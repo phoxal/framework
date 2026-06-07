@@ -5,7 +5,9 @@ use std::fmt;
 
 use phoxal_api_joint::v1::JointId;
 use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use phoxal_infra_bus::zenoh_typed::{
+    BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder,
+};
 use serde::{Deserialize, Serialize};
 
 pub const TREE_TOPIC: &str = "runtime/frame/tree";
@@ -113,11 +115,18 @@ pub enum FrameLookupResponse {
     ExtrapolationTooNew {
         newest_available_ns: u64,
     },
+    Busy,
 }
 
 impl TypedSchema for FrameLookupResponse {
     const SCHEMA_NAME: &'static str = "runtime/frame/lookup/response";
     const SCHEMA_VERSION: u32 = 1;
+}
+
+impl BusyResponse for FrameLookupResponse {
+    fn busy() -> Self {
+        Self::Busy
+    }
 }
 
 pub mod tree {
@@ -224,7 +233,7 @@ pub mod lookup {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_infra_bus::zenoh_typed::TypedSchema;
+    use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 
     use crate::v1::{FrameLookupRequest, FrameLookupResponse, FrameTransform, Static, Tree};
 
@@ -246,6 +255,7 @@ mod tests {
             "runtime/frame/lookup/response"
         );
         assert_eq!(FrameLookupResponse::SCHEMA_VERSION, 1);
+        assert_eq!(FrameLookupResponse::busy(), FrameLookupResponse::Busy);
     }
 }
 

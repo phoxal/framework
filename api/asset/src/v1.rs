@@ -1,7 +1,7 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-asset/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
 pub const GET_TOPIC: &str = "runtime/asset/get";
@@ -27,6 +27,7 @@ pub enum GetResponse {
     NotFound,
     InvalidPath(InvalidPathReason),
     Unavailable(UnavailableReason),
+    Busy,
 }
 
 #[non_exhaustive]
@@ -49,6 +50,12 @@ pub enum UnavailableReason {
 impl TypedSchema for GetResponse {
     const SCHEMA_NAME: &'static str = "runtime/asset/get/response";
     const SCHEMA_VERSION: u32 = 1;
+}
+
+impl BusyResponse for GetResponse {
+    fn busy() -> Self {
+        Self::Busy
+    }
 }
 
 pub fn topic(bus: &phoxal_infra_bus::Bus) -> String {

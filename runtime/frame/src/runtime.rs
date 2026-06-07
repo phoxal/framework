@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
@@ -9,8 +11,8 @@ use phoxal_api_frame::v1::{
 };
 use phoxal_api_joint::v1::{JointId, JointState, Quantity};
 use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::step::{Io, Publisher, RequestResponder, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
+use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal_core_spatial::frame::{extract_link_transforms, pose_to_isometry};
 use phoxal_core_structure::Structure;
 use phoxal_infra_bus::pubsub::Stamped;
@@ -171,19 +173,23 @@ pub enum Input {
         child_frame_id: FrameId,
         sample: Stamped<JointState>,
     },
-    Lookup {
-        request: FrameLookupRequest,
-        responder: RequestResponder<FrameLookupRequest, FrameLookupResponse>,
-    },
+}
+
+pub struct FrameView {
+    statics: Arc<HashMap<FrameId, FrameTransform>>,
+    parent_by_child: Arc<HashMap<FrameId, (FrameId, JointMeta)>>,
+    dynamics: Arc<HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>>,
 }
 
 pub struct FrameRuntime {
     initial: bool,
     tree: Tree,
-    static_transforms: HashMap<FrameId, FrameTransform>,
-    parent_by_child: HashMap<FrameId, (FrameId, JointMeta)>,
+    static_transforms: Arc<HashMap<FrameId, FrameTransform>>,
+    parent_by_child: Arc<HashMap<FrameId, (FrameId, JointMeta)>>,
     dynamic_by_child: HashMap<FrameId, DynamicJoint>,
     buffers: HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+    published_dynamics: HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
+    view: ReadCell<FrameView>,
     tree_publisher: Publisher<Stamped<Tree>>,
     static_publisher: Publisher<Stamped<Static>>,
     dynamic_publishers: HashMap<FrameId, Publisher<Stamped<FrameTransform>>>,
@@ -208,12 +214,8 @@ impl Runtime for FrameRuntime {
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         let tree_publisher = io.publisher::<Stamped<Tree>>(tree::TOPIC).await?;
         let static_publisher = io.publisher::<Stamped<Static>>(r#static::TOPIC).await?;
-
-        io.serve_request::<FrameLookupRequest, FrameLookupResponse, _>(
-            lookup::TOPIC,
-            |request, responder| Input::Lookup { request, responder },
-        )
-        .await?;
+        let static_transforms = Arc::new(config.static_transforms);
+        let parent_by_child = Arc::new(config.parent_by_child);
 
         let mut dynamic_publishers = HashMap::new();
         let mut buffers = HashMap::new();
@@ -240,6 +242,20 @@ impl Runtime for FrameRuntime {
             );
         }
 
+        let published_dynamics = initial_published_dynamics(&buffers);
+        let view = ReadCell::new(FrameView {
+            statics: static_transforms.clone(),
+            parent_by_child: parent_by_child.clone(),
+            dynamics: Arc::new(published_dynamics.clone()),
+        });
+        io.serve_query::<FrameLookupRequest, FrameLookupResponse, FrameView, _>(
+            lookup::TOPIC,
+            view.reader(),
+            QueryOptions::max_in_flight(NonZeroUsize::new(16).unwrap()),
+            frame_lookup,
+        )
+        .await?;
+
         let dynamic_by_child = config
             .dynamic_joints
             .into_iter()
@@ -249,10 +265,12 @@ impl Runtime for FrameRuntime {
         Ok(Self {
             initial: true,
             tree: config.tree,
-            static_transforms: config.static_transforms,
-            parent_by_child: config.parent_by_child,
+            static_transforms,
+            parent_by_child,
             dynamic_by_child,
             buffers,
+            published_dynamics,
+            view,
             tree_publisher,
             static_publisher,
             dynamic_publishers,
@@ -261,47 +279,42 @@ impl Runtime for FrameRuntime {
 
     async fn step(&mut self, step: Step, inputs: RuntimeInputs<Self::Input>) -> Result<()> {
         let mut updated = HashMap::new();
-        let mut lookups = Vec::new();
 
         for input in inputs {
-            match input {
-                Input::Joint {
-                    joint_id,
-                    child_frame_id,
-                    sample,
-                } => {
-                    let Some((_, meta)) = self.parent_by_child.get(&child_frame_id) else {
-                        warn!(frame_id = %child_frame_id, "frame runtime received joint sample for unknown child frame");
-                        continue;
-                    };
-                    let Some(dynamic) = self.dynamic_by_child.get(&child_frame_id) else {
-                        warn!(frame_id = %child_frame_id, "frame runtime received joint sample for non-dynamic frame");
-                        continue;
-                    };
-                    if dynamic.joint_id != joint_id {
-                        warn!(
-                            expected_joint_id = %dynamic.joint_id,
-                            actual_joint_id = %joint_id,
-                            frame_id = %child_frame_id,
-                            "frame runtime received joint sample with mismatched joint id"
-                        );
-                        continue;
-                    }
-                    let Some(transform) = joint_transform(meta, &sample.data) else {
-                        continue;
-                    };
-                    self.buffers
-                        .entry(child_frame_id.clone())
-                        .or_insert_with(|| RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES))
-                        .push(sample.timestamp_ns, transform);
-                    updated.insert(child_frame_id, (joint_id, sample.timestamp_ns, transform));
-                }
-                Input::Lookup { request, responder } => {
-                    lookups.push((request, responder));
-                }
+            let Input::Joint {
+                joint_id,
+                child_frame_id,
+                sample,
+            } = input;
+            let Some((_, meta)) = self.parent_by_child.get(&child_frame_id) else {
+                warn!(frame_id = %child_frame_id, "frame runtime received joint sample for unknown child frame");
+                continue;
+            };
+            let Some(dynamic) = self.dynamic_by_child.get(&child_frame_id) else {
+                warn!(frame_id = %child_frame_id, "frame runtime received joint sample for non-dynamic frame");
+                continue;
+            };
+            if dynamic.joint_id != joint_id {
+                warn!(
+                    expected_joint_id = %dynamic.joint_id,
+                    actual_joint_id = %joint_id,
+                    frame_id = %child_frame_id,
+                    "frame runtime received joint sample with mismatched joint id"
+                );
+                continue;
             }
+            let Some(transform) = joint_transform(meta, &sample.data) else {
+                continue;
+            };
+            self.buffers
+                .entry(child_frame_id.clone())
+                .or_insert_with(|| RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES))
+                .push(sample.timestamp_ns, transform);
+            updated.insert(child_frame_id, (joint_id, sample.timestamp_ns, transform));
         }
 
+        let changed_frame_ids = updated.keys().cloned().collect::<Vec<_>>();
+        let should_commit_query_view = self.initial || !changed_frame_ids.is_empty();
         let time_ns = step.tick.time_ns();
         if self.initial {
             self.static_publisher
@@ -335,16 +348,8 @@ impl Runtime for FrameRuntime {
                 .await?;
         }
 
-        for (request, responder) in lookups {
-            let response = resolve_lookup(
-                &request.parent_frame_id,
-                &request.child_frame_id,
-                request.timestamp_ns,
-                &self.static_transforms,
-                &self.buffers,
-                &self.parent_by_child,
-            );
-            responder.reply(&response).await?;
+        if should_commit_query_view {
+            self.commit_query_view(&changed_frame_ids);
         }
 
         Ok(())
@@ -368,6 +373,46 @@ impl FrameRuntime {
         let mut transforms = self.static_transforms.values().cloned().collect::<Vec<_>>();
         transforms.sort_by(|left, right| left.child_frame_id.cmp(&right.child_frame_id));
         Static { transforms }
+    }
+
+    fn commit_query_view(&mut self, changed_frame_ids: &[FrameId]) {
+        let view = committed_frame_view(
+            self.static_transforms.clone(),
+            self.parent_by_child.clone(),
+            &self.buffers,
+            &mut self.published_dynamics,
+            changed_frame_ids,
+        );
+        self.view.publish(view);
+    }
+}
+
+fn initial_published_dynamics(
+    buffers: &HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+) -> HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>> {
+    buffers
+        .iter()
+        .map(|(frame_id, buffer)| (frame_id.clone(), Arc::new(buffer.clone())))
+        .collect()
+}
+
+fn committed_frame_view(
+    statics: Arc<HashMap<FrameId, FrameTransform>>,
+    parent_by_child: Arc<HashMap<FrameId, (FrameId, JointMeta)>>,
+    buffers: &HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+    published_dynamics: &mut HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
+    changed_frame_ids: &[FrameId],
+) -> FrameView {
+    for frame_id in changed_frame_ids {
+        if let Some(buffer) = buffers.get(frame_id) {
+            published_dynamics.insert(frame_id.clone(), Arc::new(buffer.clone()));
+        }
+    }
+
+    FrameView {
+        statics,
+        parent_by_child,
+        dynamics: Arc::new(published_dynamics.clone()),
     }
 }
 
@@ -444,12 +489,23 @@ impl<T: Copy> RingBuffer<T> {
     }
 }
 
+fn frame_lookup(view: &FrameView, request: FrameLookupRequest) -> FrameLookupResponse {
+    resolve_lookup(
+        &request.parent_frame_id,
+        &request.child_frame_id,
+        request.timestamp_ns,
+        &view.statics,
+        &view.dynamics,
+        &view.parent_by_child,
+    )
+}
+
 fn resolve_lookup(
     parent: &FrameId,
     child: &FrameId,
     timestamp_ns: u64,
     statics: &HashMap<FrameId, FrameTransform>,
-    dynamics: &HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+    dynamics: &HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
     parent_by_child: &HashMap<FrameId, (FrameId, JointMeta)>,
 ) -> FrameLookupResponse {
     if !known_frame(parent, statics, dynamics, parent_by_child) {
@@ -527,7 +583,7 @@ fn lookup_ok(
 fn known_frame(
     frame_id: &FrameId,
     statics: &HashMap<FrameId, FrameTransform>,
-    dynamics: &HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+    dynamics: &HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
     parent_by_child: &HashMap<FrameId, (FrameId, JointMeta)>,
 ) -> bool {
     statics.contains_key(frame_id)
@@ -574,7 +630,7 @@ fn transform_from_ancestor_to_descendant(
     descendant: &FrameId,
     timestamp_ns: u64,
     statics: &HashMap<FrameId, FrameTransform>,
-    dynamics: &HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+    dynamics: &HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
     parent_by_child: &HashMap<FrameId, (FrameId, JointMeta)>,
 ) -> Result<Isometry3<f64>, Box<FrameLookupResponse>> {
     let mut child_to_parent_edges = Vec::new();
@@ -603,13 +659,13 @@ fn edge_transform(
     child_frame_id: &FrameId,
     timestamp_ns: u64,
     statics: &HashMap<FrameId, FrameTransform>,
-    dynamics: &HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
+    dynamics: &HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
 ) -> Result<Isometry3<f64>, Box<FrameLookupResponse>> {
     if let Some(transform) = statics.get(child_frame_id) {
         return Ok(isometry_from_transform(transform));
     }
     if let Some(buffer) = dynamics.get(child_frame_id) {
-        return buffer.nearest(timestamp_ns);
+        return buffer.as_ref().nearest(timestamp_ns);
     }
     Err(Box::new(FrameLookupResponse::UnknownFrame {
         frame_id: child_frame_id.clone(),
@@ -722,7 +778,7 @@ mod tests {
     use super::*;
 
     const EPSILON: f64 = 1e-9;
-    type DynamicStateFixture = (Config, HashMap<FrameId, RingBuffer<Isometry3<f64>>>);
+    type DynamicStateFixture = (Config, HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>);
 
     #[test]
     fn static_chain_lookup_composes_yaw() -> Result<()> {
@@ -785,7 +841,7 @@ mod tests {
             )
             .expect("joint transform"),
         );
-        let dynamics = HashMap::from([(wheel.clone(), buffer)]);
+        let dynamics = HashMap::from([(wheel.clone(), Arc::new(buffer))]);
 
         let response = resolve_lookup(
             &FrameId::new("base_link"),
@@ -939,6 +995,175 @@ mod tests {
     }
 
     #[test]
+    fn frame_lookup_reads_frozen_view_responses() {
+        let base = FrameId::new("base_link");
+        let camera = FrameId::new("camera_link");
+        let isolated_root = FrameId::new("isolated_root");
+        let isolated_child = FrameId::new("isolated_child");
+
+        let statics = Arc::new(HashMap::from([
+            (
+                base.clone(),
+                transform_from_isometry(None, base.clone(), Isometry3::identity(), Source::Static),
+            ),
+            (
+                isolated_root.clone(),
+                transform_from_isometry(
+                    None,
+                    isolated_root.clone(),
+                    Isometry3::identity(),
+                    Source::Static,
+                ),
+            ),
+            (
+                isolated_child.clone(),
+                transform_from_isometry(
+                    Some(isolated_root.clone()),
+                    isolated_child.clone(),
+                    Isometry3::identity(),
+                    Source::Static,
+                ),
+            ),
+        ]));
+        let parent_by_child = Arc::new(HashMap::from([
+            (
+                camera.clone(),
+                (base.clone(), test_joint_meta("camera_joint")),
+            ),
+            (
+                isolated_child.clone(),
+                (isolated_root.clone(), test_joint_meta("isolated_joint")),
+            ),
+        ]));
+        let mut camera_buffer = RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES);
+        camera_buffer.push(100, yaw_isometry(FRAC_PI_4));
+        camera_buffer.push(200, yaw_isometry(FRAC_PI_2));
+        let view = FrameView {
+            statics,
+            parent_by_child,
+            dynamics: Arc::new(HashMap::from([(camera.clone(), Arc::new(camera_buffer))])),
+        };
+
+        let response = frame_lookup(
+            &view,
+            FrameLookupRequest {
+                parent_frame_id: base.clone(),
+                child_frame_id: camera.clone(),
+                timestamp_ns: 175,
+            },
+        );
+        let FrameLookupResponse::Ok {
+            parent_frame_id,
+            child_frame_id,
+            timestamp_ns,
+            transform,
+        } = response
+        else {
+            panic!("expected ok response, got {response:?}");
+        };
+        assert_eq!(parent_frame_id, base);
+        assert_eq!(child_frame_id, camera);
+        assert_eq!(timestamp_ns, 175);
+        assert_yaw(transform.rotation_xyzw, FRAC_PI_2);
+
+        assert_eq!(
+            frame_lookup(
+                &view,
+                FrameLookupRequest {
+                    parent_frame_id: FrameId::new("base_link"),
+                    child_frame_id: FrameId::new("camera_link"),
+                    timestamp_ns: 99,
+                },
+            ),
+            FrameLookupResponse::ExtrapolationTooOld {
+                oldest_available_ns: 100
+            }
+        );
+        assert_eq!(
+            frame_lookup(
+                &view,
+                FrameLookupRequest {
+                    parent_frame_id: FrameId::new("base_link"),
+                    child_frame_id: FrameId::new("camera_link"),
+                    timestamp_ns: 201,
+                },
+            ),
+            FrameLookupResponse::ExtrapolationTooNew {
+                newest_available_ns: 200
+            }
+        );
+        assert_eq!(
+            frame_lookup(
+                &view,
+                FrameLookupRequest {
+                    parent_frame_id: FrameId::new("base_link"),
+                    child_frame_id: FrameId::new("missing_link"),
+                    timestamp_ns: 175,
+                },
+            ),
+            FrameLookupResponse::UnknownFrame {
+                frame_id: FrameId::new("missing_link")
+            }
+        );
+        assert_eq!(
+            frame_lookup(
+                &view,
+                FrameLookupRequest {
+                    parent_frame_id: FrameId::new("base_link"),
+                    child_frame_id: FrameId::new("isolated_child"),
+                    timestamp_ns: 175,
+                },
+            ),
+            FrameLookupResponse::DisconnectedTree {
+                parent_frame_id: FrameId::new("base_link"),
+                child_frame_id: FrameId::new("isolated_child")
+            }
+        );
+    }
+
+    #[test]
+    fn committing_changed_frame_reuses_unchanged_history_arc() {
+        let statics = Arc::new(HashMap::new());
+        let parent_by_child = Arc::new(HashMap::new());
+        let changed = FrameId::new("changed");
+        let unchanged = FrameId::new("unchanged");
+        let mut changed_buffer = RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES);
+        changed_buffer.push(1, Isometry3::identity());
+        let mut unchanged_buffer = RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES);
+        unchanged_buffer.push(1, Isometry3::identity());
+        let mut buffers = HashMap::from([
+            (changed.clone(), changed_buffer),
+            (unchanged.clone(), unchanged_buffer),
+        ]);
+        let mut published_dynamics = initial_published_dynamics(&buffers);
+        let before_changed = published_dynamics
+            .get(&changed)
+            .expect("changed history")
+            .clone();
+        let before_unchanged = published_dynamics
+            .get(&unchanged)
+            .expect("unchanged history")
+            .clone();
+
+        buffers
+            .get_mut(&changed)
+            .expect("changed buffer")
+            .push(2, Isometry3::translation(1.0, 0.0, 0.0));
+        let view = committed_frame_view(
+            statics,
+            parent_by_child,
+            &buffers,
+            &mut published_dynamics,
+            std::slice::from_ref(&changed),
+        );
+
+        let after_changed = view.dynamics.get(&changed).expect("changed history");
+        let after_unchanged = view.dynamics.get(&unchanged).expect("unchanged history");
+        assert!(!Arc::ptr_eq(&before_changed, after_changed));
+        assert!(Arc::ptr_eq(&before_unchanged, after_unchanged));
+    }
+
+    #[test]
     fn ring_buffer_evicts_entries_outside_time_window() {
         let mut buffer = RingBuffer::new(5_000_000_000, BUFFER_MAX_ENTRIES);
 
@@ -983,7 +1208,7 @@ mod tests {
             )
             .expect("joint transform"),
         );
-        Ok((config, HashMap::from([(wheel, buffer)])))
+        Ok((config, HashMap::from([(wheel, Arc::new(buffer))])))
     }
 
     fn single_dynamic_config() -> Result<Config> {
@@ -1009,6 +1234,22 @@ mod tests {
             FrameLookupResponse::Ok { transform, .. } => transform,
             other => panic!("expected ok response, got {other:?}"),
         }
+    }
+
+    fn test_joint_meta(joint_id: &str) -> JointMeta {
+        JointMeta {
+            joint_id: JointId::new(joint_id),
+            joint_type: FrameJointType::Revolute,
+            origin: Isometry3::identity(),
+            axis_xyz: [0.0, 0.0, 1.0],
+        }
+    }
+
+    fn yaw_isometry(yaw: f64) -> Isometry3<f64> {
+        Isometry3::from_parts(
+            Translation3::identity(),
+            UnitQuaternion::from_axis_angle(&Vector3::z_axis(), yaw),
+        )
     }
 
     fn assert_yaw(rotation_xyzw: [f64; 4], expected_yaw: f64) {

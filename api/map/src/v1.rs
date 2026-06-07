@@ -5,7 +5,7 @@ use std::fmt;
 
 use phoxal_api_frame::v1::FrameId;
 use phoxal_api_localize::v1::LocalizationRevisionId;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
 pub const REVISION_TOPIC: &str = "runtime/map/revision";
@@ -198,6 +198,7 @@ pub enum MapTileResponse<T> {
     ResponseTooLarge {
         available_bytes: u64,
     },
+    Busy,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,6 +251,12 @@ macro_rules! response_schema {
         impl TypedSchema for $name {
             const SCHEMA_NAME: &'static str = $schema;
             const SCHEMA_VERSION: u32 = 1;
+        }
+
+        impl BusyResponse for $name {
+            fn busy() -> Self {
+                Self(MapTileResponse::Busy)
+            }
         }
     };
 }
@@ -339,12 +346,13 @@ pub mod query {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_infra_bus::zenoh_typed::TypedSchema;
+    use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 
     use crate::v1::{
-        EsdfTileRequest, EsdfTileResponse, GlobalGridRequest, GlobalGridResponse, LocalCost,
-        LocalGridRequest, LocalGridResponse, MapRevision, SnapshotRequest, SnapshotResponse,
-        SubmapRequest, SubmapResponse, Summary, Traversability, TraversabilitySummary,
+        EsdfTile, EsdfTileRequest, EsdfTileResponse, GlobalGrid, GlobalGridRequest,
+        GlobalGridResponse, LocalCost, LocalGrid, LocalGridRequest, LocalGridResponse, MapRevision,
+        MapTileResponse, Snapshot, SnapshotRequest, SnapshotResponse, Submap, SubmapRequest,
+        SubmapResponse, Summary, Traversability, TraversabilitySummary, TraversabilityTile,
         TraversabilityTileRequest, TraversabilityTileResponse,
     };
 
@@ -423,6 +431,34 @@ mod tests {
             "runtime/map/query/snapshot/response"
         );
         assert_eq!(SnapshotResponse::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn query_responses_report_busy() {
+        assert_eq!(
+            <SubmapResponse as BusyResponse>::busy(),
+            SubmapResponse(MapTileResponse::<Submap>::Busy)
+        );
+        assert_eq!(
+            <EsdfTileResponse as BusyResponse>::busy(),
+            EsdfTileResponse(MapTileResponse::<EsdfTile>::Busy)
+        );
+        assert_eq!(
+            <TraversabilityTileResponse as BusyResponse>::busy(),
+            TraversabilityTileResponse(MapTileResponse::<TraversabilityTile>::Busy)
+        );
+        assert_eq!(
+            <LocalGridResponse as BusyResponse>::busy(),
+            LocalGridResponse(MapTileResponse::<LocalGrid>::Busy)
+        );
+        assert_eq!(
+            <GlobalGridResponse as BusyResponse>::busy(),
+            GlobalGridResponse(MapTileResponse::<GlobalGrid>::Busy)
+        );
+        assert_eq!(
+            <SnapshotResponse as BusyResponse>::busy(),
+            SnapshotResponse(MapTileResponse::<Snapshot>::Busy)
+        );
     }
 }
 

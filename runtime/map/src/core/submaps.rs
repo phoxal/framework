@@ -14,7 +14,7 @@ pub struct SubmapMetadata {
     pub anchor_rotation_xyzw: [f64; 4],
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SubmapStore {
     by_id: BTreeMap<SubmapId, SubmapMetadata>,
     insertion_order: Vec<SubmapId>,

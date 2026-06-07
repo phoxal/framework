@@ -2,6 +2,7 @@ pub mod clock;
 pub mod conventions;
 pub mod execute;
 pub mod presence;
+pub mod query;
 pub mod sensor_store;
 pub mod sim_clock;
 pub mod sim_pose;
@@ -22,6 +23,7 @@ use phoxal_infra_helpers::parse_trimmed_non_empty;
 
 pub use conventions::*;
 pub use execute::execute;
+pub use query::{QueryOptions, ReadCell, Reader};
 pub use step::EmptyArgs;
 
 pub const ENV_ROBOT_CONFIG: &str = "ROBOT_CONFIG";

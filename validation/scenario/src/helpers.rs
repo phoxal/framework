@@ -154,6 +154,7 @@ pub fn ok_transform(response: FrameLookupResponse) -> Result<FrameTransform> {
         FrameLookupResponse::ExtrapolationTooNew {
             newest_available_ns,
         } => bail!("lookup reported data too new; newest available {newest_available_ns}"),
+        FrameLookupResponse::Busy => bail!("lookup reported busy"),
     }
 }
 

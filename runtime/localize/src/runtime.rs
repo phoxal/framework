@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -18,8 +19,8 @@ use phoxal_api_odometry::v1::{OdometryEstimate, StatusMode, data as odometry_dat
 use phoxal_core_component::v1::capability::GnssCoordinateSystem;
 use phoxal_core_engine::clock::Step;
 use phoxal_core_engine::sim_pose::{self, Pose as SimPose};
-use phoxal_core_engine::step::{Io, Publisher, RequestResponder, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
+use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal_core_robot::v1::LocalizeBackendKind;
 use phoxal_infra_bus::pubsub::Stamped;
 use tracing::info;
@@ -288,22 +289,15 @@ pub enum Input {
     Imu(Stamped<imu::Sample>),
     Camera(Stamped<camera::Frame>),
     Depth(Stamped<depth::Depth>),
-    PoseGraphQuery {
-        request: PoseGraphRequest,
-        responder: RequestResponder<PoseGraphRequest, PoseGraphResponse>,
-    },
-    KeyframeQuery {
-        request: KeyframeRequest,
-        responder: RequestResponder<KeyframeRequest, KeyframeResponse>,
-    },
-    CorrectionsQuery {
-        request: CorrectionsRequest,
-        responder: RequestResponder<CorrectionsRequest, CorrectionsResponse>,
-    },
+}
+
+pub struct LocalizeView {
+    current_revision: LocalizationRevisionId,
 }
 
 pub struct LocalizeRuntime {
     backend: Box<dyn LocalizeBackend>,
+    view: ReadCell<LocalizeView>,
     current_revision: LocalizationRevisionId,
     revision_emitted: bool,
     last_emitted_localization: Option<(LocalizationMode, LocalizationSource)>,
@@ -365,22 +359,6 @@ impl Runtime for LocalizeRuntime {
             )
             .await?;
         }
-        io.serve_request::<PoseGraphRequest, PoseGraphResponse, _>(
-            pose_graph::TOPIC,
-            |request, responder| Input::PoseGraphQuery { request, responder },
-        )
-        .await?;
-        io.serve_request::<KeyframeRequest, KeyframeResponse, _>(
-            keyframe_query::TOPIC,
-            |request, responder| Input::KeyframeQuery { request, responder },
-        )
-        .await?;
-        io.serve_request::<CorrectionsRequest, CorrectionsResponse, _>(
-            corrections::TOPIC,
-            |request, responder| Input::CorrectionsQuery { request, responder },
-        )
-        .await?;
-
         let (current_revision, backend): (LocalizationRevisionId, Box<dyn LocalizeBackend>) =
             match config.backend {
                 BackendSelection::DeadReckoning => {
@@ -411,9 +389,33 @@ impl Runtime for LocalizeRuntime {
                     }
                 }
             };
+        let view = ReadCell::new(LocalizeView { current_revision });
+
+        io.serve_query::<PoseGraphRequest, PoseGraphResponse, LocalizeView, _>(
+            pose_graph::TOPIC,
+            view.reader(),
+            QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
+            localize_pose_graph,
+        )
+        .await?;
+        io.serve_query::<KeyframeRequest, KeyframeResponse, LocalizeView, _>(
+            keyframe_query::TOPIC,
+            view.reader(),
+            QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
+            localize_keyframe,
+        )
+        .await?;
+        io.serve_query::<CorrectionsRequest, CorrectionsResponse, LocalizeView, _>(
+            corrections::TOPIC,
+            view.reader(),
+            QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
+            localize_corrections,
+        )
+        .await?;
 
         Ok(Self {
             backend,
+            view,
             current_revision,
             revision_emitted: false,
             last_emitted_localization: None,
@@ -440,21 +442,6 @@ impl Runtime for LocalizeRuntime {
                 Input::Imu(sample) => self.backend.ingest_imu(sample)?,
                 Input::Camera(sample) => self.backend.ingest_camera(sample)?,
                 Input::Depth(sample) => self.backend.ingest_depth(sample)?,
-                Input::PoseGraphQuery { request, responder } => {
-                    responder
-                        .reply(&pose_graph_response(&request, self.current_revision))
-                        .await?;
-                }
-                Input::KeyframeQuery { request, responder } => {
-                    responder
-                        .reply(&keyframe_response(&request, self.current_revision))
-                        .await?;
-                }
-                Input::CorrectionsQuery { request, responder } => {
-                    responder
-                        .reply(&corrections_response(&request, self.current_revision))
-                        .await?;
-                }
             }
         }
 
@@ -496,6 +483,9 @@ impl Runtime for LocalizeRuntime {
                 &mut self.revision_emitted,
                 new_revision,
             );
+            self.view.publish(LocalizeView {
+                current_revision: self.current_revision,
+            });
             self.revision_publisher
                 .put(&Stamped::new(timestamp_ns, revision))
                 .await?;
@@ -610,9 +600,21 @@ pub(crate) fn corrections_response(
     }
 }
 
+fn localize_pose_graph(view: &LocalizeView, req: PoseGraphRequest) -> PoseGraphResponse {
+    pose_graph_response(&req, view.current_revision)
+}
+
+fn localize_keyframe(view: &LocalizeView, req: KeyframeRequest) -> KeyframeResponse {
+    keyframe_response(&req, view.current_revision)
+}
+
+fn localize_corrections(view: &LocalizeView, req: CorrectionsRequest) -> CorrectionsResponse {
+    corrections_response(&req, view.current_revision)
+}
+
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::PoseGraphRange;
+    use phoxal_api_localize::v1::{KeyframeId, PoseGraphRange};
     use phoxal_api_odometry::v1::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
@@ -763,6 +765,63 @@ mod tests {
             PoseGraphResponse::RevisionUnavailable {
                 latest_available: Some(current)
             }
+        );
+    }
+
+    #[test]
+    fn localize_pose_graph_handler_matches_response_builder() {
+        let current_revision = LocalizationRevisionId {
+            epoch: LOCALIZE_EPOCH,
+            sequence: 7,
+        };
+        let view = LocalizeView { current_revision };
+        let request = PoseGraphRequest {
+            revision: current_revision,
+            range: PoseGraphRange::All,
+            max_bytes: None,
+        };
+
+        assert_eq!(
+            localize_pose_graph(&view, request.clone()),
+            pose_graph_response(&request, current_revision)
+        );
+    }
+
+    #[test]
+    fn localize_keyframe_handler_matches_response_builder() {
+        let current_revision = LocalizationRevisionId {
+            epoch: LOCALIZE_EPOCH,
+            sequence: 7,
+        };
+        let view = LocalizeView { current_revision };
+        let request = KeyframeRequest {
+            revision: current_revision,
+            keyframe_id: KeyframeId::new("kf-1"),
+            max_bytes: None,
+        };
+
+        assert_eq!(
+            localize_keyframe(&view, request.clone()),
+            keyframe_response(&request, current_revision)
+        );
+    }
+
+    #[test]
+    fn localize_corrections_handler_matches_response_builder() {
+        let current_revision = LocalizationRevisionId {
+            epoch: LOCALIZE_EPOCH,
+            sequence: 7,
+        };
+        let view = LocalizeView { current_revision };
+        let request = CorrectionsRequest {
+            from_revision: current_revision,
+            to_revision: current_revision,
+            max_bytes: None,
+        };
+
+        assert_eq!(
+            localize_corrections(&view, request.clone()),
+            corrections_response(&request, current_revision)
         );
     }
 

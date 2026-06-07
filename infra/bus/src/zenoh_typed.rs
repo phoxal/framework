@@ -83,6 +83,10 @@ pub trait TypedSchema {
     const SCHEMA_VERSION: u32;
 }
 
+pub trait BusyResponse {
+    fn busy() -> Self;
+}
+
 impl TypedSchema for () {
     const SCHEMA_NAME: &'static str = "unit";
     const SCHEMA_VERSION: u32 = 1;
