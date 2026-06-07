@@ -40,7 +40,7 @@ impl LocalizeBackendKind {
         }
     }
 
-    /// Pinned backend version (BLUEPRINT deploy-descriptor `localize_backend.version`).
+    /// Pinned backend version, part of the resolved localize-backend identity.
     /// Placeholder pins to refine once backend conformance is versioned.
     #[must_use]
     pub const fn version(self) -> &'static str {
