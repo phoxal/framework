@@ -19,11 +19,52 @@ jobs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
       - id: v
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          v=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
-          echo "version=${v}" >> "$GITHUB_OUTPUT"
+          # Verify the intended version: the version in Cargo.toml on the merged
+          # commit must match the version advertised in the release-prep PR title.
+          cargo_version=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          title_version="${PR_TITLE#release: prepare v}"
+          if [ "${cargo_version}" != "${title_version}" ]; then
+            echo "::error::Version mismatch: Cargo.toml=${cargo_version} but PR title says v${title_version}. Refusing to release."
+            exit 1
+          fi
+          echo "Verified release version v${cargo_version}."
+          echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
+
+  tag:
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+      - name: Verify or create version tag
+        run: |
+          set -euo pipefail
+          v="${{ needs.plan.outputs.version }}"
+          tag="v${v}"
+          sha="${{ github.event.pull_request.merge_commit_sha }}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            existing=$(git rev-list -n1 "${tag}")
+            echo "Tag ${tag} already exists at ${existing} (retry-safe; reusing it)."
+            if [ "${existing}" != "${sha}" ]; then
+              echo "::warning::Tag ${tag} points at ${existing}, but this release merged at ${sha}. Keeping the existing tag."
+            fi
+          else
+            echo "Creating tag ${tag} at ${sha}."
+            git tag "${tag}" "${sha}"
+            git push origin "refs/tags/${tag}"
+          fi
 
   build:
     needs: plan
@@ -189,13 +230,14 @@ jobs:
             "${name}:${v}-amd64" "${name}:${v}-arm64"
 
   publish:
-    needs: [plan, manifest, build-binaries]
+    needs: [plan, tag, manifest, build-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
@@ -225,14 +267,25 @@ jobs:
             done
           } >> release-notes.md
 
-      - name: Create GitHub Release
+      - name: Publish or update GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           v=${{ needs.plan.outputs.version }}
-          gh release create "v${v}" \
-            --title "v${v}" \
-            --notes-file release-notes.md \
-            --target main \
-            dist/*.tar.gz
+          tag="v${v}"
+          # Retry-safe: the `tag` job guarantees the tag exists. If a prior run
+          # already created the release, update it and re-upload assets instead
+          # of failing.
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists; updating notes and re-uploading assets."
+            gh release edit "${tag}" --title "${tag}" --notes-file release-notes.md
+            gh release upload "${tag}" dist/*.tar.gz --clobber
+          else
+            echo "Creating release ${tag}."
+            gh release create "${tag}" \
+              --title "${tag}" \
+              --notes-file release-notes.md \
+              --target main \
+              dist/*.tar.gz
+          fi
