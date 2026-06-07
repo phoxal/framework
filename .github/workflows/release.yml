@@ -234,7 +234,7 @@ jobs:
   # and create-or-update the GitHub Release from the uploaded artifacts.
   publish:
     needs: [plan, manifest, build-binaries, notes]
-    uses: phoxal/organization/.github/workflows/rust-github-release.yml@master
+    uses: phoxal/.github/.github/workflows/rust-github-release.yml@main
     secrets: inherit
     with:
       version: ${{ needs.plan.outputs.version }}
