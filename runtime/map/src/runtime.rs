@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -21,8 +23,8 @@ use phoxal_api_map::v1::{
 };
 use phoxal_core_component::v1::CapabilityRef;
 use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::step::{Io, Publisher, RequestResponder, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
+use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal_core_spatial::ray::sample_range_rays;
 use phoxal_core_spatial::sensor::{
     ResolvedSensorKind, ResolvedSensorPose, resolve_sensor_poses_in_frame,
@@ -91,30 +93,14 @@ pub enum Input {
     LocalizationRevision(Stamped<LocalizationRevision>),
     Keyframe(Stamped<Keyframe>),
     RangeSample(CapabilityRef, Stamped<range::Sample>),
-    SubmapQuery {
-        request: SubmapRequest,
-        responder: RequestResponder<SubmapRequest, SubmapResponse>,
-    },
-    EsdfTileQuery {
-        request: EsdfTileRequest,
-        responder: RequestResponder<EsdfTileRequest, EsdfTileResponse>,
-    },
-    TraversabilityTileQuery {
-        request: TraversabilityTileRequest,
-        responder: RequestResponder<TraversabilityTileRequest, TraversabilityTileResponse>,
-    },
-    LocalGridQuery {
-        request: LocalGridRequest,
-        responder: RequestResponder<LocalGridRequest, LocalGridResponse>,
-    },
-    GlobalGridQuery {
-        request: GlobalGridRequest,
-        responder: RequestResponder<GlobalGridRequest, GlobalGridResponse>,
-    },
-    SnapshotQuery {
-        request: SnapshotRequest,
-        responder: RequestResponder<SnapshotRequest, SnapshotResponse>,
-    },
+}
+
+pub struct MapView {
+    planar_frame_id: FrameId,
+    body_radius_m: f64,
+    store: RevisionStore,
+    submaps: SubmapStore,
+    occupancy: Option<Arc<OccupancyGrid>>,
 }
 
 pub struct MapRuntime {
@@ -123,6 +109,8 @@ pub struct MapRuntime {
     store: RevisionStore,
     submap_store: SubmapStore,
     current_submap_occupancy: Option<OccupancyGrid>,
+    view: ReadCell<MapView>,
+    query_view_committed: bool,
     mapping_sensor_poses: BTreeMap<CapabilityRef, ResolvedSensorPose>,
     latest_robot_pose: Option<PoseEstimate>,
     revision_publisher: Publisher<Stamped<MapRevision>>,
@@ -174,43 +162,70 @@ impl Runtime for MapRuntime {
             })
             .await?;
         }
-        io.serve_request::<SubmapRequest, SubmapResponse, _>(
+        let store = RevisionStore::new();
+        let submap_store = SubmapStore::new();
+        let current_submap_occupancy: Option<OccupancyGrid> = None;
+        let view = ReadCell::new(MapView {
+            planar_frame_id: config.planar_frame_id.clone(),
+            body_radius_m: config.body_radius_m,
+            store: store.clone(),
+            submaps: submap_store.clone(),
+            occupancy: current_submap_occupancy
+                .as_ref()
+                .map(|grid| Arc::new(grid.clone())),
+        });
+
+        io.serve_query::<SubmapRequest, SubmapResponse, MapView, _>(
             submap::TOPIC,
-            |request, responder| Input::SubmapQuery { request, responder },
+            view.reader(),
+            map_query_options(),
+            map_submap,
         )
         .await?;
-        io.serve_request::<EsdfTileRequest, EsdfTileResponse, _>(
+        io.serve_query::<EsdfTileRequest, EsdfTileResponse, MapView, _>(
             esdf_tile::TOPIC,
-            |request, responder| Input::EsdfTileQuery { request, responder },
+            view.reader(),
+            map_query_options(),
+            map_esdf_tile,
         )
         .await?;
-        io.serve_request::<TraversabilityTileRequest, TraversabilityTileResponse, _>(
+        io.serve_query::<TraversabilityTileRequest, TraversabilityTileResponse, MapView, _>(
             traversability_tile::TOPIC,
-            |request, responder| Input::TraversabilityTileQuery { request, responder },
+            view.reader(),
+            map_query_options(),
+            map_traversability_tile,
         )
         .await?;
-        io.serve_request::<LocalGridRequest, LocalGridResponse, _>(
+        io.serve_query::<LocalGridRequest, LocalGridResponse, MapView, _>(
             local_grid::TOPIC,
-            |request, responder| Input::LocalGridQuery { request, responder },
+            view.reader(),
+            map_query_options(),
+            map_local_grid,
         )
         .await?;
-        io.serve_request::<GlobalGridRequest, GlobalGridResponse, _>(
+        io.serve_query::<GlobalGridRequest, GlobalGridResponse, MapView, _>(
             global_grid::TOPIC,
-            |request, responder| Input::GlobalGridQuery { request, responder },
+            view.reader(),
+            map_query_options(),
+            map_global_grid,
         )
         .await?;
-        io.serve_request::<SnapshotRequest, SnapshotResponse, _>(
+        io.serve_query::<SnapshotRequest, SnapshotResponse, MapView, _>(
             snapshot::TOPIC,
-            |request, responder| Input::SnapshotQuery { request, responder },
+            view.reader(),
+            map_query_options(),
+            map_snapshot,
         )
         .await?;
 
         Ok(Self {
             planar_frame_id: config.planar_frame_id,
             body_radius_m: config.body_radius_m,
-            store: RevisionStore::new(),
-            submap_store: SubmapStore::new(),
-            current_submap_occupancy: None,
+            store,
+            submap_store,
+            current_submap_occupancy,
+            view,
+            query_view_committed: false,
             mapping_sensor_poses: config.mapping_sensor_poses,
             latest_robot_pose: None,
             revision_publisher: io
@@ -231,6 +246,9 @@ impl Runtime for MapRuntime {
 
     async fn step(&mut self, step: Step, inputs: RuntimeInputs<Self::Input>) -> Result<()> {
         let timestamp_ns = step.tick.time_ns();
+        let mut store_changed = false;
+        let mut submaps_changed = false;
+        let mut occupancy_changed = false;
         for input in inputs {
             match input {
                 Input::LocalizationState(sample) => {
@@ -238,6 +256,7 @@ impl Runtime for MapRuntime {
                 }
                 Input::LocalizationRevision(sample) => {
                     if let Some(retained) = self.store.observe(&sample.data) {
+                        store_changed = true;
                         self.revision_publisher
                             .put(&Stamped::new(timestamp_ns, map_revision_payload(&retained)))
                             .await?;
@@ -245,6 +264,8 @@ impl Runtime for MapRuntime {
                 }
                 Input::Keyframe(sample) => {
                     if self.submap_store.ingest(&sample.data).is_some() {
+                        submaps_changed = true;
+                        occupancy_changed = self.current_submap_occupancy.is_some();
                         self.current_submap_occupancy = None;
                     }
                 }
@@ -264,6 +285,7 @@ impl Runtime for MapRuntime {
                             latest.anchor_translation_m[1],
                         ])
                     });
+                    occupancy_changed = true;
                     let robot_yaw = yaw_from_quaternion_xyzw(robot_pose.rotation_xyzw);
                     let off_x = f64::from(sensor_pose.offset_xyz_m[0]);
                     let off_y = f64::from(sensor_pose.offset_xyz_m[1]);
@@ -284,54 +306,6 @@ impl Runtime for MapRuntime {
                             ray.occupied_distance_m.map(f64::from),
                         );
                     }
-                }
-                Input::SubmapQuery { request, responder } => {
-                    let response = submap_response(
-                        &request,
-                        &self.store,
-                        &self.submap_store,
-                        self.current_submap_occupancy.as_ref(),
-                        &self.planar_frame_id,
-                    )?;
-                    responder.reply(&response).await?;
-                }
-                Input::EsdfTileQuery { request, responder } => {
-                    let response = esdf_tile_response(&request, &self.store, &self.planar_frame_id);
-                    responder.reply(&response).await?;
-                }
-                Input::TraversabilityTileQuery { request, responder } => {
-                    let response = traversability_tile_response(
-                        &request,
-                        &self.store,
-                        self.current_submap_occupancy.as_ref(),
-                        &self.planar_frame_id,
-                        self.body_radius_m,
-                    );
-                    responder.reply(&response).await?;
-                }
-                Input::LocalGridQuery { request, responder } => {
-                    let response = local_grid_response(
-                        &request,
-                        &self.store,
-                        &self.submap_store,
-                        self.current_submap_occupancy.as_ref(),
-                        &self.planar_frame_id,
-                    );
-                    responder.reply(&response).await?;
-                }
-                Input::GlobalGridQuery { request, responder } => {
-                    let response =
-                        global_grid_response(&request, &self.store, &self.planar_frame_id);
-                    responder.reply(&response).await?;
-                }
-                Input::SnapshotQuery { request, responder } => {
-                    let response = snapshot_response(
-                        &request,
-                        &self.store,
-                        &self.submap_store,
-                        &self.planar_frame_id,
-                    );
-                    responder.reply(&response).await?;
                 }
             }
         }
@@ -388,6 +362,8 @@ impl Runtime for MapRuntime {
             ))
             .await?;
 
+        self.commit_query_view(store_changed, submaps_changed, occupancy_changed);
+
         Ok(())
     }
 
@@ -398,6 +374,86 @@ impl Runtime for MapRuntime {
     async fn run_scenario(name: &str, common: &RobotRuntimeArgs, _args: &Self::Args) -> Result<()> {
         crate::scenarios::run(name, common).await
     }
+}
+
+impl MapRuntime {
+    fn commit_query_view(
+        &mut self,
+        store_changed: bool,
+        submaps_changed: bool,
+        occupancy_changed: bool,
+    ) {
+        if self.query_view_committed && !store_changed && !submaps_changed && !occupancy_changed {
+            return;
+        }
+
+        let previous = self.view.load();
+        let occupancy = if occupancy_changed || !self.query_view_committed {
+            self.current_submap_occupancy
+                .as_ref()
+                .map(|grid| Arc::new(grid.clone()))
+        } else {
+            previous.occupancy.clone()
+        };
+
+        self.view.publish(MapView {
+            planar_frame_id: self.planar_frame_id.clone(),
+            body_radius_m: self.body_radius_m,
+            store: self.store.clone(),
+            submaps: self.submap_store.clone(),
+            occupancy,
+        });
+        self.query_view_committed = true;
+    }
+}
+
+fn map_query_options() -> QueryOptions {
+    QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap())
+}
+
+fn map_submap(view: &MapView, request: SubmapRequest) -> SubmapResponse {
+    submap_response(
+        &request,
+        &view.store,
+        &view.submaps,
+        view.occupancy.as_deref(),
+        &view.planar_frame_id,
+    )
+}
+
+fn map_esdf_tile(view: &MapView, request: EsdfTileRequest) -> EsdfTileResponse {
+    esdf_tile_response(&request, &view.store, &view.planar_frame_id)
+}
+
+fn map_traversability_tile(
+    view: &MapView,
+    request: TraversabilityTileRequest,
+) -> TraversabilityTileResponse {
+    traversability_tile_response(
+        &request,
+        &view.store,
+        view.occupancy.as_deref(),
+        &view.planar_frame_id,
+        view.body_radius_m,
+    )
+}
+
+fn map_local_grid(view: &MapView, request: LocalGridRequest) -> LocalGridResponse {
+    local_grid_response(
+        &request,
+        &view.store,
+        &view.submaps,
+        view.occupancy.as_deref(),
+        &view.planar_frame_id,
+    )
+}
+
+fn map_global_grid(view: &MapView, request: GlobalGridRequest) -> GlobalGridResponse {
+    global_grid_response(&request, &view.store, &view.planar_frame_id)
+}
+
+fn map_snapshot(view: &MapView, request: SnapshotRequest) -> SnapshotResponse {
+    snapshot_response(&request, &view.store, &view.submaps, &view.planar_frame_id)
 }
 
 fn map_revision_payload(retained: &RetainedRevision) -> MapRevision {
@@ -538,15 +594,16 @@ fn submap_response(
     submaps: &SubmapStore,
     occupancy: Option<&OccupancyGrid>,
     frame_id: &FrameId,
-) -> Result<SubmapResponse> {
+) -> SubmapResponse {
     match store.lookup(request.0.requested_revision) {
         RevisionLookup::Found(retained) => match submaps.latest() {
             Some(latest) => {
                 let bytes = match occupancy {
-                    Some(grid) => rmp_serde::to_vec(&grid.to_snapshot())?,
+                    Some(grid) => rmp_serde::to_vec(&grid.to_snapshot())
+                        .expect("occupancy snapshot should serialize to MessagePack"),
                     None => Vec::new(),
                 };
-                Ok(SubmapResponse(MapTileResponse::Ok {
+                SubmapResponse(MapTileResponse::Ok {
                     served_map_revision: retained.map_revision_id,
                     built_from_localize_revision: retained.built_from_localize_revision,
                     frame_id: frame_id.clone(),
@@ -554,22 +611,20 @@ fn submap_response(
                         submap_id: latest.submap_id.clone(),
                         bytes,
                     },
-                }))
+                })
             }
-            None => Ok(SubmapResponse(MapTileResponse::RegionUnavailable {
+            None => SubmapResponse(MapTileResponse::RegionUnavailable {
                 served_map_revision: retained.map_revision_id,
-            })),
+            }),
         },
         RevisionLookup::Stale { current } => {
-            Ok(SubmapResponse(MapTileResponse::StaleRevision { current }))
+            SubmapResponse(MapTileResponse::StaleRevision { current })
         }
         RevisionLookup::Unavailable { latest_available } => {
-            Ok(SubmapResponse(MapTileResponse::RevisionUnavailable {
-                latest_available,
-            }))
+            SubmapResponse(MapTileResponse::RevisionUnavailable { latest_available })
         }
         RevisionLookup::WrongEpoch { current } => {
-            Ok(SubmapResponse(MapTileResponse::WrongEpoch { current }))
+            SubmapResponse(MapTileResponse::WrongEpoch { current })
         }
     }
 }
@@ -883,6 +938,223 @@ mod tests {
                     map_revision: retained.map_revision_id,
                     submaps: Vec::new()
                 }
+            })
+        );
+    }
+
+    #[test]
+    fn map_handlers_match_response_builders_for_available_view() {
+        let mut store = RevisionStore::new();
+        let Some(_) = store.observe(&localization_revision(localize_revision_id(1, 0))) else {
+            panic!("revision should be retained");
+        };
+        let mut submaps = SubmapStore::new();
+        let _ = submaps.ingest(&keyframe("kf-a", 0));
+        let mut grid = OccupancyGrid::centered_at([0.0, 0.0]);
+        grid.integrate_ray([0.0, 0.0], 0.0, 1.0, Some(1.0));
+        let view = map_view(store, submaps, Some(grid), 0.30);
+        let request = map_tile_request();
+
+        assert_eq!(
+            map_submap(&view, SubmapRequest(request.clone())),
+            submap_response(
+                &SubmapRequest(request.clone()),
+                &view.store,
+                &view.submaps,
+                view.occupancy.as_deref(),
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            map_esdf_tile(&view, EsdfTileRequest(request.clone())),
+            esdf_tile_response(
+                &EsdfTileRequest(request.clone()),
+                &view.store,
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            map_traversability_tile(&view, TraversabilityTileRequest(request.clone())),
+            traversability_tile_response(
+                &TraversabilityTileRequest(request.clone()),
+                &view.store,
+                view.occupancy.as_deref(),
+                &view.planar_frame_id,
+                view.body_radius_m,
+            )
+        );
+        assert_eq!(
+            map_local_grid(&view, LocalGridRequest(request.clone())),
+            local_grid_response(
+                &LocalGridRequest(request.clone()),
+                &view.store,
+                &view.submaps,
+                view.occupancy.as_deref(),
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            map_global_grid(&view, GlobalGridRequest(request.clone())),
+            global_grid_response(
+                &GlobalGridRequest(request.clone()),
+                &view.store,
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            map_snapshot(&view, SnapshotRequest(request.clone())),
+            snapshot_response(
+                &SnapshotRequest(request),
+                &view.store,
+                &view.submaps,
+                &view.planar_frame_id,
+            )
+        );
+    }
+
+    #[test]
+    fn map_handlers_match_response_builders_for_unavailable_regions() {
+        let mut store = RevisionStore::new();
+        let Some(retained) = store.observe(&localization_revision(localize_revision_id(1, 0)))
+        else {
+            panic!("revision should be retained");
+        };
+        let view = map_view(store, SubmapStore::new(), None, 0.30);
+        let request = map_tile_request();
+
+        let submap = map_submap(&view, SubmapRequest(request.clone()));
+        assert_eq!(
+            submap,
+            submap_response(
+                &SubmapRequest(request.clone()),
+                &view.store,
+                &view.submaps,
+                view.occupancy.as_deref(),
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            submap,
+            SubmapResponse(MapTileResponse::<Submap>::RegionUnavailable {
+                served_map_revision: retained.map_revision_id,
+            })
+        );
+
+        let local_grid = map_local_grid(&view, LocalGridRequest(request.clone()));
+        assert_eq!(
+            local_grid,
+            local_grid_response(
+                &LocalGridRequest(request.clone()),
+                &view.store,
+                &view.submaps,
+                view.occupancy.as_deref(),
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            local_grid,
+            LocalGridResponse(MapTileResponse::<LocalGrid>::RegionUnavailable {
+                served_map_revision: retained.map_revision_id,
+            })
+        );
+
+        let traversability =
+            map_traversability_tile(&view, TraversabilityTileRequest(request.clone()));
+        assert_eq!(
+            traversability,
+            traversability_tile_response(
+                &TraversabilityTileRequest(request),
+                &view.store,
+                view.occupancy.as_deref(),
+                &view.planar_frame_id,
+                view.body_radius_m,
+            )
+        );
+        assert_eq!(
+            traversability,
+            TraversabilityTileResponse(MapTileResponse::<TraversabilityTile>::RegionUnavailable {
+                served_map_revision: retained.map_revision_id,
+            })
+        );
+    }
+
+    #[test]
+    fn map_snapshot_handler_matches_builder_for_revision_errors() {
+        let mut store = RevisionStore::new();
+        for sequence in 0..5 {
+            let _ = store.observe(&localization_revision(localize_revision_id(1, sequence)));
+        }
+        let view = map_view(store, SubmapStore::new(), None, 0.30);
+
+        let stale_request = map_tile_request_for(MapRevisionId {
+            epoch: INITIAL_MAP_EPOCH,
+            sequence: 0,
+        });
+        let stale = map_snapshot(&view, SnapshotRequest(stale_request.clone()));
+        assert_eq!(
+            stale,
+            snapshot_response(
+                &SnapshotRequest(stale_request),
+                &view.store,
+                &view.submaps,
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            stale,
+            SnapshotResponse(MapTileResponse::<Snapshot>::StaleRevision {
+                current: MapRevisionId {
+                    epoch: INITIAL_MAP_EPOCH,
+                    sequence: 4,
+                },
+            })
+        );
+
+        let unavailable_request = map_tile_request_for(MapRevisionId {
+            epoch: INITIAL_MAP_EPOCH,
+            sequence: 9,
+        });
+        let unavailable = map_snapshot(&view, SnapshotRequest(unavailable_request.clone()));
+        assert_eq!(
+            unavailable,
+            snapshot_response(
+                &SnapshotRequest(unavailable_request),
+                &view.store,
+                &view.submaps,
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            unavailable,
+            SnapshotResponse(MapTileResponse::<Snapshot>::RevisionUnavailable {
+                latest_available: Some(MapRevisionId {
+                    epoch: INITIAL_MAP_EPOCH,
+                    sequence: 4,
+                }),
+            })
+        );
+
+        let wrong_epoch_request = map_tile_request_for(MapRevisionId {
+            epoch: 99,
+            sequence: 0,
+        });
+        let wrong_epoch = map_snapshot(&view, SnapshotRequest(wrong_epoch_request.clone()));
+        assert_eq!(
+            wrong_epoch,
+            snapshot_response(
+                &SnapshotRequest(wrong_epoch_request),
+                &view.store,
+                &view.submaps,
+                &view.planar_frame_id,
+            )
+        );
+        assert_eq!(
+            wrong_epoch,
+            SnapshotResponse(MapTileResponse::<Snapshot>::WrongEpoch {
+                current: MapRevisionId {
+                    epoch: INITIAL_MAP_EPOCH,
+                    sequence: 4,
+                },
             })
         );
     }
@@ -1249,8 +1521,12 @@ mod tests {
     }
 
     fn map_tile_request() -> MapTileRequest {
+        map_tile_request_for(initial_map_revision())
+    }
+
+    fn map_tile_request_for(requested_revision: MapRevisionId) -> MapTileRequest {
         MapTileRequest {
-            requested_revision: initial_map_revision(),
+            requested_revision,
             region: Region {
                 min_xyz_m: [0.0, 0.0, 0.0],
                 max_xyz_m: [1.0, 1.0, 1.0],
@@ -1261,6 +1537,21 @@ mod tests {
             },
             frame_id: FrameId::new("map"),
             max_bytes: None,
+        }
+    }
+
+    fn map_view(
+        store: RevisionStore,
+        submaps: SubmapStore,
+        occupancy: Option<OccupancyGrid>,
+        body_radius_m: f64,
+    ) -> MapView {
+        MapView {
+            planar_frame_id: FrameId::new("map"),
+            body_radius_m,
+            store,
+            submaps,
+            occupancy: occupancy.map(std::sync::Arc::new),
         }
     }
 
@@ -1331,9 +1622,6 @@ mod tests {
         occupancy: Option<&OccupancyGrid>,
         frame_id: &FrameId,
     ) -> SubmapResponse {
-        match submap_response(request, store, submaps, occupancy, frame_id) {
-            Ok(response) => response,
-            Err(error) => panic!("submap response failed: {error:#}"),
-        }
+        submap_response(request, store, submaps, occupancy, frame_id)
     }
 }

@@ -2,7 +2,9 @@ pub const SCHEMA_NAME: &str = "phoxal-api-video/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
 use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use phoxal_infra_bus::zenoh_typed::{
+    BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder,
+};
 use serde::{Deserialize, Serialize};
 
 pub const OPEN_TOPIC: &str = "runtime/video/open";
@@ -52,11 +54,18 @@ pub enum OpenResponse {
     },
     UnknownSource,
     Unavailable(UnavailableReason),
+    Busy,
 }
 
 impl TypedSchema for OpenResponse {
     const SCHEMA_NAME: &'static str = "runtime/video/open/response";
     const SCHEMA_VERSION: u32 = 1;
+}
+
+impl BusyResponse for OpenResponse {
+    fn busy() -> Self {
+        Self::Busy
+    }
 }
 
 #[non_exhaustive]
@@ -178,7 +187,7 @@ pub mod stream {
 #[cfg(test)]
 mod tests {
     use super::{OpenRequest, OpenResponse, StreamEvent};
-    use phoxal_infra_bus::zenoh_typed::TypedSchema;
+    use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 
     #[test]
     fn schema_names_and_versions_do_not_drift() {
@@ -188,6 +197,11 @@ mod tests {
         assert_eq!(OpenResponse::SCHEMA_VERSION, 1);
         assert_eq!(StreamEvent::SCHEMA_NAME, "runtime/video/stream");
         assert_eq!(StreamEvent::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn open_response_busy_uses_busy_variant() {
+        assert_eq!(OpenResponse::busy(), OpenResponse::Busy);
     }
 }
 

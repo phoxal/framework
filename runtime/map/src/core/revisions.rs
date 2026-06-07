@@ -33,7 +33,7 @@ pub enum RevisionLookup {
 }
 
 // Pin mechanism deferred to P2.3.B/C; synchronous query handling prevents mid-read eviction today.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RevisionStore {
     epoch: u64,
     next_sequence: u64,

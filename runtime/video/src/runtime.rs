@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -17,8 +18,8 @@ use phoxal_core_component::v1::CapabilityRef;
 use phoxal_core_component::v1::capability::Capability;
 use phoxal_core_engine::clock::Step;
 use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{Io, Publisher, RequestResponder, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
+use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal_infra_bus::Bus;
 use phoxal_infra_bus::liveliness::LivelinessEvent;
 use phoxal_infra_bus::pubsub::Stamped;
@@ -79,10 +80,10 @@ pub(crate) enum Input {
         stream_id: String,
         frame: Stamped<camera::Frame>,
     },
-    Open {
-        request: OpenRequest,
-        responder: RequestResponder<OpenRequest, OpenResponse>,
-    },
+}
+
+pub(crate) struct VideoView {
+    sources: Arc<[PreviewSource]>,
 }
 
 pub(crate) struct StreamState {
@@ -97,7 +98,7 @@ pub(crate) struct StreamState {
 
 pub(crate) struct VideoRuntime {
     bus: Bus,
-    sources: Vec<PreviewSource>,
+    view: ReadCell<VideoView>,
     streams: Vec<StreamState>,
     last_step_time_ns: u64,
 }
@@ -122,14 +123,28 @@ impl Runtime for VideoRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         let bus = io.bus()?;
+        let view = ReadCell::new(VideoView {
+            sources: config.sources.into(),
+        });
 
-        io.serve_request::<OpenRequest, OpenResponse, _>(open::TOPIC, |request, responder| {
-            Input::Open { request, responder }
-        })
+        io.serve_query::<OpenRequest, OpenResponse, VideoView, _>(
+            open::TOPIC,
+            view.reader(),
+            QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
+            video_open,
+        )
         .await?;
 
-        let mut streams = Vec::with_capacity(config.sources.len());
-        for source in &config.sources {
+        let mut runtime = Self {
+            bus,
+            view,
+            streams: Vec::new(),
+            last_step_time_ns: 0,
+        };
+
+        let sources = runtime.view.load().sources.clone();
+        runtime.streams.reserve(sources.len());
+        for source in sources.iter() {
             let input_stream_id = source.stream_id.clone();
             io.subscribe::<Stamped<camera::Frame>, _>(&source.profile_topic, move |frame| {
                 Input::Frame {
@@ -144,12 +159,12 @@ impl Runtime for VideoRuntime {
                 .await?;
             let demand = Arc::new(AtomicUsize::new(0));
             let demand_task = spawn_demand_task(
-                bus.clone(),
+                runtime.bus.clone(),
                 stream::path(&source.stream_id),
                 Arc::clone(&demand),
             );
             let encoder = PreviewEncoder::new(source.format.width_px, source.format.height_px)?;
-            streams.push(StreamState {
+            runtime.streams.push(StreamState {
                 source: source.clone(),
                 publisher,
                 encoder,
@@ -160,12 +175,7 @@ impl Runtime for VideoRuntime {
             });
         }
 
-        Ok(Self {
-            bus,
-            sources: config.sources,
-            streams,
-            last_step_time_ns: 0,
-        })
+        Ok(runtime)
     }
 
     async fn step(&mut self, step: Step, inputs: RuntimeInputs<Self::Input>) -> Result<()> {
@@ -204,11 +214,6 @@ impl Runtime for VideoRuntime {
 
         for input in inputs {
             match input {
-                Input::Open { request, responder } => {
-                    responder
-                        .reply(&resolve_open(&request.source, &self.sources))
-                        .await?;
-                }
                 Input::Frame { stream_id, frame } => {
                     let Some(stream) = self
                         .streams
@@ -503,9 +508,14 @@ pub(crate) fn resolve_open(request_source: &str, sources: &[PreviewSource]) -> O
     }
 }
 
+fn video_open(view: &VideoView, request: OpenRequest) -> OpenResponse {
+    resolve_open(&request.source, &view.sources)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phoxal_api_video::v1::Quality;
 
     fn preview_source() -> PreviewSource {
         PreviewSource::new(CapabilityRef::new("front_camera", "rgb"), 640, 480, 30.0)
@@ -617,6 +627,41 @@ mod tests {
                     height_px: 240,
                 },
             }
+        );
+    }
+
+    #[test]
+    fn video_open_resolves_ok_unknown_and_unavailable() {
+        let source = preview_source();
+        let view = VideoView {
+            sources: Arc::from(vec![source]),
+        };
+
+        assert_eq!(
+            video_open(&view, OpenRequest::new("front_camera.rgb", Quality::Auto)),
+            OpenResponse::Ok {
+                stream_id: "front_camera_rgb".to_string(),
+                format: StreamFormat {
+                    codec: Codec::H264,
+                    width_px: 640,
+                    height_px: 480,
+                },
+            }
+        );
+        assert_eq!(
+            video_open(&view, OpenRequest::new("rear_camera.rgb", Quality::Auto)),
+            OpenResponse::UnknownSource
+        );
+
+        let empty_view = VideoView {
+            sources: Arc::from(Vec::new()),
+        };
+        assert_eq!(
+            video_open(
+                &empty_view,
+                OpenRequest::new("front_camera.rgb", Quality::Auto)
+            ),
+            OpenResponse::Unavailable(UnavailableReason::NoCamerasAvailable)
         );
     }
 

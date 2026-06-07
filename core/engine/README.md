@@ -4,8 +4,9 @@ Shared runtime process mechanics for framework runtimes and component drivers.
 
 `phoxal-core-engine` owns the step loop, logical-time source, shutdown polling,
 CLI dispatch, runtime config resolution hooks, scenario dispatch, input fan-in
-with per-source queue policies, publisher setup, query serving, and recording
-test I/O. Runtime crates own domain behavior and narrow resolved config.
+with per-source queue policies, publisher setup, immediate query serving over
+committed read views, and recording test I/O. Runtime crates own domain behavior
+and narrow resolved config.
 
 ## Runtime
 
@@ -55,10 +56,10 @@ pub trait Runtime: Sized + Send {
   republish the exact consumed payload to
   `runtime/<runtime-id>/debug/input/<debug_key>` only while a subscriber is
   present.
-- `io.serve_request(query, map)` maps a Zenoh query into `Input` with a
-  `RequestResponder`; the runtime replies with `responder.reply(&response).await?`
-  from inside `step(...)`. Query sources are always `All` — there is no policy
-  parameter, because dropping a query would leave the caller hanging.
+- `io.serve_query::<Req, Resp, View, _>(topic, reader, options, handler)` serves a
+  Zenoh query immediately, off the step loop, from the runtime's last committed
+  read view (see [Queries](#queries)). The handler is a pure
+  `fn(&View, Req) -> Resp` — it never borrows `&mut self` and never waits for a step.
 - `io.publisher::<T>(topic).await?` returns a `Publisher<T>` stored by the
   runtime and used with `.put(&payload).await?` from `step(...)`.
 - `io.eager_publisher::<T>(topic).await?` is the explicit command/backbone
@@ -68,8 +69,8 @@ pub trait Runtime: Sized + Send {
 and uses stored output handles for pub/sub output.
 
 There is no separate request-runtime model. A pure query service (for example
-`runtime/asset`) is just a `Runtime` that registers `serve_request` and
-replies from `step(...)`.
+`runtime/asset`) is just a `Runtime` that registers `serve_query` over a view and
+has an empty `step(...)`.
 
 Mirrored subscriptions are input-only debug products. A runtime opts in per
 consumed input when Rerun or another operator tool needs to render the same
@@ -100,7 +101,6 @@ whether older samples still matter:
 
 | Input shape | Policy | Why |
 |---|---|---|
-| Query / request | `All` (forced) | every request must receive a reply |
 | Event/command applied per message — mission/power command, estop, keyframe, revision, heartbeat | `All` | collapsing would drop events or break safety/liveness (a multiplexed heartbeat stream needs every message) |
 | Current setpoint the runtime reduces to one value — drive target, follow path, plan goal, motion manual/follow target | `Latest` | only the newest value matters |
 | Per-frame sensor where only the freshest frame is processed — perception camera/depth | `Latest` | processing a stale backlog is wasted work |
@@ -112,6 +112,42 @@ whether older samples still matter:
 `RuntimeInputStats { received, delivered, dropped }` via `inputs.stats()`
 (`received == delivered + dropped`). Per-runtime delivered/dropped totals are
 logged in the periodic "runtime alive" line.
+
+## Queries
+
+Queries are immediate reads, answered off the step loop from the runtime's last
+committed *view* — never by waiting for the next `step`. A runtime keeps its
+queryable state in a `ReadCell<View>`, registers each endpoint once in `new(...)`,
+and republishes a frozen view from `step(...)` when query-visible state changes:
+
+```rust
+// in new(): one registration per endpoint; the handler is a pure free fn
+let view = ReadCell::new(MapView { /* ... */ });
+io.serve_query::<SubmapRequest, SubmapResponse, MapView, _>(
+    submap::TOPIC, view.reader(), QueryOptions::single(), map_submap).await?;
+
+// in step(): after mutating working state, commit the new frozen view
+self.view.publish(self.build_view());
+
+// the handler — pure; testing it is just calling it over a hand-built view
+fn map_submap(view: &MapView, req: SubmapRequest) -> SubmapResponse { /* ... */ }
+```
+
+- The view must be **frozen**: it may hold `Arc`-shared products but no interior
+  mutability a handler can observe change. The framework hands each handler an
+  `Arc<View>` snapshot, so anything reachable from it (e.g. retained revisions) is
+  pinned for the call by ordinary `Arc` ownership — there is no separate
+  pin/evict protocol.
+- The handler is a pure `fn(&View, Req) -> Resp`. Only `step(...)` mutates state,
+  so query timing never affects state evolution, and the same request over the
+  same committed view returns the same response.
+- `QueryOptions` bounds in-flight concurrency per endpoint
+  (`single()` or `max_in_flight(n)`). On saturation the framework replies with
+  `Resp::busy()` immediately — no queue, no blocking the step loop. Every query
+  response type implements `phoxal_infra_bus::zenoh_typed::BusyResponse`
+  (typically a `Busy` variant).
+- Heavy response materialization (serialization, tile extraction) runs on the
+  query task, off the step loop, so large reads never stall stepping.
 
 ## Example
 

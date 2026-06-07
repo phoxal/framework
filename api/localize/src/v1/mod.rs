@@ -4,7 +4,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 use std::fmt;
 
 use phoxal_api_frame::v1::FrameId;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
 pub mod stream_demand;
@@ -238,11 +238,18 @@ pub enum CorrectionsResponse {
     ResponseTooLarge {
         available_bytes: u64,
     },
+    Busy,
 }
 
 impl TypedSchema for CorrectionsResponse {
     const SCHEMA_NAME: &'static str = "runtime/localize/query/corrections/response";
     const SCHEMA_VERSION: u32 = 1;
+}
+
+impl BusyResponse for CorrectionsResponse {
+    fn busy() -> Self {
+        Self::Busy
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -275,11 +282,18 @@ pub enum PoseGraphResponse {
     ResponseTooLarge {
         available_bytes: u64,
     },
+    Busy,
 }
 
 impl TypedSchema for PoseGraphResponse {
     const SCHEMA_NAME: &'static str = "runtime/localize/query/pose_graph/response";
     const SCHEMA_VERSION: u32 = 1;
+}
+
+impl BusyResponse for PoseGraphResponse {
+    fn busy() -> Self {
+        Self::Busy
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -336,11 +350,18 @@ pub enum KeyframeResponse {
     ResponseTooLarge {
         available_bytes: u64,
     },
+    Busy,
 }
 
 impl TypedSchema for KeyframeResponse {
     const SCHEMA_NAME: &'static str = "runtime/localize/query/keyframe/response";
     const SCHEMA_VERSION: u32 = 1;
+}
+
+impl BusyResponse for KeyframeResponse {
+    fn busy() -> Self {
+        Self::Busy
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -381,7 +402,7 @@ pub mod query {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_infra_bus::zenoh_typed::TypedSchema;
+    use phoxal_infra_bus::zenoh_typed::{BusyResponse, TypedSchema};
 
     use crate::v1::{
         CorrectionsRequest, CorrectionsResponse, Keyframe, KeyframeRequest, KeyframeResponse,
@@ -448,6 +469,13 @@ mod tests {
 
         assert_eq!(value, "\"simulator_truth\"");
         assert_eq!(gnss_value, "\"gnss_anchored\"");
+    }
+
+    #[test]
+    fn localize_query_responses_have_busy_values() {
+        assert_eq!(PoseGraphResponse::busy(), PoseGraphResponse::Busy);
+        assert_eq!(KeyframeResponse::busy(), KeyframeResponse::Busy);
+        assert_eq!(CorrectionsResponse::busy(), CorrectionsResponse::Busy);
     }
 }
 
