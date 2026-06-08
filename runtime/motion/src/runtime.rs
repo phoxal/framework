@@ -7,10 +7,11 @@ use phoxal_api_follow::v1::{Target as FollowTarget, target as follow_target};
 use phoxal_api_motion::v1::{ManualCommand, MotionReason, MotionSource, State, manual, state};
 use phoxal_api_safety::v1::{SafetyAuthorization, authorization as safety_authorization};
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
 use phoxal_infra_bus::pubsub::Stamped;
-use tracing::info;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -35,7 +36,7 @@ pub struct MotionRuntime {
     latest_manual_command: Option<Stamped<ManualCommand>>,
     latest_follow_target: Option<Stamped<FollowTarget>>,
     latest_safety_authorization: Option<Stamped<SafetyAuthorization>>,
-    last_logged_state: Option<MotionLogKey>,
+    decision_log: DecisionLog<MotionLogKey>,
     drive_target_publisher: Publisher<Stamped<DriveTarget>>,
     state_publisher: Publisher<Stamped<State>>,
 }
@@ -86,7 +87,12 @@ impl Runtime for MotionRuntime {
             latest_manual_command: None,
             latest_follow_target: None,
             latest_safety_authorization: None,
-            last_logged_state: None,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                state::TOPIC,
+                <State as TypedSchema>::SCHEMA_NAME,
+                <State as TypedSchema>::SCHEMA_VERSION,
+            ),
             drive_target_publisher,
             state_publisher,
         })
@@ -120,15 +126,8 @@ impl Runtime for MotionRuntime {
             selected: Some(drive_target),
             reason: arbitration.reason,
         };
-        let logged = (state.active_source, state.reason);
-        if self.last_logged_state != Some(logged) {
-            info!(
-                active_source = ?state.active_source,
-                reason = ?state.reason,
-                "motion state changed"
-            );
-            self.last_logged_state = Some(logged);
-        }
+        self.decision_log
+            .observe(now_ns, (state.active_source, state.reason));
         self.state_publisher
             .put(&Stamped::new(now_ns, state))
             .await?;

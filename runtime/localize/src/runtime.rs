@@ -18,12 +18,13 @@ use phoxal_api_localize::v1::{
 use phoxal_api_odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
 use phoxal_core_component::v1::capability::GnssCoordinateSystem;
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::sim_pose::{self, Pose as SimPose};
 use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal_core_robot::v1::LocalizeBackendKind;
 use phoxal_infra_bus::pubsub::Stamped;
-use tracing::info;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 use crate::gnss_anchored::GnssAnchoredBackend;
 use crate::orbslam3;
@@ -300,13 +301,15 @@ pub struct LocalizeRuntime {
     view: ReadCell<LocalizeView>,
     current_revision: LocalizationRevisionId,
     revision_emitted: bool,
-    last_emitted_localization: Option<(LocalizationMode, LocalizationSource)>,
+    decision_log: DecisionLog<LocalizeLogKey>,
     state_publisher: Publisher<Stamped<LocalizationState>>,
     pose_publisher: Publisher<Stamped<PoseEstimate>>,
     revision_publisher: Publisher<Stamped<LocalizationRevision>>,
     keyframe_publisher: Publisher<Stamped<Keyframe>>,
     _correction_publisher: Publisher<Stamped<PoseGraphCorrection>>,
 }
+
+type LocalizeLogKey = (LocalizationMode, LocalizationSource);
 
 #[async_trait::async_trait]
 impl Runtime for LocalizeRuntime {
@@ -418,7 +421,12 @@ impl Runtime for LocalizeRuntime {
             view,
             current_revision,
             revision_emitted: false,
-            last_emitted_localization: None,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                state::TOPIC,
+                <LocalizationState as TypedSchema>::SCHEMA_NAME,
+                <LocalizationState as TypedSchema>::SCHEMA_VERSION,
+            ),
             state_publisher: io
                 .publisher::<Stamped<LocalizationState>>(state::TOPIC)
                 .await?,
@@ -459,15 +467,8 @@ impl Runtime for LocalizeRuntime {
             valid_at_ns: update.valid_at_ns,
         };
 
-        let emitted = (state.mode, state.source);
-        if self.last_emitted_localization != Some(emitted) {
-            info!(
-                mode = ?state.mode,
-                source = ?state.source,
-                "localization state changed"
-            );
-            self.last_emitted_localization = Some(emitted);
-        }
+        self.decision_log
+            .observe(timestamp_ns, (state.mode, state.source));
 
         self.state_publisher
             .put(&Stamped::new(timestamp_ns, state))
