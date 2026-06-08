@@ -75,13 +75,13 @@ were produced under rather than minting their own id.
 
 ## Schema identity
 
-Each `phoxal::api::<name>` module declares `SCHEMA_NAME` / `SCHEMA_VERSION` (e.g.
-`phoxal-api-safety/v1`), and each typed contract carries a `TypedSchema`
-`SCHEMA_NAME` that follows the contract path — `runtime/<name>/<stream>` for
-pub/sub, with `/request` and `/response` suffixes for queries (e.g.
-`runtime/safety/authorization`, `runtime/map/query/submap/request`).
-`SCHEMA_VERSION` is numeric and starts at `1`. Every api crate carries a
-contract-drift test asserting its `SCHEMA_NAME` and `SCHEMA_VERSION`.
+Each `phoxal::api::<name>` module declares `SCHEMA_NAME` / `SCHEMA_VERSION`, and
+each typed contract carries a `TypedSchema` `SCHEMA_NAME` that follows the
+contract path — `runtime/<name>/<stream>` for pub/sub, with `/request` and
+`/response` suffixes for queries (e.g. `runtime/safety/authorization`,
+`runtime/map/query/submap/request`). `SCHEMA_VERSION` is numeric and starts at
+`1`. Every api module carries a contract-drift test asserting its `SCHEMA_NAME`
+and `SCHEMA_VERSION`.
 
 ## Large products
 
