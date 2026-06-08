@@ -78,7 +78,6 @@ pub fn p4_goal() -> (GoalPose, GoalTolerance) {
         GoalTolerance {
             pos_m: 0.20,
             yaw_rad: Some(0.2),
-            time_ns: None,
         },
     )
 }

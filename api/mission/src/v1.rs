@@ -19,6 +19,10 @@ pub enum MissionCommand {
     NavigateTo {
         goal: GoalPose,
         tolerance: GoalTolerance,
+        /// Execution budget measured in logical time from goal acceptance.
+        ///
+        /// Expiry is a mission failure, not mission completion.
+        max_duration_ns: Option<u64>,
     },
     Pause,
     Resume,
@@ -65,9 +69,10 @@ pub enum GoalPose {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GoalTolerance {
+    /// Geometric arrival radius in metres.
     pub pos_m: f64,
+    /// Optional geometric heading tolerance in radians, compared as a normalized error.
     pub yaw_rad: Option<f64>,
-    pub time_ns: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -111,6 +116,8 @@ pub enum MissionMode {
 pub struct Goal {
     pub pose: GoalPose,
     pub tolerance: GoalTolerance,
+    /// Execution budget carried with the active goal for inspection on `GOAL_TOPIC`.
+    pub max_duration_ns: Option<u64>,
     pub source: GoalSource,
 }
 
