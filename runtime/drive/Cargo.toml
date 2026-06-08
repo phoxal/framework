@@ -10,16 +10,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-phoxal-infra-bus = { workspace = true }
-phoxal-api-component = { workspace = true }
-phoxal-api-drive = { workspace = true }
-phoxal-core-engine = { workspace = true }
-phoxal-core-component = { workspace = true }
-phoxal-core-robot = { workspace = true }
-phoxal-core-spatial = { workspace = true }
-phoxal-core-structure = { workspace = true }
-phoxal-infra-helpers = { workspace = true }
-phoxal-validation-scenario = { workspace = true }
+phoxal = { workspace = true, features = ["scenario"] }
 
 nalgebra = { workspace = true }
 serde_json = { workspace = true }

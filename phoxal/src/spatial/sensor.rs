@@ -408,11 +408,11 @@ mod tests {
             Ok(value) => PathBuf::from(value),
             Err(error) => panic!("CARGO_MANIFEST_DIR is not set: {error}"),
         };
-        // spatial sits at core/spatial/ — two levels below the workspace root.
-        let workspace_root = match manifest_dir.parent().and_then(|path| path.parent()) {
+        // phoxal sits one level below the workspace root.
+        let workspace_root = match manifest_dir.parent() {
             Some(path) => path,
             None => panic!(
-                "spatial CARGO_MANIFEST_DIR must live two levels below the workspace root: {}",
+                "phoxal CARGO_MANIFEST_DIR must live one level below the workspace root: {}",
                 manifest_dir.display()
             ),
         };

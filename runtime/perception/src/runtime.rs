@@ -2,23 +2,23 @@ use std::time::Duration;
 
 use crate::core::{HealthState, Tracker, TrackerConfig};
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::{camera, depth};
-use phoxal_api_frame::v1::{FrameId, Tree, tree};
-use phoxal_api_localize::v1::LocalizationState;
-use phoxal_api_map::v1::{MapRevision, revision};
-use phoxal_api_perception::v1::{
+use phoxal::api::component::v1::capability::{camera, depth};
+use phoxal::api::frame::v1::{FrameId, Tree, tree};
+use phoxal::api::localize::v1::LocalizationState;
+use phoxal::api::map::v1::{MapRevision, revision};
+use phoxal::api::perception::v1::{
     BoundingBox, Detection, Detections, PerceptionDegradedReason, PerceptionState,
     PerceptionStoppedReason, RevisionLinkage, detections, state,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::Capability;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_core_robot::v1::Role;
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::robot::v1::Role;
+use phoxal::model::structure::Structure;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::staged::Robot;
+use phoxal::runtime::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
@@ -132,7 +132,7 @@ impl Runtime for PerceptionRuntime {
             warn!("perception runtime started without perception-role camera/depth source");
         }
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            phoxal::api::localize::v1::state::TOPIC,
             Input::LocalizationState,
         )
         .await?;
@@ -294,11 +294,11 @@ impl PerceptionSource {
             (Some(camera), Some(depth)) => {
                 let source_frame_id = FrameId::new(robot.require_link_target(&camera, structure)?);
                 Ok(Some(Self {
-                    camera_topic: phoxal_api_component::v1::capability::default_profile_path(
+                    camera_topic: phoxal::api::component::v1::capability::default_profile_path(
                         &camera.component_id,
                         &camera.capability_id,
                     ),
-                    depth_topic: phoxal_api_component::v1::capability::default_profile_path(
+                    depth_topic: phoxal::api::component::v1::capability::default_profile_path(
                         &depth.component_id,
                         &depth.capability_id,
                     ),

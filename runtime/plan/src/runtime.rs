@@ -2,16 +2,16 @@ use std::time::Duration;
 
 use crate::core::PlanDecision;
 use anyhow::Result;
-use phoxal_api_localize::v1::LocalizationState;
-use phoxal_api_map::v1::MapRevision;
-use phoxal_api_mission::v1::Goal;
-use phoxal_api_plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::localize::v1::LocalizationState;
+use phoxal::api::map::v1::MapRevision;
+use phoxal::api::mission::v1::Goal;
+use phoxal::api::plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -61,18 +61,18 @@ impl Runtime for PlanRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_with::<Stamped<Goal>, _>(
-            phoxal_api_mission::v1::goal::TOPIC,
+            phoxal::api::mission::v1::goal::TOPIC,
             InputPolicy::latest(),
             Input::Goal,
         )
         .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            phoxal::api::localize::v1::state::TOPIC,
             Input::LocalizationState,
         )
         .await?;
         io.subscribe::<Stamped<MapRevision>, _>(
-            phoxal_api_map::v1::revision::TOPIC,
+            phoxal::api::map::v1::revision::TOPIC,
             Input::MapRevision,
         )
         .await?;
@@ -128,7 +128,7 @@ impl Runtime for PlanRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

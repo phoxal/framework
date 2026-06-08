@@ -3,15 +3,15 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::encoder::{self, Sample as EncoderSample};
-use phoxal_api_joint::v1::{JointId, JointState, Quantity, data};
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::{Capability, StructuralTarget};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::component::v1::capability::encoder::{self, Sample as EncoderSample};
+use phoxal::api::joint::v1::{JointId, JointState, Quantity, data};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::staged::Robot;
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 use tracing::warn;
 
 #[derive(Clone)]

@@ -2,19 +2,19 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal_api_component::v1::capability::{
+use phoxal::api::component::v1::capability::{
     camera::{Encoding as CameraEncoding, Frame as CameraFrame},
     depth::Depth as DepthFrame,
     profile::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
     profile_path,
 };
-use phoxal_api_motion::v1::ManualCommand;
-use phoxal_core_engine::RobotRuntimeArgs;
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_infra_bus::liveliness::declare_liveliness_token;
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_validation_scenario::harness::ScenarioContext;
-use phoxal_validation_scenario::webots::{command_deadline, context_from_args};
+use phoxal::api::motion::v1::ManualCommand;
+use phoxal::bus::liveliness::declare_liveliness_token;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::RobotRuntimeArgs;
+use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::harness::ScenarioContext;
+use phoxal::scenario::webots::{command_deadline, context_from_args};
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p2-stream-profile-camera-downsample"),
@@ -22,7 +22,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     kind: ScenarioKind::Webots {
         world: Cow::Borrowed("ArenaWorld"),
     },
-    phase: phoxal_core_engine::step::Phase::P2,
+    phase: phoxal::runtime::step::Phase::P2,
     timeout_secs: 120,
     category: Cow::Borrowed("stream-profile"),
     tier: 2,
@@ -69,11 +69,11 @@ async fn assert_p2_stream_profile_camera_downsample(
     let camera_path = profile_path("front_camera", "rgb", &camera_profile);
     let depth_path = profile_path("front_camera", "depth", &depth_profile);
     let camera_subscriber =
-        phoxal_infra_bus::pubsub::subscribe::<Stamped<CameraFrame>>(ctx.bus(), &camera_path)
+        phoxal::bus::pubsub::subscribe::<Stamped<CameraFrame>>(ctx.bus(), &camera_path)
             .await
             .map_err(|error| anyhow!(error.to_string()))?;
     let depth_subscriber =
-        phoxal_infra_bus::pubsub::subscribe::<Stamped<DepthFrame>>(ctx.bus(), &depth_path)
+        phoxal::bus::pubsub::subscribe::<Stamped<DepthFrame>>(ctx.bus(), &depth_path)
             .await
             .map_err(|error| anyhow!(error.to_string()))?;
 
@@ -128,10 +128,10 @@ async fn assert_p2_stream_profile_camera_downsample(
 }
 
 async fn next_profile_frame<T>(
-    subscriber: &phoxal_infra_bus::zenoh_typed::TypedSubscriber<Stamped<T>>,
+    subscriber: &phoxal::bus::zenoh_typed::TypedSubscriber<Stamped<T>>,
 ) -> Result<Stamped<T>>
 where
-    T: serde::de::DeserializeOwned + phoxal_infra_bus::zenoh_typed::TypedSchema,
+    T: serde::de::DeserializeOwned + phoxal::bus::zenoh_typed::TypedSchema,
 {
     match subscriber.recv_async().await {
         Ok(Ok(value)) => Ok(value),

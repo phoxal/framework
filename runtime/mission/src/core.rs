@@ -1,6 +1,6 @@
-use phoxal_api_explore::v1::GoalCandidates;
-use phoxal_api_localize::v1::{LocalizationMode, PoseEstimate};
-use phoxal_api_mission::v1::{
+use phoxal::api::explore::v1::GoalCandidates;
+use phoxal::api::localize::v1::{LocalizationMode, PoseEstimate};
+use phoxal::api::mission::v1::{
     Goal, GoalPose, GoalSource, MissionCommand, MissionFailure, MissionMode, State,
 };
 
@@ -186,11 +186,13 @@ fn reached_goal(pose: &PoseEstimate, goal: &Goal) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_explore::v1::{GoalCandidate, GoalCandidates};
-    use phoxal_api_frame::v1::FrameId;
-    use phoxal_api_localize::v1::LocalizationMode;
-    use phoxal_api_map::v1::MapRevisionId;
-    use phoxal_api_mission::v1::{ExplorationCompletion, ExplorationCompletionMode, GoalTolerance};
+    use phoxal::api::explore::v1::{GoalCandidate, GoalCandidates};
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::LocalizationMode;
+    use phoxal::api::map::v1::MapRevisionId;
+    use phoxal::api::mission::v1::{
+        ExplorationCompletion, ExplorationCompletionMode, GoalTolerance,
+    };
 
     use super::*;
 
@@ -457,7 +459,7 @@ mod tests {
                 epoch: 1,
                 sequence: 2,
             },
-            built_from_localize_revision: phoxal_api_localize::v1::LocalizationRevisionId {
+            built_from_localize_revision: phoxal::api::localize::v1::LocalizationRevisionId {
                 epoch: 1,
                 sequence: 3,
             },

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{Keyframe, KeyframeId, LocalizationRevisionId};
-use phoxal_api_map::v1::{Submap, SubmapId};
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{Keyframe, KeyframeId, LocalizationRevisionId};
+use phoxal::api::map::v1::{Submap, SubmapId};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubmapMetadata {
@@ -79,7 +79,7 @@ impl SubmapMetadata {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::PoseEstimate;
+    use phoxal::api::localize::v1::PoseEstimate;
 
     use super::*;
 

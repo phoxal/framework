@@ -1,8 +1,8 @@
-use phoxal_api_drive::v1::Target as DriveTarget;
-use phoxal_api_follow::v1::Target as FollowTarget;
-use phoxal_api_motion::v1::{ManualCommand, MotionReason, MotionSource};
-use phoxal_api_safety::v1::{SafetyAuthorization, SafetyDecision};
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::drive::v1::Target as DriveTarget;
+use phoxal::api::follow::v1::Target as FollowTarget;
+use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource};
+use phoxal::api::safety::v1::{SafetyAuthorization, SafetyDecision};
+use phoxal::bus::pubsub::Stamped;
 
 const MANUAL_COMMAND_STALE_TIMEOUT_NS: u64 = 500_000_000; // 500 ms
 const FOLLOW_TARGET_STALE_TIMEOUT_NS: u64 = 500_000_000;
@@ -155,7 +155,7 @@ fn stop_for_invalid_safety_authorization() -> Arbitration {
     }
 }
 
-fn clamp_to_constraint(value: f64, constraint: &phoxal_api_safety::v1::Constraint) -> f64 {
+fn clamp_to_constraint(value: f64, constraint: &phoxal::api::safety::v1::Constraint) -> f64 {
     value.clamp(constraint.min, constraint.max)
 }
 
@@ -169,9 +169,9 @@ const fn zero_target() -> DriveTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_api_localize::v1::LocalizationRevisionId;
-    use phoxal_api_map::v1::MapRevisionId;
-    use phoxal_api_safety::v1::{
+    use phoxal::api::localize::v1::LocalizationRevisionId;
+    use phoxal::api::map::v1::MapRevisionId;
+    use phoxal::api::safety::v1::{
         Constraint, MotionConstraint, RawSourceRevision, SafetyReason, SafetySourceRevision,
     };
 

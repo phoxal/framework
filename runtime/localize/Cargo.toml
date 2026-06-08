@@ -14,22 +14,9 @@ name = "phoxal_runtime_localize"
 path = "src/lib.rs"
 
 [dependencies]
+phoxal = { workspace = true, features = ["scenario"] }
 async-trait = { workspace = true }
 phoxal-runtime-localize-orb-slam3-sys = { workspace = true }
-phoxal-infra-bus = { workspace = true }
-phoxal-api-component = { workspace = true }
-phoxal-api-frame = { workspace = true }
-phoxal-api-localize = { workspace = true }
-phoxal-api-map = { workspace = true }
-phoxal-api-motion = { workspace = true }
-phoxal-api-odometry = { workspace = true }
-phoxal-core-component = { workspace = true }
-phoxal-core-robot = { workspace = true }
-phoxal-core-engine = { workspace = true }
-phoxal-validation-scenario = { workspace = true }
-phoxal-core-spatial = { workspace = true }
-phoxal-core-structure = { workspace = true }
-phoxal-infra-helpers = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }

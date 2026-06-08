@@ -10,19 +10,9 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+phoxal = { workspace = true, features = ["scenario"] }
 async-trait = { workspace = true }
 nalgebra = { workspace = true }
-phoxal-infra-bus = { workspace = true }
-phoxal-api-component = { workspace = true }
-phoxal-api-localize = { workspace = true }
-phoxal-api-safety = { workspace = true }
-phoxal-core-component = { workspace = true }
-phoxal-core-robot = { workspace = true }
-phoxal-core-engine = { workspace = true }
-phoxal-validation-scenario = { workspace = true }
-phoxal-core-spatial = { workspace = true }
-phoxal-core-structure = { workspace = true }
-phoxal-infra-helpers = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }

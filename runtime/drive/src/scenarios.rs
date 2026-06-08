@@ -2,18 +2,18 @@ use std::borrow::Cow;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, ensure};
-use phoxal_api_drive::v1::{
+use phoxal::api::drive::v1::{
     ActuatorAuthority, ActuatorCommands, Kinematics, Saturation, State as DriveState, StopReason,
     Target as DriveTarget, Watchdog,
 };
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_validation_scenario::helpers::{assert_close, assert_schema};
+use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::helpers::{assert_close, assert_schema};
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-drive-kinematics-contract"),
     summary: Cow::Borrowed("Checks drive kinematics and typed drive contracts."),
     kind: ScenarioKind::Headless,
-    phase: phoxal_core_engine::step::Phase::P3,
+    phase: phoxal::runtime::step::Phase::P3,
     timeout_secs: 60,
     category: Cow::Borrowed("failure-recovery"),
     tier: 1,

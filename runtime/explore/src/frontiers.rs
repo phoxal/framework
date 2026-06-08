@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
-use phoxal_api_explore::v1::Frontier;
-use phoxal_api_map::v1::{Grid, TraversabilityCell};
+use phoxal::api::explore::v1::Frontier;
+use phoxal::api::map::v1::{Grid, TraversabilityCell};
 
 pub(crate) fn detect_frontiers_in_frame(
     grid: &Grid<TraversabilityCell>,
@@ -158,7 +158,7 @@ fn cell_index(width: usize, x: usize, y: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_map::v1::{Grid, Resolution, TraversabilityCell};
+    use phoxal::api::map::v1::{Grid, Resolution, TraversabilityCell};
 
     use super::detect_frontiers_in_frame;
 

@@ -1,14 +1,14 @@
 use anyhow::Result;
-use phoxal_api_component::v1::capability::gnss;
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{
+use phoxal::api::component::v1::capability::gnss;
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{
     LocalizationMode, LocalizationSource, LocalizationStatus, LocalizationStatusReason,
     PoseEstimate,
 };
-use phoxal_api_odometry::v1::OdometryEstimate;
-use phoxal_core_component::v1::capability::GnssCoordinateSystem;
-use phoxal_core_engine::clock::Step;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::odometry::v1::OdometryEstimate;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::capability::GnssCoordinateSystem;
+use phoxal::runtime::clock::Step;
 
 use crate::geodetic::geodetic_to_enu;
 use crate::runtime::{BackendUpdate, LocalizeBackend, initial_sensor_integration_revision};
@@ -153,12 +153,12 @@ impl GnssAnchoredBackend {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause};
-    use phoxal_api_odometry::v1::{
+    use phoxal::api::localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause};
+    use phoxal::api::odometry::v1::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status, StatusMode,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal_core_engine::sim_clock::SimulationClock as Clock;
+    use phoxal::runtime::sim_clock::SimulationClock as Clock;
 
     use super::*;
 

@@ -1,13 +1,13 @@
 use anyhow::Result;
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{
     AffectedKeyframeSummary, Keyframe, KeyframeId, LocalizationMode, LocalizationRevisionCause,
     LocalizationSource, LocalizationStatus, LocalizationStatusReason, PoseEstimate,
 };
-use phoxal_api_odometry::v1::OdometryEstimate;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::sim_pose::Pose as SimPose;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::odometry::v1::OdometryEstimate;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::sim_pose::Pose as SimPose;
 
 use crate::runtime::{
     BackendUpdate, LocalizeBackend, NewRevision, current_revision,
@@ -123,8 +123,8 @@ impl LocalizeBackend for SimulatorTruthBackend {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause};
-    use phoxal_core_engine::sim_clock::SimulationClock as Clock;
+    use phoxal::api::localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause};
+    use phoxal::runtime::sim_clock::SimulationClock as Clock;
 
     use super::*;
 

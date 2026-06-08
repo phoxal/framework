@@ -4,5 +4,5 @@ mod scenarios;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    phoxal_core_engine::execute::<runtime::DriveRuntime>().await
+    phoxal::runtime::execute::<runtime::DriveRuntime>().await
 }

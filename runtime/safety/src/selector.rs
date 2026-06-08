@@ -1,7 +1,7 @@
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::Capability;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_robot::v1::Role;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::robot::v1::Role;
+use phoxal::runtime::staged::Robot;
 use tracing::warn;
 
 /// All range-capable capabilities tagged `Role::Safety`. Empty is valid:
@@ -53,9 +53,9 @@ fn detect_safety_inputs(
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use phoxal_core_component::v1::CapabilityRef;
-    use phoxal_core_engine::staged::Robot;
-    use phoxal_core_robot::v1::Robot as RobotManifest;
+    use phoxal::model::component::v1::CapabilityRef;
+    use phoxal::model::robot::v1::Robot as RobotManifest;
+    use phoxal::runtime::staged::Robot;
 
     use super::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
 
@@ -114,7 +114,7 @@ mod tests {
     fn read_fixture_component(
         bundle_root: &Path,
         component_type: &str,
-    ) -> phoxal_core_component::v1::Component {
+    ) -> phoxal::model::component::v1::Component {
         let fixture_root = match bundle_root.parent().and_then(Path::parent) {
             Some(path) => path,
             None => panic!(
@@ -123,7 +123,7 @@ mod tests {
             ),
         };
         let component_root = fixture_root.join("component").join(component_type);
-        match phoxal_core_component::Component::read_from_dir(&component_root) {
+        match phoxal::model::component::Component::read_from_dir(&component_root) {
             Ok(component) => match component.as_v1() {
                 Some(component) => component.clone(),
                 None => panic!("fixture component '{component_type}' is not v1"),

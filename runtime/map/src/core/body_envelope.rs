@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use phoxal_core_structure::{Geometry, Structure};
+use phoxal::model::structure::{Geometry, Structure};
 
 /// The robot's bounding radius in meters, derived from the base_link's first
 /// collision geometry. Used by the traversability inflation step.
@@ -32,7 +32,7 @@ pub fn body_radius_from_structure(structure: &Structure, base_link_id: &str) -> 
 
 #[cfg(test)]
 mod tests {
-    use phoxal_core_structure::Structure;
+    use phoxal::model::structure::Structure;
 
     use super::*;
 

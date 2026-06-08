@@ -2,18 +2,18 @@ use std::time::Duration;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::motor;
-use phoxal_api_drive::v1::{
+use phoxal::api::component::v1::capability::motor;
+use phoxal::api::drive::v1::{
     ActuatorAuthority, State, StopReason, Target, state as drive_state, target as drive_target,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_core_robot::v1::KinematicConfig;
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::robot::v1::KinematicConfig;
+use phoxal::model::structure::Structure;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::staged::Robot;
+use phoxal::runtime::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
 const TARGET_STALE_TIMEOUT_NS: u64 = 500_000_000;
@@ -77,7 +77,7 @@ impl Config {
 }
 
 impl MotorBinding {
-    fn from_resolved(motor: phoxal_core_engine::staged::ResolvedMotor<'_>) -> Self {
+    fn from_resolved(motor: phoxal::runtime::staged::ResolvedMotor<'_>) -> Self {
         Self {
             component_id: motor.reference.component_id,
             capability_id: motor.reference.capability_id,
@@ -222,7 +222,7 @@ impl Runtime for DriveRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -313,7 +313,7 @@ fn signed_velocity(omega_radps: f64, direction_sign: i8) -> f32 {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use phoxal_core_robot::v1::Robot as RobotManifest;
+    use phoxal::model::robot::v1::Robot as RobotManifest;
 
     use super::*;
 
@@ -408,7 +408,7 @@ mod tests {
     fn read_fixture_component(
         bundle_root: &Path,
         component_type: &str,
-    ) -> phoxal_core_component::v1::Component {
+    ) -> phoxal::model::component::v1::Component {
         let fixture_root = match bundle_root.parent().and_then(Path::parent) {
             Some(path) => path,
             None => panic!(
@@ -417,7 +417,7 @@ mod tests {
             ),
         };
         let component_root = fixture_root.join("component").join(component_type);
-        match phoxal_core_component::Component::read_from_dir(&component_root) {
+        match phoxal::model::component::Component::read_from_dir(&component_root) {
             Ok(component) => match component.as_v1() {
                 Some(component) => component.clone(),
                 None => panic!("fixture component '{component_type}' is not v1"),

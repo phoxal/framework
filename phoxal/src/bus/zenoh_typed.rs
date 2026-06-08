@@ -1137,8 +1137,17 @@ mod tests {
         format!("phoxal/tests/{suffix}/{nanos}")
     }
 
+    fn local_test_config() -> zenoh::Config {
+        let mut config = zenoh::Config::default();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config
+    }
+
     async fn open_session() -> zenoh::Session {
-        zenoh::open(zenoh::Config::default())
+        zenoh::open(local_test_config())
             .await
             .expect("test zenoh session should open")
     }
@@ -1318,14 +1327,13 @@ mod tests {
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn lazy_publisher_publishes_once_subscriber_matches() {
-        let publisher_session = open_session().await;
-        let subscriber_session = open_session().await;
+        let session = open_session().await;
         let topic = unique_topic("lazy-matched");
-        let publisher = publisher_session
+        let publisher = session
             .declare_typed_publisher::<TestPayload, _>(&topic)
             .await
             .expect("publisher should build");
-        let subscriber = subscriber_session
+        let subscriber = session
             .declare_typed_subscriber::<TestPayload, _>(&topic)
             .await
             .expect("subscriber should build");
@@ -1359,13 +1367,6 @@ mod tests {
 
         drop(subscriber);
         drop(publisher);
-        publisher_session
-            .close()
-            .await
-            .expect("publisher session should close");
-        subscriber_session
-            .close()
-            .await
-            .expect("subscriber session should close");
+        session.close().await.expect("session should close");
     }
 }

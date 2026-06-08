@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal_api_component::v1::capability::{camera, depth, imu};
-use phoxal_api_component::v1::{RuntimeStreamDemand, capability::gnss};
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{
+use phoxal::api::component::v1::capability::{camera, depth, imu};
+use phoxal::api::component::v1::{RuntimeStreamDemand, capability::gnss};
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance, ImuBiasEstimate,
     Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode, LocalizationRevision,
     LocalizationRevisionCause, LocalizationRevisionId, LocalizationSource, LocalizationState,
@@ -15,16 +15,16 @@ use phoxal_api_localize::v1::{
     keyframe, pose, query::corrections, query::keyframe as keyframe_query, query::pose_graph,
     revision, state,
 };
-use phoxal_api_odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
-use phoxal_core_component::v1::capability::GnssCoordinateSystem;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::sim_pose::{self, Pose as SimPose};
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal_core_robot::v1::LocalizeBackendKind;
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::model::component::v1::capability::GnssCoordinateSystem;
+use phoxal::model::robot::v1::LocalizeBackendKind;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::sim_pose::{self, Pose as SimPose};
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 
 use crate::gnss_anchored::GnssAnchoredBackend;
 use crate::orbslam3;
@@ -500,7 +500,7 @@ impl Runtime for LocalizeRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -540,7 +540,7 @@ pub(crate) fn publishable_revision(
     }
 }
 
-fn localize_pose_from_odometry(pose: &phoxal_api_odometry::v1::PoseEstimate) -> PoseEstimate {
+fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -> PoseEstimate {
     PoseEstimate {
         frame_id: FrameId::new(ODOM_FRAME_ID),
         child_frame_id: FrameId::new(BASE_FRAME_ID),
@@ -550,7 +550,7 @@ fn localize_pose_from_odometry(pose: &phoxal_api_odometry::v1::PoseEstimate) -> 
 }
 
 fn localize_velocity_from_odometry(
-    velocity: &phoxal_api_odometry::v1::VelocityEstimate,
+    velocity: &phoxal::api::odometry::v1::VelocityEstimate,
 ) -> VelocityEstimate {
     VelocityEstimate {
         frame_id: velocity.frame_id.clone(),
@@ -559,7 +559,7 @@ fn localize_velocity_from_odometry(
     }
 }
 
-fn localize_covariance(covariance: &phoxal_api_odometry::v1::Covariance) -> Covariance {
+fn localize_covariance(covariance: &phoxal::api::odometry::v1::Covariance) -> Covariance {
     Covariance {
         values: covariance.values.clone(),
     }
@@ -615,13 +615,13 @@ fn localize_corrections(view: &LocalizeView, req: CorrectionsRequest) -> Correct
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::{KeyframeId, PoseGraphRange};
-    use phoxal_api_odometry::v1::{
+    use phoxal::api::localize::v1::{KeyframeId, PoseGraphRange};
+    use phoxal::api::odometry::v1::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal_core_engine::clock::Step;
-    use phoxal_core_engine::sim_clock::SimulationClock as Clock;
+    use phoxal::runtime::clock::Step;
+    use phoxal::runtime::sim_clock::SimulationClock as Clock;
 
     use super::*;
 

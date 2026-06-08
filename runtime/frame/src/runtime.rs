@@ -5,17 +5,17 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal_api_frame::v1::{
+use phoxal::api::frame::v1::{
     FrameId, FrameLink, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source, Static,
     Tree, data, lookup, r#static, tree,
 };
-use phoxal_api_joint::v1::{JointId, JointState, Quantity};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal_core_spatial::frame::{extract_link_transforms, pose_to_isometry};
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::joint::v1::{JointId, JointState, Quantity};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::structure::Structure;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::spatial::frame::{extract_link_transforms, pose_to_isometry};
 use tracing::warn;
 use urdf_rs::JointType;
 
@@ -223,7 +223,7 @@ impl Runtime for FrameRuntime {
             let joint_id = dynamic.joint_id.clone();
             let child_frame_id = dynamic.child_frame_id.clone();
             io.subscribe::<Stamped<JointState>, _>(
-                &phoxal_api_joint::v1::data::path(&joint_id),
+                &phoxal::api::joint::v1::data::path(&joint_id),
                 move |sample| Input::Joint {
                     joint_id: joint_id.clone(),
                     child_frame_id: child_frame_id.clone(),
@@ -355,7 +355,7 @@ impl Runtime for FrameRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

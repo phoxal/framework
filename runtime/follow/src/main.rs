@@ -4,5 +4,5 @@ mod scenarios;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    phoxal_core_engine::execute::<runtime::FollowRuntime>().await
+    phoxal::runtime::execute::<runtime::FollowRuntime>().await
 }

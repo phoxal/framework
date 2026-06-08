@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use phoxal_api_power::v1::{Command, FailedReason, RejectedReason, State, Status, command, state};
-use phoxal_core_engine::RobotRuntimeArgs;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::power::v1::{
+    Command, FailedReason, RejectedReason, State, Status, command, state,
+};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::RobotRuntimeArgs;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
 
 #[derive(Debug)]
 pub(crate) struct Config {
@@ -225,7 +227,7 @@ fn idle_state() -> State {
 #[cfg(test)]
 mod tests {
     use super::{ExecutorOutcome, LatchedState, PowerExecutor, idle_state, state_for_command};
-    use phoxal_api_power::v1::{Command, FailedReason, RejectedReason, State, Status};
+    use phoxal::api::power::v1::{Command, FailedReason, RejectedReason, State, Status};
 
     struct StaticExecutor {
         outcome: ExecutorOutcome,

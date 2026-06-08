@@ -1,9 +1,9 @@
 # Contract Discipline
 
-The cross-cutting rules every `phoxal-api-<name>` crate follows. The **per-domain
+The cross-cutting rules every `phoxal::api::<name>` module follows. The **per-domain
 contracts** (the actual payload/query/command types for localize, map, frame,
-mission, perception, safety, sensor capabilities, …) live in each `api/<name>`
-crate and its `README.md` — this file is the shared discipline they all obey.
+mission, perception, safety, sensor capabilities, …) live under `phoxal::api` —
+this file is the shared discipline they all obey.
 
 For the architecture these contracts serve, see the org-level
 [ARCHITECTURE](https://github.com/phoxal/organization/blob/master/docs/product/ARCHITECTURE.md)
@@ -15,7 +15,7 @@ direction, not a claim that every handler already enforces it.
 
 ## Envelope and timestamp
 
-Pub/sub payloads ride the `phoxal_infra_bus::pubsub::Stamped<T>` envelope, which
+Pub/sub payloads ride the `phoxal::bus::pubsub::Stamped<T>` envelope, which
 owns exactly one time: when the message was produced (`timestamp_ns`).
 
 - A payload struct must **not** carry a generic `timestamp_ns` — the envelope is
@@ -75,7 +75,7 @@ were produced under rather than minting their own id.
 
 ## Schema identity
 
-Each `api/<name>` crate declares `SCHEMA_NAME` / `SCHEMA_VERSION` (e.g.
+Each `phoxal::api::<name>` module declares `SCHEMA_NAME` / `SCHEMA_VERSION` (e.g.
 `phoxal-api-safety/v1`), and each typed contract carries a `TypedSchema`
 `SCHEMA_NAME` that follows the contract path — `runtime/<name>/<stream>` for
 pub/sub, with `/request` and `/response` suffixes for queries (e.g.
@@ -95,9 +95,9 @@ caller re-fetches by query.
 ## API evolution
 
 Contract versions evolve inside `pub mod vN` modules. Additive changes go in the
-existing `vN`; breaking changes mint `v(N+1)`; a crate may serve several `vN` at
-once; removal happens at a major crate bump. The framework workspace ships every
-`phoxal-api-<name>` crate at one coherent version per release — there are no
+existing `vN`; breaking changes mint `v(N+1)`; a domain may serve several `vN` at
+once; removal happens at a major workspace bump. The framework workspace ships
+all runtime contracts at one coherent version per release — there are no
 per-runtime independent semver tracks.
 
 A subscriber that decodes a payload it does not understand fails loud, carrying

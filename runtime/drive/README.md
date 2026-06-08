@@ -2,8 +2,8 @@
 
 `phoxal-runtime-drive` is currently a BLUEPRINT skeleton.
 
-It loads the staged source-shaped bundle through `phoxal-core-engine`, calls the
-shared deterministic resolver in `phoxal-core-robot`, and then stops with an
+It loads the staged source-shaped bundle through `phoxal::runtime`, calls the
+shared deterministic resolver in `phoxal::model::robot`, and then stops with an
 explicit `unimplemented!("BLUEPRINT skeleton")`.
 
 Target scope: final actuator authority, command watchdog, dynamic limiting,

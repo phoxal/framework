@@ -85,8 +85,17 @@ mod tests {
         format!("phoxal/tests/liveliness/{suffix}/{nanos}")
     }
 
+    fn local_test_config() -> zenoh::Config {
+        let mut config = zenoh::Config::default();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config
+    }
+
     async fn open_bus() -> Bus {
-        let session = zenoh::open(zenoh::Config::default())
+        let session = zenoh::open(local_test_config())
             .await
             .expect("test zenoh session should open");
         Bus::new(session, String::new())

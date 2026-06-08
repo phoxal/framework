@@ -5,5 +5,5 @@ mod scoring;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    phoxal_core_engine::execute::<runtime::ExploreRuntime>().await
+    phoxal::runtime::execute::<runtime::ExploreRuntime>().await
 }

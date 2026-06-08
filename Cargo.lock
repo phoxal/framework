@@ -2241,296 +2241,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-api-asset"
-version = "0.4.0"
-dependencies = [
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-component"
-version = "0.4.0"
-dependencies = [
- "derive-new",
- "phoxal-infra-bus",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "phoxal-api-drive"
-version = "0.4.0"
-dependencies = [
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-explore"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-follow"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-frame"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-joint",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-joint"
-version = "0.4.0"
-dependencies = [
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-localize"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-component",
- "phoxal-api-frame",
- "phoxal-core-robot",
- "phoxal-infra-bus",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "phoxal-api-map"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-mission"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-map",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-motion"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-drive",
- "phoxal-api-safety",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-odometry"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-frame",
- "phoxal-api-joint",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-perception"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-infra-bus",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "phoxal-api-plan"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-power"
-version = "0.4.0"
-dependencies = [
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-presence"
-version = "0.4.0"
-
-[[package]]
-name = "phoxal-api-safety"
-version = "0.4.0"
-dependencies = [
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-infra-bus",
- "serde",
-]
-
-[[package]]
-name = "phoxal-api-video"
-version = "0.4.0"
-dependencies = [
- "phoxal-infra-bus",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
-name = "phoxal-core-component"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "derive-new",
- "serde",
- "serde_yaml",
- "tempfile",
-]
-
-[[package]]
-name = "phoxal-core-engine"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "arc-swap",
- "async-trait",
- "clap",
- "dotenvy",
- "nalgebra",
- "phoxal-api-component",
- "phoxal-core-component",
- "phoxal-core-robot",
- "phoxal-core-spatial",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "rmp-serde",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "urdf-rs",
-]
-
-[[package]]
-name = "phoxal-core-robot"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "nalgebra",
- "phoxal-core-component",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "urdf-rs",
-]
-
-[[package]]
-name = "phoxal-core-simulation"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "derive-new",
- "phoxal-core-component",
- "serde",
- "serde_yaml",
- "tempfile",
-]
-
-[[package]]
-name = "phoxal-core-spatial"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "nalgebra",
- "phoxal-api-component",
- "phoxal-core-component",
- "phoxal-core-robot",
- "phoxal-core-structure",
- "serde",
- "urdf-rs",
-]
-
-[[package]]
-name = "phoxal-core-structure"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "derive-new",
- "serde",
- "tempfile",
- "urdf-rs",
-]
-
-[[package]]
-name = "phoxal-infra-bus"
-version = "0.4.0"
-dependencies = [
- "derive-new",
- "derive_setters",
- "rmp-serde",
- "serde",
- "serde_json",
- "serial_test",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "zenoh",
-]
-
-[[package]]
-name = "phoxal-infra-helpers"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "phoxal-runtime-asset"
 version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-asset",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
+ "phoxal",
  "tokio",
  "tracing",
 ]
@@ -2543,16 +2260,7 @@ dependencies = [
  "async-trait",
  "clap",
  "nalgebra",
- "phoxal-api-component",
- "phoxal-api-drive",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-spatial",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "serde_json",
  "tokio",
  "tracing",
@@ -2565,15 +2273,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-explore",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "serde",
  "tokio",
  "tracing",
@@ -2586,16 +2286,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-follow",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-api-plan",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "tokio",
  "tracing",
 ]
@@ -2608,14 +2299,7 @@ dependencies = [
  "async-trait",
  "clap",
  "nalgebra",
- "phoxal-api-frame",
- "phoxal-api-joint",
- "phoxal-core-engine",
- "phoxal-core-spatial",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "tokio",
  "tracing",
  "urdf-rs",
@@ -2628,14 +2312,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-component",
- "phoxal-api-joint",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
+ "phoxal",
  "tokio",
  "tracing",
  "urdf-rs",
@@ -2648,21 +2325,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-component",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-motion",
- "phoxal-api-odometry",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-spatial",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
+ "phoxal",
  "phoxal-runtime-localize-orb-slam3-sys",
- "phoxal-validation-scenario",
  "tempfile",
  "tokio",
  "tracing",
@@ -2683,20 +2347,7 @@ dependencies = [
  "async-trait",
  "clap",
  "nalgebra",
- "phoxal-api-component",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-api-motion",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-spatial",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "rmp-serde",
  "serde",
  "tokio",
@@ -2710,14 +2361,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-explore",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
+ "phoxal",
  "tokio",
  "tracing",
 ]
@@ -2729,16 +2373,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-drive",
- "phoxal-api-follow",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-motion",
- "phoxal-api-safety",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "serde_json",
  "tokio",
  "tracing",
@@ -2753,17 +2388,7 @@ dependencies = [
  "async-trait",
  "clap",
  "nalgebra",
- "phoxal-api-component",
- "phoxal-api-frame",
- "phoxal-api-joint",
- "phoxal-api-odometry",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "tokio",
  "tracing",
  "urdf-rs",
@@ -2776,17 +2401,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-component",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-perception",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
+ "phoxal",
  "serde",
  "tokio",
  "tracing",
@@ -2799,15 +2414,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-api-plan",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "tokio",
  "tracing",
 ]
@@ -2819,10 +2426,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
- "phoxal-api-power",
- "phoxal-core-engine",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
+ "phoxal",
  "reqwest",
  "rustls",
  "tokio",
@@ -2838,11 +2442,7 @@ dependencies = [
  "async-trait",
  "clap",
  "derive-new",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "tokio",
  "tracing",
 ]
@@ -2855,17 +2455,7 @@ dependencies = [
  "async-trait",
  "clap",
  "nalgebra",
- "phoxal-api-component",
- "phoxal-api-localize",
- "phoxal-api-safety",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-core-spatial",
- "phoxal-core-structure",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "serde_json",
  "tokio",
  "tracing",
@@ -2879,43 +2469,10 @@ dependencies = [
  "async-trait",
  "clap",
  "openh264",
- "phoxal-api-component",
- "phoxal-api-motion",
- "phoxal-api-video",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-infra-bus",
- "phoxal-infra-helpers",
- "phoxal-validation-scenario",
+ "phoxal",
  "serde",
  "tokio",
  "tracing",
-]
-
-[[package]]
-name = "phoxal-validation-scenario"
-version = "0.4.0"
-dependencies = [
- "anyhow",
- "nalgebra",
- "phoxal-api-explore",
- "phoxal-api-follow",
- "phoxal-api-frame",
- "phoxal-api-localize",
- "phoxal-api-map",
- "phoxal-api-mission",
- "phoxal-api-motion",
- "phoxal-api-odometry",
- "phoxal-api-plan",
- "phoxal-api-safety",
- "phoxal-core-component",
- "phoxal-core-engine",
- "phoxal-core-robot",
- "phoxal-infra-bus",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

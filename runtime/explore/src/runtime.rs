@@ -1,18 +1,18 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal_api_explore::v1::{
+use phoxal::api::explore::v1::{
     ExploreStatus, Frontiers, GoalCandidates, State, frontiers, goal_candidates, state,
 };
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{LocalizationRevisionId, LocalizationState};
-use phoxal_api_map::v1::{MapRevision, Traversability, revision, traversability};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{LocalizationRevisionId, LocalizationState};
+use phoxal::api::map::v1::{MapRevision, Traversability, revision, traversability};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 use crate::frontiers::detect_frontiers_in_frame;
 use crate::scoring::{candidate_centroids, score_candidates};
@@ -96,7 +96,7 @@ impl Runtime for ExploreRuntime {
         io.subscribe::<Stamped<MapRevision>, _>(revision::TOPIC, Input::MapRevision)
             .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            phoxal::api::localize::v1::state::TOPIC,
             Input::LocalizationState,
         )
         .await?;
@@ -231,7 +231,7 @@ impl Runtime for ExploreRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

@@ -2,11 +2,11 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal_api_follow::v1::FollowStatus;
-use phoxal_core_engine::RobotRuntimeArgs;
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_validation_scenario::harness::ScenarioContext;
-use phoxal_validation_scenario::webots::{
+use phoxal::api::follow::v1::FollowStatus;
+use phoxal::runtime::RobotRuntimeArgs;
+use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::harness::ScenarioContext;
+use phoxal::scenario::webots::{
     P4_GOAL_REACHED_TOLERANCE_M, P4_GOAL_XY_M, command_deadline, context_from_args, p4_goal,
     wait_until_robot_reaches, wait_until_tracking,
 };
@@ -17,7 +17,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     kind: ScenarioKind::Webots {
         world: Cow::Borrowed("ArenaWorld"),
     },
-    phase: phoxal_core_engine::step::Phase::P4,
+    phase: phoxal::runtime::step::Phase::P4,
     timeout_secs: 120,
     category: Cow::Borrowed("following"),
     tier: 2,

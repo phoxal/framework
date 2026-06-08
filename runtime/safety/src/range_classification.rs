@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use crate::core::RangeSafetyClass;
 use nalgebra::Vector3;
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_spatial::sensor::resolve_sensor_poses_in_frame;
-use phoxal_core_structure::Structure;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::structure::Structure;
+use phoxal::runtime::staged::Robot;
+use phoxal::spatial::sensor::resolve_sensor_poses_in_frame;
 use tracing::warn;
 
 use crate::selector::detect_safety_range_inputs;
@@ -92,8 +92,8 @@ mod tests {
 
     use crate::core::RangeSafetyClass;
     use anyhow::Result;
-    use phoxal_core_structure::Structure;
-    use phoxal_validation_scenario::helpers::{fixture_bundle_path, fixture_robot, workspace_root};
+    use phoxal::model::structure::Structure;
+    use phoxal::scenario::helpers::{fixture_bundle_path, fixture_robot, workspace_root};
 
     use super::classify_safety_range_inputs;
 

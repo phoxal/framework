@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::presence::{
+use phoxal::api::presence::{
     DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary, debug, heartbeat,
     summary,
 };
-use phoxal_core_engine::stale_timeout_ns;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::stale_timeout_ns;
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const PUBLISH_HZ: f64 = 1.0;
 
@@ -102,7 +102,7 @@ impl Runtime for PresenceRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -169,8 +169,8 @@ fn is_stale(now_ns: u64, last_seen_ns: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ReadinessTracker, autonomy_ready};
-    use phoxal_core_engine::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
-    use phoxal_core_engine::stale_timeout_ns;
+    use phoxal::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
+    use phoxal::runtime::stale_timeout_ns;
 
     #[test]
     fn stale_runtime_is_reported_degraded() {

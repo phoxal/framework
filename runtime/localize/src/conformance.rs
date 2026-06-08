@@ -4,19 +4,19 @@
 //! ORB-SLAM3 backend end-to-end; this proves the contract every backend must satisfy.
 
 use anyhow::{Result, bail, ensure};
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, KeyframeId, KeyframeRequest,
     KeyframeResponse, LocalizationMode, LocalizationRevisionCause, LocalizationRevisionId,
     LocalizationStatusReason, PoseGraphRange, PoseGraphRequest, PoseGraphResponse,
 };
-use phoxal_api_odometry::v1::{
+use phoxal::api::odometry::v1::{
     Covariance as OdometryCovariance, OdometryEstimate, PoseEstimate as OdometryPoseEstimate,
     Status, StatusMode, VelocityEstimate as OdometryVelocityEstimate,
 };
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::sim_clock::SimulationClock as Clock;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::sim_clock::SimulationClock as Clock;
 
 use crate::runtime::{
     BackendUpdate, DeadReckoningBackend, LOCALIZE_EPOCH, LocalizeBackend, NewRevision,

@@ -3,22 +3,22 @@ use std::time::Duration;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome, RangeSafetyClass};
 use anyhow::Result;
-use phoxal_api_component::v1::capability::{emergency_stop as component_emergency_stop, range};
-use phoxal_api_localize::v1::{LocalizationState, state as localize_state};
-use phoxal_api_safety::v1::{
+use phoxal::api::component::v1::capability::{emergency_stop as component_emergency_stop, range};
+use phoxal::api::localize::v1::{LocalizationState, state as localize_state};
+use phoxal::api::safety::v1::{
     EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
     SafetySourceRevision, State, authorization as safety_authorization,
     emergency_stop_request as safety_emergency_stop_request, state as safety_state,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::structure::Structure;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::staged::Robot;
+use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
 use crate::selector::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
@@ -231,7 +231,7 @@ impl Runtime for SafetyRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

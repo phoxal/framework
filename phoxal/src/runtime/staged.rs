@@ -385,7 +385,7 @@ mod tests {
     fn camera_capabilities_lists_color_cameras_not_depth() {
         let model = Robot::read_model_config(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../fixture/robot/rgbd-imu-diff-drive"
+            "/../fixture/robot/rgbd-imu-diff-drive"
         ))
         .expect("fixture model should load");
         let robot = Robot {

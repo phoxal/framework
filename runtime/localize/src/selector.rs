@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::profile::ProfileId;
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::{Capability, GnssCoordinateSystem};
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_robot::v1::{ResolvedLocalizeBackend, resolve_localize_backend};
-use phoxal_core_structure::Structure;
+use phoxal::api::component::v1::capability::profile::ProfileId;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::{Capability, GnssCoordinateSystem};
+use phoxal::model::robot::v1::{ResolvedLocalizeBackend, resolve_localize_backend};
+use phoxal::model::structure::Structure;
+use phoxal::runtime::staged::Robot;
 use tracing::warn;
 
 use crate::runtime::BackendSelection;
@@ -18,7 +18,7 @@ pub fn capability_default_profile_topic(
     capability: &CapabilityRef,
 ) -> anyhow::Result<String> {
     robot.capability(capability)?;
-    Ok(phoxal_api_component::v1::capability::profile_path(
+    Ok(phoxal::api::component::v1::capability::profile_path(
         &capability.component_id,
         &capability.capability_id,
         &ProfileId::default_profile(),
@@ -26,7 +26,7 @@ pub fn capability_default_profile_topic(
 }
 
 fn capability_profile_topic(capability: &CapabilityRef, profile_id: &ProfileId) -> String {
-    phoxal_api_component::v1::capability::profile_path(
+    phoxal::api::component::v1::capability::profile_path(
         &capability.component_id,
         &capability.capability_id,
         profile_id,
@@ -147,7 +147,7 @@ fn camera_optical_to_base(
     structure: &Structure,
     camera: &CapabilityRef,
 ) -> Result<([f64; 3], [f64; 4])> {
-    let transform = phoxal_core_spatial::sensor::resolve_capability_link_pose_in_frame(
+    let transform = phoxal::spatial::sensor::resolve_capability_link_pose_in_frame(
         &robot.model,
         &robot.components,
         structure,
@@ -171,14 +171,14 @@ fn imu_to_camera_optical(
     camera: &CapabilityRef,
     imu: &CapabilityRef,
 ) -> Result<([f64; 3], [[f64; 3]; 3])> {
-    let camera_link_in_base = phoxal_core_spatial::sensor::resolve_capability_link_pose_in_frame(
+    let camera_link_in_base = phoxal::spatial::sensor::resolve_capability_link_pose_in_frame(
         &robot.model,
         &robot.components,
         structure,
         camera,
         "base_footprint",
     )?;
-    let imu_link_in_base = phoxal_core_spatial::sensor::resolve_capability_link_pose_in_frame(
+    let imu_link_in_base = phoxal::spatial::sensor::resolve_capability_link_pose_in_frame(
         &robot.model,
         &robot.components,
         structure,
@@ -207,7 +207,7 @@ fn imu_to_camera_optical(
 
 fn camera_publish_rate_hz(robot: &Robot, capability_ref: &CapabilityRef) -> Result<f64> {
     use anyhow::bail;
-    use phoxal_core_component::v1::capability::Capability;
+    use phoxal::model::component::v1::capability::Capability;
 
     let capability = robot.capability(capability_ref)?;
     let Capability::Camera(camera) = capability else {
@@ -222,7 +222,7 @@ fn camera_publish_rate_hz(robot: &Robot, capability_ref: &CapabilityRef) -> Resu
 
 fn imu_publish_frequency_hz(robot: &Robot, capability_ref: &CapabilityRef) -> Result<f64> {
     use anyhow::bail;
-    use phoxal_core_component::v1::capability::Capability;
+    use phoxal::model::component::v1::capability::Capability;
 
     let capability = robot.capability(capability_ref)?;
     let Capability::Imu(imu) = capability else {
@@ -255,7 +255,7 @@ fn intrinsics_for(
     capability_ref: &CapabilityRef,
 ) -> Result<crate::settings::CameraIntrinsics> {
     use anyhow::bail;
-    use phoxal_core_component::v1::capability::Capability;
+    use phoxal::model::component::v1::capability::Capability;
 
     let capability = robot.capability(capability_ref)?;
     let (width_px, height_px, field_of_view_rad) = match capability {
@@ -367,12 +367,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    use phoxal_core_component::v1::CapabilityRef;
-    use phoxal_core_component::v1::capability::{Capability, Gnss, StructuralTarget};
-    use phoxal_core_engine::staged::Robot;
-    use phoxal_core_robot::v1::Robot as RobotManifest;
-    use phoxal_core_robot::v1::{Component, Role};
-    use phoxal_core_structure::Structure;
+    use phoxal::model::component::v1::CapabilityRef;
+    use phoxal::model::component::v1::capability::{Capability, Gnss, StructuralTarget};
+    use phoxal::model::robot::v1::Robot as RobotManifest;
+    use phoxal::model::robot::v1::{Component, Role};
+    use phoxal::model::structure::Structure;
+    use phoxal::runtime::staged::Robot;
 
     use super::{
         GnssCoordinateSystem, capability_default_profile_topic, default_profile_topic,
@@ -712,7 +712,7 @@ mod tests {
     fn read_fixture_component(
         bundle_root: &Path,
         component_type: &str,
-    ) -> phoxal_core_component::v1::Component {
+    ) -> phoxal::model::component::v1::Component {
         let fixture_root = match bundle_root.parent().and_then(Path::parent) {
             Some(path) => path,
             None => panic!(
@@ -721,7 +721,7 @@ mod tests {
             ),
         };
         let component_root = fixture_root.join("component").join(component_type);
-        match phoxal_core_component::Component::read_from_dir(&component_root) {
+        match phoxal::model::component::Component::read_from_dir(&component_root) {
             Ok(component) => match component.as_v1() {
                 Some(component) => component.clone(),
                 None => panic!("fixture component {component_type} is not v1"),
@@ -746,7 +746,7 @@ mod tests {
     fn add_gnss_localization_component(robot: &mut Robot) {
         robot.components.insert(
             "zed_f9p".to_string(),
-            phoxal_core_component::v1::Component::new(BTreeMap::from([(
+            phoxal::model::component::v1::Component::new(BTreeMap::from([(
                 "gnss".to_string(),
                 Capability::Gnss(Gnss {
                     target: StructuralTarget::Link {
