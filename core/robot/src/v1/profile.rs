@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{KinematicKind, Role};
+use super::{KinematicConfig, Role};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +35,20 @@ impl AutonomyProfileId {
             Self::UnseenGroundNavigationNight => Some(Self::UnseenGroundNavigation),
         }
     }
+
+    /// Whether this profile accepts the given kinematic configuration. The v1
+    /// ground-navigation family commits to differential drive; a child profile
+    /// inherits the parent's rule unless it explicitly tightens it. Conformance
+    /// is expressed as typed logic over `&KinematicConfig` — there is no parallel
+    /// discriminator enum to drift from the authored `motion.kinematic`.
+    #[must_use]
+    pub fn supports_kinematics(self, kinematic: &KinematicConfig) -> bool {
+        match self {
+            Self::UnseenGroundNavigation | Self::UnseenGroundNavigationNight => {
+                matches!(kinematic, KinematicConfig::Differential { .. })
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for AutonomyProfileId {
@@ -54,7 +68,6 @@ pub struct AutonomyProfileSpec {
     pub id: AutonomyProfileId,
     pub version: u32,
     pub required_roles: BTreeSet<Role>,
-    pub supported_kinematics: BTreeSet<KinematicKind>,
     pub goal_pose_support: GoalPoseSupport,
     pub required_sensing: Vec<String>,
     pub safety_envelope: String,
@@ -79,7 +92,6 @@ pub fn autonomy_profile(id: AutonomyProfileId) -> AutonomyProfileSpec {
             ]
             .into_iter()
             .collect(),
-            supported_kinematics: [KinematicKind::Differential].into_iter().collect(),
             goal_pose_support: GoalPoseSupport::Pose2,
             required_sensing: vec![
                 "imu".to_string(),
@@ -137,6 +149,41 @@ pub fn autonomy_profile(id: AutonomyProfileId) -> AutonomyProfileSpec {
 #[cfg(test)]
 mod tests {
     use super::{AutonomyProfileId, autonomy_profile};
+    use crate::v1::KinematicConfig;
+
+    #[test]
+    fn profile_supports_only_differential_kinematics() {
+        let differential = KinematicConfig::Differential {
+            left_actuators: vec![],
+            right_actuators: vec![],
+            left_encoders: vec![],
+            right_encoders: vec![],
+            wheel_radius_m: 0.1,
+            wheel_base_m: 0.5,
+        };
+        let omnidirectional = KinematicConfig::Omnidirectional {
+            actuators: vec![],
+            encoders: vec![],
+        };
+        // The v1 ground-navigation family commits to differential drive; the night
+        // profile inherits that rule (it tightens elsewhere, not on kinematics).
+        for profile in [
+            AutonomyProfileId::UnseenGroundNavigation,
+            AutonomyProfileId::UnseenGroundNavigationNight,
+        ] {
+            assert!(
+                profile.supports_kinematics(&differential),
+                "{profile} should accept differential drive"
+            );
+            assert!(
+                !profile.supports_kinematics(&omnidirectional),
+                "{profile} must reject a non-differential kinematic"
+            );
+        }
+        // The diagnostic label tracks the serde `kind` tag.
+        assert_eq!(differential.variant_label(), "differential");
+        assert_eq!(omnidirectional.variant_label(), "omnidirectional");
+    }
 
     #[test]
     fn night_profile_extends_base_without_removing_requirements() {

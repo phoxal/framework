@@ -45,38 +45,17 @@ pub enum KinematicConfig {
 }
 
 impl KinematicConfig {
-    pub const fn kind(&self) -> KinematicKind {
+    /// Stable snake_case label for the kinematic variant — matches the serde
+    /// `kind` tag. For diagnostics and conformance evidence only; the variant
+    /// itself is the single source of truth, so callers pattern-match
+    /// `KinematicConfig` directly rather than branching on a parallel enum.
+    #[must_use]
+    pub const fn variant_label(&self) -> &'static str {
         match self {
-            Self::Differential { .. } => KinematicKind::Differential,
-            Self::Mecanum { .. } => KinematicKind::Mecanum,
-            Self::Ackermann { .. } => KinematicKind::Ackermann,
-            Self::Omnidirectional { .. } => KinematicKind::Omnidirectional,
+            Self::Differential { .. } => "differential",
+            Self::Mecanum { .. } => "mecanum",
+            Self::Ackermann { .. } => "ackermann",
+            Self::Omnidirectional { .. } => "omnidirectional",
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum KinematicKind {
-    Differential,
-    Mecanum,
-    Ackermann,
-    Omnidirectional,
-}
-
-impl KinematicKind {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Differential => "differential",
-            Self::Mecanum => "mecanum",
-            Self::Ackermann => "ackermann",
-            Self::Omnidirectional => "omnidirectional",
-        }
-    }
-}
-
-impl std::fmt::Display for KinematicKind {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
     }
 }
