@@ -24,8 +24,59 @@ pub fn is_valid_token(value: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, new)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
+    /// Global Trade Item Number identifying the physical part this component
+    /// models. Optional: custom/robot-local components need not have one;
+    /// catalog components carry it as a stable identity fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[new(default)]
+    pub gtin: Option<Gtin>,
     #[serde(default)]
     pub capabilities: BTreeMap<String, Capability>,
+}
+
+/// A Global Trade Item Number (GTIN-13). Validated on parse so a component
+/// definition cannot carry a malformed identity.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Gtin(String);
+
+impl Gtin {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Gtin {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let trimmed = s.trim();
+        if trimmed.len() != 13 || !trimmed.chars().all(|character| character.is_ascii_digit()) {
+            bail!("invalid GTIN '{}': must be exactly 13 digits", s);
+        }
+        Ok(Self(trimmed.to_string()))
+    }
+}
+
+impl TryFrom<String> for Gtin {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<Gtin> for String {
+    fn from(value: Gtin) -> Self {
+        value.0
+    }
+}
+
+impl fmt::Display for Gtin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
