@@ -2214,8 +2214,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "clap",
+ "derive-new",
+ "derive_setters",
+ "dotenvy",
+ "nalgebra",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+ "serde_yaml",
+ "serial_test",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "urdf-rs",
+ "zenoh",
+]
+
+[[package]]
 name = "phoxal-api-asset"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-infra-bus",
  "serde",
@@ -2223,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-component"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "derive-new",
  "phoxal-infra-bus",
@@ -2233,7 +2260,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-drive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-infra-bus",
  "serde",
@@ -2241,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-explore"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-localize",
  "phoxal-api-map",
@@ -2252,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-follow"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-localize",
  "phoxal-api-map",
@@ -2262,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-frame"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-joint",
  "phoxal-infra-bus",
@@ -2271,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-joint"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-infra-bus",
  "serde",
@@ -2279,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-localize"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-component",
  "phoxal-api-frame",
@@ -2291,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-map"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-frame",
  "phoxal-api-localize",
@@ -2301,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-mission"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-map",
  "phoxal-infra-bus",
@@ -2310,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-motion"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-drive",
  "phoxal-api-safety",
@@ -2320,7 +2347,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-odometry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-frame",
  "phoxal-api-joint",
@@ -2330,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-perception"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-frame",
  "phoxal-api-localize",
@@ -2342,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-plan"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-localize",
  "phoxal-api-map",
@@ -2353,7 +2380,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-power"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-infra-bus",
  "serde",
@@ -2361,11 +2388,11 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-presence"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "phoxal-api-safety"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-api-localize",
  "phoxal-api-map",
@@ -2375,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api-video"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "phoxal-infra-bus",
  "serde",
@@ -2384,7 +2411,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-core-component"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "derive-new",
@@ -2395,7 +2422,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-core-engine"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2420,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-core-robot"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2434,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-core-simulation"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "derive-new",
@@ -2446,7 +2473,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-core-spatial"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2460,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-core-structure"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "derive-new",
@@ -2471,7 +2498,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-infra-bus"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "derive-new",
  "derive_setters",
@@ -2487,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-infra-helpers"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "tracing-subscriber",
@@ -2495,7 +2522,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-asset"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2510,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-drive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2533,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-explore"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2554,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-follow"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2575,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-frame"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2596,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-joint"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2616,7 +2643,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2643,14 +2670,14 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize-orb-slam3-sys"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "phoxal-runtime-map"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2678,7 +2705,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-mission"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2697,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-motion"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2719,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-odometry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -2744,7 +2771,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-perception"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2767,7 +2794,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-plan"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2787,7 +2814,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-power"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2805,7 +2832,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-presence"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2822,7 +2849,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-safety"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2846,7 +2873,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-video"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2868,7 +2895,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-validation-scenario"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "nalgebra",

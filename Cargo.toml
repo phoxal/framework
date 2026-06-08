@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -12,6 +12,7 @@ repository = "https://github.com/phoxal/framework"
 [workspace]
 resolver = "3"
 members = [
+    "phoxal",
     "infra/bus",
     "infra/helpers",
     "api/component",
