@@ -11,6 +11,9 @@ mission commands.
 
 Primary contract: `runtime/mission/command`, `runtime/mission/state`,
 `runtime/mission/goal`, and `runtime/mission/debug/decision_trace`.
+`GoalTolerance` is geometric only: position radius plus optional normalized
+heading error. `NavigateTo.max_duration_ns` is a logical-time execution budget;
+expiry is published as mission failure, not treated as goal completion.
 
 Exploration contract: `phoxal-runtime-explore` proposes scored candidates on
 `runtime/explore/goal_candidates`; mission remains the only goal decider. During

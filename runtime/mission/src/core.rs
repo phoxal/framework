@@ -1,3 +1,5 @@
+use std::f64::consts::PI;
+
 use phoxal_api_explore::v1::GoalCandidates;
 use phoxal_api_localize::v1::{LocalizationMode, PoseEstimate};
 use phoxal_api_mission::v1::{
@@ -8,6 +10,7 @@ use phoxal_api_mission::v1::{
 pub struct MissionState {
     pub mode: MissionMode,
     pub active_goal: Option<Goal>,
+    pub active_goal_accepted_ns: Option<u64>,
     pub failure: Option<MissionFailure>,
     pub exploration_active: bool,
 }
@@ -17,6 +20,7 @@ impl MissionState {
         Self {
             mode: MissionMode::Idle,
             active_goal: None,
+            active_goal_accepted_ns: None,
             failure: None,
             exploration_active: false,
         }
@@ -31,18 +35,25 @@ impl MissionState {
         &mut self,
         command: &MissionCommand,
         localize_mode: LocalizationMode,
+        now_ns: u64,
     ) -> GoalPublish {
         match command {
-            MissionCommand::NavigateTo { goal, tolerance } => {
+            MissionCommand::NavigateTo {
+                goal,
+                tolerance,
+                max_duration_ns,
+            } => {
                 self.exploration_active = false;
                 if localize_mode == LocalizationMode::Tracking {
                     let goal = Goal {
                         pose: goal.clone(),
                         tolerance: *tolerance,
+                        max_duration_ns: *max_duration_ns,
                         source: GoalSource::Operator,
                     };
                     self.mode = MissionMode::Navigating;
                     self.active_goal = Some(goal.clone());
+                    self.active_goal_accepted_ns = Some(now_ns);
                     self.failure = None;
                     GoalPublish::Publish(goal)
                 } else {
@@ -55,6 +66,7 @@ impl MissionState {
             MissionCommand::Cancel => {
                 self.mode = MissionMode::Idle;
                 self.active_goal = None;
+                self.active_goal_accepted_ns = None;
                 self.failure = None;
                 self.exploration_active = false;
                 GoalPublish::None
@@ -67,6 +79,7 @@ impl MissionState {
                 if let Some(goal) = &self.active_goal {
                     if localize_mode == LocalizationMode::Tracking {
                         self.mode = MissionMode::Navigating;
+                        self.active_goal_accepted_ns = Some(now_ns);
                         self.failure = None;
                         GoalPublish::Publish(goal.clone())
                     } else {
@@ -78,6 +91,7 @@ impl MissionState {
                     }
                 } else {
                     self.mode = MissionMode::Idle;
+                    self.active_goal_accepted_ns = None;
                     self.failure = Some(command_refused(
                         "Resume requires an active goal".to_string(),
                     ));
@@ -87,6 +101,7 @@ impl MissionState {
             MissionCommand::ManualHandover => {
                 self.mode = MissionMode::ManualHandover;
                 self.active_goal = None;
+                self.active_goal_accepted_ns = None;
                 self.failure = None;
                 GoalPublish::None
             }
@@ -94,6 +109,7 @@ impl MissionState {
                 if localize_mode == LocalizationMode::Tracking {
                     self.mode = MissionMode::Exploring;
                     self.active_goal = None;
+                    self.active_goal_accepted_ns = None;
                     self.failure = None;
                     self.exploration_active = true;
                 } else {
@@ -114,7 +130,11 @@ impl MissionState {
         }
     }
 
-    pub fn promote_explore_goal(&mut self, candidates: &GoalCandidates) -> GoalPublish {
+    pub fn promote_explore_goal(
+        &mut self,
+        candidates: &GoalCandidates,
+        now_ns: u64,
+    ) -> GoalPublish {
         if self.mode != MissionMode::Exploring || !self.exploration_active {
             return GoalPublish::None;
         }
@@ -130,10 +150,12 @@ impl MissionState {
         let goal = Goal {
             pose: candidate.goal.clone(),
             tolerance: candidate.tolerance,
+            max_duration_ns: None,
             source: GoalSource::Explore,
         };
         self.mode = MissionMode::Navigating;
         self.active_goal = Some(goal.clone());
+        self.active_goal_accepted_ns = Some(now_ns);
         self.failure = None;
         GoalPublish::Publish(goal)
     }
@@ -150,12 +172,35 @@ impl MissionState {
                 MissionMode::Idle
             };
             self.active_goal = None;
+            self.active_goal_accepted_ns = None;
+        }
+    }
+
+    pub fn fail_active_goal_if_budget_exceeded(&mut self, now_ns: u64) {
+        if self.mode == MissionMode::Navigating
+            && let Some(goal) = &self.active_goal
+            && let Some(budget_ns) = goal.max_duration_ns
+            && let Some(accepted_ns) = self.active_goal_accepted_ns
+        {
+            let elapsed_ns = now_ns.saturating_sub(accepted_ns);
+            if elapsed_ns > budget_ns {
+                self.mode = MissionMode::Failed;
+                self.failure = Some(MissionFailure {
+                    code: "navigate_budget_exceeded".into(),
+                    detail: Some(format!(
+                        "NavigateTo exceeded execution budget: elapsed {elapsed_ns} ns > budget {budget_ns} ns"
+                    )),
+                });
+                self.active_goal = None;
+                self.active_goal_accepted_ns = None;
+            }
         }
     }
 
     fn refuse_command(&mut self, detail: String) {
         self.mode = MissionMode::Idle;
         self.active_goal = None;
+        self.active_goal_accepted_ns = None;
         self.failure = Some(command_refused(detail));
     }
 }
@@ -175,17 +220,33 @@ fn command_refused(detail: String) -> MissionFailure {
 
 fn reached_goal(pose: &PoseEstimate, goal: &Goal) -> bool {
     match &goal.pose {
-        GoalPose::Pose2 { xy_m, .. } => {
+        GoalPose::Pose2 { xy_m, yaw_rad, .. } => {
             let dx = pose.translation_m[0] - xy_m[0];
             let dy = pose.translation_m[1] - xy_m[1];
-            (dx * dx + dy * dy).sqrt() <= goal.tolerance.pos_m
+            let position_reached = (dx * dx + dy * dy).sqrt() <= goal.tolerance.pos_m;
+            let heading_reached = goal.tolerance.yaw_rad.is_none_or(|tolerance_rad| {
+                let pose_yaw_rad = yaw_from_xyzw(pose.rotation_xyzw);
+                normalize_angle_rad(pose_yaw_rad - yaw_rad).abs() <= tolerance_rad
+            });
+            position_reached && heading_reached
         }
         _ => false,
     }
 }
 
+fn yaw_from_xyzw(rotation_xyzw: [f64; 4]) -> f64 {
+    let [x, y, z, w] = rotation_xyzw;
+    (2.0 * (w * z + x * y)).atan2(1.0 - 2.0 * (y * y + z * z))
+}
+
+fn normalize_angle_rad(angle_rad: f64) -> f64 {
+    (angle_rad + PI).rem_euclid(2.0 * PI) - PI
+}
+
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::PI;
+
     use phoxal_api_explore::v1::{GoalCandidate, GoalCandidates};
     use phoxal_api_frame::v1::FrameId;
     use phoxal_api_localize::v1::LocalizationMode;
@@ -194,17 +255,21 @@ mod tests {
 
     use super::*;
 
+    const ACCEPTED_NS: u64 = 1_000;
+    const RESUMED_NS: u64 = 2_000;
+
     #[test]
     fn navigate_to_accepted_in_tracking_publishes_goal() {
         let command = navigate_to_command();
         let mut state = MissionState::idle();
 
-        let publish = state.apply(&command, LocalizationMode::Tracking);
+        let publish = state.apply(&command, LocalizationMode::Tracking, ACCEPTED_NS);
 
         let expected = goal();
         assert_eq!(publish, GoalPublish::Publish(expected.clone()));
         assert_eq!(state.mode, MissionMode::Navigating);
         assert_eq!(state.active_goal, Some(expected));
+        assert_eq!(state.active_goal_accepted_ns, Some(ACCEPTED_NS));
         assert_eq!(state.failure, None);
         assert!(!state.exploration_active);
     }
@@ -233,11 +298,16 @@ mod tests {
     fn cancel_clears_goal() {
         let mut state = navigating_state();
 
-        let publish = state.apply(&MissionCommand::Cancel, LocalizationMode::Tracking);
+        let publish = state.apply(
+            &MissionCommand::Cancel,
+            LocalizationMode::Tracking,
+            ACCEPTED_NS,
+        );
 
         assert_eq!(publish, GoalPublish::None);
         assert_eq!(state.mode, MissionMode::Idle);
         assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
         assert_eq!(state.failure, None);
         assert!(!state.exploration_active);
     }
@@ -247,11 +317,16 @@ mod tests {
         let expected = goal();
         let mut state = navigating_state();
 
-        let publish = state.apply(&MissionCommand::Pause, LocalizationMode::Tracking);
+        let publish = state.apply(
+            &MissionCommand::Pause,
+            LocalizationMode::Tracking,
+            ACCEPTED_NS,
+        );
 
         assert_eq!(publish, GoalPublish::None);
         assert_eq!(state.mode, MissionMode::Paused);
         assert_eq!(state.active_goal, Some(expected));
+        assert_eq!(state.active_goal_accepted_ns, Some(ACCEPTED_NS));
     }
 
     #[test]
@@ -259,11 +334,16 @@ mod tests {
         let expected = goal();
         let mut state = paused_state();
 
-        let publish = state.apply(&MissionCommand::Resume, LocalizationMode::Tracking);
+        let publish = state.apply(
+            &MissionCommand::Resume,
+            LocalizationMode::Tracking,
+            RESUMED_NS,
+        );
 
         assert_eq!(publish, GoalPublish::Publish(expected.clone()));
         assert_eq!(state.mode, MissionMode::Navigating);
         assert_eq!(state.active_goal, Some(expected));
+        assert_eq!(state.active_goal_accepted_ns, Some(RESUMED_NS));
         assert_eq!(state.failure, None);
     }
 
@@ -271,7 +351,11 @@ mod tests {
     fn resume_refused_without_tracking() {
         let mut state = paused_state();
 
-        let publish = state.apply(&MissionCommand::Resume, LocalizationMode::DeadReckoning);
+        let publish = state.apply(
+            &MissionCommand::Resume,
+            LocalizationMode::DeadReckoning,
+            RESUMED_NS,
+        );
 
         assert_eq!(publish, GoalPublish::None);
         assert_ne!(state.mode, MissionMode::Navigating);
@@ -282,11 +366,16 @@ mod tests {
     fn manual_handover_clears_goal() {
         let mut state = navigating_state();
 
-        let publish = state.apply(&MissionCommand::ManualHandover, LocalizationMode::Tracking);
+        let publish = state.apply(
+            &MissionCommand::ManualHandover,
+            LocalizationMode::Tracking,
+            ACCEPTED_NS,
+        );
 
         assert_eq!(publish, GoalPublish::None);
         assert_eq!(state.mode, MissionMode::ManualHandover);
         assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
         assert_eq!(state.failure, None);
     }
 
@@ -294,11 +383,12 @@ mod tests {
     fn explore_in_tracking_starts_exploration_session() {
         let mut state = MissionState::idle();
 
-        let publish = state.apply(&explore_command(), LocalizationMode::Tracking);
+        let publish = state.apply(&explore_command(), LocalizationMode::Tracking, ACCEPTED_NS);
 
         assert_eq!(publish, GoalPublish::None);
         assert_eq!(state.mode, MissionMode::Exploring);
         assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
         assert_eq!(state.failure, None);
         assert!(state.exploration_active);
     }
@@ -307,11 +397,12 @@ mod tests {
     fn explore_is_refused_without_tracking() {
         let mut state = MissionState::idle();
 
-        let publish = state.apply(&explore_command(), LocalizationMode::Lost);
+        let publish = state.apply(&explore_command(), LocalizationMode::Lost, ACCEPTED_NS);
 
         assert_eq!(publish, GoalPublish::None);
         assert_eq!(state.mode, MissionMode::Idle);
         assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
         assert!(state.failure.is_some());
         assert!(!state.exploration_active);
     }
@@ -319,15 +410,16 @@ mod tests {
     #[test]
     fn promote_explore_goal_selects_top_scored_candidate() {
         let mut state = MissionState::idle();
-        let publish = state.apply(&explore_command(), LocalizationMode::Tracking);
+        let publish = state.apply(&explore_command(), LocalizationMode::Tracking, ACCEPTED_NS);
         assert_eq!(publish, GoalPublish::None);
 
-        let promoted = state.promote_explore_goal(&goal_candidates());
+        let promoted = state.promote_explore_goal(&goal_candidates(), RESUMED_NS);
 
         let expected = explore_goal([2.0, 0.0], 0.7);
         assert_eq!(promoted, GoalPublish::Publish(expected.clone()));
         assert_eq!(state.mode, MissionMode::Navigating);
         assert_eq!(state.active_goal, Some(expected));
+        assert_eq!(state.active_goal_accepted_ns, Some(RESUMED_NS));
         assert!(state.exploration_active);
     }
 
@@ -336,35 +428,63 @@ mod tests {
         let mut state = MissionState {
             mode: MissionMode::Navigating,
             active_goal: Some(explore_goal([2.0, 0.0], 0.7)),
+            active_goal_accepted_ns: Some(ACCEPTED_NS),
             failure: None,
             exploration_active: true,
         };
 
-        state.complete_active_goal_if_reached(Some(&pose_estimate([2.0, 0.0, 0.0])));
+        state.complete_active_goal_if_reached(Some(&pose_estimate_with_yaw([2.0, 0.0, 0.0], 0.0)));
 
         assert_eq!(state.mode, MissionMode::Exploring);
         assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
         assert_eq!(state.failure, None);
         assert!(state.exploration_active);
     }
 
     #[test]
-    fn reached_goal_is_true_within_pose2_position_tolerance() {
-        let pose = pose_estimate([1.1, 0.0, 0.0]);
+    fn reached_goal_with_position_in_and_no_yaw_tolerance() {
+        let pose = pose_estimate_with_yaw([1.1, 0.0, 0.0], 1.5);
+        let goal = goal_with_tolerance([1.0, 0.0], 0.0, 0.2, None);
 
-        assert!(reached_goal(&pose, &goal()));
+        assert!(reached_goal(&pose, &goal));
     }
 
     #[test]
-    fn reached_goal_is_false_outside_pose2_position_tolerance() {
-        let pose = pose_estimate([1.3, 0.0, 0.0]);
+    fn reached_goal_with_position_in_and_yaw_in() {
+        let pose = pose_estimate_with_yaw([1.1, 0.0, 0.0], 0.55);
+        let goal = goal_with_tolerance([1.0, 0.0], 0.5, 0.2, Some(0.1));
 
-        assert!(!reached_goal(&pose, &goal()));
+        assert!(reached_goal(&pose, &goal));
+    }
+
+    #[test]
+    fn reached_goal_with_position_in_and_yaw_out_is_false() {
+        let pose = pose_estimate_with_yaw([1.1, 0.0, 0.0], 0.8);
+        let goal = goal_with_tolerance([1.0, 0.0], 0.5, 0.2, Some(0.1));
+
+        assert!(!reached_goal(&pose, &goal));
+    }
+
+    #[test]
+    fn reached_goal_with_position_out_and_yaw_in_is_false() {
+        let pose = pose_estimate_with_yaw([1.3, 0.0, 0.0], 0.05);
+        let goal = goal_with_tolerance([1.0, 0.0], 0.0, 0.2, Some(0.1));
+
+        assert!(!reached_goal(&pose, &goal));
+    }
+
+    #[test]
+    fn reached_goal_normalizes_yaw_wraparound() {
+        let pose = pose_estimate_with_yaw([1.0, 0.0, 0.0], -PI + 0.01);
+        let goal = goal_with_tolerance([1.0, 0.0], PI - 0.01, 0.2, Some(0.05));
+
+        assert!(reached_goal(&pose, &goal));
     }
 
     #[test]
     fn reached_goal_is_false_for_non_pose2_goal() {
-        let pose = pose_estimate([1.0, 0.0, 0.0]);
+        let pose = pose_estimate_with_yaw([1.0, 0.0, 0.0], 0.0);
         let goal = Goal {
             pose: GoalPose::Pose3 {
                 frame_id: "map".into(),
@@ -373,20 +493,70 @@ mod tests {
                 rotation_wxyz: [1.0, 0.0, 0.0, 0.0],
             },
             tolerance: goal_tolerance(),
+            max_duration_ns: None,
             source: GoalSource::Operator,
         };
 
         assert!(!reached_goal(&pose, &goal));
     }
 
+    #[test]
+    fn navigate_budget_fails_only_after_budget_is_exceeded() {
+        const BUDGET_NS: u64 = 50;
+        let mut state = MissionState::idle();
+
+        let publish = state.apply(
+            &navigate_to_command_with_budget(Some(BUDGET_NS)),
+            LocalizationMode::Tracking,
+            ACCEPTED_NS,
+        );
+        assert!(matches!(publish, GoalPublish::Publish(_)));
+
+        state.fail_active_goal_if_budget_exceeded(ACCEPTED_NS);
+        state.fail_active_goal_if_budget_exceeded(ACCEPTED_NS + BUDGET_NS);
+        assert_eq!(state.mode, MissionMode::Navigating);
+        assert!(state.failure.is_none());
+        assert!(state.active_goal.is_some());
+
+        state.fail_active_goal_if_budget_exceeded(ACCEPTED_NS + BUDGET_NS + 1);
+
+        assert_eq!(state.mode, MissionMode::Failed);
+        assert_eq!(
+            state.failure.as_ref().map(|failure| failure.code.as_str()),
+            Some("navigate_budget_exceeded")
+        );
+        assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
+    }
+
+    #[test]
+    fn navigate_goal_without_budget_never_fails_on_budget() {
+        let mut state = MissionState::idle();
+
+        let publish = state.apply(
+            &navigate_to_command_with_budget(None),
+            LocalizationMode::Tracking,
+            ACCEPTED_NS,
+        );
+        assert!(matches!(publish, GoalPublish::Publish(_)));
+
+        state.fail_active_goal_if_budget_exceeded(u64::MAX);
+
+        assert_eq!(state.mode, MissionMode::Navigating);
+        assert!(state.failure.is_none());
+        assert!(state.active_goal.is_some());
+        assert_eq!(state.active_goal_accepted_ns, Some(ACCEPTED_NS));
+    }
+
     fn assert_navigate_to_refused(mode: LocalizationMode) {
         let mut state = MissionState::idle();
 
-        let publish = state.apply(&navigate_to_command(), mode);
+        let publish = state.apply(&navigate_to_command(), mode, ACCEPTED_NS);
 
         assert_eq!(publish, GoalPublish::None);
         assert_eq!(state.mode, MissionMode::Idle);
         assert_eq!(state.active_goal, None);
+        assert_eq!(state.active_goal_accepted_ns, None);
         assert!(state.failure.is_some());
     }
 
@@ -394,6 +564,7 @@ mod tests {
         MissionState {
             mode: MissionMode::Navigating,
             active_goal: Some(goal()),
+            active_goal_accepted_ns: Some(ACCEPTED_NS),
             failure: None,
             exploration_active: false,
         }
@@ -403,15 +574,21 @@ mod tests {
         MissionState {
             mode: MissionMode::Paused,
             active_goal: Some(goal()),
+            active_goal_accepted_ns: Some(ACCEPTED_NS),
             failure: None,
             exploration_active: false,
         }
     }
 
     fn navigate_to_command() -> MissionCommand {
+        navigate_to_command_with_budget(None)
+    }
+
+    fn navigate_to_command_with_budget(max_duration_ns: Option<u64>) -> MissionCommand {
         MissionCommand::NavigateTo {
             goal: goal_pose(),
             tolerance: goal_tolerance(),
+            max_duration_ns,
         }
     }
 
@@ -430,6 +607,29 @@ mod tests {
         Goal {
             pose: goal_pose(),
             tolerance: goal_tolerance(),
+            max_duration_ns: None,
+            source: GoalSource::Operator,
+        }
+    }
+
+    fn goal_with_tolerance(
+        xy_m: [f64; 2],
+        yaw_rad: f64,
+        pos_m: f64,
+        yaw_tolerance_rad: Option<f64>,
+    ) -> Goal {
+        Goal {
+            pose: GoalPose::Pose2 {
+                frame_id: "map".into(),
+                map_revision: None,
+                xy_m,
+                yaw_rad,
+            },
+            tolerance: GoalTolerance {
+                pos_m,
+                yaw_rad: yaw_tolerance_rad,
+            },
+            max_duration_ns: None,
             source: GoalSource::Operator,
         }
     }
@@ -445,8 +645,8 @@ mod tests {
             tolerance: GoalTolerance {
                 pos_m: pos_tolerance_m,
                 yaw_rad: Some(0.14),
-                time_ns: None,
             },
+            max_duration_ns: None,
             source: GoalSource::Explore,
         }
     }
@@ -468,7 +668,6 @@ mod tests {
                     tolerance: GoalTolerance {
                         pos_m: 0.4,
                         yaw_rad: Some(0.14),
-                        time_ns: None,
                     },
                     score: 0.2,
                 },
@@ -478,7 +677,6 @@ mod tests {
                     tolerance: GoalTolerance {
                         pos_m: 0.7,
                         yaw_rad: Some(0.14),
-                        time_ns: None,
                     },
                     score: 0.9,
                 },
@@ -499,16 +697,15 @@ mod tests {
         GoalTolerance {
             pos_m: 0.2,
             yaw_rad: Some(0.14),
-            time_ns: None,
         }
     }
 
-    fn pose_estimate(translation_m: [f64; 3]) -> PoseEstimate {
+    fn pose_estimate_with_yaw(translation_m: [f64; 3], yaw_rad: f64) -> PoseEstimate {
         PoseEstimate {
             frame_id: FrameId::new("map"),
             child_frame_id: FrameId::new("base_footprint"),
             translation_m,
-            rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
+            rotation_xyzw: [0.0, 0.0, (yaw_rad / 2.0).sin(), (yaw_rad / 2.0).cos()],
         }
     }
 }

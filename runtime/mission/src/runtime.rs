@@ -105,7 +105,8 @@ impl Runtime for MissionRuntime {
             match input {
                 Input::Command(command) => {
                     if let GoalPublish::Publish(goal) =
-                        self.state.apply(&command.data, self.latest_localize_mode)
+                        self.state
+                            .apply(&command.data, self.latest_localize_mode, timestamp_ns)
                     {
                         self.goal_publisher
                             .put(&Stamped::new(timestamp_ns, goal))
@@ -125,9 +126,11 @@ impl Runtime for MissionRuntime {
 
         self.state
             .complete_active_goal_if_reached(self.latest_localize_pose.as_ref());
+        self.state.fail_active_goal_if_budget_exceeded(timestamp_ns);
 
         if let Some(candidates) = self.latest_explore_candidates.as_ref()
-            && let GoalPublish::Publish(goal) = self.state.promote_explore_goal(candidates)
+            && let GoalPublish::Publish(goal) =
+                self.state.promote_explore_goal(candidates, timestamp_ns)
         {
             self.latest_explore_candidates = None;
             self.goal_publisher
@@ -297,7 +300,6 @@ mod tests {
                     tolerance: GoalTolerance {
                         pos_m: 0.4,
                         yaw_rad: Some(0.14),
-                        time_ns: None,
                     },
                     score: 0.2,
                 },
@@ -307,7 +309,6 @@ mod tests {
                     tolerance: GoalTolerance {
                         pos_m: 0.7,
                         yaw_rad: Some(0.14),
-                        time_ns: None,
                     },
                     score: 0.9,
                 },
@@ -324,6 +325,7 @@ mod tests {
                 yaw_rad: 0.0,
             },
             tolerance: goal_tolerance(pos_tolerance_m),
+            max_duration_ns: None,
             source: GoalSource::Explore,
         }
     }
@@ -332,7 +334,6 @@ mod tests {
         GoalTolerance {
             pos_m,
             yaw_rad: Some(0.14),
-            time_ns: None,
         }
     }
 

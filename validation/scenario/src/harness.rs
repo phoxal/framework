@@ -240,8 +240,12 @@ impl ScenarioContext {
         goal: GoalPose,
         tolerance: GoalTolerance,
     ) -> Result<()> {
-        self.publish_mission_command(MissionCommand::NavigateTo { goal, tolerance })
-            .await
+        self.publish_mission_command(MissionCommand::NavigateTo {
+            goal,
+            tolerance,
+            max_duration_ns: None,
+        })
+        .await
     }
 
     pub async fn publish_explore_command(&self) -> Result<()> {
