@@ -8,10 +8,11 @@ use phoxal_api_frame::v1::FrameId;
 use phoxal_api_localize::v1::{LocalizationRevisionId, LocalizationState};
 use phoxal_api_map::v1::{MapRevision, Traversability, revision, traversability};
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
 use phoxal_infra_bus::pubsub::Stamped;
-use tracing::info;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 use crate::frontiers::detect_frontiers_in_frame;
 use crate::scoring::{candidate_centroids, score_candidates};
@@ -51,7 +52,7 @@ pub struct ExploreRuntime {
     latest_pose_xy_m: Option<[f64; 2]>,
     latest_localize_revision: Option<LocalizationRevisionId>,
     last_centroids: Vec<[f64; 2]>,
-    last_logged_state: Option<ExploreLogKey>,
+    decision_log: DecisionLog<ExploreLogKey>,
     frontiers_publisher: Publisher<Stamped<Frontiers>>,
     goal_candidates_publisher: Publisher<Stamped<GoalCandidates>>,
     state_publisher: Publisher<Stamped<State>>,
@@ -107,7 +108,12 @@ impl Runtime for ExploreRuntime {
             latest_pose_xy_m: None,
             latest_localize_revision: None,
             last_centroids: Vec::new(),
-            last_logged_state: None,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                state::TOPIC,
+                <State as TypedSchema>::SCHEMA_NAME,
+                <State as TypedSchema>::SCHEMA_VERSION,
+            ),
             frontiers_publisher: io.publisher::<Stamped<Frontiers>>(frontiers::TOPIC).await?,
             goal_candidates_publisher: io
                 .publisher::<Stamped<GoalCandidates>>(goal_candidates::TOPIC)
@@ -251,16 +257,7 @@ impl ExploreRuntime {
             frontier_count,
             candidate_count,
         };
-        if self.last_logged_state != Some(logged) {
-            info!(
-                status = ?state.status,
-                reason = ?state.reason,
-                frontier_count = ?frontier_count,
-                candidate_count = ?candidate_count,
-                "explore state changed"
-            );
-            self.last_logged_state = Some(logged);
-        }
+        self.decision_log.observe(timestamp_ns, logged);
         self.state_publisher
             .put(&Stamped::new(timestamp_ns, state))
             .await

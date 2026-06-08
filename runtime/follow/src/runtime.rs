@@ -6,10 +6,11 @@ use phoxal_api_follow::v1::{FollowReason, FollowStatus, State, Target, state, ta
 use phoxal_api_localize::v1::LocalizationState;
 use phoxal_api_plan::v1::{Path, path as plan_path};
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
 use phoxal_infra_bus::pubsub::Stamped;
-use tracing::info;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -32,7 +33,7 @@ pub enum Input {
 pub struct FollowRuntime {
     latest_path: Option<Stamped<Path>>,
     latest_localize: Option<Stamped<LocalizationState>>,
-    last_logged_state: Option<FollowLogKey>,
+    decision_log: DecisionLog<FollowLogKey>,
     target_publisher: Publisher<Stamped<Target>>,
     state_publisher: Publisher<Stamped<State>>,
 }
@@ -70,7 +71,12 @@ impl Runtime for FollowRuntime {
         Ok(Self {
             latest_path: None,
             latest_localize: None,
-            last_logged_state: None,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                state::TOPIC,
+                <State as TypedSchema>::SCHEMA_NAME,
+                <State as TypedSchema>::SCHEMA_VERSION,
+            ),
             target_publisher,
             state_publisher,
         })
@@ -95,15 +101,8 @@ impl Runtime for FollowRuntime {
         self.target_publisher
             .put(&Stamped::new(timestamp_ns, target))
             .await?;
-        let logged = (state.status, state.reason);
-        if self.last_logged_state != Some(logged) {
-            info!(
-                status = ?state.status,
-                reason = ?state.reason,
-                "follow state changed"
-            );
-            self.last_logged_state = Some(logged);
-        }
+        self.decision_log
+            .observe(timestamp_ns, (state.status, state.reason));
         self.state_publisher
             .put(&Stamped::new(timestamp_ns, state))
             .await?;

@@ -6,17 +6,19 @@ use anyhow::Result;
 use phoxal_api_component::v1::capability::{emergency_stop as component_emergency_stop, range};
 use phoxal_api_localize::v1::{LocalizationState, state as localize_state};
 use phoxal_api_safety::v1::{
-    EmergencyStopRequest, SafetyAuthorization, SafetySourceRevision, State,
-    authorization as safety_authorization, emergency_stop_request as safety_emergency_stop_request,
-    state as safety_state,
+    EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
+    SafetySourceRevision, State, authorization as safety_authorization,
+    emergency_stop_request as safety_emergency_stop_request, state as safety_state,
 };
 use phoxal_core_component::v1::CapabilityRef;
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::staged::Robot;
 use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
 use phoxal_core_structure::Structure;
 use phoxal_infra_bus::pubsub::Stamped;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
 use crate::selector::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
@@ -67,8 +69,15 @@ pub struct SafetyRuntime {
     latest_operator_emergency_stop_request: Option<Stamped<EmergencyStopRequest>>,
     latest_localize_state: Option<Stamped<LocalizationState>>,
     range_classes: BTreeMap<String, RangeSafetyClass>,
+    decision_log: DecisionLog<SafetyLogKey>,
     authorization_publisher: Publisher<Stamped<SafetyAuthorization>>,
     state_publisher: Publisher<Stamped<State>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SafetyLogKey {
+    decision: SafetyDecision,
+    reason_codes: Vec<SafetyReasonCode>,
 }
 
 #[async_trait::async_trait]
@@ -139,6 +148,12 @@ impl Runtime for SafetyRuntime {
             latest_operator_emergency_stop_request: None,
             latest_localize_state: None,
             range_classes: config.range_classes,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                safety_state::TOPIC,
+                <State as TypedSchema>::SCHEMA_NAME,
+                <State as TypedSchema>::SCHEMA_VERSION,
+            ),
             authorization_publisher,
             state_publisher,
         })
@@ -199,6 +214,17 @@ impl Runtime for SafetyRuntime {
             decision: outcome.decision,
             active_reasons: outcome.reasons,
         };
+        self.decision_log.observe(
+            now_ns,
+            SafetyLogKey {
+                decision: state.decision,
+                reason_codes: state
+                    .active_reasons
+                    .iter()
+                    .map(|reason| reason.code)
+                    .collect(),
+            },
+        );
         self.state_publisher
             .put(&Stamped::new(now_ns, state))
             .await?;

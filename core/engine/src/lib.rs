@@ -1,5 +1,6 @@
 pub mod clock;
 pub mod conventions;
+pub mod decision_log;
 pub mod execute;
 pub mod presence;
 pub mod query;

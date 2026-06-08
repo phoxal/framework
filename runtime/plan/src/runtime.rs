@@ -7,10 +7,11 @@ use phoxal_api_map::v1::MapRevision;
 use phoxal_api_mission::v1::Goal;
 use phoxal_api_plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
 use phoxal_infra_bus::pubsub::Stamped;
-use tracing::info;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -35,7 +36,7 @@ pub struct PlanRuntime {
     latest_goal: Option<Stamped<Goal>>,
     latest_localize: Option<Stamped<LocalizationState>>,
     latest_map_revision: Option<Stamped<MapRevision>>,
-    last_logged_state: Option<PlanLogKey>,
+    decision_log: DecisionLog<PlanLogKey>,
     path_publisher: Publisher<Stamped<Path>>,
     state_publisher: Publisher<Stamped<State>>,
 }
@@ -83,7 +84,12 @@ impl Runtime for PlanRuntime {
             latest_goal: None,
             latest_localize: None,
             latest_map_revision: None,
-            last_logged_state: None,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                state::TOPIC,
+                <State as TypedSchema>::SCHEMA_NAME,
+                <State as TypedSchema>::SCHEMA_VERSION,
+            ),
             path_publisher,
             state_publisher,
         })
@@ -113,15 +119,8 @@ impl Runtime for PlanRuntime {
                 .put(&Stamped::new(timestamp_ns, path))
                 .await?;
         }
-        let logged = (state.status, state.reason);
-        if self.last_logged_state != Some(logged) {
-            info!(
-                status = ?state.status,
-                reason = ?state.reason,
-                "plan state changed"
-            );
-            self.last_logged_state = Some(logged);
-        }
+        self.decision_log
+            .observe(timestamp_ns, (state.status, state.reason));
         self.state_publisher
             .put(&Stamped::new(timestamp_ns, state))
             .await?;

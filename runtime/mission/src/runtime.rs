@@ -8,10 +8,11 @@ use phoxal_api_mission::v1::{
     Goal, GoalSource, MissionCommand, MissionMode, State, command, goal, state,
 };
 use phoxal_core_engine::clock::Step;
+use phoxal_core_engine::decision_log::DecisionLog;
 use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
 use phoxal_infra_bus::pubsub::Stamped;
-use tracing::info;
+use phoxal_infra_bus::zenoh_typed::TypedSchema;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -37,7 +38,7 @@ pub struct MissionRuntime {
     latest_localize_mode: LocalizationMode,
     latest_localize_pose: Option<PoseEstimate>,
     latest_explore_candidates: Option<GoalCandidates>,
-    last_logged_state: Option<MissionLogKey>,
+    decision_log: DecisionLog<MissionLogKey>,
     goal_publisher: Publisher<Stamped<Goal>>,
     state_publisher: Publisher<Stamped<State>>,
 }
@@ -91,7 +92,12 @@ impl Runtime for MissionRuntime {
             latest_localize_mode: LocalizationMode::Initializing,
             latest_localize_pose: None,
             latest_explore_candidates: None,
-            last_logged_state: None,
+            decision_log: DecisionLog::new(
+                Self::RUNTIME_ID,
+                state::TOPIC,
+                <State as TypedSchema>::SCHEMA_NAME,
+                <State as TypedSchema>::SCHEMA_VERSION,
+            ),
             goal_publisher,
             state_publisher,
         })
@@ -152,16 +158,8 @@ impl Runtime for MissionRuntime {
         }
 
         let state = self.state.to_product();
-        let logged = mission_log_key(&state);
-        if self.last_logged_state != Some(logged) {
-            info!(
-                mode = ?state.mode,
-                active_goal_source = ?logged.active_goal_source,
-                has_failure = logged.has_failure,
-                "mission state changed"
-            );
-            self.last_logged_state = Some(logged);
-        }
+        self.decision_log
+            .observe(timestamp_ns, mission_log_key(&state));
         self.state_publisher
             .put(&Stamped::new(timestamp_ns, state))
             .await?;
