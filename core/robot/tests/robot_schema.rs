@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use phoxal_core_component::v1::CapabilityRef;
 use phoxal_core_robot::Robot as RobotManifest;
 use phoxal_core_robot::v1::{
     Component, ComponentSource, Components, ConnectionConfig, DriverConfig, Identity,
-    KinematicConfig, Motion, Phoxal, PhoxalRuntimes, PlatformRuntimeOverride, Robot, SourcePath,
-    UserRuntime, ValidationError,
+    KinematicConfig, Motion, Phoxal, PhoxalRuntimes, PlatformRuntimeOverride, Robot, SourceGit,
+    SourcePath, UserRuntime, ValidationError,
 };
 
 const PLATFORM_RUNTIMES: &[&str] = &["router", "drive", "localize"];
@@ -31,6 +31,54 @@ fn parses_plan_robot_fixture() {
     robot
         .validate_with(PLATFORM_RUNTIMES)
         .expect("plan robot fixture should validate against platform names");
+}
+
+#[test]
+fn git_source_directory_is_optional() {
+    // Historical single-component-repo layout: no `directory` → None.
+    let root: ComponentSource =
+        serde_yaml::from_str("git: https://github.com/phoxal/component-bno085\ntag: main")
+            .expect("rootless git source should parse");
+    match root {
+        ComponentSource::Git(source) => assert_eq!(source.directory, None),
+        other => panic!("expected git source, got {other:?}"),
+    }
+
+    // Shared catalog-repo layout: `directory` selects the subdirectory.
+    let subdir: ComponentSource = serde_yaml::from_str(
+        "git: https://github.com/phoxal/components\ntag: v0.3.0\ndirectory: bno085",
+    )
+    .expect("subdir git source should parse");
+    match subdir {
+        ComponentSource::Git(source) => {
+            assert_eq!(source.directory.as_deref(), Some(Path::new("bno085")));
+        }
+        other => panic!("expected git source, got {other:?}"),
+    }
+}
+
+#[test]
+fn git_source_directory_round_trips_and_omits_when_absent() {
+    let with_dir = ComponentSource::Git(SourceGit {
+        git: "https://github.com/phoxal/components".to_string(),
+        tag: "v0.3.0".to_string(),
+        directory: Some(PathBuf::from("ddsm115")),
+    });
+    let yaml = serde_yaml::to_string(&with_dir).expect("source should serialize");
+    assert!(yaml.contains("directory: ddsm115"), "got: {yaml}");
+    let reparsed: ComponentSource = serde_yaml::from_str(&yaml).expect("source should reparse");
+    assert_eq!(reparsed, with_dir);
+
+    let without_dir = ComponentSource::Git(SourceGit {
+        git: "https://github.com/phoxal/component-bno085".to_string(),
+        tag: "main".to_string(),
+        directory: None,
+    });
+    let yaml = serde_yaml::to_string(&without_dir).expect("source should serialize");
+    assert!(
+        !yaml.contains("directory"),
+        "directory must be omitted when absent, got: {yaml}"
+    );
 }
 
 #[test]
