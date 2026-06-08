@@ -114,6 +114,14 @@ pub enum ComponentSource {
 pub struct SourceGit {
     pub git: String,
     pub tag: String,
+    /// Optional subdirectory within the git repository that holds the
+    /// component definition (`component.yaml` and friends). Absent means the
+    /// component lives at the repository root — the historical single-component
+    /// repository layout. A value such as `bno085` selects
+    /// `<repo>/bno085/component.yaml`, enabling a shared catalog repository
+    /// (e.g. `phoxal/components`) to host many components as subdirectories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
