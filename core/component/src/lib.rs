@@ -131,6 +131,54 @@ capabilities:
     }
 
     #[test]
+    fn component_parses_and_round_trips_gtin() -> anyhow::Result<()> {
+        // The exact shape `phoxal-cli create catalog-component <GTIN>` emits.
+        let component = Component::read_from_string(
+            "version: v1\ngtin: \"1234567890123\"\ncapabilities: {}\n",
+        )?;
+        assert_eq!(
+            component
+                .as_v1()
+                .expect("supported version")
+                .gtin
+                .as_ref()
+                .map(crate::v1::Gtin::as_str),
+            Some("1234567890123")
+        );
+        let yaml = serde_yaml::to_string(&component)?;
+        let reparsed = Component::read_from_string(&yaml)?;
+        assert_eq!(
+            reparsed
+                .as_v1()
+                .expect("supported version")
+                .gtin
+                .as_ref()
+                .map(crate::v1::Gtin::as_str),
+            Some("1234567890123")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn component_rejects_malformed_gtin() {
+        let result = Component::read_from_string("version: v1\ngtin: \"123\"\ncapabilities: {}\n");
+        let error = result.expect_err("13-digit GTIN must be enforced");
+        assert!(format!("{error:#}").contains("13 digits"), "got: {error:#}");
+    }
+
+    #[test]
+    fn component_without_gtin_is_none_and_omits_on_serialize() -> anyhow::Result<()> {
+        let component = Component::read_from_string("version: v1\ncapabilities: {}\n")?;
+        assert!(component.as_v1().expect("supported version").gtin.is_none());
+        let yaml = serde_yaml::to_string(&component)?;
+        assert!(
+            !yaml.contains("gtin"),
+            "gtin must be omitted when absent: {yaml}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn component_parses_range_capability() -> anyhow::Result<()> {
         let component = Component::read_from_string(
             r#"

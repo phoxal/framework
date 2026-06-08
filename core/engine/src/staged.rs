@@ -391,6 +391,7 @@ mod tests {
             components: BTreeMap::from([(
                 "camera_rgbd_640x480".to_string(),
                 ComponentSpec {
+                    gtin: None,
                     capabilities: BTreeMap::from([
                         (
                             "rgb".to_string(),
