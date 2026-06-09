@@ -11,8 +11,8 @@ use phoxal::bus::pubsub::Stamped;
 use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 

@@ -5,8 +5,8 @@ use phoxal::api::asset::v1::{
     GetRequest as AssetRequest, GetResponse as AssetResponse, InvalidPathReason, UnavailableReason,
 };
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{Io, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs};
 
 pub struct AssetView {
     bundle_root: PathBuf,

@@ -11,8 +11,8 @@ use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
 const TARGET_STALE_TIMEOUT_NS: u64 = 500_000_000;
@@ -220,7 +220,7 @@ impl Runtime for DriveRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

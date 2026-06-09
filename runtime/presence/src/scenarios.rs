@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use anyhow::{Result, ensure};
 use phoxal::api::presence::{DebugReadiness, Readiness};
-use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::helpers::{
     assert_ready_summary, heartbeat, readiness_for, readiness_summary,
 };
@@ -13,7 +13,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("readiness-bootstrap"),
     summary: Cow::Borrowed("Checks presence readiness aggregation during P0 bootstrap."),
     kind: ScenarioKind::Headless,
-    phase: phoxal::runtime::runtime::Phase::P0,
+    phase: phoxal::runtime::Phase::P0,
     timeout_secs: 60,
     category: Cow::Borrowed("readiness-bootstrap"),
     tier: 1,

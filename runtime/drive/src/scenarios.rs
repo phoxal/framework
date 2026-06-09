@@ -6,14 +6,14 @@ use phoxal::api::drive::v1::{
     ActuatorAuthority, ActuatorCommands, Kinematics, Saturation, State as DriveState, StopReason,
     Target as DriveTarget, Watchdog,
 };
-use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::helpers::{assert_close, assert_schema};
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-drive-kinematics-contract"),
     summary: Cow::Borrowed("Checks drive kinematics and typed drive contracts."),
     kind: ScenarioKind::Headless,
-    phase: phoxal::runtime::runtime::Phase::P3,
+    phase: phoxal::runtime::Phase::P3,
     timeout_secs: 60,
     category: Cow::Borrowed("failure-recovery"),
     tier: 1,

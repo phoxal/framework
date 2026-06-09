@@ -16,8 +16,8 @@ use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
 use crate::selector::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
@@ -230,7 +230,7 @@ impl Runtime for SafetyRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

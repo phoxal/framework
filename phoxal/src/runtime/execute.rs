@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 use dotenvy::Error as DotenvError;
 
 use crate::runtime::RobotRuntimeArgs;
-use crate::runtime::runtime::{Runtime, RuntimeProcess};
+use crate::runtime::{Runtime, RuntimeProcess};
 
 #[derive(Debug, Parser)]
 #[command(about = "Robot runtime process")]
@@ -91,7 +91,7 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
-    use crate::runtime::runtime::EmptyArgs;
+    use crate::runtime::EmptyArgs;
 
     #[test]
     fn parses_run_subcommand_with_empty_extra_args() {

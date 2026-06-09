@@ -20,8 +20,8 @@ use phoxal::bus::zenoh::TypedSchema;
 use phoxal::model::component::v1::capability::GnssCoordinateSystem;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 use crate::gnss_anchored::GnssAnchoredBackend;
 use crate::orbslam3;
@@ -476,7 +476,7 @@ impl Runtime for LocalizeRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

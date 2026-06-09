@@ -16,8 +16,8 @@ use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::robot::v1::Role;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);

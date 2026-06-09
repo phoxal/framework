@@ -12,9 +12,9 @@ use phoxal::bus::pubsub::Stamped;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::stale_timeout_ns;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
@@ -245,7 +245,7 @@ impl Runtime for OdometryRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

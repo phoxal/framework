@@ -10,8 +10,8 @@ use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 #[derive(Clone)]

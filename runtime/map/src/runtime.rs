@@ -24,8 +24,8 @@ use phoxal::api::map::v1::{
 use phoxal::bus::pubsub::Stamped;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::spatial::ray::sample_range_rays;
 use phoxal::spatial::sensor::{
     ResolvedSensorKind, ResolvedSensorPose, resolve_sensor_poses_in_frame,
@@ -369,7 +369,7 @@ impl Runtime for MapRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

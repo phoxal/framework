@@ -11,8 +11,8 @@ use phoxal::bus::pubsub::Stamped;
 use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 use crate::frontiers::detect_frontiers_in_frame;
 use crate::scoring::{candidate_centroids, score_candidates};
@@ -233,7 +233,7 @@ impl Runtime for ExploreRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

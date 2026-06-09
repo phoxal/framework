@@ -8,9 +8,9 @@ use phoxal::api::presence::{
 };
 use phoxal::bus::pubsub::Stamped;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::stale_timeout_ns;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 const PUBLISH_HZ: f64 = 1.0;
 
@@ -102,7 +102,7 @@ impl Runtime for PresenceRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

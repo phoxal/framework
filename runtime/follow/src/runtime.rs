@@ -9,8 +9,8 @@ use phoxal::bus::pubsub::Stamped;
 use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -114,7 +114,7 @@ impl Runtime for FollowRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
