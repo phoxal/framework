@@ -11,10 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const TREE_TOPIC: &str = "runtime/frame/tree";
 pub const STATIC_TOPIC: &str = "runtime/frame/static";
 pub const DATA_SCHEMA: &str = "runtime/frame/data";
-/// Topic template for per-frame transform streams. The `{frame-id}` placeholder
-/// is substituted at subscribe time by `data::path(...)`.
 pub const FRAME_TRANSFORM_TOPIC_TEMPLATE: &str = "runtime/frame/{frame-id}/data";
-pub const LOOKUP_TOPIC: &str = "runtime/frame/lookup";
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub String);
 
@@ -199,33 +196,11 @@ pub mod data {
     }
 }
 
-pub mod lookup {
-    use crate::api::frame::v1::{FrameLookupRequest, FrameLookupResponse, LOOKUP_TOPIC};
-
-    pub const TOPIC: &str = LOOKUP_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn get_builder<'a>(
-        bus: &'a crate::bus::Bus,
-        request: &'a FrameLookupRequest,
-    ) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, FrameLookupResponse> {
-        crate::bus::query::get_builder(bus, TOPIC, request)
-    }
-
-    pub fn queryable_builder(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<
-        crate::bus::zenoh::TypedQueryableBuilder<
-            '_,
-            'static,
-            FrameLookupRequest,
-            FrameLookupResponse,
-        >,
-    > {
-        crate::bus::query::queryable_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    query lookup() {
+        path: "runtime/frame/lookup",
+        request: FrameLookupRequest,
+        response: FrameLookupResponse
     }
 }
 
@@ -234,7 +209,7 @@ mod tests {
     use crate::bus::zenoh::{BusyResponse, TypedSchema};
 
     use crate::api::frame::v1::{
-        FrameLookupRequest, FrameLookupResponse, FrameTransform, Static, Tree,
+        FrameLookupRequest, FrameLookupResponse, FrameTransform, Static, Tree, lookup,
     };
 
     #[test]
@@ -251,11 +226,26 @@ mod tests {
         );
         assert_eq!(FrameLookupRequest::SCHEMA_VERSION, 1);
         assert_eq!(
+            lookup::request_schema_name(),
+            "runtime/frame/lookup/request"
+        );
+        assert_eq!(lookup::request_schema_version(), 1);
+        assert_eq!(
             FrameLookupResponse::SCHEMA_NAME,
             "runtime/frame/lookup/response"
         );
         assert_eq!(FrameLookupResponse::SCHEMA_VERSION, 1);
+        assert_eq!(
+            lookup::response_schema_name(),
+            "runtime/frame/lookup/response"
+        );
+        assert_eq!(lookup::response_schema_version(), 1);
         assert_eq!(FrameLookupResponse::busy(), FrameLookupResponse::Busy);
+    }
+
+    #[test]
+    fn lookup_path_is_stable() {
+        assert_eq!(lookup::path(), "runtime/frame/lookup");
     }
 }
 

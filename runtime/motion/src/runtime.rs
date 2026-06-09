@@ -7,7 +7,6 @@ use phoxal::api::follow::v1::{Target as FollowTarget, target as follow_target};
 use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource, State, manual, state};
 use phoxal::api::safety::v1::{SafetyAuthorization, authorization as safety_authorization};
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
@@ -81,7 +80,8 @@ impl Runtime for MotionRuntime {
         let drive_target_publisher = io
             .publisher::<Stamped<DriveTarget>>(drive_target::TOPIC)
             .await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let state_path = state::path();
+        let state_publisher = io.publisher::<Stamped<State>>(&state_path).await?;
 
         Ok(Self {
             latest_manual_command: None,
@@ -89,9 +89,9 @@ impl Runtime for MotionRuntime {
             latest_safety_authorization: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
-                <State as TypedSchema>::SCHEMA_NAME,
-                <State as TypedSchema>::SCHEMA_VERSION,
+                state_path,
+                state::schema_name(),
+                state::schema_version(),
             ),
             drive_target_publisher,
             state_publisher,

@@ -248,8 +248,9 @@ impl Runtime for FrameRuntime {
             parent_by_child: parent_by_child.clone(),
             dynamics: Arc::new(published_dynamics.clone()),
         });
+        let lookup_path = lookup::path();
         io.serve_query::<FrameLookupRequest, FrameLookupResponse, FrameView, _>(
-            lookup::TOPIC,
+            &lookup_path,
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(16).unwrap()),
             frame_lookup,

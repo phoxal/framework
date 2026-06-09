@@ -5,7 +5,6 @@ use crate::bus::pubsub::Stamped;
 use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
 use serde::{Deserialize, Serialize};
 
-pub const STATE_TOPIC: &str = "runtime/motion/state";
 pub const MANUAL_COMMAND_TOPIC: &str = "runtime/motion/manual";
 pub const DRIVE_TARGET_TOPIC: &str = crate::api::drive::v1::TARGET_TOPIC;
 pub const DEBUG_ARBITRATION_TOPIC: &str = "runtime/motion/debug/arbitration";
@@ -92,25 +91,10 @@ pub struct SourceStatus {
     pub reason: Option<String>,
 }
 
-pub mod state {
-    use super::*;
-
-    pub const TOPIC: &str = STATE_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<State>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<State>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub state() {
+        path: "runtime/motion/state",
+        payload: State
     }
 }
 
@@ -155,7 +139,9 @@ pub mod debug {
 mod tests {
     use crate::bus::zenoh::TypedSchema;
 
-    use super::{Arbitration, ManualCommand, SCHEMA_NAME, SCHEMA_VERSION, SourceFreshness, State};
+    use super::{
+        Arbitration, ManualCommand, SCHEMA_NAME, SCHEMA_VERSION, SourceFreshness, State, state,
+    };
 
     #[test]
     fn schema_contracts_do_not_drift() {
@@ -163,6 +149,8 @@ mod tests {
         assert_eq!(SCHEMA_VERSION, 1);
         assert_eq!(State::SCHEMA_NAME, "runtime/motion/state");
         assert_eq!(State::SCHEMA_VERSION, 2);
+        assert_eq!(state::schema_name(), "runtime/motion/state");
+        assert_eq!(state::schema_version(), 2);
         assert_eq!(ManualCommand::SCHEMA_NAME, "runtime/motion/manual");
         assert_eq!(ManualCommand::SCHEMA_VERSION, 1);
         assert_eq!(Arbitration::SCHEMA_NAME, "runtime/motion/debug/arbitration");
@@ -172,6 +160,11 @@ mod tests {
             "runtime/motion/debug/source_freshness"
         );
         assert_eq!(SourceFreshness::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn state_path_is_stable() {
+        assert_eq!(state::path(), "runtime/motion/state");
     }
 }
 

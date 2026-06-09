@@ -3,14 +3,10 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 use std::fmt;
 
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DATA_SCHEMA: &str = "runtime/joint/data";
-/// Topic template for per-joint state streams. The `{joint-id}` placeholder is
-/// substituted at subscribe time by `data::path(...)`.
-pub const JOINT_STATE_TOPIC_TEMPLATE: &str = "runtime/joint/{joint-id}/data";
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct JointId(pub String);
 
@@ -44,31 +40,10 @@ pub enum Quantity {
     LinearM,
 }
 
-pub mod data {
-    use super::*;
-
-    pub const SCHEMA: &str = DATA_SCHEMA;
-
-    pub fn path(joint_id: &JointId) -> String {
-        format!("runtime/joint/{}/data", joint_id)
-    }
-
-    pub fn topic(bus: &crate::bus::Bus, joint_id: &JointId) -> String {
-        bus.topic(&path(joint_id))
-    }
-
-    pub fn publisher<'a>(
-        bus: &'a crate::bus::Bus,
-        joint_id: &JointId,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'a, 'static, Stamped<JointState>>> {
-        crate::bus::pubsub::publisher_builder(bus, &path(joint_id))
-    }
-
-    pub fn subscriber_builder<'a>(
-        bus: &'a crate::bus::Bus,
-        joint_id: &JointId,
-    ) -> TypedSubscriberBuilder<'a, 'static, Stamped<JointState>> {
-        crate::bus::pubsub::subscriber_builder(bus, &path(joint_id))
+crate::bus::topic_leaf! {
+    pubsub data(joint_id: &JointId) {
+        path: "runtime/joint/{}/data",
+        payload: JointState
     }
 }
 
@@ -76,12 +51,22 @@ pub mod data {
 mod tests {
     use crate::bus::zenoh::TypedSchema;
 
-    use crate::api::joint::v1::JointState;
+    use crate::api::joint::v1::{JointId, JointState, data};
 
     #[test]
     fn joint_state_schema_is_stable() {
         assert_eq!(JointState::SCHEMA_NAME, "runtime/joint/data");
         assert_eq!(JointState::SCHEMA_VERSION, 1);
+        assert_eq!(data::schema_name(), "runtime/joint/data");
+        assert_eq!(data::schema_version(), 1);
+    }
+
+    #[test]
+    fn data_path_is_stable() {
+        assert_eq!(
+            data::path(&JointId::new("left_wheel")),
+            "runtime/joint/left_wheel/data"
+        );
     }
 }
 

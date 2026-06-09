@@ -276,7 +276,11 @@ impl DriveRuntime {
 
 impl MotorBinding {
     fn topic(&self) -> String {
-        motor::topic(&self.component_id, &self.capability_id)
+        motor::command::path(
+            self.component_id.as_str(),
+            motor::KIND,
+            self.capability_id.as_str(),
+        )
     }
 }
 

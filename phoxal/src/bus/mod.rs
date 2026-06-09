@@ -11,7 +11,7 @@ pub mod query;
 #[allow(clippy::module_name_repetitions)]
 pub mod zenoh;
 
-pub use crate::{pubsub_leaf, query_leaf, request_schema};
+pub use crate::{pubsub_leaf, query_leaf, request_schema, topic_leaf};
 
 #[derive(Clone, new)]
 pub struct Bus {
