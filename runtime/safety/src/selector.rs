@@ -1,7 +1,7 @@
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::robot::v1::Role;
-use phoxal::runtime::staged::Robot;
+use phoxal::model::v1::Robot;
 use tracing::warn;
 
 /// All range-capable capabilities tagged `Role::Safety`. Empty is valid:
@@ -24,7 +24,7 @@ fn detect_safety_inputs(
 ) -> Vec<CapabilityRef> {
     let mut inputs = Vec::new();
 
-    for (component_id, component) in &robot.model.components {
+    for (component_id, component) in &robot.manifest.components {
         for (capability_id, roles) in &component.roles {
             if !roles.contains(&Role::Safety) {
                 continue;
@@ -51,11 +51,10 @@ fn detect_safety_inputs(
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use phoxal::model::component::v1::CapabilityRef;
-    use phoxal::model::robot::v1::Robot as RobotManifest;
-    use phoxal::runtime::staged::Robot;
+    use phoxal::model::v1::Robot;
 
     use super::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
 
@@ -90,47 +89,11 @@ mod tests {
             .join("fixture")
             .join("robot")
             .join("rgbd-imu-diff-drive");
-        let model = match RobotManifest::read_from_dir(&bundle_root) {
-            Ok(model) => model,
+        match Robot::read_from_dir(&bundle_root) {
+            Ok(robot) => robot,
             Err(error) => panic!(
                 "failed to read fixture robot from {}: {error:#}",
                 bundle_root.display()
-            ),
-        };
-        let components = model
-            .used_component_types()
-            .into_iter()
-            .map(|component_type| {
-                (
-                    component_type.to_string(),
-                    read_fixture_component(&bundle_root, component_type),
-                )
-            })
-            .collect();
-
-        Robot { model, components }
-    }
-
-    fn read_fixture_component(
-        bundle_root: &Path,
-        component_type: &str,
-    ) -> phoxal::model::component::v1::Component {
-        let fixture_root = match bundle_root.parent().and_then(Path::parent) {
-            Some(path) => path,
-            None => panic!(
-                "fixture bundle root must live under fixture/robot: {}",
-                bundle_root.display()
-            ),
-        };
-        let component_root = fixture_root.join("component").join(component_type);
-        match phoxal::model::component::Component::read_from_dir(&component_root) {
-            Ok(component) => match component.as_v1() {
-                Some(component) => component.clone(),
-                None => panic!("fixture component '{component_type}' is not v1"),
-            },
-            Err(error) => panic!(
-                "failed to read fixture component '{component_type}' from {}: {error:#}",
-                component_root.display()
             ),
         }
     }

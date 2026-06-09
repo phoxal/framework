@@ -13,11 +13,10 @@ use phoxal::api::safety::v1::{
 use phoxal::bus::pubsub::Stamped;
 use phoxal::bus::zenoh::TypedSchema;
 use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::structure::Structure;
+use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal::runtime::staged::Robot;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
@@ -36,11 +35,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_robot(robot: &Robot, structure: &Structure) -> Result<Self> {
+    pub fn from_robot(robot: &Robot) -> Result<Self> {
         Ok(Self {
             range_inputs: detect_safety_range_inputs(robot),
             emergency_stop_inputs: detect_safety_emergency_stop_inputs(robot),
-            range_classes: classify_safety_range_inputs(robot, structure),
+            range_classes: classify_safety_range_inputs(robot),
             clock_period: CLOCK_PERIOD,
         })
     }
@@ -89,7 +88,7 @@ impl Runtime for SafetyRuntime {
     type Input = Input;
 
     fn config(_args: &Self::Args, common: &RobotRuntimeArgs) -> Result<Self::Config> {
-        Config::from_robot(&common.robot()?, &common.structure()?)
+        Config::from_robot(&common.robot()?)
     }
 
     fn clock_period(config: &Self::Config) -> Duration {

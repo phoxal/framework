@@ -9,10 +9,9 @@ use phoxal::api::drive::v1::{
 use phoxal::bus::pubsub::Stamped;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::robot::v1::KinematicConfig;
-use phoxal::model::structure::Structure;
+use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal::runtime::staged::Robot;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
@@ -39,18 +38,18 @@ struct MotorBinding {
 }
 
 impl Config {
-    pub fn from_robot(robot: &Robot, _structure: &Structure) -> Result<Self> {
+    pub fn from_robot(robot: &Robot) -> Result<Self> {
         let KinematicConfig::Differential {
             left_actuators,
             right_actuators,
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = &robot.model.motion.kinematic
+        } = &robot.manifest.motion.kinematic
         else {
             bail!(
                 "drive runtime only supports differential drive kinematics, found {}",
-                robot.model.motion.kinematic.variant_label()
+                robot.manifest.motion.kinematic.variant_label()
             );
         };
 
@@ -77,11 +76,11 @@ impl Config {
 }
 
 impl MotorBinding {
-    fn from_resolved(motor: phoxal::runtime::staged::ResolvedMotor<'_>) -> Self {
+    fn new(reference: &CapabilityRef, direction_sign: i8) -> Self {
         Self {
-            component_id: motor.reference.component_id,
-            capability_id: motor.reference.capability_id,
-            direction_sign: motor.direction_sign,
+            component_id: reference.component_id.clone(),
+            capability_id: reference.capability_id.clone(),
+            direction_sign,
         }
     }
 }
@@ -98,9 +97,8 @@ fn resolve_motor_bindings(
     actuators
         .iter()
         .map(|actuator| {
-            robot
-                .require_motor(actuator)
-                .map(MotorBinding::from_resolved)
+            let (_motor, direction_sign) = robot.require_motor(actuator)?;
+            Ok(MotorBinding::new(actuator, direction_sign))
         })
         .collect()
 }
@@ -147,7 +145,7 @@ impl Runtime for DriveRuntime {
     type Input = Input;
 
     fn config(_args: &Self::Args, common: &RobotRuntimeArgs) -> Result<Self::Config> {
-        Config::from_robot(&common.robot()?, &common.structure()?)
+        Config::from_robot(&common.robot()?)
     }
 
     fn clock_period(config: &Self::Config) -> Duration {
@@ -311,16 +309,14 @@ fn signed_velocity(omega_radps: f64, direction_sign: i8) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-
-    use phoxal::model::robot::v1::Robot as RobotManifest;
+    use std::path::PathBuf;
 
     use super::*;
 
     #[test]
     fn config_from_fixture_resolves_side_motor_lists() {
-        let (robot, structure) = fixture_robot_and_structure();
-        let config = match Config::from_robot(&robot, &structure) {
+        let robot = fixture_robot();
+        let config = match Config::from_robot(&robot) {
             Ok(config) => config,
             Err(error) => panic!("failed to resolve drive config from fixture: {error:#}"),
         };
@@ -345,8 +341,8 @@ mod tests {
 
     #[test]
     fn four_motor_differential_fanout_keeps_each_side_in_lockstep() {
-        let (robot, structure) = fixture_robot_and_structure();
-        let config = match Config::from_robot(&robot, &structure) {
+        let robot = fixture_robot();
+        let config = match Config::from_robot(&robot) {
             Ok(config) => config,
             Err(error) => panic!("failed to resolve drive config from fixture: {error:#}"),
         };
@@ -375,56 +371,13 @@ mod tests {
             .collect()
     }
 
-    fn fixture_robot_and_structure() -> (Robot, Structure) {
+    fn fixture_robot() -> Robot {
         let bundle_root = fixture_bundle_root();
-        let model = match RobotManifest::read_from_dir(&bundle_root) {
-            Ok(model) => model,
+        match Robot::read_from_dir(&bundle_root) {
+            Ok(robot) => robot,
             Err(error) => panic!(
                 "failed to read fixture robot from {}: {error:#}",
                 bundle_root.display()
-            ),
-        };
-        let components = model
-            .used_component_types()
-            .into_iter()
-            .map(|component_type| {
-                (
-                    component_type.to_string(),
-                    read_fixture_component(&bundle_root, component_type),
-                )
-            })
-            .collect();
-        let robot = Robot { model, components };
-        let structure = match Structure::read_from_dir(&bundle_root) {
-            Ok(structure) => structure,
-            Err(error) => panic!(
-                "failed to read fixture structure from {}: {error:#}",
-                bundle_root.display()
-            ),
-        };
-        (robot, structure)
-    }
-
-    fn read_fixture_component(
-        bundle_root: &Path,
-        component_type: &str,
-    ) -> phoxal::model::component::v1::Component {
-        let fixture_root = match bundle_root.parent().and_then(Path::parent) {
-            Some(path) => path,
-            None => panic!(
-                "fixture bundle root must live under fixture/robot: {}",
-                bundle_root.display()
-            ),
-        };
-        let component_root = fixture_root.join("component").join(component_type);
-        match phoxal::model::component::Component::read_from_dir(&component_root) {
-            Ok(component) => match component.as_v1() {
-                Some(component) => component.clone(),
-                None => panic!("fixture component '{component_type}' is not v1"),
-            },
-            Err(error) => panic!(
-                "failed to read fixture component '{component_type}' from {}: {error:#}",
-                component_root.display()
             ),
         }
     }

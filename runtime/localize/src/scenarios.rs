@@ -174,16 +174,15 @@ fn p2_localization_mode_policy(common: &RobotRuntimeArgs) -> Result<()> {
     );
 
     let robot = fixture_robot(fixture_bundle_name(common)?)?;
-    let structure = common.structure()?;
     ensure!(
         matches!(
-            phoxal::model::robot::v1::resolve_localize_backend(&robot.model, &robot.components),
+            phoxal::model::robot::v1::resolve_localize_backend(&robot.manifest, &robot.components),
             phoxal::model::robot::v1::ResolvedLocalizeBackend::OrbSlam3RgbdInertial { .. }
         ),
         "rgbd-imu-diff-drive fixture must expose the RGB-D + IMU localization sensor mix"
     );
 
-    let backend = crate::selector::select_backend(&robot, &structure, None)?;
+    let backend = crate::selector::select_backend(&robot, None)?;
     ensure!(
         matches!(backend, BackendSelection::DeadReckoning),
         "ORB-SLAM3-eligible robot without vocabulary must fall back to dead-reckoning"

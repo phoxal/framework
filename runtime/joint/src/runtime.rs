@@ -8,9 +8,9 @@ use phoxal::api::joint::v1::{JointId, JointState, Quantity, data};
 use phoxal::bus::pubsub::Stamped;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
+use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal::runtime::staged::Robot;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 use tracing::warn;
 
@@ -24,7 +24,7 @@ impl Config {
     pub fn from_robot(robot: &Robot) -> Result<Self> {
         let mut encoders = Vec::new();
 
-        for component_id in robot.model.components.keys() {
+        for component_id in robot.manifest.components.keys() {
             let component = robot.component_for_instance(component_id)?;
             for (capability_id, capability) in &component.capabilities {
                 let Capability::Encoder(_) = capability else {
@@ -37,14 +37,14 @@ impl Config {
                 };
 
                 let reference = CapabilityRef::new(component_id, capability_id);
-                let resolved = robot.require_encoder(&reference)?;
+                let (encoder, direction_sign) = robot.require_encoder(&reference)?;
                 encoders.push(JointEncoder::new(
                     JointId::new(id),
-                    resolved.reference,
-                    resolved.direction_sign,
-                    resolved.gear_ratio,
-                    resolved.counts_per_revolution,
-                    resolved.encoder.publish_rate_hz,
+                    reference,
+                    direction_sign,
+                    encoder.gear_ratio,
+                    encoder.counts_per_revolution,
+                    encoder.publish_rate_hz,
                 )?);
             }
         }

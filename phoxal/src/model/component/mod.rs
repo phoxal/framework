@@ -159,6 +159,52 @@ capabilities:
     }
 
     #[test]
+    fn component_rejects_non_positive_motor_gear_ratio() {
+        let result = Component::read_from_string(
+            r#"
+version: v1
+capabilities:
+  motor:
+    kind: motor
+    command: velocity
+    gear_ratio: 0.0
+    target: { kind: joint, id: motor_joint }
+"#,
+        );
+        let error = result.expect_err("motor gear_ratio must be enforced");
+        assert!(
+            format!("{error:#}").contains("capabilities.motor.gear_ratio must be > 0"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn component_rejects_non_positive_encoder_values() {
+        let result = Component::read_from_string(
+            r#"
+version: v1
+capabilities:
+  encoder:
+    kind: encoder
+    publish_rate_hz: 50.0
+    gear_ratio: 0.0
+    counts_per_revolution: 0
+    target: { kind: joint, id: motor_joint }
+"#,
+        );
+        let error = result.expect_err("encoder gear_ratio and counts must be enforced");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("capabilities.encoder.gear_ratio must be > 0"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("capabilities.encoder.counts_per_revolution must be > 0"),
+            "got: {message}"
+        );
+    }
+
+    #[test]
     fn component_rejects_malformed_gtin() {
         let result = Component::read_from_string("version: v1\ngtin: \"123\"\ncapabilities: {}\n");
         let error = result.expect_err("13-digit GTIN must be enforced");

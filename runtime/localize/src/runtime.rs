@@ -58,10 +58,9 @@ impl Config {
         }
 
         let robot = args.robot()?;
-        let structure = args.structure()?;
         let vocabulary_path = orb_slam3_vocabulary_from_env()?;
         Ok(Self {
-            backend: selector::select_backend(&robot, &structure, vocabulary_path.as_deref())?,
+            backend: selector::select_backend(&robot, vocabulary_path.as_deref())?,
             clock_period: CLOCK_PERIOD,
         })
     }

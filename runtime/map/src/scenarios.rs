@@ -233,9 +233,9 @@ fn p2_traversability_body_envelope(common: &RobotRuntimeArgs) -> Result<()> {
     const OCCUPANCY_FREE: u8 = 1;
     const OCCUPANCY_OCCUPIED: u8 = 2;
 
-    let structure = common.structure()?;
+    let robot = common.robot()?;
     let body_radius =
-        crate::core::body_envelope::body_radius_from_structure(&structure, "base_link")?;
+        crate::core::body_envelope::body_radius_from_structure(&robot.structure, "base_link")?;
     assert_close("body radius", body_radius, 0.291_547_594_742_265, 1e-9)?;
 
     let mut grid = OccupancyGrid::centered_at([0.0, 0.0]);

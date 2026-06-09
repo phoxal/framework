@@ -56,15 +56,14 @@ pub struct Config {
 impl Config {
     pub fn from_args(args: &RobotRuntimeArgs) -> Result<Self> {
         let robot = args.robot()?;
-        let structure = args.structure()?;
         let mapping_range_inputs = selector::detect_mapping_range_inputs(&robot);
         let mapping_sensor_poses = if mapping_range_inputs.is_empty() {
             BTreeMap::new()
         } else {
             let resolved_sensor_poses = resolve_sensor_poses_in_frame(
-                &robot.model,
+                &robot.manifest,
                 &robot.components,
-                &structure,
+                &robot.structure,
                 &mapping_range_inputs,
                 BASE_FOOTPRINT_ID,
             )?;
@@ -79,7 +78,10 @@ impl Config {
             clock_period: CLOCK_PERIOD,
             mapping_range_inputs,
             mapping_sensor_poses,
-            body_radius_m: body_envelope::body_radius_from_structure(&structure, BASE_LINK_ID)?,
+            body_radius_m: body_envelope::body_radius_from_structure(
+                &robot.structure,
+                BASE_LINK_ID,
+            )?,
         })
     }
 

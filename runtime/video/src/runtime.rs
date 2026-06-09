@@ -19,9 +19,9 @@ use phoxal::bus::liveliness::LivelinessEvent;
 use phoxal::bus::pubsub::Stamped;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal::runtime::staged::Robot;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use tracing::warn;
 

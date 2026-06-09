@@ -10,10 +10,9 @@ use phoxal::api::odometry::v1::{
 };
 use phoxal::bus::pubsub::Stamped;
 use phoxal::model::robot::v1::KinematicConfig;
-use phoxal::model::structure::Structure;
+use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal::runtime::staged::Robot;
 use phoxal::runtime::stale_timeout_ns;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 use tracing::warn;
@@ -37,18 +36,18 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_robot(robot: &Robot, structure: &Structure) -> Result<Self> {
+    pub fn from_robot(robot: &Robot) -> Result<Self> {
         let KinematicConfig::Differential {
             left_encoders,
             right_encoders,
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = &robot.model.motion.kinematic
+        } = &robot.manifest.motion.kinematic
         else {
             bail!(
                 "odometry runtime only supports differential drive kinematics, found {}",
-                robot.model.motion.kinematic.variant_label()
+                robot.manifest.motion.kinematic.variant_label()
             );
         };
 
@@ -62,20 +61,16 @@ impl Config {
             bail!("motion.kinematic.right_encoders must list at least one encoder");
         };
 
-        let left_encoder = robot.require_encoder(left_encoder_ref)?;
-        let right_encoder = robot.require_encoder(right_encoder_ref)?;
-        validate_positive_f64(left_encoder.encoder.publish_rate_hz, "left publish_rate_hz")?;
-        validate_positive_f64(
-            right_encoder.encoder.publish_rate_hz,
-            "right publish_rate_hz",
-        )?;
+        let (left_encoder, _left_direction_sign) = robot.require_encoder(left_encoder_ref)?;
+        let (right_encoder, _right_direction_sign) = robot.require_encoder(right_encoder_ref)?;
+        validate_positive_f64(left_encoder.publish_rate_hz, "left publish_rate_hz")?;
+        validate_positive_f64(right_encoder.publish_rate_hz, "right publish_rate_hz")?;
 
-        let left_joint = robot.require_joint(&left_encoder.reference, structure)?;
-        let right_joint = robot.require_joint(&right_encoder.reference, structure)?;
+        let left_joint = robot.require_joint(left_encoder_ref)?;
+        let right_joint = robot.require_joint(right_encoder_ref)?;
         let joint_publish_hz = left_encoder
-            .encoder
             .publish_rate_hz
-            .min(right_encoder.encoder.publish_rate_hz);
+            .min(right_encoder.publish_rate_hz);
 
         Ok(Self {
             left_joint_id: JointId::new(&left_joint.name),
@@ -127,7 +122,7 @@ impl Runtime for OdometryRuntime {
     type Input = Input;
 
     fn config(_args: &Self::Args, common: &RobotRuntimeArgs) -> Result<Self::Config> {
-        Config::from_robot(&common.robot()?, &common.structure()?)
+        Config::from_robot(&common.robot()?)
     }
 
     fn clock_period(config: &Self::Config) -> Duration {

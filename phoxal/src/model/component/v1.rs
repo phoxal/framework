@@ -167,6 +167,25 @@ impl Component {
                 ));
             }
             match capability {
+                capability::Capability::Motor(motor) => {
+                    if !is_valid_positive_f64(motor.gear_ratio) {
+                        errors.push(format!(
+                            "capabilities.{capability_id}.gear_ratio must be > 0"
+                        ));
+                    }
+                }
+                capability::Capability::Encoder(encoder) => {
+                    if !is_valid_positive_f64(encoder.gear_ratio) {
+                        errors.push(format!(
+                            "capabilities.{capability_id}.gear_ratio must be > 0"
+                        ));
+                    }
+                    if encoder.counts_per_revolution == 0 {
+                        errors.push(format!(
+                            "capabilities.{capability_id}.counts_per_revolution must be > 0"
+                        ));
+                    }
+                }
                 capability::Capability::Camera(camera) => {
                     if camera.width_px == 0 {
                         errors.push(format!("capabilities.{capability_id}.width_px must be > 0"));
@@ -197,4 +216,8 @@ impl Component {
             bail!("{}", errors.join("\n"))
         }
     }
+}
+
+fn is_valid_positive_f64(value: f64) -> bool {
+    value.is_finite() && value > 0.0
 }

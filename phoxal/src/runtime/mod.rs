@@ -26,7 +26,6 @@ pub mod execute;
 pub mod query;
 pub mod runtime;
 pub mod sensor;
-pub mod staged;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -146,8 +145,8 @@ impl RobotRuntimeArgs {
         Duration::from_millis(self.robot_connect_timeout_ms)
     }
 
-    pub fn robot(&self) -> Result<staged::Robot> {
-        staged::Robot::read_from_dir(&self.robot_config)
+    pub fn robot(&self) -> Result<crate::model::v1::Robot> {
+        crate::model::v1::Robot::read_from_dir(&self.robot_config)
     }
 
     pub fn resolved_facts(&self) -> Result<crate::model::robot::v1::ResolvedFacts> {
@@ -155,9 +154,7 @@ impl RobotRuntimeArgs {
     }
 
     pub fn structure(&self) -> Result<Structure> {
-        let structure = Structure::read_from_dir(&self.robot_config)?;
-        structure.validate()?;
-        Ok(structure)
+        Ok(self.robot()?.structure)
     }
 
     pub async fn connect_bus(&self) -> Result<Bus> {

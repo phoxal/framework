@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::api::frame::v1::{FrameId, FrameLookupResponse, FrameTransform, Source};
@@ -12,8 +12,7 @@ use crate::api::odometry::v1::{
 use crate::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
 use crate::api::simulation::v1::pose::Pose;
 use crate::bus::zenoh::TypedSchema;
-use crate::runtime::COMPONENT_FILE;
-use crate::runtime::staged;
+use crate::model::v1;
 use anyhow::{Context, Result, bail, ensure};
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 
@@ -158,32 +157,10 @@ pub fn ok_transform(response: FrameLookupResponse) -> Result<FrameTransform> {
     }
 }
 
-pub fn fixture_robot(fixture_bundle: &str) -> Result<staged::Robot> {
+pub fn fixture_robot(fixture_bundle: &str) -> Result<v1::Robot> {
     let workspace_root = workspace_root()?;
     let bundle_path = fixture_bundle_path(&workspace_root, fixture_bundle);
-    let model = crate::model::robot::v1::Robot::read_from_dir(&bundle_path)
-        .context("failed to load scenario fixture robot")?;
-    let components = model
-        .used_component_types()
-        .into_iter()
-        .map(|component_type| {
-            let component_dir =
-                component_config_dir_for_model(&workspace_root, fixture_bundle, component_type);
-            let component = crate::model::component::Component::read_from_dir(&component_dir)
-                .with_context(|| {
-                    format!(
-                        "failed to load scenario fixture component '{}' from {}",
-                        component_type,
-                        component_dir.display()
-                    )
-                })?
-                .as_v1()
-                .context("scenario fixture component must be v1")?
-                .clone();
-            Ok((component_type.to_string(), component))
-        })
-        .collect::<Result<BTreeMap<_, _>>>()?;
-    Ok(staged::Robot { model, components })
+    v1::Robot::read_from_dir(&bundle_path).context("failed to load scenario fixture robot")
 }
 
 /// Resolve the workspace root from a runtime crate manifest directory.
@@ -217,45 +194,6 @@ pub fn fixture_bundle_path(workspace_root: &Path, fixture_bundle: &str) -> PathB
         .join("fixture")
         .join("robot")
         .join(fixture_bundle)
-}
-
-fn component_config_dir_for_model(
-    workspace_root: &Path,
-    robot_model: &str,
-    component_type: &str,
-) -> PathBuf {
-    let model_component_dir = model_dir(workspace_root, robot_model)
-        .join("components")
-        .join(component_type);
-    if model_component_dir.join(COMPONENT_FILE).is_file() {
-        model_component_dir
-    } else if fixture_component_dir(workspace_root, component_type)
-        .join(COMPONENT_FILE)
-        .is_file()
-    {
-        fixture_component_dir(workspace_root, component_type)
-    } else {
-        workspace_root.join("components").join(component_type)
-    }
-}
-
-fn model_dir(workspace_root: &Path, robot_model: &str) -> PathBuf {
-    let model_dir = workspace_root.join("models").join(robot_model);
-    if model_dir.is_dir() {
-        model_dir
-    } else {
-        workspace_root
-            .join("fixture")
-            .join("robot")
-            .join(robot_model)
-    }
-}
-
-fn fixture_component_dir(workspace_root: &Path, component_type: &str) -> PathBuf {
-    workspace_root
-        .join("fixture")
-        .join("component")
-        .join(component_type)
 }
 
 pub fn localization_revision(

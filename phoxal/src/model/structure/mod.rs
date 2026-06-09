@@ -30,18 +30,15 @@ impl Structure {
 
     pub fn read_from_dir(path: impl AsRef<Path>) -> anyhow::Result<Structure> {
         let path = path.as_ref();
-        let urdf = std::fs::read_to_string(path.join(STRUCTURE_FILE)).with_context(|| {
-            format!(
-                "Failed to read structure file {}",
-                path.join(STRUCTURE_FILE).display()
-            )
-        })?;
-        Self::from_urdf_str(&urdf).with_context(|| {
-            format!(
-                "Failed to parse structure file {}",
-                path.join(STRUCTURE_FILE).display()
-            )
-        })
+        Self::read_from_file(path.join(STRUCTURE_FILE))
+    }
+
+    pub fn read_from_file(path: impl AsRef<Path>) -> anyhow::Result<Structure> {
+        let path = path.as_ref();
+        let urdf = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read structure file {}", path.display()))?;
+        Self::from_urdf_str(&urdf)
+            .with_context(|| format!("Failed to parse structure file {}", path.display()))
     }
 
     pub fn write_to_dir(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
