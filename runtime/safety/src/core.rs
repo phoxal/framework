@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use phoxal_api_component::v1::capability::range;
-use phoxal_api_localize::v1::{LocalizationMode, LocalizationState};
-use phoxal_api_safety::v1::{
+use phoxal::api::component::v1::capability::range;
+use phoxal::api::localize::v1::{LocalizationMode, LocalizationState};
+use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyDecision, SafetyReason, SafetyReasonCode,
 };
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
 
 /// Drop-off horizon beyond the expected floor return for a downward range sensor.
 const CLIFF_DROP_MARGIN_M: f32 = 0.12;
@@ -280,7 +280,7 @@ fn full_motion() -> MotionConstraint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_api_localize::v1::{
+    use phoxal::api::localize::v1::{
         LocalizationSource, LocalizationStatus, LocalizationStatusReason,
     };
 

@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use phoxal_api_asset::v1::{
+use phoxal::api::asset::v1::{
     GetRequest as AssetRequest, GetResponse as AssetResponse, InvalidPathReason, UnavailableReason,
 };
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::step::{Io, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs};
 
 pub struct AssetView {
     bundle_root: PathBuf,
@@ -75,7 +75,7 @@ impl Runtime for AssetRuntime {
     async fn new(io: &mut Io<Self::Input>, bundle_root: Self::Config) -> Result<Self> {
         let view = ReadCell::new(AssetView { bundle_root });
         io.serve_query::<AssetRequest, AssetResponse, AssetView, _>(
-            phoxal_api_asset::v1::get::TOPIC,
+            &phoxal::api::asset::v1::get::path(),
             view.reader(),
             QueryOptions::single(),
             asset_get,
@@ -94,8 +94,10 @@ impl Runtime for AssetRuntime {
 mod tests {
     use super::{AssetView, asset_get};
     use anyhow::Result;
-    use phoxal_api_asset::v1::{GetRequest as Request, GetResponse as Response, InvalidPathReason};
-    use phoxal_core_engine::MESHES_DIR;
+    use phoxal::api::asset::v1::{
+        GetRequest as Request, GetResponse as Response, InvalidPathReason,
+    };
+    use phoxal::runtime::MESHES_DIR;
     use std::fs;
 
     #[test]

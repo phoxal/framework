@@ -95,4 +95,3 @@ All notable changes documented here. The format follows
 
 - *(fixture)* Plan_robot.yaml uses tag: main for real catalog repos
 - *(safety)* Replace ignored robot-v1 test with fixture-driven coverage
-

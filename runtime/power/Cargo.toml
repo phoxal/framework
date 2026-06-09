@@ -10,6 +10,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+phoxal = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -19,7 +20,3 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sign
 tracing = { workspace = true }
 webpki-roots = "1.0"
 
-phoxal-infra-bus = { workspace = true }
-phoxal-api-power = { workspace = true }
-phoxal-core-engine = { workspace = true }
-phoxal-infra-helpers = { workspace = true }

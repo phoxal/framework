@@ -3,15 +3,15 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::encoder::{self, Sample as EncoderSample};
-use phoxal_api_joint::v1::{JointId, JointState, Quantity, data};
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::{Capability, StructuralTarget};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::api::component::v1::capability::encoder::{self, Sample as EncoderSample};
+use phoxal::api::joint::v1::{JointId, JointState, Quantity, data};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
+use phoxal::model::v1::Robot;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 #[derive(Clone)]
@@ -24,7 +24,7 @@ impl Config {
     pub fn from_robot(robot: &Robot) -> Result<Self> {
         let mut encoders = Vec::new();
 
-        for component_id in robot.model.components.keys() {
+        for component_id in robot.manifest.components.keys() {
             let component = robot.component_for_instance(component_id)?;
             for (capability_id, capability) in &component.capabilities {
                 let Capability::Encoder(_) = capability else {
@@ -37,14 +37,14 @@ impl Config {
                 };
 
                 let reference = CapabilityRef::new(component_id, capability_id);
-                let resolved = robot.require_encoder(&reference)?;
+                let (encoder, direction_sign) = robot.require_encoder(&reference)?;
                 encoders.push(JointEncoder::new(
                     JointId::new(id),
-                    resolved.reference,
-                    resolved.direction_sign,
-                    resolved.gear_ratio,
-                    resolved.counts_per_revolution,
-                    resolved.encoder.publish_rate_hz,
+                    reference,
+                    direction_sign,
+                    encoder.gear_ratio,
+                    encoder.counts_per_revolution,
+                    encoder.publish_rate_hz,
                 )?);
             }
         }
@@ -136,7 +136,7 @@ impl Runtime for JointRuntime {
 
         for encoder in &config.encoders {
             io.subscribe::<Stamped<EncoderSample>, _>(
-                &encoder::topic(
+                &encoder::path(
                     &encoder.reference.component_id,
                     &encoder.reference.capability_id,
                 ),

@@ -1,12 +1,12 @@
 use std::borrow::Cow;
 
 use anyhow::{Result, bail, ensure};
-use phoxal_api_frame::v1::{
+use phoxal::api::frame::v1::{
     FrameId, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source,
 };
-use phoxal_api_joint::v1::{JointId, JointState, Quantity};
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_validation_scenario::helpers::{
+use phoxal::api::joint::v1::{JointId, JointState, Quantity};
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::helpers::{
     assert_close, compose, ok_transform, yaw_from_xyzw, yaw_quaternion,
 };
 
@@ -14,7 +14,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("frame-calibration"),
     summary: Cow::Borrowed("Checks frame transform composition and lookup response variants."),
     kind: ScenarioKind::Headless,
-    phase: phoxal_core_engine::step::Phase::P1,
+    phase: phoxal::runtime::Phase::P1,
     timeout_secs: 60,
     category: Cow::Borrowed("frame-calibration"),
     tier: 1,

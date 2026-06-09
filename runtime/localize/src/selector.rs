@@ -1,12 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::profile::ProfileId;
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::{Capability, GnssCoordinateSystem};
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_robot::v1::{ResolvedLocalizeBackend, resolve_localize_backend};
-use phoxal_core_structure::Structure;
+use phoxal::api::component::v1::capability::profile::ProfileId;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::{Capability, GnssCoordinateSystem};
+use phoxal::model::robot::v1::{ResolvedLocalizeBackend, resolve_localize_backend};
+use phoxal::model::v1::Robot;
 use tracing::warn;
 
 use crate::runtime::BackendSelection;
@@ -18,7 +17,7 @@ pub fn capability_default_profile_topic(
     capability: &CapabilityRef,
 ) -> anyhow::Result<String> {
     robot.capability(capability)?;
-    Ok(phoxal_api_component::v1::capability::profile_path(
+    Ok(phoxal::api::component::v1::capability::profile_path(
         &capability.component_id,
         &capability.capability_id,
         &ProfileId::default_profile(),
@@ -26,7 +25,7 @@ pub fn capability_default_profile_topic(
 }
 
 fn capability_profile_topic(capability: &CapabilityRef, profile_id: &ProfileId) -> String {
-    phoxal_api_component::v1::capability::profile_path(
+    phoxal::api::component::v1::capability::profile_path(
         &capability.component_id,
         &capability.capability_id,
         profile_id,
@@ -35,19 +34,17 @@ fn capability_profile_topic(capability: &CapabilityRef, profile_id: &ProfileId) 
 
 pub fn select_backend(
     robot: &Robot,
-    structure: &Structure,
     orb_slam3_vocabulary_path: Option<&std::path::Path>,
 ) -> Result<BackendSelection> {
-    select_backend_with_settings_dir(robot, structure, orb_slam3_vocabulary_path, None)
+    select_backend_with_settings_dir(robot, orb_slam3_vocabulary_path, None)
 }
 
 fn select_backend_with_settings_dir(
     robot: &Robot,
-    structure: &Structure,
     orb_slam3_vocabulary_path: Option<&Path>,
     settings_dir: Option<&Path>,
 ) -> Result<BackendSelection> {
-    match resolve_localize_backend(&robot.model, &robot.components) {
+    match resolve_localize_backend(&robot.manifest, &robot.components) {
         ResolvedLocalizeBackend::DeadReckoning => Ok(BackendSelection::DeadReckoning),
         ResolvedLocalizeBackend::GnssAnchored { gnss } => Ok(BackendSelection::GnssAnchored {
             gnss_topic: capability_default_profile_topic(robot, &gnss)?,
@@ -66,8 +63,8 @@ fn select_backend_with_settings_dir(
             let imu_frequency_hz = imu_publish_frequency_hz(robot, &imu)?;
             let camera_topic = default_profile_topic(&camera);
             let depth_topic = default_profile_topic(&depth);
-            let camera_optical_to_base = camera_optical_to_base(robot, structure, &camera)?;
-            let imu_to_camera_optical = imu_to_camera_optical(robot, structure, &camera, &imu)?;
+            let camera_optical_to_base = camera_optical_to_base(robot, &camera)?;
+            let imu_to_camera_optical = imu_to_camera_optical(robot, &camera, &imu)?;
             let settings_path = write_orb_slam3_settings(
                 &color_intrinsics,
                 camera_fps,
@@ -102,7 +99,7 @@ fn select_backend_with_settings_dir(
             let camera_fps = camera_publish_rate_hz(robot, &camera)?;
             let camera_topic = default_profile_topic(&camera);
             let depth_topic = default_profile_topic(&depth);
-            let camera_optical_to_base = camera_optical_to_base(robot, structure, &camera)?;
+            let camera_optical_to_base = camera_optical_to_base(robot, &camera)?;
             let settings_path =
                 write_orb_slam3_rgbd_settings(&color_intrinsics, camera_fps, settings_dir)?;
 
@@ -142,15 +139,11 @@ fn default_profile_topic(capability_ref: &CapabilityRef) -> String {
     capability_profile_topic(capability_ref, &ProfileId::default_profile())
 }
 
-fn camera_optical_to_base(
-    robot: &Robot,
-    structure: &Structure,
-    camera: &CapabilityRef,
-) -> Result<([f64; 3], [f64; 4])> {
-    let transform = phoxal_core_spatial::sensor::resolve_capability_link_pose_in_frame(
-        &robot.model,
+fn camera_optical_to_base(robot: &Robot, camera: &CapabilityRef) -> Result<([f64; 3], [f64; 4])> {
+    let transform = phoxal::spatial::sensor::resolve_capability_link_pose_in_frame(
+        &robot.manifest,
         &robot.components,
-        structure,
+        &robot.structure,
         camera,
         "base_footprint",
     )?;
@@ -167,21 +160,20 @@ fn camera_optical_to_base(
 
 fn imu_to_camera_optical(
     robot: &Robot,
-    structure: &Structure,
     camera: &CapabilityRef,
     imu: &CapabilityRef,
 ) -> Result<([f64; 3], [[f64; 3]; 3])> {
-    let camera_link_in_base = phoxal_core_spatial::sensor::resolve_capability_link_pose_in_frame(
-        &robot.model,
+    let camera_link_in_base = phoxal::spatial::sensor::resolve_capability_link_pose_in_frame(
+        &robot.manifest,
         &robot.components,
-        structure,
+        &robot.structure,
         camera,
         "base_footprint",
     )?;
-    let imu_link_in_base = phoxal_core_spatial::sensor::resolve_capability_link_pose_in_frame(
-        &robot.model,
+    let imu_link_in_base = phoxal::spatial::sensor::resolve_capability_link_pose_in_frame(
+        &robot.manifest,
         &robot.components,
-        structure,
+        &robot.structure,
         imu,
         "base_footprint",
     )?;
@@ -207,7 +199,7 @@ fn imu_to_camera_optical(
 
 fn camera_publish_rate_hz(robot: &Robot, capability_ref: &CapabilityRef) -> Result<f64> {
     use anyhow::bail;
-    use phoxal_core_component::v1::capability::Capability;
+    use phoxal::model::component::v1::capability::Capability;
 
     let capability = robot.capability(capability_ref)?;
     let Capability::Camera(camera) = capability else {
@@ -222,7 +214,7 @@ fn camera_publish_rate_hz(robot: &Robot, capability_ref: &CapabilityRef) -> Resu
 
 fn imu_publish_frequency_hz(robot: &Robot, capability_ref: &CapabilityRef) -> Result<f64> {
     use anyhow::bail;
-    use phoxal_core_component::v1::capability::Capability;
+    use phoxal::model::component::v1::capability::Capability;
 
     let capability = robot.capability(capability_ref)?;
     let Capability::Imu(imu) = capability else {
@@ -255,7 +247,7 @@ fn intrinsics_for(
     capability_ref: &CapabilityRef,
 ) -> Result<crate::settings::CameraIntrinsics> {
     use anyhow::bail;
-    use phoxal_core_component::v1::capability::Capability;
+    use phoxal::model::component::v1::capability::Capability;
 
     let capability = robot.capability(capability_ref)?;
     let (width_px, height_px, field_of_view_rad) = match capability {
@@ -365,14 +357,12 @@ fn orb_slam3_settings_dir(settings_dir: Option<&Path>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    use phoxal_core_component::v1::CapabilityRef;
-    use phoxal_core_component::v1::capability::{Capability, Gnss, StructuralTarget};
-    use phoxal_core_engine::staged::Robot;
-    use phoxal_core_robot::v1::Robot as RobotManifest;
-    use phoxal_core_robot::v1::{Component, Role};
-    use phoxal_core_structure::Structure;
+    use phoxal::model::component::v1::CapabilityRef;
+    use phoxal::model::component::v1::capability::{Capability, Gnss, StructuralTarget};
+    use phoxal::model::robot::v1::{Component, Role};
+    use phoxal::model::v1::Robot;
 
     use super::{
         GnssCoordinateSystem, capability_default_profile_topic, default_profile_topic,
@@ -408,12 +398,11 @@ mod tests {
     #[test]
     fn selector_returns_gnss_anchored_for_gnss_localization_robot() {
         let mut robot = fixture_robot();
-        let structure = fixture_structure();
         component_roles_mut(&mut robot, "front_camera").clear();
         component_roles_mut(&mut robot, "imu").clear();
         add_gnss_localization_component(&mut robot);
 
-        let backend = match select_backend(&robot, &structure, None) {
+        let backend = match select_backend(&robot, None) {
             Ok(backend) => backend,
             Err(error) => panic!("selector failed: {error:#}"),
         };
@@ -432,9 +421,8 @@ mod tests {
     #[test]
     fn feature_on_no_paths_returns_dead_reckoning() {
         let robot = fixture_robot();
-        let structure = fixture_structure();
 
-        let backend = match select_backend(&robot, &structure, None) {
+        let backend = match select_backend(&robot, None) {
             Ok(backend) => backend,
             Err(error) => panic!("selector failed: {error:#}"),
         };
@@ -444,13 +432,11 @@ mod tests {
     #[test]
     fn feature_on_with_paths_returns_orb_slam3() {
         let robot = fixture_robot();
-        let structure = fixture_structure();
         let vocabulary_path = PathBuf::from("/tmp/orb-vocabulary.txt");
         let (settings_root, settings_dir) = temp_settings_dir();
 
         let backend = match select_backend_with_settings_dir(
             &robot,
-            &structure,
             Some(&vocabulary_path),
             Some(&settings_dir),
         ) {
@@ -486,13 +472,11 @@ mod tests {
     #[test]
     fn inertial_settings_yaml_embeds_resolved_imu_extrinsic() {
         let robot = fixture_robot();
-        let structure = fixture_structure();
         let vocabulary_path = PathBuf::from("/tmp/orb-vocabulary.txt");
         let (settings_root, settings_dir) = temp_settings_dir();
 
         let backend = match select_backend_with_settings_dir(
             &robot,
-            &structure,
             Some(&vocabulary_path),
             Some(&settings_dir),
         ) {
@@ -526,7 +510,6 @@ mod tests {
         let matrix = parse_imu_t_b_c1(&yaml);
         let (expected_translation, expected_rotation) = imu_to_camera_optical(
             &robot,
-            &structure,
             &CapabilityRef::new("front_camera", "rgb"),
             &CapabilityRef::new("imu", "imu"),
         )
@@ -586,14 +569,12 @@ mod tests {
     #[test]
     fn feature_on_with_rgbd_only_sensor_mix_returns_orb_slam3_rgbd() {
         let mut robot = fixture_robot();
-        let structure = fixture_structure();
         component_roles_mut(&mut robot, "imu").insert("imu".to_string(), vec![Role::Odometry]);
         let vocabulary_path = PathBuf::from("/tmp/orb-vocabulary.txt");
         let (settings_root, settings_dir) = temp_settings_dir();
 
         let backend = match select_backend_with_settings_dir(
             &robot,
-            &structure,
             Some(&vocabulary_path),
             Some(&settings_dir),
         ) {
@@ -659,33 +640,10 @@ mod tests {
     fn fixture_robot() -> Robot {
         let bundle_root = fixture_bundle_root();
 
-        let model = match RobotManifest::read_from_dir(&bundle_root) {
-            Ok(model) => model,
+        match Robot::read_from_dir(&bundle_root) {
+            Ok(robot) => robot,
             Err(error) => panic!(
                 "failed to read fixture robot from {}: {error:#}",
-                bundle_root.display()
-            ),
-        };
-        let components = model
-            .used_component_types()
-            .into_iter()
-            .map(|component_type| {
-                (
-                    component_type.to_string(),
-                    read_fixture_component(&bundle_root, component_type),
-                )
-            })
-            .collect();
-
-        Robot { model, components }
-    }
-
-    fn fixture_structure() -> Structure {
-        let bundle_root = fixture_bundle_root();
-        match Structure::read_from_dir(&bundle_root) {
-            Ok(structure) => structure,
-            Err(error) => panic!(
-                "failed to read fixture structure from {}: {error:#}",
                 bundle_root.display()
             ),
         }
@@ -709,35 +667,11 @@ mod tests {
             .join("rgbd-imu-diff-drive")
     }
 
-    fn read_fixture_component(
-        bundle_root: &Path,
-        component_type: &str,
-    ) -> phoxal_core_component::v1::Component {
-        let fixture_root = match bundle_root.parent().and_then(Path::parent) {
-            Some(path) => path,
-            None => panic!(
-                "fixture bundle root must live under fixture/robot: {}",
-                bundle_root.display()
-            ),
-        };
-        let component_root = fixture_root.join("component").join(component_type);
-        match phoxal_core_component::Component::read_from_dir(&component_root) {
-            Ok(component) => match component.as_v1() {
-                Some(component) => component.clone(),
-                None => panic!("fixture component {component_type} is not v1"),
-            },
-            Err(error) => panic!(
-                "failed to read fixture component from {}: {error:#}",
-                component_root.display()
-            ),
-        }
-    }
-
     fn component_roles_mut<'a>(
         robot: &'a mut Robot,
         component_id: &str,
     ) -> &'a mut BTreeMap<String, Vec<Role>> {
-        match robot.model.components.get_mut(component_id) {
+        match robot.manifest.components.get_mut(component_id) {
             Some(component) => &mut component.roles,
             None => panic!("fixture missing {component_id} component instance"),
         }
@@ -746,7 +680,7 @@ mod tests {
     fn add_gnss_localization_component(robot: &mut Robot) {
         robot.components.insert(
             "zed_f9p".to_string(),
-            phoxal_core_component::v1::Component::new(BTreeMap::from([(
+            phoxal::model::component::v1::Component::new(BTreeMap::from([(
                 "gnss".to_string(),
                 Capability::Gnss(Gnss {
                     target: StructuralTarget::Link {
@@ -757,7 +691,7 @@ mod tests {
                 }),
             )])),
         );
-        robot.model.components.insert(
+        robot.manifest.components.insert(
             "gnss".to_string(),
             Component {
                 component: "zed_f9p".to_string(),

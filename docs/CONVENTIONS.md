@@ -7,15 +7,15 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 ## Bus and contracts
 
-- Use `phoxal-infra-bus` plus owner-local `phoxal-api-<name>` crates for all
+- Use `phoxal::bus` plus owner-local `phoxal::api::<name>` modules for all
   inter-service communication. Do **not** add a direct `zenoh` dependency outside
-  `phoxal-infra-bus`.
-- `phoxal-infra-bus` owns the Zenoh-backed builder, `Bus`, typed transport
+  `phoxal::bus`.
+- `phoxal::bus` owns the Zenoh-backed builder, `Bus`, typed transport
   primitives, lazy/eager publisher policy, schema encoding, and query-retry
   mechanics. Runtime, driver, simulator, and tool crates connect through the bus
-  builder, then use the api crates for semantic topic and query contracts.
+  builder, then use the api modules for semantic topic and query contracts.
 - Endpoints use Zenoh endpoint syntax directly (`tcp/127.0.0.1:7447`,
-  `tcp/router:7447`); `phoxal-infra-bus` does not repair bare hosts, `tcp://…`
+  `tcp/router:7447`); `phoxal::bus` does not repair bare hosts, `tcp://…`
   URIs, or missing ports.
 - By convention each topic has one public producer: products (state, telemetry,
   debug) are read via a subscriber and commands are sent via a publisher, with the
@@ -40,7 +40,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 ## Pub/sub and telemetry
 
-- Every pub/sub payload uses `phoxal_infra_bus::pubsub::Stamped<T>`. Bare payloads
+- Every pub/sub payload uses `phoxal::bus::pubsub::Stamped<T>`. Bare payloads
   on a topic — including commands and heartbeats — are bugs. Query
   request/response payloads are not `Stamped` unless the queried data itself needs
   an event time.
@@ -56,7 +56,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 - Runtimes and drivers track time, watchdogs, staleness, and computations with
   **logical time** only — never wall time (`Instant::now`, `SystemTime::now`,
-  `.elapsed`). Use the engine/simulator clock (`phoxal-core-engine`'s sim clock
+  `.elapsed`). Use the engine/simulator clock (`phoxal::runtime`'s sim clock
   carries `epoch`, `step`, `time_ns`, `dt_ns`).
 - Simulation uses next-step visibility: messages produced during step `S` are
   consumed at `S+1`. In simulation mode, subscriptions buffer stamped inputs and
@@ -71,7 +71,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
   (`phoxal-runtime-<name>`); some expose a small library target for shared
   selector/scenario logic. `main.rs` stays a thin entrypoint.
 - Express every runtime through the shared `Runtime` trait and run it through the
-  engine's `execute(...)` (`phoxal-core-engine`). The trait owns CLI args, config
+  engine's `execute(...)` (`phoxal::runtime::execute`). The trait owns CLI args, config
   resolution, the step-loop clock period, and the scenario surface; the harness
   provides the common `run` / `scenario` / `scenarios` subcommands.
 - Register inbound surfaces at construction: pub/sub via the bus subscribe
@@ -86,7 +86,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 ## Components
 
-- Component capability contracts live in `phoxal-api-component`. A
+- Component capability contracts live in `phoxal::api::component`. A
   capability-bearing component has an executable driver; a component with no
   capabilities declares no per-instance driver config.
 - `component.yaml` is the only source of component-local capability definitions;
@@ -95,4 +95,4 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
   an explicit `connection`, sparse per-capability `parameters`).
 - Keep component-local ids local in the component source; namespace them only at
   robot composition boundaries (`<instance-id>.<capability-id>`). Geometry shared
-  across runtimes lives in `phoxal-core-spatial`.
+  across runtimes lives in `phoxal::spatial`.

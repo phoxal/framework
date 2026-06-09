@@ -2,16 +2,16 @@ use std::time::Duration;
 
 use crate::core::PlanDecision;
 use anyhow::Result;
-use phoxal_api_localize::v1::LocalizationState;
-use phoxal_api_map::v1::MapRevision;
-use phoxal_api_mission::v1::Goal;
-use phoxal_api_plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::localize::v1::LocalizationState;
+use phoxal::api::map::v1::MapRevision;
+use phoxal::api::mission::v1::Goal;
+use phoxal::api::plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh::TypedSchema;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -61,24 +61,24 @@ impl Runtime for PlanRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_with::<Stamped<Goal>, _>(
-            phoxal_api_mission::v1::goal::TOPIC,
+            &phoxal::api::mission::v1::goal::path(),
             InputPolicy::latest(),
             Input::Goal,
         )
         .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
         io.subscribe::<Stamped<MapRevision>, _>(
-            phoxal_api_map::v1::revision::TOPIC,
+            &phoxal::api::map::v1::revision::path(),
             Input::MapRevision,
         )
         .await?;
 
-        let path_publisher = io.publisher::<Stamped<Path>>(path::TOPIC).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let path_publisher = io.publisher::<Stamped<Path>>(&path::path()).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
 
         Ok(Self {
             latest_goal: None,
@@ -86,7 +86,7 @@ impl Runtime for PlanRuntime {
             latest_map_revision: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),
@@ -128,7 +128,7 @@ impl Runtime for PlanRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

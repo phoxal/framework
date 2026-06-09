@@ -10,22 +10,14 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+phoxal = { workspace = true, features = ["scenario"] }
 anyhow.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 openh264.workspace = true
-phoxal-infra-bus.workspace = true
-phoxal-api-component.workspace = true
-phoxal-api-video.workspace = true
-phoxal-api-motion.workspace = true
-phoxal-core-component.workspace = true
-phoxal-core-robot.workspace = true
-phoxal-core-engine.workspace = true
-phoxal-validation-scenario.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tokio.workspace = true
 tracing.workspace = true
-phoxal-infra-helpers.workspace = true
 
 [lints]
 workspace = true

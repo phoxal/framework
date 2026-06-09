@@ -1,21 +1,20 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_joint::v1::{JointId, JointState, Quantity, data as joint_data};
-use phoxal_api_odometry::v1::{
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::joint::v1::{JointId, JointState, Quantity, data as joint_data};
+use phoxal::api::odometry::v1::{
     Covariance, Integration, IntegrationStep, OdometryEstimate, PoseEstimate, Residuals,
     SourceHealth, SourceId, SourceReason, SourceStatus, Status, StatusMode, StatusReason,
     VelocityEstimate, data, debug, status,
 };
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::stale_timeout_ns;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_core_robot::v1::KinematicConfig;
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::robot::v1::KinematicConfig;
+use phoxal::model::v1::Robot;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::stale_timeout_ns;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
@@ -37,18 +36,18 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_robot(robot: &Robot, structure: &Structure) -> Result<Self> {
+    pub fn from_robot(robot: &Robot) -> Result<Self> {
         let KinematicConfig::Differential {
             left_encoders,
             right_encoders,
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = &robot.model.motion.kinematic
+        } = &robot.manifest.motion.kinematic
         else {
             bail!(
                 "odometry runtime only supports differential drive kinematics, found {}",
-                robot.model.motion.kinematic.variant_label()
+                robot.manifest.motion.kinematic.variant_label()
             );
         };
 
@@ -62,20 +61,16 @@ impl Config {
             bail!("motion.kinematic.right_encoders must list at least one encoder");
         };
 
-        let left_encoder = robot.require_encoder(left_encoder_ref)?;
-        let right_encoder = robot.require_encoder(right_encoder_ref)?;
-        validate_positive_f64(left_encoder.encoder.publish_rate_hz, "left publish_rate_hz")?;
-        validate_positive_f64(
-            right_encoder.encoder.publish_rate_hz,
-            "right publish_rate_hz",
-        )?;
+        let (left_encoder, _left_direction_sign) = robot.require_encoder(left_encoder_ref)?;
+        let (right_encoder, _right_direction_sign) = robot.require_encoder(right_encoder_ref)?;
+        validate_positive_f64(left_encoder.publish_rate_hz, "left publish_rate_hz")?;
+        validate_positive_f64(right_encoder.publish_rate_hz, "right publish_rate_hz")?;
 
-        let left_joint = robot.require_joint(&left_encoder.reference, structure)?;
-        let right_joint = robot.require_joint(&right_encoder.reference, structure)?;
+        let left_joint = robot.require_joint(left_encoder_ref)?;
+        let right_joint = robot.require_joint(right_encoder_ref)?;
         let joint_publish_hz = left_encoder
-            .encoder
             .publish_rate_hz
-            .min(right_encoder.encoder.publish_rate_hz);
+            .min(right_encoder.publish_rate_hz);
 
         Ok(Self {
             left_joint_id: JointId::new(&left_joint.name),
@@ -127,7 +122,7 @@ impl Runtime for OdometryRuntime {
     type Input = Input;
 
     fn config(_args: &Self::Args, common: &RobotRuntimeArgs) -> Result<Self::Config> {
-        Config::from_robot(&common.robot()?, &common.structure()?)
+        Config::from_robot(&common.robot()?)
     }
 
     fn clock_period(config: &Self::Config) -> Duration {
@@ -147,17 +142,17 @@ impl Runtime for OdometryRuntime {
         .await?;
 
         let data_publisher = io
-            .publisher::<Stamped<OdometryEstimate>>(data::TOPIC)
+            .publisher::<Stamped<OdometryEstimate>>(&data::path())
             .await?;
-        let status_publisher = io.publisher::<Stamped<Status>>(status::TOPIC).await?;
+        let status_publisher = io.publisher::<Stamped<Status>>(&status::path()).await?;
         let source_health_publisher = io
-            .publisher::<Stamped<SourceHealth>>(debug::source_health::TOPIC)
+            .publisher::<Stamped<SourceHealth>>(&debug::source_health::path())
             .await?;
         let residuals_publisher = io
-            .publisher::<Stamped<Residuals>>(debug::residuals::TOPIC)
+            .publisher::<Stamped<Residuals>>(&debug::residuals::path())
             .await?;
         let integration_publisher = io
-            .publisher::<Stamped<Integration>>(debug::integration::TOPIC)
+            .publisher::<Stamped<Integration>>(&debug::integration::path())
             .await?;
 
         Ok(Self {
@@ -250,7 +245,7 @@ impl Runtime for OdometryRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -575,8 +570,8 @@ fn source_status(joint_id: &JointId, health: WheelHealth) -> SourceStatus {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_joint::v1::JointId;
-    use phoxal_api_odometry::v1::{SourceId, StatusMode, StatusReason};
+    use phoxal::api::joint::v1::JointId;
+    use phoxal::api::odometry::v1::{SourceId, StatusMode, StatusReason};
 
     use super::{
         Covariance3, IntegrationOutcome, OdometryState, PlanarPose, VAR_PER_STEP_DEGRADED_M2,

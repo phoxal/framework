@@ -6,5 +6,5 @@ mod selector;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    phoxal_core_engine::execute::<runtime::SafetyRuntime>().await
+    phoxal::runtime::execute::<runtime::SafetyRuntime>().await
 }

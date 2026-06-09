@@ -4,20 +4,20 @@ use std::time::Instant;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome};
 use anyhow::{Result, ensure};
-use phoxal_api_component::v1::capability::range;
-use phoxal_api_localize::v1::{
+use phoxal::api::component::v1::capability::range;
+use phoxal::api::localize::v1::{
     LocalizationMode, LocalizationSource, LocalizationState, LocalizationStatus,
 };
-use phoxal_api_safety::v1::{
+use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
     SafetyReasonCode, SafetySourceRevision, State as SafetyState,
 };
-use phoxal_core_engine::RobotRuntimeArgs;
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_validation_scenario::harness::ScenarioContext;
-use phoxal_validation_scenario::helpers::assert_schema;
-use phoxal_validation_scenario::webots::{
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::RobotRuntimeArgs;
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::harness::ScenarioContext;
+use phoxal::scenario::helpers::assert_schema;
+use phoxal::scenario::webots::{
     command_deadline, context_from_args, kill_service, restart_service, wait_for_safety_decision,
     wait_until_tracking,
 };
@@ -31,7 +31,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
             "Checks safety decision priority, serde contract, and core evaluation policy.",
         ),
         kind: ScenarioKind::Headless,
-        phase: phoxal_core_engine::step::Phase::P3,
+        phase: phoxal::runtime::Phase::P3,
         timeout_secs: 60,
         category: Cow::Borrowed("safety"),
         tier: 1,
@@ -42,7 +42,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal_core_engine::step::Phase::P3,
+        phase: phoxal::runtime::Phase::P3,
         timeout_secs: 120,
         category: Cow::Borrowed("safety"),
         tier: 2,
@@ -53,7 +53,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal_core_engine::step::Phase::P3,
+        phase: phoxal::runtime::Phase::P3,
         timeout_secs: 120,
         category: Cow::Borrowed("safety"),
         tier: 2,

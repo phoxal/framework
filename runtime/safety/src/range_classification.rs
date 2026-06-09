@@ -2,10 +2,9 @@ use std::collections::BTreeMap;
 
 use crate::core::RangeSafetyClass;
 use nalgebra::Vector3;
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_spatial::sensor::resolve_sensor_poses_in_frame;
-use phoxal_core_structure::Structure;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::v1::Robot;
+use phoxal::spatial::sensor::resolve_sensor_poses_in_frame;
 use tracing::warn;
 
 use crate::selector::detect_safety_range_inputs;
@@ -15,15 +14,12 @@ const TARGET_FRAME: &str = "base_footprint";
 /// Beam pitched below horizontal by roughly 15 degrees or more is a ground/cliff sensor.
 pub(crate) const CLIFF_BEAM_Z_THRESHOLD: f32 = -0.25;
 
-pub(crate) fn classify_safety_range_inputs(
-    robot: &Robot,
-    structure: &Structure,
-) -> BTreeMap<String, RangeSafetyClass> {
+pub(crate) fn classify_safety_range_inputs(robot: &Robot) -> BTreeMap<String, RangeSafetyClass> {
     detect_safety_range_inputs(robot)
         .into_iter()
         .map(|device| {
             let source_id = range_source_id(&device);
-            let safety_class = classify_range_device(robot, structure, &device);
+            let safety_class = classify_range_device(robot, &device);
             (source_id, safety_class)
         })
         .collect()
@@ -33,15 +29,11 @@ pub(crate) fn range_source_id(capability: &CapabilityRef) -> String {
     format!("{}.{}", capability.component_id, capability.capability_id)
 }
 
-fn classify_range_device(
-    robot: &Robot,
-    structure: &Structure,
-    device: &CapabilityRef,
-) -> RangeSafetyClass {
+fn classify_range_device(robot: &Robot, device: &CapabilityRef) -> RangeSafetyClass {
     let poses = match resolve_sensor_poses_in_frame(
-        &robot.model,
+        &robot.manifest,
         &robot.components,
-        structure,
+        &robot.structure,
         std::slice::from_ref(device),
         TARGET_FRAME,
     ) {
@@ -92,8 +84,7 @@ mod tests {
 
     use crate::core::RangeSafetyClass;
     use anyhow::Result;
-    use phoxal_core_structure::Structure;
-    use phoxal_validation_scenario::helpers::{fixture_bundle_path, fixture_robot, workspace_root};
+    use phoxal::scenario::helpers::fixture_robot;
 
     use super::classify_safety_range_inputs;
 
@@ -102,8 +93,7 @@ mod tests {
         const FIXTURE_BUNDLE: &str = "lowrate-range-diff-drive";
 
         let robot = fixture_robot(FIXTURE_BUNDLE)?;
-        let structure = fixture_structure(FIXTURE_BUNDLE)?;
-        let classes = classify_safety_range_inputs(&robot, &structure);
+        let classes = classify_safety_range_inputs(&robot);
 
         assert_cliff(&classes, "ground_tof.range");
         assert_eq!(
@@ -112,12 +102,6 @@ mod tests {
         );
 
         Ok(())
-    }
-
-    fn fixture_structure(fixture_bundle: &str) -> Result<Structure> {
-        let workspace_root = workspace_root()?;
-        let bundle_root = fixture_bundle_path(&workspace_root, fixture_bundle);
-        Structure::read_from_dir(bundle_root)
     }
 
     fn assert_cliff(classes: &BTreeMap<String, RangeSafetyClass>, source_id: &str) {

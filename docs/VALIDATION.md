@@ -2,14 +2,14 @@
 
 How the framework proves its contracts — not just that a robot moves. Validation
 must exercise the runtime contract end to end. The scenario spec and report
-types live in `phoxal-validation-scenario` (see
-[validation/scenario/README.md](../validation/scenario/README.md)); per-runtime
+types live in `phoxal::scenario` (feature `scenario`); per-runtime
 scenarios live in each `runtime/<name>` crate.
 
 ## Layers
 
-1. **Schema.** Each authored file parses through its schema crate
-   (`phoxal-core-robot`, `phoxal-core-structure`, `phoxal-core-component`) with
+1. **Schema.** Each authored file parses through its model module
+   (`phoxal::model::robot`, `phoxal::model::structure`,
+   `phoxal::model::component`) with
    parse + round-trip + `deny_unknown_fields` tests. Errors point at file + line.
 2. **Resolution.** Each runtime process loads the source-shaped staged bundle
    (`robot.yaml`, `structure.urdf`, `components/<name>/component.yaml` + sibling
@@ -19,7 +19,7 @@ scenarios live in each `runtime/<name>` crate.
    config file and no deploy descriptor; build reproducibility is provided
    downstream by the consumer CLI (`phoxal/phoxal-cli`) via `phoxal.lock` (image
    digests, component SHAs, tool hashes), not by this workspace.
-3. **Contract.** Each `phoxal-api-<name>` crate carries drift, decode, and
+3. **Contract.** Each `phoxal::api::<name>` module carries drift, decode, and
    actionable-error tests (see [CONTRACTS.md](./CONTRACTS.md)): `SCHEMA_NAME` /
    `SCHEMA_VERSION` asserted, query responses are enums, revision linkage lives in
    the success variant, reasons are closed-set typed enums, payloads carry no

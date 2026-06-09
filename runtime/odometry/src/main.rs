@@ -3,5 +3,5 @@ mod scenarios;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    phoxal_core_engine::execute::<runtime::OdometryRuntime>().await
+    phoxal::runtime::execute::<runtime::OdometryRuntime>().await
 }

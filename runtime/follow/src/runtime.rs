@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use crate::core::FollowDecision;
 use anyhow::Result;
-use phoxal_api_follow::v1::{FollowReason, FollowStatus, State, Target, state, target};
-use phoxal_api_localize::v1::LocalizationState;
-use phoxal_api_plan::v1::{Path, path as plan_path};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::follow::v1::{FollowReason, FollowStatus, State, Target, state, target};
+use phoxal::api::localize::v1::LocalizationState;
+use phoxal::api::plan::v1::{Path, path as plan_path};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh::TypedSchema;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -57,23 +57,27 @@ impl Runtime for FollowRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_with::<Stamped<Path>, _>(plan_path::TOPIC, InputPolicy::latest(), Input::Path)
-            .await?;
+        io.subscribe_with::<Stamped<Path>, _>(
+            &plan_path::path(),
+            InputPolicy::latest(),
+            Input::Path,
+        )
+        .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
 
-        let target_publisher = io.publisher::<Stamped<Target>>(target::TOPIC).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let target_publisher = io.publisher::<Stamped<Target>>(&target::path()).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
 
         Ok(Self {
             latest_path: None,
             latest_localize: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),
@@ -110,7 +114,7 @@ impl Runtime for FollowRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

@@ -3,6 +3,6 @@ target/
 .env
 *.lock~
 .rerun/
-.claude/
+.claude/worktrees
 .aider*
 

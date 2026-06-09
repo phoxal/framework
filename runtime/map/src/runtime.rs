@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use anyhow::Result;
 use nalgebra::{Quaternion, UnitQuaternion};
-use phoxal_api_component::v1::capability::range;
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{
+use phoxal::api::component::v1::capability::range;
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{
     Keyframe, LocalizationRevision, LocalizationRevisionId, LocalizationState, PoseEstimate,
     keyframe as localize_keyframe, revision as localize_revision, state as localize_state,
 };
-use phoxal_api_map::v1::{
+use phoxal::api::map::v1::{
     EsdfTile, EsdfTileRequest, EsdfTileResponse, GlobalGrid, GlobalGridRequest, GlobalGridResponse,
     Grid, LocalCost, LocalGrid, LocalGridRequest, LocalGridResponse, MapRevision, MapRevisionId,
     MapTileResponse, RegionSummary, Snapshot, SnapshotRequest, SnapshotResponse, SubmapRequest,
@@ -21,15 +21,15 @@ use phoxal_api_map::v1::{
     query::local_grid, query::snapshot, query::submap, query::traversability_tile, revision,
     summary, traversability, traversability_summary,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal_core_spatial::ray::sample_range_rays;
-use phoxal_core_spatial::sensor::{
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::spatial::ray::sample_range_rays;
+use phoxal::spatial::sensor::{
     ResolvedSensorKind, ResolvedSensorPose, resolve_sensor_poses_in_frame,
 };
-use phoxal_infra_bus::pubsub::Stamped;
 use tracing::info;
 
 use crate::core::body_envelope;
@@ -56,15 +56,14 @@ pub struct Config {
 impl Config {
     pub fn from_args(args: &RobotRuntimeArgs) -> Result<Self> {
         let robot = args.robot()?;
-        let structure = args.structure()?;
         let mapping_range_inputs = selector::detect_mapping_range_inputs(&robot);
         let mapping_sensor_poses = if mapping_range_inputs.is_empty() {
             BTreeMap::new()
         } else {
             let resolved_sensor_poses = resolve_sensor_poses_in_frame(
-                &robot.model,
+                &robot.manifest,
                 &robot.components,
-                &structure,
+                &robot.structure,
                 &mapping_range_inputs,
                 BASE_FOOTPRINT_ID,
             )?;
@@ -79,7 +78,10 @@ impl Config {
             clock_period: CLOCK_PERIOD,
             mapping_range_inputs,
             mapping_sensor_poses,
-            body_radius_m: body_envelope::body_radius_from_structure(&structure, BASE_LINK_ID)?,
+            body_radius_m: body_envelope::body_radius_from_structure(
+                &robot.structure,
+                BASE_LINK_ID,
+            )?,
         })
     }
 
@@ -138,16 +140,16 @@ impl Runtime for MapRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         io.subscribe::<Stamped<LocalizationState>, _>(
-            localize_state::TOPIC,
+            &localize_state::path(),
             Input::LocalizationState,
         )
         .await?;
         io.subscribe::<Stamped<LocalizationRevision>, _>(
-            localize_revision::TOPIC,
+            &localize_revision::path(),
             Input::LocalizationRevision,
         )
         .await?;
-        io.subscribe::<Stamped<Keyframe>, _>(localize_keyframe::TOPIC, Input::Keyframe)
+        io.subscribe::<Stamped<Keyframe>, _>(&localize_keyframe::path(), Input::Keyframe)
             .await?;
         if config.mapping_range_inputs.is_empty() {
             info!(
@@ -155,7 +157,7 @@ impl Runtime for MapRuntime {
             );
         }
         for capability_ref in &config.mapping_range_inputs {
-            let topic = range::topic(&capability_ref.component_id, &capability_ref.capability_id);
+            let topic = range::path(&capability_ref.component_id, &capability_ref.capability_id);
             let sensor = capability_ref.clone();
             io.subscribe::<Stamped<range::Sample>, _>(&topic, move |sample| {
                 Input::RangeSample(sensor.clone(), sample)
@@ -176,42 +178,42 @@ impl Runtime for MapRuntime {
         });
 
         io.serve_query::<SubmapRequest, SubmapResponse, MapView, _>(
-            submap::TOPIC,
+            &submap::path(),
             view.reader(),
             map_query_options(),
             map_submap,
         )
         .await?;
         io.serve_query::<EsdfTileRequest, EsdfTileResponse, MapView, _>(
-            esdf_tile::TOPIC,
+            &esdf_tile::path(),
             view.reader(),
             map_query_options(),
             map_esdf_tile,
         )
         .await?;
         io.serve_query::<TraversabilityTileRequest, TraversabilityTileResponse, MapView, _>(
-            traversability_tile::TOPIC,
+            &traversability_tile::path(),
             view.reader(),
             map_query_options(),
             map_traversability_tile,
         )
         .await?;
         io.serve_query::<LocalGridRequest, LocalGridResponse, MapView, _>(
-            local_grid::TOPIC,
+            &local_grid::path(),
             view.reader(),
             map_query_options(),
             map_local_grid,
         )
         .await?;
         io.serve_query::<GlobalGridRequest, GlobalGridResponse, MapView, _>(
-            global_grid::TOPIC,
+            &global_grid::path(),
             view.reader(),
             map_query_options(),
             map_global_grid,
         )
         .await?;
         io.serve_query::<SnapshotRequest, SnapshotResponse, MapView, _>(
-            snapshot::TOPIC,
+            &snapshot::path(),
             view.reader(),
             map_query_options(),
             map_snapshot,
@@ -229,17 +231,17 @@ impl Runtime for MapRuntime {
             mapping_sensor_poses: config.mapping_sensor_poses,
             latest_robot_pose: None,
             revision_publisher: io
-                .publisher::<Stamped<MapRevision>>(revision::TOPIC)
+                .publisher::<Stamped<MapRevision>>(&revision::path())
                 .await?,
-            summary_publisher: io.publisher::<Stamped<Summary>>(summary::TOPIC).await?,
+            summary_publisher: io.publisher::<Stamped<Summary>>(&summary::path()).await?,
             local_cost_publisher: io
-                .publisher::<Stamped<LocalCost>>(local_cost::TOPIC)
+                .publisher::<Stamped<LocalCost>>(&local_cost::path())
                 .await?,
             traversability_publisher: io
-                .publisher::<Stamped<Traversability>>(traversability::TOPIC)
+                .publisher::<Stamped<Traversability>>(&traversability::path())
                 .await?,
             traversability_summary_publisher: io
-                .publisher::<Stamped<TraversabilitySummary>>(traversability_summary::TOPIC)
+                .publisher::<Stamped<TraversabilitySummary>>(&traversability_summary::path())
                 .await?,
         })
     }
@@ -367,7 +369,7 @@ impl Runtime for MapRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -528,7 +530,7 @@ fn traversability_summary_payload(
 fn zero_grid<T>(cell: T) -> Grid<T> {
     Grid {
         origin_xy_m: [0.0, 0.0],
-        resolution: phoxal_api_map::v1::Resolution {
+        resolution: phoxal::api::map::v1::Resolution {
             xy_m: 1.0,
             z_m: None,
         },
@@ -607,7 +609,7 @@ fn submap_response(
                     served_map_revision: retained.map_revision_id,
                     built_from_localize_revision: retained.built_from_localize_revision,
                     frame_id: frame_id.clone(),
-                    payload: phoxal_api_map::v1::Submap {
+                    payload: phoxal::api::map::v1::Submap {
                         submap_id: latest.submap_id.clone(),
                         bytes,
                     },
@@ -783,7 +785,7 @@ fn empty_global_grid() -> GlobalGrid {
 fn empty_grid<T>() -> Grid<T> {
     Grid {
         origin_xy_m: [0.0, 0.0],
-        resolution: phoxal_api_map::v1::Resolution {
+        resolution: phoxal::api::map::v1::Resolution {
             xy_m: 1.0,
             z_m: None,
         },
@@ -795,11 +797,11 @@ fn empty_grid<T>() -> Grid<T> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::{
+    use phoxal::api::localize::v1::{
         AffectedKeyframeSummary, Keyframe, KeyframeId, LocalizationRevisionCause, PoseEstimate,
         Region as LocalizeRegion,
     };
-    use phoxal_api_map::v1::{MapRevisionCause, MapTileRequest, Region, Resolution, Submap};
+    use phoxal::api::map::v1::{MapRevisionCause, MapTileRequest, Region, Resolution, Submap};
 
     use crate::core::occupancy::{
         GRID_HEIGHT_CELLS, GRID_RESOLUTION_M, GRID_WIDTH_CELLS, OccupancyGrid, OccupancySnapshot,
@@ -1207,7 +1209,7 @@ mod tests {
                 built_from_localize_revision: retained.built_from_localize_revision,
                 frame_id,
                 payload: Submap {
-                    submap_id: phoxal_api_map::v1::SubmapId::new("submap-kf-a"),
+                    submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-a"),
                     bytes: Vec::new()
                 }
             })
@@ -1440,7 +1442,7 @@ mod tests {
                 built_from_localize_revision: retained.built_from_localize_revision,
                 frame_id,
                 payload: Submap {
-                    submap_id: phoxal_api_map::v1::SubmapId::new("submap-kf-a"),
+                    submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-a"),
                     bytes: Vec::new()
                 }
             })
@@ -1475,15 +1477,15 @@ mod tests {
                     map_revision: retained.map_revision_id,
                     submaps: vec![
                         Submap {
-                            submap_id: phoxal_api_map::v1::SubmapId::new("submap-kf-b"),
+                            submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-b"),
                             bytes: Vec::new()
                         },
                         Submap {
-                            submap_id: phoxal_api_map::v1::SubmapId::new("submap-kf-a"),
+                            submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-a"),
                             bytes: Vec::new()
                         },
                         Submap {
-                            submap_id: phoxal_api_map::v1::SubmapId::new("submap-kf-c"),
+                            submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-c"),
                             bytes: Vec::new()
                         },
                     ]

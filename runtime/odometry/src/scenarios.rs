@@ -1,16 +1,16 @@
 use std::borrow::Cow;
 
 use anyhow::{Result, bail, ensure};
-use phoxal_api_joint::v1::JointId;
-use phoxal_api_odometry::v1::{
+use phoxal::api::joint::v1::JointId;
+use phoxal::api::odometry::v1::{
     Integration, IntegrationStep, SourceHealth, SourceId, SourceReason, SourceStatus, Status,
     StatusMode, StatusReason,
 };
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_validation_scenario::assertions::{
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::assertions::{
     Meters, Radians, assert_forward_delta, assert_lateral_drift, assert_yaw_drift,
 };
-use phoxal_validation_scenario::helpers::{
+use phoxal::scenario::helpers::{
     assert_close, estimate_from_wheel_delta, origin_pose, pose_from_estimate, yaw_from_xyzw,
 };
 
@@ -20,7 +20,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
         "Checks differential wheel odometry integration and typed health reasons.",
     ),
     kind: ScenarioKind::Headless,
-    phase: phoxal_core_engine::step::Phase::P1,
+    phase: phoxal::runtime::Phase::P1,
     timeout_secs: 60,
     category: Cow::Borrowed("odometry"),
     tier: 1,

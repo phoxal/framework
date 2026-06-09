@@ -3,28 +3,25 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal_api_component::v1::capability::{camera, depth, imu};
-use phoxal_api_component::v1::{RuntimeStreamDemand, capability::gnss};
-use phoxal_api_frame::v1::FrameId;
-use phoxal_api_localize::v1::{
+use phoxal::api::component::v1::capability::{camera, depth, gnss, imu};
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::v1::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance, ImuBiasEstimate,
     Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode, LocalizationRevision,
     LocalizationRevisionCause, LocalizationRevisionId, LocalizationSource, LocalizationState,
-    LocalizationStatus, LocalizationStatusReason, LocalizeStreamDemands, PoseEstimate,
-    PoseGraphCorrection, PoseGraphRequest, PoseGraphResponse, VelocityEstimate, correction,
-    keyframe, pose, query::corrections, query::keyframe as keyframe_query, query::pose_graph,
-    revision, state,
+    LocalizationStatus, LocalizationStatusReason, PoseEstimate, PoseGraphCorrection,
+    PoseGraphRequest, PoseGraphResponse, VelocityEstimate, correction, keyframe, pose,
+    query::corrections, query::keyframe as keyframe_query, query::pose_graph, revision, state,
 };
-use phoxal_api_odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
-use phoxal_core_component::v1::capability::GnssCoordinateSystem;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::sim_pose::{self, Pose as SimPose};
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal_core_robot::v1::LocalizeBackendKind;
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
+use phoxal::api::simulation::v1::pose::{self as sim_pose, Pose as SimPose};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh::TypedSchema;
+use phoxal::model::component::v1::capability::GnssCoordinateSystem;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 use crate::gnss_anchored::GnssAnchoredBackend;
 use crate::orbslam3;
@@ -58,10 +55,9 @@ impl Config {
         }
 
         let robot = args.robot()?;
-        let structure = args.structure()?;
         let vocabulary_path = orb_slam3_vocabulary_from_env()?;
         Ok(Self {
-            backend: selector::select_backend(&robot, &structure, vocabulary_path.as_deref())?,
+            backend: selector::select_backend(&robot, vocabulary_path.as_deref())?,
             clock_period: CLOCK_PERIOD,
         })
     }
@@ -83,22 +79,6 @@ pub enum BackendSelection {
         coordinate_system: GnssCoordinateSystem,
     },
     OrbSlam3(Box<orbslam3::OrbSlam3Config>),
-}
-
-fn stream_demands_for_selection(selection: &BackendSelection) -> Vec<RuntimeStreamDemand> {
-    match selection {
-        BackendSelection::DeadReckoning
-        | BackendSelection::SimulatorTruth { .. }
-        | BackendSelection::GnssAnchored { .. } => Vec::new(),
-        BackendSelection::OrbSlam3(config) => {
-            let backend = if config.inertial {
-                LocalizeBackendKind::OrbSlam3RgbdInertial
-            } else {
-                LocalizeBackendKind::OrbSlam3Rgbd
-            };
-            LocalizeStreamDemands::for_backend(backend)
-        }
-    }
 }
 
 fn orb_slam3_vocabulary_from_env() -> Result<Option<PathBuf>> {
@@ -327,12 +307,8 @@ impl Runtime for LocalizeRuntime {
         config.clock_period()
     }
 
-    fn stream_demands(config: &Self::Config) -> Vec<RuntimeStreamDemand> {
-        stream_demands_for_selection(&config.backend)
-    }
-
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<OdometryEstimate>, _>(odometry_data::TOPIC, Input::Odometry)
+        io.subscribe::<Stamped<OdometryEstimate>, _>(&odometry_data::path(), Input::Odometry)
             .await?;
         if let BackendSelection::SimulatorTruth { robot_id } = &config.backend {
             io.subscribe::<Stamped<SimPose>, _>(&sim_pose::path(robot_id), Input::SimPose)
@@ -395,21 +371,21 @@ impl Runtime for LocalizeRuntime {
         let view = ReadCell::new(LocalizeView { current_revision });
 
         io.serve_query::<PoseGraphRequest, PoseGraphResponse, LocalizeView, _>(
-            pose_graph::TOPIC,
+            &pose_graph::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_pose_graph,
         )
         .await?;
         io.serve_query::<KeyframeRequest, KeyframeResponse, LocalizeView, _>(
-            keyframe_query::TOPIC,
+            &keyframe_query::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_keyframe,
         )
         .await?;
         io.serve_query::<CorrectionsRequest, CorrectionsResponse, LocalizeView, _>(
-            corrections::TOPIC,
+            &corrections::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_corrections,
@@ -423,20 +399,20 @@ impl Runtime for LocalizeRuntime {
             revision_emitted: false,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <LocalizationState as TypedSchema>::SCHEMA_NAME,
                 <LocalizationState as TypedSchema>::SCHEMA_VERSION,
             ),
             state_publisher: io
-                .publisher::<Stamped<LocalizationState>>(state::TOPIC)
+                .publisher::<Stamped<LocalizationState>>(&state::path())
                 .await?,
-            pose_publisher: io.publisher::<Stamped<PoseEstimate>>(pose::TOPIC).await?,
+            pose_publisher: io.publisher::<Stamped<PoseEstimate>>(&pose::path()).await?,
             revision_publisher: io
-                .publisher::<Stamped<LocalizationRevision>>(revision::TOPIC)
+                .publisher::<Stamped<LocalizationRevision>>(&revision::path())
                 .await?,
-            keyframe_publisher: io.publisher::<Stamped<Keyframe>>(keyframe::TOPIC).await?,
+            keyframe_publisher: io.publisher::<Stamped<Keyframe>>(&keyframe::path()).await?,
             _correction_publisher: io
-                .publisher::<Stamped<PoseGraphCorrection>>(correction::TOPIC)
+                .publisher::<Stamped<PoseGraphCorrection>>(&correction::path())
                 .await?,
         })
     }
@@ -500,7 +476,7 @@ impl Runtime for LocalizeRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -540,7 +516,7 @@ pub(crate) fn publishable_revision(
     }
 }
 
-fn localize_pose_from_odometry(pose: &phoxal_api_odometry::v1::PoseEstimate) -> PoseEstimate {
+fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -> PoseEstimate {
     PoseEstimate {
         frame_id: FrameId::new(ODOM_FRAME_ID),
         child_frame_id: FrameId::new(BASE_FRAME_ID),
@@ -550,7 +526,7 @@ fn localize_pose_from_odometry(pose: &phoxal_api_odometry::v1::PoseEstimate) -> 
 }
 
 fn localize_velocity_from_odometry(
-    velocity: &phoxal_api_odometry::v1::VelocityEstimate,
+    velocity: &phoxal::api::odometry::v1::VelocityEstimate,
 ) -> VelocityEstimate {
     VelocityEstimate {
         frame_id: velocity.frame_id.clone(),
@@ -559,7 +535,7 @@ fn localize_velocity_from_odometry(
     }
 }
 
-fn localize_covariance(covariance: &phoxal_api_odometry::v1::Covariance) -> Covariance {
+fn localize_covariance(covariance: &phoxal::api::odometry::v1::Covariance) -> Covariance {
     Covariance {
         values: covariance.values.clone(),
     }
@@ -615,25 +591,15 @@ fn localize_corrections(view: &LocalizeView, req: CorrectionsRequest) -> Correct
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_localize::v1::{KeyframeId, PoseGraphRange};
-    use phoxal_api_odometry::v1::{
+    use phoxal::api::localize::v1::{KeyframeId, PoseGraphRange};
+    use phoxal::api::odometry::v1::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal_core_engine::clock::Step;
-    use phoxal_core_engine::sim_clock::SimulationClock as Clock;
+    use phoxal::api::simulation::v1::clock::Clock;
+    use phoxal::runtime::clock::Step;
 
     use super::*;
-
-    #[test]
-    fn trait_default_for_dead_reckoning_localize_declares_no_stream_demands() {
-        let config = Config {
-            backend: BackendSelection::DeadReckoning,
-            clock_period: CLOCK_PERIOD,
-        };
-
-        assert!(<LocalizeRuntime as Runtime>::stream_demands(&config).is_empty());
-    }
 
     #[test]
     fn emits_initial_revision_on_first_tracking() {

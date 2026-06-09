@@ -2,23 +2,22 @@ use std::time::Duration;
 
 use crate::core::{HealthState, Tracker, TrackerConfig};
 use anyhow::{Result, bail};
-use phoxal_api_component::v1::capability::{camera, depth};
-use phoxal_api_frame::v1::{FrameId, Tree, tree};
-use phoxal_api_localize::v1::LocalizationState;
-use phoxal_api_map::v1::{MapRevision, revision};
-use phoxal_api_perception::v1::{
+use phoxal::api::component::v1::capability::{camera, depth};
+use phoxal::api::frame::v1::{FrameId, Tree, tree};
+use phoxal::api::localize::v1::LocalizationState;
+use phoxal::api::map::v1::{MapRevision, revision};
+use phoxal::api::perception::v1::{
     BoundingBox, Detection, Detections, PerceptionDegradedReason, PerceptionState,
     PerceptionStoppedReason, RevisionLinkage, detections, state,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::Capability;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_core_robot::v1::Role;
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::robot::v1::Role;
+use phoxal::model::v1::Robot;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
@@ -51,10 +50,10 @@ pub(crate) struct Config {
 }
 
 impl Config {
-    pub(crate) fn from_robot(robot: &Robot, structure: &Structure) -> Result<Self> {
+    pub(crate) fn from_robot(robot: &Robot) -> Result<Self> {
         Ok(Self {
             clock_period: CLOCK_PERIOD,
-            source: PerceptionSource::from_robot(robot, structure)?,
+            source: PerceptionSource::from_robot(robot)?,
             detector_id: PLACEHOLDER_DETECTOR_ID.to_string(),
             backend: PLACEHOLDER_BACKEND.to_string(),
             model_id: PLACEHOLDER_MODEL_ID.to_string(),
@@ -106,7 +105,7 @@ impl Runtime for PerceptionRuntime {
     type Input = Input;
 
     fn config(_args: &Self::Args, common: &RobotRuntimeArgs) -> Result<Self::Config> {
-        Config::from_robot(&common.robot()?, &common.structure()?)
+        Config::from_robot(&common.robot()?)
     }
 
     fn clock_period(config: &Self::Config) -> Duration {
@@ -132,13 +131,13 @@ impl Runtime for PerceptionRuntime {
             warn!("perception runtime started without perception-role camera/depth source");
         }
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<Tree>, _>(tree::TOPIC, Input::FrameTree)
+        io.subscribe::<Stamped<Tree>, _>(&tree::path(), Input::FrameTree)
             .await?;
-        io.subscribe::<Stamped<MapRevision>, _>(revision::TOPIC, Input::MapRevision)
+        io.subscribe::<Stamped<MapRevision>, _>(&revision::path(), Input::MapRevision)
             .await?;
 
         Ok(Self {
@@ -159,10 +158,10 @@ impl Runtime for PerceptionRuntime {
             weights_version: config.weights_version,
             cadence_hz: config.cadence_hz,
             detections_publisher: io
-                .publisher::<Stamped<Detections>>(detections::TOPIC)
+                .publisher::<Stamped<Detections>>(&detections::path())
                 .await?,
             state_publisher: io
-                .publisher::<Stamped<PerceptionState>>(state::TOPIC)
+                .publisher::<Stamped<PerceptionState>>(&state::path())
                 .await?,
         })
     }
@@ -283,7 +282,7 @@ impl PerceptionRuntime {
 }
 
 impl PerceptionSource {
-    fn from_robot(robot: &Robot, structure: &Structure) -> Result<Option<Self>> {
+    fn from_robot(robot: &Robot) -> Result<Option<Self>> {
         let camera = first_role_capability(robot, Role::Perception, |capability| {
             matches!(capability, Capability::Camera(_))
         });
@@ -292,13 +291,13 @@ impl PerceptionSource {
         });
         match (camera, depth) {
             (Some(camera), Some(depth)) => {
-                let source_frame_id = FrameId::new(robot.require_link_target(&camera, structure)?);
+                let source_frame_id = FrameId::new(robot.require_link_target(&camera)?);
                 Ok(Some(Self {
-                    camera_topic: phoxal_api_component::v1::capability::default_profile_path(
+                    camera_topic: phoxal::api::component::v1::capability::default_profile_path(
                         &camera.component_id,
                         &camera.capability_id,
                     ),
-                    depth_topic: phoxal_api_component::v1::capability::default_profile_path(
+                    depth_topic: phoxal::api::component::v1::capability::default_profile_path(
                         &depth.component_id,
                         &depth.capability_id,
                     ),
@@ -388,7 +387,7 @@ fn first_role_capability(
     predicate: impl Fn(&Capability) -> bool,
 ) -> Option<CapabilityRef> {
     robot
-        .model
+        .manifest
         .components
         .iter()
         .flat_map(|(component_id, component)| {

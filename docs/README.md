@@ -5,8 +5,9 @@ crate's own `README.md`; org-level vision, architecture, and process live in
 [`phoxal/organization`](https://github.com/phoxal/organization).
 
 - [CONTRACTS.md](./CONTRACTS.md) — the cross-cutting contract discipline every
-  `phoxal-api-<name>` crate follows (envelope/timestamp, query results, typed
-  reasons, revisions, schema identity, large products, API evolution).
+  `phoxal::api::<name>` contract module follows (envelope/timestamp, query
+  results, typed reasons, revisions, schema identity, large products, API
+  evolution).
 - [CONVENTIONS.md](./CONVENTIONS.md) — bus, topic, logical-time, runtime
   bootstrap, and component conventions inside this workspace.
 - [VALIDATION.md](./VALIDATION.md) — validation layers, scenario surfaces, tiers,

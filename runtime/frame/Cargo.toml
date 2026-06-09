@@ -10,15 +10,8 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
-phoxal-core-engine = { workspace = true }
-phoxal-infra-bus = { workspace = true }
-phoxal-api-frame = { workspace = true }
-phoxal-api-joint = { workspace = true }
-phoxal-core-spatial = { workspace = true }
-phoxal-core-structure = { workspace = true }
+phoxal = { workspace = true, features = ["scenario"] }
 urdf-rs = { workspace = true }
-phoxal-infra-helpers = { workspace = true }
-phoxal-validation-scenario = { workspace = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }

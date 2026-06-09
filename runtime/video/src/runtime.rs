@@ -8,21 +8,21 @@ use openh264::encoder::{
     BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode,
 };
 use openh264::formats::{RgbSliceU8, YUVBuffer};
-use phoxal_api_component::v1::capability::camera;
-use phoxal_api_component::v1::capability::profile::{CameraProfileEncoding, CameraProfileSpec};
-use phoxal_api_video::v1::{
+use phoxal::api::component::v1::capability::camera;
+use phoxal::api::component::v1::capability::profile::{CameraProfileEncoding, CameraProfileSpec};
+use phoxal::api::video::v1::{
     Codec, EndReason, OpenRequest, OpenResponse, StreamEvent, StreamFormat, StreamPacket,
     UnavailableReason, open, stream,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_component::v1::capability::Capability;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal_infra_bus::Bus;
-use phoxal_infra_bus::liveliness::LivelinessEvent;
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::Bus;
+use phoxal::bus::liveliness::LivelinessEvent;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::v1::Robot;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use tracing::warn;
 
 pub(crate) const PREVIEW_MAX_HEIGHT_PX: u32 = 480;
@@ -49,7 +49,7 @@ impl PreviewSource {
         let profile_id = spec
             .to_profile_id()
             .context("failed to derive video preview profile id")?;
-        let profile_topic = phoxal_api_component::v1::capability::profile_path(
+        let profile_topic = phoxal::api::component::v1::capability::profile_path(
             &capability.component_id,
             &capability.capability_id,
             &profile_id,
@@ -128,7 +128,7 @@ impl Runtime for VideoRuntime {
         });
 
         io.serve_query::<OpenRequest, OpenResponse, VideoView, _>(
-            open::TOPIC,
+            &open::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             video_open,
@@ -183,7 +183,7 @@ impl Runtime for VideoRuntime {
         for stream in &mut self.streams {
             let demanded = stream.demand.load(Ordering::Relaxed) > 0;
             if demanded && stream.camera_token.is_none() {
-                let token = phoxal_infra_bus::liveliness::declare_liveliness_token(
+                let token = phoxal::bus::liveliness::declare_liveliness_token(
                     &self.bus,
                     &stream.source.profile_topic,
                 )
@@ -264,7 +264,7 @@ impl Runtime for VideoRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -292,7 +292,7 @@ fn spawn_demand_task(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let subscriber =
-            match phoxal_infra_bus::liveliness::liveliness_subscriber(&bus, &stream_topic).await {
+            match phoxal::bus::liveliness::liveliness_subscriber(&bus, &stream_topic).await {
                 Ok(subscriber) => subscriber,
                 Err(error) => {
                     warn!(
@@ -515,7 +515,7 @@ fn video_open(view: &VideoView, request: OpenRequest) -> OpenResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal_api_video::v1::Quality;
+    use phoxal::api::video::v1::Quality;
 
     fn preview_source() -> PreviewSource {
         PreviewSource::new(CapabilityRef::new("front_camera", "rgb"), 640, 480, 30.0)

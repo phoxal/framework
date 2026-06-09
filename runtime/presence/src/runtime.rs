@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::presence::{
+use phoxal::api::presence::{
     DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary, debug, heartbeat,
     summary,
 };
-use phoxal_core_engine::stale_timeout_ns;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::stale_timeout_ns;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 const PUBLISH_HZ: f64 = 1.0;
 
@@ -54,11 +54,11 @@ impl Runtime for PresenceRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<Heartbeat>, _>(heartbeat::TOPIC, Input::Heartbeat)
+        io.subscribe::<Stamped<Heartbeat>, _>(&heartbeat::path(), Input::Heartbeat)
             .await?;
-        let summary_pub = io.publisher::<Stamped<Summary>>(summary::TOPIC).await?;
+        let summary_pub = io.publisher::<Stamped<Summary>>(&summary::path()).await?;
         let debug_readiness_pub = io
-            .publisher::<Stamped<DebugReadiness>>(debug::readiness::TOPIC)
+            .publisher::<Stamped<DebugReadiness>>(&debug::readiness::path())
             .await?;
 
         Ok(Self {
@@ -102,7 +102,7 @@ impl Runtime for PresenceRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -169,8 +169,8 @@ fn is_stale(now_ns: u64, last_seen_ns: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ReadinessTracker, autonomy_ready};
-    use phoxal_core_engine::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
-    use phoxal_core_engine::stale_timeout_ns;
+    use phoxal::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
+    use phoxal::runtime::stale_timeout_ns;
 
     #[test]
     fn stale_runtime_is_reported_degraded() {

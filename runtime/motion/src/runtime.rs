@@ -2,16 +2,15 @@ use std::time::Duration;
 
 use crate::core::Arbitration;
 use anyhow::Result;
-use phoxal_api_drive::v1::{Target as DriveTarget, target as drive_target};
-use phoxal_api_follow::v1::{Target as FollowTarget, target as follow_target};
-use phoxal_api_motion::v1::{ManualCommand, MotionReason, MotionSource, State, manual, state};
-use phoxal_api_safety::v1::{SafetyAuthorization, authorization as safety_authorization};
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::api::drive::v1::{Target as DriveTarget, target as drive_target};
+use phoxal::api::follow::v1::{Target as FollowTarget, target as follow_target};
+use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource, State, manual, state};
+use phoxal::api::safety::v1::{SafetyAuthorization, authorization as safety_authorization};
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -61,27 +60,28 @@ impl Runtime for MotionRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_with::<Stamped<ManualCommand>, _>(
-            manual::TOPIC,
+            &manual::path(),
             InputPolicy::latest(),
             Input::ManualCommand,
         )
         .await?;
         io.subscribe_with::<Stamped<FollowTarget>, _>(
-            follow_target::TOPIC,
+            &follow_target::path(),
             InputPolicy::latest(),
             Input::FollowTarget,
         )
         .await?;
         io.subscribe::<Stamped<SafetyAuthorization>, _>(
-            safety_authorization::TOPIC,
+            &safety_authorization::path(),
             Input::SafetyAuthorization,
         )
         .await?;
 
         let drive_target_publisher = io
-            .publisher::<Stamped<DriveTarget>>(drive_target::TOPIC)
+            .publisher::<Stamped<DriveTarget>>(&drive_target::path())
             .await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let state_path = state::path();
+        let state_publisher = io.publisher::<Stamped<State>>(&state_path).await?;
 
         Ok(Self {
             latest_manual_command: None,
@@ -89,9 +89,9 @@ impl Runtime for MotionRuntime {
             latest_safety_authorization: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
-                <State as TypedSchema>::SCHEMA_NAME,
-                <State as TypedSchema>::SCHEMA_VERSION,
+                state_path,
+                state::schema_name(),
+                state::schema_version(),
             ),
             drive_target_publisher,
             state_publisher,
@@ -134,7 +134,7 @@ impl Runtime for MotionRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

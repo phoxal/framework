@@ -3,5 +3,5 @@ mod runtime;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    phoxal_core_engine::execute::<runtime::PerceptionRuntime>().await
+    phoxal::runtime::execute::<runtime::PerceptionRuntime>().await
 }

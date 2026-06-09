@@ -3,22 +3,21 @@ use std::time::Duration;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome, RangeSafetyClass};
 use anyhow::Result;
-use phoxal_api_component::v1::capability::{emergency_stop as component_emergency_stop, range};
-use phoxal_api_localize::v1::{LocalizationState, state as localize_state};
-use phoxal_api_safety::v1::{
+use phoxal::api::component::v1::capability::{emergency_stop as component_emergency_stop, range};
+use phoxal::api::localize::v1::{LocalizationState, state as localize_state};
+use phoxal::api::safety::v1::{
     EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
     SafetySourceRevision, State, authorization as safety_authorization,
     emergency_stop_request as safety_emergency_stop_request, state as safety_state,
 };
-use phoxal_core_component::v1::CapabilityRef;
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::staged::Robot;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_core_structure::Structure;
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh::TypedSchema;
+use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::v1::Robot;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
 use crate::selector::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
@@ -36,11 +35,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_robot(robot: &Robot, structure: &Structure) -> Result<Self> {
+    pub fn from_robot(robot: &Robot) -> Result<Self> {
         Ok(Self {
             range_inputs: detect_safety_range_inputs(robot),
             emergency_stop_inputs: detect_safety_emergency_stop_inputs(robot),
-            range_classes: classify_safety_range_inputs(robot, structure),
+            range_classes: classify_safety_range_inputs(robot),
             clock_period: CLOCK_PERIOD,
         })
     }
@@ -89,7 +88,7 @@ impl Runtime for SafetyRuntime {
     type Input = Input;
 
     fn config(_args: &Self::Args, common: &RobotRuntimeArgs) -> Result<Self::Config> {
-        Config::from_robot(&common.robot()?, &common.structure()?)
+        Config::from_robot(&common.robot()?)
     }
 
     fn clock_period(config: &Self::Config) -> Duration {
@@ -99,7 +98,7 @@ impl Runtime for SafetyRuntime {
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         for capability in &config.range_inputs {
             let source_id = range_source_id(capability);
-            let topic = range::topic(&capability.component_id, &capability.capability_id);
+            let topic = range::path(&capability.component_id, &capability.capability_id);
             io.subscribe::<Stamped<range::Sample>, _>(&topic, {
                 let source_id = source_id.clone();
                 move |sample| Input::Range {
@@ -112,10 +111,8 @@ impl Runtime for SafetyRuntime {
 
         for capability in &config.emergency_stop_inputs {
             let source_id = capability.to_string();
-            let topic = component_emergency_stop::topic(
-                &capability.component_id,
-                &capability.capability_id,
-            );
+            let topic =
+                component_emergency_stop::path(&capability.component_id, &capability.capability_id);
             io.subscribe::<Stamped<component_emergency_stop::State>, _>(&topic, {
                 let source_id = source_id.clone();
                 move |state| Input::EmergencyStop {
@@ -127,20 +124,22 @@ impl Runtime for SafetyRuntime {
         }
 
         io.subscribe::<Stamped<EmergencyStopRequest>, _>(
-            safety_emergency_stop_request::TOPIC,
+            &safety_emergency_stop_request::path(),
             Input::OperatorEmergencyStopRequest,
         )
         .await?;
 
-        io.subscribe::<Stamped<LocalizationState>, _>(localize_state::TOPIC, |sample| {
+        io.subscribe::<Stamped<LocalizationState>, _>(&localize_state::path(), |sample| {
             Input::LocalizationState(Box::new(sample))
         })
         .await?;
 
         let authorization_publisher = io
-            .publisher::<Stamped<SafetyAuthorization>>(safety_authorization::TOPIC)
+            .publisher::<Stamped<SafetyAuthorization>>(&safety_authorization::path())
             .await?;
-        let state_publisher = io.publisher::<Stamped<State>>(safety_state::TOPIC).await?;
+        let state_publisher = io
+            .publisher::<Stamped<State>>(&safety_state::path())
+            .await?;
 
         Ok(Self {
             latest_range: BTreeMap::new(),
@@ -150,7 +149,7 @@ impl Runtime for SafetyRuntime {
             range_classes: config.range_classes,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                safety_state::TOPIC,
+                safety_state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),
@@ -231,7 +230,7 @@ impl Runtime for SafetyRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal_core_engine::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

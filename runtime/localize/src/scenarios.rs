@@ -2,19 +2,19 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal_api_localize::v1::{
+use phoxal::api::localize::v1::{
     Keyframe, LocalizationMode, LocalizationRevision, LocalizationRevisionCause,
     LocalizationSource, LocalizationState, LocalizationStatusReason, PoseEstimate,
     PoseGraphCorrection,
 };
-use phoxal_api_map::v1::Summary as MapSummary;
-use phoxal_api_motion::v1::ManualCommand;
-use phoxal_core_engine::RobotRuntimeArgs;
-use phoxal_core_engine::sim_pose::Pose as SimulatorPose;
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_validation_scenario::harness::ScenarioContext;
-use phoxal_validation_scenario::helpers::{assert_schema, fixture_robot};
-use phoxal_validation_scenario::webots::{
+use phoxal::api::map::v1::Summary as MapSummary;
+use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::simulation::v1::pose::Pose as SimulatorPose;
+use phoxal::runtime::RobotRuntimeArgs;
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::harness::ScenarioContext;
+use phoxal::scenario::helpers::{assert_schema, fixture_robot};
+use phoxal::scenario::webots::{
     command_deadline, context_from_args, publish_and_advance, wait_until_tracking,
 };
 
@@ -47,7 +47,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-localization-backend-conformance"),
         summary: Cow::Borrowed("Runs the localize backend conformance suite in-process."),
         kind: ScenarioKind::Headless,
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("localization"),
         tier: 1,
@@ -58,7 +58,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
             "Checks localize mode, revision, status policy, and selector fallback.",
         ),
         kind: ScenarioKind::Headless,
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("localization"),
         tier: 1,
@@ -69,7 +69,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("LocalizationArena"),
         },
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 240,
         category: Cow::Borrowed("localization"),
         tier: 2,
@@ -80,7 +80,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("localization"),
         tier: 2,
@@ -91,7 +91,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("revision-convergence"),
         tier: 2,
@@ -174,16 +174,15 @@ fn p2_localization_mode_policy(common: &RobotRuntimeArgs) -> Result<()> {
     );
 
     let robot = fixture_robot(fixture_bundle_name(common)?)?;
-    let structure = common.structure()?;
     ensure!(
         matches!(
-            phoxal_core_robot::v1::resolve_localize_backend(&robot.model, &robot.components),
-            phoxal_core_robot::v1::ResolvedLocalizeBackend::OrbSlam3RgbdInertial { .. }
+            phoxal::model::robot::v1::resolve_localize_backend(&robot.manifest, &robot.components),
+            phoxal::model::robot::v1::ResolvedLocalizeBackend::OrbSlam3RgbdInertial { .. }
         ),
         "rgbd-imu-diff-drive fixture must expose the RGB-D + IMU localization sensor mix"
     );
 
-    let backend = crate::selector::select_backend(&robot, &structure, None)?;
+    let backend = crate::selector::select_backend(&robot, None)?;
     ensure!(
         matches!(backend, BackendSelection::DeadReckoning),
         "ORB-SLAM3-eligible robot without vocabulary must fall back to dead-reckoning"
@@ -521,8 +520,7 @@ async fn assert_p2_revision_loop_closure(ctx: &ScenarioContext, deadline: Instan
     wait_until_tracking(ctx, deadline).await?;
 
     loop {
-        let summary: phoxal_infra_bus::pubsub::Stamped<MapSummary> =
-            ctx.latest_map_summary().await?;
+        let summary: phoxal::bus::pubsub::Stamped<MapSummary> = ctx.latest_map_summary().await?;
         if summary.data.built_from_localize_revision.is_some() {
             break;
         }

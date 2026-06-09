@@ -7,19 +7,17 @@ use crate::core::revisions::{
 };
 use crate::core::submaps::SubmapStore;
 use anyhow::{Result, bail, ensure};
-use phoxal_api_localize::v1::{LocalizationMode, LocalizationRevisionId};
-use phoxal_api_map::v1::{
+use phoxal::api::localize::v1::{LocalizationMode, LocalizationRevisionId};
+use phoxal::api::map::v1::{
     MapRevisionCause, MapRevisionId, Traversability, TraversabilityCell, TraversabilityStatus,
 };
-use phoxal_api_mission::v1::{GoalPose, GoalTolerance};
-use phoxal_api_motion::v1::ManualCommand;
-use phoxal_core_engine::RobotRuntimeArgs;
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_validation_scenario::harness::ScenarioContext;
-use phoxal_validation_scenario::helpers::{
-    assert_close, assert_schema, keyframe, localization_revision,
-};
-use phoxal_validation_scenario::webots::{
+use phoxal::api::mission::v1::{GoalPose, GoalTolerance};
+use phoxal::api::motion::v1::ManualCommand;
+use phoxal::runtime::RobotRuntimeArgs;
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::harness::ScenarioContext;
+use phoxal::scenario::helpers::{assert_close, assert_schema, keyframe, localization_revision};
+use phoxal::scenario::webots::{
     command_deadline, context_from_args, publish_and_advance, wait_until_tracking,
 };
 
@@ -30,7 +28,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-mapping-revision-linkage"),
         summary: Cow::Borrowed("Checks map revisions link to localization revisions."),
         kind: ScenarioKind::Headless,
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("mapping"),
         tier: 1,
@@ -39,7 +37,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-traversability-body-envelope"),
         summary: Cow::Borrowed("Checks body-envelope inflation against fixture structure."),
         kind: ScenarioKind::Headless,
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("traversability"),
         tier: 1,
@@ -48,7 +46,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-revision-convergence-store"),
         summary: Cow::Borrowed("Checks map revision-store convergence and reset behavior."),
         kind: ScenarioKind::Headless,
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("revision-convergence"),
         tier: 1,
@@ -59,7 +57,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("mapping"),
         tier: 2,
@@ -70,7 +68,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("traversability"),
         tier: 2,
@@ -81,7 +79,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("MappingLoopArena"),
         },
-        phase: phoxal_core_engine::step::Phase::P2,
+        phase: phoxal::runtime::Phase::P2,
         timeout_secs: 240,
         category: Cow::Borrowed("mapping"),
         tier: 2,
@@ -235,9 +233,9 @@ fn p2_traversability_body_envelope(common: &RobotRuntimeArgs) -> Result<()> {
     const OCCUPANCY_FREE: u8 = 1;
     const OCCUPANCY_OCCUPIED: u8 = 2;
 
-    let structure = common.structure()?;
+    let robot = common.robot()?;
     let body_radius =
-        crate::core::body_envelope::body_radius_from_structure(&structure, "base_link")?;
+        crate::core::body_envelope::body_radius_from_structure(&robot.structure, "base_link")?;
     assert_close("body radius", body_radius, 0.291_547_594_742_265, 1e-9)?;
 
     let mut grid = OccupancyGrid::centered_at([0.0, 0.0]);

@@ -2,25 +2,25 @@ use std::borrow::Cow;
 
 use crate::core::Arbitration as MotionArbitration;
 use anyhow::{Result, ensure};
-use phoxal_api_drive::v1::Target as DriveTarget;
-use phoxal_api_follow::v1::Target as FollowTarget;
-use phoxal_api_localize::v1::LocalizationRevisionId;
-use phoxal_api_map::v1::MapRevisionId;
-use phoxal_api_motion::v1::{
+use phoxal::api::drive::v1::Target as DriveTarget;
+use phoxal::api::follow::v1::Target as FollowTarget;
+use phoxal::api::localize::v1::LocalizationRevisionId;
+use phoxal::api::map::v1::MapRevisionId;
+use phoxal::api::motion::v1::{
     Arbitration, ArbitrationCandidate, MotionSource, SourceFreshness, State as MotionState,
 };
-use phoxal_api_safety::v1::{
+use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetySourceRevision,
 };
-use phoxal_core_engine::step::{ScenarioDescriptor, ScenarioKind};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_validation_scenario::helpers::assert_schema;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
+use phoxal::scenario::helpers::assert_schema;
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-motion-arbitration-contract"),
     summary: Cow::Borrowed("Checks motion arbitration contracts and follow/safety policy."),
     kind: ScenarioKind::Headless,
-    phase: phoxal_core_engine::step::Phase::P3,
+    phase: phoxal::runtime::Phase::P3,
     timeout_secs: 60,
     category: Cow::Borrowed("failure-recovery"),
     tier: 1,

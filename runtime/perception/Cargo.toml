@@ -10,23 +10,13 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+phoxal = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-phoxal-infra-bus = { workspace = true }
-phoxal-api-component = { workspace = true }
-phoxal-api-frame = { workspace = true }
-phoxal-api-localize = { workspace = true }
-phoxal-api-map = { workspace = true }
-phoxal-api-perception = { workspace = true }
-phoxal-core-component = { workspace = true }
-phoxal-core-robot = { workspace = true }
-phoxal-core-engine = { workspace = true }
-phoxal-core-structure = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "signal", "process"] }
 tracing = { workspace = true }
-phoxal-infra-helpers = { workspace = true }
 
 [lints]
 workspace = true

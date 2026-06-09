@@ -2,17 +2,17 @@ use std::time::Duration;
 
 use crate::core::{GoalPublish, MissionState};
 use anyhow::Result;
-use phoxal_api_explore::v1::{GoalCandidates, goal_candidates};
-use phoxal_api_localize::v1::{LocalizationMode, LocalizationState, PoseEstimate};
-use phoxal_api_mission::v1::{
+use phoxal::api::explore::v1::{GoalCandidates, goal_candidates};
+use phoxal::api::localize::v1::{LocalizationMode, LocalizationState, PoseEstimate};
+use phoxal::api::mission::v1::{
     Goal, GoalSource, MissionCommand, MissionMode, State, command, goal, state,
 };
-use phoxal_core_engine::clock::Step;
-use phoxal_core_engine::decision_log::DecisionLog;
-use phoxal_core_engine::step::{Io, Publisher, Runtime, RuntimeInputs};
-use phoxal_core_engine::{EmptyArgs, RobotRuntimeArgs};
-use phoxal_infra_bus::pubsub::Stamped;
-use phoxal_infra_bus::zenoh_typed::TypedSchema;
+use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::zenoh::TypedSchema;
+use phoxal::runtime::clock::Step;
+use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
+use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -74,18 +74,18 @@ impl Runtime for MissionRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<MissionCommand>, _>(command::TOPIC, Input::Command)
+        io.subscribe::<Stamped<MissionCommand>, _>(&command::path(), Input::Command)
             .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal_api_localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<GoalCandidates>, _>(goal_candidates::TOPIC, Input::GoalCandidates)
+        io.subscribe::<Stamped<GoalCandidates>, _>(&goal_candidates::path(), Input::GoalCandidates)
             .await?;
 
-        let goal_publisher = io.publisher::<Stamped<Goal>>(goal::TOPIC).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let goal_publisher = io.publisher::<Stamped<Goal>>(&goal::path()).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
 
         Ok(Self {
             state: MissionState::idle(),
@@ -94,7 +94,7 @@ impl Runtime for MissionRuntime {
             latest_explore_candidates: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),
@@ -189,14 +189,14 @@ const fn mission_goal_source(source: &GoalSource) -> MissionGoalSource {
 
 #[cfg(test)]
 mod tests {
-    use phoxal_api_explore::v1::{GoalCandidate, GoalCandidates};
-    use phoxal_api_frame::v1::FrameId;
-    use phoxal_api_localize::v1::{LocalizationSource, LocalizationStatus};
-    use phoxal_api_map::v1::MapRevisionId;
-    use phoxal_api_mission::v1::{
+    use phoxal::api::explore::v1::{GoalCandidate, GoalCandidates};
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::{LocalizationSource, LocalizationStatus};
+    use phoxal::api::map::v1::MapRevisionId;
+    use phoxal::api::mission::v1::{
         ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalSource, GoalTolerance,
     };
-    use phoxal_core_engine::sim_clock::SimulationClock as Clock;
+    use phoxal::api::simulation::v1::clock::Clock;
 
     use super::*;
 
@@ -216,7 +216,7 @@ mod tests {
             )
             .await?;
 
-        let published_goals = io.recorded_puts::<Stamped<Goal>>(goal::TOPIC);
+        let published_goals = io.recorded_puts::<Stamped<Goal>>(&goal::path());
         assert_eq!(
             published_goals,
             vec![Stamped::new(100, explore_goal([2.0, 0.0], 0.7))]
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(runtime.state.active_goal, None);
         assert!(runtime.state.exploration_active);
 
-        let published_states = io.recorded_puts::<Stamped<State>>(state::TOPIC);
+        let published_states = io.recorded_puts::<Stamped<State>>(&state::path());
         assert_eq!(
             published_states.last().map(|stamped| stamped.data.mode),
             Some(MissionMode::Exploring)
@@ -287,7 +287,7 @@ mod tests {
                 epoch: 1,
                 sequence: 2,
             },
-            built_from_localize_revision: phoxal_api_localize::v1::LocalizationRevisionId {
+            built_from_localize_revision: phoxal::api::localize::v1::LocalizationRevisionId {
                 epoch: 1,
                 sequence: 3,
             },
