@@ -3,24 +3,21 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::component::v1::capability::{camera, depth, imu};
-use phoxal::api::component::v1::{RuntimeStreamDemand, capability::gnss};
+use phoxal::api::component::v1::capability::{camera, depth, gnss, imu};
 use phoxal::api::frame::v1::FrameId;
 use phoxal::api::localize::v1::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance, ImuBiasEstimate,
     Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode, LocalizationRevision,
     LocalizationRevisionCause, LocalizationRevisionId, LocalizationSource, LocalizationState,
-    LocalizationStatus, LocalizationStatusReason, LocalizeStreamDemands, PoseEstimate,
-    PoseGraphCorrection, PoseGraphRequest, PoseGraphResponse, VelocityEstimate, correction,
-    keyframe, pose, query::corrections, query::keyframe as keyframe_query, query::pose_graph,
-    revision, state,
+    LocalizationStatus, LocalizationStatusReason, PoseEstimate, PoseGraphCorrection,
+    PoseGraphRequest, PoseGraphResponse, VelocityEstimate, correction, keyframe, pose,
+    query::corrections, query::keyframe as keyframe_query, query::pose_graph, revision, state,
 };
 use phoxal::api::odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
 use phoxal::api::simulation::v1::pose::{self as sim_pose, Pose as SimPose};
 use phoxal::bus::pubsub::Stamped;
 use phoxal::bus::zenoh::TypedSchema;
 use phoxal::model::component::v1::capability::GnssCoordinateSystem;
-use phoxal::model::robot::v1::LocalizeBackendKind;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
@@ -82,22 +79,6 @@ pub enum BackendSelection {
         coordinate_system: GnssCoordinateSystem,
     },
     OrbSlam3(Box<orbslam3::OrbSlam3Config>),
-}
-
-fn stream_demands_for_selection(selection: &BackendSelection) -> Vec<RuntimeStreamDemand> {
-    match selection {
-        BackendSelection::DeadReckoning
-        | BackendSelection::SimulatorTruth { .. }
-        | BackendSelection::GnssAnchored { .. } => Vec::new(),
-        BackendSelection::OrbSlam3(config) => {
-            let backend = if config.inertial {
-                LocalizeBackendKind::OrbSlam3RgbdInertial
-            } else {
-                LocalizeBackendKind::OrbSlam3Rgbd
-            };
-            LocalizeStreamDemands::for_backend(backend)
-        }
-    }
 }
 
 fn orb_slam3_vocabulary_from_env() -> Result<Option<PathBuf>> {
@@ -324,10 +305,6 @@ impl Runtime for LocalizeRuntime {
 
     fn clock_period(config: &Self::Config) -> Duration {
         config.clock_period()
-    }
-
-    fn stream_demands(config: &Self::Config) -> Vec<RuntimeStreamDemand> {
-        stream_demands_for_selection(&config.backend)
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
@@ -623,16 +600,6 @@ mod tests {
     use phoxal::runtime::clock::Step;
 
     use super::*;
-
-    #[test]
-    fn trait_default_for_dead_reckoning_localize_declares_no_stream_demands() {
-        let config = Config {
-            backend: BackendSelection::DeadReckoning,
-            clock_period: CLOCK_PERIOD,
-        };
-
-        assert!(<LocalizeRuntime as Runtime>::stream_demands(&config).is_empty());
-    }
 
     #[test]
     fn emits_initial_revision_on_first_tracking() {

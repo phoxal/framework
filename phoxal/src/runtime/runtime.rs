@@ -4,7 +4,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::api::component::v1::RuntimeStreamDemand;
 use crate::bus::Bus;
 use crate::bus::pubsub::Stamped;
 use crate::bus::zenoh::{
@@ -115,10 +114,6 @@ pub trait Runtime: Sized + Send {
 
     /// Clock period the runtime's step loop drives at.
     fn clock_period(config: &Self::Config) -> Duration;
-
-    fn stream_demands(_config: &Self::Config) -> Vec<RuntimeStreamDemand> {
-        Vec::new()
-    }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self>;
 
@@ -871,18 +866,14 @@ fn push_source_input<I>(source: &SourceHandle<I>, input: I) {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::clock::{Schedule, SchedulePolicy, Step};
+    use crate::runtime::clock::{Schedule, SchedulePolicy};
     use crate::runtime::{QueryOptions, ReadCell};
 
     use super::{
-        EmptyArgs, InputPolicy, Io, QueryExecutor, QueryStart, Runtime, RuntimeInputStats,
-        RuntimeInputs, SourceBuffer, debug_input_topic,
+        InputPolicy, QueryExecutor, QueryStart, RuntimeInputStats, SourceBuffer, debug_input_topic,
     };
     use crate::bus::zenoh::BusyResponse;
     use std::sync::{Arc, Condvar, Mutex};
-    use std::time::Duration;
-
-    struct EmptyRuntime;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct QueryRequest {
@@ -899,43 +890,6 @@ mod tests {
         fn busy() -> Self {
             Self::Busy
         }
-    }
-
-    #[async_trait::async_trait]
-    impl Runtime for EmptyRuntime {
-        const RUNTIME_ID: &'static str = "empty";
-
-        type Args = EmptyArgs;
-        type Config = ();
-        type Input = ();
-
-        fn config(
-            _args: &Self::Args,
-            _common: &crate::runtime::RobotRuntimeArgs,
-        ) -> anyhow::Result<Self::Config> {
-            Ok(())
-        }
-
-        fn clock_period(_config: &Self::Config) -> Duration {
-            Duration::from_secs(1)
-        }
-
-        async fn new(_io: &mut Io<Self::Input>, _config: Self::Config) -> anyhow::Result<Self> {
-            Ok(Self)
-        }
-
-        async fn step(
-            &mut self,
-            _step: Step,
-            _inputs: RuntimeInputs<Self::Input>,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn runtime_traits_default_to_no_stream_demands() {
-        assert!(EmptyRuntime::stream_demands(&()).is_empty());
     }
 
     #[test]

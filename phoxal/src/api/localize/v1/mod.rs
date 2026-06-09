@@ -7,10 +7,6 @@ use crate::api::frame::v1::FrameId;
 use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
-pub mod stream_demand;
-
-pub use stream_demand::LocalizeStreamDemands;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalizationRevisionId {
     pub epoch: u64,
