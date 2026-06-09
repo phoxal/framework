@@ -57,9 +57,11 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-latest
             short: amd64
+            triple: x86_64-unknown-linux-gnu
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             short: arm64
+            triple: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -94,37 +96,40 @@ jobs:
             org.opencontainers.image.title=phoxal-runtime-${{ matrix.runtime }}
             org.opencontainers.image.licenses=AGPL-3.0-only
 
-  build-binaries:
+      # Reuse the binary we just compiled into the image instead of building it
+      # again natively - `docker cp` reads the container filesystem without
+      # running it, so no recompile. macOS is handled separately below.
+      - name: Extract release binary from image
+        run: |
+          set -euo pipefail
+          v=${{ needs.plan.outputs.version }}
+          image=ghcr.io/phoxal/runtime-${{ matrix.runtime }}:${v}-${{ matrix.short }}
+          bin=phoxal-runtime-${{ matrix.runtime }}
+          mkdir -p dist
+          cid=$(docker create "${image}")
+          docker cp "${cid}:/usr/local/bin/runtime" "${bin}"
+          docker rm "${cid}" >/dev/null
+          tar -czf "dist/${bin}-${v}-${{ matrix.triple }}.tar.gz" "${bin}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-binaries-${{ matrix.runtime }}-${{ matrix.short }}
+          path: dist/*.tar.gz
+
+  # Only macOS needs a native build - Docker can't target Darwin, so the macOS
+  # tarball can't be extracted from the runtime images. The two Linux tarballs
+  # are extracted from those images in the `build` job above.
+  build-macos-binaries:
     needs: plan
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-          - target: aarch64-apple-darwin
-            runner: macos-14
-    runs-on: ${{ matrix.runner }}
+    runs-on: macos-14
+    env:
+      TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: ${{ matrix.target }}
-
-      - name: Install native build dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            clang \
-            cmake \
-            nasm \
-            pkg-config
+          target: ${{ env.TARGET }}
 
       - name: Build release binaries
         run: |
@@ -134,21 +139,21 @@ jobs:
           for r in "${runtimes[@]}"; do
             args+=(--bin "phoxal-runtime-${r}")
           done
-          cargo build --release --target ${{ matrix.target }} "${args[@]}"
+          cargo build --release --target "${TARGET}" "${args[@]}"
 
       - name: Package each runtime
         run: |
           set -euo pipefail
           mkdir -p dist
           for r in asset drive explore follow frame joint localize map mission motion odometry perception plan power presence safety video; do
-            bin=target/${{ matrix.target }}/release/phoxal-runtime-${r}
-            tar -czf "dist/phoxal-runtime-${r}-${{ needs.plan.outputs.version }}-${{ matrix.target }}.tar.gz" \
+            bin=target/${TARGET}/release/phoxal-runtime-${r}
+            tar -czf "dist/phoxal-runtime-${r}-${{ needs.plan.outputs.version }}-${TARGET}.tar.gz" \
               -C "$(dirname "$bin")" "$(basename "$bin")"
           done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: runtime-binaries-${{ matrix.target }}
+          name: runtime-binaries-${{ env.TARGET }}
           path: dist/*.tar.gz
 
   manifest:
@@ -234,7 +239,7 @@ jobs:
   # Shared release seam: verify version, create the vX.Y.Z tag (git push here),
   # and create-or-update the GitHub Release from the uploaded artifacts.
   publish:
-    needs: [plan, manifest, build-binaries, notes]
+    needs: [plan, manifest, build, build-macos-binaries, notes]
     uses: phoxal/.github/.github/workflows/rust-github-release.yml@main
     secrets: inherit
     with:
