@@ -121,14 +121,6 @@ pub mod open {
             response: Response
         }
     }
-
-    pub async fn query(
-        bus: &crate::bus::Bus,
-        request: &Request,
-        retry: &crate::bus::query::Retry,
-    ) -> crate::bus::Result<Option<Response>> {
-        crate::bus::query::query(bus, &path(), request, retry).await
-    }
 }
 
 pub mod stream {

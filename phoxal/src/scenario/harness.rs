@@ -117,7 +117,7 @@ impl ScenarioContext {
     pub async fn reset_simulation(&self) -> Result<u64> {
         let retry =
             crate::bus::query::Retry::new(3).with_initial_backoff(Duration::from_millis(50));
-        let response = reset::request(&self.bus, &reset::Request, &retry)
+        let response = reset::query(&self.bus, &reset::Request, &retry)
             .await?
             .ok_or_else(|| anyhow!("simulation reset returned no acknowledgement"))?;
         self.wait_for_status(|status| status.epoch >= response.epoch && status.step > 0)

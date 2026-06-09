@@ -185,6 +185,15 @@ macro_rules! topic_leaf {
             $crate::bus::query::queryable_builder(bus, &path($($key),*))
         }
 
+        pub async fn query(
+            bus: &$crate::bus::Bus,
+            $($key: $kty,)*
+            request: &$request,
+            retry: &$crate::bus::query::Retry,
+        ) -> $crate::bus::Result<Option<$response>> {
+            $crate::bus::query::query(bus, &path($($key),*), request, retry).await
+        }
+
         pub fn request_schema_name() -> &'static str {
             <$request as $crate::bus::zenoh::TypedSchema>::SCHEMA_NAME
         }
@@ -238,6 +247,15 @@ macro_rules! topic_leaf {
                 >,
             > {
                 $crate::bus::query::queryable_builder(bus, &path($($key),*))
+            }
+
+            pub async fn query(
+                bus: &$crate::bus::Bus,
+                $($key: $kty,)*
+                request: &$request,
+                retry: &$crate::bus::query::Retry,
+            ) -> $crate::bus::Result<Option<$response>> {
+                $crate::bus::query::query(bus, &path($($key),*), request, retry).await
             }
 
             pub fn request_schema_name() -> &'static str {

@@ -57,25 +57,6 @@ impl BusyResponse for GetResponse {
     }
 }
 
-pub fn topic(bus: &crate::bus::Bus) -> String {
-    get::topic(bus)
-}
-
-pub fn get_builder<'a>(
-    bus: &'a crate::bus::Bus,
-    request: &'a GetRequest,
-) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, GetResponse> {
-    get::get_builder(bus, request)
-}
-
-pub fn queryable_builder(
-    bus: &crate::bus::Bus,
-) -> crate::bus::Result<
-    crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, GetRequest, GetResponse>,
-> {
-    get::queryable_builder(bus)
-}
-
 pub mod get {
     use super::{GetRequest, GetResponse};
 
@@ -85,14 +66,6 @@ pub mod get {
             request: GetRequest,
             response: GetResponse
         }
-    }
-
-    pub async fn query(
-        bus: &crate::bus::Bus,
-        request: &GetRequest,
-        retry: &crate::bus::query::Retry,
-    ) -> crate::bus::Result<Option<GetResponse>> {
-        crate::bus::query::query(bus, &path(), request, retry).await
     }
 }
 

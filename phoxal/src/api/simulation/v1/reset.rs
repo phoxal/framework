@@ -30,14 +30,6 @@ crate::bus::topic_leaf! {
     }
 }
 
-pub async fn request(
-    bus: &crate::bus::Bus,
-    request: &Request,
-    retry: &crate::bus::query::Retry,
-) -> crate::bus::Result<Option<Response>> {
-    crate::bus::query::query(bus, &path(), request, retry).await
-}
-
 pub fn responder_builder(
     bus: &crate::bus::Bus,
 ) -> crate::bus::Result<crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, Request, Response>> {
