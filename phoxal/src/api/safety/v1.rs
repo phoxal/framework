@@ -6,13 +6,6 @@ use crate::api::map::v1::MapRevisionId;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const AUTHORIZATION_TOPIC: &str = "runtime/safety/authorization";
-pub const STATE_TOPIC: &str = "runtime/safety/state";
-pub const EMERGENCY_STOP_REQUEST_TOPIC: &str = "runtime/safety/emergency_stop_request";
-pub const DEBUG_EVIDENCE_TOPIC: &str = "runtime/safety/debug/evidence";
-pub const DEBUG_STOP_SET_TOPIC: &str = "runtime/safety/debug/stop_set";
-pub const DEBUG_LATENCY_BUDGET_TOPIC: &str = "runtime/safety/debug/latency_budget";
-pub const DEBUG_SOURCE_HEALTH_TOPIC: &str = "runtime/safety/debug/source_health";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SafetyAuthorization {
     pub decision: SafetyDecision,
@@ -170,21 +163,57 @@ pub struct SourceStatus {
     pub reason: Option<String>,
 }
 
-crate::bus::pubsub_leaf!(authorization, AUTHORIZATION_TOPIC, SafetyAuthorization);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, State);
-crate::bus::pubsub_leaf!(
-    emergency_stop_request,
-    EMERGENCY_STOP_REQUEST_TOPIC,
-    EmergencyStopRequest
-);
+crate::bus::topic_leaf! {
+    pubsub authorization {
+        path: "runtime/safety/authorization",
+        payload: SafetyAuthorization
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/safety/state",
+        payload: State
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub emergency_stop_request {
+        path: "runtime/safety/emergency_stop_request",
+        payload: EmergencyStopRequest
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(evidence, DEBUG_EVIDENCE_TOPIC, Evidence);
-    crate::bus::pubsub_leaf!(stop_set, DEBUG_STOP_SET_TOPIC, StopSet);
-    crate::bus::pubsub_leaf!(latency_budget, DEBUG_LATENCY_BUDGET_TOPIC, LatencyBudget);
-    crate::bus::pubsub_leaf!(source_health, DEBUG_SOURCE_HEALTH_TOPIC, SourceHealth);
+    crate::bus::topic_leaf! {
+        pubsub evidence {
+            path: "runtime/safety/debug/evidence",
+            payload: Evidence
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub stop_set {
+            path: "runtime/safety/debug/stop_set",
+            payload: StopSet
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub latency_budget {
+            path: "runtime/safety/debug/latency_budget",
+            payload: LatencyBudget
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub source_health {
+            path: "runtime/safety/debug/source_health",
+            payload: SourceHealth
+        }
+    }
 }
 
 #[cfg(test)]
@@ -226,6 +255,32 @@ mod tests {
             "runtime/safety/debug/source_health"
         );
         assert_eq!(SourceHealth::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::authorization::path(), "runtime/safety/authorization");
+        assert_eq!(super::state::path(), "runtime/safety/state");
+        assert_eq!(
+            super::emergency_stop_request::path(),
+            "runtime/safety/emergency_stop_request"
+        );
+        assert_eq!(
+            super::debug::evidence::path(),
+            "runtime/safety/debug/evidence"
+        );
+        assert_eq!(
+            super::debug::stop_set::path(),
+            "runtime/safety/debug/stop_set"
+        );
+        assert_eq!(
+            super::debug::latency_budget::path(),
+            "runtime/safety/debug/latency_budget"
+        );
+        assert_eq!(
+            super::debug::source_health::path(),
+            "runtime/safety/debug/source_health"
+        );
     }
 }
 

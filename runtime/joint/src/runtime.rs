@@ -136,7 +136,7 @@ impl Runtime for JointRuntime {
 
         for encoder in &config.encoders {
             io.subscribe::<Stamped<EncoderSample>, _>(
-                &encoder::topic(
+                &encoder::path(
                     &encoder.reference.component_id,
                     &encoder.reference.capability_id,
                 ),

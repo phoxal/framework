@@ -1,4 +1,3 @@
-use crate::bus::pubsub::Stamped;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
@@ -14,16 +13,11 @@ impl TypedSchema for State {
 
 pub const KIND: &str = "emergency_stop";
 
-pub fn topic(component_id: impl AsRef<str>, capability_id: impl AsRef<str>) -> String {
-    super::default_profile_path(component_id, capability_id)
-}
-
-pub fn subscriber_builder(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> crate::bus::zenoh::TypedSubscriberBuilder<'_, '_, Stamped<State>> {
-    crate::bus::pubsub::subscriber_builder(bus, &topic(component_id, capability_id))
+crate::bus::topic_leaf! {
+    pubsub(component_id: &str, capability_id: &str) {
+        path: "component/{}/{}/profile/default",
+        payload: State
+    }
 }
 
 #[cfg(test)]
@@ -36,5 +30,13 @@ mod tests {
     fn schema_contract_does_not_drift() {
         assert_eq!(State::SCHEMA_NAME, "component/capability/emergency_stop");
         assert_eq!(State::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn path_is_stable() {
+        assert_eq!(
+            super::path("safety_panel", "estop"),
+            "component/safety_panel/estop/profile/default"
+        );
     }
 }

@@ -4,10 +4,6 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA_NAME: &str = "phoxal-api-presence/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-pub const HEARTBEAT_TOPIC: &str = "runtime/presence/heartbeat";
-pub const SUMMARY_TOPIC: &str = "runtime/presence/summary";
-pub const DEBUG_READINESS_TOPIC: &str = "runtime/presence/debug/readiness";
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RuntimeId(pub String);
 
@@ -72,77 +68,27 @@ impl TypedSchema for DebugReadiness {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-pub mod heartbeat {
-    use super::Heartbeat;
-    use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
-
-    pub const TOPIC: &str = super::HEARTBEAT_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Heartbeat>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Heartbeat>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub heartbeat {
+        path: "runtime/presence/heartbeat",
+        payload: Heartbeat
     }
 }
 
-pub mod summary {
-    use super::Summary;
-    use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
-
-    pub const TOPIC: &str = super::SUMMARY_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Summary>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Summary>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub summary {
+        path: "runtime/presence/summary",
+        payload: Summary
     }
 }
 
 pub mod debug {
-    pub mod readiness {
-        use crate::api::presence::DebugReadiness;
-        use crate::bus::pubsub::Stamped;
-        use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
+    use super::*;
 
-        pub const TOPIC: &str = crate::api::presence::DEBUG_READINESS_TOPIC;
-
-        pub fn topic(bus: &crate::bus::Bus) -> String {
-            bus.topic(TOPIC)
-        }
-
-        pub fn publisher(
-            bus: &crate::bus::Bus,
-        ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<DebugReadiness>>>
-        {
-            crate::bus::pubsub::publisher_builder(bus, TOPIC)
-        }
-
-        pub fn subscriber_builder(
-            bus: &crate::bus::Bus,
-        ) -> TypedSubscriberBuilder<'_, 'static, Stamped<DebugReadiness>> {
-            crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+    crate::bus::topic_leaf! {
+        pubsub readiness {
+            path: "runtime/presence/debug/readiness",
+            payload: DebugReadiness
         }
     }
 }
@@ -169,5 +115,15 @@ mod tests {
     fn api_contract_version_is_stable() {
         assert_eq!(SCHEMA_NAME, "phoxal-api-presence/v1");
         assert_eq!(SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::heartbeat::path(), "runtime/presence/heartbeat");
+        assert_eq!(super::summary::path(), "runtime/presence/summary");
+        assert_eq!(
+            super::debug::readiness::path(),
+            "runtime/presence/debug/readiness"
+        );
     }
 }

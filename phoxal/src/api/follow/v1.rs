@@ -6,12 +6,6 @@ use crate::api::map::v1::MapRevisionId;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const TARGET_TOPIC: &str = "runtime/follow/target";
-pub const STATE_TOPIC: &str = "runtime/follow/state";
-pub const DEBUG_TRACKING_ERROR_TOPIC: &str = "runtime/follow/debug/tracking_error";
-pub const DEBUG_CANDIDATES_TOPIC: &str = "runtime/follow/debug/candidates";
-pub const DEBUG_COSTS_TOPIC: &str = "runtime/follow/debug/costs";
-pub const DEBUG_REVISION_INPUTS_TOPIC: &str = "runtime/follow/debug/revision_inputs";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     pub map_revision: MapRevisionId,
@@ -109,16 +103,50 @@ impl TypedSchema for RevisionInputs {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-crate::bus::pubsub_leaf!(target, TARGET_TOPIC, Target);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, State);
+crate::bus::topic_leaf! {
+    pubsub target {
+        path: "runtime/follow/target",
+        payload: Target
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/follow/state",
+        payload: State
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(tracking_error, DEBUG_TRACKING_ERROR_TOPIC, TrackingError);
-    crate::bus::pubsub_leaf!(candidates, DEBUG_CANDIDATES_TOPIC, Candidates);
-    crate::bus::pubsub_leaf!(costs, DEBUG_COSTS_TOPIC, Costs);
-    crate::bus::pubsub_leaf!(revision_inputs, DEBUG_REVISION_INPUTS_TOPIC, RevisionInputs);
+    crate::bus::topic_leaf! {
+        pubsub tracking_error {
+            path: "runtime/follow/debug/tracking_error",
+            payload: TrackingError
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub candidates {
+            path: "runtime/follow/debug/candidates",
+            payload: Candidates
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub costs {
+            path: "runtime/follow/debug/costs",
+            payload: Costs
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub revision_inputs {
+            path: "runtime/follow/debug/revision_inputs",
+            payload: RevisionInputs
+        }
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +180,25 @@ mod tests {
             "runtime/follow/debug/revision_inputs"
         );
         assert_eq!(RevisionInputs::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::target::path(), "runtime/follow/target");
+        assert_eq!(super::state::path(), "runtime/follow/state");
+        assert_eq!(
+            super::debug::tracking_error::path(),
+            "runtime/follow/debug/tracking_error"
+        );
+        assert_eq!(
+            super::debug::candidates::path(),
+            "runtime/follow/debug/candidates"
+        );
+        assert_eq!(super::debug::costs::path(), "runtime/follow/debug/costs");
+        assert_eq!(
+            super::debug::revision_inputs::path(),
+            "runtime/follow/debug/revision_inputs"
+        );
     }
 }
 

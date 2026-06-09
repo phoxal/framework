@@ -4,7 +4,6 @@ pub const SCHEMA_VERSION: u32 = 1;
 use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
-pub const GET_TOPIC: &str = "runtime/asset/get";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetRequest {
     pub path: String,
@@ -59,14 +58,14 @@ impl BusyResponse for GetResponse {
 }
 
 pub fn topic(bus: &crate::bus::Bus) -> String {
-    bus.topic(GET_TOPIC)
+    get::topic(bus)
 }
 
 pub fn get_builder<'a>(
     bus: &'a crate::bus::Bus,
     request: &'a GetRequest,
 ) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, GetResponse> {
-    crate::bus::query::get_builder(bus, GET_TOPIC, request)
+    get::get_builder(bus, request)
 }
 
 pub fn queryable_builder(
@@ -74,16 +73,18 @@ pub fn queryable_builder(
 ) -> crate::bus::Result<
     crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, GetRequest, GetResponse>,
 > {
-    crate::bus::query::queryable_builder(bus, GET_TOPIC)
+    get::queryable_builder(bus)
 }
 
 pub mod get {
-    use super::{GET_TOPIC, GetRequest, GetResponse};
+    use super::{GetRequest, GetResponse};
 
-    pub const TOPIC: &str = GET_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
+    crate::bus::topic_leaf! {
+        query {
+            path: "runtime/asset/get",
+            request: GetRequest,
+            response: GetResponse
+        }
     }
 
     pub async fn query(
@@ -91,7 +92,7 @@ pub mod get {
         request: &GetRequest,
         retry: &crate::bus::query::Retry,
     ) -> crate::bus::Result<Option<GetResponse>> {
-        crate::bus::query::query(bus, TOPIC, request, retry).await
+        crate::bus::query::query(bus, &path(), request, retry).await
     }
 }
 
@@ -110,6 +111,11 @@ mod tests {
     fn get_response_schema_contract_is_stable() {
         assert_eq!(GetResponse::SCHEMA_NAME, "runtime/asset/get/response");
         assert_eq!(GetResponse::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn get_path_is_stable() {
+        assert_eq!(super::get::path(), "runtime/asset/get");
     }
 }
 

@@ -1,15 +1,8 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-video/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
-
-pub const OPEN_TOPIC: &str = "runtime/video/open";
-pub const STREAM_TOPIC_PREFIX: &str = "runtime/video/stream";
-/// Topic template for per-stream video events. The `{stream-id}` placeholder is
-/// substituted at subscribe time by `stream::path(...)`.
-pub const STREAM_TOPIC_TEMPLATE: &str = "runtime/video/stream/{stream-id}";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,26 +112,14 @@ pub enum EndReason {
 }
 
 pub mod open {
-    pub use crate::api::video::v1::{
-        OPEN_TOPIC as TOPIC, OpenRequest as Request, OpenResponse as Response, Quality,
-    };
+    pub use crate::api::video::v1::{OpenRequest as Request, OpenResponse as Response, Quality};
 
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn get_builder<'a>(
-        bus: &'a crate::bus::Bus,
-        request: &'a Request,
-    ) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, Response> {
-        crate::bus::query::get_builder(bus, TOPIC, request)
-    }
-
-    pub fn queryable_builder(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, Request, Response>>
-    {
-        crate::bus::query::queryable_builder(bus, TOPIC)
+    crate::bus::topic_leaf! {
+        query {
+            path: "runtime/video/open",
+            request: Request,
+            response: Response
+        }
     }
 
     pub async fn query(
@@ -146,38 +127,20 @@ pub mod open {
         request: &Request,
         retry: &crate::bus::query::Retry,
     ) -> crate::bus::Result<Option<Response>> {
-        crate::bus::query::query(bus, TOPIC, request, retry).await
+        crate::bus::query::query(bus, &path(), request, retry).await
     }
 }
 
 pub mod stream {
-    use super::*;
-
     pub use crate::api::video::v1::{
-        Codec, EndReason, STREAM_TOPIC_PREFIX as TOPIC_PREFIX, StreamEvent as Event,
-        StreamFormat as Format, StreamPacket as Packet,
+        Codec, EndReason, StreamEvent as Event, StreamFormat as Format, StreamPacket as Packet,
     };
 
-    pub fn path(stream_id: impl AsRef<str>) -> String {
-        format!("{}/{}", TOPIC_PREFIX, stream_id.as_ref())
-    }
-
-    pub fn topic(bus: &crate::bus::Bus, stream_id: impl AsRef<str>) -> String {
-        bus.topic(&path(stream_id))
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-        stream_id: impl AsRef<str>,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Event>>> {
-        crate::bus::pubsub::publisher_builder(bus, &path(stream_id))
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-        stream_id: impl AsRef<str>,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Event>> {
-        crate::bus::pubsub::subscriber_builder(bus, &path(stream_id))
+    crate::bus::topic_leaf! {
+        pubsub(stream_id: &str) {
+            path: "runtime/video/stream/{}",
+            payload: Event
+        }
     }
 }
 
@@ -199,6 +162,15 @@ mod tests {
     #[test]
     fn open_response_busy_uses_busy_variant() {
         assert_eq!(OpenResponse::busy(), OpenResponse::Busy);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::open::path(), "runtime/video/open");
+        assert_eq!(
+            super::stream::path("front_camera"),
+            "runtime/video/stream/front_camera"
+        );
     }
 }
 

@@ -85,20 +85,3 @@ pub fn default_profile_path(
         &profile::ProfileId::default_profile(),
     )
 }
-
-fn default_profile_topic(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> String {
-    bus.topic(&default_profile_path(component_id, capability_id))
-}
-
-fn command_topic(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_kind: &str,
-    capability_id: impl AsRef<str>,
-) -> String {
-    bus.topic(&command_path(component_id, capability_kind, capability_id))
-}

@@ -1,5 +1,4 @@
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,28 +41,19 @@ impl TypedSchema for Clock {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-pub const TOPIC: &str = "simulation/clock";
-
-pub fn topic(bus: &crate::bus::Bus) -> String {
-    bus.topic(TOPIC)
+crate::bus::topic_leaf! {
+    pubsub {
+        path: "simulation/clock",
+        payload: Clock
+    }
 }
 
 pub fn publisher_builder(
     bus: &crate::bus::Bus,
-) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Clock>>> {
-    crate::bus::pubsub::publisher_builder(bus, TOPIC)
-}
-
-pub fn publisher(
-    bus: &crate::bus::Bus,
-) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Clock>>> {
-    publisher_builder(bus)
-}
-
-pub fn subscriber_builder(
-    bus: &crate::bus::Bus,
-) -> TypedSubscriberBuilder<'_, 'static, Stamped<Clock>> {
-    crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+) -> crate::bus::Result<
+    crate::bus::zenoh::TypedPublisherBuilder<'_, 'static, crate::bus::pubsub::Stamped<Clock>>,
+> {
+    publisher(bus)
 }
 
 #[cfg(test)]
@@ -71,7 +61,7 @@ mod tests {
     use crate::bus::zenoh::TypedSchema;
     use serde::Serialize;
 
-    use super::{Clock, TOPIC};
+    use super::Clock;
 
     #[derive(Serialize)]
     struct SimulatorApiClockLayout {
@@ -85,7 +75,7 @@ mod tests {
     fn clock_contract_matches_simulator_wire_values() {
         assert_eq!(Clock::SCHEMA_NAME, "simulation/clock");
         assert_eq!(Clock::SCHEMA_VERSION, 1);
-        assert_eq!(TOPIC, "simulation/clock");
+        assert_eq!(super::path(), "simulation/clock");
 
         let clock = Clock::new(7, 11, 13, 17);
         assert_eq!(clock.epoch(), 7);

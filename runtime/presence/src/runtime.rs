@@ -54,11 +54,11 @@ impl Runtime for PresenceRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<Heartbeat>, _>(heartbeat::TOPIC, Input::Heartbeat)
+        io.subscribe::<Stamped<Heartbeat>, _>(&heartbeat::path(), Input::Heartbeat)
             .await?;
-        let summary_pub = io.publisher::<Stamped<Summary>>(summary::TOPIC).await?;
+        let summary_pub = io.publisher::<Stamped<Summary>>(&summary::path()).await?;
         let debug_readiness_pub = io
-            .publisher::<Stamped<DebugReadiness>>(debug::readiness::TOPIC)
+            .publisher::<Stamped<DebugReadiness>>(&debug::readiness::path())
             .await?;
 
         Ok(Self {

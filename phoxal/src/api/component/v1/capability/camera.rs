@@ -1,4 +1,3 @@
-use crate::bus::pubsub::Stamped;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
@@ -91,23 +90,11 @@ impl TypedSchema for Frame {
 
 pub const KIND: &str = "camera";
 
-pub fn topic(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> String {
-    super::default_profile_topic(bus, component_id, capability_id)
-}
-
-pub fn subscriber_builder(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> crate::bus::zenoh::TypedSubscriberBuilder<'_, '_, Stamped<Frame>> {
-    crate::bus::pubsub::subscriber_builder(
-        bus,
-        &super::default_profile_path(component_id, capability_id),
-    )
+crate::bus::topic_leaf! {
+    pubsub(component_id: &str, capability_id: &str) {
+        path: "component/{}/{}/profile/default",
+        payload: Frame
+    }
 }
 
 #[cfg(test)]
@@ -120,5 +107,13 @@ mod tests {
     fn schema_contract_does_not_drift() {
         assert_eq!(Frame::SCHEMA_NAME, "component/capability/camera");
         assert_eq!(Frame::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn path_is_stable() {
+        assert_eq!(
+            super::path("front_camera", "rgb"),
+            "component/front_camera/rgb/profile/default"
+        );
     }
 }

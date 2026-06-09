@@ -99,7 +99,7 @@ impl Runtime for SafetyRuntime {
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         for capability in &config.range_inputs {
             let source_id = range_source_id(capability);
-            let topic = range::topic(&capability.component_id, &capability.capability_id);
+            let topic = range::path(&capability.component_id, &capability.capability_id);
             io.subscribe::<Stamped<range::Sample>, _>(&topic, {
                 let source_id = source_id.clone();
                 move |sample| Input::Range {
@@ -112,10 +112,8 @@ impl Runtime for SafetyRuntime {
 
         for capability in &config.emergency_stop_inputs {
             let source_id = capability.to_string();
-            let topic = component_emergency_stop::topic(
-                &capability.component_id,
-                &capability.capability_id,
-            );
+            let topic =
+                component_emergency_stop::path(&capability.component_id, &capability.capability_id);
             io.subscribe::<Stamped<component_emergency_stop::State>, _>(&topic, {
                 let source_id = source_id.clone();
                 move |state| Input::EmergencyStop {
@@ -127,20 +125,22 @@ impl Runtime for SafetyRuntime {
         }
 
         io.subscribe::<Stamped<EmergencyStopRequest>, _>(
-            safety_emergency_stop_request::TOPIC,
+            &safety_emergency_stop_request::path(),
             Input::OperatorEmergencyStopRequest,
         )
         .await?;
 
-        io.subscribe::<Stamped<LocalizationState>, _>(localize_state::TOPIC, |sample| {
+        io.subscribe::<Stamped<LocalizationState>, _>(&localize_state::path(), |sample| {
             Input::LocalizationState(Box::new(sample))
         })
         .await?;
 
         let authorization_publisher = io
-            .publisher::<Stamped<SafetyAuthorization>>(safety_authorization::TOPIC)
+            .publisher::<Stamped<SafetyAuthorization>>(&safety_authorization::path())
             .await?;
-        let state_publisher = io.publisher::<Stamped<State>>(safety_state::TOPIC).await?;
+        let state_publisher = io
+            .publisher::<Stamped<State>>(&safety_state::path())
+            .await?;
 
         Ok(Self {
             latest_range: BTreeMap::new(),
@@ -150,7 +150,7 @@ impl Runtime for SafetyRuntime {
             range_classes: config.range_classes,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                safety_state::TOPIC,
+                safety_state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),

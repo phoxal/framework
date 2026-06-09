@@ -5,10 +5,6 @@ use crate::api::map::v1::MapRevisionId;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const COMMAND_TOPIC: &str = "runtime/mission/command";
-pub const STATE_TOPIC: &str = "runtime/mission/state";
-pub const GOAL_TOPIC: &str = "runtime/mission/goal";
-pub const DEBUG_DECISION_TRACE_TOPIC: &str = "runtime/mission/debug/decision_trace";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MissionCommand {
     Explore {
@@ -116,7 +112,7 @@ pub enum MissionMode {
 pub struct Goal {
     pub pose: GoalPose,
     pub tolerance: GoalTolerance,
-    /// Execution budget carried with the active goal for inspection on `GOAL_TOPIC`.
+    /// Execution budget carried with the active goal for inspection on `goal::path()`.
     pub max_duration_ns: Option<u64>,
     pub source: GoalSource,
 }
@@ -156,14 +152,36 @@ pub struct Decision {
     pub outcome: String,
 }
 
-crate::bus::pubsub_leaf!(command, COMMAND_TOPIC, MissionCommand);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, State);
-crate::bus::pubsub_leaf!(goal, GOAL_TOPIC, Goal);
+crate::bus::topic_leaf! {
+    pubsub command {
+        path: "runtime/mission/command",
+        payload: MissionCommand
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/mission/state",
+        payload: State
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub goal {
+        path: "runtime/mission/goal",
+        payload: Goal
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(decision_trace, DEBUG_DECISION_TRACE_TOPIC, DecisionTrace);
+    crate::bus::topic_leaf! {
+        pubsub decision_trace {
+            path: "runtime/mission/debug/decision_trace",
+            payload: DecisionTrace
+        }
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +205,17 @@ mod tests {
             "runtime/mission/debug/decision_trace"
         );
         assert_eq!(DecisionTrace::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::command::path(), "runtime/mission/command");
+        assert_eq!(super::state::path(), "runtime/mission/state");
+        assert_eq!(super::goal::path(), "runtime/mission/goal");
+        assert_eq!(
+            super::debug::decision_trace::path(),
+            "runtime/mission/debug/decision_trace"
+        );
     }
 }
 

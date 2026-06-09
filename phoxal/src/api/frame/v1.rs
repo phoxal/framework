@@ -4,14 +4,10 @@ pub const SCHEMA_VERSION: u32 = 1;
 use std::fmt;
 
 use crate::api::joint::v1::JointId;
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
-pub const TREE_TOPIC: &str = "runtime/frame/tree";
-pub const STATIC_TOPIC: &str = "runtime/frame/static";
 pub const DATA_SCHEMA: &str = "runtime/frame/data";
-pub const FRAME_TRANSFORM_TOPIC_TEMPLATE: &str = "runtime/frame/{frame-id}/data";
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FrameId(pub String);
 
@@ -124,47 +120,17 @@ impl BusyResponse for FrameLookupResponse {
     }
 }
 
-pub mod tree {
-    use super::*;
-
-    pub const TOPIC: &str = TREE_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Tree>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Tree>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub tree {
+        path: "runtime/frame/tree",
+        payload: Tree
     }
 }
 
-pub mod r#static {
-    use super::*;
-
-    pub const TOPIC: &str = STATIC_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Static>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Static>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub r#static {
+        path: "runtime/frame/static",
+        payload: Static
     }
 }
 
@@ -173,26 +139,11 @@ pub mod data {
 
     pub const SCHEMA: &str = DATA_SCHEMA;
 
-    pub fn path(frame_id: &FrameId) -> String {
-        format!("runtime/frame/{frame_id}/data")
-    }
-
-    pub fn topic(bus: &crate::bus::Bus, frame_id: &FrameId) -> String {
-        bus.topic(&path(frame_id))
-    }
-
-    pub fn publisher<'a>(
-        bus: &'a crate::bus::Bus,
-        frame_id: &FrameId,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'a, 'static, Stamped<FrameTransform>>> {
-        crate::bus::pubsub::publisher_builder(bus, &path(frame_id))
-    }
-
-    pub fn subscriber_builder<'a>(
-        bus: &'a crate::bus::Bus,
-        frame_id: &FrameId,
-    ) -> TypedSubscriberBuilder<'a, 'static, Stamped<FrameTransform>> {
-        crate::bus::pubsub::subscriber_builder(bus, &path(frame_id))
+    crate::bus::topic_leaf! {
+        pubsub(frame_id: &FrameId) {
+            path: "runtime/frame/{}/data",
+            payload: FrameTransform
+        }
     }
 }
 
@@ -246,6 +197,16 @@ mod tests {
     #[test]
     fn lookup_path_is_stable() {
         assert_eq!(lookup::path(), "runtime/frame/lookup");
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::tree::path(), "runtime/frame/tree");
+        assert_eq!(super::r#static::path(), "runtime/frame/static");
+        assert_eq!(
+            super::data::path(&super::FrameId::new("base_link")),
+            "runtime/frame/base_link/data"
+        );
     }
 }
 

@@ -36,6 +36,19 @@ mod tests {
         assert_eq!(status::Status::SCHEMA_NAME, "simulation/status");
         assert_eq!(status::Status::SCHEMA_VERSION, 1);
     }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(clock::path(), "simulation/clock");
+        assert_eq!(status::path(), "simulation/status");
+        assert_eq!(pose::path("robot-1"), "simulation/robot/robot-1/pose");
+        assert_eq!(
+            collision::path("robot-1"),
+            "simulation/robot/robot-1/collision"
+        );
+        assert_eq!(contact::path("robot-1"), "simulation/robot/robot-1/contact");
+        assert_eq!(reset::path(), "simulation/reset");
+    }
 }
 
 #[cfg(test)]

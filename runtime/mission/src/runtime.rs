@@ -74,18 +74,18 @@ impl Runtime for MissionRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<MissionCommand>, _>(command::TOPIC, Input::Command)
+        io.subscribe::<Stamped<MissionCommand>, _>(&command::path(), Input::Command)
             .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal::api::localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<GoalCandidates>, _>(goal_candidates::TOPIC, Input::GoalCandidates)
+        io.subscribe::<Stamped<GoalCandidates>, _>(&goal_candidates::path(), Input::GoalCandidates)
             .await?;
 
-        let goal_publisher = io.publisher::<Stamped<Goal>>(goal::TOPIC).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let goal_publisher = io.publisher::<Stamped<Goal>>(&goal::path()).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
 
         Ok(Self {
             state: MissionState::idle(),
@@ -94,7 +94,7 @@ impl Runtime for MissionRuntime {
             latest_explore_candidates: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),
@@ -216,7 +216,7 @@ mod tests {
             )
             .await?;
 
-        let published_goals = io.recorded_puts::<Stamped<Goal>>(goal::TOPIC);
+        let published_goals = io.recorded_puts::<Stamped<Goal>>(&goal::path());
         assert_eq!(
             published_goals,
             vec![Stamped::new(100, explore_goal([2.0, 0.0], 0.7))]
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(runtime.state.active_goal, None);
         assert!(runtime.state.exploration_active);
 
-        let published_states = io.recorded_puts::<Stamped<State>>(state::TOPIC);
+        let published_states = io.recorded_puts::<Stamped<State>>(&state::path());
         assert_eq!(
             published_states.last().map(|stamped| stamped.data.mode),
             Some(MissionMode::Exploring)

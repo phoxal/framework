@@ -11,14 +11,6 @@ pub mod stream_demand;
 
 pub use stream_demand::LocalizeStreamDemands;
 
-pub const STATE_TOPIC: &str = "runtime/localize/state";
-pub const POSE_TOPIC: &str = "runtime/localize/pose";
-pub const REVISION_TOPIC: &str = "runtime/localize/revision";
-pub const KEYFRAME_TOPIC: &str = "runtime/localize/keyframe";
-pub const CORRECTION_TOPIC: &str = "runtime/localize/correction";
-pub const QUERY_POSE_GRAPH_TOPIC: &str = "runtime/localize/query/pose_graph";
-pub const QUERY_KEYFRAME_TOPIC: &str = "runtime/localize/query/keyframe";
-pub const QUERY_CORRECTIONS_TOPIC: &str = "runtime/localize/query/corrections";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalizationRevisionId {
     pub epoch: u64,
@@ -371,33 +363,67 @@ pub struct Region {
     pub max_xyz_m: [f64; 3],
 }
 
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, LocalizationState);
-crate::bus::pubsub_leaf!(pose, POSE_TOPIC, PoseEstimate);
-crate::bus::pubsub_leaf!(revision, REVISION_TOPIC, LocalizationRevision);
-crate::bus::pubsub_leaf!(keyframe, KEYFRAME_TOPIC, Keyframe);
-crate::bus::pubsub_leaf!(correction, CORRECTION_TOPIC, PoseGraphCorrection);
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/localize/state",
+        payload: LocalizationState
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub pose {
+        path: "runtime/localize/pose",
+        payload: PoseEstimate
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub revision {
+        path: "runtime/localize/revision",
+        payload: LocalizationRevision
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub keyframe {
+        path: "runtime/localize/keyframe",
+        payload: Keyframe
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub correction {
+        path: "runtime/localize/correction",
+        payload: PoseGraphCorrection
+    }
+}
 
 pub mod query {
     use super::*;
 
-    crate::bus::query_leaf!(
-        pose_graph,
-        QUERY_POSE_GRAPH_TOPIC,
-        PoseGraphRequest,
-        PoseGraphResponse
-    );
-    crate::bus::query_leaf!(
-        keyframe,
-        QUERY_KEYFRAME_TOPIC,
-        KeyframeRequest,
-        KeyframeResponse
-    );
-    crate::bus::query_leaf!(
-        corrections,
-        QUERY_CORRECTIONS_TOPIC,
-        CorrectionsRequest,
-        CorrectionsResponse
-    );
+    crate::bus::topic_leaf! {
+        query pose_graph {
+            path: "runtime/localize/query/pose_graph",
+            request: PoseGraphRequest,
+            response: PoseGraphResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query keyframe {
+            path: "runtime/localize/query/keyframe",
+            request: KeyframeRequest,
+            response: KeyframeResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query corrections {
+            path: "runtime/localize/query/corrections",
+            request: CorrectionsRequest,
+            response: CorrectionsResponse
+        }
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +502,27 @@ mod tests {
         assert_eq!(PoseGraphResponse::busy(), PoseGraphResponse::Busy);
         assert_eq!(KeyframeResponse::busy(), KeyframeResponse::Busy);
         assert_eq!(CorrectionsResponse::busy(), CorrectionsResponse::Busy);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::state::path(), "runtime/localize/state");
+        assert_eq!(super::pose::path(), "runtime/localize/pose");
+        assert_eq!(super::revision::path(), "runtime/localize/revision");
+        assert_eq!(super::keyframe::path(), "runtime/localize/keyframe");
+        assert_eq!(super::correction::path(), "runtime/localize/correction");
+        assert_eq!(
+            super::query::pose_graph::path(),
+            "runtime/localize/query/pose_graph"
+        );
+        assert_eq!(
+            super::query::keyframe::path(),
+            "runtime/localize/query/keyframe"
+        );
+        assert_eq!(
+            super::query::corrections::path(),
+            "runtime/localize/query/corrections"
+        );
     }
 }
 

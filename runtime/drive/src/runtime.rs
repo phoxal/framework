@@ -156,7 +156,7 @@ impl Runtime for DriveRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         io.subscribe_with::<Stamped<Target>, _>(
-            drive_target::TOPIC,
+            &drive_target::path(),
             InputPolicy::latest(),
             Input::DriveTarget,
         )
@@ -164,7 +164,7 @@ impl Runtime for DriveRuntime {
 
         let left_motor_publishers = motor_publishers(io, &config.left_motors).await?;
         let right_motor_publishers = motor_publishers(io, &config.right_motors).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(drive_state::TOPIC).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&drive_state::path()).await?;
 
         Ok(Self {
             config,
@@ -276,11 +276,7 @@ impl DriveRuntime {
 
 impl MotorBinding {
     fn topic(&self) -> String {
-        motor::command::path(
-            self.component_id.as_str(),
-            motor::KIND,
-            self.capability_id.as_str(),
-        )
+        motor::command::path(self.component_id.as_str(), self.capability_id.as_str())
     }
 }
 

@@ -1,4 +1,3 @@
-use crate::bus::pubsub::Stamped;
 use crate::bus::zenoh::TypedSchema;
 use derive_new::new;
 use serde::{Deserialize, Serialize};
@@ -44,23 +43,11 @@ impl TypedSchema for Sample {
 
 pub const KIND: &str = "gnss";
 
-pub fn topic(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> String {
-    super::default_profile_topic(bus, component_id, capability_id)
-}
-
-pub fn subscriber_builder(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> crate::bus::zenoh::TypedSubscriberBuilder<'_, '_, Stamped<Sample>> {
-    crate::bus::pubsub::subscriber_builder(
-        bus,
-        &super::default_profile_path(component_id, capability_id),
-    )
+crate::bus::topic_leaf! {
+    pubsub(component_id: &str, capability_id: &str) {
+        path: "component/{}/{}/profile/default",
+        payload: Sample
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +65,13 @@ mod tests {
     #[test]
     fn coordinate_system_defaults_to_local() {
         assert_eq!(CoordinateSystem::default(), CoordinateSystem::Local);
+    }
+
+    #[test]
+    fn path_is_stable() {
+        assert_eq!(
+            super::path("gps", "gnss"),
+            "component/gps/gnss/profile/default"
+        );
     }
 }

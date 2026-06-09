@@ -19,13 +19,15 @@ impl TypedSchema for Response {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-/// `simulation/reset` is a command-with-ack: it changes simulator state by
-/// starting a new epoch, while request/reply transport is used only to carry
-/// the acknowledgement. Keep it out of every `query/` namespace.
-pub const TOPIC: &str = "simulation/reset";
-
-pub fn topic(bus: &crate::bus::Bus) -> String {
-    bus.topic(TOPIC)
+// `simulation/reset` is a command-with-ack: it changes simulator state by
+// starting a new epoch, while request/reply transport is used only to carry
+// the acknowledgement. Keep it out of every `query/` namespace.
+crate::bus::topic_leaf! {
+    query {
+        path: "simulation/reset",
+        request: Request,
+        response: Response
+    }
 }
 
 pub async fn request(
@@ -33,17 +35,17 @@ pub async fn request(
     request: &Request,
     retry: &crate::bus::query::Retry,
 ) -> crate::bus::Result<Option<Response>> {
-    crate::bus::query::query(bus, TOPIC, request, retry).await
+    crate::bus::query::query(bus, &path(), request, retry).await
 }
 
 pub fn responder_builder(
     bus: &crate::bus::Bus,
 ) -> crate::bus::Result<crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, Request, Response>> {
-    crate::bus::query::queryable_builder(bus, TOPIC)
+    queryable_builder(bus)
 }
 
 pub async fn responder(
     bus: &crate::bus::Bus,
 ) -> crate::bus::Result<crate::bus::zenoh::TypedQueryable<Request, Response>> {
-    crate::bus::query::queryable(bus, TOPIC).await
+    crate::bus::query::queryable(bus, &path()).await
 }

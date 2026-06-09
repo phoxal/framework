@@ -7,11 +7,6 @@ use crate::api::mission::v1::{GoalPose, GoalTolerance};
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const FRONTIERS_TOPIC: &str = "runtime/explore/frontiers";
-pub const GOAL_CANDIDATES_TOPIC: &str = "runtime/explore/goal_candidates";
-pub const STATE_TOPIC: &str = "runtime/explore/state";
-pub const DEBUG_SCORING_TOPIC: &str = "runtime/explore/debug/scoring";
-pub const DEBUG_REJECTED_CANDIDATES_TOPIC: &str = "runtime/explore/debug/rejected_candidates";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Frontiers {
     pub map_revision: MapRevisionId,
@@ -110,19 +105,43 @@ pub struct RejectedCandidate {
     pub reason: String,
 }
 
-crate::bus::pubsub_leaf!(frontiers, FRONTIERS_TOPIC, Frontiers);
-crate::bus::pubsub_leaf!(goal_candidates, GOAL_CANDIDATES_TOPIC, GoalCandidates);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, State);
+crate::bus::topic_leaf! {
+    pubsub frontiers {
+        path: "runtime/explore/frontiers",
+        payload: Frontiers
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub goal_candidates {
+        path: "runtime/explore/goal_candidates",
+        payload: GoalCandidates
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/explore/state",
+        payload: State
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(scoring, DEBUG_SCORING_TOPIC, Scoring);
-    crate::bus::pubsub_leaf!(
-        rejected_candidates,
-        DEBUG_REJECTED_CANDIDATES_TOPIC,
-        RejectedCandidates
-    );
+    crate::bus::topic_leaf! {
+        pubsub scoring {
+            path: "runtime/explore/debug/scoring",
+            payload: Scoring
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub rejected_candidates {
+            path: "runtime/explore/debug/rejected_candidates",
+            payload: RejectedCandidates
+        }
+    }
 }
 
 #[cfg(test)]
@@ -153,6 +172,24 @@ mod tests {
             "runtime/explore/debug/rejected_candidates"
         );
         assert_eq!(RejectedCandidates::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::frontiers::path(), "runtime/explore/frontiers");
+        assert_eq!(
+            super::goal_candidates::path(),
+            "runtime/explore/goal_candidates"
+        );
+        assert_eq!(super::state::path(), "runtime/explore/state");
+        assert_eq!(
+            super::debug::scoring::path(),
+            "runtime/explore/debug/scoring"
+        );
+        assert_eq!(
+            super::debug::rejected_candidates::path(),
+            "runtime/explore/debug/rejected_candidates"
+        );
     }
 }
 

@@ -138,16 +138,16 @@ impl Runtime for MapRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         io.subscribe::<Stamped<LocalizationState>, _>(
-            localize_state::TOPIC,
+            &localize_state::path(),
             Input::LocalizationState,
         )
         .await?;
         io.subscribe::<Stamped<LocalizationRevision>, _>(
-            localize_revision::TOPIC,
+            &localize_revision::path(),
             Input::LocalizationRevision,
         )
         .await?;
-        io.subscribe::<Stamped<Keyframe>, _>(localize_keyframe::TOPIC, Input::Keyframe)
+        io.subscribe::<Stamped<Keyframe>, _>(&localize_keyframe::path(), Input::Keyframe)
             .await?;
         if config.mapping_range_inputs.is_empty() {
             info!(
@@ -155,7 +155,7 @@ impl Runtime for MapRuntime {
             );
         }
         for capability_ref in &config.mapping_range_inputs {
-            let topic = range::topic(&capability_ref.component_id, &capability_ref.capability_id);
+            let topic = range::path(&capability_ref.component_id, &capability_ref.capability_id);
             let sensor = capability_ref.clone();
             io.subscribe::<Stamped<range::Sample>, _>(&topic, move |sample| {
                 Input::RangeSample(sensor.clone(), sample)
@@ -176,42 +176,42 @@ impl Runtime for MapRuntime {
         });
 
         io.serve_query::<SubmapRequest, SubmapResponse, MapView, _>(
-            submap::TOPIC,
+            &submap::path(),
             view.reader(),
             map_query_options(),
             map_submap,
         )
         .await?;
         io.serve_query::<EsdfTileRequest, EsdfTileResponse, MapView, _>(
-            esdf_tile::TOPIC,
+            &esdf_tile::path(),
             view.reader(),
             map_query_options(),
             map_esdf_tile,
         )
         .await?;
         io.serve_query::<TraversabilityTileRequest, TraversabilityTileResponse, MapView, _>(
-            traversability_tile::TOPIC,
+            &traversability_tile::path(),
             view.reader(),
             map_query_options(),
             map_traversability_tile,
         )
         .await?;
         io.serve_query::<LocalGridRequest, LocalGridResponse, MapView, _>(
-            local_grid::TOPIC,
+            &local_grid::path(),
             view.reader(),
             map_query_options(),
             map_local_grid,
         )
         .await?;
         io.serve_query::<GlobalGridRequest, GlobalGridResponse, MapView, _>(
-            global_grid::TOPIC,
+            &global_grid::path(),
             view.reader(),
             map_query_options(),
             map_global_grid,
         )
         .await?;
         io.serve_query::<SnapshotRequest, SnapshotResponse, MapView, _>(
-            snapshot::TOPIC,
+            &snapshot::path(),
             view.reader(),
             map_query_options(),
             map_snapshot,
@@ -229,17 +229,17 @@ impl Runtime for MapRuntime {
             mapping_sensor_poses: config.mapping_sensor_poses,
             latest_robot_pose: None,
             revision_publisher: io
-                .publisher::<Stamped<MapRevision>>(revision::TOPIC)
+                .publisher::<Stamped<MapRevision>>(&revision::path())
                 .await?,
-            summary_publisher: io.publisher::<Stamped<Summary>>(summary::TOPIC).await?,
+            summary_publisher: io.publisher::<Stamped<Summary>>(&summary::path()).await?,
             local_cost_publisher: io
-                .publisher::<Stamped<LocalCost>>(local_cost::TOPIC)
+                .publisher::<Stamped<LocalCost>>(&local_cost::path())
                 .await?,
             traversability_publisher: io
-                .publisher::<Stamped<Traversability>>(traversability::TOPIC)
+                .publisher::<Stamped<Traversability>>(&traversability::path())
                 .await?,
             traversability_summary_publisher: io
-                .publisher::<Stamped<TraversabilitySummary>>(traversability_summary::TOPIC)
+                .publisher::<Stamped<TraversabilitySummary>>(&traversability_summary::path())
                 .await?,
         })
     }

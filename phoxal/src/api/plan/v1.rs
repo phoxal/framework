@@ -7,13 +7,6 @@ use crate::api::mission::v1::Goal;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const PATH_TOPIC: &str = "runtime/plan/path";
-pub const STATE_TOPIC: &str = "runtime/plan/state";
-pub const GOAL_INPUT_TOPIC: &str = crate::api::mission::v1::GOAL_TOPIC;
-pub const DEBUG_SEARCH_GRAPH_TOPIC: &str = "runtime/plan/debug/search_graph";
-pub const DEBUG_COST_LAYERS_TOPIC: &str = "runtime/plan/debug/cost_layers";
-pub const DEBUG_REJECTED_PATHS_TOPIC: &str = "runtime/plan/debug/rejected_paths";
-pub const DEBUG_REVISION_INPUTS_TOPIC: &str = "runtime/plan/debug/revision_inputs";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Path {
     pub goal: Goal,
@@ -124,16 +117,50 @@ impl TypedSchema for RevisionInputs {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-crate::bus::pubsub_leaf!(path, PATH_TOPIC, Path);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, State);
+crate::bus::topic_leaf! {
+    pubsub path {
+        path: "runtime/plan/path",
+        payload: Path
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/plan/state",
+        payload: State
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(search_graph, DEBUG_SEARCH_GRAPH_TOPIC, SearchGraph);
-    crate::bus::pubsub_leaf!(cost_layers, DEBUG_COST_LAYERS_TOPIC, CostLayers);
-    crate::bus::pubsub_leaf!(rejected_paths, DEBUG_REJECTED_PATHS_TOPIC, RejectedPaths);
-    crate::bus::pubsub_leaf!(revision_inputs, DEBUG_REVISION_INPUTS_TOPIC, RevisionInputs);
+    crate::bus::topic_leaf! {
+        pubsub search_graph {
+            path: "runtime/plan/debug/search_graph",
+            payload: SearchGraph
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub cost_layers {
+            path: "runtime/plan/debug/cost_layers",
+            payload: CostLayers
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub rejected_paths {
+            path: "runtime/plan/debug/rejected_paths",
+            payload: RejectedPaths
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub revision_inputs {
+            path: "runtime/plan/debug/revision_inputs",
+            payload: RevisionInputs
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,6 +194,28 @@ mod tests {
             "runtime/plan/debug/revision_inputs"
         );
         assert_eq!(RevisionInputs::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::path::path(), "runtime/plan/path");
+        assert_eq!(super::state::path(), "runtime/plan/state");
+        assert_eq!(
+            super::debug::search_graph::path(),
+            "runtime/plan/debug/search_graph"
+        );
+        assert_eq!(
+            super::debug::cost_layers::path(),
+            "runtime/plan/debug/cost_layers"
+        );
+        assert_eq!(
+            super::debug::rejected_paths::path(),
+            "runtime/plan/debug/rejected_paths"
+        );
+        assert_eq!(
+            super::debug::revision_inputs::path(),
+            "runtime/plan/debug/revision_inputs"
+        );
     }
 }
 

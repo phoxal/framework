@@ -91,12 +91,12 @@ impl Runtime for ExploreRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<Traversability>, _>(traversability::TOPIC, Input::Traversability)
+        io.subscribe::<Stamped<Traversability>, _>(&traversability::path(), Input::Traversability)
             .await?;
-        io.subscribe::<Stamped<MapRevision>, _>(revision::TOPIC, Input::MapRevision)
+        io.subscribe::<Stamped<MapRevision>, _>(&revision::path(), Input::MapRevision)
             .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal::api::localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
@@ -110,15 +110,17 @@ impl Runtime for ExploreRuntime {
             last_centroids: Vec::new(),
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),
-            frontiers_publisher: io.publisher::<Stamped<Frontiers>>(frontiers::TOPIC).await?,
-            goal_candidates_publisher: io
-                .publisher::<Stamped<GoalCandidates>>(goal_candidates::TOPIC)
+            frontiers_publisher: io
+                .publisher::<Stamped<Frontiers>>(&frontiers::path())
                 .await?,
-            state_publisher: io.publisher::<Stamped<State>>(state::TOPIC).await?,
+            goal_candidates_publisher: io
+                .publisher::<Stamped<GoalCandidates>>(&goal_candidates::path())
+                .await?,
+            state_publisher: io.publisher::<Stamped<State>>(&state::path()).await?,
         })
     }
 

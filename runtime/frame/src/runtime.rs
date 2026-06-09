@@ -212,8 +212,8 @@ impl Runtime for FrameRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        let tree_publisher = io.publisher::<Stamped<Tree>>(tree::TOPIC).await?;
-        let static_publisher = io.publisher::<Stamped<Static>>(r#static::TOPIC).await?;
+        let tree_publisher = io.publisher::<Stamped<Tree>>(&tree::path()).await?;
+        let static_publisher = io.publisher::<Stamped<Static>>(&r#static::path()).await?;
         let static_transforms = Arc::new(config.static_transforms);
         let parent_by_child = Arc::new(config.parent_by_child);
 

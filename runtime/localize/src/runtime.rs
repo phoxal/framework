@@ -332,7 +332,7 @@ impl Runtime for LocalizeRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<OdometryEstimate>, _>(odometry_data::TOPIC, Input::Odometry)
+        io.subscribe::<Stamped<OdometryEstimate>, _>(&odometry_data::path(), Input::Odometry)
             .await?;
         if let BackendSelection::SimulatorTruth { robot_id } = &config.backend {
             io.subscribe::<Stamped<SimPose>, _>(&sim_pose::path(robot_id), Input::SimPose)
@@ -395,21 +395,21 @@ impl Runtime for LocalizeRuntime {
         let view = ReadCell::new(LocalizeView { current_revision });
 
         io.serve_query::<PoseGraphRequest, PoseGraphResponse, LocalizeView, _>(
-            pose_graph::TOPIC,
+            &pose_graph::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_pose_graph,
         )
         .await?;
         io.serve_query::<KeyframeRequest, KeyframeResponse, LocalizeView, _>(
-            keyframe_query::TOPIC,
+            &keyframe_query::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_keyframe,
         )
         .await?;
         io.serve_query::<CorrectionsRequest, CorrectionsResponse, LocalizeView, _>(
-            corrections::TOPIC,
+            &corrections::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_corrections,
@@ -423,20 +423,20 @@ impl Runtime for LocalizeRuntime {
             revision_emitted: false,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <LocalizationState as TypedSchema>::SCHEMA_NAME,
                 <LocalizationState as TypedSchema>::SCHEMA_VERSION,
             ),
             state_publisher: io
-                .publisher::<Stamped<LocalizationState>>(state::TOPIC)
+                .publisher::<Stamped<LocalizationState>>(&state::path())
                 .await?,
-            pose_publisher: io.publisher::<Stamped<PoseEstimate>>(pose::TOPIC).await?,
+            pose_publisher: io.publisher::<Stamped<PoseEstimate>>(&pose::path()).await?,
             revision_publisher: io
-                .publisher::<Stamped<LocalizationRevision>>(revision::TOPIC)
+                .publisher::<Stamped<LocalizationRevision>>(&revision::path())
                 .await?,
-            keyframe_publisher: io.publisher::<Stamped<Keyframe>>(keyframe::TOPIC).await?,
+            keyframe_publisher: io.publisher::<Stamped<Keyframe>>(&keyframe::path()).await?,
             _correction_publisher: io
-                .publisher::<Stamped<PoseGraphCorrection>>(correction::TOPIC)
+                .publisher::<Stamped<PoseGraphCorrection>>(&correction::path())
                 .await?,
         })
     }

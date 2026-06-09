@@ -58,9 +58,9 @@ impl Runtime for PowerRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<Command>, _>(command::TOPIC, Input::Command)
+        io.subscribe::<Stamped<Command>, _>(&command::path(), Input::Command)
             .await?;
-        let state_pub = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let state_pub = io.publisher::<Stamped<State>>(&state::path()).await?;
         let executor = match config.supervisor_address {
             Some(address) => Some(Arc::new(ReqwestExecutor::new(
                 address,

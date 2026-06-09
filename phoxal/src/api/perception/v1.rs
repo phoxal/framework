@@ -9,8 +9,6 @@ use crate::api::map::v1::MapRevisionId;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const DETECTIONS_TOPIC: &str = "runtime/perception/detections";
-pub const STATE_TOPIC: &str = "runtime/perception/state";
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoundingBox {
     pub x: f32,
@@ -186,8 +184,19 @@ impl TypedSchema for TrackedObservation {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-crate::bus::pubsub_leaf!(detections, DETECTIONS_TOPIC, Detections);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, PerceptionState);
+crate::bus::topic_leaf! {
+    pubsub detections {
+        path: "runtime/perception/detections",
+        payload: Detections
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/perception/state",
+        payload: PerceptionState
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -278,6 +287,12 @@ mod tests {
                 map_revision: map(9, 10),
             }
         );
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::detections::path(), "runtime/perception/detections");
+        assert_eq!(super::state::path(), "runtime/perception/state");
     }
 
     fn detections(

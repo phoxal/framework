@@ -17,8 +17,8 @@ impl TypedSchema for Command {
 pub const KIND: &str = "motor";
 
 crate::bus::topic_leaf! {
-    pubsub command(component_id: &str, capability_kind: &str, capability_id: &str) {
-        path: "component/{}/{}/{}/command",
+    pubsub command(component_id: &str, capability_id: &str) {
+        path: "component/{}/motor/{}/command",
         payload: Command
     }
 }
@@ -44,7 +44,7 @@ mod tests {
     #[test]
     fn command_path_is_stable() {
         assert_eq!(
-            command::path("base", "motor", "left_wheel"),
+            command::path("base", "left_wheel"),
             "component/base/motor/left_wheel/command"
         );
     }

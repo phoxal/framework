@@ -57,23 +57,27 @@ impl Runtime for FollowRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_with::<Stamped<Path>, _>(plan_path::TOPIC, InputPolicy::latest(), Input::Path)
-            .await?;
+        io.subscribe_with::<Stamped<Path>, _>(
+            &plan_path::path(),
+            InputPolicy::latest(),
+            Input::Path,
+        )
+        .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal::api::localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
 
-        let target_publisher = io.publisher::<Stamped<Target>>(target::TOPIC).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let target_publisher = io.publisher::<Stamped<Target>>(&target::path()).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
 
         Ok(Self {
             latest_path: None,
             latest_localize: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),

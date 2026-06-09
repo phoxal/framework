@@ -132,13 +132,13 @@ impl Runtime for PerceptionRuntime {
             warn!("perception runtime started without perception-role camera/depth source");
         }
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal::api::localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<Tree>, _>(tree::TOPIC, Input::FrameTree)
+        io.subscribe::<Stamped<Tree>, _>(&tree::path(), Input::FrameTree)
             .await?;
-        io.subscribe::<Stamped<MapRevision>, _>(revision::TOPIC, Input::MapRevision)
+        io.subscribe::<Stamped<MapRevision>, _>(&revision::path(), Input::MapRevision)
             .await?;
 
         Ok(Self {
@@ -159,10 +159,10 @@ impl Runtime for PerceptionRuntime {
             weights_version: config.weights_version,
             cadence_hz: config.cadence_hz,
             detections_publisher: io
-                .publisher::<Stamped<Detections>>(detections::TOPIC)
+                .publisher::<Stamped<Detections>>(&detections::path())
                 .await?,
             state_publisher: io
-                .publisher::<Stamped<PerceptionState>>(state::TOPIC)
+                .publisher::<Stamped<PerceptionState>>(&state::path())
                 .await?,
         })
     }

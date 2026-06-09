@@ -147,17 +147,17 @@ impl Runtime for OdometryRuntime {
         .await?;
 
         let data_publisher = io
-            .publisher::<Stamped<OdometryEstimate>>(data::TOPIC)
+            .publisher::<Stamped<OdometryEstimate>>(&data::path())
             .await?;
-        let status_publisher = io.publisher::<Stamped<Status>>(status::TOPIC).await?;
+        let status_publisher = io.publisher::<Stamped<Status>>(&status::path()).await?;
         let source_health_publisher = io
-            .publisher::<Stamped<SourceHealth>>(debug::source_health::TOPIC)
+            .publisher::<Stamped<SourceHealth>>(&debug::source_health::path())
             .await?;
         let residuals_publisher = io
-            .publisher::<Stamped<Residuals>>(debug::residuals::TOPIC)
+            .publisher::<Stamped<Residuals>>(&debug::residuals::path())
             .await?;
         let integration_publisher = io
-            .publisher::<Stamped<Integration>>(debug::integration::TOPIC)
+            .publisher::<Stamped<Integration>>(&debug::integration::path())
             .await?;
 
         Ok(Self {

@@ -6,11 +6,6 @@ use crate::api::joint::v1::JointId;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const DATA_TOPIC: &str = "runtime/odometry/data";
-pub const STATUS_TOPIC: &str = "runtime/odometry/status";
-pub const DEBUG_SOURCE_HEALTH_TOPIC: &str = "runtime/odometry/debug/source_health";
-pub const DEBUG_RESIDUALS_TOPIC: &str = "runtime/odometry/debug/residuals";
-pub const DEBUG_INTEGRATION_TOPIC: &str = "runtime/odometry/debug/integration";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OdometryEstimate {
     pub pose: PoseEstimate,
@@ -144,39 +139,43 @@ impl TypedSchema for Integration {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-crate::bus::pubsub_leaf!(data, DATA_TOPIC, OdometryEstimate);
-crate::bus::pubsub_leaf!(status, STATUS_TOPIC, Status);
+crate::bus::topic_leaf! {
+    pubsub data {
+        path: "runtime/odometry/data",
+        payload: OdometryEstimate
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub status {
+        path: "runtime/odometry/status",
+        payload: Status
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(source_health, DEBUG_SOURCE_HEALTH_TOPIC, SourceHealth);
-    pub mod residuals {
-        use crate::bus::pubsub::Stamped;
-        use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
-
-        use crate::api::odometry::v1::Residuals;
-
-        pub const TOPIC: &str = crate::api::odometry::v1::DEBUG_RESIDUALS_TOPIC;
-
-        pub fn topic(bus: &crate::bus::Bus) -> String {
-            bus.topic(TOPIC)
-        }
-
-        /// Residuals intentionally stay empty for v1 until IMU fusion provides a reference signal.
-        pub fn publisher(
-            bus: &crate::bus::Bus,
-        ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Residuals>>> {
-            crate::bus::pubsub::publisher_builder(bus, TOPIC)
-        }
-
-        pub fn subscriber_builder(
-            bus: &crate::bus::Bus,
-        ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Residuals>> {
-            crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+    crate::bus::topic_leaf! {
+        pubsub source_health {
+            path: "runtime/odometry/debug/source_health",
+            payload: SourceHealth
         }
     }
-    crate::bus::pubsub_leaf!(integration, DEBUG_INTEGRATION_TOPIC, Integration);
+
+    crate::bus::topic_leaf! {
+        pubsub residuals {
+            path: "runtime/odometry/debug/residuals",
+            payload: Residuals
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub integration {
+            path: "runtime/odometry/debug/integration",
+            payload: Integration
+        }
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +220,24 @@ mod tests {
             "runtime/odometry/debug/integration"
         );
         assert_eq!(Integration::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::data::path(), "runtime/odometry/data");
+        assert_eq!(super::status::path(), "runtime/odometry/status");
+        assert_eq!(
+            super::debug::source_health::path(),
+            "runtime/odometry/debug/source_health"
+        );
+        assert_eq!(
+            super::debug::residuals::path(),
+            "runtime/odometry/debug/residuals"
+        );
+        assert_eq!(
+            super::debug::integration::path(),
+            "runtime/odometry/debug/integration"
+        );
     }
 }
 

@@ -75,7 +75,7 @@ impl Runtime for AssetRuntime {
     async fn new(io: &mut Io<Self::Input>, bundle_root: Self::Config) -> Result<Self> {
         let view = ReadCell::new(AssetView { bundle_root });
         io.serve_query::<AssetRequest, AssetResponse, AssetView, _>(
-            phoxal::api::asset::v1::get::TOPIC,
+            &phoxal::api::asset::v1::get::path(),
             view.reader(),
             QueryOptions::single(),
             asset_get,

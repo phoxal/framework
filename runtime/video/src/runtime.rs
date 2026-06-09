@@ -128,7 +128,7 @@ impl Runtime for VideoRuntime {
         });
 
         io.serve_query::<OpenRequest, OpenResponse, VideoView, _>(
-            open::TOPIC,
+            &open::path(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             video_open,

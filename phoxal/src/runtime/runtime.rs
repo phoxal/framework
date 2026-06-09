@@ -559,7 +559,9 @@ impl<'a> RuntimeProcess<'a> {
         let mut io = Io::live((*self.bus).clone(), R::RUNTIME_ID);
         let mut runtime = R::new(&mut io, config).await?;
         let mut steps = StepStream::new(self.bus, self.simulation, self.period).await?;
-        let heartbeat_pub = io.publisher::<Stamped<Heartbeat>>(heartbeat::TOPIC).await?;
+        let heartbeat_pub = io
+            .publisher::<Stamped<Heartbeat>>(&heartbeat::path())
+            .await?;
         let (handles, sources) = io.into_parts();
         let _handles = handles;
 

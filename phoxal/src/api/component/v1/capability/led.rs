@@ -1,5 +1,4 @@
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema};
+use crate::bus::zenoh::TypedSchema;
 use derive_new::new;
 use serde::{Deserialize, Serialize};
 
@@ -16,23 +15,11 @@ impl TypedSchema for Command {
 
 pub const KIND: &str = "led";
 
-pub fn topic(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> String {
-    super::command_topic(bus, component_id, KIND, capability_id)
-}
-
-pub fn publisher(
-    bus: &crate::bus::Bus,
-    component_id: impl AsRef<str>,
-    capability_id: impl AsRef<str>,
-) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Command>>> {
-    crate::bus::pubsub::publisher_builder(
-        bus,
-        &super::command_path(component_id, KIND, capability_id),
-    )
+crate::bus::topic_leaf! {
+    pubsub(component_id: &str, capability_id: &str) {
+        path: "component/{}/led/{}/command",
+        payload: Command
+    }
 }
 
 #[cfg(test)]
@@ -45,5 +32,13 @@ mod tests {
     fn schema_contract_does_not_drift() {
         assert_eq!(Command::SCHEMA_NAME, "component/capability/led");
         assert_eq!(Command::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn path_is_stable() {
+        assert_eq!(
+            super::path("status_light", "rgb"),
+            "component/status_light/led/rgb/command"
+        );
     }
 }

@@ -61,24 +61,24 @@ impl Runtime for PlanRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_with::<Stamped<Goal>, _>(
-            phoxal::api::mission::v1::goal::TOPIC,
+            &phoxal::api::mission::v1::goal::path(),
             InputPolicy::latest(),
             Input::Goal,
         )
         .await?;
         io.subscribe::<Stamped<LocalizationState>, _>(
-            phoxal::api::localize::v1::state::TOPIC,
+            &phoxal::api::localize::v1::state::path(),
             Input::LocalizationState,
         )
         .await?;
         io.subscribe::<Stamped<MapRevision>, _>(
-            phoxal::api::map::v1::revision::TOPIC,
+            &phoxal::api::map::v1::revision::path(),
             Input::MapRevision,
         )
         .await?;
 
-        let path_publisher = io.publisher::<Stamped<Path>>(path::TOPIC).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(state::TOPIC).await?;
+        let path_publisher = io.publisher::<Stamped<Path>>(&path::path()).await?;
+        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
 
         Ok(Self {
             latest_goal: None,
@@ -86,7 +86,7 @@ impl Runtime for PlanRuntime {
             latest_map_revision: None,
             decision_log: DecisionLog::new(
                 Self::RUNTIME_ID,
-                state::TOPIC,
+                state::path(),
                 <State as TypedSchema>::SCHEMA_NAME,
                 <State as TypedSchema>::SCHEMA_VERSION,
             ),

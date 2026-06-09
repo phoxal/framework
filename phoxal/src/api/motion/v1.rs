@@ -1,14 +1,9 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-motion/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const MANUAL_COMMAND_TOPIC: &str = "runtime/motion/manual";
-pub const DRIVE_TARGET_TOPIC: &str = crate::api::drive::v1::TARGET_TOPIC;
-pub const DEBUG_ARBITRATION_TOPIC: &str = "runtime/motion/debug/arbitration";
-pub const DEBUG_SOURCE_FRESHNESS_TOPIC: &str = "runtime/motion/debug/source_freshness";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub active_source: Option<MotionSource>,
@@ -98,41 +93,29 @@ crate::bus::topic_leaf! {
     }
 }
 
-pub mod manual {
-    use super::*;
-
-    pub const TOPIC: &str = MANUAL_COMMAND_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
+crate::bus::topic_leaf! {
+    pubsub manual {
+        path: "runtime/motion/manual",
+        payload: ManualCommand
     }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<ManualCommand>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<ManualCommand>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
-    }
-}
-
-pub mod drive {
-    pub const TARGET_TOPIC: &str = crate::api::motion::v1::DRIVE_TARGET_TOPIC;
 }
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(arbitration, DEBUG_ARBITRATION_TOPIC, Arbitration);
-    crate::bus::pubsub_leaf!(
-        source_freshness,
-        DEBUG_SOURCE_FRESHNESS_TOPIC,
-        SourceFreshness
-    );
+    crate::bus::topic_leaf! {
+        pubsub arbitration {
+            path: "runtime/motion/debug/arbitration",
+            payload: Arbitration
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub source_freshness {
+            path: "runtime/motion/debug/source_freshness",
+            payload: SourceFreshness
+        }
+    }
 }
 
 #[cfg(test)]
@@ -165,6 +148,19 @@ mod tests {
     #[test]
     fn state_path_is_stable() {
         assert_eq!(state::path(), "runtime/motion/state");
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::manual::path(), "runtime/motion/manual");
+        assert_eq!(
+            super::debug::arbitration::path(),
+            "runtime/motion/debug/arbitration"
+        );
+        assert_eq!(
+            super::debug::source_freshness::path(),
+            "runtime/motion/debug/source_freshness"
+        );
     }
 }
 

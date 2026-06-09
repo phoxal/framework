@@ -4,12 +4,6 @@ pub const SCHEMA_VERSION: u32 = 1;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const TARGET_TOPIC: &str = "runtime/drive/target";
-pub const STATE_TOPIC: &str = "runtime/drive/state";
-pub const DEBUG_ACTUATOR_COMMANDS_TOPIC: &str = "runtime/drive/debug/actuator_commands";
-pub const DEBUG_SATURATION_TOPIC: &str = "runtime/drive/debug/saturation";
-pub const DEBUG_WATCHDOG_TOPIC: &str = "runtime/drive/debug/watchdog";
-pub const DEBUG_KINEMATICS_TOPIC: &str = "runtime/drive/debug/kinematics";
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     pub linear_x_mps: f64,
@@ -102,20 +96,50 @@ impl TypedSchema for Kinematics {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-crate::bus::pubsub_leaf!(target, TARGET_TOPIC, Target);
-crate::bus::pubsub_leaf!(state, STATE_TOPIC, State);
+crate::bus::topic_leaf! {
+    pubsub target {
+        path: "runtime/drive/target",
+        payload: Target
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/drive/state",
+        payload: State
+    }
+}
 
 pub mod debug {
     use super::*;
 
-    crate::bus::pubsub_leaf!(
-        actuator_commands,
-        DEBUG_ACTUATOR_COMMANDS_TOPIC,
-        ActuatorCommands
-    );
-    crate::bus::pubsub_leaf!(saturation, DEBUG_SATURATION_TOPIC, Saturation);
-    crate::bus::pubsub_leaf!(watchdog, DEBUG_WATCHDOG_TOPIC, Watchdog);
-    crate::bus::pubsub_leaf!(kinematics, DEBUG_KINEMATICS_TOPIC, Kinematics);
+    crate::bus::topic_leaf! {
+        pubsub actuator_commands {
+            path: "runtime/drive/debug/actuator_commands",
+            payload: ActuatorCommands
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub saturation {
+            path: "runtime/drive/debug/saturation",
+            payload: Saturation
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub watchdog {
+            path: "runtime/drive/debug/watchdog",
+            payload: Watchdog
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        pubsub kinematics {
+            path: "runtime/drive/debug/kinematics",
+            payload: Kinematics
+        }
+    }
 }
 
 #[cfg(test)]
@@ -146,6 +170,28 @@ mod tests {
         assert_eq!(Watchdog::SCHEMA_VERSION, 1);
         assert_eq!(Kinematics::SCHEMA_NAME, "runtime/drive/debug/kinematics");
         assert_eq!(Kinematics::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::target::path(), "runtime/drive/target");
+        assert_eq!(super::state::path(), "runtime/drive/state");
+        assert_eq!(
+            super::debug::actuator_commands::path(),
+            "runtime/drive/debug/actuator_commands"
+        );
+        assert_eq!(
+            super::debug::saturation::path(),
+            "runtime/drive/debug/saturation"
+        );
+        assert_eq!(
+            super::debug::watchdog::path(),
+            "runtime/drive/debug/watchdog"
+        );
+        assert_eq!(
+            super::debug::kinematics::path(),
+            "runtime/drive/debug/kinematics"
+        );
     }
 }
 

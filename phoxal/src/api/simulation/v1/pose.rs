@@ -1,5 +1,4 @@
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,24 +15,9 @@ impl TypedSchema for Pose {
 
 pub const SCHEMA: &str = "simulation/robot/pose";
 
-pub fn path(robot_id: impl AsRef<str>) -> String {
-    format!("simulation/robot/{}/pose", robot_id.as_ref())
-}
-
-pub fn topic(bus: &crate::bus::Bus, robot_id: impl AsRef<str>) -> String {
-    bus.topic(&path(robot_id))
-}
-
-pub fn publisher(
-    bus: &crate::bus::Bus,
-    robot_id: impl AsRef<str>,
-) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Pose>>> {
-    crate::bus::pubsub::publisher_builder(bus, &path(robot_id))
-}
-
-pub fn subscriber_builder(
-    bus: &crate::bus::Bus,
-    robot_id: impl AsRef<str>,
-) -> TypedSubscriberBuilder<'_, 'static, Stamped<Pose>> {
-    crate::bus::pubsub::subscriber_builder(bus, &path(robot_id))
+crate::bus::topic_leaf! {
+    pubsub(robot_id: &str) {
+        path: "simulation/robot/{}/pose",
+        payload: Pose
+    }
 }

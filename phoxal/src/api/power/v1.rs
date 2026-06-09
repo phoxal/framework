@@ -4,8 +4,6 @@ pub const SCHEMA_VERSION: u32 = 1;
 use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
-pub const COMMAND_TOPIC: &str = "runtime/power/command";
-pub const STATE_TOPIC: &str = "runtime/power/state";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Command {
@@ -54,51 +52,17 @@ impl TypedSchema for State {
     const SCHEMA_VERSION: u32 = 1;
 }
 
-pub mod command {
-    use super::Command;
-    use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
-
-    pub const TOPIC: &str = super::COMMAND_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<Command>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<Command>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub command {
+        path: "runtime/power/command",
+        payload: Command
     }
 }
 
-pub mod state {
-    use super::State;
-    use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
-
-    pub const TOPIC: &str = super::STATE_TOPIC;
-
-    pub fn topic(bus: &crate::bus::Bus) -> String {
-        bus.topic(TOPIC)
-    }
-
-    pub fn publisher(
-        bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<TypedPublisherBuilder<'_, 'static, Stamped<State>>> {
-        crate::bus::pubsub::publisher_builder(bus, TOPIC)
-    }
-
-    pub fn subscriber_builder(
-        bus: &crate::bus::Bus,
-    ) -> TypedSubscriberBuilder<'_, 'static, Stamped<State>> {
-        crate::bus::pubsub::subscriber_builder(bus, TOPIC)
+crate::bus::topic_leaf! {
+    pubsub state {
+        path: "runtime/power/state",
+        payload: State
     }
 }
 
@@ -117,6 +81,12 @@ mod tests {
     fn state_contract_schema_is_stable() {
         assert_eq!(State::SCHEMA_NAME, "runtime/power/state");
         assert_eq!(State::SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::command::path(), "runtime/power/command");
+        assert_eq!(super::state::path(), "runtime/power/state");
     }
 }
 

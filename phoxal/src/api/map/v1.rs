@@ -8,17 +8,6 @@ use crate::api::localize::v1::LocalizationRevisionId;
 use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
-pub const REVISION_TOPIC: &str = "runtime/map/revision";
-pub const SUMMARY_TOPIC: &str = "runtime/map/summary";
-pub const LOCAL_COST_TOPIC: &str = "runtime/map/local_cost";
-pub const TRAVERSABILITY_TOPIC: &str = "runtime/map/traversability";
-pub const TRAVERSABILITY_SUMMARY_TOPIC: &str = "runtime/map/traversability_summary";
-pub const QUERY_SUBMAP_TOPIC: &str = "runtime/map/query/submap";
-pub const QUERY_ESDF_TILE_TOPIC: &str = "runtime/map/query/esdf_tile";
-pub const QUERY_TRAVERSABILITY_TILE_TOPIC: &str = "runtime/map/query/traversability_tile";
-pub const QUERY_LOCAL_GRID_TOPIC: &str = "runtime/map/query/local_grid";
-pub const QUERY_GLOBAL_GRID_TOPIC: &str = "runtime/map/query/global_grid";
-pub const QUERY_SNAPSHOT_TOPIC: &str = "runtime/map/query/snapshot";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapRevisionId {
     pub epoch: u64,
@@ -298,50 +287,91 @@ response_schema!(
     "runtime/map/query/snapshot/response"
 );
 
-crate::bus::pubsub_leaf!(revision, REVISION_TOPIC, MapRevision);
-crate::bus::pubsub_leaf!(summary, SUMMARY_TOPIC, Summary);
-crate::bus::pubsub_leaf!(local_cost, LOCAL_COST_TOPIC, LocalCost);
-crate::bus::pubsub_leaf!(traversability, TRAVERSABILITY_TOPIC, Traversability);
-crate::bus::pubsub_leaf!(
-    traversability_summary,
-    TRAVERSABILITY_SUMMARY_TOPIC,
-    TraversabilitySummary
-);
+crate::bus::topic_leaf! {
+    pubsub revision {
+        path: "runtime/map/revision",
+        payload: MapRevision
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub summary {
+        path: "runtime/map/summary",
+        payload: Summary
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub local_cost {
+        path: "runtime/map/local_cost",
+        payload: LocalCost
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub traversability {
+        path: "runtime/map/traversability",
+        payload: Traversability
+    }
+}
+
+crate::bus::topic_leaf! {
+    pubsub traversability_summary {
+        path: "runtime/map/traversability_summary",
+        payload: TraversabilitySummary
+    }
+}
 
 pub mod query {
     use super::*;
 
-    crate::bus::query_leaf!(submap, QUERY_SUBMAP_TOPIC, SubmapRequest, SubmapResponse);
-    crate::bus::query_leaf!(
-        esdf_tile,
-        QUERY_ESDF_TILE_TOPIC,
-        EsdfTileRequest,
-        EsdfTileResponse
-    );
-    crate::bus::query_leaf!(
-        traversability_tile,
-        QUERY_TRAVERSABILITY_TILE_TOPIC,
-        TraversabilityTileRequest,
-        TraversabilityTileResponse
-    );
-    crate::bus::query_leaf!(
-        local_grid,
-        QUERY_LOCAL_GRID_TOPIC,
-        LocalGridRequest,
-        LocalGridResponse
-    );
-    crate::bus::query_leaf!(
-        global_grid,
-        QUERY_GLOBAL_GRID_TOPIC,
-        GlobalGridRequest,
-        GlobalGridResponse
-    );
-    crate::bus::query_leaf!(
-        snapshot,
-        QUERY_SNAPSHOT_TOPIC,
-        SnapshotRequest,
-        SnapshotResponse
-    );
+    crate::bus::topic_leaf! {
+        query submap {
+            path: "runtime/map/query/submap",
+            request: SubmapRequest,
+            response: SubmapResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query esdf_tile {
+            path: "runtime/map/query/esdf_tile",
+            request: EsdfTileRequest,
+            response: EsdfTileResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query traversability_tile {
+            path: "runtime/map/query/traversability_tile",
+            request: TraversabilityTileRequest,
+            response: TraversabilityTileResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query local_grid {
+            path: "runtime/map/query/local_grid",
+            request: LocalGridRequest,
+            response: LocalGridResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query global_grid {
+            path: "runtime/map/query/global_grid",
+            request: GlobalGridRequest,
+            response: GlobalGridResponse
+        }
+    }
+
+    crate::bus::topic_leaf! {
+        query snapshot {
+            path: "runtime/map/query/snapshot",
+            request: SnapshotRequest,
+            response: SnapshotResponse
+        }
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +489,36 @@ mod tests {
             <SnapshotResponse as BusyResponse>::busy(),
             SnapshotResponse(MapTileResponse::<Snapshot>::Busy)
         );
+    }
+
+    #[test]
+    fn topic_paths_are_stable() {
+        assert_eq!(super::revision::path(), "runtime/map/revision");
+        assert_eq!(super::summary::path(), "runtime/map/summary");
+        assert_eq!(super::local_cost::path(), "runtime/map/local_cost");
+        assert_eq!(super::traversability::path(), "runtime/map/traversability");
+        assert_eq!(
+            super::traversability_summary::path(),
+            "runtime/map/traversability_summary"
+        );
+        assert_eq!(super::query::submap::path(), "runtime/map/query/submap");
+        assert_eq!(
+            super::query::esdf_tile::path(),
+            "runtime/map/query/esdf_tile"
+        );
+        assert_eq!(
+            super::query::traversability_tile::path(),
+            "runtime/map/query/traversability_tile"
+        );
+        assert_eq!(
+            super::query::local_grid::path(),
+            "runtime/map/query/local_grid"
+        );
+        assert_eq!(
+            super::query::global_grid::path(),
+            "runtime/map/query/global_grid"
+        );
+        assert_eq!(super::query::snapshot::path(), "runtime/map/query/snapshot");
     }
 }
 
