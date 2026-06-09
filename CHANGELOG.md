@@ -4,6 +4,43 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0](https://github.com/phoxal/framework/releases/tag/v0.4.0) - 2026-06-09
+
+
+### Added
+
+- *(engine)* Immediate queries over committed read views (#42)
+- *(core-robot)* Optional directory selector for git component sources (#46)
+- *(core-component)* Typed optional gtin on the component schema (#47)
+- *(api-mission)* Split arrival tolerance from execution budget (#49)
+- *(core-engine)* Engine-owned decision-logging contract (#50)
+
+### CI
+
+- *(release)* Add runtime-image release verification gate (#31) (#32)
+- *(release)* Make release tag handling explicit and retry-safe (#36)
+- Adopt shared reusable release workflows (#37)
+- Enforce Conventional Commit PR titles (#38)
+- Repoint reusable workflows to public phoxal/.github (#39)
+- Gate release on the release-prep branch, not the PR title (#40)
+- Gate releases on the release/ branch prefix (#41)
+- Publish the phoxal crate to crates.io on release (#52)
+
+### Documentation
+
+- Point runtime READMEs at docs/BLUEPRINT after codex/ -> docs/ rename (#33)
+- Re-home v1 contract, convention, and validation docs (#44)
+- Drop stale deploy-descriptor reference in localize_backend (#45)
+
+### Refactored
+
+- *(core-robot)* Remove redundant KinematicKind discriminator (#48)
+- Collapse the framework into one phoxal crate (#51)
+
+### Style
+
+- Cargo fmt --all (#34)
+
 ## [0.3.0](https://github.com/phoxal/framework/releases/tag/v0.3.0) - 2026-05-29
 
 
@@ -95,3 +132,4 @@ All notable changes documented here. The format follows
 
 - *(fixture)* Plan_robot.yaml uses tag: main for real catalog repos
 - *(safety)* Replace ignored robot-v1 test with fixture-driven coverage
+
