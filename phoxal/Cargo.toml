@@ -5,10 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = true
-description = "Phoxal — production-oriented autonomous mobile robot framework (engine, model, typed bus, contracts)."
+description = "Phoxal — production-oriented autonomous robot framework (engine, model, typed bus, contracts)."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["robotics", "robot", "autonomy", "zenoh", "simulation"]
+categories = ["science::robotics", "simulation"]
 
 [lib]
 name = "phoxal"
