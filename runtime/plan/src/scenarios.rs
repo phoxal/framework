@@ -4,7 +4,7 @@ use std::time::Instant;
 use anyhow::{Result, anyhow, ensure};
 use phoxal::api::plan::v1::PlanStatus;
 use phoxal::runtime::RobotRuntimeArgs;
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
 use phoxal::scenario::webots::{command_deadline, context_from_args, p4_goal, wait_until_tracking};
 
@@ -14,7 +14,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     kind: ScenarioKind::Webots {
         world: Cow::Borrowed("ArenaWorld"),
     },
-    phase: phoxal::runtime::step::Phase::P4,
+    phase: phoxal::runtime::runtime::Phase::P4,
     timeout_secs: 120,
     category: Cow::Borrowed("planning"),
     tier: 2,

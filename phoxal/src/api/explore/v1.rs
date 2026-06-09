@@ -4,7 +4,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 use crate::api::localize::v1::LocalizationRevisionId;
 use crate::api::map::v1::MapRevisionId;
 use crate::api::mission::v1::{GoalPose, GoalTolerance};
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const FRONTIERS_TOPIC: &str = "runtime/explore/frontiers";
@@ -127,7 +127,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{
         Frontiers, GoalCandidates, RejectedCandidates, SCHEMA_NAME, SCHEMA_VERSION, Scoring, State,

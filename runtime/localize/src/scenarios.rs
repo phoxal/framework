@@ -9,9 +9,9 @@ use phoxal::api::localize::v1::{
 };
 use phoxal::api::map::v1::Summary as MapSummary;
 use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::simulation::v1::pose::Pose as SimulatorPose;
 use phoxal::runtime::RobotRuntimeArgs;
-use phoxal::runtime::sim_pose::Pose as SimulatorPose;
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
 use phoxal::scenario::helpers::{assert_schema, fixture_robot};
 use phoxal::scenario::webots::{
@@ -47,7 +47,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-localization-backend-conformance"),
         summary: Cow::Borrowed("Runs the localize backend conformance suite in-process."),
         kind: ScenarioKind::Headless,
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("localization"),
         tier: 1,
@@ -58,7 +58,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
             "Checks localize mode, revision, status policy, and selector fallback.",
         ),
         kind: ScenarioKind::Headless,
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("localization"),
         tier: 1,
@@ -69,7 +69,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("LocalizationArena"),
         },
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 240,
         category: Cow::Borrowed("localization"),
         tier: 2,
@@ -80,7 +80,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("localization"),
         tier: 2,
@@ -91,7 +91,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("revision-convergence"),
         tier: 2,

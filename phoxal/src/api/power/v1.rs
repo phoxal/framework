@@ -1,7 +1,7 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-power/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const COMMAND_TOPIC: &str = "runtime/power/command";
@@ -57,7 +57,7 @@ impl TypedSchema for State {
 pub mod command {
     use super::Command;
     use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
     pub const TOPIC: &str = super::COMMAND_TOPIC;
 
@@ -81,7 +81,7 @@ pub mod command {
 pub mod state {
     use super::State;
     use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
     pub const TOPIC: &str = super::STATE_TOPIC;
 
@@ -105,7 +105,7 @@ pub mod state {
 #[cfg(test)]
 mod tests {
     use super::{Command, State};
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     #[test]
     fn command_contract_schema_is_stable() {

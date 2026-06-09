@@ -1,5 +1,5 @@
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -62,13 +62,13 @@ pub fn subscriber_builder(
     bus: &crate::bus::Bus,
     component_id: impl AsRef<str>,
     capability_id: impl AsRef<str>,
-) -> crate::bus::zenoh_typed::TypedSubscriberBuilder<'_, '_, Stamped<Sample>> {
+) -> crate::bus::zenoh::TypedSubscriberBuilder<'_, '_, Stamped<Sample>> {
     crate::bus::pubsub::subscriber_builder(bus, &topic(component_id, capability_id))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::Sample;
 

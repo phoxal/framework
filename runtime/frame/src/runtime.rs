@@ -13,7 +13,7 @@ use phoxal::api::joint::v1::{JointId, JointState, Quantity};
 use phoxal::bus::pubsub::Stamped;
 use phoxal::model::structure::Structure;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal::spatial::frame::{extract_link_transforms, pose_to_isometry};
 use tracing::warn;
@@ -355,7 +355,7 @@ impl Runtime for FrameRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

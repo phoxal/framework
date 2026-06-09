@@ -8,10 +8,10 @@ use phoxal::api::mission::v1::{
     Goal, GoalSource, MissionCommand, MissionMode, State, command, goal, state,
 };
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
@@ -196,7 +196,7 @@ mod tests {
     use phoxal::api::mission::v1::{
         ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalSource, GoalTolerance,
     };
-    use phoxal::runtime::sim_clock::SimulationClock as Clock;
+    use phoxal::api::simulation::v1::clock::Clock;
 
     use super::*;
 

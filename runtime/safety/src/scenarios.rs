@@ -14,7 +14,7 @@ use phoxal::api::safety::v1::{
 };
 use phoxal::bus::pubsub::Stamped;
 use phoxal::runtime::RobotRuntimeArgs;
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
 use phoxal::scenario::helpers::assert_schema;
 use phoxal::scenario::webots::{
@@ -31,7 +31,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
             "Checks safety decision priority, serde contract, and core evaluation policy.",
         ),
         kind: ScenarioKind::Headless,
-        phase: phoxal::runtime::step::Phase::P3,
+        phase: phoxal::runtime::runtime::Phase::P3,
         timeout_secs: 60,
         category: Cow::Borrowed("safety"),
         tier: 1,
@@ -42,7 +42,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal::runtime::step::Phase::P3,
+        phase: phoxal::runtime::runtime::Phase::P3,
         timeout_secs: 120,
         category: Cow::Borrowed("safety"),
         tier: 2,
@@ -53,7 +53,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal::runtime::step::Phase::P3,
+        phase: phoxal::runtime::runtime::Phase::P3,
         timeout_secs: 120,
         category: Cow::Borrowed("safety"),
         tier: 2,

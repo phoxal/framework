@@ -20,8 +20,8 @@ use phoxal::bus::pubsub::Stamped;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::runtime::clock::Step;
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::staged::Robot;
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use tracing::warn;
 
@@ -264,7 +264,7 @@ impl Runtime for VideoRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

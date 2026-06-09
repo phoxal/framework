@@ -1,6 +1,6 @@
 use crate::api::localize::v1::{LocalizationRevision, LocalizationRevisionId};
 use crate::api::map::v1::{MapRevision, MapRevisionId};
-use crate::runtime::sim_pose::Pose;
+use crate::api::simulation::v1::pose::Pose;
 use anyhow::{Result, bail};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -147,7 +147,7 @@ mod tests {
         LocalizationRevisionId,
     };
     use crate::api::map::v1::{MapRevision, MapRevisionCause, MapRevisionId};
-    use crate::runtime::sim_pose::Pose;
+    use crate::api::simulation::v1::pose::Pose;
 
     use super::{
         Meters, assert_forward_delta, assert_lateral_drift, assert_revision_linked,

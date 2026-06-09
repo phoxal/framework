@@ -4,18 +4,6 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
-## [0.4.0](https://github.com/phoxal/framework/releases/tag/v0.4.0) - 2026-06-08
-
-### Changed
-
-- *(workspace)* Collapse the library crates into one published `phoxal` crate with `bus`, `util`, `model`, `spatial`, `api`, `runtime`, and feature-gated `scenario` modules.
-- *(runtime)* Keep the `phoxal-runtime-<name>` binaries separate while releasing the workspace as one coherent version.
-- *(api)* Move the presence contract into `phoxal::api::presence` and fold the simulator API into `phoxal::api::simulation`.
-
-### Removed
-
-- *(planning)* Cancel the proposed `phoxal/engine` and `phoxal/runtimes` repository split.
-
 ## [0.3.0](https://github.com/phoxal/framework/releases/tag/v0.3.0) - 2026-05-29
 
 

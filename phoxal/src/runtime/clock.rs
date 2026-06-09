@@ -1,19 +1,18 @@
 use std::time::Duration;
 
+use crate::api::simulation::v1::clock::{self, Clock};
 use crate::bus::Bus;
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::TypedSubscriber;
+use crate::bus::zenoh::TypedSubscriber;
 use anyhow::{Result, anyhow};
-
-use crate::runtime::sim_clock::{SimulationClock, subscriber_builder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
-    pub tick: SimulationClock,
+    pub tick: Clock,
 }
 
 impl Step {
-    pub const fn new(tick: SimulationClock) -> Self {
+    pub const fn new(tick: Clock) -> Self {
         Self { tick }
     }
 }
@@ -92,13 +91,13 @@ impl RealClock {
         self.interval.tick().await;
         self.step = self.step.saturating_add(1);
         self.time_ns = self.time_ns.saturating_add(self.dt_ns);
-        Step::new(SimulationClock::new(0, self.step, self.time_ns, self.dt_ns))
+        Step::new(Clock::new(0, self.step, self.time_ns, self.dt_ns))
     }
 }
 
 enum StepSource {
     Local(RealClock),
-    Simulation(TypedSubscriber<Stamped<SimulationClock>>),
+    Simulation(TypedSubscriber<Stamped<Clock>>),
 }
 
 pub(crate) struct StepStream {
@@ -112,7 +111,7 @@ impl StepStream {
         Ok(Self {
             source: if simulation {
                 StepSource::Simulation(
-                    subscriber_builder(bus)
+                    clock::subscriber_builder(bus)
                         .await
                         .map_err(crate::bus::Error::from)?,
                 )

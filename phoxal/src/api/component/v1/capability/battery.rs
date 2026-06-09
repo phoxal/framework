@@ -1,5 +1,5 @@
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use derive_new::new;
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +43,7 @@ pub fn subscriber_builder(
     bus: &crate::bus::Bus,
     component_id: impl AsRef<str>,
     capability_id: impl AsRef<str>,
-) -> crate::bus::zenoh_typed::TypedSubscriberBuilder<'_, '_, Stamped<State>> {
+) -> crate::bus::zenoh::TypedSubscriberBuilder<'_, '_, Stamped<State>> {
     crate::bus::pubsub::subscriber_builder(
         bus,
         &super::default_profile_path(component_id, capability_id),
@@ -52,7 +52,7 @@ pub fn subscriber_builder(
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::State;
 

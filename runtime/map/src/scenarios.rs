@@ -14,7 +14,7 @@ use phoxal::api::map::v1::{
 use phoxal::api::mission::v1::{GoalPose, GoalTolerance};
 use phoxal::api::motion::v1::ManualCommand;
 use phoxal::runtime::RobotRuntimeArgs;
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
 use phoxal::scenario::helpers::{assert_close, assert_schema, keyframe, localization_revision};
 use phoxal::scenario::webots::{
@@ -28,7 +28,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-mapping-revision-linkage"),
         summary: Cow::Borrowed("Checks map revisions link to localization revisions."),
         kind: ScenarioKind::Headless,
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("mapping"),
         tier: 1,
@@ -37,7 +37,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-traversability-body-envelope"),
         summary: Cow::Borrowed("Checks body-envelope inflation against fixture structure."),
         kind: ScenarioKind::Headless,
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("traversability"),
         tier: 1,
@@ -46,7 +46,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         name: Cow::Borrowed("p2-revision-convergence-store"),
         summary: Cow::Borrowed("Checks map revision-store convergence and reset behavior."),
         kind: ScenarioKind::Headless,
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 60,
         category: Cow::Borrowed("revision-convergence"),
         tier: 1,
@@ -57,7 +57,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("mapping"),
         tier: 2,
@@ -68,7 +68,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("ArenaWorld"),
         },
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 120,
         category: Cow::Borrowed("traversability"),
         tier: 2,
@@ -79,7 +79,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[
         kind: ScenarioKind::Webots {
             world: Cow::Borrowed("MappingLoopArena"),
         },
-        phase: phoxal::runtime::step::Phase::P2,
+        phase: phoxal::runtime::runtime::Phase::P2,
         timeout_secs: 240,
         category: Cow::Borrowed("mapping"),
         tier: 2,

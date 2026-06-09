@@ -1,4 +1,4 @@
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_NAME: &str = "phoxal-api-presence/v1";
@@ -75,7 +75,7 @@ impl TypedSchema for DebugReadiness {
 pub mod heartbeat {
     use super::Heartbeat;
     use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
     pub const TOPIC: &str = super::HEARTBEAT_TOPIC;
 
@@ -99,7 +99,7 @@ pub mod heartbeat {
 pub mod summary {
     use super::Summary;
     use crate::bus::pubsub::Stamped;
-    use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+    use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
     pub const TOPIC: &str = super::SUMMARY_TOPIC;
 
@@ -124,7 +124,7 @@ pub mod debug {
     pub mod readiness {
         use crate::api::presence::DebugReadiness;
         use crate::bus::pubsub::Stamped;
-        use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+        use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
         pub const TOPIC: &str = crate::api::presence::DEBUG_READINESS_TOPIC;
 
@@ -150,7 +150,7 @@ pub mod debug {
 #[cfg(test)]
 mod tests {
     use super::{DebugReadiness, Heartbeat, SCHEMA_NAME, SCHEMA_VERSION, Summary};
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     #[test]
     fn schema_contracts_do_not_drift() {

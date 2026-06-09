@@ -2,9 +2,7 @@ pub const SCHEMA_NAME: &str = "phoxal-api-video/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{
-    BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder,
-};
+use crate::bus::zenoh::{BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
 use serde::{Deserialize, Serialize};
 
 pub const OPEN_TOPIC: &str = "runtime/video/open";
@@ -132,15 +130,14 @@ pub mod open {
     pub fn get_builder<'a>(
         bus: &'a crate::bus::Bus,
         request: &'a Request,
-    ) -> crate::bus::zenoh_typed::TypedGetBuilder<'a, 'static, Response> {
+    ) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, Response> {
         crate::bus::query::get_builder(bus, TOPIC, request)
     }
 
     pub fn queryable_builder(
         bus: &crate::bus::Bus,
-    ) -> crate::bus::Result<
-        crate::bus::zenoh_typed::TypedQueryableBuilder<'_, 'static, Request, Response>,
-    > {
+    ) -> crate::bus::Result<crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, Request, Response>>
+    {
         crate::bus::query::queryable_builder(bus, TOPIC)
     }
 
@@ -187,7 +184,7 @@ pub mod stream {
 #[cfg(test)]
 mod tests {
     use super::{OpenRequest, OpenResponse, StreamEvent};
-    use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+    use crate::bus::zenoh::{BusyResponse, TypedSchema};
 
     #[test]
     fn schema_names_and_versions_do_not_drift() {

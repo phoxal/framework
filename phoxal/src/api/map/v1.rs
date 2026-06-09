@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::api::frame::v1::FrameId;
 use crate::api::localize::v1::LocalizationRevisionId;
-use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
 pub const REVISION_TOPIC: &str = "runtime/map/revision";
@@ -346,7 +346,7 @@ pub mod query {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+    use crate::bus::zenoh::{BusyResponse, TypedSchema};
 
     use crate::api::map::v1::{
         EsdfTile, EsdfTileRequest, EsdfTileResponse, GlobalGrid, GlobalGridRequest,

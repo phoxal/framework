@@ -1,7 +1,7 @@
 //! # phoxal
 //!
 //! The Phoxal robot framework as one crate. Production-oriented autonomous
-//! mobile robots: manifest-driven, simulation-first, typed bus.
+//! robots: manifest-driven, simulation-first, typed bus.
 //!
 //! Module map:
 //! - [`bus`] — typed Zenoh transport + pubsub/query leaves.

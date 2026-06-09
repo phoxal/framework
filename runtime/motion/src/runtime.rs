@@ -7,10 +7,10 @@ use phoxal::api::follow::v1::{Target as FollowTarget, target as follow_target};
 use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource, State, manual, state};
 use phoxal::api::safety::v1::{SafetyAuthorization, authorization as safety_authorization};
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
@@ -134,7 +134,7 @@ impl Runtime for MotionRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

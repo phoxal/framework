@@ -12,7 +12,7 @@ use phoxal::api::motion::v1::ManualCommand;
 use phoxal::bus::liveliness::declare_liveliness_token;
 use phoxal::bus::pubsub::Stamped;
 use phoxal::runtime::RobotRuntimeArgs;
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
 use phoxal::scenario::webots::{command_deadline, context_from_args};
 
@@ -22,7 +22,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     kind: ScenarioKind::Webots {
         world: Cow::Borrowed("ArenaWorld"),
     },
-    phase: phoxal::runtime::step::Phase::P2,
+    phase: phoxal::runtime::runtime::Phase::P2,
     timeout_secs: 120,
     category: Cow::Borrowed("stream-profile"),
     tier: 2,
@@ -128,10 +128,10 @@ async fn assert_p2_stream_profile_camera_downsample(
 }
 
 async fn next_profile_frame<T>(
-    subscriber: &phoxal::bus::zenoh_typed::TypedSubscriber<Stamped<T>>,
+    subscriber: &phoxal::bus::zenoh::TypedSubscriber<Stamped<T>>,
 ) -> Result<Stamped<T>>
 where
-    T: serde::de::DeserializeOwned + phoxal::bus::zenoh_typed::TypedSchema,
+    T: serde::de::DeserializeOwned + phoxal::bus::zenoh::TypedSchema,
 {
     match subscriber.recv_async().await {
         Ok(Ok(value)) => Ok(value),

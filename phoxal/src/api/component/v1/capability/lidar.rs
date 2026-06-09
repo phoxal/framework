@@ -1,5 +1,5 @@
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ pub fn subscriber_builder(
     bus: &crate::bus::Bus,
     component_id: impl AsRef<str>,
     capability_id: impl AsRef<str>,
-) -> crate::bus::zenoh_typed::TypedSubscriberBuilder<'_, '_, Stamped<Scan>> {
+) -> crate::bus::zenoh::TypedSubscriberBuilder<'_, '_, Stamped<Scan>> {
     crate::bus::pubsub::subscriber_builder(
         bus,
         &super::default_profile_path(component_id, capability_id),
@@ -106,7 +106,7 @@ pub enum SensorHealth {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::Scan;
 

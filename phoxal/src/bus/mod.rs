@@ -9,13 +9,13 @@ pub mod liveliness;
 pub mod pubsub;
 pub mod query;
 #[allow(clippy::module_name_repetitions)]
-pub mod zenoh_typed;
+pub mod zenoh;
 
 pub use crate::{pubsub_leaf, query_leaf, request_schema};
 
 #[derive(Clone, new)]
 pub struct Bus {
-    session: zenoh::Session,
+    session: ::zenoh::Session,
     prefix: String,
 }
 
@@ -37,11 +37,11 @@ impl Bus {
         }
     }
 
-    pub fn session(&self) -> &zenoh::Session {
+    pub fn session(&self) -> &::zenoh::Session {
         &self.session
     }
 
-    pub fn cloned_session(&self) -> zenoh::Session {
+    pub fn cloned_session(&self) -> ::zenoh::Session {
         self.session.clone()
     }
 }
@@ -64,10 +64,10 @@ pub enum Error {
     InvalidRetry(String),
 
     #[error("bus transport error: {0}")]
-    Transport(#[from] zenoh::Error),
+    Transport(#[from] ::zenoh::Error),
 
     #[error("typed query failed: {0}")]
-    TypedGet(#[from] zenoh_typed::TypedGetError),
+    TypedGet(#[from] zenoh::TypedGetError),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

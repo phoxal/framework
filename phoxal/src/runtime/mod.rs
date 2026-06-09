@@ -24,13 +24,9 @@ pub mod conventions;
 pub mod decision_log;
 pub mod execute;
 pub mod query;
-pub mod sensor_store;
-pub mod sim_clock;
-pub mod sim_pose;
-pub mod sim_reset;
-pub mod sim_status;
+pub mod runtime;
+pub mod sensor;
 pub mod staged;
-pub mod step;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -45,7 +41,7 @@ use clap::Parser;
 pub use conventions::*;
 pub use execute::execute;
 pub use query::{QueryOptions, ReadCell, Reader};
-pub use step::EmptyArgs;
+pub use runtime::EmptyArgs;
 
 pub const ENV_ROBOT_CONFIG: &str = "ROBOT_CONFIG";
 pub const ENV_ROBOT_ROUTER_ENDPOINT: &str = "ROBOT_ROUTER_ENDPOINT";

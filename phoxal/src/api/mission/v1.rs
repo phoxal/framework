@@ -2,7 +2,7 @@ pub const SCHEMA_NAME: &str = "phoxal-api-mission/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
 use crate::api::map::v1::MapRevisionId;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const COMMAND_TOPIC: &str = "runtime/mission/command";
@@ -168,7 +168,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{DecisionTrace, Goal, MissionCommand, SCHEMA_NAME, SCHEMA_VERSION, State};
 

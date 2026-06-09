@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::api::component::v1::RuntimeStreamDemand;
 use crate::bus::Bus;
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{
+use crate::bus::zenoh::{
     BusyResponse, TypedPublisher, TypedQueryable, TypedSchema, TypedSubscriber,
 };
 use anyhow::{Result, anyhow};
@@ -876,7 +876,7 @@ mod tests {
         EmptyArgs, InputPolicy, Io, QueryExecutor, QueryStart, Runtime, RuntimeInputStats,
         RuntimeInputs, SourceBuffer, debug_input_topic,
     };
-    use crate::bus::zenoh_typed::BusyResponse;
+    use crate::bus::zenoh::BusyResponse;
     use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
 

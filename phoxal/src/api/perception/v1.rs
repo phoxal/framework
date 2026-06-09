@@ -6,7 +6,7 @@ use std::fmt;
 use crate::api::frame::v1::FrameId;
 use crate::api::localize::v1::LocalizationRevisionId;
 use crate::api::map::v1::MapRevisionId;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DETECTIONS_TOPIC: &str = "runtime/perception/detections";
@@ -194,7 +194,7 @@ mod tests {
     use crate::api::frame::v1::FrameId;
     use crate::api::localize::v1::LocalizationRevisionId;
     use crate::api::map::v1::MapRevisionId;
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{
         BoundingBox, Detection, Detections, DetectorHealth, PerceptionDegradedReason,

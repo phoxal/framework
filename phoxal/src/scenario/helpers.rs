@@ -10,9 +10,9 @@ use crate::api::odometry::v1::{
     OdometryEstimate, PoseEstimate, Status, StatusMode, VelocityEstimate,
 };
 use crate::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::api::simulation::v1::pose::Pose;
+use crate::bus::zenoh::TypedSchema;
 use crate::runtime::COMPONENT_FILE;
-use crate::runtime::sim_pose::Pose;
 use crate::runtime::staged;
 use anyhow::{Context, Result, bail, ensure};
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};

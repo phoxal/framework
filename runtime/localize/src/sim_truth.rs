@@ -5,9 +5,9 @@ use phoxal::api::localize::v1::{
     LocalizationSource, LocalizationStatus, LocalizationStatusReason, PoseEstimate,
 };
 use phoxal::api::odometry::v1::OdometryEstimate;
+use phoxal::api::simulation::v1::pose::Pose as SimPose;
 use phoxal::bus::pubsub::Stamped;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::sim_pose::Pose as SimPose;
 
 use crate::runtime::{
     BackendUpdate, LocalizeBackend, NewRevision, current_revision,
@@ -124,7 +124,7 @@ impl LocalizeBackend for SimulatorTruthBackend {
 #[cfg(test)]
 mod tests {
     use phoxal::api::localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause};
-    use phoxal::runtime::sim_clock::SimulationClock as Clock;
+    use phoxal::api::simulation::v1::clock::Clock;
 
     use super::*;
 

@@ -16,14 +16,14 @@ use phoxal::api::localize::v1::{
     revision, state,
 };
 use phoxal::api::odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
+use phoxal::api::simulation::v1::pose::{self as sim_pose, Pose as SimPose};
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::bus::zenoh::TypedSchema;
 use phoxal::model::component::v1::capability::GnssCoordinateSystem;
 use phoxal::model::robot::v1::LocalizeBackendKind;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::sim_pose::{self, Pose as SimPose};
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 
 use crate::gnss_anchored::GnssAnchoredBackend;
@@ -500,7 +500,7 @@ impl Runtime for LocalizeRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 
@@ -620,8 +620,8 @@ mod tests {
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
     };
+    use phoxal::api::simulation::v1::clock::Clock;
     use phoxal::runtime::clock::Step;
-    use phoxal::runtime::sim_clock::SimulationClock as Clock;
 
     use super::*;
 

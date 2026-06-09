@@ -1,7 +1,7 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-asset/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
 pub const GET_TOPIC: &str = "runtime/asset/get";
@@ -65,14 +65,14 @@ pub fn topic(bus: &crate::bus::Bus) -> String {
 pub fn get_builder<'a>(
     bus: &'a crate::bus::Bus,
     request: &'a GetRequest,
-) -> crate::bus::zenoh_typed::TypedGetBuilder<'a, 'static, GetResponse> {
+) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, GetResponse> {
     crate::bus::query::get_builder(bus, GET_TOPIC, request)
 }
 
 pub fn queryable_builder(
     bus: &crate::bus::Bus,
 ) -> crate::bus::Result<
-    crate::bus::zenoh_typed::TypedQueryableBuilder<'_, 'static, GetRequest, GetResponse>,
+    crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, GetRequest, GetResponse>,
 > {
     crate::bus::query::queryable_builder(bus, GET_TOPIC)
 }
@@ -98,7 +98,7 @@ pub mod get {
 #[cfg(test)]
 mod tests {
     use super::{GetRequest, GetResponse};
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     #[test]
     fn get_request_schema_contract_is_stable() {

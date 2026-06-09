@@ -7,10 +7,10 @@ use phoxal::api::map::v1::MapRevision;
 use phoxal::api::mission::v1::Goal;
 use phoxal::api::plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
@@ -128,7 +128,7 @@ impl Runtime for PlanRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

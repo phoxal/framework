@@ -5,9 +5,7 @@ use std::fmt;
 
 use crate::api::joint::v1::JointId;
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{
-    BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder,
-};
+use crate::bus::zenoh::{BusyResponse, TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
 use serde::{Deserialize, Serialize};
 
 pub const TREE_TOPIC: &str = "runtime/frame/tree";
@@ -213,14 +211,14 @@ pub mod lookup {
     pub fn get_builder<'a>(
         bus: &'a crate::bus::Bus,
         request: &'a FrameLookupRequest,
-    ) -> crate::bus::zenoh_typed::TypedGetBuilder<'a, 'static, FrameLookupResponse> {
+    ) -> crate::bus::zenoh::TypedGetBuilder<'a, 'static, FrameLookupResponse> {
         crate::bus::query::get_builder(bus, TOPIC, request)
     }
 
     pub fn queryable_builder(
         bus: &crate::bus::Bus,
     ) -> crate::bus::Result<
-        crate::bus::zenoh_typed::TypedQueryableBuilder<
+        crate::bus::zenoh::TypedQueryableBuilder<
             '_,
             'static,
             FrameLookupRequest,
@@ -233,7 +231,7 @@ pub mod lookup {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+    use crate::bus::zenoh::{BusyResponse, TypedSchema};
 
     use crate::api::frame::v1::{
         FrameLookupRequest, FrameLookupResponse, FrameTransform, Static, Tree,

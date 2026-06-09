@@ -8,10 +8,10 @@ use phoxal::api::frame::v1::FrameId;
 use phoxal::api::localize::v1::{LocalizationRevisionId, LocalizationState};
 use phoxal::api::map::v1::{MapRevision, Traversability, revision, traversability};
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::bus::zenoh::TypedSchema;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 use crate::frontiers::detect_frontiers_in_frame;
@@ -231,7 +231,7 @@ impl Runtime for ExploreRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

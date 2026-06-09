@@ -1,5 +1,5 @@
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSchema};
+use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema};
 use derive_new::new;
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +37,7 @@ pub fn publisher(
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::Command;
 

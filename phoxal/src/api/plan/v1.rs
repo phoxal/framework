@@ -4,7 +4,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 use crate::api::localize::v1::LocalizationRevisionId;
 use crate::api::map::v1::MapRevisionId;
 use crate::api::mission::v1::Goal;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const PATH_TOPIC: &str = "runtime/plan/path";
@@ -138,7 +138,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{
         CostLayers, Path, RejectedPaths, RevisionInputs, SCHEMA_NAME, SCHEMA_VERSION, SearchGraph,

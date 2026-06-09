@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tracing::warn;
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::bus::zenoh_typed::{
+use crate::bus::zenoh::{
     TypedGetBuilder, TypedGetError, TypedQueryable, TypedQueryableBuilder, TypedSchema,
     TypedSessionExt,
 };

@@ -1,7 +1,7 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-drive/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const TARGET_TOPIC: &str = "runtime/drive/target";
@@ -120,7 +120,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{
         ActuatorCommands, Kinematics, SCHEMA_NAME, SCHEMA_VERSION, Saturation, State, Target,

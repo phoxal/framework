@@ -10,7 +10,7 @@ pub mod status;
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{SCHEMA_NAME, SCHEMA_VERSION, clock, collision, contact, pose, reset, status};
 

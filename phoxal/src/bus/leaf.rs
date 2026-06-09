@@ -5,7 +5,7 @@ macro_rules! pubsub_leaf {
         pub mod $module {
             use super::*;
             use $crate::bus::pubsub::Stamped;
-            use $crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+            use $crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
             pub const TOPIC: &str = $topic;
 
@@ -44,14 +44,14 @@ macro_rules! query_leaf {
             pub fn get_builder<'a>(
                 bus: &'a $crate::bus::Bus,
                 request: &'a $request,
-            ) -> $crate::bus::zenoh_typed::TypedGetBuilder<'a, 'static, $response> {
+            ) -> $crate::bus::zenoh::TypedGetBuilder<'a, 'static, $response> {
                 $crate::bus::query::get_builder(bus, TOPIC, request)
             }
 
             pub fn queryable_builder(
                 bus: &$crate::bus::Bus,
             ) -> $crate::bus::Result<
-                $crate::bus::zenoh_typed::TypedQueryableBuilder<'_, 'static, $request, $response>,
+                $crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, $request, $response>,
             > {
                 $crate::bus::query::queryable_builder(bus, TOPIC)
             }

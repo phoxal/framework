@@ -3,7 +3,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 use crate::api::localize::v1::LocalizationRevisionId;
 use crate::api::map::v1::MapRevisionId;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const TARGET_TOPIC: &str = "runtime/follow/target";
@@ -123,7 +123,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{
         Candidates, Costs, RevisionInputs, SCHEMA_NAME, SCHEMA_VERSION, State, Target,

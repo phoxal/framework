@@ -12,14 +12,13 @@ use crate::api::mission::v1::{
 use crate::api::plan::v1::State as PlanState;
 use crate::api::presence::Summary;
 use crate::api::safety::v1::State as SafetyState;
+use crate::api::simulation::v1::{
+    clock, clock::Clock, pose, pose::Pose, reset, status, status::Status,
+};
 use crate::bus::Bus;
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{TypedPublisher, TypedSchema, TypedSubscriber};
+use crate::bus::zenoh::{TypedPublisher, TypedSchema, TypedSubscriber};
 use crate::runtime::DEFAULT_ROBOT_NAMESPACE;
-use crate::runtime::{
-    sim_clock, sim_clock::SimulationClock as Clock, sim_pose, sim_pose::Pose, sim_reset as reset,
-    sim_status, sim_status::Status,
-};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -132,7 +131,7 @@ impl ScenarioContext {
 
     pub async fn advance_for_secs(&self, secs: f64) -> Result<Stamped<Clock>> {
         let duration_ns = duration_ns_from_secs(secs)?;
-        let subscriber = sim_clock::subscriber_builder(&self.bus)
+        let subscriber = clock::subscriber_builder(&self.bus)
             .await
             .map_err(|error| anyhow!(error.to_string()))?;
         let first = next_stamped(&subscriber, self.wallclock_timeout).await?;
@@ -159,7 +158,7 @@ impl ScenarioContext {
     }
 
     pub async fn simulation_pose(&self) -> Result<Stamped<Pose>> {
-        let subscriber = sim_pose::subscriber_builder(&self.bus, &self.environment.robot_id)
+        let subscriber = pose::subscriber_builder(&self.bus, &self.environment.robot_id)
             .await
             .map_err(|error| anyhow!(error.to_string()))?;
         next_stamped(&subscriber, self.wallclock_timeout).await
@@ -287,7 +286,7 @@ impl ScenarioContext {
         &self,
         predicate: impl Fn(&Status) -> bool,
     ) -> Result<Stamped<Status>> {
-        let subscriber = sim_status::subscriber_builder(&self.bus)
+        let subscriber = status::subscriber_builder(&self.bus)
             .await
             .map_err(|error| anyhow!(error.to_string()))?;
         loop {

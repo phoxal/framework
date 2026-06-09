@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::bus::zenoh_typed::{
+use crate::bus::zenoh::{
     TypedPublisher, TypedPublisherBuilder, TypedSchema, TypedSessionExt, TypedSubscriber,
     TypedSubscriberBuilder,
 };

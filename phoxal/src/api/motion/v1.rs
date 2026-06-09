@@ -2,7 +2,7 @@ pub const SCHEMA_NAME: &str = "phoxal-api-motion/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
 use serde::{Deserialize, Serialize};
 
 pub const STATE_TOPIC: &str = "runtime/motion/state";
@@ -153,7 +153,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use super::{Arbitration, ManualCommand, SCHEMA_NAME, SCHEMA_VERSION, SourceFreshness, State};
 

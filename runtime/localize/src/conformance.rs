@@ -14,9 +14,9 @@ use phoxal::api::odometry::v1::{
     Covariance as OdometryCovariance, OdometryEstimate, PoseEstimate as OdometryPoseEstimate,
     Status, StatusMode, VelocityEstimate as OdometryVelocityEstimate,
 };
+use phoxal::api::simulation::v1::clock::Clock;
 use phoxal::bus::pubsub::Stamped;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::sim_clock::SimulationClock as Clock;
 
 use crate::runtime::{
     BackendUpdate, DeadReckoningBackend, LOCALIZE_EPOCH, LocalizeBackend, NewRevision,

@@ -4,7 +4,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 use std::fmt;
 
 use crate::api::frame::v1::FrameId;
-use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+use crate::bus::zenoh::{BusyResponse, TypedSchema};
 use serde::{Deserialize, Serialize};
 
 pub mod stream_demand;
@@ -402,7 +402,7 @@ pub mod query {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::{BusyResponse, TypedSchema};
+    use crate::bus::zenoh::{BusyResponse, TypedSchema};
 
     use crate::api::localize::v1::{
         CorrectionsRequest, CorrectionsResponse, Keyframe, KeyframeRequest, KeyframeResponse,

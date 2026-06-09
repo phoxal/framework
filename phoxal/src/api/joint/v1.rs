@@ -4,7 +4,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 use std::fmt;
 
 use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
+use crate::bus::zenoh::{TypedPublisherBuilder, TypedSchema, TypedSubscriberBuilder};
 use serde::{Deserialize, Serialize};
 
 pub const DATA_SCHEMA: &str = "runtime/joint/data";
@@ -74,7 +74,7 @@ pub mod data {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use crate::api::joint::v1::JointState;
 

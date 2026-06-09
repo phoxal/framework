@@ -6,7 +6,7 @@ use phoxal::api::odometry::v1::{
     Integration, IntegrationStep, SourceHealth, SourceId, SourceReason, SourceStatus, Status,
     StatusMode, StatusReason,
 };
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::assertions::{
     Meters, Radians, assert_forward_delta, assert_lateral_drift, assert_yaw_drift,
 };
@@ -20,7 +20,7 @@ pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
         "Checks differential wheel odometry integration and typed health reasons.",
     ),
     kind: ScenarioKind::Headless,
-    phase: phoxal::runtime::step::Phase::P1,
+    phase: phoxal::runtime::runtime::Phase::P1,
     timeout_secs: 60,
     category: Cow::Borrowed("odometry"),
     tier: 1,

@@ -13,14 +13,14 @@ use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetySourceRevision,
 };
 use phoxal::bus::pubsub::Stamped;
-use phoxal::runtime::step::{ScenarioDescriptor, ScenarioKind};
+use phoxal::runtime::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::helpers::assert_schema;
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-motion-arbitration-contract"),
     summary: Cow::Borrowed("Checks motion arbitration contracts and follow/safety policy."),
     kind: ScenarioKind::Headless,
-    phase: phoxal::runtime::step::Phase::P3,
+    phase: phoxal::runtime::runtime::Phase::P3,
     timeout_secs: 60,
     category: Cow::Borrowed("failure-recovery"),
     tier: 1,

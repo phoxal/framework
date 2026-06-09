@@ -1,4 +1,4 @@
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -38,14 +38,12 @@ pub async fn request(
 
 pub fn responder_builder(
     bus: &crate::bus::Bus,
-) -> crate::bus::Result<
-    crate::bus::zenoh_typed::TypedQueryableBuilder<'_, 'static, Request, Response>,
-> {
+) -> crate::bus::Result<crate::bus::zenoh::TypedQueryableBuilder<'_, 'static, Request, Response>> {
     crate::bus::query::queryable_builder(bus, TOPIC)
 }
 
 pub async fn responder(
     bus: &crate::bus::Bus,
-) -> crate::bus::Result<crate::bus::zenoh_typed::TypedQueryable<Request, Response>> {
+) -> crate::bus::Result<crate::bus::zenoh::TypedQueryable<Request, Response>> {
     crate::bus::query::queryable(bus, TOPIC).await
 }

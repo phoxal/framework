@@ -158,7 +158,7 @@ mod tests {
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status, StatusMode,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal::runtime::sim_clock::SimulationClock as Clock;
+    use phoxal::api::simulation::v1::clock::Clock;
 
     use super::*;
 

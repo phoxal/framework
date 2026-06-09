@@ -3,7 +3,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 use crate::api::frame::v1::FrameId;
 use crate::api::joint::v1::JointId;
-use crate::bus::zenoh_typed::TypedSchema;
+use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const DATA_TOPIC: &str = "runtime/odometry/data";
@@ -153,7 +153,7 @@ pub mod debug {
     crate::bus::pubsub_leaf!(source_health, DEBUG_SOURCE_HEALTH_TOPIC, SourceHealth);
     pub mod residuals {
         use crate::bus::pubsub::Stamped;
-        use crate::bus::zenoh_typed::{TypedPublisherBuilder, TypedSubscriberBuilder};
+        use crate::bus::zenoh::{TypedPublisherBuilder, TypedSubscriberBuilder};
 
         use crate::api::odometry::v1::Residuals;
 
@@ -181,7 +181,7 @@ pub mod debug {
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh_typed::TypedSchema;
+    use crate::bus::zenoh::TypedSchema;
 
     use crate::api::odometry::v1::{
         Integration, OdometryEstimate, Residuals, SourceHealth, Status,

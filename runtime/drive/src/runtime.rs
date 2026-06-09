@@ -11,8 +11,8 @@ use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::structure::Structure;
 use phoxal::runtime::clock::Step;
+use phoxal::runtime::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::staged::Robot;
-use phoxal::runtime::step::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
@@ -222,7 +222,7 @@ impl Runtime for DriveRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

@@ -11,13 +11,13 @@ use phoxal::api::safety::v1::{
     emergency_stop_request as safety_emergency_stop_request, state as safety_state,
 };
 use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh_typed::TypedSchema;
+use phoxal::bus::zenoh::TypedSchema;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::structure::Structure;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::staged::Robot;
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
@@ -231,7 +231,7 @@ impl Runtime for SafetyRuntime {
         Ok(())
     }
 
-    fn scenarios() -> &'static [phoxal::runtime::step::ScenarioDescriptor] {
+    fn scenarios() -> &'static [phoxal::runtime::runtime::ScenarioDescriptor] {
         crate::scenarios::SCENARIOS
     }
 

@@ -9,8 +9,8 @@ use phoxal::bus::pubsub::Stamped;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
 use phoxal::runtime::clock::Step;
+use phoxal::runtime::runtime::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::staged::Robot;
-use phoxal::runtime::step::{Io, Publisher, Runtime, RuntimeInputs};
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
 use tracing::warn;
 
