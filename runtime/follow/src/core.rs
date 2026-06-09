@@ -461,8 +461,8 @@ mod tests {
             tolerance: GoalTolerance {
                 pos_m: GOAL_TOLERANCE_M,
                 yaw_rad: None,
-                time_ns: None,
             },
+            max_duration_ns: None,
             source: GoalSource::Operator,
         }
     }

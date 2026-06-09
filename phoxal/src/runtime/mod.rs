@@ -1,3 +1,24 @@
+//! Runtime execution and observability helpers.
+//!
+//! Runtime decisions are logged through [`decision_log::DecisionLog`], not
+//! runtime-local `last_logged_state` fields or free-text event names. The
+//! runtime owns the typed decision key, normally derived from its owner-local
+//! API `State` contract. `phoxal::runtime` owns the logging mechanics.
+//!
+//! Each runtime calls `observe(now_ns, key)` once per step with logical time
+//! from [`clock::Step`]. The initial key always emits. Identical keys are
+//! silent. Changes are emitted only when the key differs from the last emitted
+//! key, and the helper bounds flapping with a logical-time `min_interval_ns`;
+//! in-window transitions are folded into the next emitted event via
+//! `suppressed_count`.
+//!
+//! All decision logs use one structured tracing event on target
+//! `phoxal.runtime.decision` with message `runtime decision changed`. Every
+//! event carries `runtime_id`, `decision_label`, `schema_name`,
+//! `schema_version`, `decision_key`, `now_ns`, and `suppressed_count`.
+//! Decision logging is observability only; it does not create a bus topic or
+//! product.
+
 pub mod clock;
 pub mod conventions;
 pub mod decision_log;

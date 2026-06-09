@@ -48,7 +48,7 @@ impl Config {
         else {
             bail!(
                 "odometry runtime only supports differential drive kinematics, found {}",
-                robot.model.motion.kinematic.kind()
+                robot.model.motion.kinematic.variant_label()
             );
         };
 

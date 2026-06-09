@@ -359,7 +359,6 @@ async fn assert_p2_traversability(ctx: &ScenarioContext, deadline: Instant) -> R
         GoalTolerance {
             pos_m: 0.20,
             yaw_rad: Some(0.14),
-            time_ns: None,
         },
     )
     .await?;

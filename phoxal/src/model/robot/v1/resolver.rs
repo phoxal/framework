@@ -91,16 +91,16 @@ fn validate_profile(
     let mut evidence = Vec::new();
     let mut failures = Vec::new();
 
-    let kinematic = model.motion.kinematic.kind();
-    if profile.supported_kinematics.contains(&kinematic) {
+    let kinematic_label = model.motion.kinematic.variant_label();
+    if profile_id.supports_kinematics(&model.motion.kinematic) {
         evidence.push(ConformanceEvidence::new(
             "kinematics",
-            format!("{kinematic} is supported by {profile_id}"),
+            format!("{kinematic_label} is supported by {profile_id}"),
         ));
     } else {
         failures.push(ConformanceFailure::new(
             "kinematics",
-            format!("{kinematic} is not supported by {profile_id}"),
+            format!("{kinematic_label} is not supported by {profile_id}"),
         ));
     }
 

@@ -17,7 +17,7 @@ pub use driver::{ConnectionConfig, DriverConfig, GpioDirection, GpioPinConfig};
 pub use localize_backend::{
     LocalizeBackendKind, ResolvedLocalizeBackend, resolve_localize_backend,
 };
-pub use motion::{KinematicConfig, KinematicKind, Motion};
+pub use motion::{KinematicConfig, Motion};
 pub use profile::{AutonomyProfileId, AutonomyProfileSpec, autonomy_profile};
 pub use resolver::{ResolvedCapabilityRole, ResolvedFacts, SourceBundle, resolve_source_bundle};
 pub use robot::{

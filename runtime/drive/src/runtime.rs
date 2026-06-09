@@ -50,7 +50,7 @@ impl Config {
         else {
             bail!(
                 "drive runtime only supports differential drive kinematics, found {}",
-                robot.model.motion.kinematic.kind()
+                robot.model.motion.kinematic.variant_label()
             );
         };
 

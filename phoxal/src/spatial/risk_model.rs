@@ -46,7 +46,7 @@ impl SafetyKinematicEvaluator {
             | KinematicConfig::Omnidirectional { .. } => {
                 bail!(
                     "safety has no evaluator for motion.kinematic.kind = {}",
-                    kinematic.kind()
+                    kinematic.variant_label()
                 )
             }
         }

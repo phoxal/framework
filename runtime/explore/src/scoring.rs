@@ -38,7 +38,6 @@ pub(crate) fn score_candidates(
                 tolerance: GoalTolerance {
                     pos_m: GOAL_TOLERANCE_POS_M,
                     yaw_rad: Some(GOAL_TOLERANCE_YAW_RAD),
-                    time_ns: None,
                 },
                 score,
             })
