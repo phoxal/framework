@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::api::presence::{Heartbeat, Readiness, RuntimeId};
+use crate::api::v1::presence::{Heartbeat, Readiness, RuntimeId};
 use crate::api::v1::topic;
 use crate::bus::Bus;
 use crate::bus::builder::Builder;

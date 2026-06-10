@@ -7,12 +7,12 @@ use crate::core::revisions::{
 };
 use crate::core::submaps::SubmapStore;
 use anyhow::{Result, bail, ensure};
-use phoxal::api::localize::v1::{LocalizationMode, LocalizationRevisionId};
-use phoxal::api::map::v1::{
+use phoxal::api::v1::localize::{LocalizationMode, LocalizationRevisionId};
+use phoxal::api::v1::map::{
     MapRevisionCause, MapRevisionId, TraversabilityCell, TraversabilityStatus,
 };
-use phoxal::api::mission::v1::{GoalPose, GoalTolerance};
-use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::v1::mission::{GoalPose, GoalTolerance};
+use phoxal::api::v1::motion::ManualCommand;
 use phoxal::api::v1::topic;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};

@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use crate::core::PlanDecision;
 use anyhow::Result;
-use phoxal::api::localize::v1::LocalizationState;
-use phoxal::api::map::v1::MapRevision;
-use phoxal::api::mission::v1::Goal;
-use phoxal::api::plan::v1::{Path, PlanReason, PlanStatus, State};
+use phoxal::api::v1::localize::LocalizationState;
+use phoxal::api::v1::map::MapRevision;
+use phoxal::api::v1::mission::Goal;
+use phoxal::api::v1::plan::{Path, PlanReason, PlanStatus, State};
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;

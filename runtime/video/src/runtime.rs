@@ -8,13 +8,13 @@ use openh264::encoder::{
     BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode,
 };
 use openh264::formats::{RgbSliceU8, YUVBuffer};
-use phoxal::api::component::v1::capability::camera;
-use phoxal::api::component::v1::capability::profile::{
+use phoxal::api::v1::component::capability::camera;
+use phoxal::api::v1::component::capability::profile::{
     CameraProfileEncoding, CameraProfileSpec, ProfileId,
 };
-use phoxal::api::motion::v1::State as MotionState;
+use phoxal::api::v1::motion::State as MotionState;
 use phoxal::api::v1::topic;
-use phoxal::api::video::v1::{
+use phoxal::api::v1::video::{
     Codec, EndReason, OpenRequest, OpenResponse, StreamEvent, StreamFormat, StreamPacket,
     UnavailableReason,
 };
@@ -544,7 +544,7 @@ fn video_open(view: &VideoView, request: OpenRequest) -> OpenResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::api::video::v1::Quality;
+    use phoxal::api::v1::video::Quality;
 
     fn preview_source() -> PreviewSource {
         PreviewSource::new(CapabilityRef::new("front_camera", "rgb"), 640, 480, 30.0)

@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, bail};
-use phoxal::api::component::v1::capability::motor::Command as MotorCommand;
-use phoxal::api::drive::v1::{ActuatorAuthority, State, StopReason, Target};
+use phoxal::api::v1::component::capability::motor::Command as MotorCommand;
+use phoxal::api::v1::drive::{ActuatorAuthority, State, StopReason, Target};
 use phoxal::api::v1::topic;
 use phoxal::bus::topic::{PubSub, Topic};
 use phoxal::bus::typed::Received;

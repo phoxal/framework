@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::api::simulation::v1::clock::Clock;
+use crate::api::v1::simulation::clock::Clock;
 use crate::api::v1::topic;
 use crate::bus::Bus;
 use crate::bus::typed::TypedTopicSubscriber;

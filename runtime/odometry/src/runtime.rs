@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::joint::v1::{JointId, JointState, Quantity};
-use phoxal::api::odometry::v1::{
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::joint::{JointId, JointState, Quantity};
+use phoxal::api::v1::odometry::{
     Covariance, Integration, IntegrationStep, OdometryEstimate, PoseEstimate, Residuals,
     SourceHealth, SourceId, SourceReason, SourceStatus, Status, StatusMode, StatusReason,
     VelocityEstimate,
@@ -570,8 +570,8 @@ fn source_status(joint_id: &JointId, health: WheelHealth) -> SourceStatus {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::joint::v1::JointId;
-    use phoxal::api::odometry::v1::{SourceId, StatusMode, StatusReason};
+    use phoxal::api::v1::joint::JointId;
+    use phoxal::api::v1::odometry::{SourceId, StatusMode, StatusReason};
 
     use super::{
         Covariance3, IntegrationOutcome, OdometryState, PlanarPose, VAR_PER_STEP_DEGRADED_M2,

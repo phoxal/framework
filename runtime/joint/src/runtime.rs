@@ -3,8 +3,8 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal::api::component::v1::capability::encoder::Sample as EncoderSample;
-use phoxal::api::joint::v1::{JointId, JointState, Quantity};
+use phoxal::api::v1::component::capability::encoder::Sample as EncoderSample;
+use phoxal::api::v1::joint::{JointId, JointState, Quantity};
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;

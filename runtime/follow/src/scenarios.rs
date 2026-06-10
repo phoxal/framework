@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::follow::v1::FollowStatus;
+use phoxal::api::v1::follow::FollowStatus;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;

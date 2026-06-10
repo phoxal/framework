@@ -1,4 +1,4 @@
-use phoxal::api::component::v1::capability::motor::Command;
+use phoxal::api::v1::component::capability::motor::Command;
 use phoxal::api::v1::topic;
 use phoxal::bus::topic::{PubSub, Topic};
 

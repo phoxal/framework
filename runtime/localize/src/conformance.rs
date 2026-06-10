@@ -4,17 +4,17 @@
 //! ORB-SLAM3 backend end-to-end; this proves the contract every backend must satisfy.
 
 use anyhow::{Result, bail, ensure};
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::localize::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, KeyframeId, KeyframeRequest,
     KeyframeResponse, LocalizationMode, LocalizationRevisionCause, LocalizationRevisionId,
     LocalizationStatusReason, PoseGraphRange, PoseGraphRequest, PoseGraphResponse,
 };
-use phoxal::api::odometry::v1::{
+use phoxal::api::v1::odometry::{
     Covariance as OdometryCovariance, OdometryEstimate, PoseEstimate as OdometryPoseEstimate,
     Status, StatusMode, VelocityEstimate as OdometryVelocityEstimate,
 };
-use phoxal::api::simulation::v1::clock::Clock;
+use phoxal::api::v1::simulation::clock::Clock;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 

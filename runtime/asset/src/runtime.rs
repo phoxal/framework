@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use phoxal::api::asset::v1::{GetRequest, GetResponse, InvalidPathReason, UnavailableReason};
+use phoxal::api::v1::asset::{GetRequest, GetResponse, InvalidPathReason, UnavailableReason};
 use phoxal::api::v1::topic;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
@@ -93,7 +93,7 @@ impl Runtime for AssetRuntime {
 mod tests {
     use super::{AssetView, asset_get};
     use anyhow::Result;
-    use phoxal::api::asset::v1::{
+    use phoxal::api::v1::asset::{
         GetRequest as Request, GetResponse as Response, InvalidPathReason,
     };
     use phoxal::runtime::MESHES_DIR;

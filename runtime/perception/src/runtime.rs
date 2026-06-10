@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use crate::core::{HealthState, Tracker, TrackerConfig};
 use anyhow::{Result, bail};
-use phoxal::api::component::v1::capability::{camera, depth};
-use phoxal::api::frame::v1::{FrameId, Tree};
-use phoxal::api::localize::v1::LocalizationState;
-use phoxal::api::map::v1::MapRevision;
-use phoxal::api::perception::v1::{
+use phoxal::api::v1::component::capability::{camera, depth};
+use phoxal::api::v1::frame::{FrameId, Tree};
+use phoxal::api::v1::localize::LocalizationState;
+use phoxal::api::v1::map::MapRevision;
+use phoxal::api::v1::perception::{
     BoundingBox, Detection, Detections, PerceptionDegradedReason, PerceptionState,
     PerceptionStoppedReason, RevisionLinkage,
 };

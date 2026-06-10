@@ -2,13 +2,13 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::localize::{
     LocalizationMode, LocalizationRevisionCause, LocalizationSource, LocalizationStatusReason,
     PoseEstimate,
 };
-use phoxal::api::map::v1::Summary as MapSummary;
-use phoxal::api::motion::v1::ManualCommand;
-use phoxal::api::simulation::v1::pose::Pose as SimulatorPose;
+use phoxal::api::v1::map::Summary as MapSummary;
+use phoxal::api::v1::motion::ManualCommand;
+use phoxal::api::v1::simulation::pose::Pose as SimulatorPose;
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;

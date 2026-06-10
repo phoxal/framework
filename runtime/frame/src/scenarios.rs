@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
 use anyhow::{Result, bail, ensure};
-use phoxal::api::frame::v1::{
+use phoxal::api::v1::frame::{
     FrameId, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source,
 };
-use phoxal::api::joint::v1::{JointId, JointState, Quantity};
+use phoxal::api::v1::joint::{JointId, JointState, Quantity};
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::helpers::{
     assert_close, compose, ok_transform, yaw_from_xyzw, yaw_quaternion,

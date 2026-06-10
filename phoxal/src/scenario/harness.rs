@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::api::explore::v1::{GoalCandidates, State as ExploreState};
-use crate::api::follow::v1::State as FollowState;
-use crate::api::localize::v1::LocalizationState;
-use crate::api::map::v1::{Summary as MapSummary, TraversabilitySummary};
-use crate::api::mission::v1::{
+use crate::api::v1::explore::{GoalCandidates, State as ExploreState};
+use crate::api::v1::follow::State as FollowState;
+use crate::api::v1::localize::LocalizationState;
+use crate::api::v1::map::{Summary as MapSummary, TraversabilitySummary};
+use crate::api::v1::mission::{
     ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalTolerance, MissionCommand,
     State as MissionState,
 };
-use crate::api::plan::v1::State as PlanState;
-use crate::api::presence::Summary;
-use crate::api::safety::v1::State as SafetyState;
-use crate::api::simulation::v1::{clock::Clock, pose::Pose, reset, status::Status};
+use crate::api::v1::plan::State as PlanState;
+use crate::api::v1::presence::Summary;
+use crate::api::v1::safety::State as SafetyState;
+use crate::api::v1::simulation::{clock::Clock, pose::Pose, reset, status::Status};
 use crate::api::v1::topic;
 use crate::bus::Bus;
 use crate::bus::typed::{Received, TypedTopicSubscriber};
@@ -291,7 +291,7 @@ impl ScenarioContext {
 
     pub async fn publish_manual_command(
         &self,
-        command: crate::api::motion::v1::ManualCommand,
+        command: crate::api::v1::motion::ManualCommand,
     ) -> Result<()> {
         let produced_at_ns = self.wait_until_ready().await?.value.time_ns;
         self.bus

@@ -6,8 +6,8 @@ error[E0308]: mismatched types
   |     |
   |     arguments to this function are incorrect
   |
-  = note: expected struct `Topic<PubSub<phoxal::api::component::v1::capability::motor::Command>>`
-             found struct `Topic<PubSub<phoxal::api::drive::v1::Target>>`
+  = note: expected struct `Topic<PubSub<phoxal::api::v1::component::capability::motor::Command>>`
+             found struct `Topic<PubSub<phoxal::api::v1::drive::Target>>`
 note: function defined here
  --> tests/ui/topic_wrong_payload.rs:5:4
   |

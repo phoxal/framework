@@ -1,6 +1,6 @@
-use crate::api::component::v1::capability::depth::Depth;
-use crate::api::component::v1::capability::lidar::Scan;
-use crate::api::component::v1::capability::range::Sample;
+use crate::api::v1::component::capability::depth::Depth;
+use crate::api::v1::component::capability::lidar::Scan;
+use crate::api::v1::component::capability::range::Sample;
 
 use crate::spatial::ray::{
     DepthGrid, DepthRayProjection, RangeRayProjection, Ray, sample_depth_rays, sample_lidar_rays,
@@ -219,7 +219,7 @@ fn project_planar_ray(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::component::v1::capability::depth::Depth as DepthPayload;
+    use crate::api::v1::component::capability::depth::Depth as DepthPayload;
     use crate::model::component::v1::CapabilityRef;
     use nalgebra::UnitQuaternion;
 
@@ -292,7 +292,7 @@ mod tests {
         let pose = range_pose(0.4, 0.0, 0.0);
         let rays = rays_from_range_sample(
             &pose,
-            &crate::api::component::v1::capability::range::Sample::new(1.5),
+            &crate::api::v1::component::capability::range::Sample::new(1.5),
         )
         .expect("valid range sample");
 
@@ -307,7 +307,7 @@ mod tests {
         let pose = range_pose(0.0, 0.0, 0.0);
         let rays = rays_from_range_sample(
             &pose,
-            &crate::api::component::v1::capability::range::Sample::new(4.0),
+            &crate::api::v1::component::capability::range::Sample::new(4.0),
         )
         .expect("valid range sample");
 

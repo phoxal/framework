@@ -2,12 +2,12 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::component::v1::capability::{
+use phoxal::api::v1::component::capability::{
     camera::{Encoding as CameraEncoding, Frame as CameraFrame},
     depth::Depth as DepthFrame,
     profile::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
 };
-use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::v1::motion::ManualCommand;
 use phoxal::api::v1::topic;
 use phoxal::bus::liveliness::declare_liveliness_token;
 use phoxal::bus::typed::{Received, TypedTopicSubscriber};

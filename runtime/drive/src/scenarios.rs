@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, ensure};
-use phoxal::api::drive::v1::{
+use phoxal::api::v1::drive::{
     ActuatorAuthority, State as DriveState, StopReason, Target as DriveTarget,
 };
 use phoxal::api::v1::topic;

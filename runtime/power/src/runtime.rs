@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use phoxal::api::power::v1::{Command, FailedReason, RejectedReason, State, Status};
+use phoxal::api::v1::power::{Command, FailedReason, RejectedReason, State, Status};
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
@@ -229,7 +229,7 @@ fn idle_state() -> State {
 #[cfg(test)]
 mod tests {
     use super::{ExecutorOutcome, LatchedState, PowerExecutor, idle_state, state_for_command};
-    use phoxal::api::power::v1::{Command, FailedReason, RejectedReason, State, Status};
+    use phoxal::api::v1::power::{Command, FailedReason, RejectedReason, State, Status};
 
     struct StaticExecutor {
         outcome: ExecutorOutcome,

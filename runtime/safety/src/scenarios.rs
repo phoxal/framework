@@ -4,11 +4,11 @@ use std::time::Instant;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome};
 use anyhow::{Result, ensure};
-use phoxal::api::component::v1::capability::range;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::component::capability::range;
+use phoxal::api::v1::localize::{
     LocalizationMode, LocalizationSource, LocalizationState, LocalizationStatus,
 };
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::safety::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
     SafetyReasonCode, SafetySourceRevision,
 };

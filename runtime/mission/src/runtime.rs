@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use crate::core::{GoalPublish, MissionState};
 use anyhow::Result;
-use phoxal::api::explore::v1::GoalCandidates;
-use phoxal::api::localize::v1::{LocalizationMode, LocalizationState, PoseEstimate};
-use phoxal::api::mission::v1::{Goal, GoalSource, MissionCommand, MissionMode, State};
+use phoxal::api::v1::explore::GoalCandidates;
+use phoxal::api::v1::localize::{LocalizationMode, LocalizationState, PoseEstimate};
+use phoxal::api::v1::mission::{Goal, GoalSource, MissionCommand, MissionMode, State};
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
@@ -192,14 +192,14 @@ const fn mission_goal_source(source: &GoalSource) -> MissionGoalSource {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::explore::v1::{GoalCandidate, GoalCandidates};
-    use phoxal::api::frame::v1::FrameId;
-    use phoxal::api::localize::v1::{LocalizationSource, LocalizationStatus};
-    use phoxal::api::map::v1::MapRevisionId;
-    use phoxal::api::mission::v1::{
+    use phoxal::api::v1::explore::{GoalCandidate, GoalCandidates};
+    use phoxal::api::v1::frame::FrameId;
+    use phoxal::api::v1::localize::{LocalizationSource, LocalizationStatus};
+    use phoxal::api::v1::map::MapRevisionId;
+    use phoxal::api::v1::mission::{
         ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalSource, GoalTolerance,
     };
-    use phoxal::api::simulation::v1::clock::Clock;
+    use phoxal::api::v1::simulation::clock::Clock;
 
     use super::*;
 
@@ -293,7 +293,7 @@ mod tests {
                 epoch: 1,
                 sequence: 2,
             },
-            built_from_localize_revision: phoxal::api::localize::v1::LocalizationRevisionId {
+            built_from_localize_revision: phoxal::api::v1::localize::LocalizationRevisionId {
                 epoch: 1,
                 sequence: 3,
             },

@@ -1,5 +1,5 @@
-use crate::api::component::v1::capability::depth::MILLIMETERS_PER_METER;
-use crate::api::component::v1::capability::lidar::Scan as LidarData;
+use crate::api::v1::component::capability::depth::MILLIMETERS_PER_METER;
+use crate::api::v1::component::capability::lidar::Scan as LidarData;
 use nalgebra::Vector3;
 use serde::{Deserialize, Serialize};
 
@@ -270,8 +270,8 @@ fn is_range_hit(distance_m: f32, max_range_m: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::component::v1::capability::depth::Depth as DepthPayload;
-    use crate::api::component::v1::capability::lidar::{Points, Ranges, Scan as LidarData};
+    use crate::api::v1::component::capability::depth::Depth as DepthPayload;
+    use crate::api::v1::component::capability::lidar::{Points, Ranges, Scan as LidarData};
     use crate::model::component::v1::CapabilityRef;
     use nalgebra::UnitQuaternion;
 

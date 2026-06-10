@@ -3,10 +3,10 @@ use std::time::Duration;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome, RangeSafetyClass};
 use anyhow::Result;
-use phoxal::api::component::v1::capability::{emergency_stop as component_emergency_stop, range};
-use phoxal::api::localize::v1::LocalizationState;
-use phoxal::api::map::v1::TraversabilitySummary;
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::component::capability::{emergency_stop as component_emergency_stop, range};
+use phoxal::api::v1::localize::LocalizationState;
+use phoxal::api::v1::map::TraversabilitySummary;
+use phoxal::api::v1::safety::{
     EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
     SafetySourceRevision, State,
 };

@@ -347,7 +347,7 @@ mod tests {
     use zenoh::{key_expr::KeyExpr, sample::SampleBuilder};
 
     use super::{concrete_publish_key, decode_sample};
-    use crate::api::{asset::v1 as asset, component::v1::capability::motor, v1::topic};
+    use crate::api::v1::{asset, component::capability::motor, topic};
     use crate::bus::metadata::BusMetadata;
     use crate::bus::query::Retry;
     use crate::bus::zenoh::{serialize_payload, typed_encoding};

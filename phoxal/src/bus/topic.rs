@@ -89,11 +89,10 @@ impl<Kind> Topic<Kind> {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::{
-        asset::v1 as asset,
-        component::v1::capability::{gnss, motor},
-        drive, simulation,
-        v1::topic,
+    use crate::api::v1::{
+        asset,
+        component::capability::{gnss, motor},
+        drive, simulation, topic,
     };
     use crate::bus::topic::{PubSub, Query, Topic};
 
@@ -183,11 +182,11 @@ mod tests {
         fn want_command(_: Topic<PubSub<motor::Command>>) {}
         fn want_asset_get(_: Topic<Query<asset::GetRequest, asset::GetResponse>>) {}
 
-        want::<drive::v1::Target>(topic::new().v1().drive().target());
-        want::<drive::v1::State>(topic::new().v1().drive().state());
+        want::<drive::Target>(topic::new().v1().drive().target());
+        want::<drive::State>(topic::new().v1().drive().state());
         want::<gnss::Sample>(topic::new().v1().component("base").gnss("receiver").data());
-        want::<simulation::v1::clock::Clock>(topic::new().v1().simulation().clock());
-        want::<simulation::v1::pose::Pose>(topic::new().v1().simulation().robot("r1").pose());
+        want::<simulation::clock::Clock>(topic::new().v1().simulation().clock());
+        want::<simulation::pose::Pose>(topic::new().v1().simulation().robot("r1").pose());
         want_command(
             topic::new()
                 .v1()

@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::explore::v1::{ExploreStatus, Frontiers, GoalCandidates, State};
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::localize::v1::{LocalizationRevisionId, LocalizationState};
-use phoxal::api::map::v1::{MapRevision, Traversability};
+use phoxal::api::v1::explore::{ExploreStatus, Frontiers, GoalCandidates, State};
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::localize::{LocalizationRevisionId, LocalizationState};
+use phoxal::api::v1::map::{MapRevision, Traversability};
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;

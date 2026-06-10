@@ -2,12 +2,12 @@ use std::borrow::Cow;
 
 use crate::core::Arbitration as MotionArbitration;
 use anyhow::{Result, ensure};
-use phoxal::api::drive::v1::Target as DriveTarget;
-use phoxal::api::follow::v1::Target as FollowTarget;
-use phoxal::api::localize::v1::LocalizationRevisionId;
-use phoxal::api::map::v1::MapRevisionId;
-use phoxal::api::motion::v1::{Arbitration, ArbitrationCandidate, MotionSource};
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::drive::Target as DriveTarget;
+use phoxal::api::v1::follow::Target as FollowTarget;
+use phoxal::api::v1::localize::LocalizationRevisionId;
+use phoxal::api::v1::map::MapRevisionId;
+use phoxal::api::v1::motion::{Arbitration, ArbitrationCandidate, MotionSource};
+use phoxal::api::v1::safety::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetySourceRevision,
 };
 use phoxal::api::v1::topic;

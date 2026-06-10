@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use crate::core::FollowDecision;
 use anyhow::Result;
-use phoxal::api::follow::v1::{FollowReason, FollowStatus, State, Target};
-use phoxal::api::localize::v1::LocalizationState;
-use phoxal::api::plan::v1::Path;
+use phoxal::api::v1::follow::{FollowReason, FollowStatus, State, Target};
+use phoxal::api::v1::localize::LocalizationState;
+use phoxal::api::v1::plan::Path;
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;

@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use crate::core::Arbitration;
 use anyhow::Result;
-use phoxal::api::drive::v1::Target as DriveTarget;
-use phoxal::api::follow::v1::Target as FollowTarget;
-use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource, State};
-use phoxal::api::safety::v1::SafetyAuthorization;
+use phoxal::api::v1::drive::Target as DriveTarget;
+use phoxal::api::v1::follow::Target as FollowTarget;
+use phoxal::api::v1::motion::{ManualCommand, MotionReason, MotionSource, State};
+use phoxal::api::v1::safety::SafetyAuthorization;
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;

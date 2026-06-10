@@ -3,17 +3,17 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::component::v1::capability::{camera, depth, gnss, imu};
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::component::capability::{camera, depth, gnss, imu};
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::localize::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance, ImuBiasEstimate,
     Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode, LocalizationRevision,
     LocalizationRevisionCause, LocalizationRevisionId, LocalizationSource, LocalizationState,
     LocalizationStatus, LocalizationStatusReason, PoseEstimate, PoseGraphCorrection,
     PoseGraphRequest, PoseGraphResponse, VelocityEstimate,
 };
-use phoxal::api::odometry::v1::{OdometryEstimate, StatusMode};
-use phoxal::api::simulation::v1::pose::Pose as SimPose;
+use phoxal::api::v1::odometry::{OdometryEstimate, StatusMode};
+use phoxal::api::v1::simulation::pose::Pose as SimPose;
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
@@ -541,7 +541,7 @@ pub(crate) fn publishable_revision(
     }
 }
 
-fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -> PoseEstimate {
+fn localize_pose_from_odometry(pose: &phoxal::api::v1::odometry::PoseEstimate) -> PoseEstimate {
     PoseEstimate {
         frame_id: FrameId::new(ODOM_FRAME_ID),
         child_frame_id: FrameId::new(BASE_FRAME_ID),
@@ -551,7 +551,7 @@ fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -
 }
 
 fn localize_velocity_from_odometry(
-    velocity: &phoxal::api::odometry::v1::VelocityEstimate,
+    velocity: &phoxal::api::v1::odometry::VelocityEstimate,
 ) -> VelocityEstimate {
     VelocityEstimate {
         frame_id: velocity.frame_id.clone(),
@@ -560,7 +560,7 @@ fn localize_velocity_from_odometry(
     }
 }
 
-fn localize_covariance(covariance: &phoxal::api::odometry::v1::Covariance) -> Covariance {
+fn localize_covariance(covariance: &phoxal::api::v1::odometry::Covariance) -> Covariance {
     Covariance {
         values: covariance.values.clone(),
     }
@@ -616,12 +616,12 @@ fn localize_corrections(view: &LocalizeView, req: CorrectionsRequest) -> Correct
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::localize::v1::{KeyframeId, PoseGraphRange};
-    use phoxal::api::odometry::v1::{
+    use phoxal::api::v1::localize::{KeyframeId, PoseGraphRange};
+    use phoxal::api::v1::odometry::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal::api::simulation::v1::clock::Clock;
+    use phoxal::api::v1::simulation::clock::Clock;
     use phoxal::runtime::clock::Step;
 
     use super::*;

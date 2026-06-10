@@ -5,11 +5,11 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal::api::frame::v1::{
+use phoxal::api::v1::frame::{
     FrameId, FrameLink, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source, Static,
     Tree,
 };
-use phoxal::api::joint::v1::{JointId, JointState, Quantity};
+use phoxal::api::v1::joint::{JointId, JointState, Quantity};
 use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::structure::Structure;

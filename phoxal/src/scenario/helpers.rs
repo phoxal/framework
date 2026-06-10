@@ -1,16 +1,16 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::api::frame::v1::{FrameId, FrameLookupResponse, FrameTransform, Source};
-use crate::api::localize::v1::{
+use crate::api::v1::frame::{FrameId, FrameLookupResponse, FrameTransform, Source};
+use crate::api::v1::localize::{
     AffectedKeyframeSummary, Keyframe, KeyframeId, LocalizationRevision, LocalizationRevisionCause,
     LocalizationRevisionId, PoseEstimate as LocalizePoseEstimate, Region,
 };
-use crate::api::odometry::v1::{
+use crate::api::v1::odometry::{
     OdometryEstimate, PoseEstimate, Status, StatusMode, VelocityEstimate,
 };
-use crate::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
-use crate::api::simulation::v1::pose::Pose;
+use crate::api::v1::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
+use crate::api::v1::simulation::pose::Pose;
 use crate::bus::topic::Topic;
 use crate::model::v1;
 use anyhow::{Context, Result, bail, ensure};
@@ -259,7 +259,7 @@ pub fn estimate_from_wheel_delta(left_delta_m: f64, right_delta_m: f64) -> Odome
             linear_mps: [delta_center_m, 0.0, 0.0],
             angular_radps: [0.0, 0.0, delta_yaw_rad],
         },
-        covariance: Some(crate::api::odometry::v1::Covariance {
+        covariance: Some(crate::api::v1::odometry::Covariance {
             values: vec![0.0; 36],
         }),
         status: Status {

@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::api::localize::v1::LocalizationMode;
-use crate::api::mission::v1::{GoalPose, GoalTolerance};
-use crate::api::motion::v1::ManualCommand;
-use crate::api::presence::Readiness;
-use crate::api::safety::v1::SafetyDecision;
+use crate::api::v1::localize::LocalizationMode;
+use crate::api::v1::mission::{GoalPose, GoalTolerance};
+use crate::api::v1::motion::ManualCommand;
+use crate::api::v1::presence::Readiness;
+use crate::api::v1::safety::SafetyDecision;
 use crate::runtime::DEFAULT_ROBOT_NAMESPACE;
 use crate::runtime::{RobotIdentity, RobotRuntimeArgs};
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -109,7 +109,7 @@ pub async fn wait_until_robot_reaches(
 pub async fn wait_for_mission_state(
     ctx: &ScenarioContext,
     deadline: Instant,
-    predicate: impl Fn(&crate::api::mission::v1::State) -> bool,
+    predicate: impl Fn(&crate::api::v1::mission::State) -> bool,
     what: &str,
 ) -> Result<()> {
     loop {

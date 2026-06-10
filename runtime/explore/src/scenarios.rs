@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, ensure};
-use phoxal::api::mission::v1::{GoalSource, MissionMode};
+use phoxal::api::v1::mission::{GoalSource, MissionMode};
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::presence::{
+use phoxal::api::v1::presence::{
     DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary,
 };
 use phoxal::api::v1::topic;
@@ -170,7 +170,7 @@ fn is_stale(now_ns: u64, last_seen_ns: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ReadinessTracker, autonomy_ready};
-    use phoxal::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
+    use phoxal::api::v1::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
     use phoxal::runtime::stale_timeout_ns;
 
     #[test]
