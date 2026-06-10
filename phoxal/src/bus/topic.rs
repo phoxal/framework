@@ -96,12 +96,22 @@ mod tests {
     fn topic_builder_keys_match_tree_paths() {
         assert_eq!(topic::new().v1().drive().target().key(), "v1/drive/target");
         assert_eq!(
-            topic::new().v1().component("base").motor().key(),
-            "v1/component/base/motor"
+            topic::new()
+                .v1()
+                .component("base")
+                .motor("left_wheel")
+                .command()
+                .key(),
+            "v1/component/base/motor/left_wheel/command"
         );
         assert_eq!(
-            topic::new().v1().component_any().motor().key(),
-            "v1/component/*/motor"
+            topic::new()
+                .v1()
+                .component_any()
+                .motor_any()
+                .command()
+                .key(),
+            "v1/component/*/motor/*/command"
         );
         assert_eq!(topic::new().v1().asset().get().key(), "v1/asset/get");
         assert_eq!(
@@ -120,13 +130,17 @@ mod tests {
 
     #[test]
     fn topic_builder_schemas_elide_holes() {
-        let motor = topic::new().v1().component("base").motor();
-        let gnss = topic::new().v1().component("base").gnss();
+        let motor = topic::new()
+            .v1()
+            .component("base")
+            .motor("left_wheel")
+            .command();
+        let gnss = topic::new().v1().component("base").gnss("receiver").data();
         let pose = topic::new().v1().simulation().robot("r1").pose();
         let target = topic::new().v1().drive().target();
 
-        assert_eq!(motor.schema(), "v1/component/motor");
-        assert_eq!(gnss.schema(), "v1/component/gnss");
+        assert_eq!(motor.schema(), "v1/component/motor/command");
+        assert_eq!(gnss.schema(), "v1/component/gnss/data");
         assert_eq!(pose.schema(), "v1/simulation/robot/pose");
         assert_eq!(target.schema(), "v1/drive/target");
         assert_eq!(motor.version(), 1);
@@ -141,7 +155,8 @@ mod tests {
             topic::new()
                 .v1()
                 .component_any()
-                .motor()
+                .motor_any()
+                .command()
                 .publish_key()
                 .is_err()
         );
@@ -149,10 +164,11 @@ mod tests {
             topic::new()
                 .v1()
                 .component("base")
-                .motor()
+                .motor("left_wheel")
+                .command()
                 .publish_key()
                 .unwrap(),
-            "v1/component/base/motor"
+            "v1/component/base/motor/left_wheel/command"
         );
     }
 
@@ -164,10 +180,18 @@ mod tests {
 
         want::<drive::target::Target>(topic::new().v1().drive().target());
         want::<drive::state::State>(topic::new().v1().drive().state());
-        want::<component::gnss::Sample>(topic::new().v1().component("base").gnss());
+        want::<component::gnss::Sample>(
+            topic::new().v1().component("base").gnss("receiver").data(),
+        );
         want::<simulation::clock::Clock>(topic::new().v1().simulation().clock());
         want::<simulation::robot::pose::Pose>(topic::new().v1().simulation().robot("r1").pose());
-        want_command(topic::new().v1().component("base").motor());
+        want_command(
+            topic::new()
+                .v1()
+                .component("base")
+                .motor("left_wheel")
+                .command(),
+        );
         want_asset_get(topic::new().v1().asset().get());
     }
 }

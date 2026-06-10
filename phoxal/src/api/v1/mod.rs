@@ -11,8 +11,12 @@ crate::bus::topic_tree! {
             pubsub state: crate::api::v1::drive::state::State, v = 1;
         }
         component(id) {
-            pubsub motor: crate::api::v1::component::motor::Command, v = 1;
-            pubsub gnss: crate::api::v1::component::gnss::Sample, v = 1;
+            motor(id) {
+                pubsub command: crate::api::v1::component::motor::Command, v = 1;
+            }
+            gnss(id) {
+                pubsub data: crate::api::v1::component::gnss::Sample, v = 1;
+            }
         }
         asset {
             query get: crate::api::v1::asset::get::Request => crate::api::v1::asset::get::Response, v = 1;

@@ -37,6 +37,8 @@ use crate::api::presence::{Heartbeat, Readiness, RuntimeId, heartbeat};
 use crate::bus::Bus;
 use crate::bus::builder::Builder;
 use crate::bus::pubsub::Stamped;
+use crate::bus::topic::{PubSub, Topic};
+use crate::bus::typed::{Received, TypedTopicSubscriber};
 use crate::bus::zenoh::{
     BusyResponse, TypedPublisher, TypedQueryable, TypedSchema, TypedSubscriber,
 };
@@ -579,6 +581,28 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(())
     }
 
+    pub async fn subscribe_topic<T, F>(
+        &mut self,
+        topic: Topic<PubSub<T>>,
+        policy: InputPolicy,
+        map: F,
+    ) -> Result<()>
+    where
+        T: DeserializeOwned + Send + Sync + 'static,
+        F: Fn(Received<T>) -> Input + Send + 'static,
+    {
+        if let Some(bus) = &self.bus {
+            let source = Arc::new(Mutex::new(SourceBuffer::new(policy)));
+            self.sources.push(source.clone());
+            self.handles.push(spawn_topic_subscription_forwarder(
+                bus.subscriber(&topic).await?,
+                source,
+                map,
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn subscribe_mirrored<T, F>(
         &mut self,
         topic: &str,
@@ -685,6 +709,33 @@ impl<Input: Send + 'static> Io<Input> {
             inner: PublisherInner::Recording(values),
         })
     }
+
+    pub async fn publisher_topic<T>(&mut self, topic: Topic<PubSub<T>>) -> Result<TopicPublisher<T>>
+    where
+        T: Serialize + Clone + Send + 'static,
+    {
+        let key = topic.publish_key()?.into_owned();
+
+        if let Some(bus) = &self.bus {
+            return Ok(TopicPublisher {
+                inner: TopicPublisherInner::Live {
+                    bus: bus.clone(),
+                    topic,
+                },
+            });
+        }
+
+        let values = Arc::new(Mutex::new(Vec::new()));
+        self.recorded_puts.insert(
+            key,
+            Arc::new(TypedRecordingBuffer {
+                values: values.clone(),
+            }),
+        );
+        Ok(TopicPublisher {
+            inner: TopicPublisherInner::Recording(values),
+        })
+    }
 }
 
 pub struct Publisher<T>
@@ -717,6 +768,41 @@ where
                     .lock()
                     .map_err(|error| anyhow!("recorded publisher lock poisoned: {error}"))?
                     .push(payload.clone());
+                Ok(())
+            }
+        }
+    }
+}
+
+pub struct TopicPublisher<T>
+where
+    T: Serialize + Clone,
+{
+    inner: TopicPublisherInner<T>,
+}
+
+enum TopicPublisherInner<T>
+where
+    T: Serialize + Clone,
+{
+    Live { bus: Bus, topic: Topic<PubSub<T>> },
+    Recording(Arc<Mutex<Vec<T>>>),
+}
+
+impl<T> TopicPublisher<T>
+where
+    T: Serialize + Clone,
+{
+    pub async fn put(&self, at_ns: u64, data: &T) -> Result<()> {
+        match &self.inner {
+            TopicPublisherInner::Live { bus, topic } => {
+                bus.publish(topic, at_ns, data).await.map_err(Into::into)
+            }
+            TopicPublisherInner::Recording(values) => {
+                values
+                    .lock()
+                    .map_err(|error| anyhow!("recorded publisher lock poisoned: {error}"))?
+                    .push(data.clone());
                 Ok(())
             }
         }
@@ -855,6 +941,42 @@ where
                         %error,
                         payload_type = std::any::type_name::<T>(),
                         "failed to receive subscription payload"
+                    );
+                    return;
+                }
+            }
+        }
+    })
+}
+
+fn spawn_topic_subscription_forwarder<T, U, F>(
+    subscriber: TypedTopicSubscriber<T>,
+    source: SourceHandle<U>,
+    map: F,
+) -> JoinHandle<()>
+where
+    T: DeserializeOwned + Send + Sync + 'static,
+    U: Send + 'static,
+    F: Fn(Received<T>) -> U + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            match subscriber.recv().await {
+                Ok(received) => {
+                    push_source_input(&source, map(received));
+                }
+                Err(crate::bus::Error::TypedDecode(error)) => {
+                    tracing::warn!(
+                        %error,
+                        payload_type = std::any::type_name::<T>(),
+                        "failed to decode typed topic payload"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        payload_type = std::any::type_name::<T>(),
+                        "failed to receive typed topic payload"
                     );
                     return;
                 }

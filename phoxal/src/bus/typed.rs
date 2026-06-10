@@ -361,28 +361,32 @@ mod tests {
 
     #[test]
     fn typed_topic_keys_are_ready_for_bus_prefix_application() -> crate::bus::Result<()> {
-        let concrete = topic::new().v1().component("base").motor();
-        let wildcard = topic::new().v1().component_any().motor();
+        let concrete = topic::new()
+            .v1()
+            .component("base")
+            .motor("left_wheel")
+            .command();
+        let wildcard = topic::new().v1().component_any().motor_any().command();
 
         assert_eq!(
             concrete_publish_key(&concrete)?.as_ref(),
-            "v1/component/base/motor"
+            "v1/component/base/motor/left_wheel/command"
         );
-        assert_eq!(wildcard.key().as_ref(), "v1/component/*/motor");
+        assert_eq!(wildcard.key().as_ref(), "v1/component/*/motor/*/command");
         assert_eq!(
             format!("robot-a/{}", concrete_publish_key(&concrete)?),
-            "robot-a/v1/component/base/motor"
+            "robot-a/v1/component/base/motor/left_wheel/command"
         );
         assert_eq!(
             format!("robot-a/{}", wildcard.key()),
-            "robot-a/v1/component/*/motor"
+            "robot-a/v1/component/*/motor/*/command"
         );
         Ok(())
     }
 
     #[test]
     fn typed_publish_rejects_wildcard_topic_before_transport() {
-        let topic = topic::new().v1().component_any().motor();
+        let topic = topic::new().v1().component_any().motor_any().command();
         assert!(matches!(
             concrete_publish_key(&topic),
             Err(Error::InvalidTopic(_))
@@ -392,27 +396,35 @@ mod tests {
     #[test]
     fn typed_decode_error_names_schema_mismatch_context() {
         let sample = sample_with_contract("other/schema", 1);
-        let error =
-            decode_sample::<TestPayload>(&sample, "v1/component/*/motor", "v1/component/motor", 1)
-                .expect_err("schema mismatch should fail")
-                .to_string();
+        let error = decode_sample::<TestPayload>(
+            &sample,
+            "v1/component/*/motor/*/command",
+            "v1/component/motor/command",
+            1,
+        )
+        .expect_err("schema mismatch should fail")
+        .to_string();
 
-        assert!(error.contains("v1/component/*/motor"));
-        assert!(error.contains("v1/component/motor"));
+        assert!(error.contains("v1/component/*/motor/*/command"));
+        assert!(error.contains("v1/component/motor/command"));
         assert!(error.contains("other/schema"));
         assert!(error.contains("encoding mismatch"));
     }
 
     #[test]
     fn typed_decode_error_names_version_mismatch_context() {
-        let sample = sample_with_contract("v1/component/motor", 2);
-        let error =
-            decode_sample::<TestPayload>(&sample, "v1/component/*/motor", "v1/component/motor", 1)
-                .expect_err("version mismatch should fail")
-                .to_string();
+        let sample = sample_with_contract("v1/component/motor/command", 2);
+        let error = decode_sample::<TestPayload>(
+            &sample,
+            "v1/component/*/motor/*/command",
+            "v1/component/motor/command",
+            1,
+        )
+        .expect_err("version mismatch should fail")
+        .to_string();
 
-        assert!(error.contains("v1/component/*/motor"));
-        assert!(error.contains("v1/component/motor"));
+        assert!(error.contains("v1/component/*/motor/*/command"));
+        assert!(error.contains("v1/component/motor/command"));
         assert!(error.contains("version mismatch"));
         assert!(error.contains("expected 1"));
         assert!(error.contains("received 2"));
@@ -422,7 +434,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn typed_live_pubsub_roundtrip_supports_wildcard_subscriber() -> crate::bus::Result<()> {
         let bus = open_bus("pubsub").await;
-        let wildcard = topic::new().v1().component_any().motor();
+        let wildcard = topic::new().v1().component_any().motor_any().command();
         let wildcard_error = bus
             .publish(&wildcard, 1, &component::motor::Command::Velocity(0.0))
             .await
@@ -430,7 +442,11 @@ mod tests {
         assert!(matches!(wildcard_error, Error::InvalidTopic(_)));
 
         let subscriber = bus.subscriber(&wildcard).await?;
-        let concrete = topic::new().v1().component("base").motor();
+        let concrete = topic::new()
+            .v1()
+            .component("base")
+            .motor("left_wheel")
+            .command();
         let now_ns = 42_000_000;
         let command = component::motor::Command::Velocity(0.75);
 
@@ -495,8 +511,8 @@ mod tests {
     fn sample_with_contract(schema: &'static str, version: u32) -> zenoh::sample::Sample {
         let payload =
             serialize_payload(&TestPayload { value: 42 }).expect("test payload should serialize");
-        let key: KeyExpr<'static> =
-            KeyExpr::try_from("v1/component/base/motor").expect("test key should be valid");
+        let key: KeyExpr<'static> = KeyExpr::try_from("v1/component/base/motor/left_wheel/command")
+            .expect("test key should be valid");
         SampleBuilder::put(key, payload)
             .encoding(typed_encoding(schema))
             .attachment(

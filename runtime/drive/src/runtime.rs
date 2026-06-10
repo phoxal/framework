@@ -2,17 +2,22 @@ use std::time::Duration;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, bail};
-use phoxal::api::component::v1::capability::motor;
-use phoxal::api::drive::v1::{
-    ActuatorAuthority, State, StopReason, Target, state as drive_state, target as drive_target,
+use phoxal::api::v1::{
+    component::motor,
+    drive::{
+        state::{ActuatorAuthority, State, StopReason},
+        target::Target,
+    },
+    topic,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::topic::{PubSub, Topic};
+use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{InputPolicy, Io, Runtime, RuntimeInputs, TopicPublisher};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
 const TARGET_STALE_TIMEOUT_NS: u64 = 500_000_000;
@@ -106,13 +111,10 @@ fn resolve_motor_bindings(
 async fn motor_publishers(
     io: &mut Io<Input>,
     motors: &[MotorBinding],
-) -> Result<Vec<Publisher<Stamped<motor::Command>>>> {
+) -> Result<Vec<TopicPublisher<motor::Command>>> {
     let mut publishers = Vec::with_capacity(motors.len());
     for motor in motors {
-        publishers.push(
-            io.publisher::<Stamped<motor::Command>>(&motor.topic())
-                .await?,
-        );
+        publishers.push(io.publisher_topic(motor.command_topic()).await?);
     }
     Ok(publishers)
 }
@@ -125,15 +127,15 @@ fn validate_positive_f64(value: f64, field_name: &str) -> Result<()> {
 }
 
 pub enum Input {
-    DriveTarget(Stamped<Target>),
+    DriveTarget(Received<Target>),
 }
 
 pub struct DriveRuntime {
     config: Config,
-    latest_target: Option<Stamped<Target>>,
-    left_motor_publishers: Vec<Publisher<Stamped<motor::Command>>>,
-    right_motor_publishers: Vec<Publisher<Stamped<motor::Command>>>,
-    state_publisher: Publisher<Stamped<State>>,
+    latest_target: Option<Received<Target>>,
+    left_motor_publishers: Vec<TopicPublisher<motor::Command>>,
+    right_motor_publishers: Vec<TopicPublisher<motor::Command>>,
+    state_publisher: TopicPublisher<State>,
 }
 
 #[async_trait::async_trait]
@@ -153,8 +155,8 @@ impl Runtime for DriveRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe_with::<Stamped<Target>, _>(
-            &drive_target::path(),
+        io.subscribe_topic(
+            topic::new().v1().drive().target(),
             InputPolicy::latest(),
             Input::DriveTarget,
         )
@@ -162,7 +164,9 @@ impl Runtime for DriveRuntime {
 
         let left_motor_publishers = motor_publishers(io, &config.left_motors).await?;
         let right_motor_publishers = motor_publishers(io, &config.right_motors).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(&drive_state::path()).await?;
+        let state_publisher = io
+            .publisher_topic(topic::new().v1().drive().state())
+            .await?;
 
         Ok(Self {
             config,
@@ -182,7 +186,7 @@ impl Runtime for DriveRuntime {
 
         let now_ns = step.tick.time_ns();
         let (target, authority, stop_reason) = self.resolve_target(now_ns);
-        let motor_commands = motor_velocity_commands(&self.config, target);
+        let motor_commands = motor_velocity_commands(&self.config, &target);
 
         for (publisher, command) in self
             .left_motor_publishers
@@ -190,7 +194,7 @@ impl Runtime for DriveRuntime {
             .zip(motor_commands.left.iter())
         {
             publisher
-                .put(&Stamped::new(now_ns, motor::Command::Velocity(*command)))
+                .put(now_ns, &motor::Command::Velocity(*command))
                 .await?;
         }
         for (publisher, command) in self
@@ -199,22 +203,23 @@ impl Runtime for DriveRuntime {
             .zip(motor_commands.right.iter())
         {
             publisher
-                .put(&Stamped::new(now_ns, motor::Command::Velocity(*command)))
+                .put(now_ns, &motor::Command::Velocity(*command))
                 .await?;
         }
 
         // MVP phase: safety/localize authority integration is deferred, so a
         // fresh target is treated as authorized and only hard clamped here.
+        let limited_target = target.clone();
         self.state_publisher
-            .put(&Stamped::new(
+            .put(
                 now_ns,
-                State {
+                &State {
                     target,
-                    limited_target: target,
+                    limited_target,
                     actuator_authority: authority,
                     stop_reason,
                 },
-            ))
+            )
             .await?;
 
         Ok(())
@@ -246,7 +251,18 @@ impl DriveRuntime {
             );
         };
 
-        let age_ns = now_ns.saturating_sub(latest.timestamp_ns);
+        let Some(target_at_ns) = latest.at_ns else {
+            return (
+                Target {
+                    linear_x_mps: 0.0,
+                    angular_z_radps: 0.0,
+                },
+                ActuatorAuthority::Stopped,
+                Some(StopReason::CommandTimedOut),
+            );
+        };
+
+        let age_ns = now_ns.saturating_sub(target_at_ns);
         if age_ns > TARGET_STALE_TIMEOUT_NS {
             return (
                 Target {
@@ -259,11 +275,11 @@ impl DriveRuntime {
         }
 
         let target = Target {
-            linear_x_mps: latest.data.linear_x_mps.clamp(
+            linear_x_mps: latest.value.linear_x_mps.clamp(
                 -self.config.max_linear_speed_mps,
                 self.config.max_linear_speed_mps,
             ),
-            angular_z_radps: latest.data.angular_z_radps.clamp(
+            angular_z_radps: latest.value.angular_z_radps.clamp(
                 -self.config.max_angular_speed_radps,
                 self.config.max_angular_speed_radps,
             ),
@@ -273,8 +289,12 @@ impl DriveRuntime {
 }
 
 impl MotorBinding {
-    fn topic(&self) -> String {
-        motor::command::path(self.component_id.as_str(), self.capability_id.as_str())
+    fn command_topic(&self) -> Topic<PubSub<motor::Command>> {
+        topic::new()
+            .v1()
+            .component(self.component_id.clone())
+            .motor(self.capability_id.clone())
+            .command()
     }
 }
 
@@ -283,7 +303,7 @@ struct MotorVelocityCommands {
     right: Vec<f32>,
 }
 
-fn motor_velocity_commands(config: &Config, target: Target) -> MotorVelocityCommands {
+fn motor_velocity_commands(config: &Config, target: &Target) -> MotorVelocityCommands {
     let (left_omega_radps, right_omega_radps) = DifferentialDrive {
         wheel_radius_m: config.wheel_radius_m,
         wheel_base_m: config.wheel_base_m,
@@ -346,13 +366,11 @@ mod tests {
             Ok(config) => config,
             Err(error) => panic!("failed to resolve drive config from fixture: {error:#}"),
         };
-        let commands = motor_velocity_commands(
-            &config,
-            Target {
-                linear_x_mps: 0.5,
-                angular_z_radps: 0.5,
-            },
-        );
+        let target = Target {
+            linear_x_mps: 0.5,
+            angular_z_radps: 0.5,
+        };
+        let commands = motor_velocity_commands(&config, &target);
 
         assert_eq!(commands.left, vec![4.0, 4.0]);
         assert_eq!(commands.right, vec![-6.0, -6.0]);
