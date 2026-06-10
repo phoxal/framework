@@ -7,7 +7,7 @@ use syn::{Ident, LitInt, Result, Token, Type, Visibility, braced, parenthesized}
 mod kw {
     syn::custom_keyword!(pubsub);
     syn::custom_keyword!(query);
-    syn::custom_keyword!(v);
+    syn::custom_keyword!(version);
 }
 
 #[proc_macro]
@@ -117,7 +117,7 @@ fn parse_pubsub(input: ParseStream<'_>) -> Result<Leaf> {
     input.parse::<Token![:]>()?;
     let payload = input.parse()?;
     input.parse::<Token![,]>()?;
-    input.parse::<kw::v>()?;
+    input.parse::<kw::version>()?;
     input.parse::<Token![=]>()?;
     let version = input.parse()?;
     input.parse::<Token![;]>()?;
@@ -137,7 +137,7 @@ fn parse_query(input: ParseStream<'_>) -> Result<Leaf> {
     input.parse::<Token![=>]>()?;
     let response = input.parse()?;
     input.parse::<Token![,]>()?;
-    input.parse::<kw::v>()?;
+    input.parse::<kw::version>()?;
     input.parse::<Token![=]>()?;
     let version = input.parse()?;
     input.parse::<Token![;]>()?;
