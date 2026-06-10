@@ -41,42 +41,42 @@ impl Arbitration {
             };
         }
 
-        if let Some(manual) = manual_command {
-            if manual.at_ns.is_some_and(|at_ns| {
+        if let Some(manual) = manual_command.filter(|manual| {
+            manual.at_ns.is_some_and(|at_ns| {
                 now_ns.saturating_sub(at_ns) <= MANUAL_COMMAND_STALE_TIMEOUT_NS
-            }) {
-                // The operator drives by sight, so a manual command is not slowed by
-                // localization uncertainty (UnknownConservative is bypassed). Every other
-                // decision -- including a protective Stop -- still bounds the command to the
-                // safety-approved envelope. A frontal-hazard Stop carries an *escape* envelope
-                // (forward blocked, reverse + rotation allowed), so the operator can always
-                // back the robot away instead of being wedged permanently.
-                let approved = &safety_authorization.value.approved_motion;
-                let drive_target = if decision == SafetyDecision::UnknownConservative {
-                    DriveTarget {
-                        linear_x_mps: manual.value.linear_x_mps,
-                        angular_z_radps: manual.value.angular_z_radps,
-                    }
-                } else {
-                    DriveTarget {
-                        linear_x_mps: clamp_to_constraint(
-                            manual.value.linear_x_mps,
-                            &approved.linear_x_mps,
-                        ),
-                        angular_z_radps: clamp_to_constraint(
-                            manual.value.angular_z_radps,
-                            &approved.angular_z_radps,
-                        ),
-                    }
-                };
-                let reason = (decision == SafetyDecision::Stop)
-                    .then_some(MotionReason::ManualEscapeUnderStop);
-                return Self {
-                    drive_target,
-                    active_source: Some(MotionSource::Manual),
-                    reason,
-                };
-            }
+            })
+        }) {
+            // The operator drives by sight, so a manual command is not slowed by
+            // localization uncertainty (UnknownConservative is bypassed). Every other
+            // decision -- including a protective Stop -- still bounds the command to the
+            // safety-approved envelope. A frontal-hazard Stop carries an *escape* envelope
+            // (forward blocked, reverse + rotation allowed), so the operator can always
+            // back the robot away instead of being wedged permanently.
+            let approved = &safety_authorization.value.approved_motion;
+            let drive_target = if decision == SafetyDecision::UnknownConservative {
+                DriveTarget {
+                    linear_x_mps: manual.value.linear_x_mps,
+                    angular_z_radps: manual.value.angular_z_radps,
+                }
+            } else {
+                DriveTarget {
+                    linear_x_mps: clamp_to_constraint(
+                        manual.value.linear_x_mps,
+                        &approved.linear_x_mps,
+                    ),
+                    angular_z_radps: clamp_to_constraint(
+                        manual.value.angular_z_radps,
+                        &approved.angular_z_radps,
+                    ),
+                }
+            };
+            let reason =
+                (decision == SafetyDecision::Stop).then_some(MotionReason::ManualEscapeUnderStop);
+            return Self {
+                drive_target,
+                active_source: Some(MotionSource::Manual),
+                reason,
+            };
         }
 
         Self::arbitrate(follow_target, Some(safety_authorization), now_ns)
@@ -113,9 +113,9 @@ impl Arbitration {
             };
         };
 
-        if !follow
+        if follow
             .at_ns
-            .is_some_and(|at_ns| now_ns.saturating_sub(at_ns) <= FOLLOW_TARGET_STALE_TIMEOUT_NS)
+            .is_none_or(|at_ns| now_ns.saturating_sub(at_ns) > FOLLOW_TARGET_STALE_TIMEOUT_NS)
         {
             return Self {
                 drive_target: zero_target(),
@@ -147,9 +147,9 @@ fn safety_authorization_is_invalid(
         return true;
     }
 
-    !authorization
+    authorization
         .at_ns
-        .is_some_and(|at_ns| now_ns.saturating_sub(at_ns) <= SAFETY_AUTHORIZATION_STALE_TIMEOUT_NS)
+        .is_none_or(|at_ns| now_ns.saturating_sub(at_ns) > SAFETY_AUTHORIZATION_STALE_TIMEOUT_NS)
 }
 
 fn stop_for_invalid_safety_authorization() -> Arbitration {

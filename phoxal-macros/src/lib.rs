@@ -26,7 +26,7 @@ struct TopicTree {
 
 enum Item {
     Node(Node),
-    Leaf(Leaf),
+    Leaf(Box<Leaf>),
 }
 
 struct Node {
@@ -42,8 +42,11 @@ struct Leaf {
 }
 
 enum Interaction {
-    PubSub(Type),
-    Query { request: Type, response: Type },
+    PubSub(Box<Type>),
+    Query {
+        request: Box<Type>,
+        response: Box<Type>,
+    },
 }
 
 impl Parse for TopicTree {
@@ -69,10 +72,10 @@ impl Parse for TopicTree {
 impl Parse for Item {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         if input.peek(kw::pubsub) {
-            return Ok(Self::Leaf(parse_pubsub(input)?));
+            return Ok(Self::Leaf(Box::new(parse_pubsub(input)?)));
         }
         if input.peek(kw::query) {
-            return Ok(Self::Leaf(parse_query(input)?));
+            return Ok(Self::Leaf(Box::new(parse_query(input)?)));
         }
         Ok(Self::Node(input.parse()?))
     }
@@ -124,7 +127,7 @@ fn parse_pubsub(input: ParseStream<'_>) -> Result<Leaf> {
 
     Ok(Leaf {
         name,
-        interaction: Interaction::PubSub(payload),
+        interaction: Interaction::PubSub(Box::new(payload)),
         version,
     })
 }
@@ -144,7 +147,10 @@ fn parse_query(input: ParseStream<'_>) -> Result<Leaf> {
 
     Ok(Leaf {
         name,
-        interaction: Interaction::Query { request, response },
+        interaction: Interaction::Query {
+            request: Box::new(request),
+            response: Box::new(response),
+        },
         version,
     })
 }

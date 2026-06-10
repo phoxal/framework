@@ -204,7 +204,7 @@ impl Runtime for DriveRuntime {
 
         // MVP phase: safety/localize authority integration is deferred, so a
         // fresh target is treated as authorized and only hard clamped here.
-        let limited_target = target.clone();
+        let limited_target = target;
         self.state_publisher
             .put(
                 now_ns,

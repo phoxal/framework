@@ -205,26 +205,23 @@ impl Bus {
             .accept_replies(ReplyKeyExpr::MatchingQuery)
             .wait()?;
 
-        while let Ok(reply) = receiver.recv_async().await {
-            match reply.into_result() {
-                Ok(sample) => {
-                    return Ok(Some(decode_response(
-                        &sample,
-                        &key,
-                        topic.schema(),
-                        topic.version(),
-                    )?));
-                }
-                Err(reply_error) => {
-                    return Err(Error::TypedDecode(format!(
-                        "topic '{key}' schema '{}' returned an error reply with {} bytes",
-                        topic.schema(),
-                        reply_error.payload().to_bytes().len()
-                    )));
-                }
-            }
+        let Ok(reply) = receiver.recv_async().await else {
+            return Ok(None);
+        };
+
+        match reply.into_result() {
+            Ok(sample) => Ok(Some(decode_response(
+                &sample,
+                &key,
+                topic.schema(),
+                topic.version(),
+            )?)),
+            Err(reply_error) => Err(Error::TypedDecode(format!(
+                "topic '{key}' schema '{}' returned an error reply with {} bytes",
+                topic.schema(),
+                reply_error.payload().to_bytes().len()
+            ))),
         }
-        Ok(None)
     }
 }
 
