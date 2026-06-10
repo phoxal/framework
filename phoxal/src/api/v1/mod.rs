@@ -81,6 +81,9 @@ crate::bus::topic_tree! {
             pubsub state: crate::api::mission::v1::State, v = 1;
             pubsub goal: crate::api::mission::v1::Goal, v = 1;
             pubsub decision_trace: crate::api::mission::v1::DecisionTrace, v = 1;
+            debug {
+                pubsub goal_record: crate::api::mission::v1::Goal, v = 1;
+            }
         }
         video {
             query open: crate::api::video::v1::OpenRequest => crate::api::video::v1::OpenResponse, v = 1;
@@ -268,6 +271,11 @@ mod tests {
             topic::new().v1().mission().command(),
             "v1/mission/command",
             "v1/mission/command",
+        );
+        assert_pubsub::<crate::api::mission::v1::Goal>(
+            topic::new().v1().mission().debug().goal_record(),
+            "v1/mission/debug/goal_record",
+            "v1/mission/debug/goal_record",
         );
         assert_pubsub::<crate::api::video::v1::StreamEvent>(
             topic::new().v1().video().stream("front").event(),

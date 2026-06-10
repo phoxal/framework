@@ -2,17 +2,15 @@ use std::time::Duration;
 
 use crate::core::{GoalPublish, MissionState};
 use anyhow::Result;
-use phoxal::api::explore::v1::{GoalCandidates, goal_candidates};
+use phoxal::api::explore::v1::GoalCandidates;
 use phoxal::api::localize::v1::{LocalizationMode, LocalizationState, PoseEstimate};
-use phoxal::api::mission::v1::{
-    Goal, GoalSource, MissionCommand, MissionMode, State, command, goal, state,
-};
-use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh::TypedSchema;
+use phoxal::api::mission::v1::{Goal, GoalSource, MissionCommand, MissionMode, State};
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -28,9 +26,9 @@ impl Config {
 }
 
 pub enum Input {
-    Command(Stamped<MissionCommand>),
-    LocalizationState(Stamped<LocalizationState>),
-    GoalCandidates(Stamped<GoalCandidates>),
+    Command(Received<MissionCommand>),
+    LocalizationState(Received<LocalizationState>),
+    GoalCandidates(Received<GoalCandidates>),
 }
 
 pub struct MissionRuntime {
@@ -39,8 +37,9 @@ pub struct MissionRuntime {
     latest_localize_pose: Option<PoseEstimate>,
     latest_explore_candidates: Option<GoalCandidates>,
     decision_log: DecisionLog<MissionLogKey>,
-    goal_publisher: Publisher<Stamped<Goal>>,
-    state_publisher: Publisher<Stamped<State>>,
+    goal_publisher: TopicPublisher<Goal>,
+    goal_record_publisher: TopicPublisher<Goal>,
+    state_publisher: TopicPublisher<State>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,31 +73,36 @@ impl Runtime for MissionRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<MissionCommand>, _>(&command::path(), Input::Command)
+        io.subscribe_topic(topic::new().v1().mission().command(), Input::Command)
             .await?;
-        io.subscribe::<Stamped<LocalizationState>, _>(
-            &phoxal::api::localize::v1::state::path(),
+        io.subscribe_topic(
+            topic::new().v1().localize().state(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<GoalCandidates>, _>(&goal_candidates::path(), Input::GoalCandidates)
-            .await?;
+        io.subscribe_topic(
+            topic::new().v1().explore().goal_candidates(),
+            Input::GoalCandidates,
+        )
+        .await?;
 
-        let goal_publisher = io.publisher::<Stamped<Goal>>(&goal::path()).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
+        let goal_publisher = io
+            .publisher_topic(topic::new().v1().mission().goal())
+            .await?;
+        let goal_record_publisher = io
+            .publisher_topic(topic::new().v1().mission().debug().goal_record())
+            .await?;
+        let state_topic = topic::new().v1().mission().state();
+        let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
             state: MissionState::idle(),
             latest_localize_mode: LocalizationMode::Initializing,
             latest_localize_pose: None,
             latest_explore_candidates: None,
-            decision_log: DecisionLog::new(
-                Self::RUNTIME_ID,
-                state::path(),
-                <State as TypedSchema>::SCHEMA_NAME,
-                <State as TypedSchema>::SCHEMA_VERSION,
-            ),
+            decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             goal_publisher,
+            goal_record_publisher,
             state_publisher,
         })
     }
@@ -112,20 +116,18 @@ impl Runtime for MissionRuntime {
                 Input::Command(command) => {
                     if let GoalPublish::Publish(goal) =
                         self.state
-                            .apply(&command.data, self.latest_localize_mode, timestamp_ns)
+                            .apply(&command.value, self.latest_localize_mode, timestamp_ns)
                     {
-                        self.goal_publisher
-                            .put(&Stamped::new(timestamp_ns, goal))
-                            .await?;
+                        self.publish_goal(timestamp_ns, &goal).await?;
                         goal_published_this_step = true;
                     }
                 }
                 Input::LocalizationState(localize) => {
-                    self.latest_localize_mode = localize.data.mode;
-                    self.latest_localize_pose = localize.data.pose.clone();
+                    self.latest_localize_mode = localize.value.mode;
+                    self.latest_localize_pose = localize.value.pose.clone();
                 }
                 Input::GoalCandidates(candidates) => {
-                    self.latest_explore_candidates = Some(candidates.data);
+                    self.latest_explore_candidates = Some(candidates.value);
                 }
             }
         }
@@ -139,9 +141,7 @@ impl Runtime for MissionRuntime {
                 self.state.promote_explore_goal(candidates, timestamp_ns)
         {
             self.latest_explore_candidates = None;
-            self.goal_publisher
-                .put(&Stamped::new(timestamp_ns, goal))
-                .await?;
+            self.publish_goal(timestamp_ns, &goal).await?;
             goal_published_this_step = true;
         }
 
@@ -152,19 +152,22 @@ impl Runtime for MissionRuntime {
             && self.state.mode == MissionMode::Navigating
             && let Some(goal) = &self.state.active_goal
         {
-            self.goal_publisher
-                .put(&Stamped::new(timestamp_ns, goal.clone()))
-                .await?;
+            self.publish_goal(timestamp_ns, goal).await?;
         }
 
         let state = self.state.to_product();
         self.decision_log
             .observe(timestamp_ns, mission_log_key(&state));
-        self.state_publisher
-            .put(&Stamped::new(timestamp_ns, state))
-            .await?;
+        self.state_publisher.put(timestamp_ns, &state).await?;
 
         Ok(())
+    }
+}
+
+impl MissionRuntime {
+    async fn publish_goal(&self, timestamp_ns: u64, goal: &Goal) -> Result<()> {
+        self.goal_publisher.put(timestamp_ns, goal).await?;
+        self.goal_record_publisher.put(timestamp_ns, goal).await
     }
 }
 
@@ -209,18 +212,20 @@ mod tests {
             .step(
                 step_at(100),
                 RuntimeInputs::from(vec![
-                    Input::LocalizationState(Stamped::new(90, tracking_state(None))),
-                    Input::Command(Stamped::new(95, explore_command())),
-                    Input::GoalCandidates(Stamped::new(96, goal_candidates())),
+                    Input::LocalizationState(received(90, tracking_state(None))),
+                    Input::Command(received(95, explore_command())),
+                    Input::GoalCandidates(received(96, goal_candidates())),
                 ]),
             )
             .await?;
 
-        let published_goals = io.recorded_puts::<Stamped<Goal>>(&goal::path());
-        assert_eq!(
-            published_goals,
-            vec![Stamped::new(100, explore_goal([2.0, 0.0], 0.7))]
-        );
+        let expected_goals = vec![explore_goal([2.0, 0.0], 0.7)];
+        let goal_topic = topic::new().v1().mission().goal();
+        let published_goals = io.recorded_puts::<Goal>(goal_topic.key().as_ref());
+        assert_eq!(published_goals, expected_goals);
+        let goal_record_topic = topic::new().v1().mission().debug().goal_record();
+        let recorded_goals = io.recorded_puts::<Goal>(goal_record_topic.key().as_ref());
+        assert_eq!(recorded_goals, expected_goals);
         assert_eq!(runtime.state.mode, MissionMode::Navigating);
         assert_eq!(
             runtime.state.active_goal,
@@ -240,9 +245,9 @@ mod tests {
             .step(
                 step_at(100),
                 RuntimeInputs::from(vec![
-                    Input::LocalizationState(Stamped::new(90, tracking_state(None))),
-                    Input::Command(Stamped::new(95, explore_command())),
-                    Input::GoalCandidates(Stamped::new(96, goal_candidates())),
+                    Input::LocalizationState(received(90, tracking_state(None))),
+                    Input::Command(received(95, explore_command())),
+                    Input::GoalCandidates(received(96, goal_candidates())),
                 ]),
             )
             .await?;
@@ -250,7 +255,7 @@ mod tests {
         runtime
             .step(
                 step_at(200),
-                RuntimeInputs::from(vec![Input::LocalizationState(Stamped::new(
+                RuntimeInputs::from(vec![Input::LocalizationState(received(
                     190,
                     tracking_state(Some(pose_estimate([2.0, 0.0, 0.0]))),
                 ))]),
@@ -261,9 +266,10 @@ mod tests {
         assert_eq!(runtime.state.active_goal, None);
         assert!(runtime.state.exploration_active);
 
-        let published_states = io.recorded_puts::<Stamped<State>>(&state::path());
+        let state_topic = topic::new().v1().mission().state();
+        let published_states = io.recorded_puts::<State>(state_topic.key().as_ref());
         assert_eq!(
-            published_states.last().map(|stamped| stamped.data.mode),
+            published_states.last().map(|state| state.mode),
             Some(MissionMode::Exploring)
         );
 
@@ -363,5 +369,12 @@ mod tests {
 
     fn step_at(time_ns: u64) -> Step {
         Step::new(Clock::new(1, time_ns / 100, time_ns, 100))
+    }
+
+    fn received<T>(timestamp_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value,
+        }
     }
 }

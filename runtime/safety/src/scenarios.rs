@@ -12,7 +12,7 @@ use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
     SafetyReasonCode, SafetySourceRevision, State as SafetyState,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
@@ -101,8 +101,8 @@ fn p3_safety_decision_policy() -> Result<()> {
         }
     }
 
-    fn localize_state(mode: LocalizationMode) -> Stamped<LocalizationState> {
-        Stamped::new(
+    fn localize_state(mode: LocalizationMode) -> Received<LocalizationState> {
+        received(
             1_000,
             LocalizationState {
                 mode,
@@ -125,11 +125,18 @@ fn p3_safety_decision_policy() -> Result<()> {
         source_id: &str,
         timestamp_ns: u64,
         distance_m: f32,
-    ) -> BTreeMap<String, Stamped<range::Sample>> {
+    ) -> BTreeMap<String, Received<range::Sample>> {
         BTreeMap::from([(
             source_id.to_string(),
-            Stamped::new(timestamp_ns, range::Sample::new(distance_m)),
+            received(timestamp_ns, range::Sample::new(distance_m)),
         )])
+    }
+
+    fn received<T>(timestamp_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value,
+        }
     }
 
     assert_schema::<SafetyAuthorization>(
