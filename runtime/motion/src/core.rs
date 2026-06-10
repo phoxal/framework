@@ -2,7 +2,7 @@ use phoxal::api::drive::v1::Target as DriveTarget;
 use phoxal::api::follow::v1::Target as FollowTarget;
 use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource};
 use phoxal::api::safety::v1::{SafetyAuthorization, SafetyDecision};
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::typed::Received;
 
 const MANUAL_COMMAND_STALE_TIMEOUT_NS: u64 = 500_000_000; // 500 ms
 const FOLLOW_TARGET_STALE_TIMEOUT_NS: u64 = 500_000_000;
@@ -17,9 +17,9 @@ pub struct Arbitration {
 
 impl Arbitration {
     pub fn decide(
-        manual_command: Option<&Stamped<ManualCommand>>,
-        follow_target: Option<&Stamped<FollowTarget>>,
-        safety_authorization: Option<&Stamped<SafetyAuthorization>>,
+        manual_command: Option<&Received<ManualCommand>>,
+        follow_target: Option<&Received<FollowTarget>>,
+        safety_authorization: Option<&Received<SafetyAuthorization>>,
         now_ns: u64,
     ) -> Self {
         let Some(safety_authorization) = safety_authorization else {
@@ -29,7 +29,7 @@ impl Arbitration {
             return stop_for_invalid_safety_authorization();
         }
 
-        let decision = safety_authorization.data.decision;
+        let decision = safety_authorization.value.decision;
 
         // EmergencyStop is an unconditional hard stop: nothing, not even a manual command,
         // overrides it.
@@ -42,28 +42,29 @@ impl Arbitration {
         }
 
         if let Some(manual) = manual_command {
-            let age_ns = now_ns.saturating_sub(manual.timestamp_ns);
-            if age_ns <= MANUAL_COMMAND_STALE_TIMEOUT_NS {
+            if manual.at_ns.is_some_and(|at_ns| {
+                now_ns.saturating_sub(at_ns) <= MANUAL_COMMAND_STALE_TIMEOUT_NS
+            }) {
                 // The operator drives by sight, so a manual command is not slowed by
                 // localization uncertainty (UnknownConservative is bypassed). Every other
                 // decision -- including a protective Stop -- still bounds the command to the
                 // safety-approved envelope. A frontal-hazard Stop carries an *escape* envelope
                 // (forward blocked, reverse + rotation allowed), so the operator can always
                 // back the robot away instead of being wedged permanently.
-                let approved = &safety_authorization.data.approved_motion;
+                let approved = &safety_authorization.value.approved_motion;
                 let drive_target = if decision == SafetyDecision::UnknownConservative {
                     DriveTarget {
-                        linear_x_mps: manual.data.linear_x_mps,
-                        angular_z_radps: manual.data.angular_z_radps,
+                        linear_x_mps: manual.value.linear_x_mps,
+                        angular_z_radps: manual.value.angular_z_radps,
                     }
                 } else {
                     DriveTarget {
                         linear_x_mps: clamp_to_constraint(
-                            manual.data.linear_x_mps,
+                            manual.value.linear_x_mps,
                             &approved.linear_x_mps,
                         ),
                         angular_z_radps: clamp_to_constraint(
-                            manual.data.angular_z_radps,
+                            manual.value.angular_z_radps,
                             &approved.angular_z_radps,
                         ),
                     }
@@ -82,12 +83,12 @@ impl Arbitration {
     }
 
     pub fn arbitrate(
-        follow_target: Option<&Stamped<FollowTarget>>,
-        safety_authorization: Option<&Stamped<SafetyAuthorization>>,
+        follow_target: Option<&Received<FollowTarget>>,
+        safety_authorization: Option<&Received<SafetyAuthorization>>,
         now_ns: u64,
     ) -> Self {
         if let Some(authorization) = safety_authorization {
-            let decision = authorization.data.decision;
+            let decision = authorization.value.decision;
             if matches!(
                 decision,
                 SafetyDecision::Stop | SafetyDecision::EmergencyStop
@@ -112,8 +113,10 @@ impl Arbitration {
             };
         };
 
-        let age_ns = now_ns.saturating_sub(follow.timestamp_ns);
-        if age_ns > FOLLOW_TARGET_STALE_TIMEOUT_NS {
+        if !follow
+            .at_ns
+            .is_some_and(|at_ns| now_ns.saturating_sub(at_ns) <= FOLLOW_TARGET_STALE_TIMEOUT_NS)
+        {
             return Self {
                 drive_target: zero_target(),
                 active_source: None,
@@ -123,8 +126,8 @@ impl Arbitration {
 
         Self {
             drive_target: DriveTarget {
-                linear_x_mps: follow.data.linear_x_mps,
-                angular_z_radps: follow.data.angular_z_radps,
+                linear_x_mps: follow.value.linear_x_mps,
+                angular_z_radps: follow.value.angular_z_radps,
             },
             active_source: Some(MotionSource::Follow),
             reason: None,
@@ -133,18 +136,20 @@ impl Arbitration {
 }
 
 fn safety_authorization_is_invalid(
-    authorization: &Stamped<SafetyAuthorization>,
+    authorization: &Received<SafetyAuthorization>,
     now_ns: u64,
 ) -> bool {
     if authorization
-        .data
+        .value
         .expires_at_ns
         .is_some_and(|expires_at_ns| now_ns > expires_at_ns)
     {
         return true;
     }
 
-    now_ns.saturating_sub(authorization.timestamp_ns) > SAFETY_AUTHORIZATION_STALE_TIMEOUT_NS
+    !authorization
+        .at_ns
+        .is_some_and(|at_ns| now_ns.saturating_sub(at_ns) <= SAFETY_AUTHORIZATION_STALE_TIMEOUT_NS)
 }
 
 fn stop_for_invalid_safety_authorization() -> Arbitration {
@@ -196,7 +201,7 @@ mod tests {
 
     #[test]
     fn arbitration_passes_through_fresh_follow_target() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
 
         let arbitration = Arbitration::arbitrate(Some(&follow), None, NOW_NS);
 
@@ -207,7 +212,7 @@ mod tests {
 
     #[test]
     fn arbitration_zeroes_stale_follow_target() {
-        let follow = Stamped::new(NOW_NS - 1_000_000_000, follow_target(0.5, 0.2));
+        let follow = received(NOW_NS - 1_000_000_000, follow_target(0.5, 0.2));
 
         let arbitration = Arbitration::arbitrate(Some(&follow), None, NOW_NS);
 
@@ -218,8 +223,8 @@ mod tests {
 
     #[test]
     fn arbitration_stops_on_safety_stop() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
-        let safety = Stamped::new(NOW_NS, safety_authorization(SafetyDecision::Stop));
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
+        let safety = received(NOW_NS, safety_authorization(SafetyDecision::Stop));
 
         let arbitration = Arbitration::arbitrate(Some(&follow), Some(&safety), NOW_NS);
 
@@ -233,8 +238,8 @@ mod tests {
 
     #[test]
     fn arbitration_emergency_stops_overrides() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
-        let safety = Stamped::new(NOW_NS, safety_authorization(SafetyDecision::EmergencyStop));
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
+        let safety = received(NOW_NS, safety_authorization(SafetyDecision::EmergencyStop));
 
         let arbitration = Arbitration::arbitrate(Some(&follow), Some(&safety), NOW_NS);
 
@@ -250,8 +255,8 @@ mod tests {
 
     #[test]
     fn arbitration_passes_through_when_safety_allows() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
-        let safety = Stamped::new(NOW_NS, safety_authorization(SafetyDecision::Allow));
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
+        let safety = received(NOW_NS, safety_authorization(SafetyDecision::Allow));
 
         let arbitration = Arbitration::arbitrate(Some(&follow), Some(&safety), NOW_NS);
 
@@ -274,8 +279,8 @@ mod tests {
 
     #[test]
     fn decide_motion_stops_on_expired_authorization() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
-        let safety = Stamped::new(
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
+        let safety = received(
             NOW_NS,
             safety_authorization_with_expiry(SafetyDecision::Allow, Some(NOW_NS - 1)),
         );
@@ -292,8 +297,8 @@ mod tests {
 
     #[test]
     fn decide_motion_stops_on_stale_authorization() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
-        let safety = Stamped::new(
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
+        let safety = received(
             NOW_NS - SAFETY_AUTHORIZATION_STALE_TIMEOUT_NS - 1,
             safety_authorization_with_expiry(SafetyDecision::Allow, Some(NOW_NS + 1_000)),
         );
@@ -310,8 +315,8 @@ mod tests {
 
     #[test]
     fn decide_motion_drives_with_fresh_authorization() {
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
-        let safety = Stamped::new(NOW_NS, safety_authorization(SafetyDecision::Allow));
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
+        let safety = received(NOW_NS, safety_authorization(SafetyDecision::Allow));
 
         let arbitration = Arbitration::decide(None, Some(&follow), Some(&safety), NOW_NS);
 
@@ -322,18 +327,18 @@ mod tests {
 
     #[test]
     fn manual_command_overrides_follow() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_limits(SafetyDecision::UnknownConservative, 0.10, 0.30),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: 0.08,
                 angular_z_radps: -0.2,
             },
         );
-        let follow = Stamped::new(NOW_NS, follow_target(0.5, 0.2));
+        let follow = received(NOW_NS, follow_target(0.5, 0.2));
 
         let arbitration = Arbitration::decide(Some(&manual), Some(&follow), Some(&safety), NOW_NS);
 
@@ -345,11 +350,11 @@ mod tests {
 
     #[test]
     fn manual_command_bypasses_conservative_envelope() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_limits(SafetyDecision::UnknownConservative, 0.10, 0.30),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: 5.0,
@@ -366,11 +371,11 @@ mod tests {
 
     #[test]
     fn manual_command_clamped_under_slow() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_limits(SafetyDecision::Slow, 0.10, 0.30),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: 5.0,
@@ -387,11 +392,11 @@ mod tests {
 
     #[test]
     fn stale_manual_command_is_ignored() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_limits(SafetyDecision::UnknownConservative, 0.10, 0.30),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS - 1_000_000_000,
             ManualCommand {
                 linear_x_mps: 0.08,
@@ -407,11 +412,11 @@ mod tests {
 
     #[test]
     fn emergency_stop_overrides_manual_command() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_limits(SafetyDecision::EmergencyStop, 0.10, 0.30),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: -0.10,
@@ -428,11 +433,11 @@ mod tests {
 
     #[test]
     fn manual_forward_blocked_under_protective_stop() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_escape(SafetyDecision::Stop, 0.15, 0.60),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: 0.30,
@@ -453,11 +458,11 @@ mod tests {
 
     #[test]
     fn manual_reverse_allowed_under_protective_stop() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_escape(SafetyDecision::Stop, 0.15, 0.60),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: -0.30,
@@ -474,11 +479,11 @@ mod tests {
 
     #[test]
     fn manual_rotation_allowed_under_protective_stop() {
-        let safety = Stamped::new(
+        let safety = received(
             NOW_NS,
             safety_authorization_with_escape(SafetyDecision::Stop, 0.15, 0.60),
         );
-        let manual = Stamped::new(
+        let manual = received(
             NOW_NS,
             ManualCommand {
                 linear_x_mps: 0.0,
@@ -491,6 +496,13 @@ mod tests {
         assert_eq!(arbitration.active_source, Some(MotionSource::Manual));
         assert_eq!(arbitration.drive_target.linear_x_mps, 0.0);
         assert_eq!(arbitration.drive_target.angular_z_radps, 0.60);
+    }
+
+    fn received<T>(at_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(at_ns),
+            value,
+        }
     }
 
     fn follow_target(linear_x_mps: f64, angular_z_radps: f64) -> FollowTarget {

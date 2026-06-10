@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use crate::core::FollowDecision;
 use anyhow::Result;
-use phoxal::api::follow::v1::{FollowReason, FollowStatus, State, Target, state, target};
+use phoxal::api::follow::v1::{FollowReason, FollowStatus, State, Target};
 use phoxal::api::localize::v1::LocalizationState;
-use phoxal::api::plan::v1::{Path, path as plan_path};
-use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh::TypedSchema;
+use phoxal::api::plan::v1::Path;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{InputPolicy, Io, Runtime, RuntimeInputs, TopicPublisher};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -26,16 +26,16 @@ impl Config {
 }
 
 pub enum Input {
-    Path(Stamped<Path>),
-    LocalizationState(Stamped<LocalizationState>),
+    Path(Received<Path>),
+    LocalizationState(Received<LocalizationState>),
 }
 
 pub struct FollowRuntime {
-    latest_path: Option<Stamped<Path>>,
-    latest_localize: Option<Stamped<LocalizationState>>,
+    latest_path: Option<Received<Path>>,
+    latest_localize: Option<Received<LocalizationState>>,
     decision_log: DecisionLog<FollowLogKey>,
-    target_publisher: Publisher<Stamped<Target>>,
-    state_publisher: Publisher<Stamped<State>>,
+    target_publisher: TopicPublisher<Target>,
+    state_publisher: TopicPublisher<State>,
 }
 
 type FollowLogKey = (FollowStatus, Option<FollowReason>);
@@ -57,30 +57,28 @@ impl Runtime for FollowRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_with::<Stamped<Path>, _>(
-            &plan_path::path(),
+        io.subscribe_topic_with(
+            topic::new().v1().plan().path(),
             InputPolicy::latest(),
             Input::Path,
         )
         .await?;
-        io.subscribe::<Stamped<LocalizationState>, _>(
-            &phoxal::api::localize::v1::state::path(),
+        io.subscribe_topic(
+            topic::new().v1().localize().state(),
             Input::LocalizationState,
         )
         .await?;
 
-        let target_publisher = io.publisher::<Stamped<Target>>(&target::path()).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
+        let state_topic = topic::new().v1().follow().state();
+        let target_publisher = io
+            .publisher_topic(topic::new().v1().follow().target())
+            .await?;
+        let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
             latest_path: None,
             latest_localize: None,
-            decision_log: DecisionLog::new(
-                Self::RUNTIME_ID,
-                state::path(),
-                <State as TypedSchema>::SCHEMA_NAME,
-                <State as TypedSchema>::SCHEMA_VERSION,
-            ),
+            decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             target_publisher,
             state_publisher,
         })
@@ -95,21 +93,17 @@ impl Runtime for FollowRuntime {
         }
 
         let decision = FollowDecision::decide(
-            self.latest_path.as_ref().map(|sample| &sample.data),
-            self.latest_localize.as_ref().map(|sample| &sample.data),
+            self.latest_path.as_ref().map(|sample| &sample.value),
+            self.latest_localize.as_ref().map(|sample| &sample.value),
         );
         let (state, target) =
-            decision.outputs(self.latest_path.as_ref().map(|sample| &sample.data));
+            decision.outputs(self.latest_path.as_ref().map(|sample| &sample.value));
         let timestamp_ns = step.tick.time_ns();
 
-        self.target_publisher
-            .put(&Stamped::new(timestamp_ns, target))
-            .await?;
+        self.target_publisher.put(timestamp_ns, &target).await?;
         self.decision_log
             .observe(timestamp_ns, (state.status, state.reason));
-        self.state_publisher
-            .put(&Stamped::new(timestamp_ns, state))
-            .await?;
+        self.state_publisher.put(timestamp_ns, &state).await?;
 
         Ok(())
     }

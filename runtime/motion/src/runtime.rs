@@ -2,15 +2,16 @@ use std::time::Duration;
 
 use crate::core::Arbitration;
 use anyhow::Result;
-use phoxal::api::drive::v1::{Target as DriveTarget, target as drive_target};
-use phoxal::api::follow::v1::{Target as FollowTarget, target as follow_target};
-use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource, State, manual, state};
-use phoxal::api::safety::v1::{SafetyAuthorization, authorization as safety_authorization};
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::drive::v1::Target as DriveTarget;
+use phoxal::api::follow::v1::Target as FollowTarget;
+use phoxal::api::motion::v1::{ManualCommand, MotionReason, MotionSource, State};
+use phoxal::api::safety::v1::SafetyAuthorization;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{InputPolicy, Io, Runtime, RuntimeInputs, TopicPublisher};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
 
@@ -26,18 +27,18 @@ impl Config {
 }
 
 pub enum Input {
-    ManualCommand(Stamped<ManualCommand>),
-    FollowTarget(Stamped<FollowTarget>),
-    SafetyAuthorization(Stamped<SafetyAuthorization>),
+    ManualCommand(Received<ManualCommand>),
+    FollowTarget(Received<FollowTarget>),
+    SafetyAuthorization(Received<SafetyAuthorization>),
 }
 
 pub struct MotionRuntime {
-    latest_manual_command: Option<Stamped<ManualCommand>>,
-    latest_follow_target: Option<Stamped<FollowTarget>>,
-    latest_safety_authorization: Option<Stamped<SafetyAuthorization>>,
+    latest_manual_command: Option<Received<ManualCommand>>,
+    latest_follow_target: Option<Received<FollowTarget>>,
+    latest_safety_authorization: Option<Received<SafetyAuthorization>>,
     decision_log: DecisionLog<MotionLogKey>,
-    drive_target_publisher: Publisher<Stamped<DriveTarget>>,
-    state_publisher: Publisher<Stamped<State>>,
+    drive_target_publisher: TopicPublisher<DriveTarget>,
+    state_publisher: TopicPublisher<State>,
 }
 
 type MotionLogKey = (Option<MotionSource>, Option<MotionReason>);
@@ -59,40 +60,35 @@ impl Runtime for MotionRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_with::<Stamped<ManualCommand>, _>(
-            &manual::path(),
+        io.subscribe_topic_with(
+            topic::new().v1().motion().manual(),
             InputPolicy::latest(),
             Input::ManualCommand,
         )
         .await?;
-        io.subscribe_with::<Stamped<FollowTarget>, _>(
-            &follow_target::path(),
+        io.subscribe_topic_with(
+            topic::new().v1().follow().target(),
             InputPolicy::latest(),
             Input::FollowTarget,
         )
         .await?;
-        io.subscribe::<Stamped<SafetyAuthorization>, _>(
-            &safety_authorization::path(),
+        io.subscribe_topic(
+            topic::new().v1().safety().authorization(),
             Input::SafetyAuthorization,
         )
         .await?;
 
         let drive_target_publisher = io
-            .publisher::<Stamped<DriveTarget>>(&drive_target::path())
+            .publisher_topic(topic::new().v1().drive().target())
             .await?;
-        let state_path = state::path();
-        let state_publisher = io.publisher::<Stamped<State>>(&state_path).await?;
+        let state_topic = topic::new().v1().motion().state();
+        let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
             latest_manual_command: None,
             latest_follow_target: None,
             latest_safety_authorization: None,
-            decision_log: DecisionLog::new(
-                Self::RUNTIME_ID,
-                state_path,
-                state::schema_name(),
-                state::schema_version(),
-            ),
+            decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             drive_target_publisher,
             state_publisher,
         })
@@ -119,7 +115,7 @@ impl Runtime for MotionRuntime {
         let drive_target = arbitration.drive_target;
 
         self.drive_target_publisher
-            .put(&Stamped::new(now_ns, drive_target))
+            .put(now_ns, &drive_target)
             .await?;
         let state = State {
             active_source: arbitration.active_source,
@@ -128,9 +124,7 @@ impl Runtime for MotionRuntime {
         };
         self.decision_log
             .observe(now_ns, (state.active_source, state.reason));
-        self.state_publisher
-            .put(&Stamped::new(now_ns, state))
-            .await?;
+        self.state_publisher.put(now_ns, &state).await?;
         Ok(())
     }
 

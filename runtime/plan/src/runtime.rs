@@ -5,13 +5,13 @@ use anyhow::Result;
 use phoxal::api::localize::v1::LocalizationState;
 use phoxal::api::map::v1::MapRevision;
 use phoxal::api::mission::v1::Goal;
-use phoxal::api::plan::v1::{Path, PlanReason, PlanStatus, State, path, state};
-use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh::TypedSchema;
+use phoxal::api::plan::v1::{Path, PlanReason, PlanStatus, State};
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{InputPolicy, Io, Runtime, RuntimeInputs, TopicPublisher};
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(100);
 
@@ -27,18 +27,18 @@ impl Config {
 }
 
 pub enum Input {
-    Goal(Stamped<Goal>),
-    LocalizationState(Stamped<LocalizationState>),
-    MapRevision(Stamped<MapRevision>),
+    Goal(Received<Goal>),
+    LocalizationState(Received<LocalizationState>),
+    MapRevision(Received<MapRevision>),
 }
 
 pub struct PlanRuntime {
-    latest_goal: Option<Stamped<Goal>>,
-    latest_localize: Option<Stamped<LocalizationState>>,
-    latest_map_revision: Option<Stamped<MapRevision>>,
+    latest_goal: Option<Received<Goal>>,
+    latest_localize: Option<Received<LocalizationState>>,
+    latest_map_revision: Option<Received<MapRevision>>,
     decision_log: DecisionLog<PlanLogKey>,
-    path_publisher: Publisher<Stamped<Path>>,
-    state_publisher: Publisher<Stamped<State>>,
+    path_publisher: TopicPublisher<Path>,
+    state_publisher: TopicPublisher<State>,
 }
 
 type PlanLogKey = (PlanStatus, Option<PlanReason>);
@@ -60,36 +60,29 @@ impl Runtime for PlanRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_with::<Stamped<Goal>, _>(
-            &phoxal::api::mission::v1::goal::path(),
+        io.subscribe_topic_with(
+            topic::new().v1().mission().goal(),
             InputPolicy::latest(),
             Input::Goal,
         )
         .await?;
-        io.subscribe::<Stamped<LocalizationState>, _>(
-            &phoxal::api::localize::v1::state::path(),
+        io.subscribe_topic(
+            topic::new().v1().localize().state(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<MapRevision>, _>(
-            &phoxal::api::map::v1::revision::path(),
-            Input::MapRevision,
-        )
-        .await?;
+        io.subscribe_topic(topic::new().v1().map().revision(), Input::MapRevision)
+            .await?;
 
-        let path_publisher = io.publisher::<Stamped<Path>>(&path::path()).await?;
-        let state_publisher = io.publisher::<Stamped<State>>(&state::path()).await?;
+        let state_topic = topic::new().v1().plan().state();
+        let path_publisher = io.publisher_topic(topic::new().v1().plan().path()).await?;
+        let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
             latest_goal: None,
             latest_localize: None,
             latest_map_revision: None,
-            decision_log: DecisionLog::new(
-                Self::RUNTIME_ID,
-                state::path(),
-                <State as TypedSchema>::SCHEMA_NAME,
-                <State as TypedSchema>::SCHEMA_VERSION,
-            ),
+            decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             path_publisher,
             state_publisher,
         })
@@ -107,23 +100,21 @@ impl Runtime for PlanRuntime {
         // Simple receding horizon: every step republishes a fresh path from the
         // latest pose to the latest goal instead of caching a long-lived plan.
         let decision = PlanDecision::decide(
-            self.latest_goal.as_ref().map(|sample| &sample.data),
-            self.latest_localize.as_ref().map(|sample| &sample.data),
-            self.latest_map_revision.as_ref().map(|sample| &sample.data),
+            self.latest_goal.as_ref().map(|sample| &sample.value),
+            self.latest_localize.as_ref().map(|sample| &sample.value),
+            self.latest_map_revision
+                .as_ref()
+                .map(|sample| &sample.value),
         );
         let timestamp_ns = step.tick.time_ns();
-        let (state, path) = decision.outputs(self.latest_goal.as_ref().map(|sample| &sample.data));
+        let (state, path) = decision.outputs(self.latest_goal.as_ref().map(|sample| &sample.value));
 
         if let Some(path) = path {
-            self.path_publisher
-                .put(&Stamped::new(timestamp_ns, path))
-                .await?;
+            self.path_publisher.put(timestamp_ns, &path).await?;
         }
         self.decision_log
             .observe(timestamp_ns, (state.status, state.reason));
-        self.state_publisher
-            .put(&Stamped::new(timestamp_ns, state))
-            .await?;
+        self.state_publisher.put(timestamp_ns, &state).await?;
 
         Ok(())
     }

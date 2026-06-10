@@ -12,7 +12,7 @@ use phoxal::api::motion::v1::{
 use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetySourceRevision,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::helpers::assert_schema;
 
@@ -44,8 +44,8 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         }
     }
 
-    fn follow_target(linear: f64, angular: f64) -> Stamped<FollowTarget> {
-        Stamped::new(
+    fn follow_target(linear: f64, angular: f64) -> Received<FollowTarget> {
+        received(
             1_000,
             FollowTarget {
                 map_revision: MapRevisionId {
@@ -63,8 +63,8 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         )
     }
 
-    fn safety_authorization(decision: SafetyDecision) -> Stamped<SafetyAuthorization> {
-        Stamped::new(
+    fn safety_authorization(decision: SafetyDecision) -> Received<SafetyAuthorization> {
+        received(
             1_000,
             SafetyAuthorization {
                 decision,
@@ -87,6 +87,13 @@ fn p3_motion_arbitration_contract() -> Result<()> {
                 expires_at_ns: Some(2_000),
             },
         )
+    }
+
+    fn received<T>(at_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(at_ns),
+            value,
+        }
     }
 
     assert_schema::<MotionState>("runtime/motion/state", 2, "motion state")?;
@@ -166,7 +173,7 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         "fresh follow target must pass through as the active follow source"
     );
 
-    let stale_follow = Stamped::new(0, follow_target(0.5, 0.2).data);
+    let stale_follow = received(0, follow_target(0.5, 0.2).value);
     let stale = MotionArbitration::arbitrate(Some(&stale_follow), None, 1_000_000_000);
     ensure!(
         stale.drive_target.linear_x_mps == 0.0
