@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 pub const MILLIMETERS_PER_METER: f32 = 1000.0;
@@ -100,24 +99,10 @@ fn meters_to_sample_mm(value_m: f32) -> Option<u16> {
     }
 }
 
-impl TypedSchema for Depth {
-    const SCHEMA_NAME: &'static str = "component/capability/depth";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 pub const KIND: &str = "depth";
-
-crate::bus::topic_leaf! {
-    pubsub(component_id: &str, capability_id: &str) {
-        path: "component/{}/{}/profile/default",
-        payload: Depth
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
     use super::{Depth, meters_to_sample_mm};
 
     #[test]
@@ -148,19 +133,5 @@ mod tests {
     fn rejects_invalid_meter_samples() {
         assert!(Depth::from_meters([0.5, f32::NAN]).is_none());
         assert!(Depth::from_meters([]).is_none());
-    }
-
-    #[test]
-    fn depth_schema_rewrites_v1_contract() {
-        assert_eq!(Depth::SCHEMA_NAME, "component/capability/depth");
-        assert_eq!(Depth::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn path_is_stable() {
-        assert_eq!(
-            super::path("front_camera", "depth"),
-            "component/front_camera/depth/profile/default"
-        );
     }
 }

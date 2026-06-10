@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::api::frame::v1::FrameId;
 use crate::api::localize::v1::LocalizationRevisionId;
-use crate::bus::zenoh::{BusyResponse, TypedSchema};
+use crate::bus::zenoh::BusyResponse;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,11 +38,6 @@ pub struct MapRevision {
     pub affected_region: Option<RegionSummary>,
 }
 
-impl TypedSchema for MapRevision {
-    const SCHEMA_NAME: &'static str = "runtime/map/revision";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum MapRevisionCause {
@@ -68,22 +63,12 @@ pub struct Summary {
     pub known_region: Option<RegionSummary>,
 }
 
-impl TypedSchema for Summary {
-    const SCHEMA_NAME: &'static str = "runtime/map/summary";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LocalCost {
     pub map_revision: MapRevisionId,
     pub built_from_localize_revision: LocalizationRevisionId,
     pub frame_id: FrameId,
     pub grid: Grid<f32>,
-}
-
-impl TypedSchema for LocalCost {
-    const SCHEMA_NAME: &'static str = "runtime/map/local_cost";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -94,11 +79,6 @@ pub struct Traversability {
     pub cells: Grid<TraversabilityCell>,
 }
 
-impl TypedSchema for Traversability {
-    const SCHEMA_NAME: &'static str = "runtime/map/traversability";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraversabilitySummary {
     pub map_revision: MapRevisionId,
@@ -106,11 +86,6 @@ pub struct TraversabilitySummary {
     pub frame_id: FrameId,
     pub region: RegionSummary,
     pub status: TraversabilityStatus,
-}
-
-impl TypedSchema for TraversabilitySummary {
-    const SCHEMA_NAME: &'static str = "runtime/map/traversability_summary";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -237,11 +212,6 @@ macro_rules! response_schema {
         #[serde(transparent)]
         pub struct $name(pub MapTileResponse<$payload>);
 
-        impl TypedSchema for $name {
-            const SCHEMA_NAME: &'static str = $schema;
-            const SCHEMA_VERSION: u32 = 1;
-        }
-
         impl BusyResponse for $name {
             fn busy() -> Self {
                 Self(MapTileResponse::Busy)
@@ -250,15 +220,29 @@ macro_rules! response_schema {
     };
 }
 
-crate::bus::request_schema!(SubmapRequest, "runtime/map/query/submap/request");
-crate::bus::request_schema!(EsdfTileRequest, "runtime/map/query/esdf_tile/request");
-crate::bus::request_schema!(
-    TraversabilityTileRequest,
-    "runtime/map/query/traversability_tile/request"
-);
-crate::bus::request_schema!(LocalGridRequest, "runtime/map/query/local_grid/request");
-crate::bus::request_schema!(GlobalGridRequest, "runtime/map/query/global_grid/request");
-crate::bus::request_schema!(SnapshotRequest, "runtime/map/query/snapshot/request");
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SubmapRequest(pub MapTileRequest);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EsdfTileRequest(pub MapTileRequest);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TraversabilityTileRequest(pub MapTileRequest);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LocalGridRequest(pub MapTileRequest);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GlobalGridRequest(pub MapTileRequest);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SnapshotRequest(pub MapTileRequest);
 
 response_schema!(SubmapResponse, Submap, "runtime/map/query/submap/response");
 response_schema!(
@@ -287,181 +271,15 @@ response_schema!(
     "runtime/map/query/snapshot/response"
 );
 
-crate::bus::topic_leaf! {
-    pubsub revision {
-        path: "runtime/map/revision",
-        payload: MapRevision
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub summary {
-        path: "runtime/map/summary",
-        payload: Summary
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub local_cost {
-        path: "runtime/map/local_cost",
-        payload: LocalCost
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub traversability {
-        path: "runtime/map/traversability",
-        payload: Traversability
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub traversability_summary {
-        path: "runtime/map/traversability_summary",
-        payload: TraversabilitySummary
-    }
-}
-
-pub mod query {
-    use super::*;
-
-    crate::bus::topic_leaf! {
-        query submap {
-            path: "runtime/map/query/submap",
-            request: SubmapRequest,
-            response: SubmapResponse
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        query esdf_tile {
-            path: "runtime/map/query/esdf_tile",
-            request: EsdfTileRequest,
-            response: EsdfTileResponse
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        query traversability_tile {
-            path: "runtime/map/query/traversability_tile",
-            request: TraversabilityTileRequest,
-            response: TraversabilityTileResponse
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        query local_grid {
-            path: "runtime/map/query/local_grid",
-            request: LocalGridRequest,
-            response: LocalGridResponse
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        query global_grid {
-            path: "runtime/map/query/global_grid",
-            request: GlobalGridRequest,
-            response: GlobalGridResponse
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        query snapshot {
-            path: "runtime/map/query/snapshot",
-            request: SnapshotRequest,
-            response: SnapshotResponse
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh::{BusyResponse, TypedSchema};
+    use crate::bus::zenoh::BusyResponse;
 
-    use crate::api::map::v1::{
-        EsdfTile, EsdfTileRequest, EsdfTileResponse, GlobalGrid, GlobalGridRequest,
-        GlobalGridResponse, LocalCost, LocalGrid, LocalGridRequest, LocalGridResponse, MapRevision,
-        MapTileResponse, Snapshot, SnapshotRequest, SnapshotResponse, Submap, SubmapRequest,
-        SubmapResponse, Summary, Traversability, TraversabilitySummary, TraversabilityTile,
-        TraversabilityTileRequest, TraversabilityTileResponse,
+    use super::{
+        EsdfTile, EsdfTileResponse, GlobalGrid, GlobalGridResponse, LocalGrid, LocalGridResponse,
+        MapTileResponse, Snapshot, SnapshotResponse, Submap, SubmapResponse, TraversabilityTile,
+        TraversabilityTileResponse,
     };
-
-    #[test]
-    fn map_contract_schemas_are_stable() {
-        assert_eq!(MapRevision::SCHEMA_NAME, "runtime/map/revision");
-        assert_eq!(MapRevision::SCHEMA_VERSION, 1);
-        assert_eq!(Summary::SCHEMA_NAME, "runtime/map/summary");
-        assert_eq!(Summary::SCHEMA_VERSION, 1);
-        assert_eq!(LocalCost::SCHEMA_NAME, "runtime/map/local_cost");
-        assert_eq!(LocalCost::SCHEMA_VERSION, 1);
-        assert_eq!(Traversability::SCHEMA_NAME, "runtime/map/traversability");
-        assert_eq!(Traversability::SCHEMA_VERSION, 1);
-        assert_eq!(
-            TraversabilitySummary::SCHEMA_NAME,
-            "runtime/map/traversability_summary"
-        );
-        assert_eq!(TraversabilitySummary::SCHEMA_VERSION, 1);
-        assert_eq!(
-            SubmapRequest::SCHEMA_NAME,
-            "runtime/map/query/submap/request"
-        );
-        assert_eq!(SubmapRequest::SCHEMA_VERSION, 1);
-        assert_eq!(
-            SubmapResponse::SCHEMA_NAME,
-            "runtime/map/query/submap/response"
-        );
-        assert_eq!(SubmapResponse::SCHEMA_VERSION, 1);
-        assert_eq!(
-            EsdfTileRequest::SCHEMA_NAME,
-            "runtime/map/query/esdf_tile/request"
-        );
-        assert_eq!(EsdfTileRequest::SCHEMA_VERSION, 1);
-        assert_eq!(
-            EsdfTileResponse::SCHEMA_NAME,
-            "runtime/map/query/esdf_tile/response"
-        );
-        assert_eq!(EsdfTileResponse::SCHEMA_VERSION, 1);
-        assert_eq!(
-            TraversabilityTileRequest::SCHEMA_NAME,
-            "runtime/map/query/traversability_tile/request"
-        );
-        assert_eq!(TraversabilityTileRequest::SCHEMA_VERSION, 1);
-        assert_eq!(
-            TraversabilityTileResponse::SCHEMA_NAME,
-            "runtime/map/query/traversability_tile/response"
-        );
-        assert_eq!(TraversabilityTileResponse::SCHEMA_VERSION, 1);
-        assert_eq!(
-            LocalGridRequest::SCHEMA_NAME,
-            "runtime/map/query/local_grid/request"
-        );
-        assert_eq!(LocalGridRequest::SCHEMA_VERSION, 1);
-        assert_eq!(
-            LocalGridResponse::SCHEMA_NAME,
-            "runtime/map/query/local_grid/response"
-        );
-        assert_eq!(LocalGridResponse::SCHEMA_VERSION, 1);
-        assert_eq!(
-            GlobalGridRequest::SCHEMA_NAME,
-            "runtime/map/query/global_grid/request"
-        );
-        assert_eq!(GlobalGridRequest::SCHEMA_VERSION, 1);
-        assert_eq!(
-            GlobalGridResponse::SCHEMA_NAME,
-            "runtime/map/query/global_grid/response"
-        );
-        assert_eq!(GlobalGridResponse::SCHEMA_VERSION, 1);
-        assert_eq!(
-            SnapshotRequest::SCHEMA_NAME,
-            "runtime/map/query/snapshot/request"
-        );
-        assert_eq!(SnapshotRequest::SCHEMA_VERSION, 1);
-        assert_eq!(
-            SnapshotResponse::SCHEMA_NAME,
-            "runtime/map/query/snapshot/response"
-        );
-        assert_eq!(SnapshotResponse::SCHEMA_VERSION, 1);
-    }
 
     #[test]
     fn query_responses_report_busy() {
@@ -489,36 +307,6 @@ mod tests {
             <SnapshotResponse as BusyResponse>::busy(),
             SnapshotResponse(MapTileResponse::<Snapshot>::Busy)
         );
-    }
-
-    #[test]
-    fn topic_paths_are_stable() {
-        assert_eq!(super::revision::path(), "runtime/map/revision");
-        assert_eq!(super::summary::path(), "runtime/map/summary");
-        assert_eq!(super::local_cost::path(), "runtime/map/local_cost");
-        assert_eq!(super::traversability::path(), "runtime/map/traversability");
-        assert_eq!(
-            super::traversability_summary::path(),
-            "runtime/map/traversability_summary"
-        );
-        assert_eq!(super::query::submap::path(), "runtime/map/query/submap");
-        assert_eq!(
-            super::query::esdf_tile::path(),
-            "runtime/map/query/esdf_tile"
-        );
-        assert_eq!(
-            super::query::traversability_tile::path(),
-            "runtime/map/query/traversability_tile"
-        );
-        assert_eq!(
-            super::query::local_grid::path(),
-            "runtime/map/query/local_grid"
-        );
-        assert_eq!(
-            super::query::global_grid::path(),
-            "runtime/map/query/global_grid"
-        );
-        assert_eq!(super::query::snapshot::path(), "runtime/map/query/snapshot");
     }
 }
 

@@ -6,15 +6,14 @@ use phoxal::api::drive::v1::Target as DriveTarget;
 use phoxal::api::follow::v1::Target as FollowTarget;
 use phoxal::api::localize::v1::LocalizationRevisionId;
 use phoxal::api::map::v1::MapRevisionId;
-use phoxal::api::motion::v1::{
-    Arbitration, ArbitrationCandidate, MotionSource, SourceFreshness, State as MotionState,
-};
+use phoxal::api::motion::v1::{Arbitration, ArbitrationCandidate, MotionSource};
 use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetySourceRevision,
 };
+use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
-use phoxal::scenario::helpers::assert_schema;
+use phoxal::scenario::helpers::assert_topic_schema;
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-motion-arbitration-contract"),
@@ -96,14 +95,21 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         }
     }
 
-    assert_schema::<MotionState>("runtime/motion/state", 2, "motion state")?;
-    assert_schema::<Arbitration>(
-        "runtime/motion/debug/arbitration",
+    assert_topic_schema(
+        topic::new().v1().motion().state(),
+        "v1/motion/state",
+        1,
+        "motion state",
+    )?;
+    assert_topic_schema(
+        topic::new().v1().motion().arbitration(),
+        "v1/motion/arbitration",
         1,
         "motion arbitration debug",
     )?;
-    assert_schema::<SourceFreshness>(
-        "runtime/motion/debug/source_freshness",
+    assert_topic_schema(
+        topic::new().v1().motion().source_freshness(),
+        "v1/motion/source_freshness",
         1,
         "motion source freshness debug",
     )?;

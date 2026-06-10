@@ -6,7 +6,6 @@ use std::fmt;
 use crate::api::frame::v1::FrameId;
 use crate::api::localize::v1::LocalizationRevisionId;
 use crate::api::map::v1::MapRevisionId;
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -15,11 +14,6 @@ pub struct BoundingBox {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-}
-
-impl TypedSchema for BoundingBox {
-    const SCHEMA_NAME: &'static str = "runtime/perception/bounding_box";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,20 +27,10 @@ pub struct Detection {
     pub tracker_id: Option<u64>,
 }
 
-impl TypedSchema for Detection {
-    const SCHEMA_NAME: &'static str = "runtime/perception/detection";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevisionLinkage {
     pub localize_revision: LocalizationRevisionId,
     pub map_revision: MapRevisionId,
-}
-
-impl TypedSchema for RevisionLinkage {
-    const SCHEMA_NAME: &'static str = "runtime/perception/revision_linkage";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,11 +63,6 @@ impl Detections {
     }
 }
 
-impl TypedSchema for Detections {
-    const SCHEMA_NAME: &'static str = "runtime/perception/detections";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RevisionMismatch {
     pub expected: RevisionLinkage,
@@ -105,11 +84,6 @@ impl fmt::Display for RevisionMismatch {
 
 impl std::error::Error for RevisionMismatch {}
 
-impl TypedSchema for RevisionMismatch {
-    const SCHEMA_NAME: &'static str = "runtime/perception/revision_mismatch";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerceptionState {
     pub health: DetectorHealth,
@@ -121,22 +95,12 @@ pub struct PerceptionState {
     pub dropped_frames: u64,
 }
 
-impl TypedSchema for PerceptionState {
-    const SCHEMA_NAME: &'static str = "runtime/perception/state";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectorHealth {
     Healthy,
     Degraded(PerceptionDegradedReason),
     Stopped(PerceptionStoppedReason),
-}
-
-impl TypedSchema for DetectorHealth {
-    const SCHEMA_NAME: &'static str = "runtime/perception/detector_health";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,11 +113,6 @@ pub enum PerceptionDegradedReason {
     ConfidenceCollapse,
 }
 
-impl TypedSchema for PerceptionDegradedReason {
-    const SCHEMA_NAME: &'static str = "runtime/perception/degraded_reason";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PerceptionStoppedReason {
@@ -162,11 +121,6 @@ pub enum PerceptionStoppedReason {
     SourceUnavailable,
     SupervisorStopped,
     BackendError,
-}
-
-impl TypedSchema for PerceptionStoppedReason {
-    const SCHEMA_NAME: &'static str = "runtime/perception/stopped_reason";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -179,81 +133,13 @@ pub struct TrackedObservation {
     pub source_frame_id: FrameId,
 }
 
-impl TypedSchema for TrackedObservation {
-    const SCHEMA_NAME: &'static str = "runtime/perception/tracked_observation";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
-crate::bus::topic_leaf! {
-    pubsub detections {
-        path: "runtime/perception/detections",
-        payload: Detections
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub state {
-        path: "runtime/perception/state",
-        payload: PerceptionState
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use crate::api::frame::v1::FrameId;
     use crate::api::localize::v1::LocalizationRevisionId;
     use crate::api::map::v1::MapRevisionId;
-    use crate::bus::zenoh::TypedSchema;
 
-    use super::{
-        BoundingBox, Detection, Detections, DetectorHealth, PerceptionDegradedReason,
-        PerceptionState, PerceptionStoppedReason, RevisionLinkage, RevisionMismatch, SCHEMA_NAME,
-        SCHEMA_VERSION, TrackedObservation,
-    };
-
-    #[test]
-    fn schema_contracts_do_not_drift() {
-        assert_eq!(SCHEMA_NAME, "phoxal-api-perception/v1");
-        assert_eq!(SCHEMA_VERSION, 1);
-        assert_eq!(BoundingBox::SCHEMA_NAME, "runtime/perception/bounding_box");
-        assert_eq!(BoundingBox::SCHEMA_VERSION, 1);
-        assert_eq!(Detection::SCHEMA_NAME, "runtime/perception/detection");
-        assert_eq!(Detection::SCHEMA_VERSION, 1);
-        assert_eq!(
-            RevisionLinkage::SCHEMA_NAME,
-            "runtime/perception/revision_linkage"
-        );
-        assert_eq!(RevisionLinkage::SCHEMA_VERSION, 1);
-        assert_eq!(Detections::SCHEMA_NAME, "runtime/perception/detections");
-        assert_eq!(Detections::SCHEMA_VERSION, 1);
-        assert_eq!(
-            RevisionMismatch::SCHEMA_NAME,
-            "runtime/perception/revision_mismatch"
-        );
-        assert_eq!(RevisionMismatch::SCHEMA_VERSION, 1);
-        assert_eq!(PerceptionState::SCHEMA_NAME, "runtime/perception/state");
-        assert_eq!(PerceptionState::SCHEMA_VERSION, 1);
-        assert_eq!(
-            DetectorHealth::SCHEMA_NAME,
-            "runtime/perception/detector_health"
-        );
-        assert_eq!(DetectorHealth::SCHEMA_VERSION, 1);
-        assert_eq!(
-            PerceptionDegradedReason::SCHEMA_NAME,
-            "runtime/perception/degraded_reason"
-        );
-        assert_eq!(PerceptionDegradedReason::SCHEMA_VERSION, 1);
-        assert_eq!(
-            PerceptionStoppedReason::SCHEMA_NAME,
-            "runtime/perception/stopped_reason"
-        );
-        assert_eq!(PerceptionStoppedReason::SCHEMA_VERSION, 1);
-        assert_eq!(
-            TrackedObservation::SCHEMA_NAME,
-            "runtime/perception/tracked_observation"
-        );
-        assert_eq!(TrackedObservation::SCHEMA_VERSION, 1);
-    }
+    use super::{BoundingBox, Detection, Detections, RevisionLinkage};
 
     #[test]
     fn rejects_mismatched_revision_linkage() {
@@ -287,12 +173,6 @@ mod tests {
                 map_revision: map(9, 10),
             }
         );
-    }
-
-    #[test]
-    fn topic_paths_are_stable() {
-        assert_eq!(super::detections::path(), "runtime/perception/detections");
-        assert_eq!(super::state::path(), "runtime/perception/state");
     }
 
     fn detections(

@@ -39,9 +39,7 @@ use crate::bus::Bus;
 use crate::bus::builder::Builder;
 use crate::bus::topic::{PubSub, Query as TopicQuery, Topic};
 use crate::bus::typed::{Received, TypedTopicResponder, TypedTopicSubscriber};
-use crate::bus::zenoh::{
-    BusyResponse, TypedPublisher, TypedQueryable, TypedSchema, TypedSubscriber,
-};
+use crate::bus::zenoh::BusyResponse;
 use crate::model::structure::Structure;
 use crate::runtime::clock::{Step, StepStream};
 use crate::util::parse_trimmed_non_empty;
@@ -217,10 +215,6 @@ impl From<&DriverRuntimeArgs> for RobotIdentity {
     fn from(args: &DriverRuntimeArgs) -> Self {
         Self::from(&args.runtime)
     }
-}
-
-pub fn debug_input_topic(runtime_id: &str, key: &str) -> String {
-    format!("runtime/{runtime_id}/debug/input/{key}")
 }
 
 // Empty per-runtime CLI extension for runtimes that only use common flags.
@@ -504,7 +498,6 @@ impl<T: Send + 'static> RecordingBuffer for TypedRecordingBuffer<T> {
 
 pub struct Io<Input> {
     bus: Option<Bus>,
-    runtime_id: &'static str,
     handles: Vec<JoinHandle<()>>,
     sources: Vec<SourceHandle<Input>>,
     recorded_puts: HashMap<String, Arc<dyn RecordingBuffer>>,
@@ -514,7 +507,6 @@ impl<Input> Io<Input> {
     pub fn recording() -> Self {
         Self {
             bus: None,
-            runtime_id: "",
             handles: Vec::new(),
             sources: Vec::new(),
             recorded_puts: HashMap::new(),
@@ -531,10 +523,9 @@ impl<Input> Io<Input> {
 }
 
 impl<Input: Send + 'static> Io<Input> {
-    fn live(bus: Bus, runtime_id: &'static str) -> Self {
+    fn live(bus: Bus, _runtime_id: &'static str) -> Self {
         Self {
             bus: Some(bus),
-            runtime_id,
             handles: Vec::new(),
             sources: Vec::new(),
             recorded_puts: HashMap::new(),
@@ -549,36 +540,6 @@ impl<Input: Send + 'static> Io<Input> {
         self.bus
             .clone()
             .ok_or_else(|| anyhow!("live bus is unavailable in recording IO"))
-    }
-
-    pub async fn subscribe<T, F>(&mut self, topic: &str, map: F) -> Result<()>
-    where
-        T: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
-    {
-        self.subscribe_with(topic, InputPolicy::All, map).await
-    }
-
-    pub async fn subscribe_with<T, F>(
-        &mut self,
-        topic: &str,
-        policy: InputPolicy,
-        map: F,
-    ) -> Result<()>
-    where
-        T: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            let source = Arc::new(Mutex::new(SourceBuffer::new(policy)));
-            self.sources.push(source.clone());
-            self.handles.push(spawn_subscription_forwarder(
-                crate::bus::pubsub::subscribe(bus, topic).await?,
-                source,
-                map,
-            ));
-        }
-        Ok(())
     }
 
     pub async fn subscribe_topic<T, F>(&mut self, topic: Topic<PubSub<T>>, map: F) -> Result<()>
@@ -612,69 +573,6 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(())
     }
 
-    pub async fn subscribe_mirrored<T, F>(
-        &mut self,
-        topic: &str,
-        debug_key: &str,
-        map: F,
-    ) -> Result<()>
-    where
-        T: DeserializeOwned + Serialize + TypedSchema + Clone + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
-    {
-        self.subscribe_mirrored_with(topic, debug_key, InputPolicy::All, map)
-            .await
-    }
-
-    pub async fn subscribe_mirrored_with<T, F>(
-        &mut self,
-        topic: &str,
-        debug_key: &str,
-        policy: InputPolicy,
-        map: F,
-    ) -> Result<()>
-    where
-        T: DeserializeOwned + Serialize + TypedSchema + Clone + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            let debug_topic = debug_input_topic(self.runtime_id, debug_key);
-            let source = Arc::new(Mutex::new(SourceBuffer::new(policy)));
-            self.sources.push(source.clone());
-            self.handles.push(spawn_mirrored_subscription_forwarder(
-                crate::bus::pubsub::subscribe(bus, topic).await?,
-                crate::bus::pubsub::publisher(bus, &debug_topic).await?,
-                source,
-                map,
-            ));
-        }
-        Ok(())
-    }
-
-    pub async fn serve_query<Req, Resp, V, F>(
-        &mut self,
-        topic: &str,
-        reader: Reader<V>,
-        options: QueryOptions,
-        handler: F,
-    ) -> Result<()>
-    where
-        Req: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-        Resp: Serialize + TypedSchema + BusyResponse + Send + Sync + 'static,
-        V: Send + Sync + 'static,
-        F: Fn(&V, Req) -> Resp + Send + Sync + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            self.handles.push(spawn_query_responder(
-                crate::bus::query::queryable(bus, topic).await?,
-                reader,
-                options,
-                handler,
-            ));
-        }
-        Ok(())
-    }
-
     pub async fn serve_query_topic<Req, Resp, V, F>(
         &mut self,
         topic: Topic<TopicQuery<Req, Resp>>,
@@ -697,50 +595,6 @@ impl<Input: Send + 'static> Io<Input> {
             ));
         }
         Ok(())
-    }
-
-    pub async fn publisher<T>(&mut self, topic: &str) -> Result<Publisher<T>>
-    where
-        T: Serialize + TypedSchema + Clone + Send + Sync + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            return Ok(Publisher {
-                inner: PublisherInner::Live(crate::bus::pubsub::publisher(bus, topic).await?),
-            });
-        }
-
-        let values = Arc::new(Mutex::new(Vec::new()));
-        self.recorded_puts.insert(
-            topic.to_string(),
-            Arc::new(TypedRecordingBuffer {
-                values: values.clone(),
-            }),
-        );
-        Ok(Publisher {
-            inner: PublisherInner::Recording(values),
-        })
-    }
-
-    pub async fn eager_publisher<T>(&mut self, topic: &str) -> Result<Publisher<T>>
-    where
-        T: Serialize + TypedSchema + Clone + Send + Sync + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            return Ok(Publisher {
-                inner: PublisherInner::Live(crate::bus::pubsub::eager_publisher(bus, topic).await?),
-            });
-        }
-
-        let values = Arc::new(Mutex::new(Vec::new()));
-        self.recorded_puts.insert(
-            topic.to_string(),
-            Arc::new(TypedRecordingBuffer {
-                values: values.clone(),
-            }),
-        );
-        Ok(Publisher {
-            inner: PublisherInner::Recording(values),
-        })
     }
 
     pub async fn publisher_topic<T>(&mut self, topic: Topic<PubSub<T>>) -> Result<TopicPublisher<T>>
@@ -768,42 +622,6 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(TopicPublisher {
             inner: TopicPublisherInner::Recording(values),
         })
-    }
-}
-
-pub struct Publisher<T>
-where
-    T: Serialize + TypedSchema + Clone,
-{
-    inner: PublisherInner<T>,
-}
-
-enum PublisherInner<T>
-where
-    T: Serialize + TypedSchema + Clone,
-{
-    Live(TypedPublisher<'static, T>),
-    Recording(Arc<Mutex<Vec<T>>>),
-}
-
-impl<T> Publisher<T>
-where
-    T: Serialize + TypedSchema + Clone,
-{
-    pub async fn put(&self, payload: &T) -> Result<()> {
-        match &self.inner {
-            PublisherInner::Live(publisher) => publisher
-                .put(payload)
-                .await
-                .map_err(|error| anyhow!(error.to_string())),
-            PublisherInner::Recording(values) => {
-                values
-                    .lock()
-                    .map_err(|error| anyhow!("recorded publisher lock poisoned: {error}"))?
-                    .push(payload.clone());
-                Ok(())
-            }
-        }
     }
 }
 
@@ -946,42 +764,6 @@ fn collect_step_inputs<I>(sources: &[SourceHandle<I>]) -> Result<RuntimeInputs<I
     Ok(RuntimeInputs { events, stats })
 }
 
-fn spawn_subscription_forwarder<T, U, F>(
-    subscriber: TypedSubscriber<T>,
-    source: SourceHandle<U>,
-    map: F,
-) -> JoinHandle<()>
-where
-    T: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-    U: Send + 'static,
-    F: Fn(T) -> U + Send + 'static,
-{
-    tokio::spawn(async move {
-        loop {
-            match subscriber.recv_async().await {
-                Ok(Ok(message)) => {
-                    push_source_input(&source, map(message));
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(
-                        %error,
-                        payload_type = std::any::type_name::<T>(),
-                        "failed to decode subscription payload"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        payload_type = std::any::type_name::<T>(),
-                        "failed to receive subscription payload"
-                    );
-                    return;
-                }
-            }
-        }
-    })
-}
-
 fn spawn_topic_subscription_forwarder<T, U, F>(
     subscriber: TypedTopicSubscriber<T>,
     source: SourceHandle<U>,
@@ -1012,128 +794,6 @@ where
                         "failed to receive typed topic payload"
                     );
                     return;
-                }
-            }
-        }
-    })
-}
-
-fn spawn_mirrored_subscription_forwarder<T, U, F>(
-    subscriber: TypedSubscriber<T>,
-    mirror_publisher: TypedPublisher<'static, T>,
-    source: SourceHandle<U>,
-    map: F,
-) -> JoinHandle<()>
-where
-    T: DeserializeOwned + Serialize + TypedSchema + Clone + Send + Sync + 'static,
-    U: Send + 'static,
-    F: Fn(T) -> U + Send + 'static,
-{
-    tokio::spawn(async move {
-        loop {
-            match subscriber.recv_async().await {
-                Ok(Ok(message)) => {
-                    match mirror_publisher.has_matching_subscribers().await {
-                        Ok(true) => {
-                            if let Err(error) = mirror_publisher.put(&message).await {
-                                tracing::warn!(
-                                    %error,
-                                    payload_type = std::any::type_name::<T>(),
-                                    "failed to mirror consumed subscription payload"
-                                );
-                            }
-                        }
-                        Ok(false) => {}
-                        Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                payload_type = std::any::type_name::<T>(),
-                                "failed to check mirrored subscription demand"
-                            );
-                        }
-                    }
-
-                    push_source_input(&source, map(message));
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(
-                        %error,
-                        payload_type = std::any::type_name::<T>(),
-                        "failed to decode subscription payload"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        payload_type = std::any::type_name::<T>(),
-                        "failed to receive subscription payload"
-                    );
-                    return;
-                }
-            }
-        }
-    })
-}
-
-fn spawn_query_responder<Req, Resp, V, F>(
-    queryable: TypedQueryable<Req, Resp>,
-    reader: Reader<V>,
-    options: QueryOptions,
-    handler: F,
-) -> JoinHandle<()>
-where
-    Req: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-    Resp: Serialize + TypedSchema + BusyResponse + Send + Sync + 'static,
-    V: Send + Sync + 'static,
-    F: Fn(&V, Req) -> Resp + Send + Sync + 'static,
-{
-    let executor = QueryExecutor::new(reader, options, handler);
-
-    tokio::spawn(async move {
-        loop {
-            let query = match queryable.recv_async().await {
-                Ok(query) => query,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        request_type = std::any::type_name::<Req>(),
-                        "failed to receive query"
-                    );
-                    return;
-                }
-            };
-            let request = match query.request() {
-                Ok(request) => request,
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        request_type = std::any::type_name::<Req>(),
-                        "failed to decode query payload"
-                    );
-                    continue;
-                }
-            };
-            match executor.start::<Req, Resp>(request) {
-                QueryStart::Busy(response) => {
-                    if let Err(error) = query.reply(&response).await {
-                        tracing::warn!(
-                            %error,
-                            response_type = std::any::type_name::<Resp>(),
-                            "failed to reply with busy query response"
-                        );
-                    }
-                }
-                QueryStart::Accepted(call) => {
-                    tokio::spawn(async move {
-                        let response = call.run();
-                        if let Err(error) = query.reply(&response).await {
-                            tracing::warn!(
-                                %error,
-                                response_type = std::any::type_name::<Resp>(),
-                                "failed to reply to query"
-                            );
-                        }
-                    });
                 }
             }
         }
@@ -1287,9 +947,7 @@ mod tests {
     use crate::runtime::clock::{Schedule, SchedulePolicy};
     use crate::runtime::{QueryOptions, ReadCell};
 
-    use super::{
-        InputPolicy, QueryExecutor, QueryStart, RuntimeInputStats, SourceBuffer, debug_input_topic,
-    };
+    use super::{InputPolicy, QueryExecutor, QueryStart, RuntimeInputStats, SourceBuffer};
     use crate::bus::zenoh::BusyResponse;
     use std::sync::{Arc, Condvar, Mutex};
 
@@ -1308,14 +966,6 @@ mod tests {
         fn busy() -> Self {
             Self::Busy
         }
-    }
-
-    #[test]
-    fn debug_input_topic_uses_runtime_debug_input_namespace() {
-        assert_eq!(
-            debug_input_topic("localize", "rgb"),
-            "runtime/localize/debug/input/rgb"
-        );
     }
 
     #[test]

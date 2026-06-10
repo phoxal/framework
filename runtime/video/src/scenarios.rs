@@ -6,11 +6,11 @@ use phoxal::api::component::v1::capability::{
     camera::{Encoding as CameraEncoding, Frame as CameraFrame},
     depth::Depth as DepthFrame,
     profile::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
-    profile_path,
 };
 use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::v1::topic;
 use phoxal::bus::liveliness::declare_liveliness_token;
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::typed::{Received, TypedTopicSubscriber};
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
@@ -66,21 +66,27 @@ async fn assert_p2_stream_profile_camera_downsample(
     }
     .to_profile_id()?;
 
-    let camera_path = profile_path("front_camera", "rgb", &camera_profile);
-    let depth_path = profile_path("front_camera", "depth", &depth_profile);
-    let camera_subscriber =
-        phoxal::bus::pubsub::subscribe::<Stamped<CameraFrame>>(ctx.bus(), &camera_path)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-    let depth_subscriber =
-        phoxal::bus::pubsub::subscribe::<Stamped<DepthFrame>>(ctx.bus(), &depth_path)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
+    let camera_topic = topic::new()
+        .v1()
+        .component("front_camera")
+        .camera("rgb")
+        .profile(camera_profile.to_string())
+        .data();
+    let depth_topic = topic::new()
+        .v1()
+        .component("front_camera")
+        .depth("depth")
+        .profile(depth_profile.to_string())
+        .data();
+    let camera_profile_key = camera_topic.key().into_owned();
+    let depth_key = depth_topic.key().into_owned();
+    let camera_subscriber = ctx.bus().subscriber(&camera_topic).await?;
+    let depth_subscriber = ctx.bus().subscriber(&depth_topic).await?;
 
-    let _camera_token = declare_liveliness_token(ctx.bus(), &camera_path)
+    let _camera_token = declare_liveliness_token(ctx.bus(), &camera_profile_key)
         .await
         .map_err(|error| anyhow!(error.to_string()))?;
-    let _depth_token = declare_liveliness_token(ctx.bus(), &depth_path)
+    let _depth_token = declare_liveliness_token(ctx.bus(), &depth_key)
         .await
         .map_err(|error| anyhow!(error.to_string()))?;
 
@@ -97,13 +103,13 @@ async fn assert_p2_stream_profile_camera_downsample(
     )
     .await?;
     ensure!(
-        camera.data.width() == 320
-            && camera.data.height() == 240
-            && camera.data.encoding() == CameraEncoding::Rgb8,
+        camera.value.width() == 320
+            && camera.value.height() == 240
+            && camera.value.encoding() == CameraEncoding::Rgb8,
         "requested camera profile produced {}x{} {:?}, expected 320x240 rgb8",
-        camera.data.width(),
-        camera.data.height(),
-        camera.data.encoding()
+        camera.value.width(),
+        camera.value.height(),
+        camera.value.encoding()
     );
 
     let depth = with_deadline(
@@ -112,32 +118,27 @@ async fn assert_p2_stream_profile_camera_downsample(
     )
     .await?;
     ensure!(
-        depth.data.width() == Some(320) && depth.data.height() == Some(240),
+        depth.value.width() == Some(320) && depth.value.height() == Some(240),
         "requested depth profile produced {:?}x{:?}, expected 320x240",
-        depth.data.width(),
-        depth.data.height()
+        depth.value.width(),
+        depth.value.height()
     );
     ensure!(
-        depth.data.samples_mm().len() == 320 * 240,
+        depth.value.samples_mm().len() == 320 * 240,
         "requested depth profile produced {} samples, expected {}",
-        depth.data.samples_mm().len(),
+        depth.value.samples_mm().len(),
         320 * 240
     );
 
     Ok(())
 }
 
-async fn next_profile_frame<T>(
-    subscriber: &phoxal::bus::zenoh::TypedSubscriber<Stamped<T>>,
-) -> Result<Stamped<T>>
+async fn next_profile_frame<T>(subscriber: &TypedTopicSubscriber<T>) -> Result<Received<T>>
 where
-    T: serde::de::DeserializeOwned + phoxal::bus::zenoh::TypedSchema,
+    T: serde::de::DeserializeOwned,
 {
-    match subscriber.recv_async().await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(anyhow!(
-            "requested profile payload failed to decode: {error}"
-        )),
+    match subscriber.recv().await {
+        Ok(value) => Ok(value),
         Err(error) => Err(anyhow!("requested profile subscriber failed: {error}")),
     }
 }

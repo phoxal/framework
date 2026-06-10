@@ -76,7 +76,7 @@ impl RevisionStore {
 
     /// Observe a fresh localize revision. Returns Some(newly-recorded RetainedRevision) iff a new
     /// map revision was emitted. Returns None when the localize revision is identical to the last
-    /// one seen (idempotent: Stamped duplicates from the bus are common).
+    /// one seen (idempotent timestamp duplicates from the bus are common).
     pub fn observe(
         &mut self,
         localize_revision: &LocalizationRevision,

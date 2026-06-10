@@ -1,7 +1,7 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-video/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::zenoh::{BusyResponse, TypedSchema};
+use crate::bus::zenoh::BusyResponse;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,11 +32,6 @@ impl OpenRequest {
     }
 }
 
-impl TypedSchema for OpenRequest {
-    const SCHEMA_NAME: &'static str = "runtime/video/open/request";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenResponse {
     Ok {
@@ -46,11 +41,6 @@ pub enum OpenResponse {
     UnknownSource,
     Unavailable(UnavailableReason),
     Busy,
-}
-
-impl TypedSchema for OpenResponse {
-    const SCHEMA_NAME: &'static str = "runtime/video/open/response";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 impl BusyResponse for OpenResponse {
@@ -88,11 +78,6 @@ pub enum StreamEvent {
     End { reason: EndReason },
 }
 
-impl TypedSchema for StreamEvent {
-    const SCHEMA_NAME: &'static str = "runtime/video/stream";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamPacket {
     pub sequence: u64,
@@ -113,56 +98,23 @@ pub enum EndReason {
 
 pub mod open {
     pub use crate::api::video::v1::{OpenRequest as Request, OpenResponse as Response, Quality};
-
-    crate::bus::topic_leaf! {
-        query {
-            path: "runtime/video/open",
-            request: Request,
-            response: Response
-        }
-    }
 }
 
 pub mod stream {
     pub use crate::api::video::v1::{
         Codec, EndReason, StreamEvent as Event, StreamFormat as Format, StreamPacket as Packet,
     };
-
-    crate::bus::topic_leaf! {
-        pubsub(stream_id: &str) {
-            path: "runtime/video/stream/{}",
-            payload: Event
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OpenRequest, OpenResponse, StreamEvent};
-    use crate::bus::zenoh::{BusyResponse, TypedSchema};
+    use crate::bus::zenoh::BusyResponse;
 
-    #[test]
-    fn schema_names_and_versions_do_not_drift() {
-        assert_eq!(OpenRequest::SCHEMA_NAME, "runtime/video/open/request");
-        assert_eq!(OpenRequest::SCHEMA_VERSION, 1);
-        assert_eq!(OpenResponse::SCHEMA_NAME, "runtime/video/open/response");
-        assert_eq!(OpenResponse::SCHEMA_VERSION, 1);
-        assert_eq!(StreamEvent::SCHEMA_NAME, "runtime/video/stream");
-        assert_eq!(StreamEvent::SCHEMA_VERSION, 1);
-    }
+    use super::OpenResponse;
 
     #[test]
     fn open_response_busy_uses_busy_variant() {
         assert_eq!(OpenResponse::busy(), OpenResponse::Busy);
-    }
-
-    #[test]
-    fn topic_paths_are_stable() {
-        assert_eq!(super::open::path(), "runtime/video/open");
-        assert_eq!(
-            super::stream::path("front_camera"),
-            "runtime/video/stream/front_camera"
-        );
     }
 }
 

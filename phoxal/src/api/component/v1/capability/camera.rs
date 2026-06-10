@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,37 +82,4 @@ pub struct CalibrationIdentity {
     pub version: String,
 }
 
-impl TypedSchema for Frame {
-    const SCHEMA_NAME: &'static str = "component/capability/camera";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 pub const KIND: &str = "camera";
-
-crate::bus::topic_leaf! {
-    pubsub(component_id: &str, capability_id: &str) {
-        path: "component/{}/{}/profile/default",
-        payload: Frame
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
-    use super::Frame;
-
-    #[test]
-    fn schema_contract_does_not_drift() {
-        assert_eq!(Frame::SCHEMA_NAME, "component/capability/camera");
-        assert_eq!(Frame::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn path_is_stable() {
-        assert_eq!(
-            super::path("front_camera", "rgb"),
-            "component/front_camera/rgb/profile/default"
-        );
-    }
-}

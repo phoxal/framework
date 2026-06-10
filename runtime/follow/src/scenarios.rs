@@ -50,13 +50,13 @@ async fn assert_p4_following(ctx: &ScenarioContext, deadline: Instant) -> Result
 
     loop {
         let state = ctx.latest_follow_state().await?;
-        match state.data.status {
+        match state.value.status {
             FollowStatus::Tracking => break,
             FollowStatus::Failed | FollowStatus::Refused => {
                 return Err(anyhow!(
                     "follow refused/failed: {:?} ({:?})",
-                    state.data.status,
-                    state.data.reason
+                    state.value.status,
+                    state.value.reason
                 ));
             }
             _ => {}
@@ -64,7 +64,7 @@ async fn assert_p4_following(ctx: &ScenarioContext, deadline: Instant) -> Result
         ensure!(
             Instant::now() < deadline,
             "follow never started tracking (last {:?})",
-            state.data.status
+            state.value.status
         );
         ctx.advance_for_secs(0.5).await?;
     }

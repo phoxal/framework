@@ -1,7 +1,6 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-drive/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -10,22 +9,12 @@ pub struct Target {
     pub angular_z_radps: f64,
 }
 
-impl TypedSchema for Target {
-    const SCHEMA_NAME: &'static str = "runtime/drive/target";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     pub target: Target,
     pub limited_target: Target,
     pub actuator_authority: ActuatorAuthority,
     pub stop_reason: Option<StopReason>,
-}
-
-impl TypedSchema for State {
-    const SCHEMA_NAME: &'static str = "runtime/drive/state";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,11 +39,6 @@ pub struct ActuatorCommands {
     pub commands: Vec<ActuatorCommand>,
 }
 
-impl TypedSchema for ActuatorCommands {
-    const SCHEMA_NAME: &'static str = "runtime/drive/debug/actuator_commands";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActuatorCommand {
     pub component_id: String,
@@ -69,130 +53,16 @@ pub struct Saturation {
     pub reasons: Vec<String>,
 }
 
-impl TypedSchema for Saturation {
-    const SCHEMA_NAME: &'static str = "runtime/drive/debug/saturation";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Watchdog {
     pub target_fresh: bool,
     pub reason: Option<String>,
 }
 
-impl TypedSchema for Watchdog {
-    const SCHEMA_NAME: &'static str = "runtime/drive/debug/watchdog";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Kinematics {
     pub profile: String,
     pub actuator_commands: Vec<ActuatorCommand>,
-}
-
-impl TypedSchema for Kinematics {
-    const SCHEMA_NAME: &'static str = "runtime/drive/debug/kinematics";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
-crate::bus::topic_leaf! {
-    pubsub target {
-        path: "runtime/drive/target",
-        payload: Target
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub state {
-        path: "runtime/drive/state",
-        payload: State
-    }
-}
-
-pub mod debug {
-    use super::*;
-
-    crate::bus::topic_leaf! {
-        pubsub actuator_commands {
-            path: "runtime/drive/debug/actuator_commands",
-            payload: ActuatorCommands
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        pubsub saturation {
-            path: "runtime/drive/debug/saturation",
-            payload: Saturation
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        pubsub watchdog {
-            path: "runtime/drive/debug/watchdog",
-            payload: Watchdog
-        }
-    }
-
-    crate::bus::topic_leaf! {
-        pubsub kinematics {
-            path: "runtime/drive/debug/kinematics",
-            payload: Kinematics
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
-    use super::{
-        ActuatorCommands, Kinematics, SCHEMA_NAME, SCHEMA_VERSION, Saturation, State, Target,
-        Watchdog,
-    };
-
-    #[test]
-    fn schema_contracts_do_not_drift() {
-        assert_eq!(SCHEMA_NAME, "phoxal-api-drive/v1");
-        assert_eq!(SCHEMA_VERSION, 1);
-        assert_eq!(Target::SCHEMA_NAME, "runtime/drive/target");
-        assert_eq!(Target::SCHEMA_VERSION, 1);
-        assert_eq!(State::SCHEMA_NAME, "runtime/drive/state");
-        assert_eq!(State::SCHEMA_VERSION, 1);
-        assert_eq!(
-            ActuatorCommands::SCHEMA_NAME,
-            "runtime/drive/debug/actuator_commands"
-        );
-        assert_eq!(ActuatorCommands::SCHEMA_VERSION, 1);
-        assert_eq!(Saturation::SCHEMA_NAME, "runtime/drive/debug/saturation");
-        assert_eq!(Saturation::SCHEMA_VERSION, 1);
-        assert_eq!(Watchdog::SCHEMA_NAME, "runtime/drive/debug/watchdog");
-        assert_eq!(Watchdog::SCHEMA_VERSION, 1);
-        assert_eq!(Kinematics::SCHEMA_NAME, "runtime/drive/debug/kinematics");
-        assert_eq!(Kinematics::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn topic_paths_are_stable() {
-        assert_eq!(super::target::path(), "runtime/drive/target");
-        assert_eq!(super::state::path(), "runtime/drive/state");
-        assert_eq!(
-            super::debug::actuator_commands::path(),
-            "runtime/drive/debug/actuator_commands"
-        );
-        assert_eq!(
-            super::debug::saturation::path(),
-            "runtime/drive/debug/saturation"
-        );
-        assert_eq!(
-            super::debug::watchdog::path(),
-            "runtime/drive/debug/watchdog"
-        );
-        assert_eq!(
-            super::debug::kinematics::path(),
-            "runtime/drive/debug/kinematics"
-        );
-    }
 }
 
 #[cfg(test)]

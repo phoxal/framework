@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -36,29 +35,8 @@ impl Clock {
     }
 }
 
-impl TypedSchema for Clock {
-    const SCHEMA_NAME: &'static str = "simulation/clock";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
-crate::bus::topic_leaf! {
-    pubsub {
-        path: "simulation/clock",
-        payload: Clock
-    }
-}
-
-pub fn publisher_builder(
-    bus: &crate::bus::Bus,
-) -> crate::bus::Result<
-    crate::bus::zenoh::TypedPublisherBuilder<'_, 'static, crate::bus::pubsub::Stamped<Clock>>,
-> {
-    publisher(bus)
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh::TypedSchema;
     use serde::Serialize;
 
     use super::Clock;
@@ -73,10 +51,6 @@ mod tests {
 
     #[test]
     fn clock_contract_matches_simulator_wire_values() {
-        assert_eq!(Clock::SCHEMA_NAME, "simulation/clock");
-        assert_eq!(Clock::SCHEMA_VERSION, 1);
-        assert_eq!(super::path(), "simulation/clock");
-
         let clock = Clock::new(7, 11, 13, 17);
         assert_eq!(clock.epoch(), 7);
         assert_eq!(clock.step(), 11);

@@ -11,27 +11,28 @@ use crate::api::odometry::v1::{
 };
 use crate::api::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
 use crate::api::simulation::v1::pose::Pose;
-use crate::bus::zenoh::TypedSchema;
+use crate::bus::topic::Topic;
 use crate::model::v1;
 use anyhow::{Context, Result, bail, ensure};
 use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 
 const TRACK_WIDTH_M: f64 = 0.40;
 
-pub fn assert_schema<T: TypedSchema>(
+pub fn assert_topic_schema<Kind>(
+    topic: Topic<Kind>,
     schema_name: &str,
     schema_version: u32,
     label: &str,
 ) -> Result<()> {
     ensure!(
-        T::SCHEMA_NAME == schema_name,
+        topic.schema() == schema_name,
         "{label} schema name drifted: expected {schema_name}, got {}",
-        T::SCHEMA_NAME
+        topic.schema()
     );
     ensure!(
-        T::SCHEMA_VERSION == schema_version,
+        topic.version() == schema_version,
         "{label} schema version drifted: expected {schema_version}, got {}",
-        T::SCHEMA_VERSION
+        topic.version()
     );
     Ok(())
 }

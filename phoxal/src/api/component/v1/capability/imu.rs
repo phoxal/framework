@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,24 +90,10 @@ pub struct Bias {
     pub linear_acceleration_mps2: [f32; 3],
 }
 
-impl TypedSchema for Sample {
-    const SCHEMA_NAME: &'static str = "component/capability/imu";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 pub const KIND: &str = "imu";
-
-crate::bus::topic_leaf! {
-    pubsub(component_id: &str, capability_id: &str) {
-        path: "component/{}/{}/profile/default",
-        payload: Sample
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
     use super::Sample;
 
     #[test]
@@ -126,19 +111,5 @@ mod tests {
         assert_eq!(sample.orientation(), Some(&orientation));
         assert_eq!(sample.angular_velocity_radps(), &angular_velocity_radps);
         assert_eq!(sample.linear_acceleration_mps2(), &linear_acceleration_mps2);
-    }
-
-    #[test]
-    fn schema_contract_does_not_drift() {
-        assert_eq!(Sample::SCHEMA_NAME, "component/capability/imu");
-        assert_eq!(Sample::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn path_is_stable() {
-        assert_eq!(
-            super::path("imu_board", "imu"),
-            "component/imu_board/imu/profile/default"
-        );
     }
 }

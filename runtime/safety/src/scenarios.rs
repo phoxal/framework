@@ -10,13 +10,14 @@ use phoxal::api::localize::v1::{
 };
 use phoxal::api::safety::v1::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
-    SafetyReasonCode, SafetySourceRevision, State as SafetyState,
+    SafetyReasonCode, SafetySourceRevision,
 };
+use phoxal::api::v1::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
-use phoxal::scenario::helpers::assert_schema;
+use phoxal::scenario::helpers::assert_topic_schema;
 use phoxal::scenario::webots::{
     command_deadline, context_from_args, kill_service, restart_service, wait_for_safety_decision,
     wait_until_tracking,
@@ -139,12 +140,18 @@ fn p3_safety_decision_policy() -> Result<()> {
         }
     }
 
-    assert_schema::<SafetyAuthorization>(
-        "runtime/safety/authorization",
+    assert_topic_schema(
+        topic::new().v1().safety().authorization(),
+        "v1/safety/authorization",
         1,
         "safety authorization",
     )?;
-    assert_schema::<SafetyState>("runtime/safety/state", 1, "safety state")?;
+    assert_topic_schema(
+        topic::new().v1().safety().state(),
+        "v1/safety/state",
+        1,
+        "safety state",
+    )?;
 
     let decisions = [
         SafetyDecision::Allow,
@@ -347,18 +354,18 @@ async fn assert_p3_safety_range_sensor_staleness(
     loop {
         let safety = ctx.latest_safety_state().await?;
         let stale = safety
-            .data
+            .value
             .active_reasons
             .iter()
             .any(|reason| reason.code == SafetyReasonCode::StaleSource);
-        if safety.data.decision == SafetyDecision::Stop && stale {
+        if safety.value.decision == SafetyDecision::Stop && stale {
             return Ok(());
         }
         ensure!(
             Instant::now() < deadline,
             "safety did not report a stale range source (decision {:?}, reasons {:?})",
-            safety.data.decision,
-            safety.data.active_reasons
+            safety.value.decision,
+            safety.value.active_reasons
         );
         ctx.advance_for_secs(0.5).await?;
     }

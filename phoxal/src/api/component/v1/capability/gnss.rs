@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use derive_new::new;
 use serde::{Deserialize, Serialize};
 
@@ -36,42 +35,14 @@ impl Sample {
     }
 }
 
-impl TypedSchema for Sample {
-    const SCHEMA_NAME: &'static str = "component/capability/gnss";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 pub const KIND: &str = "gnss";
-
-crate::bus::topic_leaf! {
-    pubsub(component_id: &str, capability_id: &str) {
-        path: "component/{}/{}/profile/default",
-        payload: Sample
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
-    use super::{CoordinateSystem, Sample};
-
-    #[test]
-    fn schema_contract_does_not_drift() {
-        assert_eq!(Sample::SCHEMA_NAME, "component/capability/gnss");
-        assert_eq!(Sample::SCHEMA_VERSION, 1);
-    }
+    use super::CoordinateSystem;
 
     #[test]
     fn coordinate_system_defaults_to_local() {
         assert_eq!(CoordinateSystem::default(), CoordinateSystem::Local);
-    }
-
-    #[test]
-    fn path_is_stable() {
-        assert_eq!(
-            super::path("gps", "gnss"),
-            "component/gps/gnss/profile/default"
-        );
     }
 }

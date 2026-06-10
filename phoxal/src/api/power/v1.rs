@@ -1,7 +1,6 @@
 pub const SCHEMA_NAME: &str = "phoxal-api-power/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9,11 +8,6 @@ use serde::{Deserialize, Serialize};
 pub enum Command {
     Poweroff,
     Reboot,
-}
-
-impl TypedSchema for Command {
-    const SCHEMA_NAME: &'static str = "runtime/power/command";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,49 +39,6 @@ pub enum RejectedReason {
 #[serde(rename_all = "snake_case")]
 pub enum FailedReason {
     SupervisorTransport,
-}
-
-impl TypedSchema for State {
-    const SCHEMA_NAME: &'static str = "runtime/power/state";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
-crate::bus::topic_leaf! {
-    pubsub command {
-        path: "runtime/power/command",
-        payload: Command
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub state {
-        path: "runtime/power/state",
-        payload: State
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Command, State};
-    use crate::bus::zenoh::TypedSchema;
-
-    #[test]
-    fn command_contract_schema_is_stable() {
-        assert_eq!(Command::SCHEMA_NAME, "runtime/power/command");
-        assert_eq!(Command::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn state_contract_schema_is_stable() {
-        assert_eq!(State::SCHEMA_NAME, "runtime/power/state");
-        assert_eq!(State::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn topic_paths_are_stable() {
-        assert_eq!(super::command::path(), "runtime/power/command");
-        assert_eq!(super::state::path(), "runtime/power/state");
-    }
 }
 
 #[cfg(test)]

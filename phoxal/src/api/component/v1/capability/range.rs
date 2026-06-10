@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,37 +45,4 @@ pub enum SensorHealth {
     Fault,
 }
 
-impl TypedSchema for Sample {
-    const SCHEMA_NAME: &'static str = "component/capability/range";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 pub const KIND: &str = "range";
-
-crate::bus::topic_leaf! {
-    pubsub(component_id: &str, capability_id: &str) {
-        path: "component/{}/{}/profile/default",
-        payload: Sample
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
-    use super::Sample;
-
-    #[test]
-    fn schema_contract_does_not_drift() {
-        assert_eq!(Sample::SCHEMA_NAME, "component/capability/range");
-        assert_eq!(Sample::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn path_is_stable() {
-        assert_eq!(
-            super::path("front_tof", "range"),
-            "component/front_tof/range/profile/default"
-        );
-    }
-}

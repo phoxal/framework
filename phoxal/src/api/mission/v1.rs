@@ -2,7 +2,6 @@ pub const SCHEMA_NAME: &str = "phoxal-api-mission/v1";
 pub const SCHEMA_VERSION: u32 = 1;
 
 use crate::api::map::v1::MapRevisionId;
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,11 +23,6 @@ pub enum MissionCommand {
     Resume,
     Cancel,
     ManualHandover,
-}
-
-impl TypedSchema for MissionCommand {
-    const SCHEMA_NAME: &'static str = "runtime/mission/command";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,11 +86,6 @@ pub struct State {
     pub failure: Option<MissionFailure>,
 }
 
-impl TypedSchema for State {
-    const SCHEMA_NAME: &'static str = "runtime/mission/state";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MissionMode {
@@ -115,11 +104,6 @@ pub struct Goal {
     /// Execution budget carried with the active goal for inspection on `goal::path()`.
     pub max_duration_ns: Option<u64>,
     pub source: GoalSource,
-}
-
-impl TypedSchema for Goal {
-    const SCHEMA_NAME: &'static str = "runtime/mission/goal";
-    const SCHEMA_VERSION: u32 = 1;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,82 +125,10 @@ pub struct DecisionTrace {
     pub decisions: Vec<Decision>,
 }
 
-impl TypedSchema for DecisionTrace {
-    const SCHEMA_NAME: &'static str = "runtime/mission/debug/decision_trace";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Decision {
     pub rule: String,
     pub outcome: String,
-}
-
-crate::bus::topic_leaf! {
-    pubsub command {
-        path: "runtime/mission/command",
-        payload: MissionCommand
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub state {
-        path: "runtime/mission/state",
-        payload: State
-    }
-}
-
-crate::bus::topic_leaf! {
-    pubsub goal {
-        path: "runtime/mission/goal",
-        payload: Goal
-    }
-}
-
-pub mod debug {
-    use super::*;
-
-    crate::bus::topic_leaf! {
-        pubsub decision_trace {
-            path: "runtime/mission/debug/decision_trace",
-            payload: DecisionTrace
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
-    use super::{DecisionTrace, Goal, MissionCommand, SCHEMA_NAME, SCHEMA_VERSION, State};
-
-    #[test]
-    fn schema_contracts_do_not_drift() {
-        assert_eq!(SCHEMA_NAME, "phoxal-api-mission/v1");
-        assert_eq!(SCHEMA_VERSION, 1);
-        assert_eq!(MissionCommand::SCHEMA_NAME, "runtime/mission/command");
-        assert_eq!(MissionCommand::SCHEMA_VERSION, 1);
-        assert_eq!(State::SCHEMA_NAME, "runtime/mission/state");
-        assert_eq!(State::SCHEMA_VERSION, 1);
-        assert_eq!(Goal::SCHEMA_NAME, "runtime/mission/goal");
-        assert_eq!(Goal::SCHEMA_VERSION, 1);
-        assert_eq!(
-            DecisionTrace::SCHEMA_NAME,
-            "runtime/mission/debug/decision_trace"
-        );
-        assert_eq!(DecisionTrace::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn topic_paths_are_stable() {
-        assert_eq!(super::command::path(), "runtime/mission/command");
-        assert_eq!(super::state::path(), "runtime/mission/state");
-        assert_eq!(super::goal::path(), "runtime/mission/goal");
-        assert_eq!(
-            super::debug::decision_trace::path(),
-            "runtime/mission/debug/decision_trace"
-        );
-    }
 }
 
 #[cfg(test)]

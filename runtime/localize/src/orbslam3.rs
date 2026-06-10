@@ -14,7 +14,6 @@ mod active {
         LocalizationMode, LocalizationRevisionCause, LocalizationSource, LocalizationStatus,
         LocalizationStatusReason, PoseEstimate, VelocityEstimate,
     };
-    use phoxal::bus::pubsub::Stamped;
     use phoxal::bus::typed::Received;
     use phoxal::runtime::clock::Step;
 
@@ -41,6 +40,18 @@ mod active {
     /// without limit. When exceeded the oldest entries are dropped.
     const MAX_BUFFERED_FRAMES: usize = 256;
     const MAX_BUFFERED_IMU: usize = 8_192;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub(crate) struct TimedSample<T> {
+        timestamp_ns: u64,
+        data: T,
+    }
+
+    impl<T> TimedSample<T> {
+        fn new(timestamp_ns: u64, data: T) -> Self {
+            Self { timestamp_ns, data }
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub(crate) struct OrbSlam3Config {
@@ -135,7 +146,7 @@ mod active {
             })
         }
 
-        pub(crate) fn ingest_imu(&mut self, sample: Stamped<imu::Sample>) -> Result<()> {
+        pub(crate) fn ingest_imu(&mut self, sample: TimedSample<imu::Sample>) -> Result<()> {
             let timestamp_ns = sample.timestamp_ns;
             self.sync.push_imu(sample);
             self.imu_count_since_log += 1;
@@ -143,7 +154,7 @@ mod active {
             Ok(())
         }
 
-        pub(crate) fn ingest_camera(&mut self, sample: Stamped<camera::Frame>) -> Result<()> {
+        pub(crate) fn ingest_camera(&mut self, sample: TimedSample<camera::Frame>) -> Result<()> {
             let frame = ColorFrame::from_sample(sample)?;
             let timestamp_ns = frame.timestamp_ns;
             self.sync.push_color(frame);
@@ -152,7 +163,7 @@ mod active {
             Ok(())
         }
 
-        pub(crate) fn ingest_depth(&mut self, sample: Stamped<depth::Depth>) {
+        pub(crate) fn ingest_depth(&mut self, sample: TimedSample<depth::Depth>) {
             let timestamp_ns = sample.timestamp_ns;
             self.depth_count_since_log += 1;
             self.log_io_rates(timestamp_ns);
@@ -328,15 +339,15 @@ mod active {
         }
 
         fn ingest_imu(&mut self, sample: Received<imu::Sample>) -> Result<()> {
-            Self::ingest_imu(self, stamped_from_received(sample))
+            Self::ingest_imu(self, timed_from_received(sample))
         }
 
         fn ingest_camera(&mut self, sample: Received<camera::Frame>) -> Result<()> {
-            Self::ingest_camera(self, stamped_from_received(sample))
+            Self::ingest_camera(self, timed_from_received(sample))
         }
 
         fn ingest_depth(&mut self, sample: Received<depth::Depth>) -> Result<()> {
-            Self::ingest_depth(self, stamped_from_received(sample));
+            Self::ingest_depth(self, timed_from_received(sample));
             Ok(())
         }
 
@@ -383,8 +394,8 @@ mod active {
         }
     }
 
-    fn stamped_from_received<T>(sample: Received<T>) -> Stamped<T> {
-        Stamped::new(sample.at_ns.unwrap_or(0), sample.value)
+    fn timed_from_received<T>(sample: Received<T>) -> TimedSample<T> {
+        TimedSample::new(sample.at_ns.unwrap_or(0), sample.value)
     }
 
     struct ColorFrame {
@@ -395,7 +406,7 @@ mod active {
     }
 
     impl ColorFrame {
-        fn from_sample(sample: Stamped<camera::Frame>) -> Result<Self> {
+        fn from_sample(sample: TimedSample<camera::Frame>) -> Result<Self> {
             let pixel_count = usize::try_from(sample.data.width())
                 .context("camera width does not fit usize")?
                 .checked_mul(
@@ -434,7 +445,7 @@ mod active {
         depth: DepthFrame,
         visual_ts_ns: u64,
         last_visual_ts_ns: Option<u64>,
-        imu: Vec<Stamped<imu::Sample>>,
+        imu: Vec<TimedSample<imu::Sample>>,
     }
 
     /// Buffers typed Zenoh sensor streams and emits deterministic visual-inertial
@@ -444,7 +455,7 @@ mod active {
     /// interval. Inputs may arrive out of order; the buffers are kept sorted so
     /// the emitted packet sequence is independent of arrival order.
     struct VisualInertialSync {
-        imu: VecDeque<Stamped<imu::Sample>>,
+        imu: VecDeque<TimedSample<imu::Sample>>,
         color: VecDeque<ColorFrame>,
         depth: VecDeque<DepthFrame>,
         last_emitted_visual_ts_ns: Option<u64>,
@@ -466,7 +477,7 @@ mod active {
             }
         }
 
-        fn push_imu(&mut self, sample: Stamped<imu::Sample>) {
+        fn push_imu(&mut self, sample: TimedSample<imu::Sample>) {
             let ts = sample.timestamp_ns;
             insert_by_ts(&mut self.imu, sample, ts, |sample| sample.timestamp_ns);
             while self.imu.len() > MAX_BUFFERED_IMU {
@@ -615,7 +626,7 @@ mod active {
             &mut self,
             lower: Option<u64>,
             upper: u64,
-        ) -> Vec<Stamped<imu::Sample>> {
+        ) -> Vec<TimedSample<imu::Sample>> {
             if let Some(lower) = lower {
                 while let Some(sample) = self.imu.front() {
                     if sample.timestamp_ns <= lower {
@@ -645,7 +656,7 @@ mod active {
     }
 
     fn imu_sample_to_ffi(
-        sample: &Stamped<imu::Sample>,
+        sample: &TimedSample<imu::Sample>,
     ) -> phoxal_runtime_localize_orb_slam3_sys::OrbSlam3ImuSample {
         let accel = sample.data.linear_acceleration_mps2();
         let gyro = sample.data.angular_velocity_radps();
@@ -853,8 +864,8 @@ mod active {
             }
         }
 
-        fn imu_at(timestamp_ns: u64) -> Stamped<imu::Sample> {
-            Stamped::new(
+        fn imu_at(timestamp_ns: u64) -> TimedSample<imu::Sample> {
+            TimedSample::new(
                 timestamp_ns,
                 imu::Sample::from_motion([0.0, 0.0, 0.0], [0.0, 0.0, 9.81]),
             )
@@ -1287,11 +1298,11 @@ Viewer.ViewpointF: 500.0
                 let imu_start_ns = frame_index * FRAME_DT_NS;
                 for imu_index in 0..IMU_SAMPLES_PER_FRAME {
                     let imu_time_ns = imu_start_ns + ((imu_index + 1) * IMU_DT_NS);
-                    backend.ingest_imu(Stamped::new(imu_time_ns, synthetic_imu()))?;
+                    backend.ingest_imu(TimedSample::new(imu_time_ns, synthetic_imu()))?;
                 }
 
-                backend.ingest_camera(Stamped::new(frame_time_ns, synthetic_rgb_frame()))?;
-                backend.ingest_depth(Stamped::new(frame_time_ns, synthetic_depth()));
+                backend.ingest_camera(TimedSample::new(frame_time_ns, synthetic_rgb_frame()))?;
+                backend.ingest_depth(TimedSample::new(frame_time_ns, synthetic_depth()));
                 let update = backend
                     .step(step_at(frame_time_ns))
                     .context("step must not fail across the FFI boundary")?;

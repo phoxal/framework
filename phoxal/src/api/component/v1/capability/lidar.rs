@@ -1,4 +1,3 @@
-use crate::bus::zenoh::TypedSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8,19 +7,7 @@ pub enum Scan {
     Points(Points),
 }
 
-impl TypedSchema for Scan {
-    const SCHEMA_NAME: &'static str = "component/capability/lidar";
-    const SCHEMA_VERSION: u32 = 1;
-}
-
 pub const KIND: &str = "lidar";
-
-crate::bus::topic_leaf! {
-    pubsub(component_id: &str, capability_id: &str) {
-        path: "component/{}/{}/profile/default",
-        payload: Scan
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ranges {
@@ -89,25 +76,4 @@ pub enum SensorHealth {
     Nominal,
     Degraded,
     Fault,
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::bus::zenoh::TypedSchema;
-
-    use super::Scan;
-
-    #[test]
-    fn schema_contract_does_not_drift() {
-        assert_eq!(Scan::SCHEMA_NAME, "component/capability/lidar");
-        assert_eq!(Scan::SCHEMA_VERSION, 1);
-    }
-
-    #[test]
-    fn path_is_stable() {
-        assert_eq!(
-            super::path("front_lidar", "scan"),
-            "component/front_lidar/scan/profile/default"
-        );
-    }
 }

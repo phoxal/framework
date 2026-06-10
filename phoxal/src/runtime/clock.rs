@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use crate::api::simulation::v1::clock::{self, Clock};
+use crate::api::simulation::v1::clock::Clock;
+use crate::api::v1::topic;
 use crate::bus::Bus;
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::TypedSubscriber;
+use crate::bus::typed::TypedTopicSubscriber;
 use anyhow::{Result, anyhow};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +97,7 @@ impl RealClock {
 
 enum StepSource {
     Local(RealClock),
-    Simulation(TypedSubscriber<Stamped<Clock>>),
+    Simulation(TypedTopicSubscriber<Clock>),
 }
 
 pub(crate) struct StepStream {
@@ -111,9 +111,8 @@ impl StepStream {
         Ok(Self {
             source: if simulation {
                 StepSource::Simulation(
-                    clock::subscriber_builder(bus)
-                        .await
-                        .map_err(crate::bus::Error::from)?,
+                    bus.subscriber(&topic::new().v1().simulation().clock())
+                        .await?,
                 )
             } else {
                 StepSource::Local(RealClock::new(period))
@@ -127,9 +126,9 @@ impl StepStream {
         loop {
             return match &mut self.source {
                 StepSource::Local(clock) => Ok(clock.tick().await),
-                StepSource::Simulation(subscriber) => match subscriber.recv_async().await {
-                    Ok(Ok(stamped)) => {
-                        let tick = stamped.data;
+                StepSource::Simulation(subscriber) => match subscriber.recv().await {
+                    Ok(received) => {
+                        let tick = received.value;
                         if self.bound_epoch != Some(tick.epoch()) {
                             self.bound_epoch = Some(tick.epoch());
                             self.last_step = None;
@@ -143,9 +142,6 @@ impl StepStream {
 
                         self.last_step = Some(tick.step());
                         Ok(Step::new(tick))
-                    }
-                    Ok(Err(error)) => {
-                        Err(anyhow!("simulation clock payload decode failed: {error}"))
                     }
                     Err(error) => Err(anyhow!("simulation clock subscription failed: {error}")),
                 },
