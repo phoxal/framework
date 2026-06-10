@@ -3,21 +3,21 @@ use std::time::Duration;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome, RangeSafetyClass};
 use anyhow::Result;
-use phoxal::api::component::v1::capability::{emergency_stop as component_emergency_stop, range};
-use phoxal::api::localize::v1::{LocalizationState, state as localize_state};
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::component::capability::{emergency_stop as component_emergency_stop, range};
+use phoxal::api::v1::localize::LocalizationState;
+use phoxal::api::v1::map::TraversabilitySummary;
+use phoxal::api::v1::safety::{
     EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
-    SafetySourceRevision, State, authorization as safety_authorization,
-    emergency_stop_request as safety_emergency_stop_request, state as safety_state,
+    SafetySourceRevision, State,
 };
-use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh::TypedSchema;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 
 use crate::range_classification::{classify_safety_range_inputs, range_source_id};
 use crate::selector::{detect_safety_emergency_stop_inputs, detect_safety_range_inputs};
@@ -52,25 +52,27 @@ impl Config {
 pub enum Input {
     Range {
         source_id: String,
-        sample: Stamped<range::Sample>,
+        sample: Received<range::Sample>,
     },
     EmergencyStop {
         source_id: String,
-        state: Stamped<component_emergency_stop::State>,
+        state: Received<component_emergency_stop::State>,
     },
-    OperatorEmergencyStopRequest(Stamped<EmergencyStopRequest>),
-    LocalizationState(Box<Stamped<LocalizationState>>),
+    OperatorEmergencyStopRequest(Received<EmergencyStopRequest>),
+    LocalizationState(Box<Received<LocalizationState>>),
+    MapTraversabilitySummary(Received<TraversabilitySummary>),
 }
 
 pub struct SafetyRuntime {
-    latest_range: BTreeMap<String, Stamped<range::Sample>>,
-    latest_emergency_stop: BTreeMap<String, Stamped<component_emergency_stop::State>>,
-    latest_operator_emergency_stop_request: Option<Stamped<EmergencyStopRequest>>,
-    latest_localize_state: Option<Stamped<LocalizationState>>,
+    latest_range: BTreeMap<String, Received<range::Sample>>,
+    latest_emergency_stop: BTreeMap<String, Received<component_emergency_stop::State>>,
+    latest_operator_emergency_stop_request: Option<Received<EmergencyStopRequest>>,
+    latest_localize_state: Option<Received<LocalizationState>>,
+    latest_traversability_summary: Option<Received<TraversabilitySummary>>,
     range_classes: BTreeMap<String, RangeSafetyClass>,
     decision_log: DecisionLog<SafetyLogKey>,
-    authorization_publisher: Publisher<Stamped<SafetyAuthorization>>,
-    state_publisher: Publisher<Stamped<State>>,
+    authorization_publisher: TopicPublisher<SafetyAuthorization>,
+    state_publisher: TopicPublisher<State>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,61 +100,72 @@ impl Runtime for SafetyRuntime {
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         for capability in &config.range_inputs {
             let source_id = range_source_id(capability);
-            let topic = range::path(&capability.component_id, &capability.capability_id);
-            io.subscribe::<Stamped<range::Sample>, _>(&topic, {
-                let source_id = source_id.clone();
-                move |sample| Input::Range {
-                    source_id: source_id.clone(),
-                    sample,
-                }
-            })
+            io.subscribe_topic(
+                topic::new()
+                    .v1()
+                    .component(capability.component_id.clone())
+                    .range(capability.capability_id.clone())
+                    .data(),
+                {
+                    let source_id = source_id.clone();
+                    move |sample| Input::Range {
+                        source_id: source_id.clone(),
+                        sample,
+                    }
+                },
+            )
             .await?;
         }
 
         for capability in &config.emergency_stop_inputs {
             let source_id = capability.to_string();
-            let topic =
-                component_emergency_stop::path(&capability.component_id, &capability.capability_id);
-            io.subscribe::<Stamped<component_emergency_stop::State>, _>(&topic, {
-                let source_id = source_id.clone();
-                move |state| Input::EmergencyStop {
-                    source_id: source_id.clone(),
-                    state,
-                }
-            })
+            io.subscribe_topic(
+                topic::new()
+                    .v1()
+                    .component(capability.component_id.clone())
+                    .emergency_stop(capability.capability_id.clone())
+                    .data(),
+                {
+                    let source_id = source_id.clone();
+                    move |state| Input::EmergencyStop {
+                        source_id: source_id.clone(),
+                        state,
+                    }
+                },
+            )
             .await?;
         }
 
-        io.subscribe::<Stamped<EmergencyStopRequest>, _>(
-            &safety_emergency_stop_request::path(),
+        io.subscribe_topic(
+            topic::new().v1().safety().emergency_stop_request(),
             Input::OperatorEmergencyStopRequest,
         )
         .await?;
 
-        io.subscribe::<Stamped<LocalizationState>, _>(&localize_state::path(), |sample| {
+        io.subscribe_topic(topic::new().v1().localize().state(), |sample| {
             Input::LocalizationState(Box::new(sample))
         })
         .await?;
+        io.subscribe_topic(
+            topic::new().v1().map().traversability_summary(),
+            Input::MapTraversabilitySummary,
+        )
+        .await?;
 
         let authorization_publisher = io
-            .publisher::<Stamped<SafetyAuthorization>>(&safety_authorization::path())
+            .publisher_topic(topic::new().v1().safety().authorization())
             .await?;
-        let state_publisher = io
-            .publisher::<Stamped<State>>(&safety_state::path())
-            .await?;
+        let state_topic = topic::new().v1().safety().state();
+        let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
             latest_range: BTreeMap::new(),
             latest_emergency_stop: BTreeMap::new(),
             latest_operator_emergency_stop_request: None,
             latest_localize_state: None,
+            latest_traversability_summary: None,
             range_classes: config.range_classes,
-            decision_log: DecisionLog::new(
-                Self::RUNTIME_ID,
-                safety_state::path(),
-                <State as TypedSchema>::SCHEMA_NAME,
-                <State as TypedSchema>::SCHEMA_VERSION,
-            ),
+            decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             authorization_publisher,
             state_publisher,
         })
@@ -172,6 +185,9 @@ impl Runtime for SafetyRuntime {
                 }
                 Input::LocalizationState(sample) => {
                     self.latest_localize_state = Some(*sample);
+                }
+                Input::MapTraversabilitySummary(sample) => {
+                    self.latest_traversability_summary = Some(sample);
                 }
             }
         }
@@ -197,8 +213,11 @@ impl Runtime for SafetyRuntime {
                 localization: self
                     .latest_localize_state
                     .as_ref()
-                    .and_then(|state| state.data.revision),
-                map: None,
+                    .and_then(|state| state.value.revision),
+                map: self
+                    .latest_traversability_summary
+                    .as_ref()
+                    .map(|summary| summary.value.map_revision),
                 raw_sources: Vec::new(),
             },
             approved_motion: outcome.motion_constraint,
@@ -206,7 +225,7 @@ impl Runtime for SafetyRuntime {
             expires_at_ns: authorization_expires_at_ns(now_ns),
         };
         self.authorization_publisher
-            .put(&Stamped::new(now_ns, authorization))
+            .put(now_ns, &authorization)
             .await?;
 
         let state = State {
@@ -224,9 +243,7 @@ impl Runtime for SafetyRuntime {
                     .collect(),
             },
         );
-        self.state_publisher
-            .put(&Stamped::new(now_ns, state))
-            .await?;
+        self.state_publisher.put(now_ns, &state).await?;
         Ok(())
     }
 
@@ -244,19 +261,20 @@ const fn authorization_expires_at_ns(now_ns: u64) -> Option<u64> {
 }
 
 fn hardware_emergency_stop_engaged(
-    states: &BTreeMap<String, Stamped<component_emergency_stop::State>>,
+    states: &BTreeMap<String, Received<component_emergency_stop::State>>,
 ) -> bool {
-    states.values().any(|state| state.data.engaged)
+    states.values().any(|state| state.value.engaged)
 }
 
 fn operator_emergency_stop_engaged(
-    request: Option<&Stamped<EmergencyStopRequest>>,
+    request: Option<&Received<EmergencyStopRequest>>,
     now_ns: u64,
 ) -> bool {
     request.is_some_and(|request| {
-        request.data.engaged
-            && now_ns.saturating_sub(request.timestamp_ns)
-                <= OPERATOR_EMERGENCY_STOP_REQUEST_TIMEOUT_NS
+        request.value.engaged
+            && request.at_ns.is_some_and(|at_ns| {
+                now_ns.saturating_sub(at_ns) <= OPERATOR_EMERGENCY_STOP_REQUEST_TIMEOUT_NS
+            })
     })
 }
 
@@ -279,11 +297,11 @@ mod tests {
         let states = BTreeMap::from([
             (
                 "left.e_stop".to_string(),
-                Stamped::new(NOW_NS, component_emergency_stop::State { engaged: false }),
+                received(NOW_NS, component_emergency_stop::State { engaged: false }),
             ),
             (
                 "right.e_stop".to_string(),
-                Stamped::new(NOW_NS, component_emergency_stop::State { engaged: true }),
+                received(NOW_NS, component_emergency_stop::State { engaged: true }),
             ),
         ]);
 
@@ -292,11 +310,18 @@ mod tests {
 
     #[test]
     fn stale_operator_emergency_stop_request_is_not_engaged() {
-        let request = Stamped::new(
+        let request = received(
             NOW_NS - OPERATOR_EMERGENCY_STOP_REQUEST_TIMEOUT_NS - 1,
             EmergencyStopRequest { engaged: true },
         );
 
         assert!(!operator_emergency_stop_engaged(Some(&request), NOW_NS));
+    }
+
+    fn received<T>(timestamp_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value,
+        }
     }
 }

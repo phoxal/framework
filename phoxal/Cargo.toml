@@ -28,10 +28,12 @@ arc-swap = "1.9.1"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
+const_format = { workspace = true }
 derive-new = { workspace = true }
 derive_setters = { workspace = true }
 dotenvy = { workspace = true }
 nalgebra = { workspace = true }
+phoxal-macros = { path = "../phoxal-macros", version = "0.4.0" }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
@@ -47,6 +49,7 @@ zenoh = { workspace = true }
 [dev-dependencies]
 serial_test = { workspace = true }
 tempfile = { workspace = true }
+trybuild = { workspace = true }
 
 [lints]
 workspace = true

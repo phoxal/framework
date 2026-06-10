@@ -10,6 +10,8 @@
 
 use std::fmt::Debug;
 
+use crate::bus::topic::{PubSub, Topic};
+
 /// Stable tracing target for all runtime decision-change events.
 pub const DECISION_LOG_TARGET: &str = "phoxal.runtime.decision";
 
@@ -69,6 +71,17 @@ where
             last_emit_ns: None,
             suppressed_count: 0,
         }
+    }
+
+    /// Creates a decision logger whose label and schema identity come from a
+    /// fluent typed topic.
+    pub fn from_topic<T>(runtime_id: &'static str, topic: &Topic<PubSub<T>>) -> Self {
+        Self::new(
+            runtime_id,
+            topic.key().into_owned(),
+            topic.schema(),
+            topic.version(),
+        )
     }
 
     /// Overrides the logical-time bound between emitted decision log events.
@@ -184,6 +197,25 @@ mod tests {
             now_ns,
             suppressed_count,
         }
+    }
+
+    #[test]
+    fn from_topic_uses_typed_topic_identity() {
+        let topic = crate::api::v1::topic::new().v1().motion().state();
+        let mut log = DecisionLog::from_topic("motion", &topic);
+
+        assert_eq!(
+            log.observe(10, Key::A),
+            Some(DecisionLogEmission {
+                runtime_id: "motion",
+                decision_label: "v1/motion/state".to_string(),
+                schema_name: "v1/motion/state",
+                schema_version: 1,
+                key: Key::A,
+                now_ns: 10,
+                suppressed_count: 0,
+            })
+        );
     }
 
     #[test]

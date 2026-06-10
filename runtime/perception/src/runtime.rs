@@ -2,22 +2,24 @@ use std::time::Duration;
 
 use crate::core::{HealthState, Tracker, TrackerConfig};
 use anyhow::{Result, bail};
-use phoxal::api::component::v1::capability::{camera, depth};
-use phoxal::api::frame::v1::{FrameId, Tree, tree};
-use phoxal::api::localize::v1::LocalizationState;
-use phoxal::api::map::v1::{MapRevision, revision};
-use phoxal::api::perception::v1::{
+use phoxal::api::v1::component::capability::{camera, depth};
+use phoxal::api::v1::frame::{FrameId, Tree};
+use phoxal::api::v1::localize::LocalizationState;
+use phoxal::api::v1::map::MapRevision;
+use phoxal::api::v1::perception::{
     BoundingBox, Detection, Detections, PerceptionDegradedReason, PerceptionState,
-    PerceptionStoppedReason, RevisionLinkage, detections, state,
+    PerceptionStoppedReason, RevisionLinkage,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::topic;
+use phoxal::bus::topic::{PubSub, Topic};
+use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::robot::v1::Role;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{InputPolicy, Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{InputPolicy, Io, Runtime, RuntimeInputs, TopicPublisher};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(50);
@@ -31,10 +33,8 @@ const PLACEHOLDER_WEIGHTS_VERSION: &str = "none";
 
 #[derive(Debug, Clone)]
 pub(crate) struct PerceptionSource {
-    camera: CapabilityRef,
-    depth: CapabilityRef,
-    camera_topic: String,
-    depth_topic: String,
+    camera_topic: Topic<PubSub<camera::Frame>>,
+    depth_topic: Topic<PubSub<depth::Depth>>,
     source_frame_id: FrameId,
 }
 
@@ -68,11 +68,11 @@ impl Config {
 }
 
 pub(crate) enum Input {
-    Camera(Stamped<camera::Frame>),
-    Depth(Stamped<depth::Depth>),
-    LocalizationState(Stamped<LocalizationState>),
-    FrameTree(Stamped<Tree>),
-    MapRevision(Stamped<MapRevision>),
+    Camera(Received<camera::Frame>),
+    Depth(Received<depth::Depth>),
+    LocalizationState(Received<LocalizationState>),
+    FrameTree(Received<Tree>),
+    MapRevision(Received<MapRevision>),
 }
 
 pub(crate) struct PerceptionRuntime {
@@ -80,11 +80,11 @@ pub(crate) struct PerceptionRuntime {
     detector: PlaceholderDetector,
     tracker: Tracker,
     health: HealthState,
-    latest_camera: Option<Stamped<camera::Frame>>,
-    latest_depth: Option<Stamped<depth::Depth>>,
-    latest_localize: Option<Stamped<LocalizationState>>,
-    latest_frame_tree: Option<Stamped<Tree>>,
-    latest_map_revision: Option<Stamped<MapRevision>>,
+    latest_camera: Option<Received<camera::Frame>>,
+    latest_depth: Option<Received<depth::Depth>>,
+    latest_localize: Option<Received<LocalizationState>>,
+    latest_frame_tree: Option<Received<Tree>>,
+    latest_map_revision: Option<Received<MapRevision>>,
     next_inference_ns: u64,
     dropped_frames: u64,
     detector_id: String,
@@ -92,8 +92,8 @@ pub(crate) struct PerceptionRuntime {
     model_id: String,
     weights_version: String,
     cadence_hz: f32,
-    detections_publisher: Publisher<Stamped<Detections>>,
-    state_publisher: Publisher<Stamped<PerceptionState>>,
+    detections_publisher: TopicPublisher<Detections>,
+    state_publisher: TopicPublisher<PerceptionState>,
 }
 
 #[async_trait::async_trait]
@@ -114,15 +114,14 @@ impl Runtime for PerceptionRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         if let Some(source) = &config.source {
-            let _ = (&source.camera, &source.depth);
-            io.subscribe_with::<Stamped<camera::Frame>, _>(
-                &source.camera_topic,
+            io.subscribe_topic_with(
+                source.camera_topic.clone(),
                 InputPolicy::latest(),
                 Input::Camera,
             )
             .await?;
-            io.subscribe_with::<Stamped<depth::Depth>, _>(
-                &source.depth_topic,
+            io.subscribe_topic_with(
+                source.depth_topic.clone(),
                 InputPolicy::latest(),
                 Input::Depth,
             )
@@ -130,14 +129,14 @@ impl Runtime for PerceptionRuntime {
         } else {
             warn!("perception runtime started without perception-role camera/depth source");
         }
-        io.subscribe::<Stamped<LocalizationState>, _>(
-            &phoxal::api::localize::v1::state::path(),
+        io.subscribe_topic(
+            topic::new().v1().localize().state(),
             Input::LocalizationState,
         )
         .await?;
-        io.subscribe::<Stamped<Tree>, _>(&tree::path(), Input::FrameTree)
+        io.subscribe_topic(topic::new().v1().frame().tree(), Input::FrameTree)
             .await?;
-        io.subscribe::<Stamped<MapRevision>, _>(&revision::path(), Input::MapRevision)
+        io.subscribe_topic(topic::new().v1().map().revision(), Input::MapRevision)
             .await?;
 
         Ok(Self {
@@ -158,10 +157,10 @@ impl Runtime for PerceptionRuntime {
             weights_version: config.weights_version,
             cadence_hz: config.cadence_hz,
             detections_publisher: io
-                .publisher::<Stamped<Detections>>(&detections::path())
+                .publisher_topic(topic::new().v1().perception().detections())
                 .await?,
             state_publisher: io
-                .publisher::<Stamped<PerceptionState>>(&state::path())
+                .publisher_topic(topic::new().v1().perception().state())
                 .await?,
         })
     }
@@ -212,10 +211,10 @@ impl Runtime for PerceptionRuntime {
         }
 
         let raw_detections = self.detector.infer(DetectorInput {
-            camera: &camera.data,
-            depth: self.latest_depth.as_ref().map(|sample| &sample.data),
+            camera: &camera.value,
+            depth: self.latest_depth.as_ref().map(|sample| &sample.value),
             source_frame_id: &source.source_frame_id,
-            timestamp_ns: camera.timestamp_ns,
+            timestamp_ns: camera.at_ns.unwrap_or(now_ns),
         });
         let detections = raw_detections
             .into_iter()
@@ -224,15 +223,15 @@ impl Runtime for PerceptionRuntime {
         let update = self.tracker.update(detections, revision_linkage, now_ns);
 
         self.detections_publisher
-            .put(&Stamped::new(
+            .put(
                 now_ns,
-                Detections {
+                &Detections {
                     detections: update.detections,
                     localize_revision: revision_linkage.localize_revision,
                     map_revision: revision_linkage.map_revision,
                     detector_id: self.detector_id.clone(),
                 },
-            ))
+            )
             .await?;
         self.health.observe_healthy();
         self.publish_state(now_ns, INFERENCE_BUDGET_NS as f32)
@@ -244,19 +243,19 @@ impl Runtime for PerceptionRuntime {
 
 impl PerceptionRuntime {
     fn current_revision_linkage(&self) -> Option<RevisionLinkage> {
-        let localize_revision = self.latest_localize.as_ref()?.data.revision?;
+        let localize_revision = self.latest_localize.as_ref()?.value.revision?;
         let map_revision = self.latest_map_revision.as_ref()?;
-        (map_revision.data.built_from_localize_revision == localize_revision).then_some(
+        (map_revision.value.built_from_localize_revision == localize_revision).then_some(
             RevisionLinkage {
                 localize_revision,
-                map_revision: map_revision.data.map_revision_id,
+                map_revision: map_revision.value.map_revision_id,
             },
         )
     }
 
     fn frame_tree_contains(&self, source_frame_id: &FrameId) -> bool {
         self.latest_frame_tree.as_ref().is_some_and(|tree| {
-            tree.data
+            tree.value
                 .frames
                 .iter()
                 .any(|link| &link.frame_id == source_frame_id)
@@ -265,9 +264,9 @@ impl PerceptionRuntime {
 
     async fn publish_state(&self, timestamp_ns: u64, headroom_ns: f32) -> Result<()> {
         self.state_publisher
-            .put(&Stamped::new(
+            .put(
                 timestamp_ns,
-                PerceptionState {
+                &PerceptionState {
                     health: self.health.health(),
                     backend: self.backend.clone(),
                     model_id: self.model_id.clone(),
@@ -276,7 +275,7 @@ impl PerceptionRuntime {
                     cadence_hz: self.cadence_hz,
                     dropped_frames: self.dropped_frames,
                 },
-            ))
+            )
             .await
     }
 }
@@ -293,16 +292,16 @@ impl PerceptionSource {
             (Some(camera), Some(depth)) => {
                 let source_frame_id = FrameId::new(robot.require_link_target(&camera)?);
                 Ok(Some(Self {
-                    camera_topic: phoxal::api::component::v1::capability::default_profile_path(
-                        &camera.component_id,
-                        &camera.capability_id,
-                    ),
-                    depth_topic: phoxal::api::component::v1::capability::default_profile_path(
-                        &depth.component_id,
-                        &depth.capability_id,
-                    ),
-                    camera,
-                    depth,
+                    camera_topic: topic::new()
+                        .v1()
+                        .component(camera.component_id)
+                        .camera(camera.capability_id)
+                        .data(),
+                    depth_topic: topic::new()
+                        .v1()
+                        .component(depth.component_id)
+                        .depth(depth.capability_id)
+                        .data(),
                     source_frame_id,
                 }))
             }

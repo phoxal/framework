@@ -2,11 +2,11 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::api::localize::v1::LocalizationMode;
-use crate::api::mission::v1::{GoalPose, GoalTolerance};
-use crate::api::motion::v1::ManualCommand;
-use crate::api::presence::Readiness;
-use crate::api::safety::v1::SafetyDecision;
+use crate::api::v1::localize::LocalizationMode;
+use crate::api::v1::mission::{GoalPose, GoalTolerance};
+use crate::api::v1::motion::ManualCommand;
+use crate::api::v1::presence::Readiness;
+use crate::api::v1::safety::SafetyDecision;
 use crate::runtime::DEFAULT_ROBOT_NAMESPACE;
 use crate::runtime::{RobotIdentity, RobotRuntimeArgs};
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -44,13 +44,13 @@ pub async fn wait_until_tracking(ctx: &ScenarioContext, deadline: Instant) -> Re
     let mut waited_secs = 0.0_f64;
     loop {
         let localize = ctx.latest_localization_state().await?;
-        if localize.data.mode == LocalizationMode::Tracking {
+        if localize.value.mode == LocalizationMode::Tracking {
             return Ok(());
         }
         ensure!(
             Instant::now() < deadline && waited_secs < TRACKING_WAIT_BUDGET_SECS,
             "localize never reached Tracking under simulator-truth (last mode {:?})",
-            localize.data.mode
+            localize.value.mode
         );
         ctx.advance_for_secs(0.5).await?;
         waited_secs += 0.5;
@@ -90,8 +90,8 @@ pub async fn wait_until_robot_reaches(
 ) -> Result<()> {
     loop {
         let pose = ctx.simulation_pose().await?;
-        let dx = pose.data.translation_m[0] - goal_xy_m[0];
-        let dy = pose.data.translation_m[1] - goal_xy_m[1];
+        let dx = pose.value.translation_m[0] - goal_xy_m[0];
+        let dy = pose.value.translation_m[1] - goal_xy_m[1];
         if (dx * dx + dy * dy).sqrt() <= tolerance_m {
             return Ok(());
         }
@@ -99,8 +99,8 @@ pub async fn wait_until_robot_reaches(
             Instant::now() < deadline,
             "robot did not reach goal {:?} (last pose [{:.2}, {:.2}])",
             goal_xy_m,
-            pose.data.translation_m[0],
-            pose.data.translation_m[1]
+            pose.value.translation_m[0],
+            pose.value.translation_m[1]
         );
         ctx.advance_for_secs(0.5).await?;
     }
@@ -109,18 +109,18 @@ pub async fn wait_until_robot_reaches(
 pub async fn wait_for_mission_state(
     ctx: &ScenarioContext,
     deadline: Instant,
-    predicate: impl Fn(&crate::api::mission::v1::State) -> bool,
+    predicate: impl Fn(&crate::api::v1::mission::State) -> bool,
     what: &str,
 ) -> Result<()> {
     loop {
         let state = ctx.latest_mission_state().await?;
-        if predicate(&state.data) {
+        if predicate(&state.value) {
             return Ok(());
         }
         ensure!(
             Instant::now() < deadline,
             "mission never reached {what} (last mode {:?})",
-            state.data.mode
+            state.value.mode
         );
         ctx.advance_for_secs(0.5).await?;
     }
@@ -136,7 +136,7 @@ pub async fn wait_for_runtime_readiness(
     loop {
         let summary = ctx.latest_presence_summary().await?;
         let readiness = summary
-            .data
+            .value
             .runtimes
             .iter()
             .find(|runtime| runtime.runtime_id.0 == runtime_id)
@@ -160,13 +160,13 @@ pub async fn wait_for_safety_decision(
 ) -> Result<()> {
     loop {
         let state = ctx.latest_safety_state().await?;
-        if predicate(state.data.decision) {
+        if predicate(state.value.decision) {
             return Ok(());
         }
         ensure!(
             Instant::now() < deadline,
             "safety never reached {what} (last decision {:?})",
-            state.data.decision
+            state.value.decision
         );
         ctx.advance_for_secs(0.5).await?;
     }

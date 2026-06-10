@@ -7,16 +7,19 @@ use crate::core::revisions::{
 };
 use crate::core::submaps::SubmapStore;
 use anyhow::{Result, bail, ensure};
-use phoxal::api::localize::v1::{LocalizationMode, LocalizationRevisionId};
-use phoxal::api::map::v1::{
-    MapRevisionCause, MapRevisionId, Traversability, TraversabilityCell, TraversabilityStatus,
+use phoxal::api::v1::localize::{LocalizationMode, LocalizationRevisionId};
+use phoxal::api::v1::map::{
+    MapRevisionCause, MapRevisionId, TraversabilityCell, TraversabilityStatus,
 };
-use phoxal::api::mission::v1::{GoalPose, GoalTolerance};
-use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::v1::mission::{GoalPose, GoalTolerance};
+use phoxal::api::v1::motion::ManualCommand;
+use phoxal::api::v1::topic;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
-use phoxal::scenario::helpers::{assert_close, assert_schema, keyframe, localization_revision};
+use phoxal::scenario::helpers::{
+    assert_close, assert_topic_schema, keyframe, localization_revision,
+};
 use phoxal::scenario::webots::{
     command_deadline, context_from_args, publish_and_advance, wait_until_tracking,
 };
@@ -254,7 +257,12 @@ fn p2_traversability_body_envelope(common: &RobotRuntimeArgs) -> Result<()> {
     );
     assert_eq!(traversability.cells[0], TraversabilityCell::Free);
 
-    assert_schema::<Traversability>("runtime/map/traversability", 1, "map traversability")
+    assert_topic_schema(
+        topic::new().v1().map().traversability(),
+        "v1/map/traversability",
+        1,
+        "map traversability",
+    )
 }
 
 fn p2_revision_convergence_store() -> Result<()> {
@@ -340,7 +348,7 @@ async fn assert_p2_mapping(ctx: &ScenarioContext, deadline: Instant) -> Result<(
 
     let summary = ctx.latest_map_summary().await?;
     ensure!(
-        summary.data.current_revision.is_some(),
+        summary.value.current_revision.is_some(),
         "map did not activate (no current_revision)"
     );
     Ok(())
@@ -366,9 +374,9 @@ async fn assert_p2_traversability(ctx: &ScenarioContext, deadline: Instant) -> R
 
     let summary = ctx.latest_traversability_summary().await?;
     ensure!(
-        summary.data.status == TraversabilityStatus::Ready,
+        summary.value.status == TraversabilityStatus::Ready,
         "traversability not ready after sensor evidence, got {:?}",
-        summary.data.status
+        summary.value.status
     );
     Ok(())
 }
@@ -381,11 +389,11 @@ async fn assert_p2_mapping_orb_driven_chain(
     const TURN_RADPS: f64 = 1.3;
     const SAFE_RADIUS_M: f64 = 1.8;
 
-    let start = ctx.simulation_pose().await?.data;
+    let start = ctx.simulation_pose().await?.value;
     let start_xy = [start.translation_m[0], start.translation_m[1]];
 
     loop {
-        let truth = ctx.simulation_pose().await?.data;
+        let truth = ctx.simulation_pose().await?.value;
         let drift_m = ((truth.translation_m[0] - start_xy[0]).powi(2)
             + (truth.translation_m[1] - start_xy[1]).powi(2))
         .sqrt();
@@ -405,12 +413,12 @@ async fn assert_p2_mapping_orb_driven_chain(
         .await?;
 
         let localize = ctx.latest_localization_state().await?;
-        if localize.data.mode == LocalizationMode::Tracking {
+        if localize.value.mode == LocalizationMode::Tracking {
             let summary = ctx.latest_map_summary().await?;
             let traversability = ctx.latest_traversability_summary().await?;
-            let occupancy_ready = traversability.data.status == TraversabilityStatus::Ready;
+            let occupancy_ready = traversability.value.status == TraversabilityStatus::Ready;
             let loop_closed = matches!(
-                summary.data.built_from_localize_revision,
+                summary.value.built_from_localize_revision,
                 Some(revision) if revision.sequence > 0
             );
             if occupancy_ready && loop_closed {
@@ -421,10 +429,10 @@ async fn assert_p2_mapping_orb_driven_chain(
         ensure!(
             Instant::now() < deadline,
             "ORB-driven map chain did not converge (mode {:?}, built_from_localize_revision {:?})",
-            localize.data.mode,
+            localize.value.mode,
             ctx.latest_map_summary()
                 .await?
-                .data
+                .value
                 .built_from_localize_revision
         );
     }

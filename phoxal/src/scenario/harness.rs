@@ -1,26 +1,24 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::api::explore::v1::{GoalCandidates, State as ExploreState};
-use crate::api::follow::v1::State as FollowState;
-use crate::api::localize::v1::LocalizationState;
-use crate::api::map::v1::{Summary as MapSummary, TraversabilitySummary};
-use crate::api::mission::v1::{
+use crate::api::v1::explore::{GoalCandidates, State as ExploreState};
+use crate::api::v1::follow::State as FollowState;
+use crate::api::v1::localize::LocalizationState;
+use crate::api::v1::map::{Summary as MapSummary, TraversabilitySummary};
+use crate::api::v1::mission::{
     ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalTolerance, MissionCommand,
     State as MissionState,
 };
-use crate::api::plan::v1::State as PlanState;
-use crate::api::presence::Summary;
-use crate::api::safety::v1::State as SafetyState;
-use crate::api::simulation::v1::{
-    clock, clock::Clock, pose, pose::Pose, reset, status, status::Status,
-};
+use crate::api::v1::plan::State as PlanState;
+use crate::api::v1::presence::Summary;
+use crate::api::v1::safety::State as SafetyState;
+use crate::api::v1::simulation::{clock::Clock, pose::Pose, reset, status::Status};
+use crate::api::v1::topic;
 use crate::bus::Bus;
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{TypedPublisher, TypedSchema, TypedSubscriber};
+use crate::bus::typed::{Received, TypedTopicSubscriber};
 use crate::runtime::DEFAULT_ROBOT_NAMESPACE;
 use anyhow::{Context, Result, anyhow, bail};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ScenarioEnvironment {
@@ -117,7 +115,13 @@ impl ScenarioContext {
     pub async fn reset_simulation(&self) -> Result<u64> {
         let retry =
             crate::bus::query::Retry::new(3).with_initial_backoff(Duration::from_millis(50));
-        let response = reset::query(&self.bus, &reset::Request, &retry)
+        let response = self
+            .bus
+            .request(
+                &topic::new().v1().simulation().reset(),
+                &reset::Request,
+                &retry,
+            )
             .await?
             .ok_or_else(|| anyhow!("simulation reset returned no acknowledgement"))?;
         self.wait_for_status(|status| status.epoch >= response.epoch && status.step > 0)
@@ -125,31 +129,32 @@ impl ScenarioContext {
         Ok(response.epoch)
     }
 
-    pub async fn wait_until_ready(&self) -> Result<Stamped<Status>> {
+    pub async fn wait_until_ready(&self) -> Result<Received<Status>> {
         self.wait_for_status(|status| status.step > 0).await
     }
 
-    pub async fn advance_for_secs(&self, secs: f64) -> Result<Stamped<Clock>> {
+    pub async fn advance_for_secs(&self, secs: f64) -> Result<Received<Clock>> {
         let duration_ns = duration_ns_from_secs(secs)?;
-        let subscriber = clock::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        let first = next_stamped(&subscriber, self.wallclock_timeout).await?;
-        let epoch = first.data.epoch();
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().simulation().clock())
+            .await?;
+        let first = next_received(&subscriber, self.wallclock_timeout).await?;
+        let epoch = first.value.epoch();
         let target_time_ns = first
-            .data
+            .value
             .time_ns()
             .checked_add(duration_ns)
             .ok_or_else(|| anyhow!("scenario target logical time overflows nanoseconds"))?;
         let mut latest = first;
 
-        while latest.data.time_ns() < target_time_ns {
-            latest = next_stamped(&subscriber, self.wallclock_timeout).await?;
-            if latest.data.epoch() != epoch {
+        while latest.value.time_ns() < target_time_ns {
+            latest = next_received(&subscriber, self.wallclock_timeout).await?;
+            if latest.value.epoch() != epoch {
                 bail!(
                     "simulation epoch changed from {} to {} while waiting for logical time",
                     epoch,
-                    latest.data.epoch()
+                    latest.value.epoch()
                 );
             }
         }
@@ -157,81 +162,98 @@ impl ScenarioContext {
         Ok(latest)
     }
 
-    pub async fn simulation_pose(&self) -> Result<Stamped<Pose>> {
-        let subscriber = pose::subscriber_builder(&self.bus, &self.environment.robot_id)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn simulation_pose(&self) -> Result<Received<Pose>> {
+        let subscriber = self
+            .bus
+            .subscriber(
+                &topic::new()
+                    .v1()
+                    .simulation()
+                    .robot(self.environment.robot_id.clone())
+                    .pose(),
+            )
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_localization_state(&self) -> Result<Stamped<LocalizationState>> {
-        let subscriber = crate::api::localize::v1::state::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_localization_state(&self) -> Result<Received<LocalizationState>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().localize().state())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_presence_summary(&self) -> Result<Stamped<Summary>> {
-        let subscriber = crate::api::presence::summary::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_presence_summary(&self) -> Result<Received<Summary>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().presence().summary())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_safety_state(&self) -> Result<Stamped<SafetyState>> {
-        let subscriber = crate::api::safety::v1::state::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_safety_state(&self) -> Result<Received<SafetyState>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().safety().state())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_plan_state(&self) -> Result<Stamped<PlanState>> {
-        let subscriber = crate::api::plan::v1::state::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_plan_state(&self) -> Result<Received<PlanState>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().plan().state())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_follow_state(&self) -> Result<Stamped<FollowState>> {
-        let subscriber = crate::api::follow::v1::state::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_follow_state(&self) -> Result<Received<FollowState>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().follow().state())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_mission_state(&self) -> Result<Stamped<MissionState>> {
-        let subscriber = crate::api::mission::v1::state::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_mission_state(&self) -> Result<Received<MissionState>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().mission().state())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_explore_state(&self) -> Result<Stamped<ExploreState>> {
-        let subscriber = crate::api::explore::v1::state::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_explore_state(&self) -> Result<Received<ExploreState>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().explore().state())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_explore_candidates(&self) -> Result<Stamped<GoalCandidates>> {
-        let subscriber = crate::api::explore::v1::goal_candidates::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_explore_candidates(&self) -> Result<Received<GoalCandidates>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().explore().goal_candidates())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_map_summary(&self) -> Result<Stamped<MapSummary>> {
-        let subscriber = crate::api::map::v1::summary::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_map_summary(&self) -> Result<Received<MapSummary>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().map().summary())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_traversability_summary(&self) -> Result<Stamped<TraversabilitySummary>> {
-        let subscriber = crate::api::map::v1::traversability_summary::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        next_stamped(&subscriber, self.wallclock_timeout).await
+    pub async fn latest_traversability_summary(&self) -> Result<Received<TraversabilitySummary>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().map().traversability_summary())
+            .await?;
+        next_received(&subscriber, self.wallclock_timeout).await
     }
 
     pub async fn publish_navigate_to(
@@ -269,82 +291,59 @@ impl ScenarioContext {
 
     pub async fn publish_manual_command(
         &self,
-        command: crate::api::motion::v1::ManualCommand,
+        command: crate::api::v1::motion::ManualCommand,
     ) -> Result<()> {
-        let produced_at_ns = self.wait_until_ready().await?.data.time_ns;
-        let publisher = crate::api::motion::v1::manual::publisher(&self.bus)?
+        let produced_at_ns = self.wait_until_ready().await?.value.time_ns;
+        self.bus
+            .publish(
+                &topic::new().v1().motion().manual(),
+                produced_at_ns,
+                &command,
+            )
             .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        wait_for_matching_subscriber(&publisher, self.wallclock_timeout).await?;
-        publisher
-            .put(&Stamped::new(produced_at_ns, command))
-            .await
-            .map_err(|error| anyhow!(error.to_string()))
+            .map_err(Into::into)
     }
 
     async fn wait_for_status(
         &self,
         predicate: impl Fn(&Status) -> bool,
-    ) -> Result<Stamped<Status>> {
-        let subscriber = status::subscriber_builder(&self.bus)
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?;
+    ) -> Result<Received<Status>> {
+        let subscriber = self
+            .bus
+            .subscriber(&topic::new().v1().simulation().status())
+            .await?;
         loop {
-            let status = next_stamped(&subscriber, self.wallclock_timeout).await?;
-            if predicate(&status.data) {
+            let status = next_received(&subscriber, self.wallclock_timeout).await?;
+            if predicate(&status.value) {
                 return Ok(status);
             }
         }
     }
 
     async fn publish_mission_command(&self, command: MissionCommand) -> Result<()> {
-        let produced_at_ns = self.wait_until_ready().await?.data.time_ns;
-        let publisher = crate::api::mission::v1::command::publisher(&self.bus)?
+        let produced_at_ns = self.wait_until_ready().await?.value.time_ns;
+        self.bus
+            .publish(
+                &topic::new().v1().mission().command(),
+                produced_at_ns,
+                &command,
+            )
             .await
-            .map_err(|error| anyhow!(error.to_string()))?;
-        wait_for_matching_subscriber(&publisher, self.wallclock_timeout).await?;
-        publisher
-            .put(&Stamped::new(produced_at_ns, command))
-            .await
-            .map_err(|error| anyhow!(error.to_string()))
+            .map_err(Into::into)
     }
 }
 
-async fn next_stamped<T>(
-    subscriber: &TypedSubscriber<Stamped<T>>,
+async fn next_received<T>(
+    subscriber: &TypedTopicSubscriber<T>,
     timeout: Duration,
-) -> Result<Stamped<T>>
+) -> Result<Received<T>>
 where
-    T: DeserializeOwned + TypedSchema,
+    T: DeserializeOwned,
 {
-    match tokio::time::timeout(timeout, subscriber.recv_async()).await {
-        Ok(Ok(Ok(value))) => Ok(value),
-        Ok(Ok(Err(error))) => Err(anyhow!("typed scenario payload failed to decode: {error}")),
+    match tokio::time::timeout(timeout, subscriber.recv()).await {
+        Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(anyhow!("scenario subscriber failed: {error}")),
         Err(_) => bail!("timed out waiting for scenario data after {:?}", timeout),
-    }
-}
-
-async fn wait_for_matching_subscriber<T>(
-    publisher: &TypedPublisher<'_, T>,
-    timeout: Duration,
-) -> Result<()>
-where
-    T: Serialize + TypedSchema,
-{
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        if publisher
-            .has_matching_subscribers()
-            .await
-            .map_err(|error| anyhow!(error.to_string()))?
-        {
-            return Ok(());
-        }
-        if tokio::time::Instant::now() >= deadline {
-            bail!("no subscriber matched the scenario command publisher within {timeout:?}");
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 

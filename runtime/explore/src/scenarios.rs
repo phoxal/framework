@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, ensure};
-use phoxal::api::mission::v1::{GoalSource, MissionMode};
+use phoxal::api::v1::mission::{GoalSource, MissionMode};
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
@@ -45,7 +45,7 @@ fn deadline_for(name: &str) -> Result<Instant> {
 async fn assert_p5_exploration_frontier(ctx: &ScenarioContext, deadline: Instant) -> Result<()> {
     wait_until_tracking(ctx, deadline).await?;
     let start = ctx.simulation_pose().await?;
-    let start_xy = [start.data.translation_m[0], start.data.translation_m[1]];
+    let start_xy = [start.value.translation_m[0], start.value.translation_m[1]];
 
     ctx.publish_explore_command().await?;
 
@@ -59,7 +59,7 @@ async fn assert_p5_exploration_frontier(ctx: &ScenarioContext, deadline: Instant
 
     loop {
         let candidates = ctx.latest_explore_candidates().await?;
-        if !candidates.data.candidates.is_empty() {
+        if !candidates.value.candidates.is_empty() {
             break;
         }
         ensure!(
@@ -84,8 +84,8 @@ async fn assert_p5_exploration_frontier(ctx: &ScenarioContext, deadline: Instant
 
     loop {
         let pose = ctx.simulation_pose().await?;
-        let dx = pose.data.translation_m[0] - start_xy[0];
-        let dy = pose.data.translation_m[1] - start_xy[1];
+        let dx = pose.value.translation_m[0] - start_xy[0];
+        let dy = pose.value.translation_m[1] - start_xy[1];
         if (dx * dx + dy * dy).sqrt() >= 0.30 {
             return Ok(());
         }

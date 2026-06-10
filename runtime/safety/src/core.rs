@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use phoxal::api::component::v1::capability::range;
-use phoxal::api::localize::v1::{LocalizationMode, LocalizationState};
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::component::capability::range;
+use phoxal::api::v1::localize::{LocalizationMode, LocalizationState};
+use phoxal::api::v1::safety::{
     Constraint, MotionConstraint, SafetyDecision, SafetyReason, SafetyReasonCode,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::typed::Received;
 
 /// Drop-off horizon beyond the expected floor return for a downward range sensor.
 const CLIFF_DROP_MARGIN_M: f32 = 0.12;
@@ -58,9 +58,9 @@ impl EmergencyStopInputs {
 
 impl EvaluationOutcome {
     pub fn evaluate(
-        range_samples: &BTreeMap<String, Stamped<range::Sample>>,
+        range_samples: &BTreeMap<String, Received<range::Sample>>,
         range_classes: &BTreeMap<String, RangeSafetyClass>,
-        localize_state: Option<&Stamped<LocalizationState>>,
+        localize_state: Option<&Received<LocalizationState>>,
         emergency_stop: EmergencyStopInputs,
         now_ns: u64,
     ) -> Self {
@@ -77,7 +77,7 @@ impl EvaluationOutcome {
 
         // 1) Stale source -> Stop.
         for (source_id, sample) in range_samples {
-            let age_ns = now_ns.saturating_sub(sample.timestamp_ns);
+            let age_ns = now_ns.saturating_sub(received_at_ns(sample));
             if age_ns > RANGE_STALE_TIMEOUT_NS {
                 return Self {
                     decision: SafetyDecision::Stop,
@@ -92,7 +92,7 @@ impl EvaluationOutcome {
 
         // 2) Obstacle, drop-off, or ground obstacle in stop horizon -> Stop.
         for (source_id, sample) in range_samples {
-            let distance_m = sample.data.distance_m();
+            let distance_m = sample.value.distance_m();
             let range_class = range_classes
                 .get(source_id)
                 .copied()
@@ -122,7 +122,7 @@ impl EvaluationOutcome {
         // 3) Localization mode policy.
         let mode_outcome = match localize_state {
             Some(state) => {
-                let age_ns = now_ns.saturating_sub(state.timestamp_ns);
+                let age_ns = now_ns.saturating_sub(received_at_ns(state));
                 if age_ns > LOCALIZATION_STALE_TIMEOUT_NS {
                     return Self {
                         decision: SafetyDecision::UnknownConservative,
@@ -133,7 +133,7 @@ impl EvaluationOutcome {
                         }],
                     };
                 }
-                state.data.mode
+                state.value.mode
             }
             None => {
                 return Self {
@@ -192,6 +192,10 @@ impl EvaluationOutcome {
             },
         }
     }
+}
+
+fn received_at_ns<T>(sample: &Received<T>) -> u64 {
+    sample.at_ns.unwrap_or(0)
 }
 
 fn stop_for_obstacle(detail: String) -> EvaluationOutcome {
@@ -280,7 +284,7 @@ fn full_motion() -> MotionConstraint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::api::localize::v1::{
+    use phoxal::api::v1::localize::{
         LocalizationSource, LocalizationStatus, LocalizationStatusReason,
     };
 
@@ -623,13 +627,13 @@ mod tests {
 
     fn range_samples<const N: usize>(
         samples: [(&str, u64, f32); N],
-    ) -> BTreeMap<String, Stamped<range::Sample>> {
+    ) -> BTreeMap<String, Received<range::Sample>> {
         samples
             .into_iter()
             .map(|(source_id, timestamp_ns, distance_m)| {
                 (
                     source_id.to_string(),
-                    Stamped::new(timestamp_ns, range::Sample::new(distance_m)),
+                    received(timestamp_ns, range::Sample::new(distance_m)),
                 )
             })
             .collect()
@@ -644,7 +648,7 @@ mod tests {
             .collect()
     }
 
-    fn localize_state(mode: LocalizationMode) -> Stamped<LocalizationState> {
+    fn localize_state(mode: LocalizationMode) -> Received<LocalizationState> {
         localize_state_at(mode, FRESH_SAMPLE_NS)
     }
 
@@ -655,8 +659,8 @@ mod tests {
         }
     }
 
-    fn localize_state_at(mode: LocalizationMode, timestamp_ns: u64) -> Stamped<LocalizationState> {
-        Stamped::new(
+    fn localize_state_at(mode: LocalizationMode, timestamp_ns: u64) -> Received<LocalizationState> {
+        received(
             timestamp_ns,
             LocalizationState {
                 mode,
@@ -678,6 +682,13 @@ mod tests {
                 valid_at_ns: Some(timestamp_ns),
             },
         )
+    }
+
+    fn received<T>(timestamp_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value,
+        }
     }
 
     fn status_reasons(mode: LocalizationMode) -> Vec<LocalizationStatusReason> {

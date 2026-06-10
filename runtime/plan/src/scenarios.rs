@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::plan::v1::PlanStatus;
+use phoxal::api::v1::plan::PlanStatus;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
@@ -47,13 +47,13 @@ async fn assert_p4_planning(ctx: &ScenarioContext, deadline: Instant) -> Result<
 
     loop {
         let state = ctx.latest_plan_state().await?;
-        match state.data.status {
+        match state.value.status {
             PlanStatus::Ready => return Ok(()),
             PlanStatus::Failed | PlanStatus::Refused => {
                 return Err(anyhow!(
                     "plan did not produce a path: {:?} ({:?})",
-                    state.data.status,
-                    state.data.reason
+                    state.value.status,
+                    state.value.reason
                 ));
             }
             _ => {}
@@ -61,7 +61,7 @@ async fn assert_p4_planning(ctx: &ScenarioContext, deadline: Instant) -> Result<
         ensure!(
             Instant::now() < deadline,
             "plan never became Ready (last {:?})",
-            state.data.status
+            state.value.status
         );
         ctx.advance_for_secs(0.5).await?;
     }

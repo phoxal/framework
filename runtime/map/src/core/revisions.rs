@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use phoxal::api::localize::v1::{LocalizationRevision, LocalizationRevisionId};
-use phoxal::api::map::v1::{MapRevisionCause, MapRevisionId};
+use phoxal::api::v1::localize::{LocalizationRevision, LocalizationRevisionId};
+use phoxal::api::v1::map::{MapRevisionCause, MapRevisionId};
 use tracing::warn;
 
 /// How many completed revisions to retain (current + previous N-1). 3 per BLUEPRINT default.
@@ -76,7 +76,7 @@ impl RevisionStore {
 
     /// Observe a fresh localize revision. Returns Some(newly-recorded RetainedRevision) iff a new
     /// map revision was emitted. Returns None when the localize revision is identical to the last
-    /// one seen (idempotent: Stamped duplicates from the bus are common).
+    /// one seen (idempotent timestamp duplicates from the bus are common).
     pub fn observe(
         &mut self,
         localize_revision: &LocalizationRevision,
@@ -196,8 +196,8 @@ impl Default for RevisionStore {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::frame::v1::FrameId;
-    use phoxal::api::localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause, Region};
+    use phoxal::api::v1::frame::FrameId;
+    use phoxal::api::v1::localize::{AffectedKeyframeSummary, LocalizationRevisionCause, Region};
 
     use super::*;
 

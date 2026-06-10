@@ -14,10 +14,10 @@ phoxal = "0.4"
 
 | Module | What it is |
 |---|---|
-| [`phoxal::bus`] | Typed Zenoh transport — pub/sub + query leaves, decode-error discipline. |
+| [`phoxal::bus`] | Typed Zenoh transport. `Bus::{publish, subscriber, request, responder}` take a typed `Topic<Kind>`; payloads are plain `serde` data; schema identity + version travel in a `BusMetadata` attachment, so wire mismatches are loud decode errors. |
 | [`phoxal::model`] | Authored manifest schemas: `robot.yaml`, `structure.urdf`, `component.yaml`, `simulation.yaml`. `model::v1::Robot` is the resolved superset. |
 | [`phoxal::spatial`] | Geometry, frames, transforms, risk model. |
-| [`phoxal::api`] | The typed bus wire contracts — one module per platform runtime (`drive`, `localize`, `mission`, …), plus `component`, `presence`, `simulation`. Each leaf exposes `path()` / `topic()` / `publisher`-`subscriber` (or `get`-`queryable`) via the `topic_leaf!` macro. |
+| [`phoxal::api`] | The typed bus wire contracts under `phoxal::api::v1::<domain>` (`drive`, `localize`, `mission`, …, plus `component`, `presence`, `simulation`). Topics are built with the fluent generated builder `phoxal::api::v1::topic`, e.g. `topic::new().v1().drive().target()` → `Topic<PubSub<Target>>`. Instance ids are method arguments (`component("base").motor("left").command()`); `*_any()` gives a wildcard for subscribe. The leaf return type carries the payload, so the bus rejects a wrong payload at compile time. |
 | [`phoxal::runtime`] | The `Runtime` trait, `execute()` bootstrap, logical clock, runtime context, decision logging. |
 | [`phoxal::scenario`] | Webots-backed validation harness (feature `scenario`). |
 
@@ -33,6 +33,19 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
+A runtime reads and writes contracts through the typed `Io` with fluent topics:
+
+```rust,ignore
+use phoxal::api::v1::{topic, drive::Target, drive::State};
+
+// subscribe (wildcard ok): map (at_ns, payload) into the runtime's Input
+io.subscribe_topic(topic::new().v1().drive().target(), InputPolicy::latest(), Input::Target).await?;
+
+// publish: the timestamp is an argument, the payload is plain data
+let state = io.publisher_topic(topic::new().v1().drive().state()).await?;
+state.put(now_ns, &State { /* … */ }).await?;
+```
+
 The platform runtime *binaries* (`phoxal-runtime-<name>`) ship as container
 images, not crates — they depend on this crate but are not published here.
 
@@ -43,8 +56,10 @@ images, not crates — they depend on this crate but are not published here.
 
 ## Status
 
-Pre-1.0, building in public. The API evolves inside `pub mod vN` modules of each
-`phoxal::api::<name>`; breaking changes are loud, not quiet.
+Pre-1.0, building in public. The API is a single version-first axis,
+`phoxal::api::v1`; a breaking re-cut of the whole contract surface becomes
+`api::v2`, while an individual contract's payload revision bumps its per-leaf
+`version` in the `topic_tree!`. Breaking changes are loud, not quiet.
 
 ## License
 

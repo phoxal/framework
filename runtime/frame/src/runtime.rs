@@ -5,16 +5,17 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal::api::frame::v1::{
+use phoxal::api::v1::frame::{
     FrameId, FrameLink, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source, Static,
-    Tree, data, lookup, r#static, tree,
+    Tree,
 };
-use phoxal::api::joint::v1::{JointId, JointState, Quantity};
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::joint::{JointId, JointState, Quantity};
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::model::structure::Structure;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 use phoxal::spatial::frame::{extract_link_transforms, pose_to_isometry};
 use tracing::warn;
 use urdf_rs::JointType;
@@ -171,7 +172,7 @@ pub enum Input {
     Joint {
         joint_id: JointId,
         child_frame_id: FrameId,
-        sample: Stamped<JointState>,
+        sample: Received<JointState>,
     },
 }
 
@@ -190,9 +191,9 @@ pub struct FrameRuntime {
     buffers: HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
     published_dynamics: HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
     view: ReadCell<FrameView>,
-    tree_publisher: Publisher<Stamped<Tree>>,
-    static_publisher: Publisher<Stamped<Static>>,
-    dynamic_publishers: HashMap<FrameId, Publisher<Stamped<FrameTransform>>>,
+    tree_publisher: TopicPublisher<Tree>,
+    static_publisher: TopicPublisher<Static>,
+    dynamic_publisher: TopicPublisher<FrameTransform>,
 }
 
 #[async_trait::async_trait]
@@ -212,18 +213,20 @@ impl Runtime for FrameRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        let tree_publisher = io.publisher::<Stamped<Tree>>(&tree::path()).await?;
-        let static_publisher = io.publisher::<Stamped<Static>>(&r#static::path()).await?;
+        let tree_publisher = io.publisher_topic(topic::new().v1().frame().tree()).await?;
+        let static_publisher = io
+            .publisher_topic(topic::new().v1().frame().r#static())
+            .await?;
+        let dynamic_publisher = io.publisher_topic(topic::new().v1().frame().data()).await?;
         let static_transforms = Arc::new(config.static_transforms);
         let parent_by_child = Arc::new(config.parent_by_child);
 
-        let mut dynamic_publishers = HashMap::new();
         let mut buffers = HashMap::new();
         for dynamic in &config.dynamic_joints {
             let joint_id = dynamic.joint_id.clone();
             let child_frame_id = dynamic.child_frame_id.clone();
-            io.subscribe::<Stamped<JointState>, _>(
-                &phoxal::api::joint::v1::data::path(&joint_id),
+            io.subscribe_topic(
+                topic::new().v1().joint(joint_id.to_string()).data(),
                 move |sample| Input::Joint {
                     joint_id: joint_id.clone(),
                     child_frame_id: child_frame_id.clone(),
@@ -231,11 +234,6 @@ impl Runtime for FrameRuntime {
                 },
             )
             .await?;
-            dynamic_publishers.insert(
-                dynamic.child_frame_id.clone(),
-                io.publisher::<Stamped<FrameTransform>>(&data::path(&dynamic.child_frame_id))
-                    .await?,
-            );
             buffers.insert(
                 dynamic.child_frame_id.clone(),
                 RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES),
@@ -248,9 +246,8 @@ impl Runtime for FrameRuntime {
             parent_by_child: parent_by_child.clone(),
             dynamics: Arc::new(published_dynamics.clone()),
         });
-        let lookup_path = lookup::path();
-        io.serve_query::<FrameLookupRequest, FrameLookupResponse, FrameView, _>(
-            &lookup_path,
+        io.serve_query_topic(
+            topic::new().v1().frame().lookup(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(16).unwrap()),
             frame_lookup,
@@ -274,7 +271,7 @@ impl Runtime for FrameRuntime {
             view,
             tree_publisher,
             static_publisher,
-            dynamic_publishers,
+            dynamic_publisher,
         })
     }
 
@@ -304,49 +301,39 @@ impl Runtime for FrameRuntime {
                 );
                 continue;
             }
-            let Some(transform) = joint_transform(meta, &sample.data) else {
+            let timestamp_ns = sample.at_ns.unwrap_or_else(|| step.tick.time_ns());
+            let Some(transform) = joint_transform(meta, &sample.value) else {
                 continue;
             };
             self.buffers
                 .entry(child_frame_id.clone())
                 .or_insert_with(|| RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES))
-                .push(sample.timestamp_ns, transform);
-            updated.insert(child_frame_id, (joint_id, sample.timestamp_ns, transform));
+                .push(timestamp_ns, transform);
+            updated.insert(child_frame_id, (joint_id, timestamp_ns, transform));
         }
 
         let changed_frame_ids = updated.keys().cloned().collect::<Vec<_>>();
         let should_commit_query_view = self.initial || !changed_frame_ids.is_empty();
         let time_ns = step.tick.time_ns();
         if self.initial {
-            self.static_publisher
-                .put(&Stamped::new(time_ns, self.static_payload()))
-                .await?;
+            let static_payload = self.static_payload();
+            self.static_publisher.put(time_ns, &static_payload).await?;
             self.initial = false;
         }
 
-        self.tree_publisher
-            .put(&Stamped::new(time_ns, self.tree.clone()))
-            .await?;
+        self.tree_publisher.put(time_ns, &self.tree).await?;
 
         for (child_frame_id, (joint_id, timestamp_ns, transform)) in updated {
             let Some((parent_frame_id, _)) = self.parent_by_child.get(&child_frame_id) else {
                 continue;
             };
-            let Some(publisher) = self.dynamic_publishers.get(&child_frame_id) else {
-                warn!(frame_id = %child_frame_id, "frame runtime has no publisher for dynamic frame");
-                continue;
-            };
-            publisher
-                .put(&Stamped::new(
-                    timestamp_ns,
-                    transform_from_isometry(
-                        Some(parent_frame_id.clone()),
-                        child_frame_id,
-                        transform,
-                        Source::Joint { joint_id },
-                    ),
-                ))
-                .await?;
+            let transform = transform_from_isometry(
+                Some(parent_frame_id.clone()),
+                child_frame_id,
+                transform,
+                Source::Joint { joint_id },
+            );
+            self.dynamic_publisher.put(timestamp_ns, &transform).await?;
         }
 
         if should_commit_query_view {

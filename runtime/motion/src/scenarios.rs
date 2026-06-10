@@ -2,19 +2,18 @@ use std::borrow::Cow;
 
 use crate::core::Arbitration as MotionArbitration;
 use anyhow::{Result, ensure};
-use phoxal::api::drive::v1::Target as DriveTarget;
-use phoxal::api::follow::v1::Target as FollowTarget;
-use phoxal::api::localize::v1::LocalizationRevisionId;
-use phoxal::api::map::v1::MapRevisionId;
-use phoxal::api::motion::v1::{
-    Arbitration, ArbitrationCandidate, MotionSource, SourceFreshness, State as MotionState,
-};
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::drive::Target as DriveTarget;
+use phoxal::api::v1::follow::Target as FollowTarget;
+use phoxal::api::v1::localize::LocalizationRevisionId;
+use phoxal::api::v1::map::MapRevisionId;
+use phoxal::api::v1::motion::{Arbitration, ArbitrationCandidate, MotionSource};
+use phoxal::api::v1::safety::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetySourceRevision,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
-use phoxal::scenario::helpers::assert_schema;
+use phoxal::scenario::helpers::assert_topic_schema;
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-motion-arbitration-contract"),
@@ -44,8 +43,8 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         }
     }
 
-    fn follow_target(linear: f64, angular: f64) -> Stamped<FollowTarget> {
-        Stamped::new(
+    fn follow_target(linear: f64, angular: f64) -> Received<FollowTarget> {
+        received(
             1_000,
             FollowTarget {
                 map_revision: MapRevisionId {
@@ -63,8 +62,8 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         )
     }
 
-    fn safety_authorization(decision: SafetyDecision) -> Stamped<SafetyAuthorization> {
-        Stamped::new(
+    fn safety_authorization(decision: SafetyDecision) -> Received<SafetyAuthorization> {
+        received(
             1_000,
             SafetyAuthorization {
                 decision,
@@ -89,14 +88,28 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         )
     }
 
-    assert_schema::<MotionState>("runtime/motion/state", 2, "motion state")?;
-    assert_schema::<Arbitration>(
-        "runtime/motion/debug/arbitration",
+    fn received<T>(at_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(at_ns),
+            value,
+        }
+    }
+
+    assert_topic_schema(
+        topic::new().v1().motion().state(),
+        "v1/motion/state",
+        1,
+        "motion state",
+    )?;
+    assert_topic_schema(
+        topic::new().v1().motion().arbitration(),
+        "v1/motion/arbitration",
         1,
         "motion arbitration debug",
     )?;
-    assert_schema::<SourceFreshness>(
-        "runtime/motion/debug/source_freshness",
+    assert_topic_schema(
+        topic::new().v1().motion().source_freshness(),
+        "v1/motion/source_freshness",
         1,
         "motion source freshness debug",
     )?;
@@ -166,7 +179,7 @@ fn p3_motion_arbitration_contract() -> Result<()> {
         "fresh follow target must pass through as the active follow source"
     );
 
-    let stale_follow = Stamped::new(0, follow_target(0.5, 0.2).data);
+    let stale_follow = received(0, follow_target(0.5, 0.2).value);
     let stale = MotionArbitration::arbitrate(Some(&stale_follow), None, 1_000_000_000);
     ensure!(
         stale.drive_target.linear_x_mps == 0.0

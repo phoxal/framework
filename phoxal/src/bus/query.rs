@@ -3,16 +3,8 @@ use std::time::Duration;
 
 use derive_new::new;
 use derive_setters::Setters;
-use serde::{Serialize, de::DeserializeOwned};
 use tokio::time::sleep;
 use tracing::warn;
-use zenoh::key_expr::OwnedKeyExpr;
-
-use crate::bus::zenoh::{
-    TypedGetBuilder, TypedGetError, TypedQueryable, TypedQueryableBuilder, TypedSchema,
-    TypedSessionExt,
-};
-use crate::bus::{Bus, Error, Result};
 
 #[derive(Debug, Clone, new, Setters)]
 #[setters(prefix = "with_")]
@@ -107,77 +99,6 @@ where
     }
 
     Ok(None)
-}
-
-pub fn get_builder<'a, Req, Resp>(
-    bus: &'a Bus,
-    topic: &str,
-    request: &'a Req,
-) -> TypedGetBuilder<'a, 'static, Resp>
-where
-    Req: Serialize + TypedSchema,
-    Resp: DeserializeOwned + TypedSchema,
-{
-    bus.session()
-        .typed_get_builder::<Req, Resp, _>(bus.topic(topic), request)
-}
-
-pub async fn get<Req, Resp>(
-    bus: &Bus,
-    topic: &str,
-    request: &Req,
-) -> Result<Vec<std::result::Result<Resp, TypedGetError>>>
-where
-    Req: Serialize + TypedSchema,
-    Resp: DeserializeOwned + TypedSchema,
-{
-    get_builder::<Req, Resp>(bus, topic, request)
-        .await
-        .map_err(Error::from)
-}
-
-pub async fn query<Req, Resp>(
-    bus: &Bus,
-    topic: &str,
-    request: &Req,
-    retry: &Retry,
-) -> Result<Option<Resp>>
-where
-    Req: Serialize + TypedSchema,
-    Resp: DeserializeOwned + TypedSchema,
-{
-    retry_query(topic, retry, || async {
-        let mut replies = get::<Req, Resp>(bus, topic, request).await?.into_iter();
-        match replies.next() {
-            Some(Ok(response)) => Ok(Some(response)),
-            Some(Err(error)) => Err(Error::from(error)),
-            None => Ok(None),
-        }
-    })
-    .await
-}
-
-pub fn queryable_builder<'a, Req, Resp>(
-    bus: &'a Bus,
-    topic: &str,
-) -> Result<TypedQueryableBuilder<'a, 'static, Req, Resp>>
-where
-    Req: DeserializeOwned + TypedSchema,
-    Resp: Serialize + TypedSchema,
-{
-    let topic = OwnedKeyExpr::new(bus.topic(topic))
-        .map_err(|error| Error::InvalidTopic(error.to_string()))?;
-    Ok(bus.session().declare_typed_queryable::<Req, Resp, _>(topic))
-}
-
-pub async fn queryable<Req, Resp>(bus: &Bus, topic: &str) -> Result<TypedQueryable<Req, Resp>>
-where
-    Req: DeserializeOwned + TypedSchema,
-    Resp: Serialize + TypedSchema,
-{
-    queryable_builder::<Req, Resp>(bus, topic)?
-        .await
-        .map_err(Error::from)
 }
 
 #[cfg(test)]

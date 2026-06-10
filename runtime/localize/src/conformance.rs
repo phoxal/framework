@@ -4,18 +4,18 @@
 //! ORB-SLAM3 backend end-to-end; this proves the contract every backend must satisfy.
 
 use anyhow::{Result, bail, ensure};
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::localize::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, KeyframeId, KeyframeRequest,
     KeyframeResponse, LocalizationMode, LocalizationRevisionCause, LocalizationRevisionId,
     LocalizationStatusReason, PoseGraphRange, PoseGraphRequest, PoseGraphResponse,
 };
-use phoxal::api::odometry::v1::{
+use phoxal::api::v1::odometry::{
     Covariance as OdometryCovariance, OdometryEstimate, PoseEstimate as OdometryPoseEstimate,
     Status, StatusMode, VelocityEstimate as OdometryVelocityEstimate,
 };
-use phoxal::api::simulation::v1::clock::Clock;
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::simulation::clock::Clock;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 
 use crate::runtime::{
@@ -383,10 +383,10 @@ fn step_at(time_ns: u64) -> Step {
     Step::new(Clock::new(1, time_ns / STEP_DT_NS, time_ns, STEP_DT_NS))
 }
 
-fn odometry_sample(timestamp_ns: u64, mode: StatusMode) -> Stamped<OdometryEstimate> {
-    Stamped::new(
-        timestamp_ns,
-        OdometryEstimate {
+fn odometry_sample(timestamp_ns: u64, mode: StatusMode) -> Received<OdometryEstimate> {
+    Received {
+        at_ns: Some(timestamp_ns),
+        value: OdometryEstimate {
             pose: OdometryPoseEstimate {
                 frame_id: FrameId::new("odom"),
                 child_frame_id: FrameId::new("base_footprint"),
@@ -406,7 +406,7 @@ fn odometry_sample(timestamp_ns: u64, mode: StatusMode) -> Stamped<OdometryEstim
                 reasons: Vec::new(),
             },
         },
-    )
+    }
 }
 
 fn new_revision(cause: LocalizationRevisionCause) -> NewRevision {

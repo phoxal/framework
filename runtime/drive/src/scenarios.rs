@@ -2,12 +2,12 @@ use std::borrow::Cow;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, ensure};
-use phoxal::api::drive::v1::{
-    ActuatorAuthority, ActuatorCommands, Kinematics, Saturation, State as DriveState, StopReason,
-    Target as DriveTarget, Watchdog,
+use phoxal::api::v1::drive::{
+    ActuatorAuthority, State as DriveState, StopReason, Target as DriveTarget,
 };
+use phoxal::api::v1::topic;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
-use phoxal::scenario::helpers::{assert_close, assert_schema};
+use phoxal::scenario::helpers::{assert_close, assert_topic_schema};
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p3-drive-kinematics-contract"),
@@ -27,21 +27,39 @@ pub fn run(name: &str) -> Result<()> {
 }
 
 fn p3_drive_kinematics_contract() -> Result<()> {
-    assert_schema::<DriveTarget>("runtime/drive/target", 1, "drive target")?;
-    assert_schema::<DriveState>("runtime/drive/state", 1, "drive state")?;
-    assert_schema::<ActuatorCommands>(
-        "runtime/drive/debug/actuator_commands",
+    assert_topic_schema(
+        topic::new().v1().drive().target(),
+        "v1/drive/target",
+        1,
+        "drive target",
+    )?;
+    assert_topic_schema(
+        topic::new().v1().drive().state(),
+        "v1/drive/state",
+        1,
+        "drive state",
+    )?;
+    assert_topic_schema(
+        topic::new().v1().drive().actuator_commands(),
+        "v1/drive/actuator_commands",
         1,
         "drive actuator commands debug",
     )?;
-    assert_schema::<Saturation>(
-        "runtime/drive/debug/saturation",
+    assert_topic_schema(
+        topic::new().v1().drive().saturation(),
+        "v1/drive/saturation",
         1,
         "drive saturation debug",
     )?;
-    assert_schema::<Watchdog>("runtime/drive/debug/watchdog", 1, "drive watchdog debug")?;
-    assert_schema::<Kinematics>(
-        "runtime/drive/debug/kinematics",
+    assert_topic_schema(
+        topic::new().v1().drive().watchdog(),
+        "v1/drive/watchdog",
+        1,
+        "drive watchdog debug",
+    )?;
+    assert_topic_schema(
+        topic::new().v1().drive().kinematics(),
+        "v1/drive/kinematics",
         1,
         "drive kinematics debug",
     )?;

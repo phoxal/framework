@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::follow::v1::FollowStatus;
+use phoxal::api::v1::follow::FollowStatus;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
@@ -50,13 +50,13 @@ async fn assert_p4_following(ctx: &ScenarioContext, deadline: Instant) -> Result
 
     loop {
         let state = ctx.latest_follow_state().await?;
-        match state.data.status {
+        match state.value.status {
             FollowStatus::Tracking => break,
             FollowStatus::Failed | FollowStatus::Refused => {
                 return Err(anyhow!(
                     "follow refused/failed: {:?} ({:?})",
-                    state.data.status,
-                    state.data.reason
+                    state.value.status,
+                    state.value.reason
                 ));
             }
             _ => {}
@@ -64,7 +64,7 @@ async fn assert_p4_following(ctx: &ScenarioContext, deadline: Instant) -> Result
         ensure!(
             Instant::now() < deadline,
             "follow never started tracking (last {:?})",
-            state.data.status
+            state.value.status
         );
         ctx.advance_for_secs(0.5).await?;
     }

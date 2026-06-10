@@ -1,12 +1,12 @@
 use anyhow::Result;
-use phoxal::api::component::v1::capability::gnss;
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::component::capability::gnss;
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::localize::{
     LocalizationMode, LocalizationSource, LocalizationStatus, LocalizationStatusReason,
     PoseEstimate,
 };
-use phoxal::api::odometry::v1::OdometryEstimate;
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::odometry::OdometryEstimate;
+use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::capability::GnssCoordinateSystem;
 use phoxal::runtime::clock::Step;
 
@@ -20,8 +20,8 @@ const IDENTITY_ROTATION_XYZW: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
 pub(crate) struct GnssAnchoredBackend {
     coordinate_system: GnssCoordinateSystem,
     wgs84_origin: Option<Wgs84Origin>,
-    latest_gnss: Option<Stamped<gnss::Sample>>,
-    latest_odometry: Option<Stamped<OdometryEstimate>>,
+    latest_gnss: Option<Received<gnss::Sample>>,
+    latest_odometry: Option<Received<OdometryEstimate>>,
     initial_revision_emitted: bool,
 }
 
@@ -60,18 +60,18 @@ impl LocalizeBackend for GnssAnchoredBackend {
         LocalizationSource::GnssAnchored
     }
 
-    fn ingest_odometry(&mut self, sample: Stamped<OdometryEstimate>) {
+    fn ingest_odometry(&mut self, sample: Received<OdometryEstimate>) {
         self.latest_odometry = Some(sample);
     }
 
-    fn ingest_gnss(&mut self, sample: Stamped<gnss::Sample>) {
+    fn ingest_gnss(&mut self, sample: Received<gnss::Sample>) {
         if self.coordinate_system == GnssCoordinateSystem::Wgs84 && self.wgs84_origin.is_none() {
-            self.wgs84_origin = Some(Wgs84Origin::from_sample(&sample.data));
+            self.wgs84_origin = Some(Wgs84Origin::from_sample(&sample.value));
         }
         self.latest_gnss = Some(sample);
     }
 
-    fn step(&mut self, _step: Step) -> Result<BackendUpdate> {
+    fn step(&mut self, step: Step) -> Result<BackendUpdate> {
         let Some(sample) = &self.latest_gnss else {
             return Ok(BackendUpdate {
                 mode: LocalizationMode::Initializing,
@@ -95,12 +95,12 @@ impl LocalizeBackend for GnssAnchoredBackend {
         let rotation_xyzw = self
             .latest_odometry
             .as_ref()
-            .map(|odometry| odometry.data.pose.rotation_xyzw)
+            .map(|odometry| odometry.value.pose.rotation_xyzw)
             .unwrap_or(IDENTITY_ROTATION_XYZW);
         let pose = PoseEstimate {
             frame_id: FrameId::new(MAP_FRAME_ID),
             child_frame_id: FrameId::new(BASE_FRAME_ID),
-            translation_m: self.translation_m(&sample.data),
+            translation_m: self.translation_m(&sample.value),
             rotation_xyzw,
         };
         let new_revision = initial_sensor_integration_revision(
@@ -122,7 +122,7 @@ impl LocalizeBackend for GnssAnchoredBackend {
                 healthy: true,
                 reasons: Vec::new(),
             },
-            valid_at_ns: Some(sample.timestamp_ns),
+            valid_at_ns: Some(sample.at_ns.unwrap_or_else(|| step.tick.time_ns())),
             new_revision,
         })
     }
@@ -153,12 +153,12 @@ impl GnssAnchoredBackend {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::localize::v1::{AffectedKeyframeSummary, LocalizationRevisionCause};
-    use phoxal::api::odometry::v1::{
+    use phoxal::api::v1::localize::{AffectedKeyframeSummary, LocalizationRevisionCause};
+    use phoxal::api::v1::odometry::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status, StatusMode,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal::api::simulation::v1::clock::Clock;
+    use phoxal::api::v1::simulation::clock::Clock;
 
     use super::*;
 
@@ -292,17 +292,17 @@ mod tests {
         latitude: f64,
         longitude: f64,
         altitude: f64,
-    ) -> Stamped<gnss::Sample> {
-        Stamped::new(
-            timestamp_ns,
-            gnss::Sample::new(latitude, longitude, altitude, [0.0; 9]),
-        )
+    ) -> Received<gnss::Sample> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value: gnss::Sample::new(latitude, longitude, altitude, [0.0; 9]),
+        }
     }
 
-    fn odometry_sample(timestamp_ns: u64, rotation_xyzw: [f64; 4]) -> Stamped<OdometryEstimate> {
-        Stamped::new(
-            timestamp_ns,
-            OdometryEstimate {
+    fn odometry_sample(timestamp_ns: u64, rotation_xyzw: [f64; 4]) -> Received<OdometryEstimate> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value: OdometryEstimate {
                 pose: OdometryPoseEstimate {
                     frame_id: FrameId::new("odom"),
                     child_frame_id: FrameId::new("base_footprint"),
@@ -322,7 +322,7 @@ mod tests {
                     reasons: Vec::new(),
                 },
             },
-        )
+        }
     }
 
     fn assert_translation_close(actual: Option<[f64; 3]>, expected: [f64; 3], tolerance: f64) {

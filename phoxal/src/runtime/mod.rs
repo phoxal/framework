@@ -33,13 +33,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::api::presence::{Heartbeat, Readiness, RuntimeId, heartbeat};
+use crate::api::v1::presence::{Heartbeat, Readiness, RuntimeId};
+use crate::api::v1::topic;
 use crate::bus::Bus;
 use crate::bus::builder::Builder;
-use crate::bus::pubsub::Stamped;
-use crate::bus::zenoh::{
-    BusyResponse, TypedPublisher, TypedQueryable, TypedSchema, TypedSubscriber,
-};
+use crate::bus::topic::{PubSub, Query as TopicQuery, Topic};
+use crate::bus::typed::{Received, TypedTopicResponder, TypedTopicSubscriber};
+use crate::bus::zenoh::BusyResponse;
 use crate::model::structure::Structure;
 use crate::runtime::clock::{Step, StepStream};
 use crate::util::parse_trimmed_non_empty;
@@ -215,10 +215,6 @@ impl From<&DriverRuntimeArgs> for RobotIdentity {
     fn from(args: &DriverRuntimeArgs) -> Self {
         Self::from(&args.runtime)
     }
-}
-
-pub fn debug_input_topic(runtime_id: &str, key: &str) -> String {
-    format!("runtime/{runtime_id}/debug/input/{key}")
 }
 
 // Empty per-runtime CLI extension for runtimes that only use common flags.
@@ -502,7 +498,6 @@ impl<T: Send + 'static> RecordingBuffer for TypedRecordingBuffer<T> {
 
 pub struct Io<Input> {
     bus: Option<Bus>,
-    runtime_id: &'static str,
     handles: Vec<JoinHandle<()>>,
     sources: Vec<SourceHandle<Input>>,
     recorded_puts: HashMap<String, Arc<dyn RecordingBuffer>>,
@@ -512,7 +507,6 @@ impl<Input> Io<Input> {
     pub fn recording() -> Self {
         Self {
             bus: None,
-            runtime_id: "",
             handles: Vec::new(),
             sources: Vec::new(),
             recorded_puts: HashMap::new(),
@@ -529,10 +523,9 @@ impl<Input> Io<Input> {
 }
 
 impl<Input: Send + 'static> Io<Input> {
-    fn live(bus: Bus, runtime_id: &'static str) -> Self {
+    fn live(bus: Bus, _runtime_id: &'static str) -> Self {
         Self {
             bus: Some(bus),
-            runtime_id,
             handles: Vec::new(),
             sources: Vec::new(),
             recorded_puts: HashMap::new(),
@@ -549,68 +542,30 @@ impl<Input: Send + 'static> Io<Input> {
             .ok_or_else(|| anyhow!("live bus is unavailable in recording IO"))
     }
 
-    pub async fn subscribe<T, F>(&mut self, topic: &str, map: F) -> Result<()>
+    pub async fn subscribe_topic<T, F>(&mut self, topic: Topic<PubSub<T>>, map: F) -> Result<()>
     where
-        T: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
+        T: DeserializeOwned + Send + Sync + 'static,
+        F: Fn(Received<T>) -> Input + Send + 'static,
     {
-        self.subscribe_with(topic, InputPolicy::All, map).await
-    }
-
-    pub async fn subscribe_with<T, F>(
-        &mut self,
-        topic: &str,
-        policy: InputPolicy,
-        map: F,
-    ) -> Result<()>
-    where
-        T: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            let source = Arc::new(Mutex::new(SourceBuffer::new(policy)));
-            self.sources.push(source.clone());
-            self.handles.push(spawn_subscription_forwarder(
-                crate::bus::pubsub::subscribe(bus, topic).await?,
-                source,
-                map,
-            ));
-        }
-        Ok(())
-    }
-
-    pub async fn subscribe_mirrored<T, F>(
-        &mut self,
-        topic: &str,
-        debug_key: &str,
-        map: F,
-    ) -> Result<()>
-    where
-        T: DeserializeOwned + Serialize + TypedSchema + Clone + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
-    {
-        self.subscribe_mirrored_with(topic, debug_key, InputPolicy::All, map)
+        self.subscribe_topic_with(topic, InputPolicy::All, map)
             .await
     }
 
-    pub async fn subscribe_mirrored_with<T, F>(
+    pub async fn subscribe_topic_with<T, F>(
         &mut self,
-        topic: &str,
-        debug_key: &str,
+        topic: Topic<PubSub<T>>,
         policy: InputPolicy,
         map: F,
     ) -> Result<()>
     where
-        T: DeserializeOwned + Serialize + TypedSchema + Clone + Send + Sync + 'static,
-        F: Fn(T) -> Input + Send + 'static,
+        T: DeserializeOwned + Send + Sync + 'static,
+        F: Fn(Received<T>) -> Input + Send + 'static,
     {
         if let Some(bus) = &self.bus {
-            let debug_topic = debug_input_topic(self.runtime_id, debug_key);
             let source = Arc::new(Mutex::new(SourceBuffer::new(policy)));
             self.sources.push(source.clone());
-            self.handles.push(spawn_mirrored_subscription_forwarder(
-                crate::bus::pubsub::subscribe(bus, topic).await?,
-                crate::bus::pubsub::publisher(bus, &debug_topic).await?,
+            self.handles.push(spawn_topic_subscription_forwarder(
+                bus.subscriber(&topic).await?,
                 source,
                 map,
             ));
@@ -618,22 +573,22 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(())
     }
 
-    pub async fn serve_query<Req, Resp, V, F>(
+    pub async fn serve_query_topic<Req, Resp, V, F>(
         &mut self,
-        topic: &str,
+        topic: Topic<TopicQuery<Req, Resp>>,
         reader: Reader<V>,
         options: QueryOptions,
         handler: F,
     ) -> Result<()>
     where
-        Req: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-        Resp: Serialize + TypedSchema + BusyResponse + Send + Sync + 'static,
+        Req: DeserializeOwned + Send + Sync + 'static,
+        Resp: Serialize + BusyResponse + Send + Sync + 'static,
         V: Send + Sync + 'static,
         F: Fn(&V, Req) -> Resp + Send + Sync + 'static,
     {
         if let Some(bus) = &self.bus {
-            self.handles.push(spawn_query_responder(
-                crate::bus::query::queryable(bus, topic).await?,
+            self.handles.push(spawn_topic_query_responder(
+                bus.responder(&topic).await?,
                 reader,
                 options,
                 handler,
@@ -642,81 +597,63 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(())
     }
 
-    pub async fn publisher<T>(&mut self, topic: &str) -> Result<Publisher<T>>
+    pub async fn publisher_topic<T>(&mut self, topic: Topic<PubSub<T>>) -> Result<TopicPublisher<T>>
     where
-        T: Serialize + TypedSchema + Clone + Send + Sync + 'static,
+        T: Serialize + Clone + Send + 'static,
     {
+        let key = topic.publish_key()?.into_owned();
+
         if let Some(bus) = &self.bus {
-            return Ok(Publisher {
-                inner: PublisherInner::Live(crate::bus::pubsub::publisher(bus, topic).await?),
+            return Ok(TopicPublisher {
+                inner: TopicPublisherInner::Live {
+                    bus: bus.clone(),
+                    topic,
+                },
             });
         }
 
         let values = Arc::new(Mutex::new(Vec::new()));
         self.recorded_puts.insert(
-            topic.to_string(),
+            key,
             Arc::new(TypedRecordingBuffer {
                 values: values.clone(),
             }),
         );
-        Ok(Publisher {
-            inner: PublisherInner::Recording(values),
-        })
-    }
-
-    pub async fn eager_publisher<T>(&mut self, topic: &str) -> Result<Publisher<T>>
-    where
-        T: Serialize + TypedSchema + Clone + Send + Sync + 'static,
-    {
-        if let Some(bus) = &self.bus {
-            return Ok(Publisher {
-                inner: PublisherInner::Live(crate::bus::pubsub::eager_publisher(bus, topic).await?),
-            });
-        }
-
-        let values = Arc::new(Mutex::new(Vec::new()));
-        self.recorded_puts.insert(
-            topic.to_string(),
-            Arc::new(TypedRecordingBuffer {
-                values: values.clone(),
-            }),
-        );
-        Ok(Publisher {
-            inner: PublisherInner::Recording(values),
+        Ok(TopicPublisher {
+            inner: TopicPublisherInner::Recording(values),
         })
     }
 }
 
-pub struct Publisher<T>
+pub struct TopicPublisher<T>
 where
-    T: Serialize + TypedSchema + Clone,
+    T: Serialize + Clone,
 {
-    inner: PublisherInner<T>,
+    inner: TopicPublisherInner<T>,
 }
 
-enum PublisherInner<T>
+enum TopicPublisherInner<T>
 where
-    T: Serialize + TypedSchema + Clone,
+    T: Serialize + Clone,
 {
-    Live(TypedPublisher<'static, T>),
+    Live { bus: Bus, topic: Topic<PubSub<T>> },
     Recording(Arc<Mutex<Vec<T>>>),
 }
 
-impl<T> Publisher<T>
+impl<T> TopicPublisher<T>
 where
-    T: Serialize + TypedSchema + Clone,
+    T: Serialize + Clone,
 {
-    pub async fn put(&self, payload: &T) -> Result<()> {
+    pub async fn put(&self, at_ns: u64, data: &T) -> Result<()> {
         match &self.inner {
-            PublisherInner::Live(publisher) => publisher
-                .put(payload)
-                .await
-                .map_err(|error| anyhow!(error.to_string())),
-            PublisherInner::Recording(values) => {
+            TopicPublisherInner::Live { bus, topic } => {
+                bus.publish(topic, at_ns, data).await.map_err(Into::into)
+            }
+            TopicPublisherInner::Recording(values) => {
                 values
                     .lock()
                     .map_err(|error| anyhow!("recorded publisher lock poisoned: {error}"))?
-                    .push(payload.clone());
+                    .push(data.clone());
                 Ok(())
             }
         }
@@ -753,7 +690,7 @@ impl<'a> RuntimeProcess<'a> {
         let mut runtime = R::new(&mut io, config).await?;
         let mut steps = StepStream::new(self.bus, self.simulation, self.period).await?;
         let heartbeat_pub = io
-            .publisher::<Stamped<Heartbeat>>(&heartbeat::path())
+            .publisher_topic(topic::new().v1().presence().heartbeat())
             .await?;
         let (handles, sources) = io.into_parts();
         let _handles = handles;
@@ -799,13 +736,13 @@ impl<'a> RuntimeProcess<'a> {
                         dropped_in_window = 0;
                     }
                     heartbeat_pub
-                        .put(&Stamped::new(
+                        .put(
                             step.tick.time_ns(),
-                            Heartbeat {
+                            &Heartbeat {
                                 runtime_id: RuntimeId::new(R::RUNTIME_ID),
                                 readiness: Readiness::Ready,
                             },
-                        ))
+                        )
                         .await?;
                 }
             }
@@ -827,34 +764,34 @@ fn collect_step_inputs<I>(sources: &[SourceHandle<I>]) -> Result<RuntimeInputs<I
     Ok(RuntimeInputs { events, stats })
 }
 
-fn spawn_subscription_forwarder<T, U, F>(
-    subscriber: TypedSubscriber<T>,
+fn spawn_topic_subscription_forwarder<T, U, F>(
+    subscriber: TypedTopicSubscriber<T>,
     source: SourceHandle<U>,
     map: F,
 ) -> JoinHandle<()>
 where
-    T: DeserializeOwned + TypedSchema + Send + Sync + 'static,
+    T: DeserializeOwned + Send + Sync + 'static,
     U: Send + 'static,
-    F: Fn(T) -> U + Send + 'static,
+    F: Fn(Received<T>) -> U + Send + 'static,
 {
     tokio::spawn(async move {
         loop {
-            match subscriber.recv_async().await {
-                Ok(Ok(message)) => {
-                    push_source_input(&source, map(message));
+            match subscriber.recv().await {
+                Ok(received) => {
+                    push_source_input(&source, map(received));
                 }
-                Ok(Err(error)) => {
+                Err(crate::bus::Error::TypedDecode(error)) => {
                     tracing::warn!(
                         %error,
                         payload_type = std::any::type_name::<T>(),
-                        "failed to decode subscription payload"
+                        "failed to decode typed topic payload"
                     );
                 }
                 Err(error) => {
                     tracing::warn!(
                         %error,
                         payload_type = std::any::type_name::<T>(),
-                        "failed to receive subscription payload"
+                        "failed to receive typed topic payload"
                     );
                     return;
                 }
@@ -863,72 +800,15 @@ where
     })
 }
 
-fn spawn_mirrored_subscription_forwarder<T, U, F>(
-    subscriber: TypedSubscriber<T>,
-    mirror_publisher: TypedPublisher<'static, T>,
-    source: SourceHandle<U>,
-    map: F,
-) -> JoinHandle<()>
-where
-    T: DeserializeOwned + Serialize + TypedSchema + Clone + Send + Sync + 'static,
-    U: Send + 'static,
-    F: Fn(T) -> U + Send + 'static,
-{
-    tokio::spawn(async move {
-        loop {
-            match subscriber.recv_async().await {
-                Ok(Ok(message)) => {
-                    match mirror_publisher.has_matching_subscribers().await {
-                        Ok(true) => {
-                            if let Err(error) = mirror_publisher.put(&message).await {
-                                tracing::warn!(
-                                    %error,
-                                    payload_type = std::any::type_name::<T>(),
-                                    "failed to mirror consumed subscription payload"
-                                );
-                            }
-                        }
-                        Ok(false) => {}
-                        Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                payload_type = std::any::type_name::<T>(),
-                                "failed to check mirrored subscription demand"
-                            );
-                        }
-                    }
-
-                    push_source_input(&source, map(message));
-                }
-                Ok(Err(error)) => {
-                    tracing::warn!(
-                        %error,
-                        payload_type = std::any::type_name::<T>(),
-                        "failed to decode subscription payload"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        payload_type = std::any::type_name::<T>(),
-                        "failed to receive subscription payload"
-                    );
-                    return;
-                }
-            }
-        }
-    })
-}
-
-fn spawn_query_responder<Req, Resp, V, F>(
-    queryable: TypedQueryable<Req, Resp>,
+fn spawn_topic_query_responder<Req, Resp, V, F>(
+    responder: TypedTopicResponder<Req, Resp>,
     reader: Reader<V>,
     options: QueryOptions,
     handler: F,
 ) -> JoinHandle<()>
 where
-    Req: DeserializeOwned + TypedSchema + Send + Sync + 'static,
-    Resp: Serialize + TypedSchema + BusyResponse + Send + Sync + 'static,
+    Req: DeserializeOwned + Send + Sync + 'static,
+    Resp: Serialize + BusyResponse + Send + Sync + 'static,
     V: Send + Sync + 'static,
     F: Fn(&V, Req) -> Resp + Send + Sync + 'static,
 {
@@ -936,13 +816,13 @@ where
 
     tokio::spawn(async move {
         loop {
-            let query = match queryable.recv_async().await {
+            let query = match responder.recv().await {
                 Ok(query) => query,
                 Err(error) => {
                     tracing::warn!(
                         %error,
                         request_type = std::any::type_name::<Req>(),
-                        "failed to receive query"
+                        "failed to receive typed topic query"
                     );
                     return;
                 }
@@ -953,7 +833,7 @@ where
                     tracing::warn!(
                         %error,
                         request_type = std::any::type_name::<Req>(),
-                        "failed to decode query payload"
+                        "failed to decode typed topic query payload"
                     );
                     continue;
                 }
@@ -964,7 +844,7 @@ where
                         tracing::warn!(
                             %error,
                             response_type = std::any::type_name::<Resp>(),
-                            "failed to reply with busy query response"
+                            "failed to reply with busy typed topic query response"
                         );
                     }
                 }
@@ -975,7 +855,7 @@ where
                             tracing::warn!(
                                 %error,
                                 response_type = std::any::type_name::<Resp>(),
-                                "failed to reply to query"
+                                "failed to reply to typed topic query"
                             );
                         }
                     });
@@ -1067,9 +947,7 @@ mod tests {
     use crate::runtime::clock::{Schedule, SchedulePolicy};
     use crate::runtime::{QueryOptions, ReadCell};
 
-    use super::{
-        InputPolicy, QueryExecutor, QueryStart, RuntimeInputStats, SourceBuffer, debug_input_topic,
-    };
+    use super::{InputPolicy, QueryExecutor, QueryStart, RuntimeInputStats, SourceBuffer};
     use crate::bus::zenoh::BusyResponse;
     use std::sync::{Arc, Condvar, Mutex};
 
@@ -1088,14 +966,6 @@ mod tests {
         fn busy() -> Self {
             Self::Busy
         }
-    }
-
-    #[test]
-    fn debug_input_topic_uses_runtime_debug_input_namespace() {
-        assert_eq!(
-            debug_input_topic("localize", "rgb"),
-            "runtime/localize/debug/input/rgb"
-        );
     }
 
     #[test]

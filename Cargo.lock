@@ -1131,6 +1131,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2215,16 +2221,18 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "arc-swap",
  "async-trait",
  "clap",
+ "const_format",
  "derive-new",
  "derive_setters",
  "dotenvy",
  "nalgebra",
+ "phoxal-macros",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -2236,13 +2244,23 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "trybuild",
  "urdf-rs",
  "zenoh",
 ]
 
 [[package]]
+name = "phoxal-macros"
+version = "0.4.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "phoxal-runtime-asset"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2254,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-drive"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2268,7 +2286,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-explore"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2281,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-follow"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2293,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-frame"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2307,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-joint"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2320,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2334,14 +2352,14 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize-orb-slam3-sys"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "phoxal-runtime-map"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2356,7 +2374,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-mission"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2368,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-motion"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2381,7 +2399,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-odometry"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -2396,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-perception"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2409,7 +2427,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-plan"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2421,7 +2439,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-power"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2436,7 +2454,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-presence"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2449,7 +2467,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-safety"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2463,7 +2481,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-video"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3303,6 +3321,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_spanned"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "serde_with"
 version = "3.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3655,6 +3682,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "target-triple"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "591ef38edfb78ca4771ee32cf494cb8771944bee237a9b91fc9c1424ac4b777b"
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3665,6 +3698,15 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
@@ -3860,6 +3902,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "1.1.2+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3888,6 +3945,12 @@ checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.1+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "tower"
@@ -4014,6 +4077,21 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "trybuild"
+version = "1.0.116"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47c635f0191bd3a2941013e5062667100969f8c4e9cd787c14f977265d73616e"
+dependencies = [
+ "glob",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "target-triple",
+ "termcolor",
+ "toml",
+]
 
 [[package]]
 name = "tungstenite"

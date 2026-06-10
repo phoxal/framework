@@ -4,19 +4,20 @@ use std::time::Instant;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome};
 use anyhow::{Result, ensure};
-use phoxal::api::component::v1::capability::range;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::component::capability::range;
+use phoxal::api::v1::localize::{
     LocalizationMode, LocalizationSource, LocalizationState, LocalizationStatus,
 };
-use phoxal::api::safety::v1::{
+use phoxal::api::v1::safety::{
     Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
-    SafetyReasonCode, SafetySourceRevision, State as SafetyState,
+    SafetyReasonCode, SafetySourceRevision,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
-use phoxal::scenario::helpers::assert_schema;
+use phoxal::scenario::helpers::assert_topic_schema;
 use phoxal::scenario::webots::{
     command_deadline, context_from_args, kill_service, restart_service, wait_for_safety_decision,
     wait_until_tracking,
@@ -101,8 +102,8 @@ fn p3_safety_decision_policy() -> Result<()> {
         }
     }
 
-    fn localize_state(mode: LocalizationMode) -> Stamped<LocalizationState> {
-        Stamped::new(
+    fn localize_state(mode: LocalizationMode) -> Received<LocalizationState> {
+        received(
             1_000,
             LocalizationState {
                 mode,
@@ -125,19 +126,32 @@ fn p3_safety_decision_policy() -> Result<()> {
         source_id: &str,
         timestamp_ns: u64,
         distance_m: f32,
-    ) -> BTreeMap<String, Stamped<range::Sample>> {
+    ) -> BTreeMap<String, Received<range::Sample>> {
         BTreeMap::from([(
             source_id.to_string(),
-            Stamped::new(timestamp_ns, range::Sample::new(distance_m)),
+            received(timestamp_ns, range::Sample::new(distance_m)),
         )])
     }
 
-    assert_schema::<SafetyAuthorization>(
-        "runtime/safety/authorization",
+    fn received<T>(timestamp_ns: u64, value: T) -> Received<T> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value,
+        }
+    }
+
+    assert_topic_schema(
+        topic::new().v1().safety().authorization(),
+        "v1/safety/authorization",
         1,
         "safety authorization",
     )?;
-    assert_schema::<SafetyState>("runtime/safety/state", 1, "safety state")?;
+    assert_topic_schema(
+        topic::new().v1().safety().state(),
+        "v1/safety/state",
+        1,
+        "safety state",
+    )?;
 
     let decisions = [
         SafetyDecision::Allow,
@@ -340,18 +354,18 @@ async fn assert_p3_safety_range_sensor_staleness(
     loop {
         let safety = ctx.latest_safety_state().await?;
         let stale = safety
-            .data
+            .value
             .active_reasons
             .iter()
             .any(|reason| reason.code == SafetyReasonCode::StaleSource);
-        if safety.data.decision == SafetyDecision::Stop && stale {
+        if safety.value.decision == SafetyDecision::Stop && stale {
             return Ok(());
         }
         ensure!(
             Instant::now() < deadline,
             "safety did not report a stale range source (decision {:?}, reasons {:?})",
-            safety.data.decision,
-            safety.data.active_reasons
+            safety.value.decision,
+            safety.value.active_reasons
         );
         ctx.advance_for_secs(0.5).await?;
     }

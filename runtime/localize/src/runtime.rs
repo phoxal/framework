@@ -3,25 +3,25 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::component::v1::capability::{camera, depth, gnss, imu};
-use phoxal::api::frame::v1::FrameId;
-use phoxal::api::localize::v1::{
+use phoxal::api::v1::component::capability::{camera, depth, gnss, imu};
+use phoxal::api::v1::frame::FrameId;
+use phoxal::api::v1::localize::{
     AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance, ImuBiasEstimate,
     Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode, LocalizationRevision,
     LocalizationRevisionCause, LocalizationRevisionId, LocalizationSource, LocalizationState,
     LocalizationStatus, LocalizationStatusReason, PoseEstimate, PoseGraphCorrection,
-    PoseGraphRequest, PoseGraphResponse, VelocityEstimate, correction, keyframe, pose,
-    query::corrections, query::keyframe as keyframe_query, query::pose_graph, revision, state,
+    PoseGraphRequest, PoseGraphResponse, VelocityEstimate,
 };
-use phoxal::api::odometry::v1::{OdometryEstimate, StatusMode, data as odometry_data};
-use phoxal::api::simulation::v1::pose::{self as sim_pose, Pose as SimPose};
-use phoxal::bus::pubsub::Stamped;
-use phoxal::bus::zenoh::TypedSchema;
+use phoxal::api::v1::odometry::{OdometryEstimate, StatusMode};
+use phoxal::api::v1::simulation::pose::Pose as SimPose;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
+use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::GnssCoordinateSystem;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 
 use crate::gnss_anchored::GnssAnchoredBackend;
 use crate::orbslam3;
@@ -75,10 +75,20 @@ pub enum BackendSelection {
         robot_id: String,
     },
     GnssAnchored {
-        gnss_topic: String,
+        gnss: CapabilityRef,
         coordinate_system: GnssCoordinateSystem,
     },
-    OrbSlam3(Box<orbslam3::OrbSlam3Config>),
+    OrbSlam3 {
+        inputs: OrbSlam3Inputs,
+        config: Box<orbslam3::OrbSlam3Config>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OrbSlam3Inputs {
+    pub(crate) camera: CapabilityRef,
+    pub(crate) depth: CapabilityRef,
+    pub(crate) imu: Option<CapabilityRef>,
 }
 
 fn orb_slam3_vocabulary_from_env() -> Result<Option<PathBuf>> {
@@ -89,21 +99,21 @@ fn orb_slam3_vocabulary_from_env() -> Result<Option<PathBuf>> {
 pub(crate) trait LocalizeBackend: Send {
     fn name(&self) -> LocalizationSource;
 
-    fn ingest_odometry(&mut self, sample: Stamped<OdometryEstimate>);
+    fn ingest_odometry(&mut self, sample: Received<OdometryEstimate>);
 
-    fn ingest_sim_pose(&mut self, _sample: Stamped<SimPose>) {}
+    fn ingest_sim_pose(&mut self, _sample: Received<SimPose>) {}
 
-    fn ingest_gnss(&mut self, _sample: Stamped<gnss::Sample>) {}
+    fn ingest_gnss(&mut self, _sample: Received<gnss::Sample>) {}
 
-    fn ingest_imu(&mut self, _sample: Stamped<imu::Sample>) -> Result<()> {
+    fn ingest_imu(&mut self, _sample: Received<imu::Sample>) -> Result<()> {
         Ok(())
     }
 
-    fn ingest_camera(&mut self, _sample: Stamped<camera::Frame>) -> Result<()> {
+    fn ingest_camera(&mut self, _sample: Received<camera::Frame>) -> Result<()> {
         Ok(())
     }
 
-    fn ingest_depth(&mut self, _sample: Stamped<depth::Depth>) -> Result<()> {
+    fn ingest_depth(&mut self, _sample: Received<depth::Depth>) -> Result<()> {
         Ok(())
     }
 
@@ -152,7 +162,7 @@ pub(crate) fn initial_sensor_integration_revision(
 pub(crate) struct DeadReckoningBackend {
     current_revision: LocalizationRevisionId,
     tracking_samples: u8,
-    latest_odometry: Option<Stamped<OdometryEstimate>>,
+    latest_odometry: Option<Received<OdometryEstimate>>,
     initial_revision_emitted: bool,
 }
 
@@ -173,8 +183,8 @@ impl LocalizeBackend for DeadReckoningBackend {
         LocalizationSource::DeadReckoning
     }
 
-    fn ingest_odometry(&mut self, sample: Stamped<OdometryEstimate>) {
-        if sample.data.status.mode == StatusMode::Tracking {
+    fn ingest_odometry(&mut self, sample: Received<OdometryEstimate>) {
+        if sample.value.status.mode == StatusMode::Tracking {
             self.tracking_samples = self
                 .tracking_samples
                 .saturating_add(1)
@@ -183,7 +193,7 @@ impl LocalizeBackend for DeadReckoningBackend {
         self.latest_odometry = Some(sample);
     }
 
-    fn step(&mut self, _step: Step) -> Result<BackendUpdate> {
+    fn step(&mut self, step: Step) -> Result<BackendUpdate> {
         let Some(sample) = &self.latest_odometry else {
             return Ok(BackendUpdate {
                 mode: LocalizationMode::Initializing,
@@ -204,7 +214,7 @@ impl LocalizeBackend for DeadReckoningBackend {
             });
         };
 
-        let (mode, status) = match sample.data.status.mode {
+        let (mode, status) = match sample.value.status.mode {
             StatusMode::Tracking if self.tracking_samples >= DEAD_RECKONING_READY_SAMPLES => (
                 LocalizationMode::DeadReckoning,
                 LocalizationStatus {
@@ -251,25 +261,25 @@ impl LocalizeBackend for DeadReckoningBackend {
 
         Ok(BackendUpdate {
             mode,
-            pose: Some(localize_pose_from_odometry(&sample.data.pose)),
+            pose: Some(localize_pose_from_odometry(&sample.value.pose)),
             keyframe: None,
-            velocity: Some(localize_velocity_from_odometry(&sample.data.velocity)),
-            covariance: sample.data.covariance.as_ref().map(localize_covariance),
+            velocity: Some(localize_velocity_from_odometry(&sample.value.velocity)),
+            covariance: sample.value.covariance.as_ref().map(localize_covariance),
             imu_bias: None,
             status,
-            valid_at_ns: Some(sample.timestamp_ns),
+            valid_at_ns: Some(sample.at_ns.unwrap_or_else(|| step.tick.time_ns())),
             new_revision,
         })
     }
 }
 
 pub enum Input {
-    Odometry(Stamped<OdometryEstimate>),
-    SimPose(Stamped<SimPose>),
-    Gnss(Stamped<gnss::Sample>),
-    Imu(Stamped<imu::Sample>),
-    Camera(Stamped<camera::Frame>),
-    Depth(Stamped<depth::Depth>),
+    Odometry(Received<OdometryEstimate>),
+    SimPose(Received<SimPose>),
+    Gnss(Received<gnss::Sample>),
+    Imu(Received<imu::Sample>),
+    Camera(Received<camera::Frame>),
+    Depth(Received<depth::Depth>),
 }
 
 pub struct LocalizeView {
@@ -282,11 +292,11 @@ pub struct LocalizeRuntime {
     current_revision: LocalizationRevisionId,
     revision_emitted: bool,
     decision_log: DecisionLog<LocalizeLogKey>,
-    state_publisher: Publisher<Stamped<LocalizationState>>,
-    pose_publisher: Publisher<Stamped<PoseEstimate>>,
-    revision_publisher: Publisher<Stamped<LocalizationRevision>>,
-    keyframe_publisher: Publisher<Stamped<Keyframe>>,
-    _correction_publisher: Publisher<Stamped<PoseGraphCorrection>>,
+    state_publisher: TopicPublisher<LocalizationState>,
+    pose_publisher: TopicPublisher<PoseEstimate>,
+    revision_publisher: TopicPublisher<LocalizationRevision>,
+    keyframe_publisher: TopicPublisher<Keyframe>,
+    _correction_publisher: TopicPublisher<PoseGraphCorrection>,
 }
 
 type LocalizeLogKey = (LocalizationMode, LocalizationSource);
@@ -308,32 +318,57 @@ impl Runtime for LocalizeRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<OdometryEstimate>, _>(&odometry_data::path(), Input::Odometry)
+        io.subscribe_topic(topic::new().v1().odometry().estimate(), Input::Odometry)
             .await?;
         if let BackendSelection::SimulatorTruth { robot_id } = &config.backend {
-            io.subscribe::<Stamped<SimPose>, _>(&sim_pose::path(robot_id), Input::SimPose)
-                .await?;
+            io.subscribe_topic(
+                topic::new()
+                    .v1()
+                    .simulation()
+                    .robot(robot_id.clone())
+                    .pose(),
+                Input::SimPose,
+            )
+            .await?;
         }
-        if let BackendSelection::GnssAnchored { gnss_topic, .. } = &config.backend {
-            io.subscribe::<Stamped<gnss::Sample>, _>(gnss_topic, Input::Gnss)
-                .await?;
+        if let BackendSelection::GnssAnchored { gnss, .. } = &config.backend {
+            io.subscribe_topic(
+                topic::new()
+                    .v1()
+                    .component(gnss.component_id.clone())
+                    .gnss(gnss.capability_id.clone())
+                    .data(),
+                Input::Gnss,
+            )
+            .await?;
         }
-        if let BackendSelection::OrbSlam3(orb_config) = &config.backend {
-            if let Some(imu_topic) = &orb_config.imu_topic {
-                io.subscribe_mirrored::<Stamped<imu::Sample>, _>(imu_topic, "imu", Input::Imu)
-                    .await?;
+        if let BackendSelection::OrbSlam3 { inputs, .. } = &config.backend {
+            if let Some(imu) = &inputs.imu {
+                io.subscribe_topic(
+                    topic::new()
+                        .v1()
+                        .component(imu.component_id.clone())
+                        .imu(imu.capability_id.clone())
+                        .data(),
+                    Input::Imu,
+                )
+                .await?;
             }
-            // Mirror the streams ORB actually consumes to runtime/localize/debug/input/* so Rerun
-            // renders localize's true input (same spec/rate), demand-tracked.
-            io.subscribe_mirrored::<Stamped<camera::Frame>, _>(
-                &orb_config.camera_topic,
-                "camera",
+            io.subscribe_topic(
+                topic::new()
+                    .v1()
+                    .component(inputs.camera.component_id.clone())
+                    .camera(inputs.camera.capability_id.clone())
+                    .data(),
                 Input::Camera,
             )
             .await?;
-            io.subscribe_mirrored::<Stamped<depth::Depth>, _>(
-                &orb_config.depth_topic,
-                "depth",
+            io.subscribe_topic(
+                topic::new()
+                    .v1()
+                    .component(inputs.depth.component_id.clone())
+                    .depth(inputs.depth.capability_id.clone())
+                    .data(),
                 Input::Depth,
             )
             .await?;
@@ -353,9 +388,9 @@ impl Runtime for LocalizeRuntime {
                     let backend = GnssAnchoredBackend::new(coordinate_system);
                     (current_revision(), Box::new(backend))
                 }
-                BackendSelection::OrbSlam3(orb_config) => {
+                BackendSelection::OrbSlam3 { config, .. } => {
                     if phoxal_runtime_localize_orb_slam3_sys::LINKED {
-                        let backend = orbslam3::OrbSlam3Backend::new(*orb_config)?;
+                        let backend = orbslam3::OrbSlam3Backend::new(*config)?;
                         (current_revision(), Box::new(backend))
                     } else {
                         tracing::warn!(
@@ -370,49 +405,47 @@ impl Runtime for LocalizeRuntime {
             };
         let view = ReadCell::new(LocalizeView { current_revision });
 
-        io.serve_query::<PoseGraphRequest, PoseGraphResponse, LocalizeView, _>(
-            &pose_graph::path(),
+        io.serve_query_topic(
+            topic::new().v1().localize().pose_graph(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_pose_graph,
         )
         .await?;
-        io.serve_query::<KeyframeRequest, KeyframeResponse, LocalizeView, _>(
-            &keyframe_query::path(),
+        io.serve_query_topic(
+            topic::new().v1().localize().keyframe_query(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_keyframe,
         )
         .await?;
-        io.serve_query::<CorrectionsRequest, CorrectionsResponse, LocalizeView, _>(
-            &corrections::path(),
+        io.serve_query_topic(
+            topic::new().v1().localize().corrections(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             localize_corrections,
         )
         .await?;
+        let state_topic = topic::new().v1().localize().state();
 
         Ok(Self {
             backend,
             view,
             current_revision,
             revision_emitted: false,
-            decision_log: DecisionLog::new(
-                Self::RUNTIME_ID,
-                state::path(),
-                <LocalizationState as TypedSchema>::SCHEMA_NAME,
-                <LocalizationState as TypedSchema>::SCHEMA_VERSION,
-            ),
-            state_publisher: io
-                .publisher::<Stamped<LocalizationState>>(&state::path())
+            decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
+            state_publisher: io.publisher_topic(state_topic).await?,
+            pose_publisher: io
+                .publisher_topic(topic::new().v1().localize().pose())
                 .await?,
-            pose_publisher: io.publisher::<Stamped<PoseEstimate>>(&pose::path()).await?,
             revision_publisher: io
-                .publisher::<Stamped<LocalizationRevision>>(&revision::path())
+                .publisher_topic(topic::new().v1().localize().revision())
                 .await?,
-            keyframe_publisher: io.publisher::<Stamped<Keyframe>>(&keyframe::path()).await?,
+            keyframe_publisher: io
+                .publisher_topic(topic::new().v1().localize().keyframe())
+                .await?,
             _correction_publisher: io
-                .publisher::<Stamped<PoseGraphCorrection>>(&correction::path())
+                .publisher_topic(topic::new().v1().localize().correction())
                 .await?,
         })
     }
@@ -446,13 +479,9 @@ impl Runtime for LocalizeRuntime {
         self.decision_log
             .observe(timestamp_ns, (state.mode, state.source));
 
-        self.state_publisher
-            .put(&Stamped::new(timestamp_ns, state))
-            .await?;
+        self.state_publisher.put(timestamp_ns, &state).await?;
         if let Some(pose) = update.pose {
-            self.pose_publisher
-                .put(&Stamped::new(timestamp_ns, pose))
-                .await?;
+            self.pose_publisher.put(timestamp_ns, &pose).await?;
         }
         if let Some(new_revision) = update.new_revision {
             let revision = publishable_revision(
@@ -463,14 +492,10 @@ impl Runtime for LocalizeRuntime {
             self.view.publish(LocalizeView {
                 current_revision: self.current_revision,
             });
-            self.revision_publisher
-                .put(&Stamped::new(timestamp_ns, revision))
-                .await?;
+            self.revision_publisher.put(timestamp_ns, &revision).await?;
         }
         if let Some(keyframe) = update.keyframe {
-            self.keyframe_publisher
-                .put(&Stamped::new(timestamp_ns, keyframe))
-                .await?;
+            self.keyframe_publisher.put(timestamp_ns, &keyframe).await?;
         }
 
         Ok(())
@@ -516,7 +541,7 @@ pub(crate) fn publishable_revision(
     }
 }
 
-fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -> PoseEstimate {
+fn localize_pose_from_odometry(pose: &phoxal::api::v1::odometry::PoseEstimate) -> PoseEstimate {
     PoseEstimate {
         frame_id: FrameId::new(ODOM_FRAME_ID),
         child_frame_id: FrameId::new(BASE_FRAME_ID),
@@ -526,7 +551,7 @@ fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -
 }
 
 fn localize_velocity_from_odometry(
-    velocity: &phoxal::api::odometry::v1::VelocityEstimate,
+    velocity: &phoxal::api::v1::odometry::VelocityEstimate,
 ) -> VelocityEstimate {
     VelocityEstimate {
         frame_id: velocity.frame_id.clone(),
@@ -535,7 +560,7 @@ fn localize_velocity_from_odometry(
     }
 }
 
-fn localize_covariance(covariance: &phoxal::api::odometry::v1::Covariance) -> Covariance {
+fn localize_covariance(covariance: &phoxal::api::v1::odometry::Covariance) -> Covariance {
     Covariance {
         values: covariance.values.clone(),
     }
@@ -591,12 +616,12 @@ fn localize_corrections(view: &LocalizeView, req: CorrectionsRequest) -> Correct
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::localize::v1::{KeyframeId, PoseGraphRange};
-    use phoxal::api::odometry::v1::{
+    use phoxal::api::v1::localize::{KeyframeId, PoseGraphRange};
+    use phoxal::api::v1::odometry::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal::api::simulation::v1::clock::Clock;
+    use phoxal::api::v1::simulation::clock::Clock;
     use phoxal::runtime::clock::Step;
 
     use super::*;
@@ -810,10 +835,10 @@ mod tests {
         Step::new(Clock::new(1, time_ns / 20_000_000, time_ns, 20_000_000))
     }
 
-    fn odometry_sample(sequence: u64, mode: StatusMode) -> Stamped<OdometryEstimate> {
-        Stamped::new(
-            sequence,
-            OdometryEstimate {
+    fn odometry_sample(sequence: u64, mode: StatusMode) -> Received<OdometryEstimate> {
+        Received {
+            at_ns: Some(sequence),
+            value: OdometryEstimate {
                 pose: OdometryPoseEstimate {
                     frame_id: FrameId::new("odom"),
                     child_frame_id: FrameId::new("base_footprint"),
@@ -833,6 +858,6 @@ mod tests {
                     reasons: Vec::new(),
                 },
             },
-        )
+        }
     }
 }

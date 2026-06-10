@@ -1,4 +1,4 @@
-use phoxal::api::perception::v1::{
+use phoxal::api::v1::perception::{
     BoundingBox, Detection, DetectorHealth, PerceptionDegradedReason, PerceptionStoppedReason,
     RevisionLinkage, TrackedObservation,
 };
@@ -205,9 +205,9 @@ fn bbox_center_distance_px(left: BoundingBox, right: BoundingBox) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::frame::v1::FrameId;
-    use phoxal::api::localize::v1::LocalizationRevisionId;
-    use phoxal::api::map::v1::MapRevisionId;
+    use phoxal::api::v1::frame::FrameId;
+    use phoxal::api::v1::localize::LocalizationRevisionId;
+    use phoxal::api::v1::map::MapRevisionId;
 
     use super::*;
 
