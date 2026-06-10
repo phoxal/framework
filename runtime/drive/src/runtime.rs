@@ -2,14 +2,9 @@ use std::time::Duration;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, bail};
-use phoxal::api::v1::{
-    component::motor,
-    drive::{
-        state::{ActuatorAuthority, State, StopReason},
-        target::Target,
-    },
-    topic,
-};
+use phoxal::api::component::v1::capability::motor::Command as MotorCommand;
+use phoxal::api::drive::v1::{ActuatorAuthority, State, StopReason, Target};
+use phoxal::api::v1::topic;
 use phoxal::bus::topic::{PubSub, Topic};
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
@@ -111,7 +106,7 @@ fn resolve_motor_bindings(
 async fn motor_publishers(
     io: &mut Io<Input>,
     motors: &[MotorBinding],
-) -> Result<Vec<TopicPublisher<motor::Command>>> {
+) -> Result<Vec<TopicPublisher<MotorCommand>>> {
     let mut publishers = Vec::with_capacity(motors.len());
     for motor in motors {
         publishers.push(io.publisher_topic(motor.command_topic()).await?);
@@ -133,8 +128,8 @@ pub enum Input {
 pub struct DriveRuntime {
     config: Config,
     latest_target: Option<Received<Target>>,
-    left_motor_publishers: Vec<TopicPublisher<motor::Command>>,
-    right_motor_publishers: Vec<TopicPublisher<motor::Command>>,
+    left_motor_publishers: Vec<TopicPublisher<MotorCommand>>,
+    right_motor_publishers: Vec<TopicPublisher<MotorCommand>>,
     state_publisher: TopicPublisher<State>,
 }
 
@@ -194,7 +189,7 @@ impl Runtime for DriveRuntime {
             .zip(motor_commands.left.iter())
         {
             publisher
-                .put(now_ns, &motor::Command::Velocity(*command))
+                .put(now_ns, &MotorCommand::Velocity(*command))
                 .await?;
         }
         for (publisher, command) in self
@@ -203,7 +198,7 @@ impl Runtime for DriveRuntime {
             .zip(motor_commands.right.iter())
         {
             publisher
-                .put(now_ns, &motor::Command::Velocity(*command))
+                .put(now_ns, &MotorCommand::Velocity(*command))
                 .await?;
         }
 
@@ -289,7 +284,7 @@ impl DriveRuntime {
 }
 
 impl MotorBinding {
-    fn command_topic(&self) -> Topic<PubSub<motor::Command>> {
+    fn command_topic(&self) -> Topic<PubSub<MotorCommand>> {
         topic::new()
             .v1()
             .component(self.component_id.clone())

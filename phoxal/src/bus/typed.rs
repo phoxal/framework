@@ -347,10 +347,9 @@ mod tests {
     use zenoh::{key_expr::KeyExpr, sample::SampleBuilder};
 
     use super::{concrete_publish_key, decode_sample};
-    use crate::api::v1::{asset, component, topic};
+    use crate::api::{asset::v1 as asset, component::v1::capability::motor, v1::topic};
     use crate::bus::metadata::BusMetadata;
     use crate::bus::query::Retry;
-    use crate::bus::typed::Received;
     use crate::bus::zenoh::{serialize_payload, typed_encoding};
     use crate::bus::{Bus, Error};
 
@@ -436,7 +435,7 @@ mod tests {
         let bus = open_bus("pubsub").await;
         let wildcard = topic::new().v1().component_any().motor_any().command();
         let wildcard_error = bus
-            .publish(&wildcard, 1, &component::motor::Command::Velocity(0.0))
+            .publish(&wildcard, 1, &motor::Command::Velocity(0.0))
             .await
             .expect_err("publishing to a wildcard topic should fail");
         assert!(matches!(wildcard_error, Error::InvalidTopic(_)));
@@ -448,20 +447,18 @@ mod tests {
             .motor("left_wheel")
             .command();
         let now_ns = 42_000_000;
-        let command = component::motor::Command::Velocity(0.75);
+        let command = motor::Command::Velocity(0.75);
 
         bus.publish(&concrete, now_ns, &command).await?;
 
         let received = timeout(Duration::from_secs(5), subscriber.recv())
             .await
             .expect("typed subscriber should receive within timeout")?;
-        assert_eq!(
-            received,
-            Received {
-                at_ns: Some(now_ns),
-                value: command
-            }
-        );
+        assert_eq!(received.at_ns, Some(now_ns));
+        match received.value {
+            motor::Command::Velocity(value) => assert_eq!(value, 0.75),
+            _ => panic!("expected velocity motor command"),
+        }
 
         bus.close().await?;
         Ok(())
@@ -473,8 +470,8 @@ mod tests {
         let bus = open_bus("query").await;
         let topic = topic::new().v1().asset().get();
         let responder = bus.responder(&topic).await?;
-        let request = asset::get::Request {
-            asset_id: "fixture-map".to_string(),
+        let request = asset::GetRequest {
+            path: "fixture-map".to_string(),
         };
         let retry = Retry::new(1)
             .with_initial_backoff(Duration::from_millis(10))
@@ -485,7 +482,7 @@ mod tests {
                 let query = responder.recv().await?;
                 let request = query.request()?;
                 query
-                    .reply(&asset::get::Response {
+                    .reply(&asset::GetResponse::Ok {
                         bytes: vec![1, 2, 3, 5, 8],
                     })
                     .await?;
@@ -499,7 +496,7 @@ mod tests {
         assert_eq!(handled?, request);
         assert_eq!(
             response?,
-            Some(asset::get::Response {
+            Some(asset::GetResponse::Ok {
                 bytes: vec![1, 2, 3, 5, 8]
             })
         );

@@ -268,8 +268,9 @@ fn child_method_for(node: &Node) -> TokenStream2 {
 
 fn leaf_method_for(leaf: &Leaf, template_prefix: &str, schema_prefix: &str) -> TokenStream2 {
     let name = &leaf.name;
-    let template = syn::LitStr::new(&join_path(template_prefix, &name.to_string()), name.span());
-    let schema = syn::LitStr::new(&join_path(schema_prefix, &name.to_string()), name.span());
+    let segment = ident_segment(name);
+    let template = syn::LitStr::new(&join_path(template_prefix, &segment), name.span());
+    let schema = syn::LitStr::new(&join_path(schema_prefix, &segment), name.span());
     let version = &leaf.version;
 
     match &leaf.interaction {
@@ -291,7 +292,7 @@ fn leaf_method_for(leaf: &Leaf, template_prefix: &str, schema_prefix: &str) -> T
 }
 
 fn node_prefix(node: &Node, template_prefix: &str, schema_prefix: &str) -> (String, String) {
-    let segment = node.name.to_string();
+    let segment = ident_segment(&node.name);
     let schema = join_path(schema_prefix, &segment);
     let template = if node.has_id {
         join_path(&join_path(template_prefix, &segment), "*")
@@ -299,6 +300,10 @@ fn node_prefix(node: &Node, template_prefix: &str, schema_prefix: &str) -> (Stri
         join_path(template_prefix, &segment)
     };
     (template, schema)
+}
+
+fn ident_segment(ident: &Ident) -> String {
+    ident.to_string().trim_start_matches("r#").to_string()
 }
 
 fn join_path(prefix: &str, segment: &str) -> String {

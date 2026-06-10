@@ -1,4 +1,5 @@
-use phoxal::api::v1::{component::motor::Command, topic};
+use phoxal::api::component::v1::capability::motor::Command;
+use phoxal::api::v1::topic;
 use phoxal::bus::topic::{PubSub, Topic};
 
 fn want_command(_: Topic<PubSub<Command>>) {}

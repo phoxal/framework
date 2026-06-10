@@ -89,7 +89,12 @@ impl<Kind> Topic<Kind> {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::v1::{asset, component, drive, simulation, topic};
+    use crate::api::{
+        asset::v1 as asset,
+        component::v1::capability::{gnss, motor},
+        drive, simulation,
+        v1::topic,
+    };
     use crate::bus::topic::{PubSub, Query, Topic};
 
     #[test]
@@ -175,16 +180,14 @@ mod tests {
     #[test]
     fn topic_payload_types_are_carried_by_leaf_methods() {
         fn want<T>(_: Topic<PubSub<T>>) {}
-        fn want_command(_: Topic<PubSub<component::motor::Command>>) {}
-        fn want_asset_get(_: Topic<Query<asset::get::Request, asset::get::Response>>) {}
+        fn want_command(_: Topic<PubSub<motor::Command>>) {}
+        fn want_asset_get(_: Topic<Query<asset::GetRequest, asset::GetResponse>>) {}
 
-        want::<drive::target::Target>(topic::new().v1().drive().target());
-        want::<drive::state::State>(topic::new().v1().drive().state());
-        want::<component::gnss::Sample>(
-            topic::new().v1().component("base").gnss("receiver").data(),
-        );
-        want::<simulation::clock::Clock>(topic::new().v1().simulation().clock());
-        want::<simulation::robot::pose::Pose>(topic::new().v1().simulation().robot("r1").pose());
+        want::<drive::v1::Target>(topic::new().v1().drive().target());
+        want::<drive::v1::State>(topic::new().v1().drive().state());
+        want::<gnss::Sample>(topic::new().v1().component("base").gnss("receiver").data());
+        want::<simulation::v1::clock::Clock>(topic::new().v1().simulation().clock());
+        want::<simulation::v1::pose::Pose>(topic::new().v1().simulation().robot("r1").pose());
         want_command(
             topic::new()
                 .v1()
