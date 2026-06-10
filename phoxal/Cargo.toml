@@ -33,7 +33,7 @@ derive-new = { workspace = true }
 derive_setters = { workspace = true }
 dotenvy = { workspace = true }
 nalgebra = { workspace = true }
-phoxal-macros = { path = "../phoxal-macros", version = "0.4.0" }
+phoxal-macros = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
