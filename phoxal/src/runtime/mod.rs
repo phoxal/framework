@@ -33,10 +33,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::api::presence::{Heartbeat, Readiness, RuntimeId, heartbeat};
+use crate::api::presence::{Heartbeat, Readiness, RuntimeId};
+use crate::api::v1::topic;
 use crate::bus::Bus;
 use crate::bus::builder::Builder;
-use crate::bus::pubsub::Stamped;
 use crate::bus::topic::{PubSub, Topic};
 use crate::bus::typed::{Received, TypedTopicSubscriber};
 use crate::bus::zenoh::{
@@ -581,7 +581,16 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(())
     }
 
-    pub async fn subscribe_topic<T, F>(
+    pub async fn subscribe_topic<T, F>(&mut self, topic: Topic<PubSub<T>>, map: F) -> Result<()>
+    where
+        T: DeserializeOwned + Send + Sync + 'static,
+        F: Fn(Received<T>) -> Input + Send + 'static,
+    {
+        self.subscribe_topic_with(topic, InputPolicy::All, map)
+            .await
+    }
+
+    pub async fn subscribe_topic_with<T, F>(
         &mut self,
         topic: Topic<PubSub<T>>,
         policy: InputPolicy,
@@ -839,7 +848,7 @@ impl<'a> RuntimeProcess<'a> {
         let mut runtime = R::new(&mut io, config).await?;
         let mut steps = StepStream::new(self.bus, self.simulation, self.period).await?;
         let heartbeat_pub = io
-            .publisher::<Stamped<Heartbeat>>(&heartbeat::path())
+            .publisher_topic(topic::new().v1().presence().heartbeat())
             .await?;
         let (handles, sources) = io.into_parts();
         let _handles = handles;
@@ -885,13 +894,13 @@ impl<'a> RuntimeProcess<'a> {
                         dropped_in_window = 0;
                     }
                     heartbeat_pub
-                        .put(&Stamped::new(
+                        .put(
                             step.tick.time_ns(),
-                            Heartbeat {
+                            &Heartbeat {
                                 runtime_id: RuntimeId::new(R::RUNTIME_ID),
                                 readiness: Readiness::Ready,
                             },
-                        ))
+                        )
                         .await?;
                 }
             }

@@ -150,7 +150,7 @@ impl Runtime for DriveRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(
+        io.subscribe_topic_with(
             topic::new().v1().drive().target(),
             InputPolicy::latest(),
             Input::DriveTarget,

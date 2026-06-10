@@ -2,19 +2,20 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use phoxal::api::frame::v1::FrameId;
-use phoxal::api::joint::v1::{JointId, JointState, Quantity, data as joint_data};
+use phoxal::api::joint::v1::{JointId, JointState, Quantity};
 use phoxal::api::odometry::v1::{
     Covariance, Integration, IntegrationStep, OdometryEstimate, PoseEstimate, Residuals,
     SourceHealth, SourceId, SourceReason, SourceStatus, Status, StatusMode, StatusReason,
-    VelocityEstimate, data, debug, status,
+    VelocityEstimate,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::stale_timeout_ns;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 use tracing::warn;
 
 const CLOCK_PERIOD: Duration = Duration::from_millis(20);
@@ -95,8 +96,8 @@ fn validate_positive_f64(value: f64, field_name: &str) -> Result<()> {
 }
 
 pub enum Input {
-    Left(Stamped<JointState>),
-    Right(Stamped<JointState>),
+    Left(Received<JointState>),
+    Right(Received<JointState>),
 }
 
 pub struct OdometryRuntime {
@@ -106,11 +107,11 @@ pub struct OdometryRuntime {
     wheel_base_m: f64,
     stale_timeout_ns: u64,
     state: OdometryState,
-    data_publisher: Publisher<Stamped<OdometryEstimate>>,
-    status_publisher: Publisher<Stamped<Status>>,
-    source_health_publisher: Publisher<Stamped<SourceHealth>>,
-    residuals_publisher: Publisher<Stamped<Residuals>>,
-    integration_publisher: Publisher<Stamped<Integration>>,
+    estimate_publisher: TopicPublisher<OdometryEstimate>,
+    status_publisher: TopicPublisher<Status>,
+    source_health_publisher: TopicPublisher<SourceHealth>,
+    residuals_publisher: TopicPublisher<Residuals>,
+    integration_publisher: TopicPublisher<Integration>,
 }
 
 #[async_trait::async_trait]
@@ -130,29 +131,37 @@ impl Runtime for OdometryRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<JointState>, _>(
-            &joint_data::path(&config.left_joint_id),
+        io.subscribe_topic(
+            topic::new()
+                .v1()
+                .joint(config.left_joint_id.to_string())
+                .data(),
             Input::Left,
         )
         .await?;
-        io.subscribe::<Stamped<JointState>, _>(
-            &joint_data::path(&config.right_joint_id),
+        io.subscribe_topic(
+            topic::new()
+                .v1()
+                .joint(config.right_joint_id.to_string())
+                .data(),
             Input::Right,
         )
         .await?;
 
-        let data_publisher = io
-            .publisher::<Stamped<OdometryEstimate>>(&data::path())
+        let estimate_publisher = io
+            .publisher_topic(topic::new().v1().odometry().estimate())
             .await?;
-        let status_publisher = io.publisher::<Stamped<Status>>(&status::path()).await?;
+        let status_publisher = io
+            .publisher_topic(topic::new().v1().odometry().status())
+            .await?;
         let source_health_publisher = io
-            .publisher::<Stamped<SourceHealth>>(&debug::source_health::path())
+            .publisher_topic(topic::new().v1().odometry().source_health())
             .await?;
         let residuals_publisher = io
-            .publisher::<Stamped<Residuals>>(&debug::residuals::path())
+            .publisher_topic(topic::new().v1().odometry().residuals())
             .await?;
         let integration_publisher = io
-            .publisher::<Stamped<Integration>>(&debug::integration::path())
+            .publisher_topic(topic::new().v1().odometry().integration())
             .await?;
 
         Ok(Self {
@@ -162,7 +171,7 @@ impl Runtime for OdometryRuntime {
             wheel_base_m: config.wheel_base_m,
             stale_timeout_ns: config.stale_timeout_ns,
             state: OdometryState::default(),
-            data_publisher,
+            estimate_publisher,
             status_publisher,
             source_health_publisher,
             residuals_publisher,
@@ -176,15 +185,15 @@ impl Runtime for OdometryRuntime {
         for input in inputs {
             match input {
                 Input::Left(sample) => {
-                    if let Some(value) = joint_angle_rad(&sample.data, &self.left_joint_id) {
+                    if let Some(value) = joint_angle_rad(&sample.value, &self.left_joint_id) {
                         self.state.left_rad = Some(value);
-                        self.state.last_left_sample_ns = Some(sample.timestamp_ns);
+                        self.state.last_left_sample_ns = sample.at_ns;
                     }
                 }
                 Input::Right(sample) => {
-                    if let Some(value) = joint_angle_rad(&sample.data, &self.right_joint_id) {
+                    if let Some(value) = joint_angle_rad(&sample.value, &self.right_joint_id) {
                         self.state.right_rad = Some(value);
-                        self.state.last_right_sample_ns = Some(sample.timestamp_ns);
+                        self.state.last_right_sample_ns = sample.at_ns;
                     }
                 }
             }
@@ -218,28 +227,19 @@ impl Runtime for OdometryRuntime {
             status: current_status.clone(),
         };
 
-        self.data_publisher
-            .put(&Stamped::new(time_ns, estimate))
-            .await?;
-        self.status_publisher
-            .put(&Stamped::new(time_ns, current_status))
-            .await?;
+        let source_health = self.source_health(left_health, right_health);
+        let residuals = Residuals {
+            residuals: Vec::new(),
+        };
+
+        self.estimate_publisher.put(time_ns, &estimate).await?;
+        self.status_publisher.put(time_ns, &current_status).await?;
         self.source_health_publisher
-            .put(&Stamped::new(
-                time_ns,
-                self.source_health(left_health, right_health),
-            ))
+            .put(time_ns, &source_health)
             .await?;
-        self.residuals_publisher
-            .put(&Stamped::new(
-                time_ns,
-                Residuals {
-                    residuals: Vec::new(),
-                },
-            ))
-            .await?;
+        self.residuals_publisher.put(time_ns, &residuals).await?;
         self.integration_publisher
-            .put(&Stamped::new(time_ns, integration))
+            .put(time_ns, &integration)
             .await?;
 
         Ok(())

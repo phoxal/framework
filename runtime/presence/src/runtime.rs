@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use phoxal::api::presence::{
-    DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary, debug, heartbeat,
-    summary,
+    DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary,
 };
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::stale_timeout_ns;
 use phoxal::runtime::{EmptyArgs, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 
 const PUBLISH_HZ: f64 = 1.0;
 
@@ -28,13 +28,13 @@ impl Config {
 }
 
 pub enum Input {
-    Heartbeat(Stamped<Heartbeat>),
+    Heartbeat(Received<Heartbeat>),
 }
 
 pub struct PresenceRuntime {
     tracker: ReadinessTracker,
-    summary_pub: Publisher<Stamped<Summary>>,
-    debug_readiness_pub: Publisher<Stamped<DebugReadiness>>,
+    summary_pub: TopicPublisher<Summary>,
+    debug_readiness_pub: TopicPublisher<DebugReadiness>,
 }
 
 #[async_trait::async_trait]
@@ -54,11 +54,13 @@ impl Runtime for PresenceRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<Heartbeat>, _>(&heartbeat::path(), Input::Heartbeat)
+        io.subscribe_topic(topic::new().v1().presence().heartbeat(), Input::Heartbeat)
             .await?;
-        let summary_pub = io.publisher::<Stamped<Summary>>(&summary::path()).await?;
+        let summary_pub = io
+            .publisher_topic(topic::new().v1().presence().summary())
+            .await?;
         let debug_readiness_pub = io
-            .publisher::<Stamped<DebugReadiness>>(&debug::readiness::path())
+            .publisher_topic(topic::new().v1().presence().readiness())
             .await?;
 
         Ok(Self {
@@ -73,8 +75,10 @@ impl Runtime for PresenceRuntime {
 
         for input in inputs {
             match input {
-                Input::Heartbeat(stamped) => {
-                    self.tracker.ingest(stamped.data, stamped.timestamp_ns)
+                Input::Heartbeat(received) => {
+                    if let Some(at_ns) = received.at_ns {
+                        self.tracker.ingest(received.value, at_ns);
+                    }
                 }
             }
         }
@@ -86,17 +90,14 @@ impl Runtime for PresenceRuntime {
         self.tracker.ingest(own, timestamp_ns);
 
         let runtimes = self.tracker.snapshot(timestamp_ns);
-        self.summary_pub
-            .put(&Stamped::new(
-                timestamp_ns,
-                Summary {
-                    autonomy_ready: autonomy_ready(&runtimes),
-                    runtimes: runtimes.clone(),
-                },
-            ))
-            .await?;
+        let summary = Summary {
+            autonomy_ready: autonomy_ready(&runtimes),
+            runtimes: runtimes.clone(),
+        };
+        let debug_readiness = DebugReadiness { runtimes };
+        self.summary_pub.put(timestamp_ns, &summary).await?;
         self.debug_readiness_pub
-            .put(&Stamped::new(timestamp_ns, DebugReadiness { runtimes }))
+            .put(timestamp_ns, &debug_readiness)
             .await?;
 
         Ok(())

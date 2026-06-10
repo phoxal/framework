@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use phoxal::api::power::v1::{
-    Command, FailedReason, RejectedReason, State, Status, command, state,
-};
-use phoxal::bus::pubsub::Stamped;
+use phoxal::api::power::v1::{Command, FailedReason, RejectedReason, State, Status};
+use phoxal::api::v1::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::clock::Step;
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{Io, Runtime, RuntimeInputs, TopicPublisher};
 
 #[derive(Debug)]
 pub(crate) struct Config {
@@ -29,13 +28,13 @@ pub(crate) struct Args {
 }
 
 pub(crate) enum Input {
-    Command(Stamped<Command>),
+    Command(Received<Command>),
 }
 
 pub(crate) struct PowerRuntime {
     latched: LatchedState,
     executor: Option<Arc<dyn PowerExecutor>>,
-    state_pub: Publisher<Stamped<State>>,
+    state_pub: TopicPublisher<State>,
 }
 
 #[async_trait::async_trait]
@@ -58,9 +57,11 @@ impl Runtime for PowerRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe::<Stamped<Command>, _>(&command::path(), Input::Command)
+        io.subscribe_topic(topic::new().v1().power().command(), Input::Command)
             .await?;
-        let state_pub = io.publisher::<Stamped<State>>(&state::path()).await?;
+        let state_pub = io
+            .publisher_topic(topic::new().v1().power().state())
+            .await?;
         let executor = match config.supervisor_address {
             Some(address) => Some(Arc::new(ReqwestExecutor::new(
                 address,
@@ -80,15 +81,16 @@ impl Runtime for PowerRuntime {
         let executor = self.executor.clone();
         for input in inputs {
             match input {
-                Input::Command(stamped) => {
-                    self.latched.apply(stamped.data, executor.as_deref()).await;
+                Input::Command(received) => {
+                    self.latched
+                        .apply(received.value, executor.as_deref())
+                        .await;
                 }
             }
         }
 
-        self.state_pub
-            .put(&Stamped::new(step.tick.time_ns(), self.latched.snapshot()))
-            .await?;
+        let state = self.latched.snapshot();
+        self.state_pub.put(step.tick.time_ns(), &state).await?;
 
         Ok(())
     }
