@@ -6,12 +6,16 @@ use thiserror::Error;
 pub mod builder;
 pub mod leaf;
 pub mod liveliness;
+pub mod metadata;
 pub mod pubsub;
 pub mod query;
+pub mod topic;
+pub mod typed;
 #[allow(clippy::module_name_repetitions)]
 pub mod zenoh;
 
 pub use crate::{request_schema, topic_leaf};
+pub use topic::topic_tree;
 
 #[derive(Clone, new)]
 pub struct Bus {
@@ -68,6 +72,9 @@ pub enum Error {
 
     #[error("typed query failed: {0}")]
     TypedGet(#[from] zenoh::TypedGetError),
+
+    #[error("typed bus decode error: {0}")]
+    TypedDecode(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

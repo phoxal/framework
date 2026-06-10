@@ -40,17 +40,19 @@ use zenoh::{
 
 type TypedDecodeError = rmp_serde::decode::Error;
 
-fn typed_encoding(schema_name: &str) -> Encoding {
+pub(crate) fn typed_encoding(schema_name: &str) -> Encoding {
     Encoding::from(format!("zenoh-ext/typed:{schema_name}"))
 }
 
-fn serialize_payload<T: Serialize>(value: &T) -> ZResult<ZBytes> {
+pub(crate) fn serialize_payload<T: Serialize>(value: &T) -> ZResult<ZBytes> {
     rmp_serde::to_vec_named(value)
         .map(ZBytes::from)
         .map_err(Into::into)
 }
 
-fn deserialize_payload<T: DeserializeOwned>(payload: &ZBytes) -> Result<T, TypedDecodeError> {
+pub(crate) fn deserialize_payload<T: DeserializeOwned>(
+    payload: &ZBytes,
+) -> Result<T, TypedDecodeError> {
     rmp_serde::from_slice(payload.to_bytes().as_ref())
 }
 

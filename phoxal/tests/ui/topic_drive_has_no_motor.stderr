@@ -1,0 +1,5 @@
+error[E0599]: no method named `motor` found for struct `phoxal::api::v1::topic::__builders::v1::drive::Builder` in the current scope
+ --> tests/ui/topic_drive_has_no_motor.rs:2:56
+  |
+2 |     let _ = phoxal::api::v1::topic::new().v1().drive().motor();
+  |                                                        ^^^^^ method not found in `phoxal::api::v1::topic::__builders::v1::drive::Builder`

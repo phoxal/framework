@@ -6,6 +6,8 @@
 //! `simulation` for the simulator protocol). Contract versions evolve inside
 //! `pub mod vN` submodules.
 
+pub mod v1;
+
 pub mod component;
 pub mod presence;
 pub mod simulation;

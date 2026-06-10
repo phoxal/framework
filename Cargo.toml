@@ -12,6 +12,7 @@ repository = "https://github.com/phoxal/framework"
 [workspace]
 resolver = "3"
 members = [
+    "phoxal-macros",
     "phoxal",
     "runtime/asset",
     "runtime/drive",
@@ -37,6 +38,7 @@ members = [
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 clap = { version = "4.6.1", features = ["derive"] }
+const_format = "0.2"
 derive-new = "0.7.0"
 derive_setters = "0.1.9"
 dotenvy = "0.15.7"
@@ -54,6 +56,7 @@ thiserror = "2.0.18"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
+trybuild = "1"
 urdf-rs = "0.9.0"
 zenoh = { version = "1.9.0" }
 phoxal                                  = { path = "phoxal" }
