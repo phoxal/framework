@@ -112,6 +112,9 @@ crate::bus::topic_tree! {
             }
             camera(id) {
                 pubsub data: crate::api::component::v1::capability::camera::Frame, v = 1;
+                profile(id) {
+                    pubsub data: crate::api::component::v1::capability::camera::Frame, v = 1;
+                }
             }
             depth(id) {
                 pubsub data: crate::api::component::v1::capability::depth::Depth, v = 1;
@@ -215,6 +218,11 @@ mod tests {
             topic::new().v1().frame().r#static(),
             "v1/frame/static",
             "v1/frame/static",
+        );
+        assert_pubsub::<crate::api::frame::v1::FrameTransform>(
+            topic::new().v1().frame().data(),
+            "v1/frame/data",
+            "v1/frame/data",
         );
         assert_pubsub::<crate::api::power::v1::State>(
             topic::new().v1().power().state(),
@@ -360,6 +368,16 @@ mod tests {
             topic::new().v1().component("head").camera("front").data(),
             "v1/component/head/camera/front/data",
             "v1/component/camera/data",
+        );
+        assert_pubsub::<crate::api::component::v1::capability::camera::Frame>(
+            topic::new()
+                .v1()
+                .component("head")
+                .camera("front")
+                .profile("r640x480_h10_rgb8")
+                .data(),
+            "v1/component/head/camera/front/profile/r640x480_h10_rgb8/data",
+            "v1/component/camera/profile/data",
         );
         assert_pubsub::<crate::api::component::v1::capability::depth::Depth>(
             topic::new()

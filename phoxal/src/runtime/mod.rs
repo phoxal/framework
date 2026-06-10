@@ -37,8 +37,8 @@ use crate::api::presence::{Heartbeat, Readiness, RuntimeId};
 use crate::api::v1::topic;
 use crate::bus::Bus;
 use crate::bus::builder::Builder;
-use crate::bus::topic::{PubSub, Topic};
-use crate::bus::typed::{Received, TypedTopicSubscriber};
+use crate::bus::topic::{PubSub, Query as TopicQuery, Topic};
+use crate::bus::typed::{Received, TypedTopicResponder, TypedTopicSubscriber};
 use crate::bus::zenoh::{
     BusyResponse, TypedPublisher, TypedQueryable, TypedSchema, TypedSubscriber,
 };
@@ -675,6 +675,30 @@ impl<Input: Send + 'static> Io<Input> {
         Ok(())
     }
 
+    pub async fn serve_query_topic<Req, Resp, V, F>(
+        &mut self,
+        topic: Topic<TopicQuery<Req, Resp>>,
+        reader: Reader<V>,
+        options: QueryOptions,
+        handler: F,
+    ) -> Result<()>
+    where
+        Req: DeserializeOwned + Send + Sync + 'static,
+        Resp: Serialize + BusyResponse + Send + Sync + 'static,
+        V: Send + Sync + 'static,
+        F: Fn(&V, Req) -> Resp + Send + Sync + 'static,
+    {
+        if let Some(bus) = &self.bus {
+            self.handles.push(spawn_topic_query_responder(
+                bus.responder(&topic).await?,
+                reader,
+                options,
+                handler,
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn publisher<T>(&mut self, topic: &str) -> Result<Publisher<T>>
     where
         T: Serialize + TypedSchema + Clone + Send + Sync + 'static,
@@ -1107,6 +1131,71 @@ where
                                 %error,
                                 response_type = std::any::type_name::<Resp>(),
                                 "failed to reply to query"
+                            );
+                        }
+                    });
+                }
+            }
+        }
+    })
+}
+
+fn spawn_topic_query_responder<Req, Resp, V, F>(
+    responder: TypedTopicResponder<Req, Resp>,
+    reader: Reader<V>,
+    options: QueryOptions,
+    handler: F,
+) -> JoinHandle<()>
+where
+    Req: DeserializeOwned + Send + Sync + 'static,
+    Resp: Serialize + BusyResponse + Send + Sync + 'static,
+    V: Send + Sync + 'static,
+    F: Fn(&V, Req) -> Resp + Send + Sync + 'static,
+{
+    let executor = QueryExecutor::new(reader, options, handler);
+
+    tokio::spawn(async move {
+        loop {
+            let query = match responder.recv().await {
+                Ok(query) => query,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        request_type = std::any::type_name::<Req>(),
+                        "failed to receive typed topic query"
+                    );
+                    return;
+                }
+            };
+            let request = match query.request() {
+                Ok(request) => request,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        request_type = std::any::type_name::<Req>(),
+                        "failed to decode typed topic query payload"
+                    );
+                    continue;
+                }
+            };
+            match executor.start::<Req, Resp>(request) {
+                QueryStart::Busy(response) => {
+                    if let Err(error) = query.reply(&response).await {
+                        tracing::warn!(
+                            %error,
+                            response_type = std::any::type_name::<Resp>(),
+                            "failed to reply with busy typed topic query response"
+                        );
+                    }
+                }
+                QueryStart::Accepted(call) => {
+                    tokio::spawn(async move {
+                        let response = call.run();
+                        if let Err(error) = query.reply(&response).await {
+                            tracing::warn!(
+                                %error,
+                                response_type = std::any::type_name::<Resp>(),
+                                "failed to reply to typed topic query"
                             );
                         }
                     });

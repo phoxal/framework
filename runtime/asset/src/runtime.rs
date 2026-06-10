@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use phoxal::api::asset::v1::{
-    GetRequest as AssetRequest, GetResponse as AssetResponse, InvalidPathReason, UnavailableReason,
-};
+use phoxal::api::asset::v1::{GetRequest, GetResponse, InvalidPathReason, UnavailableReason};
+use phoxal::api::v1::topic;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal::runtime::{Io, Runtime, RuntimeInputs};
@@ -16,11 +15,11 @@ pub struct AssetRuntime {
     view: ReadCell<AssetView>,
 }
 
-pub fn asset_get(view: &AssetView, request: AssetRequest) -> AssetResponse {
+pub fn asset_get(view: &AssetView, request: GetRequest) -> GetResponse {
     let requested = request.path.trim().trim_start_matches('/').to_string();
     match validate_requested_path(&requested) {
         Ok(()) => read_asset(view, &requested),
-        Err(reason) => AssetResponse::InvalidPath(reason),
+        Err(reason) => GetResponse::InvalidPath(reason),
     }
 }
 
@@ -40,19 +39,19 @@ fn validate_requested_path(requested: &str) -> std::result::Result<(), InvalidPa
     Ok(())
 }
 
-fn read_asset(view: &AssetView, requested: &str) -> AssetResponse {
+fn read_asset(view: &AssetView, requested: &str) -> GetResponse {
     let bundle_path = view.bundle_root.join(requested);
     if bundle_path.is_file() {
         return read_asset_bytes(&bundle_path);
     }
-    AssetResponse::NotFound
+    GetResponse::NotFound
 }
 
-fn read_asset_bytes(asset_path: &Path) -> AssetResponse {
+fn read_asset_bytes(asset_path: &Path) -> GetResponse {
     match std::fs::read(asset_path) {
-        Ok(bytes) => AssetResponse::Ok { bytes },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AssetResponse::NotFound,
-        Err(_) => AssetResponse::Unavailable(UnavailableReason::Io),
+        Ok(bytes) => GetResponse::Ok { bytes },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => GetResponse::NotFound,
+        Err(_) => GetResponse::Unavailable(UnavailableReason::Io),
     }
 }
 
@@ -74,8 +73,8 @@ impl Runtime for AssetRuntime {
 
     async fn new(io: &mut Io<Self::Input>, bundle_root: Self::Config) -> Result<Self> {
         let view = ReadCell::new(AssetView { bundle_root });
-        io.serve_query::<AssetRequest, AssetResponse, AssetView, _>(
-            &phoxal::api::asset::v1::get::path(),
+        io.serve_query_topic(
+            topic::new().v1().asset().get(),
             view.reader(),
             QueryOptions::single(),
             asset_get,

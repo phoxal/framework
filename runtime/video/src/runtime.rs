@@ -9,20 +9,25 @@ use openh264::encoder::{
 };
 use openh264::formats::{RgbSliceU8, YUVBuffer};
 use phoxal::api::component::v1::capability::camera;
-use phoxal::api::component::v1::capability::profile::{CameraProfileEncoding, CameraProfileSpec};
+use phoxal::api::component::v1::capability::profile::{
+    CameraProfileEncoding, CameraProfileSpec, ProfileId,
+};
+use phoxal::api::motion::v1::State as MotionState;
+use phoxal::api::v1::topic;
 use phoxal::api::video::v1::{
     Codec, EndReason, OpenRequest, OpenResponse, StreamEvent, StreamFormat, StreamPacket,
-    UnavailableReason, open, stream,
+    UnavailableReason,
 };
 use phoxal::bus::Bus;
 use phoxal::bus::liveliness::LivelinessEvent;
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::topic::{PubSub, Topic};
+use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::v1::Robot;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
-use phoxal::runtime::{Io, Publisher, Runtime, RuntimeInputs};
+use phoxal::runtime::{InputPolicy, Io, Runtime, RuntimeInputs, TopicPublisher};
 use tracing::warn;
 
 pub(crate) const PREVIEW_MAX_HEIGHT_PX: u32 = 480;
@@ -33,7 +38,7 @@ const H264_TARGET_BITRATE_BPS: u32 = 750_000;
 #[derive(Debug, Clone)]
 pub(crate) struct PreviewSource {
     pub(crate) capability: CapabilityRef,
-    pub(crate) profile_topic: String,
+    pub(crate) profile_id: ProfileId,
     pub(crate) stream_id: String,
     pub(crate) format: StreamFormat,
 }
@@ -49,11 +54,6 @@ impl PreviewSource {
         let profile_id = spec
             .to_profile_id()
             .context("failed to derive video preview profile id")?;
-        let profile_topic = phoxal::api::component::v1::capability::profile_path(
-            &capability.component_id,
-            &capability.capability_id,
-            &profile_id,
-        );
         let stream_id = format!("{}_{}", capability.component_id, capability.capability_id);
         let format = StreamFormat {
             codec: Codec::H264,
@@ -63,10 +63,27 @@ impl PreviewSource {
 
         Ok(Self {
             capability,
-            profile_topic,
+            profile_id,
             stream_id,
             format,
         })
+    }
+
+    pub(crate) fn profile_topic(&self) -> Topic<PubSub<camera::Frame>> {
+        topic::new()
+            .v1()
+            .component(self.capability.component_id.clone())
+            .camera(self.capability.capability_id.clone())
+            .profile(self.profile_id.to_string())
+            .data()
+    }
+
+    pub(crate) fn stream_event_topic(&self) -> Topic<PubSub<StreamEvent>> {
+        topic::new()
+            .v1()
+            .video()
+            .stream(self.stream_id.clone())
+            .event()
     }
 }
 
@@ -76,9 +93,10 @@ pub(crate) struct Config {
 }
 
 pub(crate) enum Input {
+    MotionState(Received<MotionState>),
     Frame {
         stream_id: String,
-        frame: Stamped<camera::Frame>,
+        frame: Received<camera::Frame>,
     },
 }
 
@@ -88,7 +106,7 @@ pub(crate) struct VideoView {
 
 pub(crate) struct StreamState {
     source: PreviewSource,
-    publisher: Publisher<Stamped<StreamEvent>>,
+    publisher: TopicPublisher<StreamEvent>,
     encoder: PreviewEncoder,
     demand: Arc<AtomicUsize>,
     demand_task: tokio::task::JoinHandle<()>,
@@ -100,6 +118,7 @@ pub(crate) struct VideoRuntime {
     bus: Bus,
     view: ReadCell<VideoView>,
     streams: Vec<StreamState>,
+    latest_motion_state: Option<Received<MotionState>>,
     last_step_time_ns: u64,
 }
 
@@ -127,8 +146,15 @@ impl Runtime for VideoRuntime {
             sources: config.sources.into(),
         });
 
-        io.serve_query::<OpenRequest, OpenResponse, VideoView, _>(
-            &open::path(),
+        io.subscribe_topic_with(
+            topic::new().v1().motion().state(),
+            InputPolicy::latest(),
+            Input::MotionState,
+        )
+        .await?;
+
+        io.serve_query_topic(
+            topic::new().v1().video().open(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
             video_open,
@@ -139,6 +165,7 @@ impl Runtime for VideoRuntime {
             bus,
             view,
             streams: Vec::new(),
+            latest_motion_state: None,
             last_step_time_ns: 0,
         };
 
@@ -146,21 +173,17 @@ impl Runtime for VideoRuntime {
         runtime.streams.reserve(sources.len());
         for source in sources.iter() {
             let input_stream_id = source.stream_id.clone();
-            io.subscribe::<Stamped<camera::Frame>, _>(&source.profile_topic, move |frame| {
-                Input::Frame {
-                    stream_id: input_stream_id.clone(),
-                    frame,
-                }
+            io.subscribe_topic(source.profile_topic(), move |frame| Input::Frame {
+                stream_id: input_stream_id.clone(),
+                frame,
             })
             .await?;
 
-            let publisher = io
-                .publisher::<Stamped<StreamEvent>>(&stream::path(&source.stream_id))
-                .await?;
+            let publisher = io.publisher_topic(source.stream_event_topic()).await?;
             let demand = Arc::new(AtomicUsize::new(0));
             let demand_task = spawn_demand_task(
                 runtime.bus.clone(),
-                stream::path(&source.stream_id),
+                source.stream_event_topic().key().into_owned(),
                 Arc::clone(&demand),
             );
             let encoder = PreviewEncoder::new(source.format.width_px, source.format.height_px)?;
@@ -180,15 +203,28 @@ impl Runtime for VideoRuntime {
 
     async fn step(&mut self, step: Step, inputs: RuntimeInputs<Self::Input>) -> Result<()> {
         self.last_step_time_ns = step.tick.time_ns();
+        let mut frames = Vec::new();
+        for input in inputs {
+            match input {
+                Input::MotionState(state) => self.latest_motion_state = Some(state),
+                Input::Frame { stream_id, frame } => frames.push((stream_id, frame)),
+            }
+        }
+        let _latest_motion_at_ns = self
+            .latest_motion_state
+            .as_ref()
+            .and_then(|state| state.at_ns);
+
         for stream in &mut self.streams {
             let demanded = stream.demand.load(Ordering::Relaxed) > 0;
             if demanded && stream.camera_token.is_none() {
-                let token = phoxal::bus::liveliness::declare_liveliness_token(
-                    &self.bus,
-                    &stream.source.profile_topic,
-                )
-                .await
-                .map_err(|error| anyhow!("failed to declare camera demand token: {error}"))?;
+                let profile_topic = stream.source.profile_topic().key().into_owned();
+                let token =
+                    phoxal::bus::liveliness::declare_liveliness_token(&self.bus, &profile_topic)
+                        .await
+                        .map_err(|error| {
+                            anyhow!("failed to declare camera demand token: {error}")
+                        })?;
                 stream.camera_token = Some(Box::new(token));
                 stream.encoder.request_keyframe();
                 publish_stream_event(
@@ -212,33 +248,28 @@ impl Runtime for VideoRuntime {
             }
         }
 
-        for input in inputs {
-            match input {
-                Input::Frame { stream_id, frame } => {
-                    let Some(stream) = self
-                        .streams
-                        .iter_mut()
-                        .find(|stream| stream.source.stream_id == stream_id)
-                    else {
-                        continue;
-                    };
-                    if stream.camera_token.is_none() {
-                        continue;
-                    }
-                    match stream.encoder.packet(stream.sequence, &frame) {
-                        Ok(packet) => {
-                            stream.sequence = stream.sequence.saturating_add(1);
-                            publish_stream_event(
-                                stream,
-                                step.tick.time_ns(),
-                                StreamEvent::Packet(packet),
-                            )
-                            .await?;
-                        }
-                        Err(error) => {
-                            warn!(%error, "failed to encode video preview frame");
-                        }
-                    }
+        for (stream_id, frame) in frames {
+            let Some(stream) = self
+                .streams
+                .iter_mut()
+                .find(|stream| stream.source.stream_id == stream_id)
+            else {
+                continue;
+            };
+            if stream.camera_token.is_none() {
+                continue;
+            }
+            match stream
+                .encoder
+                .packet(stream.sequence, &frame, step.tick.time_ns())
+            {
+                Ok(packet) => {
+                    stream.sequence = stream.sequence.saturating_add(1);
+                    publish_stream_event(stream, step.tick.time_ns(), StreamEvent::Packet(packet))
+                        .await?;
+                }
+                Err(error) => {
+                    warn!(%error, "failed to encode video preview frame");
                 }
             }
         }
@@ -278,10 +309,7 @@ async fn publish_stream_event(
     timestamp_ns: u64,
     event: StreamEvent,
 ) -> Result<()> {
-    stream
-        .publisher
-        .put(&Stamped::new(timestamp_ns, event))
-        .await?;
+    stream.publisher.put(timestamp_ns, &event).await?;
     Ok(())
 }
 
@@ -472,12 +500,13 @@ impl PreviewEncoder {
     pub(crate) fn packet(
         &mut self,
         sequence: u64,
-        frame: &Stamped<camera::Frame>,
+        frame: &Received<camera::Frame>,
+        fallback_captured_at_ns: u64,
     ) -> Result<StreamPacket> {
         Ok(StreamPacket {
             sequence,
-            captured_at_ns: frame.timestamp_ns,
-            bytes: self.encode(&frame.data)?,
+            captured_at_ns: frame.at_ns.unwrap_or(fallback_captured_at_ns),
+            bytes: self.encode(&frame.value)?,
         })
     }
 }
@@ -581,10 +610,15 @@ mod tests {
     #[test]
     fn stream_packet_uses_source_capture_timestamp() {
         let capture_time_ns = 123_456_789;
-        let frame = Stamped::new(capture_time_ns, rgb8_frame(16, 16));
+        let frame = Received {
+            at_ns: Some(capture_time_ns),
+            value: rgb8_frame(16, 16),
+        };
         let mut encoder = PreviewEncoder::new(16, 16).expect("encoder should build");
 
-        let packet = encoder.packet(7, &frame).expect("packet should build");
+        let packet = encoder
+            .packet(7, &frame, 987_654_321)
+            .expect("packet should build");
 
         assert_eq!(packet.sequence, 7);
         assert_eq!(packet.captured_at_ns, capture_time_ns);
@@ -671,8 +705,12 @@ mod tests {
             .expect("preview source should build");
 
         assert_eq!(
-            source.profile_topic,
-            "component/front_camera/rgb/profile/r852x480_h10_rgb8"
+            source.profile_topic().key(),
+            "v1/component/front_camera/camera/rgb/profile/r852x480_h10_rgb8/data"
+        );
+        assert_eq!(
+            source.stream_event_topic().key(),
+            "v1/video/stream/front_camera_rgb/event"
         );
         assert_eq!(source.stream_id, "front_camera_rgb");
         assert_eq!(
