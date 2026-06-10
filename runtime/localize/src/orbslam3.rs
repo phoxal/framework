@@ -15,6 +15,7 @@ mod active {
         LocalizationStatusReason, PoseEstimate, VelocityEstimate,
     };
     use phoxal::bus::pubsub::Stamped;
+    use phoxal::bus::typed::Received;
     use phoxal::runtime::clock::Step;
 
     use crate::pose_math::{compose_poses, invert_pose};
@@ -45,9 +46,6 @@ mod active {
     pub(crate) struct OrbSlam3Config {
         pub(crate) vocabulary_path: PathBuf,
         pub(crate) settings_path: PathBuf,
-        pub(crate) imu_topic: Option<String>,
-        pub(crate) camera_topic: String,
-        pub(crate) depth_topic: String,
         pub(crate) inertial: bool,
         pub(crate) color_intrinsics: crate::settings::CameraIntrinsics,
         pub(crate) depth_intrinsics: crate::settings::CameraIntrinsics,
@@ -325,20 +323,20 @@ mod active {
 
         fn ingest_odometry(
             &mut self,
-            _sample: Stamped<phoxal::api::odometry::v1::OdometryEstimate>,
+            _sample: Received<phoxal::api::odometry::v1::OdometryEstimate>,
         ) {
         }
 
-        fn ingest_imu(&mut self, sample: Stamped<imu::Sample>) -> Result<()> {
-            Self::ingest_imu(self, sample)
+        fn ingest_imu(&mut self, sample: Received<imu::Sample>) -> Result<()> {
+            Self::ingest_imu(self, stamped_from_received(sample))
         }
 
-        fn ingest_camera(&mut self, sample: Stamped<camera::Frame>) -> Result<()> {
-            Self::ingest_camera(self, sample)
+        fn ingest_camera(&mut self, sample: Received<camera::Frame>) -> Result<()> {
+            Self::ingest_camera(self, stamped_from_received(sample))
         }
 
-        fn ingest_depth(&mut self, sample: Stamped<depth::Depth>) -> Result<()> {
-            Self::ingest_depth(self, sample);
+        fn ingest_depth(&mut self, sample: Received<depth::Depth>) -> Result<()> {
+            Self::ingest_depth(self, stamped_from_received(sample));
             Ok(())
         }
 
@@ -383,6 +381,10 @@ mod active {
             }
             Ok(update)
         }
+    }
+
+    fn stamped_from_received<T>(sample: Received<T>) -> Stamped<T> {
+        Stamped::new(sample.at_ns.unwrap_or(0), sample.value)
     }
 
     struct ColorFrame {
@@ -1266,9 +1268,6 @@ Viewer.ViewpointF: 500.0
             let backend = OrbSlam3Backend::new(OrbSlam3Config {
                 vocabulary_path: vocab,
                 settings_path,
-                imu_topic: Some("component/front_camera/imu/profile/default".to_string()),
-                camera_topic: "component/front_camera/rgb/profile/default".to_string(),
-                depth_topic: "component/front_camera/depth/profile/default".to_string(),
                 inertial: true,
                 color_intrinsics: crate::settings::CameraIntrinsics::from_horizontal_fov(
                     WIDTH, HEIGHT, 1.2,
@@ -1292,10 +1291,7 @@ Viewer.ViewpointF: 500.0
                 }
 
                 backend.ingest_camera(Stamped::new(frame_time_ns, synthetic_rgb_frame()))?;
-                <OrbSlam3Backend as LocalizeBackend>::ingest_depth(
-                    &mut backend,
-                    Stamped::new(frame_time_ns, synthetic_depth()),
-                )?;
+                backend.ingest_depth(Stamped::new(frame_time_ns, synthetic_depth()));
                 let update = backend
                     .step(step_at(frame_time_ns))
                     .context("step must not fail across the FFI boundary")?;

@@ -6,7 +6,7 @@ use phoxal::api::localize::v1::{
 };
 use phoxal::api::odometry::v1::OdometryEstimate;
 use phoxal::api::simulation::v1::pose::Pose as SimPose;
-use phoxal::bus::pubsub::Stamped;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 
 use crate::runtime::{
@@ -19,7 +19,7 @@ const BASE_FRAME_ID: &str = "base_footprint";
 const LOOP_CLOSURE_DELAY_NS: u64 = 2_000_000_000;
 
 pub(crate) struct SimulatorTruthBackend {
-    latest_pose: Option<Stamped<SimPose>>,
+    latest_pose: Option<Received<SimPose>>,
     initial_revision_emitted: bool,
     loop_closure_emitted: bool,
     first_tracking_ns: Option<u64>,
@@ -42,9 +42,9 @@ impl LocalizeBackend for SimulatorTruthBackend {
         LocalizationSource::SimulatorTruth
     }
 
-    fn ingest_odometry(&mut self, _sample: Stamped<OdometryEstimate>) {}
+    fn ingest_odometry(&mut self, _sample: Received<OdometryEstimate>) {}
 
-    fn ingest_sim_pose(&mut self, sample: Stamped<SimPose>) {
+    fn ingest_sim_pose(&mut self, sample: Received<SimPose>) {
         self.latest_pose = Some(sample);
     }
 
@@ -72,8 +72,8 @@ impl LocalizeBackend for SimulatorTruthBackend {
         let pose_estimate = PoseEstimate {
             frame_id: FrameId::new(MAP_FRAME_ID),
             child_frame_id: FrameId::new(BASE_FRAME_ID),
-            translation_m: pose.data.translation_m,
-            rotation_xyzw: pose.data.rotation_xyzw,
+            translation_m: pose.value.translation_m,
+            rotation_xyzw: pose.value.rotation_xyzw,
         };
         let tracking_ns = step.tick.time_ns();
         let mut new_revision = initial_sensor_integration_revision(
@@ -115,7 +115,7 @@ impl LocalizeBackend for SimulatorTruthBackend {
                 healthy: true,
                 reasons: Vec::new(),
             },
-            valid_at_ns: Some(pose.timestamp_ns),
+            valid_at_ns: Some(pose.at_ns.unwrap_or_else(|| step.tick.time_ns())),
             new_revision,
         })
     }
@@ -232,14 +232,14 @@ mod tests {
         }
     }
 
-    fn sim_pose_sample(timestamp_ns: u64, translation_m: [f64; 3]) -> Stamped<SimPose> {
-        Stamped::new(
-            timestamp_ns,
-            SimPose {
+    fn sim_pose_sample(timestamp_ns: u64, translation_m: [f64; 3]) -> Received<SimPose> {
+        Received {
+            at_ns: Some(timestamp_ns),
+            value: SimPose {
                 frame_id: "world".into(),
                 translation_m,
                 rotation_xyzw: [0.0, 0.0, 0.0, 1.0],
             },
-        )
+        }
     }
 }

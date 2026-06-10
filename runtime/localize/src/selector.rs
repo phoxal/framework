@@ -1,36 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use phoxal::api::component::v1::capability::profile::ProfileId;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::{Capability, GnssCoordinateSystem};
 use phoxal::model::robot::v1::{ResolvedLocalizeBackend, resolve_localize_backend};
 use phoxal::model::v1::Robot;
 use tracing::warn;
 
-use crate::runtime::BackendSelection;
+use crate::runtime::{BackendSelection, OrbSlam3Inputs};
 
 pub const ENV_ORB_SLAM3_VOCABULARY: &str = "ORB_SLAM3_VOCABULARY";
-
-pub fn capability_default_profile_topic(
-    robot: &Robot,
-    capability: &CapabilityRef,
-) -> anyhow::Result<String> {
-    robot.capability(capability)?;
-    Ok(phoxal::api::component::v1::capability::profile_path(
-        &capability.component_id,
-        &capability.capability_id,
-        &ProfileId::default_profile(),
-    ))
-}
-
-fn capability_profile_topic(capability: &CapabilityRef, profile_id: &ProfileId) -> String {
-    phoxal::api::component::v1::capability::profile_path(
-        &capability.component_id,
-        &capability.capability_id,
-        profile_id,
-    )
-}
 
 pub fn select_backend(
     robot: &Robot,
@@ -47,7 +26,7 @@ fn select_backend_with_settings_dir(
     match resolve_localize_backend(&robot.manifest, &robot.components) {
         ResolvedLocalizeBackend::DeadReckoning => Ok(BackendSelection::DeadReckoning),
         ResolvedLocalizeBackend::GnssAnchored { gnss } => Ok(BackendSelection::GnssAnchored {
-            gnss_topic: capability_default_profile_topic(robot, &gnss)?,
+            gnss: gnss.clone(),
             coordinate_system: gnss_coordinate_system(robot, &gnss)?,
         }),
         ResolvedLocalizeBackend::OrbSlam3RgbdInertial { camera, depth, imu } => {
@@ -61,8 +40,6 @@ fn select_backend_with_settings_dir(
             let depth_intrinsics = intrinsics_for(robot, &depth)?;
             let camera_fps = camera_publish_rate_hz(robot, &camera)?;
             let imu_frequency_hz = imu_publish_frequency_hz(robot, &imu)?;
-            let camera_topic = default_profile_topic(&camera);
-            let depth_topic = default_profile_topic(&depth);
             let camera_optical_to_base = camera_optical_to_base(robot, &camera)?;
             let imu_to_camera_optical = imu_to_camera_optical(robot, &camera, &imu)?;
             let settings_path = write_orb_slam3_settings(
@@ -73,19 +50,21 @@ fn select_backend_with_settings_dir(
                 settings_dir,
             )?;
 
-            Ok(BackendSelection::OrbSlam3(Box::new(
-                crate::orbslam3::OrbSlam3Config {
+            Ok(BackendSelection::OrbSlam3 {
+                inputs: OrbSlam3Inputs {
+                    camera,
+                    depth,
+                    imu: Some(imu),
+                },
+                config: Box::new(crate::orbslam3::OrbSlam3Config {
                     vocabulary_path: vocabulary_path.to_path_buf(),
                     settings_path,
-                    camera_topic,
-                    depth_topic,
-                    imu_topic: Some(capability_default_profile_topic(robot, &imu)?),
                     inertial: true,
                     color_intrinsics,
                     depth_intrinsics,
                     camera_optical_to_base,
-                },
-            )))
+                }),
+            })
         }
         ResolvedLocalizeBackend::OrbSlam3Rgbd { camera, depth } => {
             let Some(vocabulary_path) = orb_slam3_vocabulary_path else {
@@ -97,25 +76,25 @@ fn select_backend_with_settings_dir(
             let color_intrinsics = intrinsics_for(robot, &camera)?;
             let depth_intrinsics = intrinsics_for(robot, &depth)?;
             let camera_fps = camera_publish_rate_hz(robot, &camera)?;
-            let camera_topic = default_profile_topic(&camera);
-            let depth_topic = default_profile_topic(&depth);
             let camera_optical_to_base = camera_optical_to_base(robot, &camera)?;
             let settings_path =
                 write_orb_slam3_rgbd_settings(&color_intrinsics, camera_fps, settings_dir)?;
 
-            Ok(BackendSelection::OrbSlam3(Box::new(
-                crate::orbslam3::OrbSlam3Config {
+            Ok(BackendSelection::OrbSlam3 {
+                inputs: OrbSlam3Inputs {
+                    camera,
+                    depth,
+                    imu: None,
+                },
+                config: Box::new(crate::orbslam3::OrbSlam3Config {
                     vocabulary_path: vocabulary_path.to_path_buf(),
                     settings_path,
-                    camera_topic,
-                    depth_topic,
-                    imu_topic: None,
                     inertial: false,
                     color_intrinsics,
                     depth_intrinsics,
                     camera_optical_to_base,
-                },
-            )))
+                }),
+            })
         }
     }
 }
@@ -133,10 +112,6 @@ fn gnss_coordinate_system(
         );
     };
     Ok(gnss.coordinate_system)
-}
-
-fn default_profile_topic(capability_ref: &CapabilityRef) -> String {
-    capability_profile_topic(capability_ref, &ProfileId::default_profile())
 }
 
 fn camera_optical_to_base(robot: &Robot, camera: &CapabilityRef) -> Result<([f64; 3], [f64; 4])> {
@@ -365,35 +340,10 @@ mod tests {
     use phoxal::model::v1::Robot;
 
     use super::{
-        GnssCoordinateSystem, capability_default_profile_topic, default_profile_topic,
-        imu_to_camera_optical, select_backend, select_backend_with_settings_dir,
+        GnssCoordinateSystem, imu_to_camera_optical, select_backend,
+        select_backend_with_settings_dir,
     };
     use crate::runtime::BackendSelection;
-
-    #[test]
-    fn capability_default_profile_topic_matches_blueprint_shape() {
-        let robot = fixture_robot();
-
-        let imu_topic =
-            match capability_default_profile_topic(&robot, &CapabilityRef::new("imu", "imu")) {
-                Ok(topic) => topic,
-                Err(error) => panic!("imu topic resolution failed: {error:#}"),
-            };
-
-        assert_eq!(imu_topic, "component/imu/imu/profile/default");
-    }
-
-    #[test]
-    fn camera_and_depth_topics_request_default_profile() {
-        assert_eq!(
-            default_profile_topic(&CapabilityRef::new("front_camera", "depth")),
-            "component/front_camera/depth/profile/default"
-        );
-        assert_eq!(
-            default_profile_topic(&CapabilityRef::new("front_camera", "rgb")),
-            "component/front_camera/rgb/profile/default"
-        );
-    }
 
     #[test]
     fn selector_returns_gnss_anchored_for_gnss_localization_robot() {
@@ -407,14 +357,14 @@ mod tests {
             Err(error) => panic!("selector failed: {error:#}"),
         };
         let BackendSelection::GnssAnchored {
-            gnss_topic,
+            gnss,
             coordinate_system,
         } = backend
         else {
             panic!("expected GNSS-anchored backend");
         };
 
-        assert_eq!(gnss_topic, "component/gnss/gnss/profile/default");
+        assert_eq!(gnss, CapabilityRef::new("gnss", "gnss"));
         assert_eq!(coordinate_system, GnssCoordinateSystem::Local);
     }
 
@@ -444,22 +394,13 @@ mod tests {
             Err(error) => panic!("selector failed: {error:#}"),
         };
         let _settings_root = settings_root;
-        let BackendSelection::OrbSlam3(config) = backend else {
+        let BackendSelection::OrbSlam3 { inputs, config } = backend else {
             panic!("expected ORB-SLAM3 backend");
         };
 
-        assert_eq!(
-            config.camera_topic,
-            "component/front_camera/rgb/profile/default"
-        );
-        assert_eq!(
-            config.depth_topic,
-            "component/front_camera/depth/profile/default"
-        );
-        assert_eq!(
-            config.imu_topic.as_deref(),
-            Some("component/imu/imu/profile/default")
-        );
+        assert_eq!(inputs.camera, CapabilityRef::new("front_camera", "rgb"));
+        assert_eq!(inputs.depth, CapabilityRef::new("front_camera", "depth"));
+        assert_eq!(inputs.imu, Some(CapabilityRef::new("imu", "imu")));
         assert!(config.inertial);
         assert_eq!(config.vocabulary_path, vocabulary_path);
         assert!(
@@ -484,7 +425,7 @@ mod tests {
             Err(error) => panic!("selector failed: {error:#}"),
         };
         let _settings_root = settings_root;
-        let BackendSelection::OrbSlam3(config) = backend else {
+        let BackendSelection::OrbSlam3 { config, .. } = backend else {
             panic!("expected ORB-SLAM3 backend");
         };
         assert!(
@@ -582,19 +523,13 @@ mod tests {
             Err(error) => panic!("selector failed: {error:#}"),
         };
         let _settings_root = settings_root;
-        let BackendSelection::OrbSlam3(config) = backend else {
+        let BackendSelection::OrbSlam3 { inputs, config } = backend else {
             panic!("expected ORB-SLAM3 backend");
         };
 
-        assert_eq!(
-            config.camera_topic,
-            "component/front_camera/rgb/profile/default"
-        );
-        assert_eq!(
-            config.depth_topic,
-            "component/front_camera/depth/profile/default"
-        );
-        assert!(config.imu_topic.is_none());
+        assert_eq!(inputs.camera, CapabilityRef::new("front_camera", "rgb"));
+        assert_eq!(inputs.depth, CapabilityRef::new("front_camera", "depth"));
+        assert!(inputs.imu.is_none());
         assert!(!config.inertial);
         assert_eq!(config.vocabulary_path, vocabulary_path);
         assert!(config.settings_path.ends_with("orb-slam3/rgbd.yaml"));
