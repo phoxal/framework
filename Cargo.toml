@@ -60,6 +60,7 @@ trybuild = "1"
 urdf-rs = "0.9.0"
 zenoh = { version = "1.9.0" }
 phoxal                                  = { path = "phoxal" }
+phoxal-macros                           = { path = "phoxal-macros" }
 phoxal-runtime-localize-orb-slam3-sys  = { path = "runtime/localize/orb-slam3-sys" }
 
 [workspace.lints.rust]
