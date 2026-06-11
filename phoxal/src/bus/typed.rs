@@ -347,6 +347,7 @@ mod tests {
     use crate::api::v1::{asset, component::capability::motor, topic};
     use crate::bus::metadata::BusMetadata;
     use crate::bus::query::Retry;
+    use crate::bus::topic::ANY;
     use crate::bus::zenoh::{serialize_payload, typed_encoding};
     use crate::bus::{Bus, Error};
 
@@ -362,7 +363,7 @@ mod tests {
             .component("base")
             .motor("left_wheel")
             .command();
-        let wildcard = topic::new().v1().component_any().motor_any().command();
+        let wildcard = topic::new().v1().component(ANY).motor(ANY).command();
 
         assert_eq!(
             concrete_publish_key(&concrete)?.as_ref(),
@@ -382,7 +383,7 @@ mod tests {
 
     #[test]
     fn typed_publish_rejects_wildcard_topic_before_transport() {
-        let topic = topic::new().v1().component_any().motor_any().command();
+        let topic = topic::new().v1().component(ANY).motor(ANY).command();
         assert!(matches!(
             concrete_publish_key(&topic),
             Err(Error::InvalidTopic(_))
@@ -430,7 +431,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn typed_live_pubsub_roundtrip_supports_wildcard_subscriber() -> crate::bus::Result<()> {
         let bus = open_bus("pubsub").await;
-        let wildcard = topic::new().v1().component_any().motor_any().command();
+        let wildcard = topic::new().v1().component(ANY).motor(ANY).command();
         let wildcard_error = bus
             .publish(&wildcard, 1, &motor::Command::Velocity(0.0))
             .await

@@ -12,8 +12,6 @@ pub mod typed;
 #[allow(clippy::module_name_repetitions)]
 pub mod zenoh;
 
-pub use topic::topic_tree;
-
 #[derive(Clone, new)]
 pub struct Bus {
     session: ::zenoh::Session,

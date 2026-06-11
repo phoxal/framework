@@ -483,7 +483,7 @@ impl<I> SourceBuffer<I> {
 type SourceHandle<I> = Arc<Mutex<SourceBuffer<I>>>;
 
 trait RecordingBuffer: Send + Sync {
-    fn as_any(&self) -> &dyn Any;
+    fn dyn_value(&self) -> &dyn Any;
 }
 
 struct TypedRecordingBuffer<T> {
@@ -491,7 +491,7 @@ struct TypedRecordingBuffer<T> {
 }
 
 impl<T: Send + 'static> RecordingBuffer for TypedRecordingBuffer<T> {
-    fn as_any(&self) -> &dyn Any {
+    fn dyn_value(&self) -> &dyn Any {
         self
     }
 }
@@ -516,7 +516,7 @@ impl<Input> Io<Input> {
     pub fn recorded_puts<T: Clone + 'static>(&self, topic: &str) -> Vec<T> {
         self.recorded_puts
             .get(topic)
-            .and_then(|buffer| buffer.as_any().downcast_ref::<TypedRecordingBuffer<T>>())
+            .and_then(|buffer| buffer.dyn_value().downcast_ref::<TypedRecordingBuffer<T>>())
             .and_then(|buffer| buffer.values.lock().ok().map(|values| values.clone()))
             .unwrap_or_default()
     }
