@@ -1,8 +1,6 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-pub use phoxal_macros::topic_tree;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PubSub<T>(PhantomData<T>);
 
@@ -13,6 +11,59 @@ pub struct Query<Req, Resp>(PhantomData<(Req, Resp)>);
 pub enum Slot {
     Any,
     Bound(Cow<'static, str>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotArg {
+    Any,
+    Bound(Cow<'static, str>),
+}
+
+pub const ANY: SlotArg = SlotArg::Any;
+
+impl From<SlotArg> for Slot {
+    fn from(value: SlotArg) -> Self {
+        match value {
+            SlotArg::Any => Self::Any,
+            SlotArg::Bound(value) => Self::Bound(value),
+        }
+    }
+}
+
+impl From<&str> for SlotArg {
+    fn from(value: &str) -> Self {
+        if value == "*" {
+            Self::Any
+        } else {
+            Self::Bound(Cow::Owned(value.to_string()))
+        }
+    }
+}
+
+impl From<&String> for SlotArg {
+    fn from(value: &String) -> Self {
+        value.as_str().into()
+    }
+}
+
+impl From<String> for SlotArg {
+    fn from(value: String) -> Self {
+        if value == "*" {
+            Self::Any
+        } else {
+            Self::Bound(Cow::Owned(value))
+        }
+    }
+}
+
+impl From<Cow<'static, str>> for SlotArg {
+    fn from(value: Cow<'static, str>) -> Self {
+        if value.as_ref() == "*" {
+            Self::Any
+        } else {
+            Self::Bound(value)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +123,7 @@ impl<Kind> Topic<Kind> {
     }
 
     pub fn is_concrete(&self) -> bool {
-        self.slots.iter().all(|slot| matches!(slot, Slot::Bound(_)))
+        self.slots.iter().all(|slot| matches!(slot, Slot::Bound(_))) && !self.key().contains('*')
     }
 
     pub fn publish_key(&self) -> crate::bus::Result<Cow<'static, str>> {
@@ -87,6 +138,239 @@ impl<Kind> Topic<Kind> {
     }
 }
 
+#[macro_export]
+macro_rules! topic_tree {
+    ($visibility:vis mod $module:ident; $($items:tt)*) => {
+        $visibility mod $module {
+            pub fn new() -> __builders::Root {
+                __builders::Root::new(::std::vec::Vec::new())
+            }
+
+            #[doc(hidden)]
+            pub mod __builders {
+                #[derive(Debug, Clone)]
+                pub struct Root {
+                    slots: ::std::vec::Vec<$crate::bus::topic::Slot>,
+                }
+
+                impl Root {
+                    pub(super) fn new(
+                        slots: ::std::vec::Vec<$crate::bus::topic::Slot>,
+                    ) -> Self {
+                        Self { slots }
+                    }
+                }
+
+                impl Root {
+                    $crate::topic_tree!(@methods [] [] $($items)*);
+                }
+
+                $crate::topic_tree!(@modules [] [] $($items)*);
+            }
+        }
+    };
+
+    (@methods [$($template:expr),*] [$($schema:expr),*]) => {};
+
+    (
+        @methods [$($template:expr),*] [$($schema:expr),*]
+        pubsub r#static: $payload:ty, version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(
+            @pubsub_method r#static, "static", [$($template),*] [$($schema),*] $payload, $version
+        );
+        $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @methods [$($template:expr),*] [$($schema:expr),*]
+        pubsub $leaf:ident: $payload:ty, version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(
+            @pubsub_method $leaf, stringify!($leaf), [$($template),*] [$($schema),*] $payload, $version
+        );
+        $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @methods [$($template:expr),*] [$($schema:expr),*]
+        query $leaf:ident: $request:ty => $response:ty, version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(
+            @query_method $leaf, stringify!($leaf), [$($template),*] [$($schema),*]
+            $request => $response, $version
+        );
+        $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @methods [$($template:expr),*] [$($schema:expr),*]
+        $name:ident(id) { $($children:tt)* }
+        $($rest:tt)*
+    ) => {
+        pub fn $name(
+            mut self,
+            id: impl ::std::convert::Into<$crate::bus::topic::SlotArg>,
+        ) -> $name::Builder {
+            self.slots.push($crate::bus::topic::Slot::from(id.into()));
+            $name::Builder::new(self.slots)
+        }
+
+        $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @methods [$($template:expr),*] [$($schema:expr),*]
+        $name:ident { $($children:tt)* }
+        $($rest:tt)*
+    ) => {
+        pub fn $name(self) -> $name::Builder {
+            $name::Builder::new(self.slots)
+        }
+
+        $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @pubsub_method $method:ident, $segment:expr,
+        [$($template:expr),*] [$($schema:expr),*]
+        $payload:ty, $version:literal
+    ) => {
+        pub fn $method(
+            self,
+        ) -> $crate::bus::topic::Topic<$crate::bus::topic::PubSub<$payload>> {
+            $crate::bus::topic::Topic::new(
+                concat!($($template, "/",)* $segment),
+                concat!($($schema, "/",)* $segment),
+                $version,
+                self.slots,
+            )
+        }
+    };
+
+    (
+        @query_method $method:ident, $segment:expr,
+        [$($template:expr),*] [$($schema:expr),*]
+        $request:ty => $response:ty, $version:literal
+    ) => {
+        pub fn $method(
+            self,
+        ) -> $crate::bus::topic::Topic<$crate::bus::topic::Query<$request, $response>> {
+            $crate::bus::topic::Topic::new(
+                concat!($($template, "/",)* $segment),
+                concat!($($schema, "/",)* $segment),
+                $version,
+                self.slots,
+            )
+        }
+    };
+
+    (@modules [$($template:expr),*] [$($schema:expr),*]) => {};
+
+    (
+        @modules [$($template:expr),*] [$($schema:expr),*]
+        pubsub r#static: $payload:ty, version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @modules [$($template:expr),*] [$($schema:expr),*]
+        pubsub $leaf:ident: $payload:ty, version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @modules [$($template:expr),*] [$($schema:expr),*]
+        query $leaf:ident: $request:ty => $response:ty, version = $version:literal;
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @modules [$($template:expr),*] [$($schema:expr),*]
+        $name:ident(id) { $($children:tt)* }
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(@module $name [$($template),*] [$($schema),*] [id] { $($children)* });
+        $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (
+        @modules [$($template:expr),*] [$($schema:expr),*]
+        $name:ident { $($children:tt)* }
+        $($rest:tt)*
+    ) => {
+        $crate::topic_tree!(@module $name [$($template),*] [$($schema),*] [] { $($children)* });
+        $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
+    };
+
+    (@module $name:ident [$($template:expr),*] [$($schema:expr),*] [id] { $($children:tt)* }) => {
+        pub mod $name {
+            #[derive(Debug, Clone)]
+            pub struct Builder {
+                slots: ::std::vec::Vec<$crate::bus::topic::Slot>,
+            }
+
+            impl Builder {
+                pub(super) fn new(
+                    slots: ::std::vec::Vec<$crate::bus::topic::Slot>,
+                ) -> Self {
+                    Self { slots }
+                }
+            }
+
+            impl Builder {
+                $crate::topic_tree!(
+                    @methods [$($template,)* stringify!($name), "*"] [$($schema,)* stringify!($name)]
+                    $($children)*
+                );
+            }
+
+            $crate::topic_tree!(
+                @modules [$($template,)* stringify!($name), "*"] [$($schema,)* stringify!($name)]
+                $($children)*
+            );
+        }
+    };
+
+    (@module $name:ident [$($template:expr),*] [$($schema:expr),*] [] { $($children:tt)* }) => {
+        pub mod $name {
+            #[derive(Debug, Clone)]
+            pub struct Builder {
+                slots: ::std::vec::Vec<$crate::bus::topic::Slot>,
+            }
+
+            impl Builder {
+                pub(super) fn new(
+                    slots: ::std::vec::Vec<$crate::bus::topic::Slot>,
+                ) -> Self {
+                    Self { slots }
+                }
+            }
+
+            impl Builder {
+                $crate::topic_tree!(
+                    @methods [$($template,)* stringify!($name)] [$($schema,)* stringify!($name)]
+                    $($children)*
+                );
+            }
+
+            $crate::topic_tree!(
+                @modules [$($template,)* stringify!($name)] [$($schema,)* stringify!($name)]
+                $($children)*
+            );
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use crate::api::v1::{
@@ -94,7 +378,7 @@ mod tests {
         component::capability::{gnss, motor},
         drive, simulation, topic,
     };
-    use crate::bus::topic::{PubSub, Query, Topic};
+    use crate::bus::topic::{ANY, PubSub, Query, Topic};
 
     #[test]
     fn topic_builder_keys_match_tree_paths() {
@@ -109,12 +393,11 @@ mod tests {
             "v1/component/base/motor/left_wheel/command"
         );
         assert_eq!(
-            topic::new()
-                .v1()
-                .component_any()
-                .motor_any()
-                .command()
-                .key(),
+            topic::new().v1().component(ANY).motor(ANY).command().key(),
+            "v1/component/*/motor/*/command"
+        );
+        assert_eq!(
+            topic::new().v1().component("*").motor("*").command().key(),
             "v1/component/*/motor/*/command"
         );
         assert_eq!(topic::new().v1().asset().get().key(), "v1/asset/get");
@@ -127,7 +410,7 @@ mod tests {
             "v1/simulation/robot/r1/pose"
         );
         assert_eq!(
-            topic::new().v1().simulation().robot_any().pose().key(),
+            topic::new().v1().simulation().robot(ANY).pose().key(),
             "v1/simulation/robot/*/pose"
         );
     }
@@ -158,8 +441,8 @@ mod tests {
         assert!(
             topic::new()
                 .v1()
-                .component_any()
-                .motor_any()
+                .component(ANY)
+                .motor(ANY)
                 .command()
                 .publish_key()
                 .is_err()
@@ -174,6 +457,20 @@ mod tests {
                 .unwrap(),
             "v1/component/base/motor/left_wheel/command"
         );
+    }
+
+    #[test]
+    fn rendered_wildcards_are_not_concrete() {
+        let wildcard = topic::new().v1().component("*").motor("left").command();
+        let manually_under_bound = Topic::<PubSub<motor::Command>>::new(
+            "v1/component/*/motor/*/command",
+            "v1/component/motor/command",
+            1,
+            Vec::new(),
+        );
+
+        assert!(!wildcard.is_concrete());
+        assert!(!manually_under_bound.is_concrete());
     }
 
     #[test]

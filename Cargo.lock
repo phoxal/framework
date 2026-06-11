@@ -2232,7 +2232,6 @@ dependencies = [
  "derive_setters",
  "dotenvy",
  "nalgebra",
- "phoxal-macros",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -2247,15 +2246,6 @@ dependencies = [
  "trybuild",
  "urdf-rs",
  "zenoh",
-]
-
-[[package]]
-name = "phoxal-macros"
-version = "0.4.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]

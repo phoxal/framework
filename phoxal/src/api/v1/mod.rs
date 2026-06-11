@@ -20,7 +20,7 @@ pub mod safety;
 pub mod simulation;
 pub mod video;
 
-crate::bus::topic_tree! {
+crate::topic_tree! {
     pub mod topic;
     v1 {
         drive {
