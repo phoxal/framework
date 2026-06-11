@@ -1,6 +1,4 @@
 version: v1
-phoxal:
-  cli_min_version: "^0.6"
 identity:
   id: lowrate-range-diff-drive
   namespace: dev

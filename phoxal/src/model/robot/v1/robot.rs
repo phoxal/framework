@@ -12,7 +12,6 @@ const ROBOT_FILE: &str = "robot.yaml";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Robot {
-    pub phoxal: Phoxal,
     pub identity: Identity,
     #[serde(default = "default_structure_path")]
     pub structure: PathBuf,
@@ -25,12 +24,6 @@ pub struct Robot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<Network>,
     pub components: Components,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Phoxal {
-    pub cli_min_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
