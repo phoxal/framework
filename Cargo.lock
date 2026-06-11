@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2250,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-asset"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-drive"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-explore"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-follow"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-frame"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-joint"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2342,14 +2342,14 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize-orb-slam3-sys"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "phoxal-runtime-map"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2364,7 +2364,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-mission"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-motion"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-odometry"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "approx",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-perception"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2417,7 +2417,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-plan"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2429,7 +2429,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-power"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2444,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-presence"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-safety"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-video"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
