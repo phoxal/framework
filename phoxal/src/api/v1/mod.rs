@@ -811,11 +811,7 @@ mod tests {
             "v1/component/led/command",
         );
         assert_pubsub::<crate::api::v1::component::capability::microphone::Frame>(
-            topic::new()
-                .v1()
-                .component("head")
-                .microphone("mic")
-                .data(),
+            topic::new().v1().component("head").microphone("mic").data(),
             "v1/component/head/microphone/mic/data",
             "v1/component/microphone/data",
         );
