@@ -4,6 +4,26 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.0.0](https://github.com/phoxal/framework/releases/tag/v1.0.0) - 2026-06-11
+
+
+### Added
+
+- *(bus)* Migrate the framework to a typed fluent-topic bus (#55)
+
+### CI
+
+- Reuse runtime-image binaries for Linux release tarballs (#53)
+- Use the shared rust-ci reusable workflow (#54)
+
+### Fixed
+
+- *(release)* Track phoxal-macros via the workspace version (#56)
+
+### Refactored
+
+- *(bus)* Replace phoxal-macros proc-macro with a macro_rules! tree (#58) [**breaking**]
+
 ## [0.4.0](https://github.com/phoxal/framework/releases/tag/v0.4.0) - 2026-06-09
 
 
