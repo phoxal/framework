@@ -4,6 +4,13 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0](https://github.com/phoxal/framework/releases/tag/v0.7.0) - 2026-06-11
+
+
+### Refactored
+
+- *(model)* Remove phoxal.cli_min_version from robot.yaml v1 schema (#63) [**breaking**]
+
 ## [0.6.0](https://github.com/phoxal/framework/releases/tag/v0.6.0) - 2026-06-11
 
 
