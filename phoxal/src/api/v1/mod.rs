@@ -162,6 +162,16 @@ crate::topic_tree! {
             battery(id) {
                 pubsub data: crate::api::v1::component::capability::battery::State, version = 1;
             }
+            led(id) {
+                pubsub command: crate::api::v1::component::capability::led::Command, version = 1;
+            }
+            microphone(id) {
+                pubsub data: crate::api::v1::component::capability::microphone::Frame, version = 1;
+            }
+            speaker(id) {
+                pubsub audio: crate::api::v1::component::capability::speaker::audio::Audio, version = 1;
+                pubsub command: crate::api::v1::component::capability::speaker::command::Command, version = 1;
+            }
         }
         asset {
             query get: crate::api::v1::asset::GetRequest => crate::api::v1::asset::GetResponse, version = 1;
@@ -790,6 +800,42 @@ mod tests {
                 .data(),
             "v1/component/power_board/battery/main_battery/data",
             "v1/component/battery/data",
+        );
+        assert_pubsub::<crate::api::v1::component::capability::led::Command>(
+            topic::new()
+                .v1()
+                .component("status_panel")
+                .led("status")
+                .command(),
+            "v1/component/status_panel/led/status/command",
+            "v1/component/led/command",
+        );
+        assert_pubsub::<crate::api::v1::component::capability::microphone::Frame>(
+            topic::new()
+                .v1()
+                .component("head")
+                .microphone("mic")
+                .data(),
+            "v1/component/head/microphone/mic/data",
+            "v1/component/microphone/data",
+        );
+        assert_pubsub::<crate::api::v1::component::capability::speaker::audio::Audio>(
+            topic::new()
+                .v1()
+                .component("head")
+                .speaker("speaker")
+                .audio(),
+            "v1/component/head/speaker/speaker/audio",
+            "v1/component/speaker/audio",
+        );
+        assert_pubsub::<crate::api::v1::component::capability::speaker::command::Command>(
+            topic::new()
+                .v1()
+                .component("head")
+                .speaker("speaker")
+                .command(),
+            "v1/component/head/speaker/speaker/command",
+            "v1/component/speaker/command",
         );
         assert_pubsub::<crate::api::v1::simulation::pose::Pose>(
             topic::new().v1().simulation().robot("r1").pose(),
