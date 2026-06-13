@@ -1,0 +1,110 @@
+name: simulator-check
+
+# Pre-merge guard for the Webots simulator binaries. The real release builds
+# them in release.yml's `build-simulator` job, which only runs on a release/v*
+# merge — too late to catch a broken Webots install or link. This workflow runs
+# the SAME install + build + link assertion on every PR that touches the
+# simulator crates (and on demand), so a stub-linked / unbuildable simulator
+# fails here instead of aborting a release.
+#
+# Keep the install + assertion steps in sync with release.yml `build-simulator`.
+
+on:
+  pull_request:
+    paths:
+      - "simulator/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/simulator-check.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-assert:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    env:
+      WEBOTS_VERSION: R2025a
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+          cache: false
+
+      - name: Cache Webots SDK (Linux)
+        if: runner.os == 'Linux'
+        id: cache-webots
+        uses: actions/cache@v4
+        with:
+          path: ~/webots
+          key: webots-${{ env.WEBOTS_VERSION }}-${{ matrix.target }}
+
+      - name: Install Webots SDK (Linux)
+        if: runner.os == 'Linux' && steps.cache-webots.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            wget ca-certificates bzip2 libgl1 libglu1-mesa libxkbcommon-x11-0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-sync1 libxcb-xfixes0 \
+            libxcb-xinerama0 libxcb-xkb1
+          tmp=$(mktemp -d)
+          wget -q -O "${tmp}/webots.tar.bz2" \
+            "https://github.com/cyberbotics/webots/releases/download/${WEBOTS_VERSION}/webots-${WEBOTS_VERSION}-x86-64.tar.bz2"
+          tar -xjf "${tmp}/webots.tar.bz2" -C "${HOME}"
+          rm -rf "${tmp}"
+
+      - name: Configure WEBOTS_HOME (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "WEBOTS_HOME=${HOME}/webots" >> "$GITHUB_ENV"
+          echo "${HOME}/webots/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=${HOME}/webots/lib/controller${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Install Webots (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          curl -fsSL -o "${tmp}/webots.dmg" \
+            "https://github.com/cyberbotics/webots/releases/download/${WEBOTS_VERSION}/webots-${WEBOTS_VERSION}.dmg"
+          hdiutil attach -nobrowse -mountpoint "${tmp}/mnt" "${tmp}/webots.dmg"
+          cp -R "${tmp}/mnt/Webots.app" /Applications/
+          hdiutil detach "${tmp}/mnt" || true
+          rm -rf "${tmp}"
+          echo "WEBOTS_HOME=/Applications/Webots.app" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=/Applications/Webots.app/Contents/lib/controller${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build controller + supervisor
+        run: |
+          set -euo pipefail
+          cargo build --release --target "${{ matrix.target }}" \
+            --bin phoxal-simulator-webots-controller \
+            --bin phoxal-simulator-webots-supervisor
+
+      - name: Assert Webots was really linked
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/phoxal-simulator-webots-controller"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            deps=$(otool -L "$bin")
+          else
+            deps=$(readelf -d "$bin" | grep NEEDED || true)
+          fi
+          echo "$deps"
+          if echo "$deps" | grep -qi "Controller"; then
+            echo "OK: controller links libController — real Webots runtime for ${{ matrix.target }}."
+          else
+            echo "::error::controller binary does NOT link libController — webots-rs stub-linked for ${{ matrix.target }} (Webots SDK not found at build time)."
+            echo "WEBOTS_HOME=${WEBOTS_HOME:-unset}; controller lib dir:"
+            ls -la "${WEBOTS_HOME:-/nonexistent}/lib/controller" 2>&1 || true
+            exit 1
+          fi
