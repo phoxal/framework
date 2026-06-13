@@ -1,0 +1,90 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/road/protos/Road.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/trees/protos/SimpleTree.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/street_furniture/protos/Fence.proto"
+
+# Pairs with phoxal-runtime-localize's WGS84 gnss-anchored path: Webots GPS
+# samples are geodetic lat/lon/alt and the backend converts them to local ENU.
+WorldInfo {
+  basicTimeStep 12
+  gpsCoordinateSystem "WGS84"
+  gpsReference 52.225611 6.8833635 0
+  contactProperties [
+    ContactProperties {
+      material1 "rubber_wheel"
+      material2 "asphalt"
+      coulombFriction [ 2.5 ]
+      bounce 0
+      bounceVelocity 0.1
+      forceDependentSlip [ 0 0 ]
+      softERP 0.2
+      softCFM 1e-9
+    }
+    ContactProperties {
+      material1 "rubber_wheel"
+      material2 "grass"
+      coulombFriction [ 1.0 ]
+      bounce 0
+      bounceVelocity 0.1
+      forceDependentSlip [ 0.02 0.02 ]
+      softERP 0.2
+      softCFM 1e-8
+    }
+  ]
+}
+Viewpoint {
+  orientation -0.36964378507182316 0.45157351429557004 0.8119754536576151 1.8588126298429638
+  position -14.387029673801193 -18.76694188901415 16.15397722048055
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+Floor {
+  contactMaterial "grass"
+  translation 0 0 -0.02
+  size 80 60
+  appearance PBRAppearance {
+    baseColor 0.31 0.47 0.28
+    roughness 1
+    metalness 0
+  }
+}
+Road {
+  translation 0 0 0.01
+  rotation 0 0 1 1.5708
+  name "wgs84 test lane"
+  width 5
+  numberOfLanes 1
+  length 60
+  speedLimit 8
+  roadBorderHeight 0.02
+}
+Fence {
+  translation -8 0 0
+  rotation 0 0 1 1.5708
+  name "west fence"
+  length 34
+}
+Fence {
+  translation 8 0 0
+  rotation 0 0 1 1.5708
+  name "east fence"
+  length 34
+}
+SimpleTree {
+  translation -18 12 0
+  name "reference tree west"
+  height 5
+  radius 2
+}
+SimpleTree {
+  translation 19 -13 0
+  name "reference tree east"
+  height 4
+  radius 1.5
+}

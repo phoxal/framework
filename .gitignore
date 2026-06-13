@@ -6,3 +6,4 @@ target/
 .claude/worktrees
 .aider*
 
+.DS_Store
