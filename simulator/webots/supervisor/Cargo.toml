@@ -1,0 +1,25 @@
+[package]
+name = "phoxal-simulator-webots-supervisor"
+version = { workspace = true }
+edition = { workspace = true }
+license.workspace = true
+publish = false
+description = { workspace = true }
+documentation = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = { workspace = true }
+
+phoxal = { workspace = true }
+webots-rs = { workspace = true }
+
+[features]
+default = []
+
+[lints]
+workspace = true
