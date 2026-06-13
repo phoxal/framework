@@ -4,6 +4,13 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0](https://github.com/phoxal/framework/releases/tag/v0.8.0) - 2026-06-13
+
+
+### Added
+
+- *(release)* Ship the Webots simulator runtime on the framework version train (#65)
+
 ## [0.7.0](https://github.com/phoxal/framework/releases/tag/v0.7.0) - 2026-06-11
 
 
