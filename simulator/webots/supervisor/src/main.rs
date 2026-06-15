@@ -2,11 +2,14 @@ use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
-use phoxal::api::v1::simulation::clock::Clock;
-use phoxal::api::v1::simulation::pose::Pose;
-use phoxal::api::v1::simulation::reset::{Request as ResetRequest, Response as ResetResponse};
-use phoxal::api::v1::simulation::status::Status;
-use phoxal::api::v1::topic;
+use phoxal::api::simulation::clock::{self as clock_contract, v1::Clock};
+use phoxal::api::simulation::pose::{self as pose_contract, v1::Pose};
+use phoxal::api::simulation::reset::{
+    self as reset_contract,
+    v1::{Request as ResetRequest, Response as ResetResponse},
+};
+use phoxal::api::simulation::status::{self as status_contract, v1::Status};
+use phoxal::api::topic;
 use phoxal::bus::builder::Builder;
 use phoxal::bus::topic::{PubSub, Topic};
 use phoxal::bus::typed::TypedTopicQuery;
@@ -52,7 +55,7 @@ struct Cli {
 struct RobotPoseTarget {
     robot_id: String,
     def_name: String,
-    topic: Topic<PubSub<Pose>>,
+    topic: Topic<PubSub<pose_contract::Pose>>,
 }
 
 #[tokio::main]
@@ -82,8 +85,8 @@ async fn main() -> Result<()> {
         .get_basic_time_step()
         .map_err(|error| anyhow!(error))? as i32;
     let dt_ns = std::time::Duration::from_millis(step_ms as u64).as_nanos() as u64;
-    let simulation_clock_topic = topic::new().v1().simulation().clock();
-    let simulation_status_topic = topic::new().v1().simulation().status();
+    let simulation_clock_topic = topic::new().simulation().clock();
+    let simulation_status_topic = topic::new().simulation().status();
     let robot_pose_targets = discover_robot_pose_targets(&supervisor).await?;
     if robot_pose_targets.is_empty() {
         warn!(
@@ -103,11 +106,12 @@ async fn main() -> Result<()> {
         );
     }
 
-    let (reset_tx, mut reset_rx) =
-        tokio::sync::mpsc::channel::<TypedTopicQuery<ResetRequest, ResetResponse>>(8);
+    let (reset_tx, mut reset_rx) = tokio::sync::mpsc::channel::<
+        TypedTopicQuery<reset_contract::Request, reset_contract::Response>,
+    >(8);
     let reset_bus = bus.clone();
     tokio::spawn(async move {
-        let reset_topic = topic::new().v1().simulation().reset();
+        let reset_topic = topic::new().simulation().reset();
         let reset_server = match reset_bus.responder(&reset_topic).await {
             Ok(server) => server,
             Err(error) => {
@@ -155,10 +159,13 @@ async fn main() -> Result<()> {
         }
 
         while let Ok(request) = reset_rx.try_recv() {
-            if let Err(error) = request.request() {
-                warn!(error = %error, "failed to decode simulation reset request");
-                continue;
-            }
+            let reset_contract::Request::V1(ResetRequest {}) = match request.request() {
+                Ok(request) => request,
+                Err(error) => {
+                    warn!(error = %error, "failed to decode simulation reset request");
+                    continue;
+                }
+            };
             match supervisor.simulation_reset() {
                 Ok(()) => {
                     epoch = std::time::SystemTime::now()
@@ -167,7 +174,10 @@ async fn main() -> Result<()> {
                         .as_secs();
                     step = 0;
                     time_ns = 0;
-                    if let Err(error) = request.reply(&ResetResponse { epoch }).await {
+                    if let Err(error) = request
+                        .reply(&reset_contract::Response::V1(ResetResponse { epoch }))
+                        .await
+                    {
                         warn!(error = %error, "failed to acknowledge simulation reset command");
                     } else {
                         info!(epoch, "accepted simulation reset command");
@@ -189,17 +199,21 @@ async fn main() -> Result<()> {
         step = step.saturating_add(1);
         time_ns = time_ns.saturating_add(dt_ns);
         let clock = Clock::new(epoch, step, time_ns, dt_ns);
-        bus.publish(&simulation_clock_topic, time_ns, &clock)
-            .await?;
+        bus.publish(
+            &simulation_clock_topic,
+            time_ns,
+            &clock_contract::Clock::V1(clock),
+        )
+        .await?;
         bus.publish(
             &simulation_status_topic,
             time_ns,
-            &Status {
+            &status_contract::Status::V1(Status {
                 time_ns,
                 epoch,
                 step,
                 dt_ns,
-            },
+            }),
         )
         .await?;
 
@@ -207,7 +221,8 @@ async fn main() -> Result<()> {
             let node = Node::from_def(&target.def_name).map_err(|error| anyhow!(error))?;
             let pose = read_pose(&node)
                 .with_context(|| format!("failed to read pose for robot '{}'", target.robot_id))?;
-            bus.publish(&target.topic, time_ns, &pose).await?;
+            bus.publish(&target.topic, time_ns, &pose_contract::Pose::V1(pose))
+                .await?;
         }
     }
 }
@@ -239,11 +254,7 @@ async fn discover_robot_pose_targets(supervisor: &Supervisor) -> Result<Vec<Robo
                 identity.robot_id
             );
         }
-        let topic = topic::new()
-            .v1()
-            .simulation()
-            .robot(&identity.robot_id)
-            .pose();
+        let topic = topic::new().simulation().robot(&identity.robot_id).pose();
         targets.push(RobotPoseTarget {
             robot_id: identity.robot_id,
             def_name: identity.def_name,

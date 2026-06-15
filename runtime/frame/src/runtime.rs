@@ -5,12 +5,18 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal::api::v1::frame::{
-    FrameId, FrameLink, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source, Static,
-    Tree,
+use phoxal::api::frame::{
+    self as frame_contract,
+    v1::{
+        FrameId, FrameLink, FrameLookupRequest, FrameLookupResponse, FrameTransform, Source,
+        Static, Tree,
+    },
 };
-use phoxal::api::v1::joint::{JointId, JointState, Quantity};
-use phoxal::api::v1::topic;
+use phoxal::api::joint::{
+    self as joint_contract,
+    v1::{JointId, JointState, Quantity},
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::structure::Structure;
 use phoxal::runtime::clock::Step;
@@ -191,9 +197,9 @@ pub struct FrameRuntime {
     buffers: HashMap<FrameId, RingBuffer<Isometry3<f64>>>,
     published_dynamics: HashMap<FrameId, Arc<RingBuffer<Isometry3<f64>>>>,
     view: ReadCell<FrameView>,
-    tree_publisher: TopicPublisher<Tree>,
-    static_publisher: TopicPublisher<Static>,
-    dynamic_publisher: TopicPublisher<FrameTransform>,
+    tree_publisher: TopicPublisher<frame_contract::Tree>,
+    static_publisher: TopicPublisher<frame_contract::Static>,
+    dynamic_publisher: TopicPublisher<frame_contract::FrameTransform>,
 }
 
 #[async_trait::async_trait]
@@ -213,11 +219,9 @@ impl Runtime for FrameRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        let tree_publisher = io.publisher_topic(topic::new().v1().frame().tree()).await?;
-        let static_publisher = io
-            .publisher_topic(topic::new().v1().frame().r#static())
-            .await?;
-        let dynamic_publisher = io.publisher_topic(topic::new().v1().frame().data()).await?;
+        let tree_publisher = io.publisher_topic(topic::new().frame().tree()).await?;
+        let static_publisher = io.publisher_topic(topic::new().frame().r#static()).await?;
+        let dynamic_publisher = io.publisher_topic(topic::new().frame().data()).await?;
         let static_transforms = Arc::new(config.static_transforms);
         let parent_by_child = Arc::new(config.parent_by_child);
 
@@ -226,11 +230,15 @@ impl Runtime for FrameRuntime {
             let joint_id = dynamic.joint_id.clone();
             let child_frame_id = dynamic.child_frame_id.clone();
             io.subscribe_topic(
-                topic::new().v1().joint(joint_id.to_string()).data(),
-                move |sample| Input::Joint {
-                    joint_id: joint_id.clone(),
-                    child_frame_id: child_frame_id.clone(),
-                    sample,
+                topic::new().joint(joint_id.to_string()).data(),
+                move |sample| {
+                    let Received { at_ns, value } = sample;
+                    let joint_contract::JointState::V1(value) = value;
+                    Input::Joint {
+                        joint_id: joint_id.clone(),
+                        child_frame_id: child_frame_id.clone(),
+                        sample: Received { at_ns, value },
+                    }
                 },
             )
             .await?;
@@ -247,10 +255,10 @@ impl Runtime for FrameRuntime {
             dynamics: Arc::new(published_dynamics.clone()),
         });
         io.serve_query_topic(
-            topic::new().v1().frame().lookup(),
+            topic::new().frame().lookup(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(16).unwrap()),
-            frame_lookup,
+            frame_lookup_contract,
         )
         .await?;
 
@@ -317,11 +325,15 @@ impl Runtime for FrameRuntime {
         let time_ns = step.tick.time_ns();
         if self.initial {
             let static_payload = self.static_payload();
-            self.static_publisher.put(time_ns, &static_payload).await?;
+            self.static_publisher
+                .put(time_ns, &frame_contract::Static::V1(static_payload))
+                .await?;
             self.initial = false;
         }
 
-        self.tree_publisher.put(time_ns, &self.tree).await?;
+        self.tree_publisher
+            .put(time_ns, &frame_contract::Tree::V1(self.tree.clone()))
+            .await?;
 
         for (child_frame_id, (joint_id, timestamp_ns, transform)) in updated {
             let Some((parent_frame_id, _)) = self.parent_by_child.get(&child_frame_id) else {
@@ -333,7 +345,9 @@ impl Runtime for FrameRuntime {
                 transform,
                 Source::Joint { joint_id },
             );
-            self.dynamic_publisher.put(timestamp_ns, &transform).await?;
+            self.dynamic_publisher
+                .put(timestamp_ns, &frame_contract::FrameTransform::V1(transform))
+                .await?;
         }
 
         if should_commit_query_view {
@@ -486,6 +500,14 @@ fn frame_lookup(view: &FrameView, request: FrameLookupRequest) -> FrameLookupRes
         &view.dynamics,
         &view.parent_by_child,
     )
+}
+
+fn frame_lookup_contract(
+    view: &FrameView,
+    request: frame_contract::FrameLookupRequest,
+) -> frame_contract::FrameLookupResponse {
+    let frame_contract::FrameLookupRequest::V1(request) = request;
+    frame_contract::FrameLookupResponse::V1(frame_lookup(view, request))
 }
 
 fn resolve_lookup(

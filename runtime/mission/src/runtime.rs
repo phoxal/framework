@@ -2,10 +2,16 @@ use std::time::Duration;
 
 use crate::core::{GoalPublish, MissionState};
 use anyhow::Result;
-use phoxal::api::v1::explore::GoalCandidates;
-use phoxal::api::v1::localize::{LocalizationMode, LocalizationState, PoseEstimate};
-use phoxal::api::v1::mission::{Goal, GoalSource, MissionCommand, MissionMode, State};
-use phoxal::api::v1::topic;
+use phoxal::api::explore::{self as explore_contract, v1::GoalCandidates};
+use phoxal::api::localize::{
+    self as localize_contract,
+    v1::{LocalizationMode, LocalizationState, PoseEstimate},
+};
+use phoxal::api::mission::{
+    self as mission_contract,
+    v1::{Goal, GoalSource, MissionCommand, MissionMode, State},
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
@@ -37,9 +43,9 @@ pub struct MissionRuntime {
     latest_localize_pose: Option<PoseEstimate>,
     latest_explore_candidates: Option<GoalCandidates>,
     decision_log: DecisionLog<MissionLogKey>,
-    goal_publisher: TopicPublisher<Goal>,
-    goal_record_publisher: TopicPublisher<Goal>,
-    state_publisher: TopicPublisher<State>,
+    goal_publisher: TopicPublisher<mission_contract::Goal>,
+    goal_record_publisher: TopicPublisher<mission_contract::Goal>,
+    state_publisher: TopicPublisher<mission_contract::State>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,26 +79,30 @@ impl Runtime for MissionRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(topic::new().v1().mission().command(), Input::Command)
-            .await?;
-        io.subscribe_topic(
-            topic::new().v1().localize().state(),
-            Input::LocalizationState,
-        )
+        io.subscribe_topic(topic::new().mission().command(), |sample| {
+            let Received { at_ns, value } = sample;
+            let mission_contract::MissionCommand::V1(value) = value;
+            Input::Command(Received { at_ns, value })
+        })
         .await?;
-        io.subscribe_topic(
-            topic::new().v1().explore().goal_candidates(),
-            Input::GoalCandidates,
-        )
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Received { at_ns, value })
+        })
+        .await?;
+        io.subscribe_topic(topic::new().explore().goal_candidates(), |sample| {
+            let Received { at_ns, value } = sample;
+            let explore_contract::GoalCandidates::V1(value) = value;
+            Input::GoalCandidates(Received { at_ns, value })
+        })
         .await?;
 
-        let goal_publisher = io
-            .publisher_topic(topic::new().v1().mission().goal())
-            .await?;
+        let goal_publisher = io.publisher_topic(topic::new().mission().goal()).await?;
         let goal_record_publisher = io
-            .publisher_topic(topic::new().v1().mission().debug().goal_record())
+            .publisher_topic(topic::new().mission().debug().goal_record())
             .await?;
-        let state_topic = topic::new().v1().mission().state();
+        let state_topic = topic::new().mission().state();
         let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
@@ -158,7 +168,9 @@ impl Runtime for MissionRuntime {
         let state = self.state.to_product();
         self.decision_log
             .observe(timestamp_ns, mission_log_key(&state));
-        self.state_publisher.put(timestamp_ns, &state).await?;
+        self.state_publisher
+            .put(timestamp_ns, &mission_contract::State::V1(state))
+            .await?;
 
         Ok(())
     }
@@ -166,8 +178,12 @@ impl Runtime for MissionRuntime {
 
 impl MissionRuntime {
     async fn publish_goal(&self, timestamp_ns: u64, goal: &Goal) -> Result<()> {
-        self.goal_publisher.put(timestamp_ns, goal).await?;
-        self.goal_record_publisher.put(timestamp_ns, goal).await
+        self.goal_publisher
+            .put(timestamp_ns, &mission_contract::Goal::V1(goal.clone()))
+            .await?;
+        self.goal_record_publisher
+            .put(timestamp_ns, &mission_contract::Goal::V1(goal.clone()))
+            .await
     }
 }
 
@@ -192,14 +208,14 @@ const fn mission_goal_source(source: &GoalSource) -> MissionGoalSource {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::v1::explore::{GoalCandidate, GoalCandidates};
-    use phoxal::api::v1::frame::FrameId;
-    use phoxal::api::v1::localize::{LocalizationSource, LocalizationStatus};
-    use phoxal::api::v1::map::MapRevisionId;
-    use phoxal::api::v1::mission::{
+    use phoxal::api::explore::v1::{GoalCandidate, GoalCandidates};
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::{LocalizationSource, LocalizationStatus};
+    use phoxal::api::map::v1::MapRevisionId;
+    use phoxal::api::mission::v1::{
         ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalSource, GoalTolerance,
     };
-    use phoxal::api::v1::simulation::clock::Clock;
+    use phoxal::api::simulation::clock::v1::Clock;
 
     use super::*;
 
@@ -220,11 +236,19 @@ mod tests {
             .await?;
 
         let expected_goals = vec![explore_goal([2.0, 0.0], 0.7)];
-        let goal_topic = topic::new().v1().mission().goal();
-        let published_goals = io.recorded_puts::<Goal>(goal_topic.key().as_ref());
+        let goal_topic = topic::new().mission().goal();
+        let published_goals = io
+            .recorded_puts::<mission_contract::Goal>(goal_topic.key().as_ref())
+            .into_iter()
+            .map(unwrap_goal)
+            .collect::<Vec<_>>();
         assert_eq!(published_goals, expected_goals);
-        let goal_record_topic = topic::new().v1().mission().debug().goal_record();
-        let recorded_goals = io.recorded_puts::<Goal>(goal_record_topic.key().as_ref());
+        let goal_record_topic = topic::new().mission().debug().goal_record();
+        let recorded_goals = io
+            .recorded_puts::<mission_contract::Goal>(goal_record_topic.key().as_ref())
+            .into_iter()
+            .map(unwrap_goal)
+            .collect::<Vec<_>>();
         assert_eq!(recorded_goals, expected_goals);
         assert_eq!(runtime.state.mode, MissionMode::Navigating);
         assert_eq!(
@@ -266,10 +290,11 @@ mod tests {
         assert_eq!(runtime.state.active_goal, None);
         assert!(runtime.state.exploration_active);
 
-        let state_topic = topic::new().v1().mission().state();
-        let published_states = io.recorded_puts::<State>(state_topic.key().as_ref());
+        let state_topic = topic::new().mission().state();
+        let published_states =
+            io.recorded_puts::<mission_contract::State>(state_topic.key().as_ref());
         assert_eq!(
-            published_states.last().map(|state| state.mode),
+            published_states.last().map(state_mode),
             Some(MissionMode::Exploring)
         );
 
@@ -293,7 +318,7 @@ mod tests {
                 epoch: 1,
                 sequence: 2,
             },
-            built_from_localize_revision: phoxal::api::v1::localize::LocalizationRevisionId {
+            built_from_localize_revision: phoxal::api::localize::v1::LocalizationRevisionId {
                 epoch: 1,
                 sequence: 3,
             },
@@ -369,6 +394,16 @@ mod tests {
 
     fn step_at(time_ns: u64) -> Step {
         Step::new(Clock::new(1, time_ns / 100, time_ns, 100))
+    }
+
+    fn unwrap_goal(value: mission_contract::Goal) -> Goal {
+        let mission_contract::Goal::V1(goal) = value;
+        goal
+    }
+
+    fn state_mode(value: &mission_contract::State) -> MissionMode {
+        let mission_contract::State::V1(state) = value;
+        state.mode
     }
 
     fn received<T>(timestamp_ns: u64, value: T) -> Received<T> {

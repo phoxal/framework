@@ -21,10 +21,10 @@ use crate::capabilities::{
 };
 use crate::webots::controller::{Capability, Controller, ControllerContract};
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::profile::{
+use phoxal::api::component::capability::profile::v1::{
     CameraProfileSpec, DepthProfileSpec, ParsedCameraProfileSpec, ParsedDepthProfileSpec, ProfileId,
 };
-use phoxal::api::v1::simulation::clock::Clock;
+use phoxal::api::simulation::clock::v1::Clock;
 use phoxal::model::component::v1::CapabilityRef;
 use std::collections::{BTreeMap, BTreeSet};
 use tracing::{debug, info, warn};
@@ -672,19 +672,19 @@ impl Sensor {
 
     const fn kind(&self) -> &'static str {
         match self {
-            Self::Encoder(_) => phoxal::api::v1::component::capability::encoder::KIND,
-            Self::Accelerometer(_) => phoxal::api::v1::component::capability::accelerometer::KIND,
-            Self::Battery(_) => phoxal::api::v1::component::capability::battery::KIND,
-            Self::Camera(_) => phoxal::api::v1::component::capability::camera::KIND,
-            Self::Depth(_) => phoxal::api::v1::component::capability::depth::KIND,
-            Self::Range(_) => phoxal::api::v1::component::capability::range::KIND,
-            Self::Gnss(_) => phoxal::api::v1::component::capability::gnss::KIND,
-            Self::Gyroscope(_) => phoxal::api::v1::component::capability::gyroscope::KIND,
-            Self::Imu(_) => phoxal::api::v1::component::capability::imu::KIND,
-            Self::Lidar(_) => phoxal::api::v1::component::capability::lidar::KIND,
-            Self::Magnetometer(_) => phoxal::api::v1::component::capability::magnetometer::KIND,
-            Self::Microphone(_) => phoxal::api::v1::component::capability::microphone::KIND,
-            Self::Mmwave(_) => phoxal::api::v1::component::capability::mmwave::KIND,
+            Self::Encoder(_) => phoxal::api::component::capability::encoder::v1::KIND,
+            Self::Accelerometer(_) => phoxal::api::component::capability::accelerometer::v1::KIND,
+            Self::Battery(_) => phoxal::api::component::capability::battery::v1::KIND,
+            Self::Camera(_) => phoxal::api::component::capability::camera::v1::KIND,
+            Self::Depth(_) => phoxal::api::component::capability::depth::v1::KIND,
+            Self::Range(_) => phoxal::api::component::capability::range::v1::KIND,
+            Self::Gnss(_) => phoxal::api::component::capability::gnss::v1::KIND,
+            Self::Gyroscope(_) => phoxal::api::component::capability::gyroscope::v1::KIND,
+            Self::Imu(_) => phoxal::api::component::capability::imu::v1::KIND,
+            Self::Lidar(_) => phoxal::api::component::capability::lidar::v1::KIND,
+            Self::Magnetometer(_) => phoxal::api::component::capability::magnetometer::v1::KIND,
+            Self::Microphone(_) => phoxal::api::component::capability::microphone::v1::KIND,
+            Self::Mmwave(_) => phoxal::api::component::capability::mmwave::v1::KIND,
         }
     }
 
@@ -782,8 +782,8 @@ fn should_capture(
     demanded_capabilities: &BTreeSet<CapabilityRef>,
     requested_profiles: &BTreeSet<ProfileId>,
 ) -> bool {
-    if kind == phoxal::api::v1::component::capability::camera::KIND
-        || kind == phoxal::api::v1::component::capability::depth::KIND
+    if kind == phoxal::api::component::capability::camera::v1::KIND
+        || kind == phoxal::api::component::capability::depth::v1::KIND
     {
         demanded_capabilities.contains(capability) || !requested_profiles.is_empty()
     } else {
@@ -796,8 +796,8 @@ fn should_publish_default(
     capability: &CapabilityRef,
     demanded_capabilities: &BTreeSet<CapabilityRef>,
 ) -> bool {
-    if kind == phoxal::api::v1::component::capability::camera::KIND
-        || kind == phoxal::api::v1::component::capability::depth::KIND
+    if kind == phoxal::api::component::capability::camera::v1::KIND
+        || kind == phoxal::api::component::capability::depth::v1::KIND
     {
         demanded_capabilities.contains(capability)
     } else {
@@ -866,7 +866,7 @@ fn native_frame_index(step_count: u64, publish_every_steps: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::should_capture;
-    use phoxal::api::v1::component::capability::profile::ProfileId;
+    use phoxal::api::component::capability::profile::v1::ProfileId;
     use phoxal::model::component::v1::CapabilityRef;
     use std::collections::BTreeSet;
 
@@ -876,7 +876,7 @@ mod tests {
         let mut demanded = BTreeSet::new();
 
         assert!(!should_capture(
-            phoxal::api::v1::component::capability::camera::KIND,
+            phoxal::api::component::capability::camera::v1::KIND,
             &capability,
             &demanded,
             &BTreeSet::new()
@@ -885,7 +885,7 @@ mod tests {
         demanded.insert(capability.clone());
 
         assert!(should_capture(
-            phoxal::api::v1::component::capability::camera::KIND,
+            phoxal::api::component::capability::camera::v1::KIND,
             &capability,
             &demanded,
             &BTreeSet::new()
@@ -900,7 +900,7 @@ mod tests {
         requested.insert(ProfileId::new("r320x240_h5_rgb8").unwrap());
 
         assert!(should_capture(
-            phoxal::api::v1::component::capability::camera::KIND,
+            phoxal::api::component::capability::camera::v1::KIND,
             &capability,
             &demanded,
             &requested
@@ -913,7 +913,7 @@ mod tests {
         let mut demanded = BTreeSet::new();
 
         assert!(!should_capture(
-            phoxal::api::v1::component::capability::depth::KIND,
+            phoxal::api::component::capability::depth::v1::KIND,
             &capability,
             &demanded,
             &BTreeSet::new()
@@ -922,7 +922,7 @@ mod tests {
         demanded.insert(capability.clone());
 
         assert!(should_capture(
-            phoxal::api::v1::component::capability::depth::KIND,
+            phoxal::api::component::capability::depth::v1::KIND,
             &capability,
             &demanded,
             &BTreeSet::new()
@@ -935,7 +935,7 @@ mod tests {
         let demanded = BTreeSet::new();
 
         assert!(should_capture(
-            phoxal::api::v1::component::capability::imu::KIND,
+            phoxal::api::component::capability::imu::v1::KIND,
             &capability,
             &demanded,
             &BTreeSet::new()

@@ -27,14 +27,13 @@ pub struct TypedTopicSubscriber<T> {
     inner: Subscriber<FifoChannelHandler<Sample>>,
     topic_key: String,
     schema: &'static str,
-    schema_version: u32,
     _phantom: PhantomData<T>,
 }
 
 impl<T: DeserializeOwned> TypedTopicSubscriber<T> {
     pub async fn recv(&self) -> Result<Received<T>> {
         let sample = self.inner.recv_async().await?;
-        decode_sample(&sample, &self.topic_key, self.schema, self.schema_version)
+        decode_sample(&sample, &self.topic_key, self.schema)
     }
 
     pub fn key_expr(&self) -> &zenoh::key_expr::KeyExpr<'static> {
@@ -46,7 +45,6 @@ pub struct TypedTopicResponder<Req, Resp> {
     inner: Queryable<FifoChannelHandler<ZenohQuery>>,
     topic_key: String,
     schema: &'static str,
-    schema_version: u32,
     _phantom: PhantomData<(Req, Resp)>,
 }
 
@@ -57,7 +55,6 @@ impl<Req, Resp> TypedTopicResponder<Req, Resp> {
             inner: query,
             topic_key: self.topic_key.clone(),
             schema: self.schema,
-            schema_version: self.schema_version,
             _phantom: PhantomData,
         })
     }
@@ -67,7 +64,6 @@ pub struct TypedTopicQuery<Req, Resp> {
     inner: ZenohQuery,
     topic_key: String,
     schema: &'static str,
-    schema_version: u32,
     _phantom: PhantomData<(Req, Resp)>,
 }
 
@@ -84,7 +80,6 @@ impl<Req: DeserializeOwned, Resp: Serialize> TypedTopicQuery<Req, Resp> {
             self.inner.attachment(),
             &self.topic_key,
             self.schema,
-            self.schema_version,
         )?;
         deserialize_payload(payload).map_err(Error::from)
     }
@@ -96,7 +91,6 @@ impl<Req: DeserializeOwned, Resp: Serialize> TypedTopicQuery<Req, Resp> {
             .encoding(typed_encoding(self.schema))
             .attachment(
                 BusMetadata {
-                    schema_version: self.schema_version,
                     produced_at_ns: None,
                 }
                 .encode(),
@@ -126,7 +120,6 @@ impl Bus {
             .encoding(typed_encoding(topic.schema()))
             .attachment(
                 BusMetadata {
-                    schema_version: topic.version(),
                     produced_at_ns: Some(at_ns),
                 }
                 .encode(),
@@ -145,7 +138,6 @@ impl Bus {
             inner,
             topic_key: key,
             schema: topic.schema(),
-            schema_version: topic.version(),
             _phantom: PhantomData,
         })
     }
@@ -176,7 +168,6 @@ impl Bus {
             inner,
             topic_key: key,
             schema: topic.schema(),
-            schema_version: topic.version(),
             _phantom: PhantomData,
         })
     }
@@ -194,7 +185,6 @@ impl Bus {
             .encoding(typed_encoding(topic.schema()))
             .attachment(
                 BusMetadata {
-                    schema_version: topic.version(),
                     produced_at_ns: None,
                 }
                 .encode(),
@@ -210,12 +200,7 @@ impl Bus {
         };
 
         match reply.into_result() {
-            Ok(sample) => Ok(Some(decode_response(
-                &sample,
-                &key,
-                topic.schema(),
-                topic.version(),
-            )?)),
+            Ok(sample) => Ok(Some(decode_response(&sample, &key, topic.schema())?)),
             Err(reply_error) => Err(Error::TypedDecode(format!(
                 "topic '{key}' schema '{}' returned an error reply with {} bytes",
                 topic.schema(),
@@ -247,14 +232,12 @@ fn decode_sample<T: DeserializeOwned>(
     sample: &Sample,
     topic_key: &str,
     schema: &'static str,
-    schema_version: u32,
 ) -> Result<Received<T>> {
     let metadata = validate_contract(
         Some(sample.encoding()),
         sample.attachment(),
         topic_key,
         schema,
-        schema_version,
     )?;
     let value = deserialize_payload(sample.payload()).map_err(Error::from)?;
     Ok(Received {
@@ -267,14 +250,12 @@ fn decode_response<T: DeserializeOwned>(
     sample: &Sample,
     topic_key: &str,
     schema: &'static str,
-    schema_version: u32,
 ) -> Result<T> {
     validate_contract(
         Some(sample.encoding()),
         sample.attachment(),
         topic_key,
         schema,
-        schema_version,
     )?;
     deserialize_payload(sample.payload()).map_err(Error::from)
 }
@@ -284,17 +265,9 @@ fn validate_contract(
     attachment: Option<&ZBytes>,
     topic_key: &str,
     schema: &'static str,
-    schema_version: u32,
 ) -> Result<BusMetadata> {
     validate_encoding(encoding, topic_key, schema)?;
-    let metadata = decode_metadata(attachment, topic_key, schema)?;
-    if metadata.schema_version != schema_version {
-        return Err(Error::TypedDecode(format!(
-            "topic '{topic_key}' schema '{schema}' version mismatch: expected {schema_version}, received {}",
-            metadata.schema_version
-        )));
-    }
-    Ok(metadata)
+    decode_metadata(attachment, topic_key, schema)
 }
 
 fn validate_encoding(
@@ -344,7 +317,7 @@ mod tests {
     use zenoh::{key_expr::KeyExpr, sample::SampleBuilder};
 
     use super::{concrete_publish_key, decode_sample};
-    use crate::api::v1::{asset, component::capability::motor, topic};
+    use crate::api::{asset, component::capability::motor, topic};
     use crate::bus::metadata::BusMetadata;
     use crate::bus::query::Retry;
     use crate::bus::topic::ANY;
@@ -358,32 +331,28 @@ mod tests {
 
     #[test]
     fn typed_topic_keys_are_ready_for_bus_prefix_application() -> crate::bus::Result<()> {
-        let concrete = topic::new()
-            .v1()
-            .component("base")
-            .motor("left_wheel")
-            .command();
-        let wildcard = topic::new().v1().component(ANY).motor(ANY).command();
+        let concrete = topic::new().component("base").motor("left_wheel").command();
+        let wildcard = topic::new().component(ANY).motor(ANY).command();
 
         assert_eq!(
             concrete_publish_key(&concrete)?.as_ref(),
-            "v1/component/base/motor/left_wheel/command"
+            "component/base/motor/left_wheel/command"
         );
-        assert_eq!(wildcard.key().as_ref(), "v1/component/*/motor/*/command");
+        assert_eq!(wildcard.key().as_ref(), "component/*/motor/*/command");
         assert_eq!(
             format!("robot-a/{}", concrete_publish_key(&concrete)?),
-            "robot-a/v1/component/base/motor/left_wheel/command"
+            "robot-a/component/base/motor/left_wheel/command"
         );
         assert_eq!(
             format!("robot-a/{}", wildcard.key()),
-            "robot-a/v1/component/*/motor/*/command"
+            "robot-a/component/*/motor/*/command"
         );
         Ok(())
     }
 
     #[test]
     fn typed_publish_rejects_wildcard_topic_before_transport() {
-        let topic = topic::new().v1().component(ANY).motor(ANY).command();
+        let topic = topic::new().component(ANY).motor(ANY).command();
         assert!(matches!(
             concrete_publish_key(&topic),
             Err(Error::InvalidTopic(_))
@@ -392,60 +361,40 @@ mod tests {
 
     #[test]
     fn typed_decode_error_names_schema_mismatch_context() {
-        let sample = sample_with_contract("other/schema", 1);
+        let sample = sample_with_contract("other/schema");
         let error = decode_sample::<TestPayload>(
             &sample,
-            "v1/component/*/motor/*/command",
-            "v1/component/motor/command",
-            1,
+            "component/*/motor/*/command",
+            "component/motor/command",
         )
         .expect_err("schema mismatch should fail")
         .to_string();
 
-        assert!(error.contains("v1/component/*/motor/*/command"));
-        assert!(error.contains("v1/component/motor/command"));
+        assert!(error.contains("component/*/motor/*/command"));
+        assert!(error.contains("component/motor/command"));
         assert!(error.contains("other/schema"));
         assert!(error.contains("encoding mismatch"));
-    }
-
-    #[test]
-    fn typed_decode_error_names_version_mismatch_context() {
-        let sample = sample_with_contract("v1/component/motor/command", 2);
-        let error = decode_sample::<TestPayload>(
-            &sample,
-            "v1/component/*/motor/*/command",
-            "v1/component/motor/command",
-            1,
-        )
-        .expect_err("version mismatch should fail")
-        .to_string();
-
-        assert!(error.contains("v1/component/*/motor/*/command"));
-        assert!(error.contains("v1/component/motor/command"));
-        assert!(error.contains("version mismatch"));
-        assert!(error.contains("expected 1"));
-        assert!(error.contains("received 2"));
     }
 
     #[serial]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn typed_live_pubsub_roundtrip_supports_wildcard_subscriber() -> crate::bus::Result<()> {
         let bus = open_bus("pubsub").await;
-        let wildcard = topic::new().v1().component(ANY).motor(ANY).command();
+        let wildcard = topic::new().component(ANY).motor(ANY).command();
         let wildcard_error = bus
-            .publish(&wildcard, 1, &motor::Command::Velocity(0.0))
+            .publish(
+                &wildcard,
+                1,
+                &motor::Command::V1(motor::v1::Command::Velocity(0.0)),
+            )
             .await
             .expect_err("publishing to a wildcard topic should fail");
         assert!(matches!(wildcard_error, Error::InvalidTopic(_)));
 
         let subscriber = bus.subscriber(&wildcard).await?;
-        let concrete = topic::new()
-            .v1()
-            .component("base")
-            .motor("left_wheel")
-            .command();
+        let concrete = topic::new().component("base").motor("left_wheel").command();
         let now_ns = 42_000_000;
-        let command = motor::Command::Velocity(0.75);
+        let command = motor::Command::V1(motor::v1::Command::Velocity(0.75));
 
         bus.publish(&concrete, now_ns, &command).await?;
 
@@ -454,8 +403,8 @@ mod tests {
             .expect("typed subscriber should receive within timeout")?;
         assert_eq!(received.at_ns, Some(now_ns));
         match received.value {
-            motor::Command::Velocity(value) => assert_eq!(value, 0.75),
-            _ => panic!("expected velocity motor command"),
+            motor::Command::V1(motor::v1::Command::Velocity(value)) => assert_eq!(value, 0.75),
+            motor::Command::V1(_) => panic!("expected velocity motor command"),
         }
 
         bus.close().await?;
@@ -466,11 +415,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn typed_live_query_roundtrip_returns_response() -> crate::bus::Result<()> {
         let bus = open_bus("query").await;
-        let topic = topic::new().v1().asset().get();
+        let topic = topic::new().asset().get();
         let responder = bus.responder(&topic).await?;
-        let request = asset::GetRequest {
+        let request = asset::GetRequest::V1(asset::v1::GetRequest {
             path: "fixture-map".to_string(),
-        };
+        });
         let retry = Retry::new(1)
             .with_initial_backoff(Duration::from_millis(10))
             .with_max_backoff(Duration::from_millis(10));
@@ -480,9 +429,9 @@ mod tests {
                 let query = responder.recv().await?;
                 let request = query.request()?;
                 query
-                    .reply(&asset::GetResponse::Ok {
+                    .reply(&asset::GetResponse::V1(asset::v1::GetResponse::Ok {
                         bytes: vec![1, 2, 3, 5, 8],
-                    })
+                    }))
                     .await?;
                 crate::bus::Result::Ok(request)
             };
@@ -494,25 +443,24 @@ mod tests {
         assert_eq!(handled?, request);
         assert_eq!(
             response?,
-            Some(asset::GetResponse::Ok {
+            Some(asset::GetResponse::V1(asset::v1::GetResponse::Ok {
                 bytes: vec![1, 2, 3, 5, 8]
-            })
+            }))
         );
 
         bus.close().await?;
         Ok(())
     }
 
-    fn sample_with_contract(schema: &'static str, version: u32) -> zenoh::sample::Sample {
+    fn sample_with_contract(schema: &'static str) -> zenoh::sample::Sample {
         let payload =
             serialize_payload(&TestPayload { value: 42 }).expect("test payload should serialize");
-        let key: KeyExpr<'static> = KeyExpr::try_from("v1/component/base/motor/left_wheel/command")
+        let key: KeyExpr<'static> = KeyExpr::try_from("component/base/motor/left_wheel/command")
             .expect("test key should be valid");
         SampleBuilder::put(key, payload)
             .encoding(typed_encoding(schema))
             .attachment(
                 BusMetadata {
-                    schema_version: version,
                     produced_at_ns: Some(9),
                 }
                 .encode(),

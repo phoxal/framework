@@ -1,11 +1,20 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::v1::explore::{ExploreStatus, Frontiers, GoalCandidates, State};
-use phoxal::api::v1::frame::FrameId;
-use phoxal::api::v1::localize::{LocalizationRevisionId, LocalizationState};
-use phoxal::api::v1::map::{MapRevision, Traversability};
-use phoxal::api::v1::topic;
+use phoxal::api::explore::{
+    self as explore_contract,
+    v1::{ExploreStatus, Frontiers, GoalCandidates, State},
+};
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::{
+    self as localize_contract,
+    v1::{LocalizationRevisionId, LocalizationState},
+};
+use phoxal::api::map::{
+    self as map_contract,
+    v1::{MapRevision, Traversability},
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
@@ -51,9 +60,9 @@ pub struct ExploreRuntime {
     latest_localize_revision: Option<LocalizationRevisionId>,
     last_centroids: Vec<[f64; 2]>,
     decision_log: DecisionLog<ExploreLogKey>,
-    frontiers_publisher: TopicPublisher<Frontiers>,
-    goal_candidates_publisher: TopicPublisher<GoalCandidates>,
-    state_publisher: TopicPublisher<State>,
+    frontiers_publisher: TopicPublisher<explore_contract::Frontiers>,
+    goal_candidates_publisher: TopicPublisher<explore_contract::GoalCandidates>,
+    state_publisher: TopicPublisher<explore_contract::State>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,20 +98,26 @@ impl Runtime for ExploreRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(
-            topic::new().v1().map().traversability(),
-            Input::Traversability,
-        )
+        io.subscribe_topic(topic::new().map().traversability(), |sample| {
+            let Received { at_ns, value } = sample;
+            let map_contract::Traversability::V1(value) = value;
+            Input::Traversability(Received { at_ns, value })
+        })
         .await?;
-        io.subscribe_topic(topic::new().v1().map().revision(), Input::MapRevision)
-            .await?;
-        io.subscribe_topic(
-            topic::new().v1().localize().state(),
-            Input::LocalizationState,
-        )
+        io.subscribe_topic(topic::new().map().revision(), |sample| {
+            let Received { at_ns, value } = sample;
+            let map_contract::MapRevision::V1(value) = value;
+            Input::MapRevision(Received { at_ns, value })
+        })
+        .await?;
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Received { at_ns, value })
+        })
         .await?;
 
-        let state_topic = topic::new().v1().explore().state();
+        let state_topic = topic::new().explore().state();
 
         Ok(Self {
             planar_frame_id: config.planar_frame_id,
@@ -113,10 +128,10 @@ impl Runtime for ExploreRuntime {
             last_centroids: Vec::new(),
             decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             frontiers_publisher: io
-                .publisher_topic(topic::new().v1().explore().frontiers())
+                .publisher_topic(topic::new().explore().frontiers())
                 .await?,
             goal_candidates_publisher: io
-                .publisher_topic(topic::new().v1().explore().goal_candidates())
+                .publisher_topic(topic::new().explore().goal_candidates())
                 .await?,
             state_publisher: io.publisher_topic(state_topic).await?,
         })
@@ -202,21 +217,21 @@ impl Runtime for ExploreRuntime {
         self.frontiers_publisher
             .put(
                 timestamp_ns,
-                &Frontiers {
+                &explore_contract::Frontiers::V1(Frontiers {
                     map_revision,
                     built_from_localize_revision: localize_revision,
                     frontiers,
-                },
+                }),
             )
             .await?;
         self.goal_candidates_publisher
             .put(
                 timestamp_ns,
-                &GoalCandidates {
+                &explore_contract::GoalCandidates::V1(GoalCandidates {
                     map_revision,
                     built_from_localize_revision: localize_revision,
                     candidates,
-                },
+                }),
             )
             .await?;
         self.publish_state(
@@ -258,7 +273,9 @@ impl ExploreRuntime {
             candidate_count,
         };
         self.decision_log.observe(timestamp_ns, logged);
-        self.state_publisher.put(timestamp_ns, &state).await
+        self.state_publisher
+            .put(timestamp_ns, &explore_contract::State::V1(state))
+            .await
     }
 }
 

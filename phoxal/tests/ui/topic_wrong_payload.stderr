@@ -1,13 +1,13 @@
 error[E0308]: mismatched types
  --> tests/ui/topic_wrong_payload.rs:8:18
   |
-8 |     want_command(topic::new().v1().drive().target());
-  |     ------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Topic<PubSub<Command>>`, found `Topic<PubSub<Target>>`
+8 |     want_command(topic::new().drive().target());
+  |     ------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Topic<PubSub<Command>>`, found `Topic<PubSub<Target>>`
   |     |
   |     arguments to this function are incorrect
   |
-  = note: expected struct `Topic<PubSub<phoxal::api::v1::component::capability::motor::Command>>`
-             found struct `Topic<PubSub<phoxal::api::v1::drive::Target>>`
+  = note: expected struct `Topic<PubSub<phoxal::api::component::capability::motor::Command>>`
+             found struct `Topic<PubSub<phoxal::api::drive::Target>>`
 note: function defined here
  --> tests/ui/topic_wrong_payload.rs:5:4
   |

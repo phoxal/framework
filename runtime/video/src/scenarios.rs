@@ -2,13 +2,16 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::v1::component::capability::{
-    camera::{Encoding as CameraEncoding, Frame as CameraFrame},
-    depth::Depth as DepthFrame,
-    profile::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
+use phoxal::api::component::capability::{
+    camera::{
+        self as camera_contract,
+        v1::{Encoding as CameraEncoding, Frame as CameraFrame},
+    },
+    depth::{self as depth_contract, v1::Depth as DepthFrame},
+    profile::v1::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
 };
-use phoxal::api::v1::motion::ManualCommand;
-use phoxal::api::v1::topic;
+use phoxal::api::motion::{self as motion_contract, v1::ManualCommand};
+use phoxal::api::topic;
 use phoxal::bus::liveliness::declare_liveliness_token;
 use phoxal::bus::typed::{Received, TypedTopicSubscriber};
 use phoxal::runtime::RobotRuntimeArgs;
@@ -67,13 +70,11 @@ async fn assert_p2_stream_profile_camera_downsample(
     .to_profile_id()?;
 
     let camera_topic = topic::new()
-        .v1()
         .component("front_camera")
         .camera("rgb")
         .profile(camera_profile.to_string())
         .data();
     let depth_topic = topic::new()
-        .v1()
         .component("front_camera")
         .depth("depth")
         .profile(depth_profile.to_string())
@@ -90,18 +91,14 @@ async fn assert_p2_stream_profile_camera_downsample(
         .await
         .map_err(|error| anyhow!(error.to_string()))?;
 
-    ctx.publish_manual_command(ManualCommand {
+    ctx.publish_manual_command(motion_contract::ManualCommand::V1(ManualCommand {
         linear_x_mps: 0.10,
         angular_z_radps: 0.0,
-    })
+    }))
     .await?;
     ctx.advance_for_secs(4.0).await?;
 
-    let camera = with_deadline(
-        deadline,
-        next_profile_frame::<CameraFrame>(&camera_subscriber),
-    )
-    .await?;
+    let camera = with_deadline(deadline, next_camera_profile_frame(&camera_subscriber)).await?;
     ensure!(
         camera.value.width() == 320
             && camera.value.height() == 240
@@ -112,11 +109,7 @@ async fn assert_p2_stream_profile_camera_downsample(
         camera.value.encoding()
     );
 
-    let depth = with_deadline(
-        deadline,
-        next_profile_frame::<DepthFrame>(&depth_subscriber),
-    )
-    .await?;
+    let depth = with_deadline(deadline, next_depth_profile_frame(&depth_subscriber)).await?;
     ensure!(
         depth.value.width() == Some(320) && depth.value.height() == Some(240),
         "requested depth profile produced {:?}x{:?}, expected 320x240",
@@ -131,6 +124,22 @@ async fn assert_p2_stream_profile_camera_downsample(
     );
 
     Ok(())
+}
+
+async fn next_camera_profile_frame(
+    subscriber: &TypedTopicSubscriber<camera_contract::Frame>,
+) -> Result<Received<CameraFrame>> {
+    let Received { at_ns, value } = next_profile_frame(subscriber).await?;
+    let camera_contract::Frame::V1(value) = value;
+    Ok(Received { at_ns, value })
+}
+
+async fn next_depth_profile_frame(
+    subscriber: &TypedTopicSubscriber<depth_contract::Depth>,
+) -> Result<Received<DepthFrame>> {
+    let Received { at_ns, value } = next_profile_frame(subscriber).await?;
+    let depth_contract::Depth::V1(value) = value;
+    Ok(Received { at_ns, value })
 }
 
 async fn next_profile_frame<T>(subscriber: &TypedTopicSubscriber<T>) -> Result<Received<T>>

@@ -70,22 +70,15 @@ impl From<Cow<'static, str>> for SlotArg {
 pub struct Topic<Kind> {
     template: &'static str,
     schema: &'static str,
-    version: u32,
     slots: Vec<Slot>,
     _kind: PhantomData<Kind>,
 }
 
 impl<Kind> Topic<Kind> {
-    pub fn new(
-        template: &'static str,
-        schema: &'static str,
-        version: u32,
-        slots: Vec<Slot>,
-    ) -> Self {
+    pub fn new(template: &'static str, schema: &'static str, slots: Vec<Slot>) -> Self {
         Self {
             template,
             schema,
-            version,
             slots,
             _kind: PhantomData,
         }
@@ -116,10 +109,6 @@ impl<Kind> Topic<Kind> {
 
     pub fn schema(&self) -> &'static str {
         self.schema
-    }
-
-    pub const fn version(&self) -> u32 {
-        self.version
     }
 
     pub fn is_concrete(&self) -> bool {
@@ -174,34 +163,34 @@ macro_rules! topic_tree {
 
     (
         @methods [$($template:expr),*] [$($schema:expr),*]
-        pubsub r#static: $payload:ty, version = $version:literal;
+        pubsub r#static: $payload:ty;
         $($rest:tt)*
     ) => {
         $crate::topic_tree!(
-            @pubsub_method r#static, "static", [$($template),*] [$($schema),*] $payload, $version
+            @pubsub_method r#static, "static", [$($template),*] [$($schema),*] $payload
         );
         $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
     };
 
     (
         @methods [$($template:expr),*] [$($schema:expr),*]
-        pubsub $leaf:ident: $payload:ty, version = $version:literal;
+        pubsub $leaf:ident: $payload:ty;
         $($rest:tt)*
     ) => {
         $crate::topic_tree!(
-            @pubsub_method $leaf, stringify!($leaf), [$($template),*] [$($schema),*] $payload, $version
+            @pubsub_method $leaf, stringify!($leaf), [$($template),*] [$($schema),*] $payload
         );
         $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
     };
 
     (
         @methods [$($template:expr),*] [$($schema:expr),*]
-        query $leaf:ident: $request:ty => $response:ty, version = $version:literal;
+        query $leaf:ident: $request:ty => $response:ty;
         $($rest:tt)*
     ) => {
         $crate::topic_tree!(
             @query_method $leaf, stringify!($leaf), [$($template),*] [$($schema),*]
-            $request => $response, $version
+            $request => $response
         );
         $crate::topic_tree!(@methods [$($template),*] [$($schema),*] $($rest)*);
     };
@@ -237,7 +226,7 @@ macro_rules! topic_tree {
     (
         @pubsub_method $method:ident, $segment:expr,
         [$($template:expr),*] [$($schema:expr),*]
-        $payload:ty, $version:literal
+        $payload:ty
     ) => {
         pub fn $method(
             self,
@@ -245,7 +234,6 @@ macro_rules! topic_tree {
             $crate::bus::topic::Topic::new(
                 concat!($($template, "/",)* $segment),
                 concat!($($schema, "/",)* $segment),
-                $version,
                 self.slots,
             )
         }
@@ -254,7 +242,7 @@ macro_rules! topic_tree {
     (
         @query_method $method:ident, $segment:expr,
         [$($template:expr),*] [$($schema:expr),*]
-        $request:ty => $response:ty, $version:literal
+        $request:ty => $response:ty
     ) => {
         pub fn $method(
             self,
@@ -262,7 +250,6 @@ macro_rules! topic_tree {
             $crate::bus::topic::Topic::new(
                 concat!($($template, "/",)* $segment),
                 concat!($($schema, "/",)* $segment),
-                $version,
                 self.slots,
             )
         }
@@ -272,7 +259,7 @@ macro_rules! topic_tree {
 
     (
         @modules [$($template:expr),*] [$($schema:expr),*]
-        pubsub r#static: $payload:ty, version = $version:literal;
+        pubsub r#static: $payload:ty;
         $($rest:tt)*
     ) => {
         $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
@@ -280,7 +267,7 @@ macro_rules! topic_tree {
 
     (
         @modules [$($template:expr),*] [$($schema:expr),*]
-        pubsub $leaf:ident: $payload:ty, version = $version:literal;
+        pubsub $leaf:ident: $payload:ty;
         $($rest:tt)*
     ) => {
         $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
@@ -288,7 +275,7 @@ macro_rules! topic_tree {
 
     (
         @modules [$($template:expr),*] [$($schema:expr),*]
-        query $leaf:ident: $request:ty => $response:ty, version = $version:literal;
+        query $leaf:ident: $request:ty => $response:ty;
         $($rest:tt)*
     ) => {
         $crate::topic_tree!(@modules [$($template),*] [$($schema),*] $($rest)*);
@@ -373,7 +360,7 @@ macro_rules! topic_tree {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::v1::{
+    use crate::api::{
         asset,
         component::capability::{gnss, motor},
         drive, simulation, topic,
@@ -382,65 +369,52 @@ mod tests {
 
     #[test]
     fn topic_builder_keys_match_tree_paths() {
-        assert_eq!(topic::new().v1().drive().target().key(), "v1/drive/target");
+        assert_eq!(topic::new().drive().target().key(), "drive/target");
         assert_eq!(
             topic::new()
-                .v1()
                 .component("base")
                 .motor("left_wheel")
                 .command()
                 .key(),
-            "v1/component/base/motor/left_wheel/command"
+            "component/base/motor/left_wheel/command"
         );
         assert_eq!(
-            topic::new().v1().component(ANY).motor(ANY).command().key(),
-            "v1/component/*/motor/*/command"
+            topic::new().component(ANY).motor(ANY).command().key(),
+            "component/*/motor/*/command"
         );
         assert_eq!(
-            topic::new().v1().component("*").motor("*").command().key(),
-            "v1/component/*/motor/*/command"
+            topic::new().component("*").motor("*").command().key(),
+            "component/*/motor/*/command"
         );
-        assert_eq!(topic::new().v1().asset().get().key(), "v1/asset/get");
+        assert_eq!(topic::new().asset().get().key(), "asset/get");
+        assert_eq!(topic::new().simulation().clock().key(), "simulation/clock");
         assert_eq!(
-            topic::new().v1().simulation().clock().key(),
-            "v1/simulation/clock"
-        );
-        assert_eq!(
-            topic::new().v1().simulation().robot("r1").pose().key(),
-            "v1/simulation/robot/r1/pose"
+            topic::new().simulation().robot("r1").pose().key(),
+            "simulation/robot/r1/pose"
         );
         assert_eq!(
-            topic::new().v1().simulation().robot(ANY).pose().key(),
-            "v1/simulation/robot/*/pose"
+            topic::new().simulation().robot(ANY).pose().key(),
+            "simulation/robot/*/pose"
         );
     }
 
     #[test]
     fn topic_builder_schemas_elide_holes() {
-        let motor = topic::new()
-            .v1()
-            .component("base")
-            .motor("left_wheel")
-            .command();
-        let gnss = topic::new().v1().component("base").gnss("receiver").data();
-        let pose = topic::new().v1().simulation().robot("r1").pose();
-        let target = topic::new().v1().drive().target();
+        let motor = topic::new().component("base").motor("left_wheel").command();
+        let gnss = topic::new().component("base").gnss("receiver").data();
+        let pose = topic::new().simulation().robot("r1").pose();
+        let target = topic::new().drive().target();
 
-        assert_eq!(motor.schema(), "v1/component/motor/command");
-        assert_eq!(gnss.schema(), "v1/component/gnss/data");
-        assert_eq!(pose.schema(), "v1/simulation/robot/pose");
-        assert_eq!(target.schema(), "v1/drive/target");
-        assert_eq!(motor.version(), 1);
-        assert_eq!(gnss.version(), 1);
-        assert_eq!(pose.version(), 1);
-        assert_eq!(target.version(), 1);
+        assert_eq!(motor.schema(), "component/motor/command");
+        assert_eq!(gnss.schema(), "component/gnss/data");
+        assert_eq!(pose.schema(), "simulation/robot/pose");
+        assert_eq!(target.schema(), "drive/target");
     }
 
     #[test]
     fn topic_publish_keys_require_bound_slots() {
         assert!(
             topic::new()
-                .v1()
                 .component(ANY)
                 .motor(ANY)
                 .command()
@@ -449,23 +423,21 @@ mod tests {
         );
         assert_eq!(
             topic::new()
-                .v1()
                 .component("base")
                 .motor("left_wheel")
                 .command()
                 .publish_key()
                 .unwrap(),
-            "v1/component/base/motor/left_wheel/command"
+            "component/base/motor/left_wheel/command"
         );
     }
 
     #[test]
     fn rendered_wildcards_are_not_concrete() {
-        let wildcard = topic::new().v1().component("*").motor("left").command();
+        let wildcard = topic::new().component("*").motor("left").command();
         let manually_under_bound = Topic::<PubSub<motor::Command>>::new(
-            "v1/component/*/motor/*/command",
-            "v1/component/motor/command",
-            1,
+            "component/*/motor/*/command",
+            "component/motor/command",
             Vec::new(),
         );
 
@@ -479,18 +451,12 @@ mod tests {
         fn want_command(_: Topic<PubSub<motor::Command>>) {}
         fn want_asset_get(_: Topic<Query<asset::GetRequest, asset::GetResponse>>) {}
 
-        want::<drive::Target>(topic::new().v1().drive().target());
-        want::<drive::State>(topic::new().v1().drive().state());
-        want::<gnss::Sample>(topic::new().v1().component("base").gnss("receiver").data());
-        want::<simulation::clock::Clock>(topic::new().v1().simulation().clock());
-        want::<simulation::pose::Pose>(topic::new().v1().simulation().robot("r1").pose());
-        want_command(
-            topic::new()
-                .v1()
-                .component("base")
-                .motor("left_wheel")
-                .command(),
-        );
-        want_asset_get(topic::new().v1().asset().get());
+        want::<drive::Target>(topic::new().drive().target());
+        want::<drive::State>(topic::new().drive().state());
+        want::<gnss::Sample>(topic::new().component("base").gnss("receiver").data());
+        want::<simulation::clock::Clock>(topic::new().simulation().clock());
+        want::<simulation::pose::Pose>(topic::new().simulation().robot("r1").pose());
+        want_command(topic::new().component("base").motor("left_wheel").command());
+        want_asset_get(topic::new().asset().get());
     }
 }

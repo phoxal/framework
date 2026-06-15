@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use phoxal::api::v1::map::{Grid, OccupancyCell, Resolution};
+use phoxal::api::map::v1::{Grid, OccupancyCell, Resolution};
 
 pub const GRID_EXTENT_M: f64 = 5.0;
 pub const GRID_RESOLUTION_M: f64 = 0.10;

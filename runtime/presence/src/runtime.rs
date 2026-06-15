@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::v1::presence::{
-    DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary,
+use phoxal::api::presence::{
+    self as presence_contract,
+    v1::{DebugReadiness, Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary},
 };
-use phoxal::api::v1::topic;
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::stale_timeout_ns;
@@ -33,8 +34,8 @@ pub enum Input {
 
 pub struct PresenceRuntime {
     tracker: ReadinessTracker,
-    summary_pub: TopicPublisher<Summary>,
-    debug_readiness_pub: TopicPublisher<DebugReadiness>,
+    summary_pub: TopicPublisher<presence_contract::Summary>,
+    debug_readiness_pub: TopicPublisher<presence_contract::DebugReadiness>,
 }
 
 #[async_trait::async_trait]
@@ -54,13 +55,17 @@ impl Runtime for PresenceRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(topic::new().v1().presence().heartbeat(), Input::Heartbeat)
-            .await?;
+        io.subscribe_topic(topic::new().presence().heartbeat(), |sample| {
+            let Received { at_ns, value } = sample;
+            let presence_contract::Heartbeat::V1(value) = value;
+            Input::Heartbeat(Received { at_ns, value })
+        })
+        .await?;
         let summary_pub = io
-            .publisher_topic(topic::new().v1().presence().summary())
+            .publisher_topic(topic::new().presence().summary())
             .await?;
         let debug_readiness_pub = io
-            .publisher_topic(topic::new().v1().presence().readiness())
+            .publisher_topic(topic::new().presence().readiness())
             .await?;
 
         Ok(Self {
@@ -95,9 +100,14 @@ impl Runtime for PresenceRuntime {
             runtimes: runtimes.clone(),
         };
         let debug_readiness = DebugReadiness { runtimes };
-        self.summary_pub.put(timestamp_ns, &summary).await?;
+        self.summary_pub
+            .put(timestamp_ns, &presence_contract::Summary::V1(summary))
+            .await?;
         self.debug_readiness_pub
-            .put(timestamp_ns, &debug_readiness)
+            .put(
+                timestamp_ns,
+                &presence_contract::DebugReadiness::V1(debug_readiness),
+            )
             .await?;
 
         Ok(())
@@ -170,7 +180,7 @@ fn is_stale(now_ns: u64, last_seen_ns: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{ReadinessTracker, autonomy_ready};
-    use phoxal::api::v1::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
+    use phoxal::api::presence::v1::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness};
     use phoxal::runtime::stale_timeout_ns;
 
     #[test]

@@ -2,10 +2,10 @@ use std::borrow::Cow;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, ensure};
-use phoxal::api::v1::drive::{
+use phoxal::api::drive::v1::{
     ActuatorAuthority, State as DriveState, StopReason, Target as DriveTarget,
 };
-use phoxal::api::v1::topic;
+use phoxal::api::topic;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::helpers::{assert_close, assert_topic_schema};
 
@@ -28,39 +28,29 @@ pub fn run(name: &str) -> Result<()> {
 
 fn p3_drive_kinematics_contract() -> Result<()> {
     assert_topic_schema(
-        topic::new().v1().drive().target(),
-        "v1/drive/target",
-        1,
+        topic::new().drive().target(),
+        "drive/target",
         "drive target",
     )?;
+    assert_topic_schema(topic::new().drive().state(), "drive/state", "drive state")?;
     assert_topic_schema(
-        topic::new().v1().drive().state(),
-        "v1/drive/state",
-        1,
-        "drive state",
-    )?;
-    assert_topic_schema(
-        topic::new().v1().drive().actuator_commands(),
-        "v1/drive/actuator_commands",
-        1,
+        topic::new().drive().actuator_commands(),
+        "drive/actuator_commands",
         "drive actuator commands debug",
     )?;
     assert_topic_schema(
-        topic::new().v1().drive().saturation(),
-        "v1/drive/saturation",
-        1,
+        topic::new().drive().saturation(),
+        "drive/saturation",
         "drive saturation debug",
     )?;
     assert_topic_schema(
-        topic::new().v1().drive().watchdog(),
-        "v1/drive/watchdog",
-        1,
+        topic::new().drive().watchdog(),
+        "drive/watchdog",
         "drive watchdog debug",
     )?;
     assert_topic_schema(
-        topic::new().v1().drive().kinematics(),
-        "v1/drive/kinematics",
-        1,
+        topic::new().drive().kinematics(),
+        "drive/kinematics",
         "drive kinematics debug",
     )?;
 

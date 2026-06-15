@@ -2,13 +2,30 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, ensure};
-use phoxal::api::v1::mission::{GoalSource, MissionMode};
+use phoxal::api::explore::{self as explore_contract, v1::GoalCandidates};
+use phoxal::api::mission::v1::{GoalSource, MissionMode};
+use phoxal::api::simulation::pose::{self as sim_pose_contract, v1::Pose as SimulatorPose};
+use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
 use phoxal::scenario::webots::{
     command_deadline, context_from_args, wait_for_mission_state, wait_until_tracking,
 };
+
+fn received_sim_pose(sample: Received<sim_pose_contract::Pose>) -> Received<SimulatorPose> {
+    let Received { at_ns, value } = sample;
+    let sim_pose_contract::Pose::V1(value) = value;
+    Received { at_ns, value }
+}
+
+fn received_goal_candidates(
+    sample: Received<explore_contract::GoalCandidates>,
+) -> Received<GoalCandidates> {
+    let Received { at_ns, value } = sample;
+    let explore_contract::GoalCandidates::V1(value) = value;
+    Received { at_ns, value }
+}
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[ScenarioDescriptor {
     name: Cow::Borrowed("p5-exploration-frontier"),
@@ -44,7 +61,7 @@ fn deadline_for(name: &str) -> Result<Instant> {
 
 async fn assert_p5_exploration_frontier(ctx: &ScenarioContext, deadline: Instant) -> Result<()> {
     wait_until_tracking(ctx, deadline).await?;
-    let start = ctx.simulation_pose().await?;
+    let start = received_sim_pose(ctx.simulation_pose().await?);
     let start_xy = [start.value.translation_m[0], start.value.translation_m[1]];
 
     ctx.publish_explore_command().await?;
@@ -58,7 +75,7 @@ async fn assert_p5_exploration_frontier(ctx: &ScenarioContext, deadline: Instant
     .await?;
 
     loop {
-        let candidates = ctx.latest_explore_candidates().await?;
+        let candidates = received_goal_candidates(ctx.latest_explore_candidates().await?);
         if !candidates.value.candidates.is_empty() {
             break;
         }
@@ -83,7 +100,7 @@ async fn assert_p5_exploration_frontier(ctx: &ScenarioContext, deadline: Instant
     .await?;
 
     loop {
-        let pose = ctx.simulation_pose().await?;
+        let pose = received_sim_pose(ctx.simulation_pose().await?);
         let dx = pose.value.translation_m[0] - start_xy[0];
         let dy = pose.value.translation_m[1] - start_xy[1];
         if (dx * dx + dy * dy).sqrt() >= 0.30 {

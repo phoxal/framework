@@ -1,7 +1,7 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::camera::Encoding as ImageEncoding;
-use phoxal::api::v1::component::capability::camera::Frame;
+use phoxal::api::component::capability::camera::v1::Encoding as ImageEncoding;
+use phoxal::api::component::capability::camera::v1::Frame;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, Deserialize)]

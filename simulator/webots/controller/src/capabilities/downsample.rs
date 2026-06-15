@@ -3,10 +3,10 @@
 #![allow(dead_code)]
 
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::{
-    camera::{self, Encoding as CameraEncoding},
-    depth,
-    profile::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
+use phoxal::api::component::capability::{
+    camera::v1::{self as camera, Encoding as CameraEncoding},
+    depth::v1 as depth,
+    profile::v1::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -314,10 +314,10 @@ fn convert_camera_encoding(
 #[cfg(test)]
 mod tests {
     use super::{CropRect, RateDecimation, downsample_camera_frame, downsample_depth_frame};
-    use phoxal::api::v1::component::capability::{
-        camera::{Encoding as CameraEncoding, Frame as CameraFrame},
-        depth::Depth,
-        profile::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
+    use phoxal::api::component::capability::{
+        camera::v1::{Encoding as CameraEncoding, Frame as CameraFrame},
+        depth::v1::Depth,
+        profile::v1::{CameraProfileEncoding, CameraProfileSpec, DepthProfileSpec},
     };
 
     #[test]

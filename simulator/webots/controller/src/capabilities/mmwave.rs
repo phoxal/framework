@@ -1,6 +1,6 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::mmwave::{
+use phoxal::api::component::capability::mmwave::v1::{
     Detection as MmwaveDetection, Scan as MmwaveData,
 };
 use serde::Deserialize;

@@ -7,13 +7,22 @@ use crate::core::revisions::{
 };
 use crate::core::submaps::SubmapStore;
 use anyhow::{Result, bail, ensure};
-use phoxal::api::v1::localize::{LocalizationMode, LocalizationRevisionId};
-use phoxal::api::v1::map::{
-    MapRevisionCause, MapRevisionId, TraversabilityCell, TraversabilityStatus,
+use phoxal::api::localize::{
+    self as localize_contract,
+    v1::{LocalizationMode, LocalizationRevisionId, LocalizationState},
 };
-use phoxal::api::v1::mission::{GoalPose, GoalTolerance};
-use phoxal::api::v1::motion::ManualCommand;
-use phoxal::api::v1::topic;
+use phoxal::api::map::{
+    self as map_contract,
+    v1::{
+        MapRevisionCause, MapRevisionId, Summary, TraversabilityCell, TraversabilityStatus,
+        TraversabilitySummary,
+    },
+};
+use phoxal::api::mission::v1::{GoalPose, GoalTolerance};
+use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::simulation::pose::{self as sim_pose_contract, v1::Pose as SimulatorPose};
+use phoxal::api::topic;
+use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
 use phoxal::scenario::harness::ScenarioContext;
@@ -25,6 +34,34 @@ use phoxal::scenario::webots::{
 };
 
 const ORB_COMMAND_STEP_SECS: f64 = 0.25;
+
+fn received_map_summary(sample: Received<map_contract::Summary>) -> Received<Summary> {
+    let Received { at_ns, value } = sample;
+    let map_contract::Summary::V1(value) = value;
+    Received { at_ns, value }
+}
+
+fn received_traversability_summary(
+    sample: Received<map_contract::TraversabilitySummary>,
+) -> Received<TraversabilitySummary> {
+    let Received { at_ns, value } = sample;
+    let map_contract::TraversabilitySummary::V1(value) = value;
+    Received { at_ns, value }
+}
+
+fn received_sim_pose(sample: Received<sim_pose_contract::Pose>) -> Received<SimulatorPose> {
+    let Received { at_ns, value } = sample;
+    let sim_pose_contract::Pose::V1(value) = value;
+    Received { at_ns, value }
+}
+
+fn received_localization_state(
+    sample: Received<localize_contract::LocalizationState>,
+) -> Received<LocalizationState> {
+    let Received { at_ns, value } = sample;
+    let localize_contract::LocalizationState::V1(value) = value;
+    Received { at_ns, value }
+}
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[
     ScenarioDescriptor {
@@ -258,9 +295,8 @@ fn p2_traversability_body_envelope(common: &RobotRuntimeArgs) -> Result<()> {
     assert_eq!(traversability.cells[0], TraversabilityCell::Free);
 
     assert_topic_schema(
-        topic::new().v1().map().traversability(),
-        "v1/map/traversability",
-        1,
+        topic::new().map().traversability(),
+        "map/traversability",
         "map traversability",
     )
 }
@@ -346,7 +382,7 @@ fn p2_revision_convergence_store() -> Result<()> {
 async fn assert_p2_mapping(ctx: &ScenarioContext, deadline: Instant) -> Result<()> {
     wait_until_tracking(ctx, deadline).await?;
 
-    let summary = ctx.latest_map_summary().await?;
+    let summary = received_map_summary(ctx.latest_map_summary().await?);
     ensure!(
         summary.value.current_revision.is_some(),
         "map did not activate (no current_revision)"
@@ -372,7 +408,7 @@ async fn assert_p2_traversability(ctx: &ScenarioContext, deadline: Instant) -> R
     .await?;
     ctx.advance_for_secs(6.0).await?;
 
-    let summary = ctx.latest_traversability_summary().await?;
+    let summary = received_traversability_summary(ctx.latest_traversability_summary().await?);
     ensure!(
         summary.value.status == TraversabilityStatus::Ready,
         "traversability not ready after sensor evidence, got {:?}",
@@ -389,11 +425,11 @@ async fn assert_p2_mapping_orb_driven_chain(
     const TURN_RADPS: f64 = 1.3;
     const SAFE_RADIUS_M: f64 = 1.8;
 
-    let start = ctx.simulation_pose().await?.value;
+    let start = received_sim_pose(ctx.simulation_pose().await?).value;
     let start_xy = [start.translation_m[0], start.translation_m[1]];
 
     loop {
-        let truth = ctx.simulation_pose().await?.value;
+        let truth = received_sim_pose(ctx.simulation_pose().await?).value;
         let drift_m = ((truth.translation_m[0] - start_xy[0]).powi(2)
             + (truth.translation_m[1] - start_xy[1]).powi(2))
         .sqrt();
@@ -412,10 +448,11 @@ async fn assert_p2_mapping_orb_driven_chain(
         )
         .await?;
 
-        let localize = ctx.latest_localization_state().await?;
+        let localize = received_localization_state(ctx.latest_localization_state().await?);
         if localize.value.mode == LocalizationMode::Tracking {
-            let summary = ctx.latest_map_summary().await?;
-            let traversability = ctx.latest_traversability_summary().await?;
+            let summary = received_map_summary(ctx.latest_map_summary().await?);
+            let traversability =
+                received_traversability_summary(ctx.latest_traversability_summary().await?);
             let occupancy_ready = traversability.value.status == TraversabilityStatus::Ready;
             let loop_closed = matches!(
                 summary.value.built_from_localize_revision,
@@ -426,14 +463,12 @@ async fn assert_p2_mapping_orb_driven_chain(
             }
         }
 
+        let latest_summary = received_map_summary(ctx.latest_map_summary().await?);
         ensure!(
             Instant::now() < deadline,
             "ORB-driven map chain did not converge (mode {:?}, built_from_localize_revision {:?})",
             localize.value.mode,
-            ctx.latest_map_summary()
-                .await?
-                .value
-                .built_from_localize_revision
+            latest_summary.value.built_from_localize_revision
         );
     }
 }

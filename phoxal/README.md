@@ -14,10 +14,10 @@ phoxal = "0.4"
 
 | Module | What it is |
 |---|---|
-| [`phoxal::bus`] | Typed Zenoh transport. `Bus::{publish, subscriber, request, responder}` take a typed `Topic<Kind>`; payloads are plain `serde` data; schema identity + version travel in a `BusMetadata` attachment, so wire mismatches are loud decode errors. |
+| [`phoxal::bus`] | Typed Zenoh transport. `Bus::{publish, subscriber, request, responder}` take a typed `Topic<Kind>`; the wire body is the contract enum (it carries its own version via the variant), the versionless schema-family identity travels as the Zenoh encoding, and a `BusMetadata` attachment carries the produce timestamp — so wire mismatches are loud decode errors. |
 | [`phoxal::model`] | Authored manifest schemas: `robot.yaml`, `structure.urdf`, `component.yaml`, `simulation.yaml`. `model::v1::Robot` is the resolved superset. |
 | [`phoxal::spatial`] | Geometry, frames, transforms, risk model. |
-| [`phoxal::api`] | The typed bus wire contracts under `phoxal::api::v1::<domain>` (`drive`, `localize`, `mission`, …, plus `component`, `presence`, `simulation`). Topics are built with the fluent generated builder `phoxal::api::v1::topic`, e.g. `topic::new().v1().drive().target()` → `Topic<PubSub<Target>>`. Instance ids are method arguments (`component("base").motor("left").command()`); pass `phoxal::bus::topic::ANY` for subscribe wildcards (`component(ANY).motor(ANY).command()`). The leaf return type carries the payload, so the bus rejects a wrong payload at compile time. |
+| [`phoxal::api`] | The typed bus wire contracts under `phoxal::api::<domain>` (`drive`, `localize`, `mission`, …, plus `component`, `presence`, `simulation`). Each contract is a domain-first **enum** (e.g. `drive::Target` is `enum { V1(v1::Target) }`, `#[serde(tag = "v", content = "data")]`); the exact wire structs live under `phoxal::api::<domain>::v1`. Topics are built with the fluent generated builder `phoxal::api::topic`, e.g. `topic::new().drive().target()` → `Topic<PubSub<Target>>`. Instance ids are method arguments (`component("base").motor("left").command()`); pass `phoxal::bus::topic::ANY` for subscribe wildcards (`component(ANY).motor(ANY).command()`). The leaf return type carries the payload, so the bus rejects a wrong payload at compile time. |
 | [`phoxal::runtime`] | The `Runtime` trait, `execute()` bootstrap, logical clock, runtime context, decision logging. |
 | [`phoxal::scenario`] | Webots-backed validation harness (feature `scenario`). |
 
@@ -36,14 +36,17 @@ async fn main() -> anyhow::Result<()> {
 A runtime reads and writes contracts through the typed `Io` with fluent topics:
 
 ```rust,ignore
-use phoxal::api::v1::{topic, drive::Target, drive::State};
+use phoxal::api::{topic, drive::{self, State}};
 
-// subscribe (wildcard ok): map (at_ns, payload) into the runtime's Input
-io.subscribe_topic(topic::new().v1().drive().target(), InputPolicy::latest(), Input::Target).await?;
+// subscribe (wildcard ok): map (at_ns, payload) into the runtime's Input.
+// The payload is the contract enum — match its current variant:
+//   match value { drive::Target::V1(target) => Input::Target(target) }
+io.subscribe_topic(topic::new().drive().target(), InputPolicy::latest(), Input::Target).await?;
 
-// publish: the timestamp is an argument, the payload is plain data
-let state = io.publisher_topic(topic::new().v1().drive().state()).await?;
-state.put(now_ns, &State { /* … */ }).await?;
+// publish: the timestamp is an argument; wrap the payload in the contract enum's
+// current variant.
+let state = io.publisher_topic(topic::new().drive().state()).await?;
+state.put(now_ns, &State::V1(drive::v1::State { /* … */ })).await?;
 ```
 
 The platform runtime *binaries* (`phoxal-runtime-<name>`) ship as container
@@ -56,10 +59,12 @@ images, not crates — they depend on this crate but are not published here.
 
 ## Status
 
-Pre-1.0, building in public. The API is a single version-first axis,
-`phoxal::api::v1`; a breaking re-cut of the whole contract surface becomes
-`api::v2`, while an individual contract's payload revision bumps its per-leaf
-`version` in the `topic_tree!`. Breaking changes are loud, not quiet.
+Pre-1.0, building in public. The API is domain-first: `phoxal::api::<domain>`
+exposes a contract enum per wire type, and the enum *is* the wire body and the
+single version authority. A payload revision adds a new variant (`V2`) — the
+serde `rename` token is the version — while old variants stay so prior recordings
+still decode. Breaking changes are loud, not quiet. See
+[`src/api/README.md`](src/api/README.md) for the versioning rules.
 
 ## License
 

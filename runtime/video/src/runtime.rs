@@ -8,15 +8,18 @@ use openh264::encoder::{
     BitRate, Encoder, EncoderConfig, FrameRate, IntraFramePeriod, RateControlMode,
 };
 use openh264::formats::{RgbSliceU8, YUVBuffer};
-use phoxal::api::v1::component::capability::camera;
-use phoxal::api::v1::component::capability::profile::{
+use phoxal::api::component::capability::camera::{self as camera_contract, v1 as camera};
+use phoxal::api::component::capability::profile::v1::{
     CameraProfileEncoding, CameraProfileSpec, ProfileId,
 };
-use phoxal::api::v1::motion::State as MotionState;
-use phoxal::api::v1::topic;
-use phoxal::api::v1::video::{
-    Codec, EndReason, OpenRequest, OpenResponse, StreamEvent, StreamFormat, StreamPacket,
-    UnavailableReason,
+use phoxal::api::motion::{self as motion_contract, v1::State as MotionState};
+use phoxal::api::topic;
+use phoxal::api::video::{
+    self as video_contract,
+    v1::{
+        Codec, EndReason, OpenRequest, OpenResponse, StreamEvent, StreamFormat, StreamPacket,
+        UnavailableReason,
+    },
 };
 use phoxal::bus::Bus;
 use phoxal::bus::liveliness::LivelinessEvent;
@@ -69,21 +72,16 @@ impl PreviewSource {
         })
     }
 
-    pub(crate) fn profile_topic(&self) -> Topic<PubSub<camera::Frame>> {
+    pub(crate) fn profile_topic(&self) -> Topic<PubSub<camera_contract::Frame>> {
         topic::new()
-            .v1()
             .component(self.capability.component_id.clone())
             .camera(self.capability.capability_id.clone())
             .profile(self.profile_id.to_string())
             .data()
     }
 
-    pub(crate) fn stream_event_topic(&self) -> Topic<PubSub<StreamEvent>> {
-        topic::new()
-            .v1()
-            .video()
-            .stream(self.stream_id.clone())
-            .event()
+    pub(crate) fn stream_event_topic(&self) -> Topic<PubSub<video_contract::StreamEvent>> {
+        topic::new().video().stream(self.stream_id.clone()).event()
     }
 }
 
@@ -106,7 +104,7 @@ pub(crate) struct VideoView {
 
 pub(crate) struct StreamState {
     source: PreviewSource,
-    publisher: TopicPublisher<StreamEvent>,
+    publisher: TopicPublisher<video_contract::StreamEvent>,
     encoder: PreviewEncoder,
     demand: Arc<AtomicUsize>,
     demand_task: tokio::task::JoinHandle<()>,
@@ -147,17 +145,21 @@ impl Runtime for VideoRuntime {
         });
 
         io.subscribe_topic_with(
-            topic::new().v1().motion().state(),
+            topic::new().motion().state(),
             InputPolicy::latest(),
-            Input::MotionState,
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let motion_contract::State::V1(value) = value;
+                Input::MotionState(Received { at_ns, value })
+            },
         )
         .await?;
 
         io.serve_query_topic(
-            topic::new().v1().video().open(),
+            topic::new().video().open(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
-            video_open,
+            video_open_contract,
         )
         .await?;
 
@@ -173,9 +175,13 @@ impl Runtime for VideoRuntime {
         runtime.streams.reserve(sources.len());
         for source in sources.iter() {
             let input_stream_id = source.stream_id.clone();
-            io.subscribe_topic(source.profile_topic(), move |frame| Input::Frame {
-                stream_id: input_stream_id.clone(),
-                frame,
+            io.subscribe_topic(source.profile_topic(), move |frame| {
+                let Received { at_ns, value } = frame;
+                let camera_contract::Frame::V1(value) = value;
+                Input::Frame {
+                    stream_id: input_stream_id.clone(),
+                    frame: Received { at_ns, value },
+                }
             })
             .await?;
 
@@ -309,7 +315,10 @@ async fn publish_stream_event(
     timestamp_ns: u64,
     event: StreamEvent,
 ) -> Result<()> {
-    stream.publisher.put(timestamp_ns, &event).await?;
+    stream
+        .publisher
+        .put(timestamp_ns, &video_contract::StreamEvent::V1(event))
+        .await?;
     Ok(())
 }
 
@@ -541,10 +550,18 @@ fn video_open(view: &VideoView, request: OpenRequest) -> OpenResponse {
     resolve_open(&request.source, &view.sources)
 }
 
+fn video_open_contract(
+    view: &VideoView,
+    request: video_contract::OpenRequest,
+) -> video_contract::OpenResponse {
+    let video_contract::OpenRequest::V1(request) = request;
+    video_contract::OpenResponse::V1(video_open(view, request))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::api::v1::video::Quality;
+    use phoxal::api::video::v1::Quality;
 
     fn preview_source() -> PreviewSource {
         PreviewSource::new(CapabilityRef::new("front_camera", "rgb"), 640, 480, 30.0)
@@ -706,11 +723,11 @@ mod tests {
 
         assert_eq!(
             source.profile_topic().key(),
-            "v1/component/front_camera/camera/rgb/profile/r852x480_h10_rgb8/data"
+            "component/front_camera/camera/rgb/profile/r852x480_h10_rgb8/data"
         );
         assert_eq!(
             source.stream_event_topic().key(),
-            "v1/video/stream/front_camera_rgb/event"
+            "video/stream/front_camera_rgb/event"
         );
         assert_eq!(source.stream_id, "front_camera_rgb");
         assert_eq!(

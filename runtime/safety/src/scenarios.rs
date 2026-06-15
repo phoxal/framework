@@ -4,15 +4,18 @@ use std::time::Instant;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome};
 use anyhow::{Result, ensure};
-use phoxal::api::v1::component::capability::range;
-use phoxal::api::v1::localize::{
+use phoxal::api::component::capability::range::v1 as range;
+use phoxal::api::localize::v1::{
     LocalizationMode, LocalizationSource, LocalizationState, LocalizationStatus,
 };
-use phoxal::api::v1::safety::{
-    Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
-    SafetyReasonCode, SafetySourceRevision,
+use phoxal::api::safety::{
+    self as safety_contract,
+    v1::{
+        Constraint, MotionConstraint, SafetyAuthorization, SafetyDecision, SafetyReason,
+        SafetyReasonCode, SafetySourceRevision,
+    },
 };
-use phoxal::api::v1::topic;
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
@@ -141,15 +144,13 @@ fn p3_safety_decision_policy() -> Result<()> {
     }
 
     assert_topic_schema(
-        topic::new().v1().safety().authorization(),
-        "v1/safety/authorization",
-        1,
+        topic::new().safety().authorization(),
+        "safety/authorization",
         "safety authorization",
     )?;
     assert_topic_schema(
-        topic::new().v1().safety().state(),
-        "v1/safety/state",
-        1,
+        topic::new().safety().state(),
+        "safety/state",
         "safety state",
     )?;
 
@@ -353,19 +354,19 @@ async fn assert_p3_safety_range_sensor_staleness(
 
     loop {
         let safety = ctx.latest_safety_state().await?;
+        let safety_contract::State::V1(safety) = safety.value;
         let stale = safety
-            .value
             .active_reasons
             .iter()
             .any(|reason| reason.code == SafetyReasonCode::StaleSource);
-        if safety.value.decision == SafetyDecision::Stop && stale {
+        if safety.decision == SafetyDecision::Stop && stale {
             return Ok(());
         }
         ensure!(
             Instant::now() < deadline,
             "safety did not report a stale range source (decision {:?}, reasons {:?})",
-            safety.value.decision,
-            safety.value.active_reasons
+            safety.decision,
+            safety.active_reasons
         );
         ctx.advance_for_secs(0.5).await?;
     }

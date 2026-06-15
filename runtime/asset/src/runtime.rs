@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use phoxal::api::v1::asset::{GetRequest, GetResponse, InvalidPathReason, UnavailableReason};
-use phoxal::api::v1::topic;
+use phoxal::api::asset::{
+    self as asset_contract,
+    v1::{GetRequest, GetResponse, InvalidPathReason, UnavailableReason},
+};
+use phoxal::api::topic;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::{EmptyArgs, QueryOptions, ReadCell, RobotRuntimeArgs};
 use phoxal::runtime::{Io, Runtime, RuntimeInputs};
@@ -21,6 +24,14 @@ pub fn asset_get(view: &AssetView, request: GetRequest) -> GetResponse {
         Ok(()) => read_asset(view, &requested),
         Err(reason) => GetResponse::InvalidPath(reason),
     }
+}
+
+fn asset_get_contract(
+    view: &AssetView,
+    request: asset_contract::GetRequest,
+) -> asset_contract::GetResponse {
+    let asset_contract::GetRequest::V1(request) = request;
+    asset_contract::GetResponse::V1(asset_get(view, request))
 }
 
 fn validate_requested_path(requested: &str) -> std::result::Result<(), InvalidPathReason> {
@@ -74,10 +85,10 @@ impl Runtime for AssetRuntime {
     async fn new(io: &mut Io<Self::Input>, bundle_root: Self::Config) -> Result<Self> {
         let view = ReadCell::new(AssetView { bundle_root });
         io.serve_query_topic(
-            topic::new().v1().asset().get(),
+            topic::new().asset().get(),
             view.reader(),
             QueryOptions::single(),
-            asset_get,
+            asset_get_contract,
         )
         .await?;
         Ok(Self { view })
@@ -93,7 +104,7 @@ impl Runtime for AssetRuntime {
 mod tests {
     use super::{AssetView, asset_get};
     use anyhow::Result;
-    use phoxal::api::v1::asset::{
+    use phoxal::api::asset::v1::{
         GetRequest as Request, GetResponse as Response, InvalidPathReason,
     };
     use phoxal::runtime::MESHES_DIR;

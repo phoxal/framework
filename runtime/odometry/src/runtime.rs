@@ -1,14 +1,20 @@
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal::api::v1::frame::FrameId;
-use phoxal::api::v1::joint::{JointId, JointState, Quantity};
-use phoxal::api::v1::odometry::{
-    Covariance, Integration, IntegrationStep, OdometryEstimate, PoseEstimate, Residuals,
-    SourceHealth, SourceId, SourceReason, SourceStatus, Status, StatusMode, StatusReason,
-    VelocityEstimate,
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::joint::{
+    self as joint_contract,
+    v1::{JointId, JointState, Quantity},
 };
-use phoxal::api::v1::topic;
+use phoxal::api::odometry::{
+    self as odometry_contract,
+    v1::{
+        Covariance, Integration, IntegrationStep, OdometryEstimate, PoseEstimate, Residuals,
+        SourceHealth, SourceId, SourceReason, SourceStatus, Status, StatusMode, StatusReason,
+        VelocityEstimate,
+    },
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
@@ -107,11 +113,11 @@ pub struct OdometryRuntime {
     wheel_base_m: f64,
     stale_timeout_ns: u64,
     state: OdometryState,
-    estimate_publisher: TopicPublisher<OdometryEstimate>,
-    status_publisher: TopicPublisher<Status>,
-    source_health_publisher: TopicPublisher<SourceHealth>,
-    residuals_publisher: TopicPublisher<Residuals>,
-    integration_publisher: TopicPublisher<Integration>,
+    estimate_publisher: TopicPublisher<odometry_contract::OdometryEstimate>,
+    status_publisher: TopicPublisher<odometry_contract::Status>,
+    source_health_publisher: TopicPublisher<odometry_contract::SourceHealth>,
+    residuals_publisher: TopicPublisher<odometry_contract::Residuals>,
+    integration_publisher: TopicPublisher<odometry_contract::Integration>,
 }
 
 #[async_trait::async_trait]
@@ -132,36 +138,36 @@ impl Runtime for OdometryRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         io.subscribe_topic(
-            topic::new()
-                .v1()
-                .joint(config.left_joint_id.to_string())
-                .data(),
-            Input::Left,
+            topic::new().joint(config.left_joint_id.to_string()).data(),
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let joint_contract::JointState::V1(value) = value;
+                Input::Left(Received { at_ns, value })
+            },
         )
         .await?;
         io.subscribe_topic(
-            topic::new()
-                .v1()
-                .joint(config.right_joint_id.to_string())
-                .data(),
-            Input::Right,
+            topic::new().joint(config.right_joint_id.to_string()).data(),
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let joint_contract::JointState::V1(value) = value;
+                Input::Right(Received { at_ns, value })
+            },
         )
         .await?;
 
         let estimate_publisher = io
-            .publisher_topic(topic::new().v1().odometry().estimate())
+            .publisher_topic(topic::new().odometry().estimate())
             .await?;
-        let status_publisher = io
-            .publisher_topic(topic::new().v1().odometry().status())
-            .await?;
+        let status_publisher = io.publisher_topic(topic::new().odometry().status()).await?;
         let source_health_publisher = io
-            .publisher_topic(topic::new().v1().odometry().source_health())
+            .publisher_topic(topic::new().odometry().source_health())
             .await?;
         let residuals_publisher = io
-            .publisher_topic(topic::new().v1().odometry().residuals())
+            .publisher_topic(topic::new().odometry().residuals())
             .await?;
         let integration_publisher = io
-            .publisher_topic(topic::new().v1().odometry().integration())
+            .publisher_topic(topic::new().odometry().integration())
             .await?;
 
         Ok(Self {
@@ -232,14 +238,20 @@ impl Runtime for OdometryRuntime {
             residuals: Vec::new(),
         };
 
-        self.estimate_publisher.put(time_ns, &estimate).await?;
-        self.status_publisher.put(time_ns, &current_status).await?;
-        self.source_health_publisher
-            .put(time_ns, &source_health)
+        self.estimate_publisher
+            .put(time_ns, &odometry_contract::OdometryEstimate::V1(estimate))
             .await?;
-        self.residuals_publisher.put(time_ns, &residuals).await?;
+        self.status_publisher
+            .put(time_ns, &odometry_contract::Status::V1(current_status))
+            .await?;
+        self.source_health_publisher
+            .put(time_ns, &odometry_contract::SourceHealth::V1(source_health))
+            .await?;
+        self.residuals_publisher
+            .put(time_ns, &odometry_contract::Residuals::V1(residuals))
+            .await?;
         self.integration_publisher
-            .put(time_ns, &integration)
+            .put(time_ns, &odometry_contract::Integration::V1(integration))
             .await?;
 
         Ok(())
@@ -570,8 +582,8 @@ fn source_status(joint_id: &JointId, health: WheelHealth) -> SourceStatus {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::v1::joint::JointId;
-    use phoxal::api::v1::odometry::{SourceId, StatusMode, StatusReason};
+    use phoxal::api::joint::v1::JointId;
+    use phoxal::api::odometry::v1::{SourceId, StatusMode, StatusReason};
 
     use super::{
         Covariance3, IntegrationOutcome, OdometryState, PlanarPose, VAR_PER_STEP_DEGRADED_M2,

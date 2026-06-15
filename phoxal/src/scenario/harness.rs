@@ -1,19 +1,14 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::api::v1::explore::{GoalCandidates, State as ExploreState};
-use crate::api::v1::follow::State as FollowState;
-use crate::api::v1::localize::LocalizationState;
-use crate::api::v1::map::{Summary as MapSummary, TraversabilitySummary};
-use crate::api::v1::mission::{
+use crate::api::mission::v1::{
     ExplorationCompletion, ExplorationCompletionMode, GoalPose, GoalTolerance, MissionCommand,
-    State as MissionState,
 };
-use crate::api::v1::plan::State as PlanState;
-use crate::api::v1::presence::Summary;
-use crate::api::v1::safety::State as SafetyState;
-use crate::api::v1::simulation::{clock::Clock, pose::Pose, reset, status::Status};
-use crate::api::v1::topic;
+use crate::api::{
+    explore, follow, localize, map, mission, plan, presence, safety,
+    simulation::{clock, pose, reset, status},
+    topic,
+};
 use crate::bus::Bus;
 use crate::bus::typed::{Received, TypedTopicSubscriber};
 use crate::runtime::DEFAULT_ROBOT_NAMESPACE;
@@ -118,43 +113,45 @@ impl ScenarioContext {
         let response = self
             .bus
             .request(
-                &topic::new().v1().simulation().reset(),
-                &reset::Request,
+                &topic::new().simulation().reset(),
+                &reset::Request::V1(reset::v1::Request),
                 &retry,
             )
             .await?
             .ok_or_else(|| anyhow!("simulation reset returned no acknowledgement"))?;
+        let reset::Response::V1(response) = response;
         self.wait_for_status(|status| status.epoch >= response.epoch && status.step > 0)
             .await?;
         Ok(response.epoch)
     }
 
-    pub async fn wait_until_ready(&self) -> Result<Received<Status>> {
+    pub async fn wait_until_ready(&self) -> Result<Received<status::Status>> {
         self.wait_for_status(|status| status.step > 0).await
     }
 
-    pub async fn advance_for_secs(&self, secs: f64) -> Result<Received<Clock>> {
+    pub async fn advance_for_secs(&self, secs: f64) -> Result<Received<clock::Clock>> {
         let duration_ns = duration_ns_from_secs(secs)?;
         let subscriber = self
             .bus
-            .subscriber(&topic::new().v1().simulation().clock())
+            .subscriber(&topic::new().simulation().clock())
             .await?;
         let first = next_received(&subscriber, self.wallclock_timeout).await?;
-        let epoch = first.value.epoch();
-        let target_time_ns = first
-            .value
+        let first_tick = clock_v1(&first.value);
+        let epoch = first_tick.epoch();
+        let target_time_ns = first_tick
             .time_ns()
             .checked_add(duration_ns)
             .ok_or_else(|| anyhow!("scenario target logical time overflows nanoseconds"))?;
         let mut latest = first;
 
-        while latest.value.time_ns() < target_time_ns {
+        while clock_v1(&latest.value).time_ns() < target_time_ns {
             latest = next_received(&subscriber, self.wallclock_timeout).await?;
-            if latest.value.epoch() != epoch {
+            let latest_tick = clock_v1(&latest.value);
+            if latest_tick.epoch() != epoch {
                 bail!(
                     "simulation epoch changed from {} to {} while waiting for logical time",
                     epoch,
-                    latest.value.epoch()
+                    latest_tick.epoch()
                 );
             }
         }
@@ -162,12 +159,11 @@ impl ScenarioContext {
         Ok(latest)
     }
 
-    pub async fn simulation_pose(&self) -> Result<Received<Pose>> {
+    pub async fn simulation_pose(&self) -> Result<Received<pose::Pose>> {
         let subscriber = self
             .bus
             .subscriber(
                 &topic::new()
-                    .v1()
                     .simulation()
                     .robot(self.environment.robot_id.clone())
                     .pose(),
@@ -176,82 +172,66 @@ impl ScenarioContext {
         next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_localization_state(&self) -> Result<Received<LocalizationState>> {
+    pub async fn latest_localization_state(&self) -> Result<Received<localize::LocalizationState>> {
         let subscriber = self
             .bus
-            .subscriber(&topic::new().v1().localize().state())
+            .subscriber(&topic::new().localize().state())
             .await?;
         next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_presence_summary(&self) -> Result<Received<Summary>> {
+    pub async fn latest_presence_summary(&self) -> Result<Received<presence::Summary>> {
         let subscriber = self
             .bus
-            .subscriber(&topic::new().v1().presence().summary())
+            .subscriber(&topic::new().presence().summary())
             .await?;
         next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_safety_state(&self) -> Result<Received<SafetyState>> {
+    pub async fn latest_safety_state(&self) -> Result<Received<safety::State>> {
+        let subscriber = self.bus.subscriber(&topic::new().safety().state()).await?;
+        next_received(&subscriber, self.wallclock_timeout).await
+    }
+
+    pub async fn latest_plan_state(&self) -> Result<Received<plan::State>> {
+        let subscriber = self.bus.subscriber(&topic::new().plan().state()).await?;
+        next_received(&subscriber, self.wallclock_timeout).await
+    }
+
+    pub async fn latest_follow_state(&self) -> Result<Received<follow::State>> {
+        let subscriber = self.bus.subscriber(&topic::new().follow().state()).await?;
+        next_received(&subscriber, self.wallclock_timeout).await
+    }
+
+    pub async fn latest_mission_state(&self) -> Result<Received<mission::State>> {
+        let subscriber = self.bus.subscriber(&topic::new().mission().state()).await?;
+        next_received(&subscriber, self.wallclock_timeout).await
+    }
+
+    pub async fn latest_explore_state(&self) -> Result<Received<explore::State>> {
+        let subscriber = self.bus.subscriber(&topic::new().explore().state()).await?;
+        next_received(&subscriber, self.wallclock_timeout).await
+    }
+
+    pub async fn latest_explore_candidates(&self) -> Result<Received<explore::GoalCandidates>> {
         let subscriber = self
             .bus
-            .subscriber(&topic::new().v1().safety().state())
+            .subscriber(&topic::new().explore().goal_candidates())
             .await?;
         next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_plan_state(&self) -> Result<Received<PlanState>> {
-        let subscriber = self
-            .bus
-            .subscriber(&topic::new().v1().plan().state())
-            .await?;
+    pub async fn latest_map_summary(&self) -> Result<Received<map::Summary>> {
+        let subscriber = self.bus.subscriber(&topic::new().map().summary()).await?;
         next_received(&subscriber, self.wallclock_timeout).await
     }
 
-    pub async fn latest_follow_state(&self) -> Result<Received<FollowState>> {
+    pub async fn latest_traversability_summary(
+        &self,
+    ) -> Result<Received<map::TraversabilitySummary>> {
         let subscriber = self
             .bus
-            .subscriber(&topic::new().v1().follow().state())
-            .await?;
-        next_received(&subscriber, self.wallclock_timeout).await
-    }
-
-    pub async fn latest_mission_state(&self) -> Result<Received<MissionState>> {
-        let subscriber = self
-            .bus
-            .subscriber(&topic::new().v1().mission().state())
-            .await?;
-        next_received(&subscriber, self.wallclock_timeout).await
-    }
-
-    pub async fn latest_explore_state(&self) -> Result<Received<ExploreState>> {
-        let subscriber = self
-            .bus
-            .subscriber(&topic::new().v1().explore().state())
-            .await?;
-        next_received(&subscriber, self.wallclock_timeout).await
-    }
-
-    pub async fn latest_explore_candidates(&self) -> Result<Received<GoalCandidates>> {
-        let subscriber = self
-            .bus
-            .subscriber(&topic::new().v1().explore().goal_candidates())
-            .await?;
-        next_received(&subscriber, self.wallclock_timeout).await
-    }
-
-    pub async fn latest_map_summary(&self) -> Result<Received<MapSummary>> {
-        let subscriber = self
-            .bus
-            .subscriber(&topic::new().v1().map().summary())
-            .await?;
-        next_received(&subscriber, self.wallclock_timeout).await
-    }
-
-    pub async fn latest_traversability_summary(&self) -> Result<Received<TraversabilitySummary>> {
-        let subscriber = self
-            .bus
-            .subscriber(&topic::new().v1().map().traversability_summary())
+            .subscriber(&topic::new().map().traversability_summary())
             .await?;
         next_received(&subscriber, self.wallclock_timeout).await
     }
@@ -291,45 +271,55 @@ impl ScenarioContext {
 
     pub async fn publish_manual_command(
         &self,
-        command: crate::api::v1::motion::ManualCommand,
+        command: crate::api::motion::ManualCommand,
     ) -> Result<()> {
-        let produced_at_ns = self.wait_until_ready().await?.value.time_ns;
+        let ready = self.wait_until_ready().await?;
+        let produced_at_ns = status_v1(&ready.value).time_ns;
         self.bus
-            .publish(
-                &topic::new().v1().motion().manual(),
-                produced_at_ns,
-                &command,
-            )
+            .publish(&topic::new().motion().manual(), produced_at_ns, &command)
             .await
             .map_err(Into::into)
     }
 
     async fn wait_for_status(
         &self,
-        predicate: impl Fn(&Status) -> bool,
-    ) -> Result<Received<Status>> {
+        predicate: impl Fn(&status::v1::Status) -> bool,
+    ) -> Result<Received<status::Status>> {
         let subscriber = self
             .bus
-            .subscriber(&topic::new().v1().simulation().status())
+            .subscriber(&topic::new().simulation().status())
             .await?;
         loop {
             let status = next_received(&subscriber, self.wallclock_timeout).await?;
-            if predicate(&status.value) {
+            if predicate(status_v1(&status.value)) {
                 return Ok(status);
             }
         }
     }
 
     async fn publish_mission_command(&self, command: MissionCommand) -> Result<()> {
-        let produced_at_ns = self.wait_until_ready().await?.value.time_ns;
+        let ready = self.wait_until_ready().await?;
+        let produced_at_ns = status_v1(&ready.value).time_ns;
         self.bus
             .publish(
-                &topic::new().v1().mission().command(),
+                &topic::new().mission().command(),
                 produced_at_ns,
-                &command,
+                &mission::MissionCommand::V1(command),
             )
             .await
             .map_err(Into::into)
+    }
+}
+
+fn clock_v1(value: &clock::Clock) -> &clock::v1::Clock {
+    match value {
+        clock::Clock::V1(value) => value,
+    }
+}
+
+fn status_v1(value: &status::Status) -> &status::v1::Status {
+    match value {
+        status::Status::V1(value) => value,
     }
 }
 

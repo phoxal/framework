@@ -1,22 +1,22 @@
 use crate::webots::controller::{Controller, ControllerContract};
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::accelerometer::Sample as AccelerometerData;
-use phoxal::api::v1::component::capability::battery::State as BatteryData;
-use phoxal::api::v1::component::capability::camera::Frame as CameraData;
-use phoxal::api::v1::component::capability::depth::Depth as DepthData;
-use phoxal::api::v1::component::capability::encoder::Sample as EncoderData;
-use phoxal::api::v1::component::capability::gnss::Sample as GnssData;
-use phoxal::api::v1::component::capability::gyroscope::Sample as GyroscopeData;
-use phoxal::api::v1::component::capability::imu::Sample as ImuData;
-use phoxal::api::v1::component::capability::lidar::Scan as LidarData;
-use phoxal::api::v1::component::capability::magnetometer::Sample as MagnetometerData;
-use phoxal::api::v1::component::capability::microphone::Frame as MicrophoneData;
-use phoxal::api::v1::component::capability::mmwave::Scan as MmwaveData;
-use phoxal::api::v1::component::capability::profile::{
+use phoxal::api::component::capability::accelerometer::v1::Sample as AccelerometerData;
+use phoxal::api::component::capability::battery::v1::State as BatteryData;
+use phoxal::api::component::capability::camera::v1::Frame as CameraData;
+use phoxal::api::component::capability::depth::v1::Depth as DepthData;
+use phoxal::api::component::capability::encoder::v1::Sample as EncoderData;
+use phoxal::api::component::capability::gnss::v1::Sample as GnssData;
+use phoxal::api::component::capability::gyroscope::v1::Sample as GyroscopeData;
+use phoxal::api::component::capability::imu::v1::Sample as ImuData;
+use phoxal::api::component::capability::lidar::v1::Scan as LidarData;
+use phoxal::api::component::capability::magnetometer::v1::Sample as MagnetometerData;
+use phoxal::api::component::capability::microphone::v1::Frame as MicrophoneData;
+use phoxal::api::component::capability::mmwave::v1::Scan as MmwaveData;
+use phoxal::api::component::capability::profile::v1::{
     ParsedCameraProfileSpec, ParsedDepthProfileSpec, ProfileId,
 };
-use phoxal::api::v1::component::capability::range::Sample as RangeData;
-use phoxal::api::v1::topic;
+use phoxal::api::component::capability::range::v1::Sample as RangeData;
+use phoxal::api::topic;
 use phoxal::bus::Bus;
 use phoxal::bus::liveliness::{LivelinessEvent, liveliness_subscriber};
 use phoxal::bus::topic::{ANY, PubSub, Topic};
@@ -82,7 +82,7 @@ impl MatchingProbe {
 }
 
 macro_rules! output_capabilities {
-    ($($variant:ident => { payload: $payload:ty, leaf: $leaf:ident, topic: $topic:expr }),+ $(,)?) => {
+    ($($variant:ident => { payload: $payload:ty, contract: $contract:ident, leaf: $leaf:ident, topic: $topic:expr }),+ $(,)?) => {
         #[derive(Debug, Clone)]
         pub enum Publish {
             $(
@@ -115,7 +115,7 @@ macro_rules! output_capabilities {
             pub const fn kind(&self) -> &'static str {
                 match self {
                     $(
-                        Self::$variant { .. } => phoxal::api::v1::component::capability::$leaf::KIND,
+                        Self::$variant { .. } => phoxal::api::component::capability::$leaf::v1::KIND,
                     )+
                 }
             }
@@ -124,7 +124,7 @@ macro_rules! output_capabilities {
         enum CapabilityPublisher {
             $($variant {
                 bus: Bus,
-                topic: Topic<PubSub<$payload>>,
+                topic: Topic<PubSub<phoxal::api::component::capability::$leaf::$contract>>,
                 matching_probe: Option<MatchingProbe>,
             },)+
         }
@@ -183,7 +183,7 @@ macro_rules! output_capabilities {
                         Controller::$variant(_) => {
                             let topic = $topic(capability, profile_id);
                             let matching_probe = if profile_id.as_ref() == ProfileId::DEFAULT
-                                && demand_tracked_kind(phoxal::api::v1::component::capability::$leaf::KIND)
+                                && demand_tracked_kind(phoxal::api::component::capability::$leaf::v1::KIND)
                             {
                                 Some(MatchingProbe::new(bus, &topic).await?)
                             } else {
@@ -209,7 +209,7 @@ macro_rules! output_capabilities {
             const fn kind(&self) -> &'static str {
                 match self {
                     $(
-                        Self::$variant { .. } => phoxal::api::v1::component::capability::$leaf::KIND,
+                        Self::$variant { .. } => phoxal::api::component::capability::$leaf::v1::KIND,
                     )+
                 }
             }
@@ -233,6 +233,8 @@ macro_rules! output_capabilities {
                         Publish::$variant { capability, at_ns, payload, .. } => {
                             match self {
                                 CapabilityPublisher::$variant { bus, topic, .. } => {
+                                    let payload =
+                                        phoxal::api::component::capability::$leaf::$contract::V1(payload);
                                     bus.publish(topic, at_ns, &payload).await?;
                                 }
                                 _ => {
@@ -255,34 +257,38 @@ macro_rules! output_capabilities {
 output_capabilities! {
     Encoder => {
         payload: EncoderData,
+        contract: Sample,
         leaf: encoder,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).encoder(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).encoder(&capability.capability_id).data()
         }
     },
     Accelerometer => {
         payload: AccelerometerData,
+        contract: Sample,
         leaf: accelerometer,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).accelerometer(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).accelerometer(&capability.capability_id).data()
         }
     },
     Battery => {
         payload: BatteryData,
+        contract: State,
         leaf: battery,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).battery(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).battery(&capability.capability_id).data()
         }
     },
     Camera => {
         payload: CameraData,
+        contract: Frame,
         leaf: camera,
         topic: |capability: &CapabilityRef, profile_id: &ProfileId| {
             if profile_id.as_ref() == ProfileId::DEFAULT {
-                topic::new().v1().component(&capability.component_id).camera(&capability.capability_id).data()
+                topic::new().component(&capability.component_id).camera(&capability.capability_id).data()
             } else {
                 topic::new()
-                    .v1()
+
                     .component(&capability.component_id)
                     .camera(&capability.capability_id)
                     .profile(profile_id.as_ref())
@@ -292,13 +298,14 @@ output_capabilities! {
     },
     Depth => {
         payload: DepthData,
+        contract: Depth,
         leaf: depth,
         topic: |capability: &CapabilityRef, profile_id: &ProfileId| {
             if profile_id.as_ref() == ProfileId::DEFAULT {
-                topic::new().v1().component(&capability.component_id).depth(&capability.capability_id).data()
+                topic::new().component(&capability.component_id).depth(&capability.capability_id).data()
             } else {
                 topic::new()
-                    .v1()
+
                     .component(&capability.component_id)
                     .depth(&capability.capability_id)
                     .profile(profile_id.as_ref())
@@ -308,58 +315,66 @@ output_capabilities! {
     },
     Range => {
         payload: RangeData,
+        contract: Sample,
         leaf: range,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).range(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).range(&capability.capability_id).data()
         }
     },
     Gnss => {
         payload: GnssData,
+        contract: Sample,
         leaf: gnss,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).gnss(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).gnss(&capability.capability_id).data()
         }
     },
     Gyroscope => {
         payload: GyroscopeData,
+        contract: Sample,
         leaf: gyroscope,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).gyroscope(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).gyroscope(&capability.capability_id).data()
         }
     },
     Imu => {
         payload: ImuData,
+        contract: Sample,
         leaf: imu,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).imu(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).imu(&capability.capability_id).data()
         }
     },
     Lidar => {
         payload: LidarData,
+        contract: Scan,
         leaf: lidar,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).lidar(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).lidar(&capability.capability_id).data()
         }
     },
     Magnetometer => {
         payload: MagnetometerData,
+        contract: Sample,
         leaf: magnetometer,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).magnetometer(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).magnetometer(&capability.capability_id).data()
         }
     },
     Microphone => {
         payload: MicrophoneData,
+        contract: Frame,
         leaf: microphone,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).microphone(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).microphone(&capability.capability_id).data()
         }
     },
     Mmwave => {
         payload: MmwaveData,
+        contract: Scan,
         leaf: mmwave,
         topic: |capability: &CapabilityRef, _profile_id: &ProfileId| {
-            topic::new().v1().component(&capability.component_id).mmwave(&capability.capability_id).data()
+            topic::new().component(&capability.component_id).mmwave(&capability.capability_id).data()
         }
     },
 }
@@ -373,8 +388,8 @@ enum QueuePolicy {
 impl QueuePolicy {
     fn for_kind(kind: &str) -> Self {
         match kind {
-            phoxal::api::v1::component::capability::camera::KIND
-            | phoxal::api::v1::component::capability::depth::KIND => Self::LatestFrameWins,
+            phoxal::api::component::capability::camera::v1::KIND
+            | phoxal::api::component::capability::depth::v1::KIND => Self::LatestFrameWins,
             _ => Self::DropOldest,
         }
     }
@@ -721,8 +736,8 @@ async fn publish_output(
 }
 
 fn demand_tracked_kind(kind: &str) -> bool {
-    kind == phoxal::api::v1::component::capability::camera::KIND
-        || kind == phoxal::api::v1::component::capability::depth::KIND
+    kind == phoxal::api::component::capability::camera::v1::KIND
+        || kind == phoxal::api::component::capability::depth::v1::KIND
 }
 
 fn update_demanded_capability(
@@ -819,7 +834,6 @@ fn profile_liveliness_key(capability: &CapabilityRef, controller: &Controller) -
     match controller {
         Controller::Camera(_) => Some(
             topic::new()
-                .v1()
                 .component(&capability.component_id)
                 .camera(&capability.capability_id)
                 .profile(ANY)
@@ -829,7 +843,6 @@ fn profile_liveliness_key(capability: &CapabilityRef, controller: &Controller) -
         ),
         Controller::Depth(_) => Some(
             topic::new()
-                .v1()
                 .component(&capability.component_id)
                 .depth(&capability.capability_id)
                 .profile(ANY)
@@ -985,7 +998,7 @@ fn parsed_requested_profile_id(
 fn validate_profile_for_controller(controller: &Controller, profile_id: &ProfileId) -> Result<()> {
     match controller {
         Controller::Camera(_) => {
-            match phoxal::api::v1::component::capability::profile::CameraProfileSpec::from_profile_id(
+            match phoxal::api::component::capability::profile::v1::CameraProfileSpec::from_profile_id(
                 profile_id,
             )? {
                 ParsedCameraProfileSpec::Native => {
@@ -995,7 +1008,7 @@ fn validate_profile_for_controller(controller: &Controller, profile_id: &Profile
             }
         }
         Controller::Depth(_) => {
-            match phoxal::api::v1::component::capability::profile::DepthProfileSpec::from_profile_id(
+            match phoxal::api::component::capability::profile::v1::DepthProfileSpec::from_profile_id(
                 profile_id,
             )? {
                 ParsedDepthProfileSpec::Native => {
@@ -1081,9 +1094,9 @@ mod tests {
     use super::{OutputQueue, Publish, QueuePolicy, profile_liveliness_key};
     use crate::capabilities::camera::CameraMode;
     use crate::webots::controller::Controller;
-    use phoxal::api::v1::component::capability::camera::{Encoding, Frame};
-    use phoxal::api::v1::component::capability::encoder::Sample;
-    use phoxal::api::v1::component::capability::profile::ProfileId;
+    use phoxal::api::component::capability::camera::v1::{Encoding, Frame};
+    use phoxal::api::component::capability::encoder::v1::Sample;
+    use phoxal::api::component::capability::profile::v1::ProfileId;
     use phoxal::model::component::v1::CapabilityRef;
 
     fn camera_output(timestamp_ns: u64, value: u8) -> Publish {
@@ -1114,7 +1127,7 @@ mod tests {
         });
         assert_eq!(
             profile_liveliness_key(&camera, &camera_controller).as_deref(),
-            Some("v1/component/front_camera/camera/rgb/profile/*/data")
+            Some("component/front_camera/camera/rgb/profile/*/data")
         );
         let depth = CapabilityRef::new("front_camera", "depth");
         let depth_controller = Controller::Depth(crate::capabilities::depth::Config {
@@ -1123,7 +1136,7 @@ mod tests {
         });
         assert_eq!(
             profile_liveliness_key(&depth, &depth_controller).as_deref(),
-            Some("v1/component/front_camera/depth/depth/profile/*/data")
+            Some("component/front_camera/depth/depth/profile/*/data")
         );
     }
 

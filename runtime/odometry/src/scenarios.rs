@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use anyhow::{Result, bail, ensure};
-use phoxal::api::v1::joint::JointId;
-use phoxal::api::v1::odometry::{
+use phoxal::api::joint::v1::JointId;
+use phoxal::api::odometry::v1::{
     Integration, IntegrationStep, SourceHealth, SourceId, SourceReason, SourceStatus, Status,
     StatusMode, StatusReason,
 };

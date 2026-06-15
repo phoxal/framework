@@ -5,20 +5,24 @@ use std::time::Duration;
 
 use anyhow::Result;
 use nalgebra::{Quaternion, UnitQuaternion};
-use phoxal::api::v1::component::capability::range;
-use phoxal::api::v1::frame::FrameId;
-use phoxal::api::v1::localize::{
-    Keyframe, LocalizationRevision, LocalizationRevisionId, LocalizationState, PoseEstimate,
+use phoxal::api::component::capability::range::{self as range_contract, v1 as range};
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::{
+    self as localize_contract,
+    v1::{Keyframe, LocalizationRevision, LocalizationRevisionId, LocalizationState, PoseEstimate},
 };
-use phoxal::api::v1::map::{
-    EsdfTile, EsdfTileRequest, EsdfTileResponse, GlobalGrid, GlobalGridRequest, GlobalGridResponse,
-    Grid, LocalCost, LocalGrid, LocalGridRequest, LocalGridResponse, MapRevision, MapRevisionId,
-    MapTileResponse, RegionSummary, Snapshot, SnapshotRequest, SnapshotResponse, SubmapRequest,
-    SubmapResponse, Summary, Traversability, TraversabilityCell, TraversabilityStatus,
-    TraversabilitySummary, TraversabilityTile, TraversabilityTileRequest,
-    TraversabilityTileResponse,
+use phoxal::api::map::{
+    self as map_contract,
+    v1::{
+        EsdfTile, EsdfTileRequest, EsdfTileResponse, GlobalGrid, GlobalGridRequest,
+        GlobalGridResponse, Grid, LocalCost, LocalGrid, LocalGridRequest, LocalGridResponse,
+        MapRevision, MapRevisionId, MapTileResponse, RegionSummary, Snapshot, SnapshotRequest,
+        SnapshotResponse, SubmapRequest, SubmapResponse, Summary, Traversability,
+        TraversabilityCell, TraversabilityStatus, TraversabilitySummary, TraversabilityTile,
+        TraversabilityTileRequest, TraversabilityTileResponse,
+    },
 };
-use phoxal::api::v1::topic;
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::runtime::clock::Step;
@@ -115,11 +119,11 @@ pub struct MapRuntime {
     mapping_sensor_poses: BTreeMap<CapabilityRef, ResolvedSensorPose>,
     latest_robot_pose: Option<PoseEstimate>,
     decision_log: DecisionLog<MapLogKey>,
-    revision_publisher: TopicPublisher<MapRevision>,
-    summary_publisher: TopicPublisher<Summary>,
-    local_cost_publisher: TopicPublisher<LocalCost>,
-    traversability_publisher: TopicPublisher<Traversability>,
-    traversability_summary_publisher: TopicPublisher<TraversabilitySummary>,
+    revision_publisher: TopicPublisher<map_contract::MapRevision>,
+    summary_publisher: TopicPublisher<map_contract::Summary>,
+    local_cost_publisher: TopicPublisher<map_contract::LocalCost>,
+    traversability_publisher: TopicPublisher<map_contract::Traversability>,
+    traversability_summary_publisher: TopicPublisher<map_contract::TraversabilitySummary>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,18 +149,24 @@ impl Runtime for MapRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(
-            topic::new().v1().localize().state(),
-            Input::LocalizationState,
-        )
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Received { at_ns, value })
+        })
         .await?;
-        io.subscribe_topic(
-            topic::new().v1().localize().revision(),
-            Input::LocalizationRevision,
-        )
+        io.subscribe_topic(topic::new().localize().revision(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationRevision::V1(value) = value;
+            Input::LocalizationRevision(Received { at_ns, value })
+        })
         .await?;
-        io.subscribe_topic(topic::new().v1().localize().keyframe(), Input::Keyframe)
-            .await?;
+        io.subscribe_topic(topic::new().localize().keyframe(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::Keyframe::V1(value) = value;
+            Input::Keyframe(Received { at_ns, value })
+        })
+        .await?;
         if config.mapping_range_inputs.is_empty() {
             info!(
                 "map runtime has no range sensors tagged for mapping; submap occupancy will remain Unknown"
@@ -166,11 +176,14 @@ impl Runtime for MapRuntime {
             let sensor = capability_ref.clone();
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(capability_ref.component_id.clone())
                     .range(capability_ref.capability_id.clone())
                     .data(),
-                move |sample| Input::RangeSample(sensor.clone(), sample),
+                move |sample| {
+                    let Received { at_ns, value } = sample;
+                    let range_contract::Sample::V1(value) = value;
+                    Input::RangeSample(sensor.clone(), Received { at_ns, value })
+                },
             )
             .await?;
         }
@@ -188,48 +201,48 @@ impl Runtime for MapRuntime {
         });
 
         io.serve_query_topic(
-            topic::new().v1().map().submap(),
+            topic::new().map().submap(),
             view.reader(),
             map_query_options(),
-            map_submap,
+            map_submap_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().map().esdf_tile(),
+            topic::new().map().esdf_tile(),
             view.reader(),
             map_query_options(),
-            map_esdf_tile,
+            map_esdf_tile_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().map().traversability_tile(),
+            topic::new().map().traversability_tile(),
             view.reader(),
             map_query_options(),
-            map_traversability_tile,
+            map_traversability_tile_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().map().local_grid(),
+            topic::new().map().local_grid(),
             view.reader(),
             map_query_options(),
-            map_local_grid,
+            map_local_grid_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().map().global_grid(),
+            topic::new().map().global_grid(),
             view.reader(),
             map_query_options(),
-            map_global_grid,
+            map_global_grid_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().map().snapshot(),
+            topic::new().map().snapshot(),
             view.reader(),
             map_query_options(),
-            map_snapshot,
+            map_snapshot_contract,
         )
         .await?;
-        let summary_topic = topic::new().v1().map().summary();
+        let summary_topic = topic::new().map().summary();
 
         Ok(Self {
             planar_frame_id: config.planar_frame_id,
@@ -242,18 +255,14 @@ impl Runtime for MapRuntime {
             mapping_sensor_poses: config.mapping_sensor_poses,
             latest_robot_pose: None,
             decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &summary_topic),
-            revision_publisher: io
-                .publisher_topic(topic::new().v1().map().revision())
-                .await?,
+            revision_publisher: io.publisher_topic(topic::new().map().revision()).await?,
             summary_publisher: io.publisher_topic(summary_topic).await?,
-            local_cost_publisher: io
-                .publisher_topic(topic::new().v1().map().local_cost())
-                .await?,
+            local_cost_publisher: io.publisher_topic(topic::new().map().local_cost()).await?,
             traversability_publisher: io
-                .publisher_topic(topic::new().v1().map().traversability())
+                .publisher_topic(topic::new().map().traversability())
                 .await?,
             traversability_summary_publisher: io
-                .publisher_topic(topic::new().v1().map().traversability_summary())
+                .publisher_topic(topic::new().map().traversability_summary())
                 .await?,
         })
     }
@@ -271,8 +280,9 @@ impl Runtime for MapRuntime {
                 Input::LocalizationRevision(sample) => {
                     if let Some(retained) = self.store.observe(&sample.value) {
                         store_changed = true;
+                        let revision = map_revision_payload(&retained);
                         self.revision_publisher
-                            .put(timestamp_ns, &map_revision_payload(&retained))
+                            .put(timestamp_ns, &map_contract::MapRevision::V1(revision))
                             .await?;
                     }
                 }
@@ -329,23 +339,23 @@ impl Runtime for MapRuntime {
             self.local_cost_publisher
                 .put(
                     timestamp_ns,
-                    &local_cost_payload(
+                    &map_contract::LocalCost::V1(local_cost_payload(
                         current.map_revision_id,
                         current.built_from_localize_revision,
                         &self.planar_frame_id,
-                    ),
+                    )),
                 )
                 .await?;
             if let Some(occupancy) = self.current_submap_occupancy.as_ref() {
                 self.traversability_publisher
                     .put(
                         timestamp_ns,
-                        &traversability_payload(
+                        &map_contract::Traversability::V1(traversability_payload(
                             current.map_revision_id,
                             current.built_from_localize_revision,
                             &self.planar_frame_id,
                             occupancy.traversability(self.body_radius_m),
-                        ),
+                        )),
                     )
                     .await?;
             }
@@ -357,7 +367,10 @@ impl Runtime for MapRuntime {
             );
             traversability_status = traversability_summary.status;
             self.traversability_summary_publisher
-                .put(timestamp_ns, &traversability_summary)
+                .put(
+                    timestamp_ns,
+                    &map_contract::TraversabilitySummary::V1(traversability_summary),
+                )
                 .await?;
         }
 
@@ -370,7 +383,9 @@ impl Runtime for MapRuntime {
                 .map(|revision| revision.built_from_localize_revision),
             &self.planar_frame_id,
         );
-        self.summary_publisher.put(timestamp_ns, &summary).await?;
+        self.summary_publisher
+            .put(timestamp_ns, &map_contract::Summary::V1(summary.clone()))
+            .await?;
         self.decision_log.observe(
             timestamp_ns,
             MapLogKey {
@@ -438,8 +453,24 @@ fn map_submap(view: &MapView, request: SubmapRequest) -> SubmapResponse {
     )
 }
 
+fn map_submap_contract(
+    view: &MapView,
+    request: map_contract::SubmapRequest,
+) -> map_contract::SubmapResponse {
+    let map_contract::SubmapRequest::V1(request) = request;
+    map_contract::SubmapResponse::V1(map_submap(view, request))
+}
+
 fn map_esdf_tile(view: &MapView, request: EsdfTileRequest) -> EsdfTileResponse {
     esdf_tile_response(&request, &view.store, &view.planar_frame_id)
+}
+
+fn map_esdf_tile_contract(
+    view: &MapView,
+    request: map_contract::EsdfTileRequest,
+) -> map_contract::EsdfTileResponse {
+    let map_contract::EsdfTileRequest::V1(request) = request;
+    map_contract::EsdfTileResponse::V1(map_esdf_tile(view, request))
 }
 
 fn map_traversability_tile(
@@ -455,6 +486,14 @@ fn map_traversability_tile(
     )
 }
 
+fn map_traversability_tile_contract(
+    view: &MapView,
+    request: map_contract::TraversabilityTileRequest,
+) -> map_contract::TraversabilityTileResponse {
+    let map_contract::TraversabilityTileRequest::V1(request) = request;
+    map_contract::TraversabilityTileResponse::V1(map_traversability_tile(view, request))
+}
+
 fn map_local_grid(view: &MapView, request: LocalGridRequest) -> LocalGridResponse {
     local_grid_response(
         &request,
@@ -465,12 +504,36 @@ fn map_local_grid(view: &MapView, request: LocalGridRequest) -> LocalGridRespons
     )
 }
 
+fn map_local_grid_contract(
+    view: &MapView,
+    request: map_contract::LocalGridRequest,
+) -> map_contract::LocalGridResponse {
+    let map_contract::LocalGridRequest::V1(request) = request;
+    map_contract::LocalGridResponse::V1(map_local_grid(view, request))
+}
+
 fn map_global_grid(view: &MapView, request: GlobalGridRequest) -> GlobalGridResponse {
     global_grid_response(&request, &view.store, &view.planar_frame_id)
 }
 
+fn map_global_grid_contract(
+    view: &MapView,
+    request: map_contract::GlobalGridRequest,
+) -> map_contract::GlobalGridResponse {
+    let map_contract::GlobalGridRequest::V1(request) = request;
+    map_contract::GlobalGridResponse::V1(map_global_grid(view, request))
+}
+
 fn map_snapshot(view: &MapView, request: SnapshotRequest) -> SnapshotResponse {
     snapshot_response(&request, &view.store, &view.submaps, &view.planar_frame_id)
+}
+
+fn map_snapshot_contract(
+    view: &MapView,
+    request: map_contract::SnapshotRequest,
+) -> map_contract::SnapshotResponse {
+    let map_contract::SnapshotRequest::V1(request) = request;
+    map_contract::SnapshotResponse::V1(map_snapshot(view, request))
 }
 
 fn map_revision_payload(retained: &RetainedRevision) -> MapRevision {
@@ -545,7 +608,7 @@ fn traversability_summary_payload(
 fn zero_grid<T>(cell: T) -> Grid<T> {
     Grid {
         origin_xy_m: [0.0, 0.0],
-        resolution: phoxal::api::v1::map::Resolution {
+        resolution: phoxal::api::map::v1::Resolution {
             xy_m: 1.0,
             z_m: None,
         },
@@ -624,7 +687,7 @@ fn submap_response(
                     served_map_revision: retained.map_revision_id,
                     built_from_localize_revision: retained.built_from_localize_revision,
                     frame_id: frame_id.clone(),
-                    payload: phoxal::api::v1::map::Submap {
+                    payload: phoxal::api::map::v1::Submap {
                         submap_id: latest.submap_id.clone(),
                         bytes,
                     },
@@ -800,7 +863,7 @@ fn empty_global_grid() -> GlobalGrid {
 fn empty_grid<T>() -> Grid<T> {
     Grid {
         origin_xy_m: [0.0, 0.0],
-        resolution: phoxal::api::v1::map::Resolution {
+        resolution: phoxal::api::map::v1::Resolution {
             xy_m: 1.0,
             z_m: None,
         },
@@ -812,11 +875,11 @@ fn empty_grid<T>() -> Grid<T> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::v1::localize::{
+    use phoxal::api::localize::v1::{
         AffectedKeyframeSummary, Keyframe, KeyframeId, LocalizationRevisionCause, PoseEstimate,
         Region as LocalizeRegion,
     };
-    use phoxal::api::v1::map::{MapRevisionCause, MapTileRequest, Region, Resolution, Submap};
+    use phoxal::api::map::v1::{MapRevisionCause, MapTileRequest, Region, Resolution, Submap};
 
     use crate::core::occupancy::{
         GRID_HEIGHT_CELLS, GRID_RESOLUTION_M, GRID_WIDTH_CELLS, OccupancyGrid, OccupancySnapshot,
@@ -1224,7 +1287,7 @@ mod tests {
                 built_from_localize_revision: retained.built_from_localize_revision,
                 frame_id,
                 payload: Submap {
-                    submap_id: phoxal::api::v1::map::SubmapId::new("submap-kf-a"),
+                    submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-a"),
                     bytes: Vec::new()
                 }
             })
@@ -1457,7 +1520,7 @@ mod tests {
                 built_from_localize_revision: retained.built_from_localize_revision,
                 frame_id,
                 payload: Submap {
-                    submap_id: phoxal::api::v1::map::SubmapId::new("submap-kf-a"),
+                    submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-a"),
                     bytes: Vec::new()
                 }
             })
@@ -1492,15 +1555,15 @@ mod tests {
                     map_revision: retained.map_revision_id,
                     submaps: vec![
                         Submap {
-                            submap_id: phoxal::api::v1::map::SubmapId::new("submap-kf-b"),
+                            submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-b"),
                             bytes: Vec::new()
                         },
                         Submap {
-                            submap_id: phoxal::api::v1::map::SubmapId::new("submap-kf-a"),
+                            submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-a"),
                             bytes: Vec::new()
                         },
                         Submap {
-                            submap_id: phoxal::api::v1::map::SubmapId::new("submap-kf-c"),
+                            submap_id: phoxal::api::map::v1::SubmapId::new("submap-kf-c"),
                             bytes: Vec::new()
                         },
                     ]

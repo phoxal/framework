@@ -1,6 +1,6 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::lidar::{
+use phoxal::api::component::capability::lidar::v1::{
     Points as LidarPointsData, Ranges as LidarRangesData, Scan as LidarData,
 };
 use serde::Deserialize;

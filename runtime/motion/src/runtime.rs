@@ -2,11 +2,14 @@ use std::time::Duration;
 
 use crate::core::Arbitration;
 use anyhow::Result;
-use phoxal::api::v1::drive::Target as DriveTarget;
-use phoxal::api::v1::follow::Target as FollowTarget;
-use phoxal::api::v1::motion::{ManualCommand, MotionReason, MotionSource, State};
-use phoxal::api::v1::safety::SafetyAuthorization;
-use phoxal::api::v1::topic;
+use phoxal::api::drive as drive_contract;
+use phoxal::api::follow::{self as follow_contract, v1::Target as FollowTarget};
+use phoxal::api::motion::{
+    self as motion_contract,
+    v1::{ManualCommand, MotionReason, MotionSource, State},
+};
+use phoxal::api::safety::{self as safety_contract, v1::SafetyAuthorization};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
@@ -37,8 +40,8 @@ pub struct MotionRuntime {
     latest_follow_target: Option<Received<FollowTarget>>,
     latest_safety_authorization: Option<Received<SafetyAuthorization>>,
     decision_log: DecisionLog<MotionLogKey>,
-    drive_target_publisher: TopicPublisher<DriveTarget>,
-    state_publisher: TopicPublisher<State>,
+    drive_target_publisher: TopicPublisher<drive_contract::Target>,
+    state_publisher: TopicPublisher<motion_contract::State>,
 }
 
 type MotionLogKey = (Option<MotionSource>, Option<MotionReason>);
@@ -61,27 +64,34 @@ impl Runtime for MotionRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_topic_with(
-            topic::new().v1().motion().manual(),
+            topic::new().motion().manual(),
             InputPolicy::latest(),
-            Input::ManualCommand,
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let motion_contract::ManualCommand::V1(value) = value;
+                Input::ManualCommand(Received { at_ns, value })
+            },
         )
         .await?;
         io.subscribe_topic_with(
-            topic::new().v1().follow().target(),
+            topic::new().follow().target(),
             InputPolicy::latest(),
-            Input::FollowTarget,
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let follow_contract::Target::V1(value) = value;
+                Input::FollowTarget(Received { at_ns, value })
+            },
         )
         .await?;
-        io.subscribe_topic(
-            topic::new().v1().safety().authorization(),
-            Input::SafetyAuthorization,
-        )
+        io.subscribe_topic(topic::new().safety().authorization(), |sample| {
+            let Received { at_ns, value } = sample;
+            let safety_contract::SafetyAuthorization::V1(value) = value;
+            Input::SafetyAuthorization(Received { at_ns, value })
+        })
         .await?;
 
-        let drive_target_publisher = io
-            .publisher_topic(topic::new().v1().drive().target())
-            .await?;
-        let state_topic = topic::new().v1().motion().state();
+        let drive_target_publisher = io.publisher_topic(topic::new().drive().target()).await?;
+        let state_topic = topic::new().motion().state();
         let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
@@ -115,7 +125,7 @@ impl Runtime for MotionRuntime {
         let drive_target = arbitration.drive_target;
 
         self.drive_target_publisher
-            .put(now_ns, &drive_target)
+            .put(now_ns, &drive_contract::Target::V1(drive_target))
             .await?;
         let state = State {
             active_source: arbitration.active_source,
@@ -124,7 +134,9 @@ impl Runtime for MotionRuntime {
         };
         self.decision_log
             .observe(now_ns, (state.active_source, state.reason));
-        self.state_publisher.put(now_ns, &state).await?;
+        self.state_publisher
+            .put(now_ns, &motion_contract::State::V1(state))
+            .await?;
         Ok(())
     }
 
