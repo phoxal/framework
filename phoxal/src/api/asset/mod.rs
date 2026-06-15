@@ -3,14 +3,14 @@ pub mod v1;
 contract! {
     #[derive(Eq)]
     pub enum GetRequest {
-        "1" => V1(v1::GetRequest),
+        V1(v1::GetRequest),
     }
 }
 
 contract! {
     #[derive(Eq)]
     pub enum GetResponse {
-        "1" => V1(v1::GetResponse),
+        V1(v1::GetResponse),
     }
 }
 

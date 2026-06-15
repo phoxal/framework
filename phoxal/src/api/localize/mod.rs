@@ -2,43 +2,43 @@ pub mod v1;
 
 contract! {
     pub enum LocalizationState {
-        "1" => V1(v1::LocalizationState),
+        V1(v1::LocalizationState),
     }
 }
 
 contract! {
     pub enum PoseEstimate {
-        "1" => V1(v1::PoseEstimate),
+        V1(v1::PoseEstimate),
     }
 }
 
 contract! {
     pub enum LocalizationRevision {
-        "1" => V1(v1::LocalizationRevision),
+        V1(v1::LocalizationRevision),
     }
 }
 
 contract! {
     pub enum Keyframe {
-        "1" => V1(v1::Keyframe),
+        V1(v1::Keyframe),
     }
 }
 
 contract! {
     pub enum PoseGraphCorrection {
-        "1" => V1(v1::PoseGraphCorrection),
+        V1(v1::PoseGraphCorrection),
     }
 }
 
 contract! {
     pub enum PoseGraphRequest {
-        "1" => V1(v1::PoseGraphRequest),
+        V1(v1::PoseGraphRequest),
     }
 }
 
 contract! {
     pub enum PoseGraphResponse {
-        "1" => V1(v1::PoseGraphResponse),
+        V1(v1::PoseGraphResponse),
     }
 }
 
@@ -50,13 +50,13 @@ impl crate::bus::zenoh::BusyResponse for PoseGraphResponse {
 
 contract! {
     pub enum KeyframeRequest {
-        "1" => V1(v1::KeyframeRequest),
+        V1(v1::KeyframeRequest),
     }
 }
 
 contract! {
     pub enum KeyframeResponse {
-        "1" => V1(v1::KeyframeResponse),
+        V1(v1::KeyframeResponse),
     }
 }
 
@@ -68,13 +68,13 @@ impl crate::bus::zenoh::BusyResponse for KeyframeResponse {
 
 contract! {
     pub enum CorrectionsRequest {
-        "1" => V1(v1::CorrectionsRequest),
+        V1(v1::CorrectionsRequest),
     }
 }
 
 contract! {
     pub enum CorrectionsResponse {
-        "1" => V1(v1::CorrectionsResponse),
+        V1(v1::CorrectionsResponse),
     }
 }
 

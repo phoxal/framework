@@ -14,12 +14,16 @@ pub(crate) fn r#wire_eq<T: Serialize>(left: &T, right: &T) -> bool {
 macro_rules! contract {
     (
         $(#[$attr:meta])*
-        $vis:vis enum $name:ident { $($tok:literal => $variant:ident($inner:path)),+ $(,)? }
+        $vis:vis enum $name:ident { $($variant:ident($inner:path)),+ $(,)? }
     ) => {
+        // The wire version tag is the lowercased variant name (`V1` -> "v1"), so
+        // a contract declares only its variants — no separate token to keep in
+        // sync. Variants are append-only and never renamed (renaming one changes
+        // the wire), per src/api/README.md.
         #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
-        #[serde(tag = "v", content = "data")]
+        #[serde(tag = "v", content = "data", rename_all = "lowercase")]
         $(#[$attr])*
-        $vis enum $name { $( #[serde(rename = $tok)] $variant($inner), )+ }
+        $vis enum $name { $( $variant($inner), )+ }
 
         impl ::core::cmp::PartialEq for $name {
             fn eq(&self, other: &Self) -> bool {

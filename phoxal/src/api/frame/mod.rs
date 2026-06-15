@@ -3,32 +3,32 @@ pub mod v1;
 contract! {
     #[derive(Eq)]
     pub enum Tree {
-        "1" => V1(v1::Tree),
+        V1(v1::Tree),
     }
 }
 
 contract! {
     pub enum Static {
-        "1" => V1(v1::Static),
+        V1(v1::Static),
     }
 }
 
 contract! {
     pub enum FrameTransform {
-        "1" => V1(v1::FrameTransform),
+        V1(v1::FrameTransform),
     }
 }
 
 contract! {
     #[derive(Eq)]
     pub enum FrameLookupRequest {
-        "1" => V1(v1::FrameLookupRequest),
+        V1(v1::FrameLookupRequest),
     }
 }
 
 contract! {
     pub enum FrameLookupResponse {
-        "1" => V1(v1::FrameLookupResponse),
+        V1(v1::FrameLookupResponse),
     }
 }
 
