@@ -1,38 +1,33 @@
 pub mod v1;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum Frontiers {
-    #[serde(rename = "1")]
-    V1(v1::Frontiers),
+contract! {
+    pub enum Frontiers {
+        V1(v1::Frontiers),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum GoalCandidates {
-    #[serde(rename = "1")]
-    V1(v1::GoalCandidates),
+contract! {
+    pub enum GoalCandidates {
+        V1(v1::GoalCandidates),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum State {
-    #[serde(rename = "1")]
-    V1(v1::State),
+contract! {
+    #[derive(Eq)]
+    pub enum State {
+        V1(v1::State),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum Scoring {
-    #[serde(rename = "1")]
-    V1(v1::Scoring),
+contract! {
+    pub enum Scoring {
+        V1(v1::Scoring),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum RejectedCandidates {
-    #[serde(rename = "1")]
-    V1(v1::RejectedCandidates),
+contract! {
+    #[derive(Eq)]
+    pub enum RejectedCandidates {
+        V1(v1::RejectedCandidates),
+    }
 }

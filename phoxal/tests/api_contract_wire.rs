@@ -83,7 +83,7 @@ where
     assert_eq!(
         structure,
         json!({
-            "v": "1",
+            "v": "v1",
             "data": data,
         })
     );

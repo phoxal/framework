@@ -1,5 +1,38 @@
 //! Domain-first typed bus wire contracts.
 
+use serde::Serialize;
+
+/// Wire equality: two contracts are equal iff they serialize identically.
+pub(crate) fn r#wire_eq<T: Serialize>(left: &T, right: &T) -> bool {
+    matches!(
+        (rmp_serde::to_vec_named(left), rmp_serde::to_vec_named(right)),
+        (Ok(left), Ok(right)) if left == right
+    )
+}
+
+/// Declares a domain-first versioned wire contract enum.
+macro_rules! contract {
+    (
+        $(#[$attr:meta])*
+        $vis:vis enum $name:ident { $($variant:ident($inner:path)),+ $(,)? }
+    ) => {
+        // The wire version tag is the lowercased variant name (`V1` -> "v1"), so
+        // a contract declares only its variants — no separate token to keep in
+        // sync. Variants are append-only and never renamed (renaming one changes
+        // the wire), per src/api/README.md.
+        #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
+        #[serde(tag = "v", content = "data", rename_all = "lowercase")]
+        $(#[$attr])*
+        $vis enum $name { $( $variant($inner), )+ }
+
+        impl ::core::cmp::PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                $crate::api::wire_eq(self, other)
+            }
+        }
+    };
+}
+
 pub mod asset;
 pub mod component;
 pub mod drive;
