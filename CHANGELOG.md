@@ -4,12 +4,27 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0](https://github.com/phoxal/framework/releases/tag/v0.9.0) - 2026-06-15
+
+
+### Added
+
+- *(api)* Domain-first versioned contract enums; drop schema_version axis (#69) (#70) [**breaking**]
+
+### Refactored
+
+- *(api)* Collapse contract enums into a `contract!` macro (#72)
+
 ## [0.8.0](https://github.com/phoxal/framework/releases/tag/v0.8.0) - 2026-06-13
 
 
 ### Added
 
 - *(release)* Ship the Webots simulator runtime on the framework version train (#65)
+
+### Fixed
+
+- *(release)* Assert Webots link via binary deps, add pre-merge simulator check (#67)
 
 ## [0.7.0](https://github.com/phoxal/framework/releases/tag/v0.7.0) - 2026-06-11
 
