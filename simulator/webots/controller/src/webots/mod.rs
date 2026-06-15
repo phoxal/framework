@@ -2,8 +2,8 @@ pub(crate) mod controller;
 pub(crate) mod output;
 pub(crate) mod registry;
 
-use phoxal::api::v1::component::capability::led::Command as LedCommand;
-use phoxal::api::v1::component::capability::motor::Command as MotorCommand;
+use phoxal::api::component::capability::led::v1::Command as LedCommand;
+use phoxal::api::component::capability::motor::v1::Command as MotorCommand;
 use phoxal::model::component::v1::CapabilityRef;
 
 #[derive(Clone, Debug)]

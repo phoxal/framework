@@ -1,16 +1,16 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::api::v1::frame::{FrameId, FrameLookupResponse, FrameTransform, Source};
-use crate::api::v1::localize::{
+use crate::api::frame::v1::{FrameId, FrameLookupResponse, FrameTransform, Source};
+use crate::api::localize::v1::{
     AffectedKeyframeSummary, Keyframe, KeyframeId, LocalizationRevision, LocalizationRevisionCause,
     LocalizationRevisionId, PoseEstimate as LocalizePoseEstimate, Region,
 };
-use crate::api::v1::odometry::{
+use crate::api::odometry::v1::{
     OdometryEstimate, PoseEstimate, Status, StatusMode, VelocityEstimate,
 };
-use crate::api::v1::presence::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
-use crate::api::v1::simulation::pose::Pose;
+use crate::api::presence::v1::{Heartbeat, Readiness, RuntimeId, RuntimeReadiness, Summary};
+use crate::api::simulation::pose::v1::Pose;
 use crate::bus::topic::Topic;
 use crate::model::v1;
 use anyhow::{Context, Result, bail, ensure};
@@ -18,21 +18,11 @@ use nalgebra::{Isometry3, Quaternion, Translation3, UnitQuaternion};
 
 const TRACK_WIDTH_M: f64 = 0.40;
 
-pub fn assert_topic_schema<Kind>(
-    topic: Topic<Kind>,
-    schema_name: &str,
-    schema_version: u32,
-    label: &str,
-) -> Result<()> {
+pub fn assert_topic_schema<Kind>(topic: Topic<Kind>, schema_name: &str, label: &str) -> Result<()> {
     ensure!(
         topic.schema() == schema_name,
         "{label} schema name drifted: expected {schema_name}, got {}",
         topic.schema()
-    );
-    ensure!(
-        topic.version() == schema_version,
-        "{label} schema version drifted: expected {schema_version}, got {}",
-        topic.version()
     );
     Ok(())
 }
@@ -259,7 +249,7 @@ pub fn estimate_from_wheel_delta(left_delta_m: f64, right_delta_m: f64) -> Odome
             linear_mps: [delta_center_m, 0.0, 0.0],
             angular_radps: [0.0, 0.0, delta_yaw_rad],
         },
-        covariance: Some(crate::api::v1::odometry::Covariance {
+        covariance: Some(crate::api::odometry::v1::Covariance {
             values: vec![0.0; 36],
         }),
         status: Status {

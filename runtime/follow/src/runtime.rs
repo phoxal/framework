@@ -2,10 +2,13 @@ use std::time::Duration;
 
 use crate::core::FollowDecision;
 use anyhow::Result;
-use phoxal::api::v1::follow::{FollowReason, FollowStatus, State, Target};
-use phoxal::api::v1::localize::LocalizationState;
-use phoxal::api::v1::plan::Path;
-use phoxal::api::v1::topic;
+use phoxal::api::follow::{
+    self as follow_contract,
+    v1::{FollowReason, FollowStatus},
+};
+use phoxal::api::localize::{self as localize_contract, v1::LocalizationState};
+use phoxal::api::plan::{self as plan_contract, v1::Path};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
@@ -34,8 +37,8 @@ pub struct FollowRuntime {
     latest_path: Option<Received<Path>>,
     latest_localize: Option<Received<LocalizationState>>,
     decision_log: DecisionLog<FollowLogKey>,
-    target_publisher: TopicPublisher<Target>,
-    state_publisher: TopicPublisher<State>,
+    target_publisher: TopicPublisher<follow_contract::Target>,
+    state_publisher: TopicPublisher<follow_contract::State>,
 }
 
 type FollowLogKey = (FollowStatus, Option<FollowReason>);
@@ -58,21 +61,24 @@ impl Runtime for FollowRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_topic_with(
-            topic::new().v1().plan().path(),
+            topic::new().plan().path(),
             InputPolicy::latest(),
-            Input::Path,
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let plan_contract::Path::V1(value) = value;
+                Input::Path(Received { at_ns, value })
+            },
         )
         .await?;
-        io.subscribe_topic(
-            topic::new().v1().localize().state(),
-            Input::LocalizationState,
-        )
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Received { at_ns, value })
+        })
         .await?;
 
-        let state_topic = topic::new().v1().follow().state();
-        let target_publisher = io
-            .publisher_topic(topic::new().v1().follow().target())
-            .await?;
+        let state_topic = topic::new().follow().state();
+        let target_publisher = io.publisher_topic(topic::new().follow().target()).await?;
         let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
@@ -100,10 +106,14 @@ impl Runtime for FollowRuntime {
             decision.outputs(self.latest_path.as_ref().map(|sample| &sample.value));
         let timestamp_ns = step.tick.time_ns();
 
-        self.target_publisher.put(timestamp_ns, &target).await?;
+        self.target_publisher
+            .put(timestamp_ns, &follow_contract::Target::V1(target))
+            .await?;
         self.decision_log
             .observe(timestamp_ns, (state.status, state.reason));
-        self.state_publisher.put(timestamp_ns, &state).await?;
+        self.state_publisher
+            .put(timestamp_ns, &follow_contract::State::V1(state))
+            .await?;
 
         Ok(())
     }

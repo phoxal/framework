@@ -1,3 +1,3 @@
 fn main() {
-    let _ = phoxal::api::v1::topic::new().v1().drive().motor();
+    let _ = phoxal::api::topic::new().drive().motor();
 }

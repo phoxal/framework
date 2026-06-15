@@ -1,13 +1,12 @@
 use crate::bus::{Error, Result};
 
-const NO_TIMESTAMP_LEN: usize = 5;
-const TIMESTAMP_LEN: usize = 13;
+const NO_TIMESTAMP_LEN: usize = 1;
+const TIMESTAMP_LEN: usize = 9;
 const NO_TIMESTAMP: u8 = 0;
 const HAS_TIMESTAMP: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BusMetadata {
-    pub schema_version: u32,
     pub produced_at_ns: Option<u64>,
 }
 
@@ -18,7 +17,6 @@ impl BusMetadata {
         } else {
             NO_TIMESTAMP_LEN
         });
-        bytes.extend_from_slice(&self.schema_version.to_le_bytes());
         match self.produced_at_ns {
             Some(produced_at_ns) => {
                 bytes.push(HAS_TIMESTAMP);
@@ -37,17 +35,14 @@ impl BusMetadata {
             )));
         }
 
-        let schema_version = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        match (bytes[4], bytes.len()) {
+        match (bytes[0], bytes.len()) {
             (NO_TIMESTAMP, NO_TIMESTAMP_LEN) => Ok(Self {
-                schema_version,
                 produced_at_ns: None,
             }),
             (HAS_TIMESTAMP, TIMESTAMP_LEN) => Ok(Self {
-                schema_version,
                 produced_at_ns: Some(u64::from_le_bytes([
-                    bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
-                    bytes[12],
+                    bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[8],
                 ])),
             }),
             (NO_TIMESTAMP, TIMESTAMP_LEN) => Err(Error::TypedDecode(
@@ -70,12 +65,11 @@ mod tests {
     #[test]
     fn metadata_roundtrips_without_timestamp() -> crate::bus::Result<()> {
         let metadata = BusMetadata {
-            schema_version: 7,
             produced_at_ns: None,
         };
         let encoded = metadata.encode();
 
-        assert_eq!(encoded.len(), 5);
+        assert_eq!(encoded.len(), 1);
         assert_eq!(BusMetadata::decode(&encoded)?, metadata);
         Ok(())
     }
@@ -83,12 +77,11 @@ mod tests {
     #[test]
     fn metadata_roundtrips_with_timestamp() -> crate::bus::Result<()> {
         let metadata = BusMetadata {
-            schema_version: 7,
             produced_at_ns: Some(123_456_789),
         };
         let encoded = metadata.encode();
 
-        assert_eq!(encoded.len(), 13);
+        assert_eq!(encoded.len(), 9);
         assert_eq!(BusMetadata::decode(&encoded)?, metadata);
         Ok(())
     }
@@ -96,7 +89,7 @@ mod tests {
     #[test]
     fn metadata_rejects_corrupt_buffer() {
         assert!(BusMetadata::decode(&[1, 2, 3]).is_err());
-        assert!(BusMetadata::decode(&[1, 0, 0, 0, 2]).is_err());
-        assert!(BusMetadata::decode(&[1, 0, 0, 0, 0, 9, 9, 9, 9, 9, 9, 9, 9]).is_err());
+        assert!(BusMetadata::decode(&[2]).is_err());
+        assert!(BusMetadata::decode(&[0, 9, 9, 9, 9, 9, 9, 9, 9]).is_err());
     }
 }

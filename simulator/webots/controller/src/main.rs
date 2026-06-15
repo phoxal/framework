@@ -1,9 +1,11 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
-use phoxal::api::v1::component::capability::led::Command as LedCommand;
-use phoxal::api::v1::component::capability::motor::Command as MotorCommand;
-use phoxal::api::v1::simulation::clock::Clock;
-use phoxal::api::v1::topic;
+use phoxal::api::component::capability::{
+    led::{self as led_contract},
+    motor::{self as motor_contract, v1::Command as MotorCommand},
+};
+use phoxal::api::simulation::clock::v1::Clock;
+use phoxal::api::topic;
 use phoxal::bus::Bus;
 use phoxal::bus::Error as BusError;
 use phoxal::bus::builder::Builder;
@@ -140,7 +142,6 @@ async fn spawn_command_inputs(
             match &capability.controller {
                 webots::controller::Controller::Motor(config) => {
                     let command_topic = topic::new()
-                        .v1()
                         .component(&capability.capability.component_id)
                         .motor(&capability.capability.capability_id)
                         .command();
@@ -153,7 +154,6 @@ async fn spawn_command_inputs(
                 }
                 webots::controller::Controller::Led(_) => {
                     let command_topic = topic::new()
-                        .v1()
                         .component(&capability.capability.component_id)
                         .led(&capability.capability.capability_id)
                         .command();
@@ -172,7 +172,7 @@ async fn spawn_command_inputs(
 }
 
 fn spawn_motor_target_subscription(
-    subscriber: TypedTopicSubscriber<MotorCommand>,
+    subscriber: TypedTopicSubscriber<motor_contract::Command>,
     capability: CapabilityRef,
     actuator_type: webots::controller::ActuatorType,
     command_cache: Arc<RwLock<BTreeMap<CapabilityRef, webots::Command>>>,
@@ -180,7 +180,10 @@ fn spawn_motor_target_subscription(
     tokio::spawn(async move {
         loop {
             let command = match subscriber.recv().await {
-                Ok(message) => message.value,
+                Ok(message) => {
+                    let motor_contract::Command::V1(command) = message.value;
+                    command
+                }
                 Err(BusError::TypedDecode(error)) => {
                     warn!(capability = %capability, error = %error, "motor target payload decode failed");
                     continue;
@@ -207,14 +210,17 @@ fn spawn_motor_target_subscription(
 }
 
 fn spawn_led_command_subscription(
-    subscriber: TypedTopicSubscriber<LedCommand>,
+    subscriber: TypedTopicSubscriber<led_contract::Command>,
     capability: CapabilityRef,
     command_cache: Arc<RwLock<BTreeMap<CapabilityRef, webots::Command>>>,
 ) {
     tokio::spawn(async move {
         loop {
             let command = match subscriber.recv().await {
-                Ok(message) => message.value,
+                Ok(message) => {
+                    let led_contract::Command::V1(command) = message.value;
+                    command
+                }
                 Err(BusError::TypedDecode(error)) => {
                     warn!(capability = %capability, error = %error, "led command payload decode failed");
                     continue;

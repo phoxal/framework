@@ -1,6 +1,6 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::accelerometer::Sample;
+use phoxal::api::component::capability::accelerometer::v1::Sample;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,7 +45,7 @@ impl Accelerometer {
 #[cfg(test)]
 mod tests {
 
-    use phoxal::api::v1::component::capability::accelerometer::Sample;
+    use phoxal::api::component::capability::accelerometer::v1::Sample;
 
     #[test]
     fn raw_values_are_forwarded_without_zeroing() {

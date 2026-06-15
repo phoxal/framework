@@ -1,9 +1,9 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use phoxal::api::v1::follow::{FollowReason, FollowStatus, State, Target};
-use phoxal::api::v1::localize::{LocalizationMode, LocalizationState};
-use phoxal::api::v1::map::MapRevisionId;
-use phoxal::api::v1::plan::{Path, PathPose};
+use phoxal::api::follow::v1::{FollowReason, FollowStatus, State, Target};
+use phoxal::api::localize::v1::{LocalizationMode, LocalizationState};
+use phoxal::api::map::v1::MapRevisionId;
+use phoxal::api::plan::v1::{Path, PathPose};
 
 const DEFAULT_FRAME_ID: &str = "map";
 
@@ -211,7 +211,7 @@ fn zero_target(latest_path: Option<&Path>) -> Target {
                 epoch: 0,
                 sequence: 0,
             },
-            built_from_localize_revision: phoxal::api::v1::localize::LocalizationRevisionId {
+            built_from_localize_revision: phoxal::api::localize::v1::LocalizationRevisionId {
                 epoch: 0,
                 sequence: 0,
             },
@@ -249,11 +249,11 @@ fn yaw_from_xyzw(rotation_xyzw: [f64; 4]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::api::v1::frame::FrameId;
-    use phoxal::api::v1::localize::{
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::{
         LocalizationRevisionId, LocalizationSource, LocalizationStatus, PoseEstimate,
     };
-    use phoxal::api::v1::mission::{Goal, GoalPose, GoalSource, GoalTolerance};
+    use phoxal::api::mission::v1::{Goal, GoalPose, GoalSource, GoalTolerance};
 
     #[test]
     fn control_arrived_within_tolerance() {

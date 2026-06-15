@@ -1,7 +1,7 @@
-use phoxal::api::v1::localize::{LocalizationMode, LocalizationRevisionId, LocalizationState};
-use phoxal::api::v1::map::{MapRevision, MapRevisionId};
-use phoxal::api::v1::mission::{Goal, GoalPose};
-use phoxal::api::v1::plan::{Path, PathPose, PlanReason, PlanStatus, State};
+use phoxal::api::localize::v1::{LocalizationMode, LocalizationRevisionId, LocalizationState};
+use phoxal::api::map::v1::{MapRevision, MapRevisionId};
+use phoxal::api::mission::v1::{Goal, GoalPose};
+use phoxal::api::plan::v1::{Path, PathPose, PlanReason, PlanStatus, State};
 
 const WAYPOINT_SPACING_M: f64 = 0.25;
 
@@ -212,10 +212,10 @@ impl PlanDecision {
 mod tests {
     use std::f64::consts::{FRAC_PI_4, PI};
 
-    use phoxal::api::v1::frame::FrameId;
-    use phoxal::api::v1::localize::{LocalizationSource, LocalizationStatus, PoseEstimate};
-    use phoxal::api::v1::map::{MapRevisionCause, RegionSummary};
-    use phoxal::api::v1::mission::{GoalSource, GoalTolerance};
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::{LocalizationSource, LocalizationStatus, PoseEstimate};
+    use phoxal::api::map::v1::{MapRevisionCause, RegionSummary};
+    use phoxal::api::mission::v1::{GoalSource, GoalTolerance};
 
     use super::*;
 

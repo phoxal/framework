@@ -7,9 +7,11 @@ mod active {
     use std::path::{Path, PathBuf};
 
     use anyhow::{Context, Result, anyhow, bail};
-    use phoxal::api::v1::component::capability::{camera, depth, imu};
-    use phoxal::api::v1::frame::FrameId;
-    use phoxal::api::v1::localize::{
+    use phoxal::api::component::capability::{
+        camera::v1 as camera, depth::v1 as depth, imu::v1 as imu,
+    };
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::{
         AffectedKeyframeSummary, Covariance, ImuBiasEstimate, Keyframe, KeyframeId,
         LocalizationMode, LocalizationRevisionCause, LocalizationSource, LocalizationStatus,
         LocalizationStatusReason, PoseEstimate, VelocityEstimate,
@@ -334,7 +336,7 @@ mod active {
 
         fn ingest_odometry(
             &mut self,
-            _sample: Received<phoxal::api::v1::odometry::OdometryEstimate>,
+            _sample: Received<phoxal::api::odometry::v1::OdometryEstimate>,
         ) {
         }
 
@@ -1161,7 +1163,7 @@ mod active {
         use std::path::PathBuf;
 
         use anyhow::Context as _;
-        use phoxal::api::v1::simulation::clock::Clock;
+        use phoxal::api::simulation::clock::v1::Clock;
 
         use super::*;
 

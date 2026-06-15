@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::led::Command;
+use phoxal::api::component::capability::led::v1::Command;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Default, Deserialize)]

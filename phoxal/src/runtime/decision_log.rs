@@ -24,7 +24,6 @@ pub struct DecisionLogEmission<K> {
     pub runtime_id: &'static str,
     pub decision_label: String,
     pub schema_name: &'static str,
-    pub schema_version: u32,
     pub key: K,
     pub now_ns: u64,
     pub suppressed_count: u64,
@@ -36,7 +35,6 @@ pub struct DecisionLog<K> {
     runtime_id: &'static str,
     decision_label: String,
     schema_name: &'static str,
-    schema_version: u32,
     min_interval_ns: u64,
     last_emitted_key: Option<K>,
     last_observed_key: Option<K>,
@@ -52,19 +50,17 @@ where
     ///
     /// `runtime_id` is the owning runtime's stable id, `decision_label` is the
     /// stable label operators use to identify the decision surface (normally the
-    /// runtime state topic), and `schema_name` / `schema_version` identify the
-    /// typed contract the key was derived from.
+    /// runtime state topic), and `schema_name` identifies the typed contract
+    /// family the key was derived from.
     pub fn new(
         runtime_id: &'static str,
         decision_label: impl Into<String>,
         schema_name: &'static str,
-        schema_version: u32,
     ) -> Self {
         Self {
             runtime_id,
             decision_label: decision_label.into(),
             schema_name,
-            schema_version,
             min_interval_ns: DEFAULT_DECISION_LOG_MIN_INTERVAL_NS,
             last_emitted_key: None,
             last_observed_key: None,
@@ -76,12 +72,7 @@ where
     /// Creates a decision logger whose label and schema identity come from a
     /// fluent typed topic.
     pub fn from_topic<T>(runtime_id: &'static str, topic: &Topic<PubSub<T>>) -> Self {
-        Self::new(
-            runtime_id,
-            topic.key().into_owned(),
-            topic.schema(),
-            topic.version(),
-        )
+        Self::new(runtime_id, topic.key().into_owned(), topic.schema())
     }
 
     /// Overrides the logical-time bound between emitted decision log events.
@@ -140,7 +131,6 @@ where
             runtime_id = self.runtime_id,
             decision_label = self.decision_label.as_str(),
             schema_name = self.schema_name,
-            schema_version = self.schema_version,
             decision_key = ?key,
             now_ns,
             suppressed_count,
@@ -156,7 +146,6 @@ where
             runtime_id: self.runtime_id,
             decision_label: self.decision_label.clone(),
             schema_name: self.schema_name,
-            schema_version: self.schema_version,
             key,
             now_ns,
             suppressed_count,
@@ -178,13 +167,8 @@ mod tests {
     }
 
     fn decision_log() -> DecisionLog<Key> {
-        DecisionLog::new(
-            "test-runtime",
-            "runtime/test/state",
-            "runtime/test/state",
-            7,
-        )
-        .with_min_interval_ns(MIN_INTERVAL_NS)
+        DecisionLog::new("test-runtime", "runtime/test/state", "runtime/test/state")
+            .with_min_interval_ns(MIN_INTERVAL_NS)
     }
 
     fn emission(key: Key, now_ns: u64, suppressed_count: u64) -> DecisionLogEmission<Key> {
@@ -192,7 +176,6 @@ mod tests {
             runtime_id: "test-runtime",
             decision_label: "runtime/test/state".to_string(),
             schema_name: "runtime/test/state",
-            schema_version: 7,
             key,
             now_ns,
             suppressed_count,
@@ -201,16 +184,15 @@ mod tests {
 
     #[test]
     fn from_topic_uses_typed_topic_identity() {
-        let topic = crate::api::v1::topic::new().v1().motion().state();
+        let topic = crate::api::topic::new().motion().state();
         let mut log = DecisionLog::from_topic("motion", &topic);
 
         assert_eq!(
             log.observe(10, Key::A),
             Some(DecisionLogEmission {
                 runtime_id: "motion",
-                decision_label: "v1/motion/state".to_string(),
-                schema_name: "v1/motion/state",
-                schema_version: 1,
+                decision_label: "motion/state".to_string(),
+                schema_name: "motion/state",
                 key: Key::A,
                 now_ns: 10,
                 suppressed_count: 0,

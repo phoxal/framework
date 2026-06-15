@@ -1,6 +1,6 @@
-use crate::api::v1::localize::{LocalizationRevision, LocalizationRevisionId};
-use crate::api::v1::map::{MapRevision, MapRevisionId};
-use crate::api::v1::simulation::pose::Pose;
+use crate::api::localize::v1::{LocalizationRevision, LocalizationRevisionId};
+use crate::api::map::v1::{MapRevision, MapRevisionId};
+use crate::api::simulation::pose::v1::Pose;
 use anyhow::{Result, bail};
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -142,12 +142,12 @@ fn angle_delta(start: f64, end: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::api::v1::localize::{
+    use crate::api::localize::v1::{
         AffectedKeyframeSummary, LocalizationRevision, LocalizationRevisionCause,
         LocalizationRevisionId,
     };
-    use crate::api::v1::map::{MapRevision, MapRevisionCause, MapRevisionId};
-    use crate::api::v1::simulation::pose::Pose;
+    use crate::api::map::v1::{MapRevision, MapRevisionCause, MapRevisionId};
+    use crate::api::simulation::pose::v1::Pose;
 
     use super::{
         Meters, assert_forward_delta, assert_lateral_drift, assert_revision_linked,

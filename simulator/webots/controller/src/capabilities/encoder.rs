@@ -1,6 +1,6 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::encoder::Sample;
+use phoxal::api::component::capability::encoder::v1::Sample;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

@@ -2,9 +2,14 @@ use std::time::Duration;
 
 use crate::core::DifferentialDrive;
 use anyhow::{Result, bail};
-use phoxal::api::v1::component::capability::motor::Command as MotorCommand;
-use phoxal::api::v1::drive::{ActuatorAuthority, State, StopReason, Target};
-use phoxal::api::v1::topic;
+use phoxal::api::component::capability::motor::{
+    self as motor_contract, v1::Command as MotorCommand,
+};
+use phoxal::api::drive::{
+    self as drive_contract,
+    v1::{ActuatorAuthority, State, StopReason, Target},
+};
+use phoxal::api::topic;
 use phoxal::bus::topic::{PubSub, Topic};
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
@@ -106,7 +111,7 @@ fn resolve_motor_bindings(
 async fn motor_publishers(
     io: &mut Io<Input>,
     motors: &[MotorBinding],
-) -> Result<Vec<TopicPublisher<MotorCommand>>> {
+) -> Result<Vec<TopicPublisher<motor_contract::Command>>> {
     let mut publishers = Vec::with_capacity(motors.len());
     for motor in motors {
         publishers.push(io.publisher_topic(motor.command_topic()).await?);
@@ -128,9 +133,9 @@ pub enum Input {
 pub struct DriveRuntime {
     config: Config,
     latest_target: Option<Received<Target>>,
-    left_motor_publishers: Vec<TopicPublisher<MotorCommand>>,
-    right_motor_publishers: Vec<TopicPublisher<MotorCommand>>,
-    state_publisher: TopicPublisher<State>,
+    left_motor_publishers: Vec<TopicPublisher<motor_contract::Command>>,
+    right_motor_publishers: Vec<TopicPublisher<motor_contract::Command>>,
+    state_publisher: TopicPublisher<drive_contract::State>,
 }
 
 #[async_trait::async_trait]
@@ -151,17 +156,19 @@ impl Runtime for DriveRuntime {
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
         io.subscribe_topic_with(
-            topic::new().v1().drive().target(),
+            topic::new().drive().target(),
             InputPolicy::latest(),
-            Input::DriveTarget,
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let drive_contract::Target::V1(value) = value;
+                Input::DriveTarget(Received { at_ns, value })
+            },
         )
         .await?;
 
         let left_motor_publishers = motor_publishers(io, &config.left_motors).await?;
         let right_motor_publishers = motor_publishers(io, &config.right_motors).await?;
-        let state_publisher = io
-            .publisher_topic(topic::new().v1().drive().state())
-            .await?;
+        let state_publisher = io.publisher_topic(topic::new().drive().state()).await?;
 
         Ok(Self {
             config,
@@ -189,7 +196,10 @@ impl Runtime for DriveRuntime {
             .zip(motor_commands.left.iter())
         {
             publisher
-                .put(now_ns, &MotorCommand::Velocity(*command))
+                .put(
+                    now_ns,
+                    &motor_contract::Command::V1(MotorCommand::Velocity(*command)),
+                )
                 .await?;
         }
         for (publisher, command) in self
@@ -198,7 +208,10 @@ impl Runtime for DriveRuntime {
             .zip(motor_commands.right.iter())
         {
             publisher
-                .put(now_ns, &MotorCommand::Velocity(*command))
+                .put(
+                    now_ns,
+                    &motor_contract::Command::V1(MotorCommand::Velocity(*command)),
+                )
                 .await?;
         }
 
@@ -208,12 +221,12 @@ impl Runtime for DriveRuntime {
         self.state_publisher
             .put(
                 now_ns,
-                &State {
+                &drive_contract::State::V1(State {
                     target,
                     limited_target,
                     actuator_authority: authority,
                     stop_reason,
-                },
+                }),
             )
             .await?;
 
@@ -284,9 +297,8 @@ impl DriveRuntime {
 }
 
 impl MotorBinding {
-    fn command_topic(&self) -> Topic<PubSub<MotorCommand>> {
+    fn command_topic(&self) -> Topic<PubSub<motor_contract::Command>> {
         topic::new()
-            .v1()
             .component(self.component_id.clone())
             .motor(self.capability_id.clone())
             .command()

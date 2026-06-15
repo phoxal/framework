@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use crate::api::v1::simulation::clock::Clock;
-use crate::api::v1::topic;
+use crate::api::simulation::{clock, clock::v1::Clock};
+use crate::api::topic;
 use crate::bus::Bus;
 use crate::bus::typed::TypedTopicSubscriber;
 use anyhow::{Result, anyhow};
@@ -97,7 +97,7 @@ impl RealClock {
 
 enum StepSource {
     Local(RealClock),
-    Simulation(TypedTopicSubscriber<Clock>),
+    Simulation(TypedTopicSubscriber<clock::Clock>),
 }
 
 pub(crate) struct StepStream {
@@ -110,10 +110,7 @@ impl StepStream {
     pub(crate) async fn new(bus: &Bus, simulation: bool, period: Duration) -> Result<Self> {
         Ok(Self {
             source: if simulation {
-                StepSource::Simulation(
-                    bus.subscriber(&topic::new().v1().simulation().clock())
-                        .await?,
-                )
+                StepSource::Simulation(bus.subscriber(&topic::new().simulation().clock()).await?)
             } else {
                 StepSource::Local(RealClock::new(period))
             },
@@ -128,7 +125,7 @@ impl StepStream {
                 StepSource::Local(clock) => Ok(clock.tick().await),
                 StepSource::Simulation(subscriber) => match subscriber.recv().await {
                     Ok(received) => {
-                        let tick = received.value;
+                        let clock::Clock::V1(tick) = received.value;
                         if self.bound_epoch != Some(tick.epoch()) {
                             self.bound_epoch = Some(tick.epoch());
                             self.last_step = None;

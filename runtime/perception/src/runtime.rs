@@ -2,15 +2,24 @@ use std::time::Duration;
 
 use crate::core::{HealthState, Tracker, TrackerConfig};
 use anyhow::{Result, bail};
-use phoxal::api::v1::component::capability::{camera, depth};
-use phoxal::api::v1::frame::{FrameId, Tree};
-use phoxal::api::v1::localize::LocalizationState;
-use phoxal::api::v1::map::MapRevision;
-use phoxal::api::v1::perception::{
-    BoundingBox, Detection, Detections, PerceptionDegradedReason, PerceptionState,
-    PerceptionStoppedReason, RevisionLinkage,
+use phoxal::api::component::capability::{
+    camera::{self as camera_contract, v1 as camera},
+    depth::{self as depth_contract, v1 as depth},
 };
-use phoxal::api::v1::topic;
+use phoxal::api::frame::{
+    self as frame_contract,
+    v1::{FrameId, Tree},
+};
+use phoxal::api::localize::{self as localize_contract, v1::LocalizationState};
+use phoxal::api::map::{self as map_contract, v1::MapRevision};
+use phoxal::api::perception::{
+    self as perception_contract,
+    v1::{
+        BoundingBox, Detection, Detections, PerceptionDegradedReason, PerceptionState,
+        PerceptionStoppedReason, RevisionLinkage,
+    },
+};
+use phoxal::api::topic;
 use phoxal::bus::topic::{PubSub, Topic};
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
@@ -33,8 +42,8 @@ const PLACEHOLDER_WEIGHTS_VERSION: &str = "none";
 
 #[derive(Debug, Clone)]
 pub(crate) struct PerceptionSource {
-    camera_topic: Topic<PubSub<camera::Frame>>,
-    depth_topic: Topic<PubSub<depth::Depth>>,
+    camera_topic: Topic<PubSub<camera_contract::Frame>>,
+    depth_topic: Topic<PubSub<depth_contract::Depth>>,
     source_frame_id: FrameId,
 }
 
@@ -92,8 +101,8 @@ pub(crate) struct PerceptionRuntime {
     model_id: String,
     weights_version: String,
     cadence_hz: f32,
-    detections_publisher: TopicPublisher<Detections>,
-    state_publisher: TopicPublisher<PerceptionState>,
+    detections_publisher: TopicPublisher<perception_contract::Detections>,
+    state_publisher: TopicPublisher<perception_contract::PerceptionState>,
 }
 
 #[async_trait::async_trait]
@@ -117,27 +126,44 @@ impl Runtime for PerceptionRuntime {
             io.subscribe_topic_with(
                 source.camera_topic.clone(),
                 InputPolicy::latest(),
-                Input::Camera,
+                |sample| {
+                    let Received { at_ns, value } = sample;
+                    let camera_contract::Frame::V1(value) = value;
+                    Input::Camera(Received { at_ns, value })
+                },
             )
             .await?;
             io.subscribe_topic_with(
                 source.depth_topic.clone(),
                 InputPolicy::latest(),
-                Input::Depth,
+                |sample| {
+                    let Received { at_ns, value } = sample;
+                    let depth_contract::Depth::V1(value) = value;
+                    Input::Depth(Received { at_ns, value })
+                },
             )
             .await?;
         } else {
             warn!("perception runtime started without perception-role camera/depth source");
         }
-        io.subscribe_topic(
-            topic::new().v1().localize().state(),
-            Input::LocalizationState,
-        )
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Received { at_ns, value })
+        })
         .await?;
-        io.subscribe_topic(topic::new().v1().frame().tree(), Input::FrameTree)
-            .await?;
-        io.subscribe_topic(topic::new().v1().map().revision(), Input::MapRevision)
-            .await?;
+        io.subscribe_topic(topic::new().frame().tree(), |sample| {
+            let Received { at_ns, value } = sample;
+            let frame_contract::Tree::V1(value) = value;
+            Input::FrameTree(Received { at_ns, value })
+        })
+        .await?;
+        io.subscribe_topic(topic::new().map().revision(), |sample| {
+            let Received { at_ns, value } = sample;
+            let map_contract::MapRevision::V1(value) = value;
+            Input::MapRevision(Received { at_ns, value })
+        })
+        .await?;
 
         Ok(Self {
             source: config.source,
@@ -157,10 +183,10 @@ impl Runtime for PerceptionRuntime {
             weights_version: config.weights_version,
             cadence_hz: config.cadence_hz,
             detections_publisher: io
-                .publisher_topic(topic::new().v1().perception().detections())
+                .publisher_topic(topic::new().perception().detections())
                 .await?,
             state_publisher: io
-                .publisher_topic(topic::new().v1().perception().state())
+                .publisher_topic(topic::new().perception().state())
                 .await?,
         })
     }
@@ -225,12 +251,12 @@ impl Runtime for PerceptionRuntime {
         self.detections_publisher
             .put(
                 now_ns,
-                &Detections {
+                &perception_contract::Detections::V1(Detections {
                     detections: update.detections,
                     localize_revision: revision_linkage.localize_revision,
                     map_revision: revision_linkage.map_revision,
                     detector_id: self.detector_id.clone(),
-                },
+                }),
             )
             .await?;
         self.health.observe_healthy();
@@ -266,7 +292,7 @@ impl PerceptionRuntime {
         self.state_publisher
             .put(
                 timestamp_ns,
-                &PerceptionState {
+                &perception_contract::PerceptionState::V1(PerceptionState {
                     health: self.health.health(),
                     backend: self.backend.clone(),
                     model_id: self.model_id.clone(),
@@ -274,7 +300,7 @@ impl PerceptionRuntime {
                     inference_budget_headroom: headroom_ns / 1_000_000.0,
                     cadence_hz: self.cadence_hz,
                     dropped_frames: self.dropped_frames,
-                },
+                }),
             )
             .await
     }
@@ -293,12 +319,10 @@ impl PerceptionSource {
                 let source_frame_id = FrameId::new(robot.require_link_target(&camera)?);
                 Ok(Some(Self {
                     camera_topic: topic::new()
-                        .v1()
                         .component(camera.component_id)
                         .camera(camera.capability_id)
                         .data(),
                     depth_topic: topic::new()
-                        .v1()
                         .component(depth.component_id)
                         .depth(depth.capability_id)
                         .data(),

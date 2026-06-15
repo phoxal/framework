@@ -1,6 +1,6 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::depth::Depth as DepthPayload;
+use phoxal::api::component::capability::depth::v1::Depth as DepthPayload;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

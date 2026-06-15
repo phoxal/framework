@@ -1,5 +1,5 @@
 use crate::webots::controller::ActuatorType;
-use phoxal::api::v1::component::capability::motor::Command;
+use phoxal::api::component::capability::motor::v1::Command;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

@@ -3,18 +3,29 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::v1::component::capability::{camera, depth, gnss, imu};
-use phoxal::api::v1::frame::FrameId;
-use phoxal::api::v1::localize::{
-    AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance, ImuBiasEstimate,
-    Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode, LocalizationRevision,
-    LocalizationRevisionCause, LocalizationRevisionId, LocalizationSource, LocalizationState,
-    LocalizationStatus, LocalizationStatusReason, PoseEstimate, PoseGraphCorrection,
-    PoseGraphRequest, PoseGraphResponse, VelocityEstimate,
+use phoxal::api::component::capability::{
+    camera::{self as camera_contract, v1 as camera},
+    depth::{self as depth_contract, v1 as depth},
+    gnss::{self as gnss_contract, v1 as gnss},
+    imu::{self as imu_contract, v1 as imu},
 };
-use phoxal::api::v1::odometry::{OdometryEstimate, StatusMode};
-use phoxal::api::v1::simulation::pose::Pose as SimPose;
-use phoxal::api::v1::topic;
+use phoxal::api::frame::v1::FrameId;
+use phoxal::api::localize::{
+    self as localize_contract,
+    v1::{
+        AffectedKeyframeSummary, CorrectionsRequest, CorrectionsResponse, Covariance,
+        ImuBiasEstimate, Keyframe, KeyframeRequest, KeyframeResponse, LocalizationMode,
+        LocalizationRevision, LocalizationRevisionCause, LocalizationRevisionId,
+        LocalizationSource, LocalizationState, LocalizationStatus, LocalizationStatusReason,
+        PoseEstimate, PoseGraphRequest, PoseGraphResponse, VelocityEstimate,
+    },
+};
+use phoxal::api::odometry::{
+    self as odometry_contract,
+    v1::{OdometryEstimate, StatusMode},
+};
+use phoxal::api::simulation::pose::{self as sim_pose_contract, v1::Pose as SimPose};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::GnssCoordinateSystem;
@@ -292,11 +303,11 @@ pub struct LocalizeRuntime {
     current_revision: LocalizationRevisionId,
     revision_emitted: bool,
     decision_log: DecisionLog<LocalizeLogKey>,
-    state_publisher: TopicPublisher<LocalizationState>,
-    pose_publisher: TopicPublisher<PoseEstimate>,
-    revision_publisher: TopicPublisher<LocalizationRevision>,
-    keyframe_publisher: TopicPublisher<Keyframe>,
-    _correction_publisher: TopicPublisher<PoseGraphCorrection>,
+    state_publisher: TopicPublisher<localize_contract::LocalizationState>,
+    pose_publisher: TopicPublisher<localize_contract::PoseEstimate>,
+    revision_publisher: TopicPublisher<localize_contract::LocalizationRevision>,
+    keyframe_publisher: TopicPublisher<localize_contract::Keyframe>,
+    _correction_publisher: TopicPublisher<localize_contract::PoseGraphCorrection>,
 }
 
 type LocalizeLogKey = (LocalizationMode, LocalizationSource);
@@ -318,27 +329,34 @@ impl Runtime for LocalizeRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(topic::new().v1().odometry().estimate(), Input::Odometry)
-            .await?;
+        io.subscribe_topic(topic::new().odometry().estimate(), |sample| {
+            let Received { at_ns, value } = sample;
+            let odometry_contract::OdometryEstimate::V1(value) = value;
+            Input::Odometry(Received { at_ns, value })
+        })
+        .await?;
         if let BackendSelection::SimulatorTruth { robot_id } = &config.backend {
             io.subscribe_topic(
-                topic::new()
-                    .v1()
-                    .simulation()
-                    .robot(robot_id.clone())
-                    .pose(),
-                Input::SimPose,
+                topic::new().simulation().robot(robot_id.clone()).pose(),
+                |sample| {
+                    let Received { at_ns, value } = sample;
+                    let sim_pose_contract::Pose::V1(value) = value;
+                    Input::SimPose(Received { at_ns, value })
+                },
             )
             .await?;
         }
         if let BackendSelection::GnssAnchored { gnss, .. } = &config.backend {
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(gnss.component_id.clone())
                     .gnss(gnss.capability_id.clone())
                     .data(),
-                Input::Gnss,
+                |sample| {
+                    let Received { at_ns, value } = sample;
+                    let gnss_contract::Sample::V1(value) = value;
+                    Input::Gnss(Received { at_ns, value })
+                },
             )
             .await?;
         }
@@ -346,30 +364,39 @@ impl Runtime for LocalizeRuntime {
             if let Some(imu) = &inputs.imu {
                 io.subscribe_topic(
                     topic::new()
-                        .v1()
                         .component(imu.component_id.clone())
                         .imu(imu.capability_id.clone())
                         .data(),
-                    Input::Imu,
+                    |sample| {
+                        let Received { at_ns, value } = sample;
+                        let imu_contract::Sample::V1(value) = value;
+                        Input::Imu(Received { at_ns, value })
+                    },
                 )
                 .await?;
             }
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(inputs.camera.component_id.clone())
                     .camera(inputs.camera.capability_id.clone())
                     .data(),
-                Input::Camera,
+                |sample| {
+                    let Received { at_ns, value } = sample;
+                    let camera_contract::Frame::V1(value) = value;
+                    Input::Camera(Received { at_ns, value })
+                },
             )
             .await?;
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(inputs.depth.component_id.clone())
                     .depth(inputs.depth.capability_id.clone())
                     .data(),
-                Input::Depth,
+                |sample| {
+                    let Received { at_ns, value } = sample;
+                    let depth_contract::Depth::V1(value) = value;
+                    Input::Depth(Received { at_ns, value })
+                },
             )
             .await?;
         }
@@ -406,27 +433,27 @@ impl Runtime for LocalizeRuntime {
         let view = ReadCell::new(LocalizeView { current_revision });
 
         io.serve_query_topic(
-            topic::new().v1().localize().pose_graph(),
+            topic::new().localize().pose_graph(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
-            localize_pose_graph,
+            localize_pose_graph_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().localize().keyframe_query(),
+            topic::new().localize().keyframe_query(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
-            localize_keyframe,
+            localize_keyframe_contract,
         )
         .await?;
         io.serve_query_topic(
-            topic::new().v1().localize().corrections(),
+            topic::new().localize().corrections(),
             view.reader(),
             QueryOptions::max_in_flight(NonZeroUsize::new(4).unwrap()),
-            localize_corrections,
+            localize_corrections_contract,
         )
         .await?;
-        let state_topic = topic::new().v1().localize().state();
+        let state_topic = topic::new().localize().state();
 
         Ok(Self {
             backend,
@@ -435,17 +462,15 @@ impl Runtime for LocalizeRuntime {
             revision_emitted: false,
             decision_log: DecisionLog::from_topic(Self::RUNTIME_ID, &state_topic),
             state_publisher: io.publisher_topic(state_topic).await?,
-            pose_publisher: io
-                .publisher_topic(topic::new().v1().localize().pose())
-                .await?,
+            pose_publisher: io.publisher_topic(topic::new().localize().pose()).await?,
             revision_publisher: io
-                .publisher_topic(topic::new().v1().localize().revision())
+                .publisher_topic(topic::new().localize().revision())
                 .await?,
             keyframe_publisher: io
-                .publisher_topic(topic::new().v1().localize().keyframe())
+                .publisher_topic(topic::new().localize().keyframe())
                 .await?,
             _correction_publisher: io
-                .publisher_topic(topic::new().v1().localize().correction())
+                .publisher_topic(topic::new().localize().correction())
                 .await?,
         })
     }
@@ -479,9 +504,16 @@ impl Runtime for LocalizeRuntime {
         self.decision_log
             .observe(timestamp_ns, (state.mode, state.source));
 
-        self.state_publisher.put(timestamp_ns, &state).await?;
+        self.state_publisher
+            .put(
+                timestamp_ns,
+                &localize_contract::LocalizationState::V1(state),
+            )
+            .await?;
         if let Some(pose) = update.pose {
-            self.pose_publisher.put(timestamp_ns, &pose).await?;
+            self.pose_publisher
+                .put(timestamp_ns, &localize_contract::PoseEstimate::V1(pose))
+                .await?;
         }
         if let Some(new_revision) = update.new_revision {
             let revision = publishable_revision(
@@ -492,10 +524,17 @@ impl Runtime for LocalizeRuntime {
             self.view.publish(LocalizeView {
                 current_revision: self.current_revision,
             });
-            self.revision_publisher.put(timestamp_ns, &revision).await?;
+            self.revision_publisher
+                .put(
+                    timestamp_ns,
+                    &localize_contract::LocalizationRevision::V1(revision),
+                )
+                .await?;
         }
         if let Some(keyframe) = update.keyframe {
-            self.keyframe_publisher.put(timestamp_ns, &keyframe).await?;
+            self.keyframe_publisher
+                .put(timestamp_ns, &localize_contract::Keyframe::V1(keyframe))
+                .await?;
         }
 
         Ok(())
@@ -541,7 +580,7 @@ pub(crate) fn publishable_revision(
     }
 }
 
-fn localize_pose_from_odometry(pose: &phoxal::api::v1::odometry::PoseEstimate) -> PoseEstimate {
+fn localize_pose_from_odometry(pose: &phoxal::api::odometry::v1::PoseEstimate) -> PoseEstimate {
     PoseEstimate {
         frame_id: FrameId::new(ODOM_FRAME_ID),
         child_frame_id: FrameId::new(BASE_FRAME_ID),
@@ -551,7 +590,7 @@ fn localize_pose_from_odometry(pose: &phoxal::api::v1::odometry::PoseEstimate) -
 }
 
 fn localize_velocity_from_odometry(
-    velocity: &phoxal::api::v1::odometry::VelocityEstimate,
+    velocity: &phoxal::api::odometry::v1::VelocityEstimate,
 ) -> VelocityEstimate {
     VelocityEstimate {
         frame_id: velocity.frame_id.clone(),
@@ -560,7 +599,7 @@ fn localize_velocity_from_odometry(
     }
 }
 
-fn localize_covariance(covariance: &phoxal::api::v1::odometry::Covariance) -> Covariance {
+fn localize_covariance(covariance: &phoxal::api::odometry::v1::Covariance) -> Covariance {
     Covariance {
         values: covariance.values.clone(),
     }
@@ -606,22 +645,46 @@ fn localize_pose_graph(view: &LocalizeView, req: PoseGraphRequest) -> PoseGraphR
     pose_graph_response(&req, view.current_revision)
 }
 
+fn localize_pose_graph_contract(
+    view: &LocalizeView,
+    req: localize_contract::PoseGraphRequest,
+) -> localize_contract::PoseGraphResponse {
+    let localize_contract::PoseGraphRequest::V1(req) = req;
+    localize_contract::PoseGraphResponse::V1(localize_pose_graph(view, req))
+}
+
 fn localize_keyframe(view: &LocalizeView, req: KeyframeRequest) -> KeyframeResponse {
     keyframe_response(&req, view.current_revision)
+}
+
+fn localize_keyframe_contract(
+    view: &LocalizeView,
+    req: localize_contract::KeyframeRequest,
+) -> localize_contract::KeyframeResponse {
+    let localize_contract::KeyframeRequest::V1(req) = req;
+    localize_contract::KeyframeResponse::V1(localize_keyframe(view, req))
 }
 
 fn localize_corrections(view: &LocalizeView, req: CorrectionsRequest) -> CorrectionsResponse {
     corrections_response(&req, view.current_revision)
 }
 
+fn localize_corrections_contract(
+    view: &LocalizeView,
+    req: localize_contract::CorrectionsRequest,
+) -> localize_contract::CorrectionsResponse {
+    let localize_contract::CorrectionsRequest::V1(req) = req;
+    localize_contract::CorrectionsResponse::V1(localize_corrections(view, req))
+}
+
 #[cfg(test)]
 mod tests {
-    use phoxal::api::v1::localize::{KeyframeId, PoseGraphRange};
-    use phoxal::api::v1::odometry::{
+    use phoxal::api::localize::v1::{KeyframeId, PoseGraphRange};
+    use phoxal::api::odometry::v1::{
         Covariance as OdometryCovariance, PoseEstimate as OdometryPoseEstimate, Status,
         VelocityEstimate as OdometryVelocityEstimate,
     };
-    use phoxal::api::v1::simulation::clock::Clock;
+    use phoxal::api::simulation::clock::v1::Clock;
     use phoxal::runtime::clock::Step;
 
     use super::*;

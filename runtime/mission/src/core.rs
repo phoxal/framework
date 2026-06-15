@@ -1,8 +1,8 @@
 use std::f64::consts::PI;
 
-use phoxal::api::v1::explore::GoalCandidates;
-use phoxal::api::v1::localize::{LocalizationMode, PoseEstimate};
-use phoxal::api::v1::mission::{
+use phoxal::api::explore::v1::GoalCandidates;
+use phoxal::api::localize::v1::{LocalizationMode, PoseEstimate};
+use phoxal::api::mission::v1::{
     Goal, GoalPose, GoalSource, MissionCommand, MissionFailure, MissionMode, State,
 };
 
@@ -247,11 +247,11 @@ fn normalize_angle_rad(angle_rad: f64) -> f64 {
 mod tests {
     use std::f64::consts::PI;
 
-    use phoxal::api::v1::explore::{GoalCandidate, GoalCandidates};
-    use phoxal::api::v1::frame::FrameId;
-    use phoxal::api::v1::localize::LocalizationMode;
-    use phoxal::api::v1::map::MapRevisionId;
-    use phoxal::api::v1::mission::{
+    use phoxal::api::explore::v1::{GoalCandidate, GoalCandidates};
+    use phoxal::api::frame::v1::FrameId;
+    use phoxal::api::localize::v1::LocalizationMode;
+    use phoxal::api::map::v1::MapRevisionId;
+    use phoxal::api::mission::v1::{
         ExplorationCompletion, ExplorationCompletionMode, GoalTolerance,
     };
 
@@ -659,7 +659,7 @@ mod tests {
                 epoch: 1,
                 sequence: 2,
             },
-            built_from_localize_revision: phoxal::api::v1::localize::LocalizationRevisionId {
+            built_from_localize_revision: phoxal::api::localize::v1::LocalizationRevisionId {
                 epoch: 1,
                 sequence: 3,
             },

@@ -1,6 +1,6 @@
 use crate::capabilities::publish_every_steps;
 use anyhow::{Result, anyhow};
-use phoxal::api::v1::component::capability::battery::State;
+use phoxal::api::component::capability::battery::v1::State;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

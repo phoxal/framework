@@ -15,7 +15,7 @@
 //! All decision logs use one structured tracing event on target
 //! `phoxal.runtime.decision` with message `runtime decision changed`. Every
 //! event carries `runtime_id`, `decision_label`, `schema_name`,
-//! `schema_version`, `decision_key`, `now_ns`, and `suppressed_count`.
+//! `decision_key`, `now_ns`, and `suppressed_count`.
 //! Decision logging is observability only; it does not create a bus topic or
 //! product.
 
@@ -33,8 +33,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::api::v1::presence::{Heartbeat, Readiness, RuntimeId};
-use crate::api::v1::topic;
+use crate::api::presence::{self, v1::Readiness};
+use crate::api::topic;
 use crate::bus::Bus;
 use crate::bus::builder::Builder;
 use crate::bus::topic::{PubSub, Query as TopicQuery, Topic};
@@ -690,7 +690,7 @@ impl<'a> RuntimeProcess<'a> {
         let mut runtime = R::new(&mut io, config).await?;
         let mut steps = StepStream::new(self.bus, self.simulation, self.period).await?;
         let heartbeat_pub = io
-            .publisher_topic(topic::new().v1().presence().heartbeat())
+            .publisher_topic(topic::new().presence().heartbeat())
             .await?;
         let (handles, sources) = io.into_parts();
         let _handles = handles;
@@ -738,10 +738,10 @@ impl<'a> RuntimeProcess<'a> {
                     heartbeat_pub
                         .put(
                             step.tick.time_ns(),
-                            &Heartbeat {
-                                runtime_id: RuntimeId::new(R::RUNTIME_ID),
+                            &presence::Heartbeat::V1(presence::v1::Heartbeat {
+                                runtime_id: presence::v1::RuntimeId::new(R::RUNTIME_ID),
                                 readiness: Readiness::Ready,
-                            },
+                            }),
                         )
                         .await?;
                 }

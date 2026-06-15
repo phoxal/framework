@@ -2,11 +2,14 @@ use std::time::Duration;
 
 use crate::core::PlanDecision;
 use anyhow::Result;
-use phoxal::api::v1::localize::LocalizationState;
-use phoxal::api::v1::map::MapRevision;
-use phoxal::api::v1::mission::Goal;
-use phoxal::api::v1::plan::{Path, PlanReason, PlanStatus, State};
-use phoxal::api::v1::topic;
+use phoxal::api::localize::{self as localize_contract, v1::LocalizationState};
+use phoxal::api::map::{self as map_contract, v1::MapRevision};
+use phoxal::api::mission::{self as mission_contract, v1::Goal};
+use phoxal::api::plan::{
+    self as plan_contract,
+    v1::{PlanReason, PlanStatus},
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::clock::Step;
 use phoxal::runtime::decision_log::DecisionLog;
@@ -37,8 +40,8 @@ pub struct PlanRuntime {
     latest_localize: Option<Received<LocalizationState>>,
     latest_map_revision: Option<Received<MapRevision>>,
     decision_log: DecisionLog<PlanLogKey>,
-    path_publisher: TopicPublisher<Path>,
-    state_publisher: TopicPublisher<State>,
+    path_publisher: TopicPublisher<plan_contract::Path>,
+    state_publisher: TopicPublisher<plan_contract::State>,
 }
 
 type PlanLogKey = (PlanStatus, Option<PlanReason>);
@@ -61,21 +64,30 @@ impl Runtime for PlanRuntime {
 
     async fn new(io: &mut Io<Self::Input>, _config: Self::Config) -> Result<Self> {
         io.subscribe_topic_with(
-            topic::new().v1().mission().goal(),
+            topic::new().mission().goal(),
             InputPolicy::latest(),
-            Input::Goal,
+            |sample| {
+                let Received { at_ns, value } = sample;
+                let mission_contract::Goal::V1(value) = value;
+                Input::Goal(Received { at_ns, value })
+            },
         )
         .await?;
-        io.subscribe_topic(
-            topic::new().v1().localize().state(),
-            Input::LocalizationState,
-        )
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Received { at_ns, value })
+        })
         .await?;
-        io.subscribe_topic(topic::new().v1().map().revision(), Input::MapRevision)
-            .await?;
+        io.subscribe_topic(topic::new().map().revision(), |sample| {
+            let Received { at_ns, value } = sample;
+            let map_contract::MapRevision::V1(value) = value;
+            Input::MapRevision(Received { at_ns, value })
+        })
+        .await?;
 
-        let state_topic = topic::new().v1().plan().state();
-        let path_publisher = io.publisher_topic(topic::new().v1().plan().path()).await?;
+        let state_topic = topic::new().plan().state();
+        let path_publisher = io.publisher_topic(topic::new().plan().path()).await?;
         let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
@@ -110,11 +122,15 @@ impl Runtime for PlanRuntime {
         let (state, path) = decision.outputs(self.latest_goal.as_ref().map(|sample| &sample.value));
 
         if let Some(path) = path {
-            self.path_publisher.put(timestamp_ns, &path).await?;
+            self.path_publisher
+                .put(timestamp_ns, &plan_contract::Path::V1(path))
+                .await?;
         }
         self.decision_log
             .observe(timestamp_ns, (state.status, state.reason));
-        self.state_publisher.put(timestamp_ns, &state).await?;
+        self.state_publisher
+            .put(timestamp_ns, &plan_contract::State::V1(state))
+            .await?;
 
         Ok(())
     }

@@ -2,14 +2,17 @@ use std::borrow::Cow;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, ensure};
-use phoxal::api::v1::localize::{
-    LocalizationMode, LocalizationRevisionCause, LocalizationSource, LocalizationStatusReason,
-    PoseEstimate,
+use phoxal::api::localize::{
+    self as localize_contract,
+    v1::{
+        LocalizationMode, LocalizationRevisionCause, LocalizationSource, LocalizationState,
+        LocalizationStatusReason, PoseEstimate,
+    },
 };
-use phoxal::api::v1::map::Summary as MapSummary;
-use phoxal::api::v1::motion::ManualCommand;
-use phoxal::api::v1::simulation::pose::Pose as SimulatorPose;
-use phoxal::api::v1::topic;
+use phoxal::api::map::{self as map_contract, v1::Summary as MapSummary};
+use phoxal::api::motion::v1::ManualCommand;
+use phoxal::api::simulation::pose::{self as sim_pose_contract, v1::Pose as SimulatorPose};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::{ScenarioDescriptor, ScenarioKind};
@@ -42,6 +45,26 @@ const ORB_TRANSLATION_TOL_M: f64 = 0.30;
 const ORB_YAW_TOL_RAD: f64 = 0.30;
 const ORB_MIN_MEASURE_TRAVEL_M: f64 = 0.30;
 const ORB_MIN_MEASURE_ROT_RAD: f64 = 0.30;
+
+fn received_localization_state(
+    sample: Received<localize_contract::LocalizationState>,
+) -> Received<LocalizationState> {
+    let Received { at_ns, value } = sample;
+    let localize_contract::LocalizationState::V1(value) = value;
+    Received { at_ns, value }
+}
+
+fn received_sim_pose(sample: Received<sim_pose_contract::Pose>) -> Received<SimulatorPose> {
+    let Received { at_ns, value } = sample;
+    let sim_pose_contract::Pose::V1(value) = value;
+    Received { at_ns, value }
+}
+
+fn received_map_summary(sample: Received<map_contract::Summary>) -> Received<MapSummary> {
+    let Received { at_ns, value } = sample;
+    let map_contract::Summary::V1(value) = value;
+    Received { at_ns, value }
+}
 
 pub const SCENARIOS: &[ScenarioDescriptor] = &[
     ScenarioDescriptor {
@@ -190,27 +213,23 @@ fn p2_localization_mode_policy(common: &RobotRuntimeArgs) -> Result<()> {
     );
 
     assert_topic_schema(
-        topic::new().v1().localize().state(),
-        "v1/localize/state",
-        1,
+        topic::new().localize().state(),
+        "localize/state",
         "localization state",
     )?;
     assert_topic_schema(
-        topic::new().v1().localize().revision(),
-        "v1/localize/revision",
-        1,
+        topic::new().localize().revision(),
+        "localize/revision",
         "localization revision",
     )?;
     assert_topic_schema(
-        topic::new().v1().localize().keyframe(),
-        "v1/localize/keyframe",
-        1,
+        topic::new().localize().keyframe(),
+        "localize/keyframe",
         "localize keyframe",
     )?;
     assert_topic_schema(
-        topic::new().v1().localize().correction(),
-        "v1/localize/correction",
-        1,
+        topic::new().localize().correction(),
+        "localize/correction",
         "pose graph correction",
     )
 }
@@ -412,7 +431,7 @@ impl OrbTrackingProgress {
 
 async fn assert_p2_localization_orb_slam3(ctx: &ScenarioContext, deadline: Instant) -> Result<()> {
     let mut progress = OrbTrackingProgress::new();
-    let initial = ctx.latest_localization_state().await?;
+    let initial = received_localization_state(ctx.latest_localization_state().await?);
     progress.record(
         initial.value.source,
         initial.value.mode,
@@ -432,7 +451,7 @@ async fn assert_p2_localization_orb_slam3(ctx: &ScenarioContext, deadline: Insta
         );
         drive_orb_explore_step(ctx, deadline, &mut explorer, "warmup").await?;
         elapsed_secs += ORB_COMMAND_STEP_SECS;
-        let localize = ctx.latest_localization_state().await?;
+        let localize = received_localization_state(ctx.latest_localization_state().await?);
         progress.record(
             localize.value.source,
             localize.value.mode,
@@ -454,7 +473,7 @@ async fn assert_p2_localization_orb_slam3(ctx: &ScenarioContext, deadline: Insta
     while elapsed_secs < ORB_TRACKING_BUDGET_SECS {
         drive_orb_explore_step(ctx, deadline, &mut explorer, "stabilize").await?;
         elapsed_secs += ORB_COMMAND_STEP_SECS;
-        let localize = ctx.latest_localization_state().await?;
+        let localize = received_localization_state(ctx.latest_localization_state().await?);
         progress.record(
             localize.value.source,
             localize.value.mode,
@@ -480,7 +499,7 @@ async fn assert_p2_localization_orb_slam3(ctx: &ScenarioContext, deadline: Insta
                     localize.value.revision
                 ));
             };
-            let truth_0 = ctx.simulation_pose().await?.value;
+            let truth_0 = received_sim_pose(ctx.simulation_pose().await?).value;
             return assert_orb_tracking_trajectory(ctx, deadline, &mut explorer, truth_0, est_0)
                 .await;
         }
@@ -504,7 +523,7 @@ async fn assert_p2_localization_gnss_anchored(
     deadline: Instant,
 ) -> Result<()> {
     loop {
-        let localize = ctx.latest_localization_state().await?;
+        let localize = received_localization_state(ctx.latest_localization_state().await?);
         if localize.value.source == LocalizationSource::GnssAnchored
             && localize.value.mode == LocalizationMode::Tracking
         {
@@ -520,8 +539,8 @@ async fn assert_p2_localization_gnss_anchored(
     }
 
     loop {
-        let localize = ctx.latest_localization_state().await?;
-        let truth = ctx.simulation_pose().await?;
+        let localize = received_localization_state(ctx.latest_localization_state().await?);
+        let truth = received_sim_pose(ctx.simulation_pose().await?);
         if let Some(pose) = &localize.value.pose {
             let dx = pose.translation_m[0] - truth.value.translation_m[0];
             let dy = pose.translation_m[1] - truth.value.translation_m[1];
@@ -541,7 +560,7 @@ async fn assert_p2_revision_loop_closure(ctx: &ScenarioContext, deadline: Instan
     wait_until_tracking(ctx, deadline).await?;
 
     loop {
-        let summary: Received<MapSummary> = ctx.latest_map_summary().await?;
+        let summary: Received<MapSummary> = received_map_summary(ctx.latest_map_summary().await?);
         if summary.value.built_from_localize_revision.is_some() {
             break;
         }
@@ -553,7 +572,7 @@ async fn assert_p2_revision_loop_closure(ctx: &ScenarioContext, deadline: Instan
     }
 
     loop {
-        let summary = ctx.latest_map_summary().await?;
+        let summary = received_map_summary(ctx.latest_map_summary().await?);
         if let Some(revision) = summary.value.built_from_localize_revision
             && revision.sequence > 0
         {
@@ -562,8 +581,7 @@ async fn assert_p2_revision_loop_closure(ctx: &ScenarioContext, deadline: Instan
         ensure!(
             Instant::now() < deadline,
             "map did not converge to the loop-closure revision (built_from {:?})",
-            ctx.latest_map_summary()
-                .await?
+            received_map_summary(ctx.latest_map_summary().await?)
                 .value
                 .built_from_localize_revision
         );
@@ -580,8 +598,8 @@ async fn assert_orb_tracking_trajectory(
 ) -> Result<()> {
     drive_orb_explore_segment(ctx, deadline, explorer, ORB_MEASURE_SECS, "measure").await?;
 
-    let truth_end = ctx.simulation_pose().await?.value;
-    let localize_end = ctx.latest_localization_state().await?;
+    let truth_end = received_sim_pose(ctx.simulation_pose().await?).value;
+    let localize_end = received_localization_state(ctx.latest_localization_state().await?);
     ensure!(
         localize_end.value.source == LocalizationSource::OrbSlam3RgbdInertial,
         "ORB-SLAM3 trajectory ended with wrong source {:?}",
@@ -633,7 +651,7 @@ async fn drive_orb_explore_step(
         Instant::now() < deadline,
         "ORB-SLAM3 {phase} exceeded validate scenario wallclock deadline"
     );
-    let truth = ctx.simulation_pose().await?.value;
+    let truth = received_sim_pose(ctx.simulation_pose().await?).value;
     let truth_xy = [truth.translation_m[0], truth.translation_m[1]];
     let command = explorer.step(truth_xy);
     publish_and_advance(ctx, command, ORB_COMMAND_STEP_SECS).await
@@ -654,13 +672,13 @@ async fn drive_orb_explore_segment(
             Instant::now() < deadline,
             "ORB-SLAM3 {phase} exceeded validate scenario wallclock deadline"
         );
-        let truth = ctx.simulation_pose().await?.value;
+        let truth = received_sim_pose(ctx.simulation_pose().await?).value;
         let truth_xy = [truth.translation_m[0], truth.translation_m[1]];
         let command = explorer.step(truth_xy);
         publish_and_advance(ctx, command, ORB_COMMAND_STEP_SECS).await?;
         elapsed_secs += ORB_COMMAND_STEP_SECS;
 
-        let localize = ctx.latest_localization_state().await?;
+        let localize = received_localization_state(ctx.latest_localization_state().await?);
         ensure!(
             localize.value.source == LocalizationSource::OrbSlam3RgbdInertial,
             "ORB-SLAM3 {phase} switched source to {:?} while in mode {:?}",

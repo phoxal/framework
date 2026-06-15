@@ -3,9 +3,14 @@ use std::f64::consts::TAU;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use phoxal::api::v1::component::capability::encoder::Sample as EncoderSample;
-use phoxal::api::v1::joint::{JointId, JointState, Quantity};
-use phoxal::api::v1::topic;
+use phoxal::api::component::capability::encoder::{
+    self as encoder_contract, v1::Sample as EncoderSample,
+};
+use phoxal::api::joint::{
+    self as joint_contract,
+    v1::{JointId, JointState, Quantity},
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
@@ -113,7 +118,7 @@ pub enum Input {
 
 pub struct JointRuntime {
     encoders: BTreeMap<JointId, JointEncoder>,
-    publishers: BTreeMap<JointId, TopicPublisher<JointState>>,
+    publishers: BTreeMap<JointId, TopicPublisher<joint_contract::JointState>>,
 }
 
 #[async_trait::async_trait]
@@ -138,15 +143,18 @@ impl Runtime for JointRuntime {
         for encoder in &config.encoders {
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(encoder.reference.component_id.clone())
                     .encoder(encoder.reference.capability_id.clone())
                     .data(),
                 {
                     let joint_id = encoder.joint_id.clone();
-                    move |sample| Input::Encoder {
-                        joint_id: joint_id.clone(),
-                        sample,
+                    move |sample| {
+                        let Received { at_ns, value } = sample;
+                        let encoder_contract::Sample::V1(value) = value;
+                        Input::Encoder {
+                            joint_id: joint_id.clone(),
+                            sample: Received { at_ns, value },
+                        }
                     }
                 },
             )
@@ -154,7 +162,7 @@ impl Runtime for JointRuntime {
 
             publishers.insert(
                 encoder.joint_id.clone(),
-                io.publisher_topic(topic::new().v1().joint(encoder.joint_id.to_string()).data())
+                io.publisher_topic(topic::new().joint(encoder.joint_id.to_string()).data())
                     .await?,
             );
         }
@@ -201,7 +209,9 @@ impl Runtime for JointRuntime {
                 ),
                 quantity: Quantity::AngleRad,
             };
-            publisher.put(step.tick.time_ns(), &state).await?;
+            publisher
+                .put(step.tick.time_ns(), &joint_contract::JointState::V1(state))
+                .await?;
         }
 
         Ok(())

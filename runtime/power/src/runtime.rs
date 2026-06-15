@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use phoxal::api::v1::power::{Command, FailedReason, RejectedReason, State, Status};
-use phoxal::api::v1::topic;
+use phoxal::api::power::{
+    self as power_contract,
+    v1::{Command, FailedReason, RejectedReason, State, Status},
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::runtime::RobotRuntimeArgs;
 use phoxal::runtime::clock::Step;
@@ -34,7 +37,7 @@ pub(crate) enum Input {
 pub(crate) struct PowerRuntime {
     latched: LatchedState,
     executor: Option<Arc<dyn PowerExecutor>>,
-    state_pub: TopicPublisher<State>,
+    state_pub: TopicPublisher<power_contract::State>,
 }
 
 #[async_trait::async_trait]
@@ -57,11 +60,13 @@ impl Runtime for PowerRuntime {
     }
 
     async fn new(io: &mut Io<Self::Input>, config: Self::Config) -> Result<Self> {
-        io.subscribe_topic(topic::new().v1().power().command(), Input::Command)
-            .await?;
-        let state_pub = io
-            .publisher_topic(topic::new().v1().power().state())
-            .await?;
+        io.subscribe_topic(topic::new().power().command(), |sample| {
+            let Received { at_ns, value } = sample;
+            let power_contract::Command::V1(value) = value;
+            Input::Command(Received { at_ns, value })
+        })
+        .await?;
+        let state_pub = io.publisher_topic(topic::new().power().state()).await?;
         let executor = match config.supervisor_address {
             Some(address) => Some(Arc::new(ReqwestExecutor::new(
                 address,
@@ -90,7 +95,9 @@ impl Runtime for PowerRuntime {
         }
 
         let state = self.latched.snapshot();
-        self.state_pub.put(step.tick.time_ns(), &state).await?;
+        self.state_pub
+            .put(step.tick.time_ns(), &power_contract::State::V1(state))
+            .await?;
 
         Ok(())
     }
@@ -229,7 +236,7 @@ fn idle_state() -> State {
 #[cfg(test)]
 mod tests {
     use super::{ExecutorOutcome, LatchedState, PowerExecutor, idle_state, state_for_command};
-    use phoxal::api::v1::power::{Command, FailedReason, RejectedReason, State, Status};
+    use phoxal::api::power::v1::{Command, FailedReason, RejectedReason, State, Status};
 
     struct StaticExecutor {
         outcome: ExecutorOutcome,

@@ -3,14 +3,20 @@ use std::time::Duration;
 
 use crate::core::{EmergencyStopInputs, EvaluationOutcome, RangeSafetyClass};
 use anyhow::Result;
-use phoxal::api::v1::component::capability::{emergency_stop as component_emergency_stop, range};
-use phoxal::api::v1::localize::LocalizationState;
-use phoxal::api::v1::map::TraversabilitySummary;
-use phoxal::api::v1::safety::{
-    EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
-    SafetySourceRevision, State,
+use phoxal::api::component::capability::{
+    emergency_stop::{self as component_emergency_stop_contract, v1 as component_emergency_stop},
+    range::{self as range_contract, v1 as range},
 };
-use phoxal::api::v1::topic;
+use phoxal::api::localize::{self as localize_contract, v1::LocalizationState};
+use phoxal::api::map::{self as map_contract, v1::TraversabilitySummary};
+use phoxal::api::safety::{
+    self as safety_contract,
+    v1::{
+        EmergencyStopRequest, SafetyAuthorization, SafetyDecision, SafetyReasonCode,
+        SafetySourceRevision, State,
+    },
+};
+use phoxal::api::topic;
 use phoxal::bus::typed::Received;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::v1::Robot;
@@ -71,8 +77,8 @@ pub struct SafetyRuntime {
     latest_traversability_summary: Option<Received<TraversabilitySummary>>,
     range_classes: BTreeMap<String, RangeSafetyClass>,
     decision_log: DecisionLog<SafetyLogKey>,
-    authorization_publisher: TopicPublisher<SafetyAuthorization>,
-    state_publisher: TopicPublisher<State>,
+    authorization_publisher: TopicPublisher<safety_contract::SafetyAuthorization>,
+    state_publisher: TopicPublisher<safety_contract::State>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,15 +108,18 @@ impl Runtime for SafetyRuntime {
             let source_id = range_source_id(capability);
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(capability.component_id.clone())
                     .range(capability.capability_id.clone())
                     .data(),
                 {
                     let source_id = source_id.clone();
-                    move |sample| Input::Range {
-                        source_id: source_id.clone(),
-                        sample,
+                    move |sample| {
+                        let Received { at_ns, value } = sample;
+                        let range_contract::Sample::V1(value) = value;
+                        Input::Range {
+                            source_id: source_id.clone(),
+                            sample: Received { at_ns, value },
+                        }
                     }
                 },
             )
@@ -121,41 +130,48 @@ impl Runtime for SafetyRuntime {
             let source_id = capability.to_string();
             io.subscribe_topic(
                 topic::new()
-                    .v1()
                     .component(capability.component_id.clone())
                     .emergency_stop(capability.capability_id.clone())
                     .data(),
                 {
                     let source_id = source_id.clone();
-                    move |state| Input::EmergencyStop {
-                        source_id: source_id.clone(),
-                        state,
+                    move |state| {
+                        let Received { at_ns, value } = state;
+                        let component_emergency_stop_contract::State::V1(value) = value;
+                        Input::EmergencyStop {
+                            source_id: source_id.clone(),
+                            state: Received { at_ns, value },
+                        }
                     }
                 },
             )
             .await?;
         }
 
-        io.subscribe_topic(
-            topic::new().v1().safety().emergency_stop_request(),
-            Input::OperatorEmergencyStopRequest,
-        )
-        .await?;
-
-        io.subscribe_topic(topic::new().v1().localize().state(), |sample| {
-            Input::LocalizationState(Box::new(sample))
+        io.subscribe_topic(topic::new().safety().emergency_stop_request(), |sample| {
+            let Received { at_ns, value } = sample;
+            let safety_contract::EmergencyStopRequest::V1(value) = value;
+            Input::OperatorEmergencyStopRequest(Received { at_ns, value })
         })
         .await?;
-        io.subscribe_topic(
-            topic::new().v1().map().traversability_summary(),
-            Input::MapTraversabilitySummary,
-        )
+
+        io.subscribe_topic(topic::new().localize().state(), |sample| {
+            let Received { at_ns, value } = sample;
+            let localize_contract::LocalizationState::V1(value) = value;
+            Input::LocalizationState(Box::new(Received { at_ns, value }))
+        })
+        .await?;
+        io.subscribe_topic(topic::new().map().traversability_summary(), |sample| {
+            let Received { at_ns, value } = sample;
+            let map_contract::TraversabilitySummary::V1(value) = value;
+            Input::MapTraversabilitySummary(Received { at_ns, value })
+        })
         .await?;
 
         let authorization_publisher = io
-            .publisher_topic(topic::new().v1().safety().authorization())
+            .publisher_topic(topic::new().safety().authorization())
             .await?;
-        let state_topic = topic::new().v1().safety().state();
+        let state_topic = topic::new().safety().state();
         let state_publisher = io.publisher_topic(state_topic.clone()).await?;
 
         Ok(Self {
@@ -225,7 +241,10 @@ impl Runtime for SafetyRuntime {
             expires_at_ns: authorization_expires_at_ns(now_ns),
         };
         self.authorization_publisher
-            .put(now_ns, &authorization)
+            .put(
+                now_ns,
+                &safety_contract::SafetyAuthorization::V1(authorization),
+            )
             .await?;
 
         let state = State {
@@ -243,7 +262,9 @@ impl Runtime for SafetyRuntime {
                     .collect(),
             },
         );
-        self.state_publisher.put(now_ns, &state).await?;
+        self.state_publisher
+            .put(now_ns, &safety_contract::State::V1(state))
+            .await?;
         Ok(())
     }
 
