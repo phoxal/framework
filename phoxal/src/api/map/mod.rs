@@ -1,54 +1,45 @@
 pub mod v1;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum MapRevision {
-    #[serde(rename = "1")]
-    V1(v1::MapRevision),
+contract! {
+    pub enum MapRevision {
+        "1" => V1(v1::MapRevision),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum Summary {
-    #[serde(rename = "1")]
-    V1(v1::Summary),
+contract! {
+    pub enum Summary {
+        "1" => V1(v1::Summary),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum LocalCost {
-    #[serde(rename = "1")]
-    V1(v1::LocalCost),
+contract! {
+    pub enum LocalCost {
+        "1" => V1(v1::LocalCost),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum Traversability {
-    #[serde(rename = "1")]
-    V1(v1::Traversability),
+contract! {
+    pub enum Traversability {
+        "1" => V1(v1::Traversability),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum TraversabilitySummary {
-    #[serde(rename = "1")]
-    V1(v1::TraversabilitySummary),
+contract! {
+    pub enum TraversabilitySummary {
+        "1" => V1(v1::TraversabilitySummary),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum SubmapRequest {
-    #[serde(rename = "1")]
-    V1(v1::SubmapRequest),
+contract! {
+    pub enum SubmapRequest {
+        "1" => V1(v1::SubmapRequest),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum SubmapResponse {
-    #[serde(rename = "1")]
-    V1(v1::SubmapResponse),
+contract! {
+    pub enum SubmapResponse {
+        "1" => V1(v1::SubmapResponse),
+    }
 }
 
 impl crate::bus::zenoh::BusyResponse for SubmapResponse {
@@ -57,18 +48,16 @@ impl crate::bus::zenoh::BusyResponse for SubmapResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum EsdfTileRequest {
-    #[serde(rename = "1")]
-    V1(v1::EsdfTileRequest),
+contract! {
+    pub enum EsdfTileRequest {
+        "1" => V1(v1::EsdfTileRequest),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum EsdfTileResponse {
-    #[serde(rename = "1")]
-    V1(v1::EsdfTileResponse),
+contract! {
+    pub enum EsdfTileResponse {
+        "1" => V1(v1::EsdfTileResponse),
+    }
 }
 
 impl crate::bus::zenoh::BusyResponse for EsdfTileResponse {
@@ -77,18 +66,16 @@ impl crate::bus::zenoh::BusyResponse for EsdfTileResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum TraversabilityTileRequest {
-    #[serde(rename = "1")]
-    V1(v1::TraversabilityTileRequest),
+contract! {
+    pub enum TraversabilityTileRequest {
+        "1" => V1(v1::TraversabilityTileRequest),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum TraversabilityTileResponse {
-    #[serde(rename = "1")]
-    V1(v1::TraversabilityTileResponse),
+contract! {
+    pub enum TraversabilityTileResponse {
+        "1" => V1(v1::TraversabilityTileResponse),
+    }
 }
 
 impl crate::bus::zenoh::BusyResponse for TraversabilityTileResponse {
@@ -97,18 +84,16 @@ impl crate::bus::zenoh::BusyResponse for TraversabilityTileResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum LocalGridRequest {
-    #[serde(rename = "1")]
-    V1(v1::LocalGridRequest),
+contract! {
+    pub enum LocalGridRequest {
+        "1" => V1(v1::LocalGridRequest),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum LocalGridResponse {
-    #[serde(rename = "1")]
-    V1(v1::LocalGridResponse),
+contract! {
+    pub enum LocalGridResponse {
+        "1" => V1(v1::LocalGridResponse),
+    }
 }
 
 impl crate::bus::zenoh::BusyResponse for LocalGridResponse {
@@ -117,18 +102,16 @@ impl crate::bus::zenoh::BusyResponse for LocalGridResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum GlobalGridRequest {
-    #[serde(rename = "1")]
-    V1(v1::GlobalGridRequest),
+contract! {
+    pub enum GlobalGridRequest {
+        "1" => V1(v1::GlobalGridRequest),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum GlobalGridResponse {
-    #[serde(rename = "1")]
-    V1(v1::GlobalGridResponse),
+contract! {
+    pub enum GlobalGridResponse {
+        "1" => V1(v1::GlobalGridResponse),
+    }
 }
 
 impl crate::bus::zenoh::BusyResponse for GlobalGridResponse {
@@ -137,18 +120,16 @@ impl crate::bus::zenoh::BusyResponse for GlobalGridResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum SnapshotRequest {
-    #[serde(rename = "1")]
-    V1(v1::SnapshotRequest),
+contract! {
+    pub enum SnapshotRequest {
+        "1" => V1(v1::SnapshotRequest),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum SnapshotResponse {
-    #[serde(rename = "1")]
-    V1(v1::SnapshotResponse),
+contract! {
+    pub enum SnapshotResponse {
+        "1" => V1(v1::SnapshotResponse),
+    }
 }
 
 impl crate::bus::zenoh::BusyResponse for SnapshotResponse {

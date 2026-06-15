@@ -1,31 +1,26 @@
 pub mod v1;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum MissionCommand {
-    #[serde(rename = "1")]
-    V1(v1::MissionCommand),
+contract! {
+    pub enum MissionCommand {
+        "1" => V1(v1::MissionCommand),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum State {
-    #[serde(rename = "1")]
-    V1(v1::State),
+contract! {
+    pub enum State {
+        "1" => V1(v1::State),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum Goal {
-    #[serde(rename = "1")]
-    V1(v1::Goal),
+contract! {
+    pub enum Goal {
+        "1" => V1(v1::Goal),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum DecisionTrace {
-    #[serde(rename = "1")]
-    V1(v1::DecisionTrace),
+contract! {
+    #[derive(Eq)]
+    pub enum DecisionTrace {
+        "1" => V1(v1::DecisionTrace),
+    }
 }

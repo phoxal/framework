@@ -1,45 +1,41 @@
 pub mod v1;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum Path {
-    #[serde(rename = "1")]
-    V1(v1::Path),
+contract! {
+    pub enum Path {
+        "1" => V1(v1::Path),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum State {
-    #[serde(rename = "1")]
-    V1(v1::State),
+contract! {
+    #[derive(Eq)]
+    pub enum State {
+        "1" => V1(v1::State),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum SearchGraph {
-    #[serde(rename = "1")]
-    V1(v1::SearchGraph),
+contract! {
+    #[derive(Eq)]
+    pub enum SearchGraph {
+        "1" => V1(v1::SearchGraph),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum CostLayers {
-    #[serde(rename = "1")]
-    V1(v1::CostLayers),
+contract! {
+    pub enum CostLayers {
+        "1" => V1(v1::CostLayers),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum RejectedPaths {
-    #[serde(rename = "1")]
-    V1(v1::RejectedPaths),
+contract! {
+    #[derive(Eq)]
+    pub enum RejectedPaths {
+        "1" => V1(v1::RejectedPaths),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "v", content = "data")]
-pub enum RevisionInputs {
-    #[serde(rename = "1")]
-    V1(v1::RevisionInputs),
+contract! {
+    #[derive(Eq)]
+    pub enum RevisionInputs {
+        "1" => V1(v1::RevisionInputs),
+    }
 }
