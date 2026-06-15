@@ -20,10 +20,11 @@ scenarios live in each `runtime/<name>` crate.
    downstream by the consumer CLI (`phoxal/phoxal-cli`) via `phoxal.lock` (image
    digests, component SHAs, tool hashes), not by this workspace.
 3. **Contract.** Each `phoxal::api::<name>` module carries drift, decode, and
-   actionable-error tests (see [CONTRACTS.md](./CONTRACTS.md)): `SCHEMA_NAME` /
-   `SCHEMA_VERSION` asserted, query responses are enums, revision linkage lives in
-   the success variant, reasons are closed-set typed enums, payloads carry no
-   generic `timestamp_ns`.
+   actionable-error tests (see [CONTRACTS.md](./CONTRACTS.md)): the schema-family
+   path and the contract enum's `{"v":…,"data":…}` wire shape are pinned (golden
+   wire test), query responses are enums, revision linkage lives in the success
+   variant, reasons are closed-set typed enums, payloads carry no generic
+   `timestamp_ns`.
 4. **Backend.** Replaceable runtime backends (notably localization) prove state
    cadence, reset/epoch handling, timestamp handling, revision monotonicity,
    loop-closure behavior, correction overflow, query behavior, and mode

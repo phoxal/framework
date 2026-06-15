@@ -75,13 +75,15 @@ were produced under rather than minting their own id.
 
 ## Schema identity
 
-Each `phoxal::api::<name>` module declares `SCHEMA_NAME` / `SCHEMA_VERSION`, and
-each typed contract carries a `TypedSchema` `SCHEMA_NAME` that follows the
-contract path — `runtime/<name>/<stream>` for pub/sub, with `/request` and
-`/response` suffixes for queries (e.g. `runtime/safety/authorization`,
-`runtime/map/query/submap/request`). `SCHEMA_VERSION` is numeric and starts at
-`1`. Every api module carries a contract-drift test asserting its `SCHEMA_NAME`
-and `SCHEMA_VERSION`.
+Each `phoxal::api::<name>` module exposes a **contract enum** per wire type
+(`#[serde(tag = "v", content = "data")]`, with each variant `#[serde(rename =
+"1")]`, `"2"`, …). The **enum variant is the version** — the `rename` token is
+the authority, decoupled from the Rust variant name — and there is no separate
+`SCHEMA_VERSION` constant. The schema-family identity is the versionless contract
+path (`<name>/<stream>` for pub/sub, e.g. `safety/authorization`, `map/submap`),
+carried as the Zenoh encoding so a wrong-contract sample is a loud decode error.
+Each api module carries a contract-drift test asserting its schema path and a
+golden wire test pinning the `{"v":"<n>","data":{…}}` representation.
 
 ## Large products
 
