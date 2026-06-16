@@ -4,6 +4,13 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0](https://github.com/phoxal/framework/releases/tag/v0.11.0) - 2026-06-16
+
+
+### Added
+
+- Fold joypad tool into the framework workspace + release train (#80)
+
 ## [0.10.0](https://github.com/phoxal/framework/releases/tag/v0.10.0) - 2026-06-16
 
 
