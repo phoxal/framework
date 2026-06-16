@@ -295,6 +295,54 @@ jobs:
           name: simulator-binaries-${{ matrix.target }}
           path: dist/*.tar.gz
 
+  build-joypad:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install joypad native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Build joypad
+        run: |
+          set -euo pipefail
+          cargo build --release --target "${{ matrix.target }}" --bin phoxal-joypad
+
+      - name: Package joypad
+        run: |
+          set -euo pipefail
+          v=${{ needs.plan.outputs.version }}
+          t=${{ matrix.target }}
+          mkdir -p dist/package
+          cp "target/${t}/release/phoxal-joypad" "dist/package/phoxal-joypad-${t}"
+          tar -czf "dist/phoxal-joypad-${v}-${t}.tar.gz" \
+            -C dist/package \
+            "phoxal-joypad-${t}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: joypad-binaries-${{ matrix.target }}
+          path: dist/*.tar.gz
+
   manifest:
     needs: [plan, build]
     runs-on: ubuntu-latest
@@ -375,6 +423,13 @@ jobs:
             for target in x86_64-unknown-linux-gnu aarch64-apple-darwin; do
               echo "- \`phoxal-simulator-${v}-${target}.tar.gz\`"
             done
+            echo ""
+            echo "## Joypad (teleop) binaries @ v${v}"
+            echo ""
+            echo "Host-native joystick teleop tool, version-matched to the runtimes:"
+            for target in ${binary_targets}; do
+              echo "- \`phoxal-joypad-${v}-${target}.tar.gz\`"
+            done
           } >> release-notes.md
 
       - uses: actions/upload-artifact@v4
@@ -385,7 +440,7 @@ jobs:
   # Shared release seam: verify version, create the vX.Y.Z tag (git push here),
   # and create-or-update the GitHub Release from the uploaded artifacts.
   publish:
-    needs: [plan, manifest, build, build-macos-binaries, build-simulator, notes]
+    needs: [plan, manifest, build, build-macos-binaries, build-simulator, build-joypad, notes]
     uses: phoxal/.github/.github/workflows/rust-github-release.yml@main
     secrets: inherit
     with:

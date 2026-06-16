@@ -8,4 +8,6 @@ on:
 jobs:
   ci:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
+    with:
+      system-packages: libudev-dev
     secrets: inherit

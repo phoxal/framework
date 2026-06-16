@@ -1,0 +1,23 @@
+[package]
+name = "phoxal-joypad"
+version = { workspace = true }
+edition = { workspace = true }
+license.workspace = true
+publish = false
+description = { workspace = true }
+documentation = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+gilrs = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = { workspace = true }
+
+phoxal = { workspace = true }
+
+[lints]
+workspace = true
