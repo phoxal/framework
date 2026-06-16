@@ -7,7 +7,7 @@ authoring to deployment.
 
 ```toml
 [dependencies]
-phoxal = "0.4"
+phoxal = "0.9"
 ```
 
 ## Modules
