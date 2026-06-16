@@ -16,6 +16,6 @@ phoxal = { workspace = true, features = ["scenario"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "signal", "process"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 derive-new = { workspace = true }

@@ -14,7 +14,7 @@ phoxal = { workspace = true, features = ["scenario"] }
 
 nalgebra = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "signal", "process"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 anyhow = { workspace = true }

@@ -20,7 +20,7 @@ phoxal-runtime-localize-orb-slam3-sys = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "signal", "process"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

@@ -16,5 +16,5 @@ urdf-rs = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "signal", "process", "time"] }
+tokio = { workspace = true }
 tracing = { workspace = true }
