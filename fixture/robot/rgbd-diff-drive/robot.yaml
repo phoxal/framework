@@ -4,7 +4,7 @@ identity:
   namespace: dev
 structure: structure.urdf
 phoxal_runtimes:
-  version: "^0.1"
+  version: "latest"
 motion:
   kinematic:
     kind: differential
