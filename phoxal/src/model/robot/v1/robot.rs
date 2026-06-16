@@ -54,6 +54,24 @@ pub struct PlatformRuntimeOverride {
 #[serde(deny_unknown_fields)]
 pub struct UserRuntime {
     pub path: PathBuf,
+    #[serde(
+        default = "default_user_runtime_framework",
+        skip_serializing_if = "is_match_platform"
+    )]
+    pub framework: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<UserRuntimeBuild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserRuntimeBuild {
+    #[serde(default = "default_build_context")]
+    pub context: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dockerfile: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -426,4 +444,206 @@ fn validation_result(
 
 fn default_structure_path() -> PathBuf {
     PathBuf::from("structure.urdf")
+}
+
+fn default_user_runtime_framework() -> String {
+    "match-platform".to_string()
+}
+
+fn is_match_platform(framework: &str) -> bool {
+    framework == "match-platform"
+}
+
+fn default_build_context() -> PathBuf {
+    PathBuf::from(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{Robot, UserRuntimeBuild};
+
+    #[test]
+    fn user_runtime_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+version: v1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        let runtime = robot
+            .user_runtimes
+            .get("autonomy")
+            .expect("user runtime should parse");
+        assert_eq!(runtime.path, PathBuf::from("runtimes/autonomy"));
+        assert_eq!(runtime.framework, "match-platform");
+        assert_eq!(runtime.build, None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn user_runtime_parses_framework_and_full_build_recipe() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+version: v1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+    framework: "0.9.0"
+    build:
+      context: container
+      dockerfile: Dockerfile.runtime
+      target: runtime
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        let runtime = robot
+            .user_runtimes
+            .get("autonomy")
+            .expect("user runtime should parse");
+        assert_eq!(runtime.framework, "0.9.0");
+        assert_eq!(
+            runtime.build,
+            Some(UserRuntimeBuild {
+                context: PathBuf::from("container"),
+                dockerfile: Some(PathBuf::from("Dockerfile.runtime")),
+                target: Some("runtime".to_string()),
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn user_runtime_build_rejects_unknown_fields() {
+        let error = Robot::parse_from_string(
+            r#"
+version: v1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+    build:
+      bogus: 1
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )
+        .expect_err("unknown build fields should fail to parse");
+
+        assert!(
+            format!("{error:#}").contains("unknown field `bogus`"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn user_runtime_round_trips_and_omits_default_framework_and_empty_build() -> anyhow::Result<()>
+    {
+        let default_robot = Robot::parse_from_string(
+            r#"
+version: v1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+        let default_yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(default_robot))?;
+
+        assert!(
+            !default_yaml.contains("framework:"),
+            "default framework should be omitted: {default_yaml}"
+        );
+        assert!(
+            !default_yaml.contains("build:"),
+            "empty build recipe should be omitted: {default_yaml}"
+        );
+
+        let robot = Robot::parse_from_string(
+            r#"
+version: v1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+    framework: "0.9.0"
+    build:
+      context: container
+      dockerfile: Dockerfile.runtime
+      target: runtime
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        let reparsed = Robot::parse_from_string(&yaml)?;
+
+        assert_eq!(reparsed.user_runtimes, robot.user_runtimes);
+
+        Ok(())
+    }
 }
