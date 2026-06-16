@@ -4,6 +4,26 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0](https://github.com/phoxal/framework/releases/tag/v0.10.0) - 2026-06-16
+
+
+### Added
+
+- *(model)* User_runtimes gain a framework selector + optional build recipe (#73)
+
+### Documentation
+
+- Refresh stale post-collapse version references (#75)
+
+### Other
+
+- *(runtime)* Unify tokio dependency across runtimes (#74)
+
+### Refactored
+
+- *(runtime)* Split runtime/mod.rs into focused submodules (#76)
+- *(api)* Move api/mod.rs contract+topic tests into api/tests.rs (#77)
+
 ## [0.9.0](https://github.com/phoxal/framework/releases/tag/v0.9.0) - 2026-06-15
 
 
