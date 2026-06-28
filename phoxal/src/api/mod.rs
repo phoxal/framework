@@ -221,6 +221,36 @@ phoxal_api_tree! {
 
             topic state: pubsub State;
         }
+
+        safety {
+            /// The robot's overall safety posture, worst-concern-wins. A family
+            /// that exists only from y2026_2 on (it consumes `battery`, which is
+            /// itself y2026_2-only).
+            enum Level {
+                /// No active concerns.
+                Nominal,
+                /// A degraded condition that does not (yet) require stopping.
+                Warning,
+                /// Actuation authority must be revoked immediately.
+                EmergencyStop,
+            }
+
+            /// A specific reason the safety monitor raised the posture.
+            enum Concern {
+                BatteryLow,
+                BatteryCritical,
+                DriveFault,
+            }
+
+            /// The published safety posture: the worst level across all active
+            /// concerns, plus the concerns that drove it.
+            struct Status {
+                level: Level,
+                concerns: Vec<Concern>,
+            }
+
+            topic state: pubsub Status;
+        }
     }
 }
 
