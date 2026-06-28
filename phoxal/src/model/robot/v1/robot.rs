@@ -12,6 +12,7 @@ const ROBOT_FILE: &str = "robot.yaml";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Robot {
+    pub api_version: String,
     pub identity: Identity,
     #[serde(default = "default_structure_path")]
     pub structure: PathBuf,
@@ -143,6 +144,7 @@ pub struct SourcePath {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
+    EmptyApiVersion,
     EmptyIdentityId,
     EmptyIdentityNamespace,
     UnknownPlatformRuntimeOverride {
@@ -308,6 +310,9 @@ impl Robot {
     }
 
     fn validate_basics(&self, errors: &mut Vec<ValidationError>) {
+        if self.api_version.trim().is_empty() {
+            errors.push(ValidationError::EmptyApiVersion);
+        }
         if self.identity.id.trim().is_empty() {
             errors.push(ValidationError::EmptyIdentityId);
         }
@@ -370,6 +375,7 @@ impl<'a> IntoIterator for &'a mut Components {
 impl fmt::Display for ValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::EmptyApiVersion => formatter.write_str("api_version must not be empty"),
             Self::EmptyIdentityId => formatter.write_str("identity.id must not be empty"),
             Self::EmptyIdentityNamespace => {
                 formatter.write_str("identity.namespace must not be empty")
@@ -468,7 +474,8 @@ mod tests {
     fn user_runtime_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
-version: v1
+schema: v0
+api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
@@ -503,7 +510,8 @@ components:
     fn user_runtime_parses_framework_and_full_build_recipe() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
-version: v1
+schema: v0
+api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
@@ -549,7 +557,8 @@ components:
     fn user_runtime_build_rejects_unknown_fields() {
         let error = Robot::parse_from_string(
             r#"
-version: v1
+schema: v0
+api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
@@ -583,7 +592,8 @@ components:
     {
         let default_robot = Robot::parse_from_string(
             r#"
-version: v1
+schema: v0
+api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
@@ -615,7 +625,8 @@ components:
 
         let robot = Robot::parse_from_string(
             r#"
-version: v1
+schema: v0
+api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
@@ -643,6 +654,99 @@ components:
         let reparsed = Robot::parse_from_string(&yaml)?;
 
         assert_eq!(reparsed.user_runtimes, robot.user_runtimes);
+
+        Ok(())
+    }
+
+    #[test]
+    fn robot_manifest_requires_schema_v0_and_api_version() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        assert_eq!(robot.api_version, "y2026_1");
+
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot))?;
+        assert!(
+            yaml.starts_with("schema: v0\napi_version: y2026_1\n"),
+            "schema and api_version should be the first root keys: {yaml}"
+        );
+
+        let old_manifest_error = Robot::parse_from_string(
+            r#"
+version: v1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )
+        .expect_err("old version discriminator should no longer parse");
+
+        assert!(
+            format!("{old_manifest_error:#}").contains("schema"),
+            "got: {old_manifest_error:#}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn empty_api_version_is_validation_error() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: " "
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "0.9.0"
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        let errors = robot
+            .validate()
+            .expect_err("blank api_version should fail validation");
+
+        assert!(errors.contains(&super::ValidationError::EmptyApiVersion));
+        assert_eq!(
+            super::ValidationError::EmptyApiVersion.to_string(),
+            "api_version must not be empty"
+        );
 
         Ok(())
     }
