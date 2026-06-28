@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+  --> tests/trybuild/fail/undeclared_family.rs:17:41
+   |
+17 |         let _undeclared = ctx.publisher(api::topic::new().drive().target()).await?;
+   |                               --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Topic<PubSub<State>>`, found `Topic<PubSub<Target>>`
+   |                               |
+   |                               arguments to this method are incorrect
+   |
+   = note: expected struct `Topic<PubSub<phoxal::api::y2026_1::drive::State>>`
+              found struct `Topic<PubSub<Target>>`
+note: method defined here
+  --> src/runtime/context.rs
+   |
+   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |                  ^^^^^^^^^

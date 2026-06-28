@@ -19,18 +19,13 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Webots-backed validation harness. Off by default so platform runtime images
-# do not carry scenario/test code; user runtimes that author scenarios enable it.
-scenario = []
 
 [dependencies]
-arc-swap = "1.9.1"
+phoxal-macros = { workspace = true }
 anyhow = { workspace = true }
-async-trait = { workspace = true }
+arc-swap = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-const_format = { workspace = true }
 derive-new = { workspace = true }
-derive_setters = { workspace = true }
 dotenvy = { workspace = true }
 nalgebra = { workspace = true }
 rmp-serde = { workspace = true }
@@ -52,3 +47,7 @@ trybuild = { workspace = true }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "runtime_control_loop"
+path = "examples/runtime_control_loop.rs"

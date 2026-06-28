@@ -1,101 +1,53 @@
-#![allow(clippy::module_name_repetitions)]
+//! The Zenoh-native `bus_abi` boundary (D26/D62).
+//!
+//! Samples are Zenoh-native: the key (`<namespace>/robots/<robot-id>/<topic>`),
+//! an encoding string + a [`BusMetadata`] attachment (the version identity +
+//! provenance), and a plain MessagePack body payload — there is no Phoxal frame
+//! independent of Zenoh, and no `{"v":…}` version tag in the body (D62).
 
-use derive_new::new;
-use thiserror::Error;
+mod abi;
+mod codec;
+mod error;
+mod handle;
+mod metadata;
+mod session;
+mod topic;
 
-pub mod builder;
-pub mod liveliness;
-pub mod metadata;
-pub mod query;
-pub mod topic;
-pub mod typed;
-#[allow(clippy::module_name_repetitions)]
-pub mod zenoh;
+pub use abi::{BUS_ABI, BusAbi, CodecId, encoding_string};
+pub use codec::{Codec, CodecError, MessagePack};
+pub use error::{BusError, Result};
+pub use handle::{Latest, Publisher, Received, Subscriber};
+pub use metadata::{BusMetadata, Source};
+pub use session::{Bus, BusConfig, BusHealth};
+pub use topic::{PubSub, Query, Topic, TopicKind, WildcardPublish};
 
-#[derive(Clone, new)]
-pub struct Bus {
-    session: ::zenoh::Session,
-    prefix: String,
+/// Logical robot time: an epoch + a nanosecond timestamp in the clock's domain.
+///
+/// Every bus sample's `produced_at_ns`/`epoch` is stamped from a `LogicalTime`,
+/// so all participants share one time domain (D34). Within an epoch `time_ns`
+/// strictly increases; an epoch bump signals a reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LogicalTime {
+    epoch: u64,
+    time_ns: u64,
 }
 
-impl Bus {
-    pub fn builder(router: impl Into<String>) -> builder::Builder {
-        builder::Builder::new(router)
+impl LogicalTime {
+    /// Construct a logical time from an epoch + nanosecond timestamp.
+    pub const fn new(epoch: u64, time_ns: u64) -> Self {
+        LogicalTime { epoch, time_ns }
     }
 
-    pub async fn close(&self) -> Result<()> {
-        self.session.close().await?;
-        Ok(())
+    /// The clock epoch (reset counter).
+    pub const fn epoch(self) -> u64 {
+        self.epoch
     }
 
-    pub fn topic(&self, suffix: &str) -> String {
-        if self.prefix.is_empty() {
-            suffix.to_string()
-        } else {
-            format!("{}/{suffix}", self.prefix)
-        }
-    }
-
-    pub fn session(&self) -> &::zenoh::Session {
-        &self.session
-    }
-
-    pub fn cloned_session(&self) -> ::zenoh::Session {
-        self.session.clone()
+    /// The nanosecond timestamp within the epoch.
+    pub const fn time_ns(self) -> u64 {
+        self.time_ns
     }
 }
-
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("failed to encode bus payload: {0}")]
-    Encode(#[from] rmp_serde::encode::Error),
-
-    #[error("failed to decode bus payload: {0}")]
-    Decode(#[from] rmp_serde::decode::Error),
-
-    #[error("invalid bus identifier: {0}")]
-    InvalidIdentifier(String),
-
-    #[error("invalid bus topic: {0}")]
-    InvalidTopic(String),
-
-    #[error("invalid query retry: {0}")]
-    InvalidRetry(String),
-
-    #[error("bus transport error: {0}")]
-    Transport(#[from] ::zenoh::Error),
-
-    #[error("typed bus decode error: {0}")]
-    TypedDecode(String),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use crate::bus::builder::Builder;
-
-    #[test]
-    fn builder_keeps_router_endpoint_as_given() {
-        assert_eq!(
-            Builder::new("tcp/127.0.0.1:7447")
-                .with_prefix("dev")
-                .router(),
-            "tcp/127.0.0.1:7447"
-        );
-    }
-
-    #[test]
-    fn builder_keeps_prefix_as_given() {
-        let builder = Builder::new("tcp/router:7447").with_prefix("dev/team");
-        assert_eq!(builder.prefix().unwrap(), "dev/team");
-    }
-
-    #[test]
-    fn builder_accepts_empty_prefix() {
-        let builder = Builder::new("tcp/router:7447").with_connect_timeout(Duration::from_secs(1));
-        assert_eq!(builder.prefix(), None);
-    }
-}
+mod tests;

@@ -1,0 +1,23 @@
+[package]
+name = "phoxal-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Proc-macros for the phoxal framework: phoxal_api_tree!, #[derive(Runtime)], #[phoxal::runtime]."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+heck = { workspace = true }
+
+[lints]
+workspace = true

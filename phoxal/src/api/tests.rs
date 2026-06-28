@@ -1,575 +1,77 @@
-use crate::bus::topic::{PubSub, Query, Topic};
+//! Golden tests for the generated API layer: the version-local body shape (plain
+//! payload, no `{"v":…}` wrapper — D62), the `ContractBody` consts, the
+//! `ApiVersion` id, and the topic keys produced by the api-local builders.
 
-use super::*;
+use crate::api::y2026_1 as api;
+use crate::api::{ApiVersion, ContractBody};
 
-fn assert_pubsub<T>(topic: Topic<PubSub<T>>, key: &str, schema: &str) {
-    assert_eq!(topic.key(), key);
-    assert_eq!(topic.schema(), schema);
-}
-
-fn assert_query<Req, Resp>(topic: Topic<Query<Req, Resp>>, key: &str, schema: &str) {
-    assert_eq!(topic.key(), key);
-    assert_eq!(topic.schema(), schema);
+#[test]
+fn api_version_id_is_the_dated_module_name() {
+    assert_eq!(<api::Api as ApiVersion>::ID, "y2026_1");
 }
 
 #[test]
-fn topic_tree_keys_and_schemas_cover_api_domains() {
-    assert_pubsub::<crate::api::drive::Target>(
-        topic::new().drive().target(),
-        "drive/target",
-        "drive/target",
-    );
-    assert_pubsub::<crate::api::drive::State>(
-        topic::new().drive().state(),
-        "drive/state",
-        "drive/state",
-    );
-    assert_pubsub::<crate::api::drive::ActuatorCommands>(
-        topic::new().drive().actuator_commands(),
-        "drive/actuator_commands",
-        "drive/actuator_commands",
-    );
-    assert_pubsub::<crate::api::drive::Saturation>(
-        topic::new().drive().saturation(),
-        "drive/saturation",
-        "drive/saturation",
-    );
-    assert_pubsub::<crate::api::drive::Watchdog>(
-        topic::new().drive().watchdog(),
-        "drive/watchdog",
-        "drive/watchdog",
-    );
-    assert_pubsub::<crate::api::drive::Kinematics>(
-        topic::new().drive().kinematics(),
-        "drive/kinematics",
-        "drive/kinematics",
-    );
-    assert_pubsub::<crate::api::odometry::OdometryEstimate>(
-        topic::new().odometry().estimate(),
-        "odometry/estimate",
-        "odometry/estimate",
-    );
-    assert_pubsub::<crate::api::odometry::Status>(
-        topic::new().odometry().status(),
-        "odometry/status",
-        "odometry/status",
-    );
-    assert_pubsub::<crate::api::odometry::SourceHealth>(
-        topic::new().odometry().source_health(),
-        "odometry/source_health",
-        "odometry/source_health",
-    );
-    assert_pubsub::<crate::api::odometry::Residuals>(
-        topic::new().odometry().residuals(),
-        "odometry/residuals",
-        "odometry/residuals",
-    );
-    assert_pubsub::<crate::api::odometry::Integration>(
-        topic::new().odometry().integration(),
-        "odometry/integration",
-        "odometry/integration",
-    );
-    assert_pubsub::<crate::api::joint::JointState>(
-        topic::new().joint("left_wheel").data(),
-        "joint/left_wheel/data",
-        "joint/data",
-    );
-    assert_pubsub::<crate::api::frame::Tree>(
-        topic::new().frame().tree(),
-        "frame/tree",
-        "frame/tree",
-    );
-    assert_pubsub::<crate::api::frame::Static>(
-        topic::new().frame().r#static(),
-        "frame/static",
-        "frame/static",
-    );
-    assert_pubsub::<crate::api::frame::FrameTransform>(
-        topic::new().frame().data(),
-        "frame/data",
-        "frame/data",
-    );
-    assert_pubsub::<crate::api::power::Command>(
-        topic::new().power().command(),
-        "power/command",
-        "power/command",
-    );
-    assert_pubsub::<crate::api::power::State>(
-        topic::new().power().state(),
-        "power/state",
-        "power/state",
-    );
-    assert_pubsub::<crate::api::presence::Heartbeat>(
-        topic::new().presence().heartbeat(),
-        "presence/heartbeat",
-        "presence/heartbeat",
-    );
-    assert_pubsub::<crate::api::presence::Summary>(
-        topic::new().presence().summary(),
-        "presence/summary",
-        "presence/summary",
-    );
-    assert_pubsub::<crate::api::presence::DebugReadiness>(
-        topic::new().presence().readiness(),
-        "presence/readiness",
-        "presence/readiness",
-    );
-    assert_pubsub::<crate::api::motion::State>(
-        topic::new().motion().state(),
-        "motion/state",
-        "motion/state",
-    );
-    assert_pubsub::<crate::api::motion::ManualCommand>(
-        topic::new().motion().manual(),
-        "motion/manual",
-        "motion/manual",
-    );
-    assert_pubsub::<crate::api::motion::Arbitration>(
-        topic::new().motion().arbitration(),
-        "motion/arbitration",
-        "motion/arbitration",
-    );
-    assert_pubsub::<crate::api::motion::SourceFreshness>(
-        topic::new().motion().source_freshness(),
-        "motion/source_freshness",
-        "motion/source_freshness",
-    );
-    assert_pubsub::<crate::api::follow::Target>(
-        topic::new().follow().target(),
-        "follow/target",
-        "follow/target",
-    );
-    assert_pubsub::<crate::api::follow::State>(
-        topic::new().follow().state(),
-        "follow/state",
-        "follow/state",
-    );
-    assert_pubsub::<crate::api::follow::TrackingError>(
-        topic::new().follow().tracking_error(),
-        "follow/tracking_error",
-        "follow/tracking_error",
-    );
-    assert_pubsub::<crate::api::follow::Candidates>(
-        topic::new().follow().candidates(),
-        "follow/candidates",
-        "follow/candidates",
-    );
-    assert_pubsub::<crate::api::follow::Costs>(
-        topic::new().follow().costs(),
-        "follow/costs",
-        "follow/costs",
-    );
-    assert_pubsub::<crate::api::follow::RevisionInputs>(
-        topic::new().follow().revision_inputs(),
-        "follow/revision_inputs",
-        "follow/revision_inputs",
-    );
-    assert_pubsub::<crate::api::explore::Frontiers>(
-        topic::new().explore().frontiers(),
-        "explore/frontiers",
-        "explore/frontiers",
-    );
-    assert_pubsub::<crate::api::explore::GoalCandidates>(
-        topic::new().explore().goal_candidates(),
-        "explore/goal_candidates",
-        "explore/goal_candidates",
-    );
-    assert_pubsub::<crate::api::explore::State>(
-        topic::new().explore().state(),
-        "explore/state",
-        "explore/state",
-    );
-    assert_pubsub::<crate::api::explore::Scoring>(
-        topic::new().explore().scoring(),
-        "explore/scoring",
-        "explore/scoring",
-    );
-    assert_pubsub::<crate::api::explore::RejectedCandidates>(
-        topic::new().explore().rejected_candidates(),
-        "explore/rejected_candidates",
-        "explore/rejected_candidates",
-    );
-    assert_pubsub::<crate::api::plan::Path>(topic::new().plan().path(), "plan/path", "plan/path");
-    assert_pubsub::<crate::api::plan::State>(
-        topic::new().plan().state(),
-        "plan/state",
-        "plan/state",
-    );
-    assert_pubsub::<crate::api::plan::SearchGraph>(
-        topic::new().plan().search_graph(),
-        "plan/search_graph",
-        "plan/search_graph",
-    );
-    assert_pubsub::<crate::api::plan::CostLayers>(
-        topic::new().plan().cost_layers(),
-        "plan/cost_layers",
-        "plan/cost_layers",
-    );
-    assert_pubsub::<crate::api::plan::RejectedPaths>(
-        topic::new().plan().rejected_paths(),
-        "plan/rejected_paths",
-        "plan/rejected_paths",
-    );
-    assert_pubsub::<crate::api::plan::RevisionInputs>(
-        topic::new().plan().revision_inputs(),
-        "plan/revision_inputs",
-        "plan/revision_inputs",
-    );
-    assert_pubsub::<crate::api::perception::Detections>(
-        topic::new().perception().detections(),
-        "perception/detections",
-        "perception/detections",
-    );
-    assert_pubsub::<crate::api::perception::PerceptionState>(
-        topic::new().perception().state(),
-        "perception/state",
-        "perception/state",
-    );
-    assert_pubsub::<crate::api::safety::SafetyAuthorization>(
-        topic::new().safety().authorization(),
-        "safety/authorization",
-        "safety/authorization",
-    );
-    assert_pubsub::<crate::api::safety::State>(
-        topic::new().safety().state(),
-        "safety/state",
-        "safety/state",
-    );
-    assert_pubsub::<crate::api::safety::EmergencyStopRequest>(
-        topic::new().safety().emergency_stop_request(),
-        "safety/emergency_stop_request",
-        "safety/emergency_stop_request",
-    );
-    assert_pubsub::<crate::api::safety::Evidence>(
-        topic::new().safety().evidence(),
-        "safety/evidence",
-        "safety/evidence",
-    );
-    assert_pubsub::<crate::api::safety::StopSet>(
-        topic::new().safety().stop_set(),
-        "safety/stop_set",
-        "safety/stop_set",
-    );
-    assert_pubsub::<crate::api::safety::LatencyBudget>(
-        topic::new().safety().latency_budget(),
-        "safety/latency_budget",
-        "safety/latency_budget",
-    );
-    assert_pubsub::<crate::api::safety::SourceHealth>(
-        topic::new().safety().source_health(),
-        "safety/source_health",
-        "safety/source_health",
-    );
-    assert_pubsub::<crate::api::mission::MissionCommand>(
-        topic::new().mission().command(),
-        "mission/command",
-        "mission/command",
-    );
-    assert_pubsub::<crate::api::mission::State>(
-        topic::new().mission().state(),
-        "mission/state",
-        "mission/state",
-    );
-    assert_pubsub::<crate::api::mission::Goal>(
-        topic::new().mission().goal(),
-        "mission/goal",
-        "mission/goal",
-    );
-    assert_pubsub::<crate::api::mission::DecisionTrace>(
-        topic::new().mission().decision_trace(),
-        "mission/decision_trace",
-        "mission/decision_trace",
-    );
-    assert_pubsub::<crate::api::mission::Goal>(
-        topic::new().mission().debug().goal_record(),
-        "mission/debug/goal_record",
-        "mission/debug/goal_record",
-    );
-    assert_pubsub::<crate::api::video::StreamEvent>(
-        topic::new().video().stream("front").event(),
-        "video/stream/front/event",
-        "video/stream/event",
-    );
-    assert_query::<crate::api::asset::GetRequest, crate::api::asset::GetResponse>(
-        topic::new().asset().get(),
-        "asset/get",
-        "asset/get",
-    );
-    assert_pubsub::<crate::api::simulation::clock::Clock>(
-        topic::new().simulation().clock(),
-        "simulation/clock",
-        "simulation/clock",
-    );
-    assert_pubsub::<crate::api::simulation::status::Status>(
-        topic::new().simulation().status(),
-        "simulation/status",
-        "simulation/status",
-    );
-    assert_pubsub::<crate::api::localize::LocalizationState>(
-        topic::new().localize().state(),
-        "localize/state",
-        "localize/state",
-    );
-    assert_pubsub::<crate::api::localize::PoseEstimate>(
-        topic::new().localize().pose(),
-        "localize/pose",
-        "localize/pose",
-    );
-    assert_pubsub::<crate::api::localize::LocalizationRevision>(
-        topic::new().localize().revision(),
-        "localize/revision",
-        "localize/revision",
-    );
-    assert_pubsub::<crate::api::localize::Keyframe>(
-        topic::new().localize().keyframe(),
-        "localize/keyframe",
-        "localize/keyframe",
-    );
-    assert_pubsub::<crate::api::localize::PoseGraphCorrection>(
-        topic::new().localize().correction(),
-        "localize/correction",
-        "localize/correction",
-    );
-    assert_pubsub::<crate::api::map::MapRevision>(
-        topic::new().map().revision(),
-        "map/revision",
-        "map/revision",
-    );
-    assert_pubsub::<crate::api::map::Summary>(
-        topic::new().map().summary(),
-        "map/summary",
-        "map/summary",
-    );
-    assert_pubsub::<crate::api::map::LocalCost>(
-        topic::new().map().local_cost(),
-        "map/local_cost",
-        "map/local_cost",
-    );
-    assert_pubsub::<crate::api::map::Traversability>(
-        topic::new().map().traversability(),
-        "map/traversability",
-        "map/traversability",
-    );
-    assert_pubsub::<crate::api::map::TraversabilitySummary>(
-        topic::new().map().traversability_summary(),
-        "map/traversability_summary",
-        "map/traversability_summary",
+fn contract_body_consts_are_family_and_topic() {
+    assert_eq!(<api::drive::State as ContractBody>::FAMILY, "drive::State");
+    assert_eq!(<api::drive::State as ContractBody>::TOPIC, "drive/state");
+    assert_eq!(
+        <api::drive::Target as ContractBody>::FAMILY,
+        "drive::Target"
+    );
+    assert_eq!(<api::drive::Target as ContractBody>::TOPIC, "drive/target");
+    assert_eq!(
+        <api::motor::Command as ContractBody>::TOPIC,
+        "motor/command"
+    );
+    assert_eq!(
+        <api::localize::LocalizationState as ContractBody>::TOPIC,
+        "localize/state"
     );
 }
 
 #[test]
-fn topic_tree_query_leaves_omit_query_path_segment() {
-    assert_query::<crate::api::frame::FrameLookupRequest, crate::api::frame::FrameLookupResponse>(
-        topic::new().frame().lookup(),
-        "frame/lookup",
-        "frame/lookup",
+fn body_serializes_as_plain_payload_without_version_tag() {
+    let target = api::drive::Target {
+        linear_x_mps: 1.0,
+        angular_z_radps: 0.5,
+    };
+    // MessagePack-as-JSON projection: the wire body is the plain struct — there is
+    // no `v`/`data` envelope around it.
+    let json = serde_json::to_value(&target).unwrap();
+    assert_eq!(json["linear_x_mps"], 1.0);
+    assert!(
+        json.get("v").is_none(),
+        "wire body must not carry a version tag"
     );
-    assert_query::<crate::api::video::OpenRequest, crate::api::video::OpenResponse>(
-        topic::new().video().open(),
-        "video/open",
-        "video/open",
-    );
-    assert_query::<crate::api::asset::GetRequest, crate::api::asset::GetResponse>(
-        topic::new().asset().get(),
-        "asset/get",
-        "asset/get",
-    );
-    assert_query::<crate::api::localize::PoseGraphRequest, crate::api::localize::PoseGraphResponse>(
-        topic::new().localize().pose_graph(),
-        "localize/pose_graph",
-        "localize/pose_graph",
-    );
-    assert_query::<crate::api::localize::KeyframeRequest, crate::api::localize::KeyframeResponse>(
-        topic::new().localize().keyframe_query(),
-        "localize/keyframe_query",
-        "localize/keyframe_query",
-    );
-    assert_query::<
-        crate::api::localize::CorrectionsRequest,
-        crate::api::localize::CorrectionsResponse,
-    >(
-        topic::new().localize().corrections(),
-        "localize/corrections",
-        "localize/corrections",
-    );
-    assert_query::<
-        crate::api::map::TraversabilityTileRequest,
-        crate::api::map::TraversabilityTileResponse,
-    >(
-        topic::new().map().traversability_tile(),
-        "map/traversability_tile",
-        "map/traversability_tile",
-    );
-    assert_query::<crate::api::map::SubmapRequest, crate::api::map::SubmapResponse>(
-        topic::new().map().submap(),
-        "map/submap",
-        "map/submap",
-    );
-    assert_query::<crate::api::map::EsdfTileRequest, crate::api::map::EsdfTileResponse>(
-        topic::new().map().esdf_tile(),
-        "map/esdf_tile",
-        "map/esdf_tile",
-    );
-    assert_query::<crate::api::map::LocalGridRequest, crate::api::map::LocalGridResponse>(
-        topic::new().map().local_grid(),
-        "map/local_grid",
-        "map/local_grid",
-    );
-    assert_query::<crate::api::map::GlobalGridRequest, crate::api::map::GlobalGridResponse>(
-        topic::new().map().global_grid(),
-        "map/global_grid",
-        "map/global_grid",
-    );
-    assert_query::<crate::api::map::SnapshotRequest, crate::api::map::SnapshotResponse>(
-        topic::new().map().snapshot(),
-        "map/snapshot",
-        "map/snapshot",
-    );
-    assert_query::<crate::api::simulation::reset::Request, crate::api::simulation::reset::Response>(
-        topic::new().simulation().reset(),
-        "simulation/reset",
-        "simulation/reset",
-    );
+    assert!(json.get("data").is_none());
 }
 
 #[test]
-fn topic_tree_component_and_simulation_slots_elide_holes_in_schemas() {
-    assert_pubsub::<crate::api::component::capability::motor::Command>(
-        topic::new().component("base").motor("left_wheel").command(),
-        "component/base/motor/left_wheel/command",
-        "component/motor/command",
-    );
-    assert_pubsub::<crate::api::component::capability::encoder::Sample>(
-        topic::new().component("base").encoder("left_wheel").data(),
-        "component/base/encoder/left_wheel/data",
-        "component/encoder/data",
-    );
-    assert_pubsub::<crate::api::component::capability::accelerometer::Sample>(
-        topic::new()
-            .component("imu_board")
-            .accelerometer("accel")
-            .data(),
-        "component/imu_board/accelerometer/accel/data",
-        "component/accelerometer/data",
-    );
-    assert_pubsub::<crate::api::component::capability::gyroscope::Sample>(
-        topic::new().component("imu_board").gyroscope("gyro").data(),
-        "component/imu_board/gyroscope/gyro/data",
-        "component/gyroscope/data",
-    );
-    assert_pubsub::<crate::api::component::capability::magnetometer::Sample>(
-        topic::new()
-            .component("imu_board")
-            .magnetometer("mag")
-            .data(),
-        "component/imu_board/magnetometer/mag/data",
-        "component/magnetometer/data",
-    );
-    assert_pubsub::<crate::api::component::capability::imu::Sample>(
-        topic::new().component("imu_board").imu("imu").data(),
-        "component/imu_board/imu/imu/data",
-        "component/imu/data",
-    );
-    assert_pubsub::<crate::api::component::capability::gnss::Sample>(
-        topic::new().component("gps").gnss("gnss").data(),
-        "component/gps/gnss/gnss/data",
-        "component/gnss/data",
-    );
-    assert_pubsub::<crate::api::component::capability::camera::Frame>(
-        topic::new().component("head").camera("front").data(),
-        "component/head/camera/front/data",
-        "component/camera/data",
-    );
-    assert_pubsub::<crate::api::component::capability::camera::Frame>(
-        topic::new()
-            .component("head")
-            .camera("front")
-            .profile("r640x480_h10_rgb8")
-            .data(),
-        "component/head/camera/front/profile/r640x480_h10_rgb8/data",
-        "component/camera/profile/data",
-    );
-    assert_pubsub::<crate::api::component::capability::depth::Depth>(
-        topic::new().component("head").depth("front_depth").data(),
-        "component/head/depth/front_depth/data",
-        "component/depth/data",
-    );
-    assert_pubsub::<crate::api::component::capability::depth::Depth>(
-        topic::new()
-            .component("head")
-            .depth("front_depth")
-            .profile("r320x240_h5_depth_mm")
-            .data(),
-        "component/head/depth/front_depth/profile/r320x240_h5_depth_mm/data",
-        "component/depth/profile/data",
-    );
-    assert_pubsub::<crate::api::component::capability::range::Sample>(
-        topic::new().component("base").range("front_tof").data(),
-        "component/base/range/front_tof/data",
-        "component/range/data",
-    );
-    assert_pubsub::<crate::api::component::capability::lidar::Scan>(
-        topic::new().component("front_lidar").lidar("scan").data(),
-        "component/front_lidar/lidar/scan/data",
-        "component/lidar/data",
-    );
-    assert_pubsub::<crate::api::component::capability::mmwave::Scan>(
-        topic::new().component("radar").mmwave("mmwave").data(),
-        "component/radar/mmwave/mmwave/data",
-        "component/mmwave/data",
-    );
-    assert_pubsub::<crate::api::component::capability::emergency_stop::State>(
-        topic::new()
-            .component("safety_panel")
-            .emergency_stop("estop")
-            .data(),
-        "component/safety_panel/emergency_stop/estop/data",
-        "component/emergency_stop/data",
-    );
-    assert_pubsub::<crate::api::component::capability::battery::State>(
-        topic::new()
-            .component("power_board")
-            .battery("main_battery")
-            .data(),
-        "component/power_board/battery/main_battery/data",
-        "component/battery/data",
-    );
-    assert_pubsub::<crate::api::component::capability::led::Command>(
-        topic::new()
-            .component("status_panel")
-            .led("status")
-            .command(),
-        "component/status_panel/led/status/command",
-        "component/led/command",
-    );
-    assert_pubsub::<crate::api::component::capability::microphone::Frame>(
-        topic::new().component("head").microphone("mic").data(),
-        "component/head/microphone/mic/data",
-        "component/microphone/data",
-    );
-    assert_pubsub::<crate::api::component::capability::speaker::audio::Audio>(
-        topic::new().component("head").speaker("speaker").audio(),
-        "component/head/speaker/speaker/audio",
-        "component/speaker/audio",
-    );
-    assert_pubsub::<crate::api::component::capability::speaker::command::Command>(
-        topic::new().component("head").speaker("speaker").command(),
-        "component/head/speaker/speaker/command",
-        "component/speaker/command",
-    );
-    assert_pubsub::<crate::api::simulation::pose::Pose>(
-        topic::new().simulation().robot("r1").pose(),
-        "simulation/robot/r1/pose",
-        "simulation/robot/pose",
-    );
-    assert_pubsub::<crate::api::simulation::contact::Contact>(
-        topic::new().simulation().robot("r1").contact(),
-        "simulation/robot/r1/contact",
-        "simulation/robot/contact",
-    );
-    assert_pubsub::<crate::api::simulation::collision::Collision>(
-        topic::new().simulation().robot("r1").collision(),
-        "simulation/robot/r1/collision",
-        "simulation/robot/collision",
+fn body_round_trips_through_messagepack() {
+    let state = api::drive::State {
+        target: api::drive::Target {
+            linear_x_mps: 0.3,
+            angular_z_radps: -0.2,
+        },
+        limited_target: api::drive::Target {
+            linear_x_mps: 0.3,
+            angular_z_radps: -0.2,
+        },
+        actuator_authority: api::drive::ActuatorAuthority::Active,
+        stop_reason: None,
+    };
+    let bytes = rmp_serde::to_vec_named(&state).unwrap();
+    let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(state, decoded);
+}
+
+#[test]
+fn topic_builder_keys_match_contract_topics() {
+    assert_eq!(api::topic::new().drive().state().key(), "drive/state");
+    assert_eq!(api::topic::new().drive().target().key(), "drive/target");
+    assert_eq!(api::topic::new().motor().command().key(), "motor/command");
+    assert_eq!(
+        api::topic::new().presence().heartbeat().key(),
+        "presence/heartbeat"
     );
 }

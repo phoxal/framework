@@ -1,0 +1,5 @@
+error: a runtime impl must declare exactly one #[setup] method (D22)
+  --> tests/trybuild/fail/missing_setup.rs:12:6
+   |
+12 | impl NoSetup {
+   |      ^^^^^^^
