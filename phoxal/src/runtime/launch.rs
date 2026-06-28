@@ -10,6 +10,8 @@
 //! slice synthesizes a default launch for `runtime run`; loading from a real
 //! bundle file lands with the CLI slice.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 /// Default bounded shutdown grace, in milliseconds.
@@ -33,6 +35,11 @@ pub struct ParticipantLaunch {
     /// The runtime's typed config block (`user_runtimes.<id>.config`), if any.
     #[serde(default)]
     pub config: Option<serde_json::Value>,
+    /// The bundle root that holds the robot model (`robot.yaml` + components +
+    /// structure). Official runtimes read it via `SetupContext::robot()`; absent
+    /// for a bare `runtime run` with no model.
+    #[serde(default)]
+    pub bundle_root: Option<PathBuf>,
     /// Bounded shutdown grace, in milliseconds.
     #[serde(default = "default_grace")]
     pub shutdown_grace_ms: u64,
@@ -53,8 +60,15 @@ impl ParticipantLaunch {
             bus: BusProfile::default(),
             clock: ClockMode::Real,
             config: None,
+            bundle_root: None,
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
         }
+    }
+
+    /// Set the bundle root (where the robot model lives) for this launch.
+    pub fn with_bundle_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.bundle_root = Some(root.into());
+        self
     }
 }
 

@@ -2,6 +2,8 @@
 //! time per scheduled step), and `ShutdownContext`.
 
 use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::api::ContractBody;
@@ -9,6 +11,7 @@ use crate::bus::{
     Bus, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, PubSub, Publisher, Querier, Query, Subscriber,
     Topic,
 };
+use crate::model::v1::Robot;
 use crate::runtime::spec::{DeclaresPublish, DeclaresQuery, DeclaresSubscribe, RuntimeFields};
 
 /// Default drop-oldest ring depth for a `Subscriber` built in `#[setup]`.
@@ -24,15 +27,36 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 /// directly; the runner opened the bus before `#[setup]`.
 pub struct SetupContext<R: RuntimeFields> {
     bus: Bus,
+    robot: Option<Arc<Robot>>,
+    bundle_root: Option<PathBuf>,
     _runtime: PhantomData<fn() -> R>,
 }
 
 impl<R: RuntimeFields> SetupContext<R> {
-    pub(crate) fn new(bus: Bus) -> Self {
+    pub(crate) fn new(bus: Bus, robot: Option<Arc<Robot>>, bundle_root: Option<PathBuf>) -> Self {
         SetupContext {
             bus,
+            robot,
+            bundle_root,
             _runtime: PhantomData,
         }
+    }
+
+    /// The resolved robot model (`robot.yaml` + components + structure). Official
+    /// runtimes build their typed state from this (D33); it is present only when
+    /// the runner was launched with a bundle. Returns an error otherwise.
+    pub fn robot(&self) -> crate::Result<&Robot> {
+        self.robot.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("no robot model is bound (this runtime was launched without a bundle)")
+        })
+    }
+
+    /// The bundle root directory (holds the robot model + assets). Present only
+    /// when launched with a bundle.
+    pub fn bundle_root(&self) -> crate::Result<&Path> {
+        self.bundle_root.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("no bundle root is bound (this runtime was launched without a bundle)")
+        })
     }
 
     /// Build a publisher for a declared pub/sub contract of this API version.
