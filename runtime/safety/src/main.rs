@@ -1,17 +1,17 @@
 //! `safety` — the official battery + drive safety monitor.
 //!
-//! This official runtime targets the inheriting API version `y2026_2`. It
-//! consumes `battery`, a family that exists only from `y2026_2` on, plus
-//! `drive/state`, and publishes the robot's aggregate `safety/state` posture.
+//! This official runtime targets API version `y2026_1`. It consumes
+//! `battery` plus `drive/state`, and publishes the robot's aggregate
+//! `safety/state` posture.
 
-use phoxal::api::y2026_2 as api;
+use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
 const BATTERY_CRITICAL_RATIO: f32 = 0.10;
 const BATTERY_LOW_RATIO: f32 = 0.25;
 
 #[derive(phoxal::Runtime)]
-#[phoxal(id = "safety", api = y2026_2)]
+#[phoxal(id = "safety", api = y2026_1)]
 struct Safety {
     // Runtime-private typed state (not handles).
     last_battery: Option<(api::battery::State, u64)>,
@@ -168,11 +168,11 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_y2026_2_safety_contracts() {
+    fn emit_apis_reports_y2026_1_safety_contracts() {
         let json = phoxal::runtime::emit_apis_json::<Safety>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "safety");
-        assert_eq!(value["api_version"], "y2026_2");
+        assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
         assert_contract::<api::battery::State>(contracts, "subscribe");

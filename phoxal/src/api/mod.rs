@@ -58,6 +58,7 @@ phoxal_api_tree! {
             struct Target {
                 linear_x_mps: f32,
                 angular_z_radps: f32,
+                curvature_limit_radpm: Option<f32>,
             }
 
             /// The drive runtime's published control state.
@@ -70,6 +71,45 @@ phoxal_api_tree! {
 
             topic target: pubsub Target;
             topic state: pubsub State;
+        }
+
+        battery {
+            /// Battery state — a family that exists only from y2026_1 on.
+            struct State {
+                voltage_v: f32,
+                current_a: f32,
+                charge_ratio: f32,
+            }
+
+            topic state: pubsub State;
+        }
+
+        safety {
+            /// The robot's overall safety posture, worst-concern-wins.
+            enum Level {
+                /// No active concerns.
+                Nominal,
+                /// A degraded condition that does not (yet) require stopping.
+                Warning,
+                /// Actuation authority must be revoked immediately.
+                EmergencyStop,
+            }
+
+            /// A specific reason the safety monitor raised the posture.
+            enum Concern {
+                BatteryLow,
+                BatteryCritical,
+                DriveFault,
+            }
+
+            /// The published safety posture: the worst level across all active
+            /// concerns, plus the concerns that drove it.
+            struct Status {
+                level: Level,
+                concerns: Vec<Concern>,
+            }
+
+            topic state: pubsub Status;
         }
 
         motor {
@@ -493,66 +533,6 @@ phoxal_api_tree! {
             }
 
             topic get: query GetRequest => GetResponse;
-        }
-    }
-
-    // A second API version that inherits y2026_1 (D61). Unchanged families/types
-    // are re-emitted *fresh* under `y2026_2` — same `FAMILY`/`TOPIC`, a different
-    // `Api` marker. A type with no changed dependency is wire-identical to its
-    // y2026_1 counterpart; a type that *contains* an overridden type changes with
-    // it. Here `drive::Target` is overridden, so the inherited `drive::State`
-    // (which embeds `Target`) reflects the new `Target` in y2026_2.
-    version y2026_2 extends y2026_1 {
-        drive {
-            /// y2026_2 adds an optional curvature limit to the drive target.
-            struct Target {
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-                curvature_limit_radpm: Option<f32>,
-            }
-
-            topic target: pubsub Target;
-        }
-
-        battery {
-            /// Battery state — a family that exists only from y2026_2 on.
-            struct State {
-                voltage_v: f32,
-                current_a: f32,
-                charge_ratio: f32,
-            }
-
-            topic state: pubsub State;
-        }
-
-        safety {
-            /// The robot's overall safety posture, worst-concern-wins. A family
-            /// that exists only from y2026_2 on (it consumes `battery`, which is
-            /// itself y2026_2-only).
-            enum Level {
-                /// No active concerns.
-                Nominal,
-                /// A degraded condition that does not (yet) require stopping.
-                Warning,
-                /// Actuation authority must be revoked immediately.
-                EmergencyStop,
-            }
-
-            /// A specific reason the safety monitor raised the posture.
-            enum Concern {
-                BatteryLow,
-                BatteryCritical,
-                DriveFault,
-            }
-
-            /// The published safety posture: the worst level across all active
-            /// concerns, plus the concerns that drove it.
-            struct Status {
-                level: Level,
-                concerns: Vec<Concern>,
-            }
-
-            topic state: pubsub Status;
         }
     }
 }

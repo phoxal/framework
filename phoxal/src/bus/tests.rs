@@ -37,6 +37,7 @@ fn sample(api_version: &str, codec: u8) -> zenoh::sample::Sample {
     let body = api::drive::Target {
         linear_x_mps: 1.0,
         angular_z_radps: 0.5,
+        curvature_limit_radpm: None,
     };
     let mut meta = metadata(api_version);
     meta.codec = codec;
@@ -80,7 +81,7 @@ fn decode_accepts_matching_api_version() {
 
 #[test]
 fn decode_rejects_api_version_mismatch() {
-    let s = sample("y2026_2", CodecId::MessagePack.as_u8());
+    let s = sample("not-y2026_1", CodecId::MessagePack.as_u8());
     let err = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap_err();
     assert!(matches!(err, BusError::ApiVersionMismatch { .. }));
 }
@@ -131,6 +132,7 @@ async fn live_publisher_to_latest_round_trip() {
             api::drive::Target {
                 linear_x_mps: 0.9,
                 angular_z_radps: -0.1,
+                curvature_limit_radpm: None,
             },
         )
         .await

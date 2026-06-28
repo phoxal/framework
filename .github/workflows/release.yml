@@ -140,13 +140,13 @@ jobs:
       matrix:
         runtime:
           - { name: asset, api: y2026_1 }
-          - { name: battery, api: y2026_2 }
+          - { name: battery, api: y2026_1 }
           - { name: drive, api: y2026_1 }
           - { name: localize, api: y2026_1 }
           - { name: map, api: y2026_1 }
           - { name: mission, api: y2026_1 }
           - { name: odometry, api: y2026_1 }
-          - { name: safety, api: y2026_2 }
+          - { name: safety, api: y2026_1 }
         platform:
           - { docker: linux/amd64, runner: ubuntu-latest, short: amd64 }
           - { docker: linux/arm64, runner: ubuntu-24.04-arm, short: arm64 }
@@ -196,13 +196,13 @@ jobs:
       matrix:
         runtime:
           - { name: asset, api: y2026_1 }
-          - { name: battery, api: y2026_2 }
+          - { name: battery, api: y2026_1 }
           - { name: drive, api: y2026_1 }
           - { name: localize, api: y2026_1 }
           - { name: map, api: y2026_1 }
           - { name: mission, api: y2026_1 }
           - { name: odometry, api: y2026_1 }
-          - { name: safety, api: y2026_2 }
+          - { name: safety, api: y2026_1 }
     steps:
       - uses: docker/login-action@v3
         with:

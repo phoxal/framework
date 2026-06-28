@@ -119,6 +119,7 @@ fn control(pose: &api::localize::LocalizationState, goal: Goal) -> api::drive::T
     api::drive::Target {
         linear_x_mps: linear as f32,
         angular_z_radps: angular as f32,
+        curvature_limit_radpm: None,
     }
 }
 
@@ -132,6 +133,7 @@ fn stop_target() -> api::drive::Target {
     api::drive::Target {
         linear_x_mps: 0.0,
         angular_z_radps: 0.0,
+        curvature_limit_radpm: None,
     }
 }
 

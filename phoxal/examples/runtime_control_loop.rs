@@ -45,10 +45,12 @@ impl AvoidObstacles {
             Some(_) => api::drive::Target {
                 linear_x_mps: 0.2,
                 angular_z_radps: 0.0,
+                curvature_limit_radpm: None,
             },
             None => api::drive::Target {
                 linear_x_mps: 0.0,
                 angular_z_radps: 0.0,
+                curvature_limit_radpm: None,
             },
         };
 

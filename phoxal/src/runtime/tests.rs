@@ -83,7 +83,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
 
     // Wrong request api_version is rejected before the handler runs.
     let failure = rt
-        .__serve_exclusive("asset/get", "y2026_2", family, &request)
+        .__serve_exclusive("asset/get", "not-y2026_1", family, &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::InvalidArgument);

@@ -1,10 +1,10 @@
 //! `battery` — the official simulated battery-state monitor.
 //!
-//! This is the first official runtime authored against the inheriting API version
-//! `y2026_2`, exercising `battery`, a family that exists only from `y2026_2` on.
+//! This official runtime targets API version `y2026_1`, exercising the
+//! `battery` family in the single shipped API.
 
 use anyhow::Result;
-use phoxal::api::y2026_2 as api;
+use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
 const FULL_VOLTAGE_V: f64 = 16.8;
@@ -13,7 +13,7 @@ const DRAW_CURRENT_A: f64 = 2.0;
 const CAPACITY_AH: f64 = 10.0;
 
 #[derive(phoxal::Runtime)]
-#[phoxal(id = "battery", api = y2026_2)]
+#[phoxal(id = "battery", api = y2026_1)]
 struct Battery {
     // Runtime-private simulated pack state.
     charge_ratio: f64,
@@ -88,7 +88,7 @@ mod tests {
         voltage_for,
     };
     use phoxal::api::ContractBody;
-    use phoxal::api::y2026_2 as api;
+    use phoxal::api::y2026_1 as api;
 
     #[test]
     fn discharge_reduces_charge_over_time() {
@@ -116,11 +116,11 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_y2026_2_battery_contract() {
+    fn emit_apis_reports_y2026_1_battery_contract() {
         let json = phoxal::runtime::emit_apis_json::<Battery>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "battery");
-        assert_eq!(value["api_version"], "y2026_2");
+        assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
         assert!(contracts.iter().any(|c| {

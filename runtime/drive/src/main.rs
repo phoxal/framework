@@ -217,6 +217,7 @@ impl Drive {
         let stopped = api::drive::Target {
             linear_x_mps: 0.0,
             angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
         };
         let Some((target, produced_at_ns)) = &self.last_target else {
             return (
@@ -235,6 +236,7 @@ impl Drive {
         let limited = api::drive::Target {
             linear_x_mps: clamp_f32(target.linear_x_mps, MAX_LINEAR_MPS),
             angular_z_radps: clamp_f32(target.angular_z_radps, MAX_ANGULAR_RADPS),
+            curvature_limit_radpm: target.curvature_limit_radpm,
         };
         (limited, api::drive::ActuatorAuthority::Active, None)
     }

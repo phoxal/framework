@@ -45,6 +45,7 @@ impl Producer {
                 api::drive::Target {
                     linear_x_mps: TARGET_LINEAR_MPS,
                     angular_z_radps: 0.0,
+                    curvature_limit_radpm: None,
                 },
             )
             .await?;
