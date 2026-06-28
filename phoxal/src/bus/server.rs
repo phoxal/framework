@@ -58,6 +58,20 @@ impl IncomingQuery {
         Ok(payload.to_bytes().to_vec())
     }
 
+    /// The request's bus metadata (api_version, family, codec, …), decoded from
+    /// the Zenoh attachment. The generated server dispatch validates `api_version`
+    /// and `family` against the handler's request body before decode.
+    pub fn request_metadata(&self) -> Result<BusMetadata> {
+        let attachment = self.query.attachment().ok_or_else(|| BusError::Metadata {
+            topic: self.topic_key.clone(),
+            detail: "query is missing a BusMetadata attachment".to_string(),
+        })?;
+        BusMetadata::decode(attachment.to_bytes().as_ref()).map_err(|e| BusError::Metadata {
+            topic: self.topic_key.clone(),
+            detail: format!("malformed request BusMetadata: {e}"),
+        })
+    }
+
     /// Send a success reply: the plain `Resp` body, with bus metadata mirroring
     /// the response contract (D62).
     pub async fn reply(

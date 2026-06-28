@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use crate::api::ContractBody;
 use crate::api::y2026_1 as api;
+use crate::api::{ApiVersion, ContractBody};
 use crate::bus::{Codec, MessagePack, QueryCode};
 use crate::prelude::*;
 use crate::runtime::RuntimeBehavior;
@@ -53,11 +53,17 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
             .any(|c| c.family == <api::asset::GetRequest as ContractBody>::FAMILY)
     );
 
+    let api = <<api::asset::GetRequest as ContractBody>::Api as ApiVersion>::ID;
+    let family = <api::asset::GetRequest as ContractBody>::FAMILY;
+
     let request = MessagePack::encode(&api::asset::GetRequest {
         path: "ok".to_string(),
     })
     .unwrap();
-    let reply = rt.__serve_exclusive("asset/get", &request).await.unwrap();
+    let reply = rt
+        .__serve_exclusive("asset/get", api, family, &request)
+        .await
+        .unwrap();
     let response: api::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
     assert!(matches!(response, api::asset::GetResponse::Found { .. }));
     assert_eq!(
@@ -70,13 +76,20 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let failure = rt
-        .__serve_exclusive("asset/get", &request)
+        .__serve_exclusive("asset/get", api, family, &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::NotFound);
 
+    // Wrong request api_version is rejected before the handler runs.
     let failure = rt
-        .__serve_exclusive("other/topic", &request)
+        .__serve_exclusive("asset/get", "y2026_2", family, &request)
+        .await
+        .unwrap_err();
+    assert_eq!(failure.code, QueryCode::InvalidArgument);
+
+    let failure = rt
+        .__serve_exclusive("other/topic", api, family, &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::Unimplemented);
@@ -139,7 +152,9 @@ async fn snapshot_server_dispatch_reads_committed_state() {
     })
     .unwrap();
 
-    let reply = MapTest::__serve_snapshot(snapshot, "map/submap".to_string(), request)
+    let api = <<api::map::SubmapRequest as ContractBody>::Api as ApiVersion>::ID.to_string();
+    let family = <api::map::SubmapRequest as ContractBody>::FAMILY.to_string();
+    let reply = MapTest::__serve_snapshot(snapshot, "map/submap".to_string(), api, family, request)
         .await
         .unwrap();
     let response: api::map::SubmapResponse = MessagePack::decode(&reply.payload).unwrap();

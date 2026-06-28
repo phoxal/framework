@@ -112,7 +112,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let server_contracts = server_contracts(&servers, &snapshot_servers);
     let serve_exclusive = serve_exclusive(&servers);
     let serve_snapshot = serve_snapshot(&snapshot_servers);
-    let topic_assertions = topic_assertions(&servers, &snapshot_servers);
+    let topic_assertions = topic_assertions(&self_ty, &servers, &snapshot_servers);
 
     Ok(quote! {
         #item_impl
@@ -165,6 +165,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             async fn __serve_exclusive(
                 &mut self,
                 topic: &str,
+                api_version: &str,
+                family: &str,
                 request: &[u8],
             ) -> ::phoxal::runtime::ServerOutcome {
                 #serve_exclusive
@@ -173,6 +175,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             fn __serve_snapshot(
                 snapshot: ::std::sync::Arc<Self::Snapshot>,
                 topic: ::std::string::String,
+                api_version: ::std::string::String,
+                family: ::std::string::String,
                 request: ::std::vec::Vec<u8>,
             ) -> ::std::pin::Pin<
                 ::std::boxed::Box<
@@ -291,9 +295,11 @@ fn serve_exclusive(servers: &[ServerFn]) -> TokenStream {
     let arms = servers.iter().map(|s| {
         let name = &s.name;
         let req_ty = &s.req_ty;
+        let validate = validate_request(req_ty);
         let encode = encode_reply(&s.resp_ty);
         quote! {
             if topic == <#req_ty as ::phoxal::api::ContractBody>::TOPIC {
+                #validate
                 let request: #req_ty = match <::phoxal::bus::MessagePack as ::phoxal::bus::Codec>::decode::<#req_ty>(request) {
                     ::core::result::Result::Ok(r) => r,
                     ::core::result::Result::Err(e) => {
@@ -317,10 +323,36 @@ fn serve_exclusive(servers: &[ServerFn]) -> TokenStream {
     }
 }
 
+/// Validate the request's metadata (api_version + family) against the handler's
+/// request body before decode — a wrong-API or wrong-family request is rejected
+/// rather than silently decoded (server-side backstop for D59/D62).
+fn validate_request(req_ty: &Type) -> TokenStream {
+    quote! {
+        if api_version != <<#req_ty as ::phoxal::api::ContractBody>::Api as ::phoxal::api::ApiVersion>::ID {
+            return ::core::result::Result::Err(::phoxal::bus::QueryFailure::invalid_argument(
+                ::std::format!(
+                    "request api_version '{}' does not match server api_version '{}'",
+                    api_version,
+                    <<#req_ty as ::phoxal::api::ContractBody>::Api as ::phoxal::api::ApiVersion>::ID,
+                ),
+            ));
+        }
+        if family != <#req_ty as ::phoxal::api::ContractBody>::FAMILY {
+            return ::core::result::Result::Err(::phoxal::bus::QueryFailure::invalid_argument(
+                ::std::format!(
+                    "request family '{}' does not match server family '{}'",
+                    family,
+                    <#req_ty as ::phoxal::api::ContractBody>::FAMILY,
+                ),
+            ));
+        }
+    }
+}
+
 fn serve_snapshot(snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
     if snapshot_servers.is_empty() {
         return quote! {
-            let _ = (snapshot, &request);
+            let _ = (snapshot, request, api_version, family);
             ::std::boxed::Box::pin(async move {
                 ::core::result::Result::Err(
                     ::phoxal::bus::QueryFailure::unimplemented(::std::format!("no snapshot server for '{topic}'")),
@@ -333,9 +365,11 @@ fn serve_snapshot(snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
         let name = &s.name;
         let req_ty = &s.req_ty;
         let resp_ty = &s.resp_ty;
+        let validate = validate_request(req_ty);
         let encode = encode_reply(resp_ty);
         quote! {
             if topic == <#req_ty as ::phoxal::api::ContractBody>::TOPIC {
+                #validate
                 let request: #req_ty = match <::phoxal::bus::MessagePack as ::phoxal::bus::Codec>::decode::<#req_ty>(&request) {
                     ::core::result::Result::Ok(r) => r,
                     ::core::result::Result::Err(e) => {
@@ -378,33 +412,55 @@ fn encode_reply(resp_ty: &Type) -> TokenStream {
     }
 }
 
-fn topic_assertions(servers: &[ServerFn], snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
+fn topic_assertions(
+    self_ty: &Type,
+    servers: &[ServerFn],
+    snapshot_servers: &[SnapshotServerFn],
+) -> TokenStream {
     let mut checks = Vec::new();
-    for (i, s) in servers.iter().enumerate() {
-        let req = &s.req_ty;
-        let resp = &s.resp_ty;
-        let topic = &s.topic;
-        let id = syn::Ident::new(&format!("__assert_server_topic_{i}"), s.name.span());
+
+    let mut emit = |idx: usize,
+                    kind: &str,
+                    req: &Type,
+                    resp: &Type,
+                    topic: &Expr,
+                    span: proc_macro2::Span| {
+        let topic_id = syn::Ident::new(&format!("__assert_{kind}_topic_{idx}"), span);
+        let api_id = syn::Ident::new(&format!("__assert_{kind}_api_{idx}"), span);
+        // The declared `topic = …` must agree with the handler's Req/Resp; and
+        // both bodies must be `ContractBody<Api = R::Api>` so a server on a foreign
+        // API version (which would emit mixed-version metadata) fails to compile
+        // (D59/D60).
         checks.push(quote! {
-            fn #id() {
+            fn #topic_id() {
                 let _t: ::phoxal::bus::Topic<::phoxal::bus::Query<#req, #resp>> = #topic;
             }
+            fn #api_id() {
+                fn assert<R, B>()
+                where
+                    R: ::phoxal::runtime::RuntimeFields,
+                    B: ::phoxal::api::ContractBody<Api = <R as ::phoxal::runtime::RuntimeFields>::Api>,
+                {}
+                assert::<#self_ty, #req>();
+                assert::<#self_ty, #resp>();
+            }
         });
+    };
+
+    for (i, s) in servers.iter().enumerate() {
+        emit(i, "server", &s.req_ty, &s.resp_ty, &s.topic, s.name.span());
     }
     for (i, s) in snapshot_servers.iter().enumerate() {
-        let req = &s.req_ty;
-        let resp = &s.resp_ty;
-        let topic = &s.topic;
-        let id = syn::Ident::new(
-            &format!("__assert_snapshot_server_topic_{i}"),
+        emit(
+            i,
+            "snapshot_server",
+            &s.req_ty,
+            &s.resp_ty,
+            &s.topic,
             s.name.span(),
         );
-        checks.push(quote! {
-            fn #id() {
-                let _t: ::phoxal::bus::Topic<::phoxal::bus::Query<#req, #resp>> = #topic;
-            }
-        });
     }
+
     if checks.is_empty() {
         return quote!();
     }

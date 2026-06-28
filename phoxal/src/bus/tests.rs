@@ -159,28 +159,33 @@ async fn live_query_round_trip_ok_then_error() {
     let server_bus = bus.clone();
 
     let server_task = tokio::spawn(async move {
-        // First query → a Found response.
-        let incoming = server.recv().await.unwrap();
-        let response = api::asset::GetResponse::Found {
-            bytes: vec![9, 9, 9],
-        };
-        let payload = rmp_serde::to_vec_named(&response).unwrap();
-        incoming
-            .reply(
-                &server_bus,
-                payload,
-                <api::asset::GetResponse as ContractBody>::FAMILY,
-                "y2026_1",
-            )
-            .await
-            .unwrap();
+        // First query → a Found response. Scoped so the query is dropped right
+        // after replying, letting the complete queryable's reply stream close.
+        {
+            let incoming = server.recv().await.unwrap();
+            let response = api::asset::GetResponse::Found {
+                bytes: vec![9, 9, 9],
+            };
+            let payload = rmp_serde::to_vec_named(&response).unwrap();
+            incoming
+                .reply(
+                    &server_bus,
+                    payload,
+                    <api::asset::GetResponse as ContractBody>::FAMILY,
+                    "y2026_1",
+                )
+                .await
+                .unwrap();
+        }
 
         // Second query → a structured error on the native error leg.
-        let incoming = server.recv().await.unwrap();
-        incoming
-            .reply_err(&QueryFailure::not_found("no such asset"))
-            .await
-            .unwrap();
+        {
+            let incoming = server.recv().await.unwrap();
+            incoming
+                .reply_err(&QueryFailure::not_found("no such asset"))
+                .await
+                .unwrap();
+        }
     });
 
     let querier = Querier::<api::asset::GetRequest, api::asset::GetResponse>::new(

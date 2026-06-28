@@ -125,19 +125,29 @@ where
         }));
     }
 
-    // Concurrent snapshot-server queries are spawned per query against the latest
-    // committed snapshot.
+    // Concurrent snapshot-server queries run against the latest committed
+    // snapshot. Each topic's per-query tasks live in a `JoinSet` owned by that
+    // topic's task, so aborting the topic task on shutdown also aborts any
+    // in-flight handlers (they never outlive the runner / race `bus.close`).
     for topic in R::__snapshot_server_topics() {
         let queryable = bus.declare_server(topic).await?;
         let committed = Arc::clone(&committed);
         let bus = bus.clone();
         server_tasks.push(tokio::spawn(async move {
-            while let Ok(incoming) = queryable.recv().await {
-                let snapshot = committed.load_full();
-                let bus = bus.clone();
-                tokio::spawn(
-                    async move { serve_snapshot_query::<R>(&bus, incoming, snapshot).await },
-                );
+            let mut inflight = tokio::task::JoinSet::new();
+            loop {
+                tokio::select! {
+                    incoming = queryable.recv() => {
+                        let Ok(incoming) = incoming else { break };
+                        let snapshot = committed.load_full();
+                        let bus = bus.clone();
+                        inflight.spawn(async move {
+                            serve_snapshot_query::<R>(&bus, incoming, snapshot).await
+                        });
+                    }
+                    // Reap finished handlers so the JoinSet does not grow unbounded.
+                    Some(_) = inflight.join_next() => {}
+                }
             }
         }));
     }
@@ -189,14 +199,13 @@ async fn main_loop<R, C, S>(
 
     loop {
         tokio::select! {
+            // Order matters: shutdown first, then a *due* step, then server
+            // queries. A due step takes priority so a steady query backlog cannot
+            // starve the control loop; between steps (timer pending) queries are
+            // served. `Some(..)` disables the query branch if the channel ever
+            // closes, so it never busy-loops.
             biased;
             _ = &mut shutdown => return,
-            incoming = excl_rx.recv() => {
-                if let Some(incoming) = incoming {
-                    serve_exclusive_query::<R>(runtime, bus, incoming).await;
-                    commit_snapshot::<R>(runtime, committed);
-                }
-            }
             _ = step_tick(period, next) => {
                 let Some(period) = period else { continue };
                 let now = clock.now();
@@ -217,11 +226,22 @@ async fn main_loop<R, C, S>(
                 step_index += 1;
 
                 // A handler `Err` is a domain outcome: stay healthy, log, continue
-                // (D32). A panic would unwind and abort the process.
-                if let Err(e) = runtime.__step(step).await {
-                    tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
+                // (D32); the snapshot is committed only after a *successful* step so
+                // a failed mutation is never published as committed state. A panic
+                // would unwind and abort the process.
+                match runtime.__step(step).await {
+                    Ok(()) => commit_snapshot::<R>(runtime, committed),
+                    Err(e) => {
+                        tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
+                    }
                 }
-                commit_snapshot::<R>(runtime, committed);
+            }
+            Some(incoming) = excl_rx.recv() => {
+                // Commit only if the handler succeeded (D14/D32: retain the prior
+                // snapshot on a handler error).
+                if serve_exclusive_query::<R>(runtime, bus, incoming).await {
+                    commit_snapshot::<R>(runtime, committed);
+                }
             }
         }
     }
@@ -242,29 +262,54 @@ fn commit_snapshot<R: RuntimeBehavior>(runtime: &R, committed: &Arc<ArcSwapOptio
     }
 }
 
+/// Serve one exclusive query. Returns `true` iff the handler succeeded (so the
+/// runner should commit a fresh snapshot).
 async fn serve_exclusive_query<R: RuntimeBehavior>(
     runtime: &mut R,
     bus: &Bus,
     incoming: IncomingQuery,
-) {
+) -> bool {
     let topic = incoming.topic_key().to_string();
+    let metadata = match incoming.request_metadata() {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = incoming
+                .reply_err(&QueryFailure::invalid_argument(e.to_string()))
+                .await;
+            return false;
+        }
+    };
+    if metadata.codec_id().is_none() {
+        let _ = incoming
+            .reply_err(&QueryFailure::invalid_argument(format!(
+                "unsupported request codec id {}",
+                metadata.codec
+            )))
+            .await;
+        return false;
+    }
     let request = match incoming.request_bytes() {
         Ok(bytes) => bytes,
         Err(e) => {
             let _ = incoming
-                .reply_err(&QueryFailure::internal(e.to_string()))
+                .reply_err(&QueryFailure::invalid_argument(e.to_string()))
                 .await;
-            return;
+            return false;
         }
     };
-    match runtime.__serve_exclusive(&topic, &request).await {
+    match runtime
+        .__serve_exclusive(&topic, &metadata.api_version, &metadata.family, &request)
+        .await
+    {
         Ok(reply) => {
             let _ = incoming
                 .reply(bus, reply.payload, reply.family, reply.api_version)
                 .await;
+            true
         }
         Err(failure) => {
             let _ = incoming.reply_err(&failure).await;
+            false
         }
     }
 }
@@ -275,11 +320,29 @@ async fn serve_snapshot_query<R: RuntimeBehavior>(
     snapshot: Option<Arc<R::Snapshot>>,
 ) {
     let topic = incoming.topic_key().to_string();
+    let metadata = match incoming.request_metadata() {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = incoming
+                .reply_err(&QueryFailure::invalid_argument(e.to_string()))
+                .await;
+            return;
+        }
+    };
+    if metadata.codec_id().is_none() {
+        let _ = incoming
+            .reply_err(&QueryFailure::invalid_argument(format!(
+                "unsupported request codec id {}",
+                metadata.codec
+            )))
+            .await;
+        return;
+    }
     let request = match incoming.request_bytes() {
         Ok(bytes) => bytes,
         Err(e) => {
             let _ = incoming
-                .reply_err(&QueryFailure::internal(e.to_string()))
+                .reply_err(&QueryFailure::invalid_argument(e.to_string()))
                 .await;
             return;
         }
@@ -290,7 +353,15 @@ async fn serve_snapshot_query<R: RuntimeBehavior>(
             .await;
         return;
     };
-    match R::__serve_snapshot(snapshot, topic, request).await {
+    match R::__serve_snapshot(
+        snapshot,
+        topic,
+        metadata.api_version,
+        metadata.family,
+        request,
+    )
+    .await
+    {
         Ok(reply) => {
             let _ = incoming
                 .reply(bus, reply.payload, reply.family, reply.api_version)

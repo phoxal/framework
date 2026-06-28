@@ -63,34 +63,40 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
     };
 
-    // Collect (body type, direction) for every recognized handle field.
-    let mut uses: Vec<HandleUse> = Vec::new();
+    // Collect a declaration for every recognized handle field.
+    let mut decls: Vec<Decl> = Vec::new();
     for field in fields {
         if let Some(found) = classify_handle(&field.ty) {
-            uses.extend(found);
+            decls.extend(found);
         }
     }
 
     let phoxal = phoxal();
 
     // FIELD_CONTRACTS entries reference the body type's ContractBody consts so the
-    // family/topic/api_version are single-sourced from the api tree (D61).
-    let contract_entries = uses.iter().map(|u| {
-        let body = &u.body;
-        let dir = u.direction.tokens(&phoxal);
-        quote! {
-            #phoxal::runtime::ContractUse {
-                api_version: <<#body as #phoxal::api::ContractBody>::Api as #phoxal::api::ApiVersion>::ID,
-                family: <#body as #phoxal::api::ContractBody>::FAMILY,
-                topic: <#body as #phoxal::api::ContractBody>::TOPIC,
-                direction: #dir,
-            }
-        }
+    // family/topic/api_version are single-sourced from the api tree (D61). A query
+    // field contributes both legs.
+    let contract_entries = decls.iter().flat_map(|d| {
+        d.contract_bodies()
+            .into_iter()
+            .map(|(body, dir)| {
+                let dir = dir.tokens(&phoxal);
+                quote! {
+                    #phoxal::runtime::ContractUse {
+                        api_version: <<#body as #phoxal::api::ContractBody>::Api as #phoxal::api::ApiVersion>::ID,
+                        family: <#body as #phoxal::api::ContractBody>::FAMILY,
+                        topic: <#body as #phoxal::api::ContractBody>::TOPIC,
+                        direction: #dir,
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
     });
 
-    // One ContractBody<Api = Self::Api> assertion per handle body (D60).
-    let assertions = uses.iter().enumerate().map(|(i, u)| {
-        let body = &u.body;
+    // One ContractBody<Api = Self::Api> assertion per body (D60), so a body from
+    // another API version is a compile error.
+    let bodies: Vec<&Type> = decls.iter().flat_map(|d| d.bodies()).collect();
+    let assertions = bodies.iter().enumerate().map(|(i, body)| {
         let assert_fn = syn::Ident::new(&format!("__assert_body_{i}"), struct_name.span());
         quote! {
             fn #assert_fn() {
@@ -104,17 +110,28 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
     });
 
-    // Declares<Body> markers (deduplicated by token string) so builders accept
-    // only declared contract families.
+    // Direction-specific Declares markers (D44): publishing a family declared only
+    // as subscribe (or vice versa) is a compile error — and would otherwise be IO
+    // `emit-apis` never reports. Deduplicated by (direction, body) token string.
     let mut seen = std::collections::BTreeSet::new();
     let mut declares = TokenStream::new();
-    for u in &uses {
-        let key = u.body.to_token_stream().to_string();
+    for decl in &decls {
+        let (marker, key) = match decl {
+            Decl::Publish(b) => (
+                quote!(impl #phoxal::runtime::DeclaresPublish<#b> for #struct_name {}),
+                format!("pub:{}", b.to_token_stream()),
+            ),
+            Decl::Subscribe(b) => (
+                quote!(impl #phoxal::runtime::DeclaresSubscribe<#b> for #struct_name {}),
+                format!("sub:{}", b.to_token_stream()),
+            ),
+            Decl::Query { req, resp } => (
+                quote!(impl #phoxal::runtime::DeclaresQuery<#req, #resp> for #struct_name {}),
+                format!("qry:{}=>{}", req.to_token_stream(), resp.to_token_stream()),
+            ),
+        };
         if seen.insert(key) {
-            let body = &u.body;
-            declares.extend(quote! {
-                impl #phoxal::runtime::Declares<#body> for #struct_name {}
-            });
+            declares.extend(marker);
         }
     }
 
@@ -185,9 +202,12 @@ impl PhoxalArgs {
     }
 }
 
-struct HandleUse {
-    body: Type,
-    direction: Direction,
+/// A handle declaration recognized from a struct field.
+#[allow(clippy::large_enum_variant)] // transient macro-internal AST holder
+enum Decl {
+    Publish(Type),
+    Subscribe(Type),
+    Query { req: Type, resp: Type },
 }
 
 #[derive(Clone, Copy)]
@@ -210,41 +230,49 @@ impl Direction {
     }
 }
 
-/// Recognize a handle field by canonical syntactic form, returning the body
-/// type(s) + direction(s). `Vec`/`BTreeMap` of a handle carry the inner handle's
-/// contracts. Returns `None` for non-handle (runtime-private) fields.
-fn classify_handle(ty: &Type) -> Option<Vec<HandleUse>> {
+impl Decl {
+    /// The (body, direction) contract entries this declaration contributes.
+    fn contract_bodies(&self) -> Vec<(Type, Direction)> {
+        match self {
+            Decl::Publish(b) => vec![(b.clone(), Direction::Publish)],
+            Decl::Subscribe(b) => vec![(b.clone(), Direction::Subscribe)],
+            Decl::Query { req, resp } => vec![
+                (req.clone(), Direction::QueryRequest),
+                (resp.clone(), Direction::QueryResponse),
+            ],
+        }
+    }
+
+    /// The body types this declaration references (for the API-version assertions).
+    fn bodies(&self) -> Vec<&Type> {
+        match self {
+            Decl::Publish(b) | Decl::Subscribe(b) => vec![b],
+            Decl::Query { req, resp } => vec![req, resp],
+        }
+    }
+}
+
+/// Recognize a handle field by canonical syntactic form, returning the
+/// declaration(s). `Vec`/`BTreeMap` of a handle carry the inner handle's
+/// declaration. Returns `None` for non-handle (runtime-private) fields.
+fn classify_handle(ty: &Type) -> Option<Vec<Decl>> {
     let path = as_type_path(ty)?;
     let seg = path.path.segments.last()?;
     let name = seg.ident.to_string();
 
     match name.as_str() {
-        "Publisher" => single(generic_type(seg, 0)?, Direction::Publish),
-        "Subscriber" | "Latest" => single(generic_type(seg, 0)?, Direction::Subscribe),
-        "Querier" => {
-            let req = generic_type(seg, 0)?;
-            let resp = generic_type(seg, 1)?;
-            Some(vec![
-                HandleUse {
-                    body: req,
-                    direction: Direction::QueryRequest,
-                },
-                HandleUse {
-                    body: resp,
-                    direction: Direction::QueryResponse,
-                },
-            ])
-        }
+        "Publisher" => Some(vec![Decl::Publish(generic_type(seg, 0)?)]),
+        "Subscriber" | "Latest" => Some(vec![Decl::Subscribe(generic_type(seg, 0)?)]),
+        "Querier" => Some(vec![Decl::Query {
+            req: generic_type(seg, 0)?,
+            resp: generic_type(seg, 1)?,
+        }]),
         // Vec<Handle> — the element is the handle.
         "Vec" => classify_handle(&generic_type(seg, 0)?),
         // BTreeMap<K, Handle> / HashMap<K, Handle> — the value is the handle.
         "BTreeMap" | "HashMap" => classify_handle(&generic_type(seg, 1)?),
         _ => None,
     }
-}
-
-fn single(body: Type, direction: Direction) -> Option<Vec<HandleUse>> {
-    Some(vec![HandleUse { body, direction }])
 }
 
 fn as_type_path(ty: &Type) -> Option<&TypePath> {

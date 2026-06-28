@@ -19,7 +19,8 @@ pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use runner::{run, run_async, run_with};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
-    ContractUse, Declares, Direction, MissedTick, RuntimeBehavior, RuntimeFields, StepSchedule,
+    ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, MissedTick,
+    RuntimeBehavior, RuntimeFields, StepSchedule,
 };
 
 /// Re-exported so authoring code can name logical time without reaching into

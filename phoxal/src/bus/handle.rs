@@ -52,15 +52,22 @@ impl<B: ContractBody> Publisher<B> {
         })
     }
 
-    /// Publish `body` stamped at logical time `at`. Non-blocking: the body is
-    /// enqueued on the runner-owned outbound queue and never blocks the caller.
+    /// Publish `body` stamped at logical time `at`. Non-blocking and
+    /// drop-tolerant (periodic-state QoS, D35): if the outbound queue is saturated
+    /// the sample is dropped + counted and this still returns `Ok` — a publish
+    /// never blocks the step loop. Use [`try_publish`](Self::try_publish) to
+    /// observe drops.
     #[allow(clippy::unused_async)]
     pub async fn publish_at(&self, at: LogicalTime, body: B) -> Result<()> {
-        self.try_publish(at, body)
+        match self.try_publish(at, body) {
+            Ok(()) | Err(BusError::Saturated { .. }) | Err(BusError::Closed) => Ok(()),
+            Err(other) => Err(other),
+        }
     }
 
-    /// The explicit non-blocking publish op (D43e). Returns immediately; a full
-    /// outbound queue drops the sample + bumps the drop counter.
+    /// The explicit non-blocking publish op (D43e). Returns immediately; a
+    /// saturated outbound queue returns [`BusError::Saturated`] (the sample was
+    /// dropped + counted) so the caller can observe loss.
     pub fn try_publish(&self, at: LogicalTime, body: B) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
         let api_version = <B::Api as ApiVersion>::ID;
@@ -78,8 +85,7 @@ impl<B: ContractBody> Publisher<B> {
         };
         let encoding = encoding_string(B::FAMILY, api_version, MessagePack::ID);
         self.bus
-            .enqueue(self.key.clone(), encoding, metadata.encode(), payload);
-        Ok(())
+            .enqueue(self.key.clone(), encoding, metadata.encode(), payload)
     }
 }
 
@@ -145,27 +151,45 @@ where
                 MessagePack::ID,
             )))
             .attachment(metadata.encode())
-            .timeout(self.timeout)
             .await
             .map_err(|e| QueryError::Protocol(e.to_string()))?;
 
-        // An exclusive query topic has a single responder: the first reply wins.
-        // Duplicate responders are caught at build time by the `phoxal-cli check`
-        // topology pass (D63), not by waiting at runtime.
-        if let Ok(reply) = replies.recv_async().await {
-            return match reply.into_result() {
-                Ok(sample) => decode_reply::<Resp>(&sample),
-                Err(reply_error) => {
-                    let bytes = reply_error.payload().to_bytes();
-                    match crate::bus::query::QueryFailure::decode(bytes.as_ref()) {
-                        Ok(failure) => Err(QueryError::Server(failure)),
-                        Err(e) => Err(QueryError::Protocol(format!("malformed error reply: {e}"))),
+        // An exclusive query topic has exactly one responder (D31/D43f): collect
+        // replies until the stream closes, returning the single reply. A second
+        // reply is `TooManyResponders` (a duplicate responder — also a
+        // `phoxal-cli check` topology error). The Phoxal-pinned finite timeout
+        // bounds the wait: deadline with no reply → `Timeout`; the stream closing
+        // with no reply → `Unavailable`.
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let mut outcome: Option<std::result::Result<Resp, QueryError>> = None;
+        loop {
+            match tokio::time::timeout_at(deadline, replies.recv_async()).await {
+                Ok(Ok(reply)) => {
+                    if outcome.is_some() {
+                        return Err(QueryError::TooManyResponders);
                     }
+                    outcome = Some(decode_reply_result::<Resp>(reply.into_result()));
                 }
-            };
+                Ok(Err(_)) => break, // reply stream closed
+                Err(_elapsed) => return outcome.unwrap_or(Err(QueryError::Timeout)),
+            }
         }
+        outcome.unwrap_or(Err(QueryError::Unavailable))
+    }
+}
 
-        Err(QueryError::Unavailable)
+fn decode_reply_result<Resp: ContractBody>(
+    result: std::result::Result<Sample, zenoh::query::ReplyError>,
+) -> std::result::Result<Resp, QueryError> {
+    match result {
+        Ok(sample) => decode_reply::<Resp>(&sample),
+        Err(reply_error) => {
+            let bytes = reply_error.payload().to_bytes();
+            match crate::bus::query::QueryFailure::decode(bytes.as_ref()) {
+                Ok(failure) => Err(QueryError::Server(failure)),
+                Err(e) => Err(QueryError::Protocol(format!("malformed error reply: {e}"))),
+            }
+        }
     }
 }
 
@@ -379,6 +403,19 @@ pub(crate) fn decode_sample<B: ContractBody>(
             topic: topic.to_string(),
             expected: expected_api.to_string(),
             received: metadata.api_version,
+        });
+    }
+
+    // The metadata family must match the body we are decoding into — a body whose
+    // family disagrees with the topic is a producer bug, not a silent accept.
+    if metadata.family != B::FAMILY {
+        return Err(BusError::Metadata {
+            topic: topic.to_string(),
+            detail: format!(
+                "family mismatch: expected '{}', received '{}'",
+                B::FAMILY,
+                metadata.family
+            ),
         });
     }
 

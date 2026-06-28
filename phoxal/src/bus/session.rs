@@ -2,7 +2,7 @@
 //! outbound queue (D43e), and health counters.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use tokio::sync::{Notify, mpsc};
 use tokio::task::JoinHandle;
@@ -13,8 +13,12 @@ use crate::bus::error::{BusError, Result};
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter — it never blocks the
-/// step loop (D35/D43e). A bytes bound is a documented follow-up.
+/// step loop (D35/D43e).
 const OUTBOUND_CAPACITY: usize = 1024;
+
+/// Byte bound of the outbound queue (D43e: limits in samples AND bytes). A
+/// publish that would exceed it is dropped + counted rather than blocking.
+const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
 #[derive(Clone, Debug)]
@@ -63,6 +67,7 @@ struct Outbound {
     encoding: String,
     attachment: Vec<u8>,
     payload: Vec<u8>,
+    bytes: usize,
 }
 
 struct BusInner {
@@ -72,6 +77,8 @@ struct BusInner {
     incarnation: u64,
     seq: AtomicU64,
     outbound: mpsc::Sender<Outbound>,
+    queued_bytes: AtomicUsize,
+    closing: AtomicBool,
     shutdown: Notify,
     drain: std::sync::Mutex<Option<JoinHandle<()>>>,
     health: BusHealth,
@@ -123,6 +130,8 @@ impl Bus {
             incarnation: config.incarnation,
             seq: AtomicU64::new(0),
             outbound: tx,
+            queued_bytes: AtomicUsize::new(0),
+            closing: AtomicBool::new(false),
             shutdown: Notify::new(),
             drain: std::sync::Mutex::new(None),
             health: BusHealth::default(),
@@ -169,40 +178,70 @@ impl Bus {
         self.inner.seq.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Non-blocking enqueue onto the outbound queue. Full queue → drop + counter,
-    /// never a block (D35/D43e).
+    /// Non-blocking enqueue onto the outbound queue. A full queue (samples or
+    /// bytes) drops the sample, bumps the drop counter, and returns
+    /// `Saturated` — it never blocks the step loop (D35/D43e).
     pub(crate) fn enqueue(
         &self,
         key: String,
         encoding: String,
         attachment: Vec<u8>,
         payload: Vec<u8>,
-    ) {
+    ) -> Result<()> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(BusError::Closed);
+        }
+        let bytes = key.len() + encoding.len() + attachment.len() + payload.len();
+
+        if self.inner.queued_bytes.load(Ordering::Relaxed) + bytes > OUTBOUND_MAX_BYTES {
+            return Err(self.dropped(&key, "byte bound"));
+        }
+
         let outbound = Outbound {
             key,
             encoding,
             attachment,
             payload,
+            bytes,
         };
-        if self.inner.outbound.try_send(outbound).is_err() {
-            self.inner
-                .health
-                .outbound_drops
-                .fetch_add(1, Ordering::Relaxed);
-            tracing::warn!(
-                target: "phoxal.bus",
-                participant = %self.inner.participant,
-                "outbound queue full; dropped sample (publish never blocks the step loop)"
-            );
+        match self.inner.outbound.try_send(outbound) {
+            Ok(()) => {
+                self.inner.queued_bytes.fetch_add(bytes, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Full(out)) => {
+                Err(self.dropped(&out.key, "sample bound"))
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(BusError::Closed),
+        }
+    }
+
+    fn dropped(&self, key: &str, detail: &str) -> BusError {
+        self.inner
+            .health
+            .outbound_drops
+            .fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            target: "phoxal.bus",
+            participant = %self.inner.participant,
+            key,
+            detail,
+            "outbound queue saturated; dropped sample (publish never blocks the step loop)"
+        );
+        BusError::Saturated {
+            topic: key.to_string(),
+            detail: detail.to_string(),
         }
     }
 
     /// Flush the outbound queue and close the session.
     pub async fn close(&self) -> Result<()> {
-        // `notify_one` stores a permit even if the drain task has not yet
-        // registered as a waiter, so the shutdown signal is never lost (a
+        // Stop accepting new samples first so the drain set is finite, then signal
+        // the drain task. `notify_one` stores a permit even if the drain task has
+        // not yet registered as a waiter, so the shutdown signal is never lost (a
         // `notify_waiters` here would be dropped if the drain task had not been
         // polled yet — e.g. on a single-worker runtime).
+        self.inner.closing.store(true, Ordering::Release);
         self.inner.shutdown.notify_one();
         let handle = self
             .inner
@@ -229,18 +268,23 @@ async fn drain_loop(
 ) {
     loop {
         tokio::select! {
+            // Shutdown wins over draining so a steady publish stream cannot starve
+            // close: on shutdown, flush the finite already-queued set, then stop.
             biased;
-            msg = rx.recv() => match msg {
-                Some(out) => put(&session, out).await,
-                None => break,
-            },
             _ = inner.shutdown.notified() => {
-                // Best-effort flush of whatever is already queued, then stop.
                 while let Ok(out) = rx.try_recv() {
+                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::Relaxed);
                     put(&session, out).await;
                 }
                 break;
             }
+            msg = rx.recv() => match msg {
+                Some(out) => {
+                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::Relaxed);
+                    put(&session, out).await;
+                }
+                None => break,
+            },
         }
     }
 }

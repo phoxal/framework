@@ -9,7 +9,7 @@ use crate::bus::{
     Bus, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, PubSub, Publisher, Querier, Query, Subscriber,
     Topic,
 };
-use crate::runtime::spec::{Declares, RuntimeFields};
+use crate::runtime::spec::{DeclaresPublish, DeclaresQuery, DeclaresSubscribe, RuntimeFields};
 
 /// Default drop-oldest ring depth for a `Subscriber` built in `#[setup]`.
 const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
@@ -17,9 +17,11 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 /// The sole IO-construction point, handed to `#[setup]` (D18).
 ///
 /// Builders are bound `B: ContractBody<Api = R::Api>` (one API version — D60) and
-/// `R: Declares<B>` (declared family only — D44): a body from another API version
-/// or an undeclared family is a compile error. Normal runtime code never opens
-/// Zenoh directly; the runner opened the bus before `#[setup]`.
+/// a **direction-specific** declaration marker
+/// (`DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery`, D44): a body from
+/// another API version, an undeclared family, or a declared family used in an
+/// undeclared direction is a compile error. Normal runtime code never opens Zenoh
+/// directly; the runner opened the bus before `#[setup]`.
 pub struct SetupContext<R: RuntimeFields> {
     bus: Bus,
     _runtime: PhantomData<fn() -> R>,
@@ -37,7 +39,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
     where
         B: ContractBody<Api = R::Api>,
-        R: Declares<B>,
+        R: DeclaresPublish<B>,
     {
         Ok(Publisher::new(self.bus.clone(), &topic)?)
     }
@@ -46,7 +48,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     pub fn subscribe<B>(&self, topic: Topic<PubSub<B>>) -> SubscribeBuilder<R, B>
     where
         B: ContractBody<Api = R::Api>,
-        R: Declares<B>,
+        R: DeclaresSubscribe<B>,
     {
         SubscribeBuilder {
             bus: self.bus.clone(),
@@ -65,7 +67,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     where
         Req: ContractBody<Api = R::Api>,
         Resp: ContractBody<Api = R::Api>,
-        R: Declares<Req> + Declares<Resp>,
+        R: DeclaresQuery<Req, Resp>,
     {
         Ok(Querier::new(
             self.bus.clone(),

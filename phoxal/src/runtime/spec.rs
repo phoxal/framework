@@ -110,23 +110,42 @@ pub trait RuntimeBehavior: RuntimeFields {
     fn __take_snapshot(&self) -> Self::Snapshot;
 
     /// Serve one exclusive `#[server]` query (holds `&mut self`, serialized with
-    /// `#[step]`). Awaited on the runner's main task.
-    async fn __serve_exclusive(&mut self, topic: &str, request: &[u8]) -> ServerOutcome;
+    /// `#[step]`). Awaited on the runner's main task. The request's
+    /// `api_version`/`family` (from bus metadata) are validated against the
+    /// handler's request body before decode.
+    async fn __serve_exclusive(
+        &mut self,
+        topic: &str,
+        api_version: &str,
+        family: &str,
+        request: &[u8],
+    ) -> ServerOutcome;
 
     /// Serve one concurrent `#[server_snapshot]` query against a committed
     /// snapshot. Returns a boxed `Send` future so the runner can spawn it.
     fn __serve_snapshot(
         snapshot: Arc<Self::Snapshot>,
         topic: String,
+        api_version: String,
+        family: String,
         request: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;
 }
 
-/// Per-runtime marker that a contract body `B` was declared by this runtime
-/// (D44). Emitted by the derive as `impl Declares<Body> for Runtime {}`; the
-/// `SetupContext` builders carry `where Self: Declares<B>` so building a handle
-/// for an undeclared family is a compile error.
-pub trait Declares<B: ?Sized> {}
+/// Per-runtime marker that this runtime declared a *publish* handle for body `B`
+/// (D44). Emitted by the derive for each `Publisher<B>` field; the
+/// `SetupContext::publisher` builder carries `where Self: DeclaresPublish<B>`, so
+/// publishing a family/direction the struct never declared is a compile error
+/// (and would otherwise be IO `emit-apis` never reports).
+pub trait DeclaresPublish<B: ?Sized> {}
+
+/// Per-runtime marker that this runtime declared a *subscribe* handle for body
+/// `B` (`Subscriber<B>`/`Latest<B>` fields). See [`DeclaresPublish`].
+pub trait DeclaresSubscribe<B: ?Sized> {}
+
+/// Per-runtime marker that this runtime declared a *query* handle for
+/// `Req`/`Resp` (`Querier<Req, Resp>` fields). See [`DeclaresPublish`].
+pub trait DeclaresQuery<Req: ?Sized, Resp: ?Sized> {}
 
 /// The cadence + missed-tick policy of a `#[step(hz = …)]` loop (D34).
 #[derive(Clone, Copy, Debug)]

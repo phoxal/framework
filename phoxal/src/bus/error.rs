@@ -38,6 +38,16 @@ pub enum BusError {
         detail: String,
     },
 
+    /// The outbound queue was saturated (samples or bytes); the sample was
+    /// dropped rather than blocking the step loop (D35/D43e).
+    #[error("outbound queue saturated on '{topic}' ({detail}); sample dropped")]
+    Saturated {
+        /// The topic key.
+        topic: String,
+        /// Which bound was hit.
+        detail: String,
+    },
+
     /// The underlying Zenoh transport failed.
     #[error("bus transport error: {0}")]
     Transport(String),
