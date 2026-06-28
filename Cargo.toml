@@ -20,6 +20,7 @@ members = [
     "runtime/battery",
     "runtime/drive",
     "runtime/localize",
+    "runtime/mission",
     "runtime/map",
     "runtime/odometry",
     "runtime/safety",

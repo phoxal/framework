@@ -2049,6 +2049,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-runtime-mission"
+version = "0.11.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
 name = "phoxal-runtime-odometry"
 version = "0.11.0"
 dependencies = [
