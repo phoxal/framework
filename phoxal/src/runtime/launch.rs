@@ -190,8 +190,8 @@ mod tests {
     #[serial]
     fn from_env_with_nothing_set_matches_local_defaults() {
         clear_env();
-        let launch = ParticipantLaunch::from_env("driver-ddsm115", "robot").unwrap();
-        assert_eq!(launch.participant_id, "driver-ddsm115");
+        let launch = ParticipantLaunch::from_env("my-runtime", "robot").unwrap();
+        assert_eq!(launch.participant_id, "my-runtime");
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
         assert_eq!(launch.bundle_root, None);

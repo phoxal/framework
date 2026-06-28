@@ -2020,17 +2020,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-driver-ddsm115"
-version = "0.15.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "serde_json",
- "serial_test",
- "tokio",
-]
-
-[[package]]
 name = "phoxal-runtime-localize"
 version = "0.15.0"
 dependencies = [
