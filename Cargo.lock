@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1997,14 +1997,14 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-asset"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "phoxal",
 ]
 
 [[package]]
 name = "phoxal-runtime-battery"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-drive"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-driver-ddsm115"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2032,7 +2032,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2041,7 +2041,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-map"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-mission"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2059,7 +2059,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-odometry"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-safety"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "anyhow",
  "phoxal",

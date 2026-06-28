@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
@@ -59,7 +59,7 @@ zenoh = { version = "1.9.0" }
 phoxal = { path = "phoxal" }
 # Carry a version (not just a path) so `phoxal` can be published to crates.io:
 # cargo strips the path on publish and resolves the dep by version from the index.
-phoxal-macros = { path = "phoxal-macros", version = "0.11.0" }
+phoxal-macros = { path = "phoxal-macros", version = "0.12.0" }
 
 [workspace.lints.rust]
 unused = "warn"
