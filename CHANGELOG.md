@@ -4,6 +4,33 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0](https://github.com/phoxal/framework/releases/tag/v0.11.0) - 2026-06-28
+
+Greenfield framework rewrite: a new engine + authoring model on a single dated
+API contract tree, with the official runtime set rebuilt on top of it.
+
+### Added
+
+- New `phoxal-macros` proc-macro crate: `phoxal_api_tree!` (dated `api::<version>`
+  contract families, static + dynamic/parameterized topics, `extends` API
+  inheritance), `#[derive(phoxal::Runtime)]`, and `#[phoxal::runtime]`
+  (`#[setup]`/`#[step]`/`#[shutdown]`/`#[server]`/`#[server_snapshot]`/`#[snapshot]`).
+- Engine: typed bus (MessagePack codec, `BusMetadata`, non-blocking outbound),
+  `Publisher`/`Subscriber`/`Latest`/`Querier`, the runner (`run`/`tokio::run`/
+  `run_with`/`run_with_bus`), `SetupContext` (model/bundle/component wiring), the
+  clock + scheduler, and the build-time `emit-apis` document.
+- Two API versions — `y2026_1` and `y2026_2` (inherits `y2026_1`, overrides
+  `drive::Target`, adds `battery` + `safety`).
+- Official runtime crates forming a closed-loop nav stack: `asset`, `drive`,
+  `driver-ddsm115`, `odometry`, `localize`, `map`, `mission`, `battery`, `safety`.
+- Runtime-to-runtime interop tests (static + dynamic topics) over a shared bus.
+
+### Changed
+
+- `phoxal` is published to crates.io alongside its new `phoxal-macros` dependency;
+  the release workflow now tags + publishes the library crates (per-runtime image
+  publishing is deferred — see the README).
+
 ## [0.10.0](https://github.com/phoxal/framework/releases/tag/v0.10.0) - 2026-06-16
 
 
