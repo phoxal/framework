@@ -17,6 +17,7 @@ members = [
     "phoxal",
     "phoxal-macros",
     "runtime/asset",
+    "runtime/battery",
     "runtime/drive",
     "runtime/odometry",
     "runtime/driver-ddsm115",

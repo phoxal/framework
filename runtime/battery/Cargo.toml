@@ -1,0 +1,25 @@
+[package]
+name = "phoxal-runtime-battery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Phoxal official runtime: battery — simulated battery-state monitor (y2026_2)."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-runtime-battery"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
