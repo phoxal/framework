@@ -51,7 +51,10 @@ pub async fn run_async<R: RuntimeBehavior>() -> crate::Result<()> {
 
     init_tracing();
 
-    let launch = ParticipantLaunch::local(R::ID, "robot");
+    // Read the launch from the environment (PHOXAL_*), falling back to local
+    // defaults — this is how `phoxal-cli runtime run` / a deploy hands the process
+    // its namespace, bus endpoints, bundle, and typed config without recompiling.
+    let launch = ParticipantLaunch::from_env(R::ID, "robot")?;
     run_with::<R, _, _>(launch, RealClock::new(), shutdown_signal()).await
 }
 
