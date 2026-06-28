@@ -4,6 +4,16 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0](https://github.com/phoxal/framework/releases/tag/v0.14.0) - 2026-06-28
+
+### Changed
+
+- **(model) BREAKING:** `robot.yaml`'s `phoxal_runtimes` block moves to the
+  API-version channel model: `version` (semver train) → `channel`
+  (`stable|latest|edge`, default `stable`), and `overrides.<name>.{image,version}` →
+  `images.<name>: <image-ref>`. The official runtime set is resolved by the graph's
+  root `api_version` + channel, not a per-graph semver selector. (#103)
+
 ## [0.13.0](https://github.com/phoxal/framework/releases/tag/v0.13.0) - 2026-06-28
 
 ### Added
