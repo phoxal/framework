@@ -4,6 +4,16 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0](https://github.com/phoxal/framework/releases/tag/v0.13.0) - 2026-06-28
+
+### Added
+
+- **(release)** Per-runtime GHCR image publishing, scoped by API version. Each
+  official runtime now ships as a multi-arch (`linux/amd64` + `linux/arm64`) image
+  `ghcr.io/phoxal/runtime-<name>:<api>-v<version>` (immutable) and `:<api>-stable`
+  (moving channel) — the pull targets `phoxal-cli` resolves for a robot graph's root
+  `api_version`. Restores `Dockerfile.runtime`. (#101)
+
 ## [0.12.0](https://github.com/phoxal/framework/releases/tag/v0.12.0) - 2026-06-28
 
 ### Changed
