@@ -1,35 +1,28 @@
 # Phoxal Framework
 
-The Phoxal robot framework as one coherent workspace: one published `phoxal`
-library crate (`bus`, `util`, `model::{component,robot,structure,simulation}`,
-`spatial`, `api::<name>`, `runtime`, and feature-gated `scenario`), the
-complete set of 17 unpublished platform runtime binaries
-(`phoxal-runtime-<name>`), and `orb-slam3-sys`. Released together, the crate and
-every runtime image share the same workspace version.
+The Phoxal robot framework as one coherent workspace: the published `phoxal`
+library crate (engine, model, typed bus, the dated `api::<version>` contract
+tree) and its `phoxal-macros` companion, plus a growing set of unpublished
+platform runtime binaries (`phoxal-runtime-<name>`) that ship as deployables.
+All workspace crates share one version; the library crates are published to
+crates.io (see [Releasing](#releasing)).
 
 Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 [conventions](docs/CONVENTIONS.md), and [validation](docs/VALIDATION.md).
 
 ## Releasing
 
-A release builds and pushes a GHCR image for every runtime binary
-(`ghcr.io/phoxal/runtime-<name>`), each a multi-arch (`linux/amd64` +
-`linux/arm64`) manifest tagged at the workspace version, plus per-target
-runtime binaries. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
+Merging a `release/vX.Y.Z` PR into `main` tags the release and publishes the
+`phoxal` library crate (and its `phoxal-macros` dependency) to crates.io at the
+workspace version. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
-After a release, prove the image set is coherent — every runtime binary has a
-published, pullable multi-arch image:
-
-```sh
-scripts/verify-runtime-release.sh [VERSION]   # defaults to the Cargo.toml version
-```
-
-The runtime set is derived from the workspace (`runtime/<name>/Cargo.toml`),
-so the gate fails if a runtime binary is added without a matching published
-image — keeping the release matrix, the runtime binaries, and the `phoxal-cli`
-platform-runtime catalog in sync. It uses `docker buildx imagetools inspect`,
-which queries the registry directly (no Docker daemon needed); `docker login
-ghcr.io` first for private packages.
+> **Per-runtime images/binaries — deferred (release-engineering / Phase 6).**
+> The greenfield framework rewrite replaced the old crate set and removed
+> `Dockerfile.runtime`, the Webots simulator, and the joypad tool, so the
+> previous per-runtime GHCR image + multi-platform binary + simulator + joypad
+> release matrix is not wired up for the current runtime set yet. Re-introducing
+> it (and the `scripts/verify-runtime-release.sh` image-coherence gate, which
+> checks images this workflow does not currently produce) is tracked separately.
 
 ## License
 
