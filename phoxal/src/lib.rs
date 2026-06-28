@@ -63,6 +63,10 @@ pub use phoxal_macros::runtime;
 #[doc(inline)]
 pub use phoxal_macros::phoxal_api_tree;
 
+/// Re-exported so runtime config types can derive/implement
+/// `phoxal::schemars::JsonSchema`, which feeds `emit-apis` config schemas.
+pub use schemars;
+
 /// Run a runtime to completion on a framework-owned blocking Tokio runtime.
 ///
 /// This is the default binary entrypoint:

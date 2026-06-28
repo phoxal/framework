@@ -24,19 +24,26 @@ use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
 #[derive(phoxal::Runtime)]
-#[phoxal(id = "avoid-obstacles", api = y2026_1)]
+#[phoxal(id = "avoid-obstacles", api = y2026_1, config = Config)]
 struct AvoidObstacles {
     state:  Latest<api::drive::State>,
     target: Publisher<api::drive::Target>,
+    cruise_linear_x_mps: f32,
+}
+
+#[derive(serde::Deserialize, phoxal::schemars::JsonSchema)]
+struct Config {
+    cruise_linear_x_mps: f32,
 }
 
 #[phoxal::runtime]
 impl AvoidObstacles {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>, config: Self::Config) -> Result<Self> {
         Ok(Self {
             state:  ctx.subscribe(api::topic::new().drive().state()).latest().await?,
             target: ctx.publisher(api::topic::new().drive().target()).await?,
+            cruise_linear_x_mps: config.cruise_linear_x_mps,
         })
     }
 
@@ -45,7 +52,9 @@ impl AvoidObstacles {
         let now = step.time();
         // read inputs, publish version-local bodies
         self.target.publish_at(now, api::drive::Target {
-            linear_x_mps: 0.2, angular_z_radps: 0.0,
+            linear_x_mps: self.cruise_linear_x_mps,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
         }).await?;
         Ok(())
     }

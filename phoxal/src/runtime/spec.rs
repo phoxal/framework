@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::api::ApiVersion;
@@ -66,7 +67,7 @@ pub trait RuntimeFields: Sized + Send + 'static {
     const API_VERSION: &'static str;
     /// The runtime's typed config (`()` for official runtimes that read the
     /// robot model directly).
-    type Config: serde::de::DeserializeOwned + Send + 'static;
+    type Config: serde::de::DeserializeOwned + JsonSchema + Send + 'static;
     /// The contracts derived from the struct's handle fields.
     const FIELD_CONTRACTS: &'static [ContractUse];
 }

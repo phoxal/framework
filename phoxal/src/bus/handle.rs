@@ -27,7 +27,7 @@ use crate::bus::abi::{CodecId, encoding_string};
 use crate::bus::codec::{Codec, MessagePack};
 use crate::bus::error::{BusError, Result};
 use crate::bus::metadata::{BusMetadata, Source};
-use crate::bus::query::QueryError;
+use crate::bus::query::{QueryError, QueryFailure};
 use crate::bus::session::Bus;
 use crate::bus::topic::{PubSub, Query, Topic};
 
@@ -176,7 +176,13 @@ where
                     outcome = Some(decode_reply_result::<Resp>(reply.into_result()));
                 }
                 Ok(Err(_)) => break, // reply stream closed
-                Err(_elapsed) => return outcome.unwrap_or(Err(QueryError::Timeout)),
+                Err(_elapsed) => {
+                    return outcome.unwrap_or_else(|| {
+                        Err(QueryError::Timeout(QueryFailure::deadline_exceeded(
+                            "query deadline exceeded",
+                        )))
+                    });
+                }
             }
         }
         outcome.unwrap_or(Err(QueryError::Unavailable))

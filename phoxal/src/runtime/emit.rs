@@ -32,7 +32,7 @@ pub struct RuntimeMetadata {
     pub bus_abi: String,
     /// The union of field-side + server-side contracts.
     pub required_contracts: Vec<ContractView>,
-    /// The runtime's config schema (empty object until config schemas land).
+    /// The runtime's JSON Schema config contract.
     pub config_schema: serde_json::Value,
 }
 
@@ -93,7 +93,8 @@ pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
         api_version: R::API_VERSION.to_string(),
         bus_abi: BUS_ABI.id().to_string(),
         required_contracts,
-        config_schema: serde_json::json!({}),
+        config_schema: serde_json::to_value(schemars::schema_for!(R::Config))
+            .expect("config JSON schema is always serializable"),
     }
 }
 

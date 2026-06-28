@@ -5,7 +5,8 @@
 //! the original methods verbatim (helper attributes stripped).
 //!
 //! Attributes: `#[setup]` (mandatory, once), `#[step(hz = N)]` (≤ 1),
-//! `#[shutdown]` (≤ 1), `#[server(topic = …)]` (exclusive, `&mut self`),
+//! `#[shutdown] async fn shutdown(&mut self, ctx: ShutdownContext)` (≤ 1),
+//! `#[server(topic = …)]` (exclusive, `&mut self`),
 //! `#[server_snapshot(topic = …)]` (concurrent, reads a committed `Snapshot`),
 //! and `#[snapshot]` (the committed-snapshot provider, ≤ 1).
 
@@ -71,6 +72,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
             Lifecycle::Shutdown => {
                 if shutdown.is_some() {
                     return Err(syn::Error::new(method.sig.span(), "duplicate #[shutdown]"));
+                }
+                if method.sig.ident != "shutdown" {
+                    return Err(syn::Error::new(
+                        method.sig.ident.span(),
+                        "the #[shutdown] method must be named `shutdown`",
+                    ));
                 }
                 shutdown = Some(LifecycleFn::parse_self_method(method)?);
             }
@@ -488,7 +495,7 @@ struct LifecycleFn {
 }
 
 impl LifecycleFn {
-    fn parse_setup(method: &ImplItemFn) -> syn::Result<Self> {
+    fn parse_setup(method: &mut ImplItemFn) -> syn::Result<Self> {
         if method.sig.asyncness.is_none() {
             return Err(syn::Error::new(
                 method.sig.span(),
@@ -508,6 +515,13 @@ impl LifecycleFn {
                 "#[setup] must take `ctx: &mut SetupContext<Self>` as its first argument",
             ));
         }
+        if typed > 2 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[setup] takes `ctx: &mut SetupContext<Self>` and optional runtime config",
+            ));
+        }
+        rewrite_setup_self_config(method);
         Ok(LifecycleFn {
             name: method.sig.ident.clone(),
             takes_extra_arg: typed >= 2,
@@ -527,7 +541,22 @@ impl LifecycleFn {
                 "#[shutdown] takes `&mut self`",
             ));
         }
-        let extra = method.sig.inputs.len() >= 2;
+        if method.sig.inputs.len() > 2 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[shutdown] takes `&mut self` and optional `ctx: ShutdownContext`",
+            ));
+        }
+        let typed = typed_arg_types(method);
+        if let Some(ctx_ty) = typed.first()
+            && !type_ends_with(ctx_ty, "ShutdownContext")
+        {
+            return Err(syn::Error::new_spanned(
+                ctx_ty,
+                "#[shutdown] context parameter must be `ctx: ShutdownContext`",
+            ));
+        }
+        let extra = !typed.is_empty();
         Ok(LifecycleFn {
             name: method.sig.ident.clone(),
             takes_extra_arg: extra,
@@ -659,6 +688,27 @@ fn typed_arg_types(method: &ImplItemFn) -> Vec<Type> {
         .collect()
 }
 
+fn rewrite_setup_self_config(method: &mut ImplItemFn) {
+    let Some(FnArg::Typed(arg)) = method.sig.inputs.iter_mut().nth(1) else {
+        return;
+    };
+    if type_is_self_config(&arg.ty) {
+        *arg.ty = syn::parse_quote!(<Self as ::phoxal::runtime::RuntimeFields>::Config);
+    }
+}
+
+fn type_is_self_config(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    let mut segments = path.path.segments.iter();
+    matches!(
+        (segments.next(), segments.next(), segments.next()),
+        (Some(first), Some(second), None)
+            if first.ident == "Self" && second.ident == "Config"
+    )
+}
+
 /// Extract `T` from a `-> ServerResult<T>` return type.
 fn server_result_ty(output: &ReturnType) -> syn::Result<Type> {
     let ty = match output {
@@ -698,6 +748,16 @@ fn single_generic_arg(ty: &Type, name: &str) -> Option<Type> {
         GenericArgument::Type(t) => Some(t.clone()),
         _ => None,
     })
+}
+
+fn type_ends_with(ty: &Type, name: &str) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
 }
 
 /// Find and remove the single phoxal helper attribute on a method.

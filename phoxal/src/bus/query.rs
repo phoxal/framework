@@ -72,6 +72,10 @@ impl QueryFailure {
     pub fn unimplemented(message: impl Into<String>) -> Self {
         Self::new(QueryCode::Unimplemented, message)
     }
+    /// `DeadlineExceeded`.
+    pub fn deadline_exceeded(message: impl Into<String>) -> Self {
+        Self::new(QueryCode::DeadlineExceeded, message)
+    }
 
     /// Encode to the MessagePack error-reply payload.
     pub fn encode(&self) -> Vec<u8> {
@@ -92,8 +96,8 @@ pub enum QueryError {
     #[error("no responder is available for this query topic")]
     Unavailable,
     /// The query exceeded the caller-side timeout.
-    #[error("query timed out")]
-    Timeout,
+    #[error("query timed out: {0:?}")]
+    Timeout(QueryFailure),
     /// The handler returned a structured failure.
     #[error("query server error: {0:?}")]
     Server(QueryFailure),

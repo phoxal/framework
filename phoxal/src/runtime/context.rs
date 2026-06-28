@@ -79,6 +79,12 @@ impl<R: RuntimeFields> SetupContext<R> {
     }
 
     /// Build a publisher for a declared pub/sub contract of this API version.
+    ///
+    /// The bounds are the static safety gate: `B` must belong to the runtime's
+    /// selected API version, and the runtime must have declared `B` in the
+    /// publish direction through a `Publisher<B>` field or
+    /// `#[phoxal(contracts(publishes(B)))]`. A body from another API version or
+    /// an undeclared publish family fails to compile.
     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
     where
         B: ContractBody<Api = R::Api>,
@@ -88,7 +94,30 @@ impl<R: RuntimeFields> SetupContext<R> {
     }
 
     /// Begin building a subscription (`.latest()` or `.subscriber()`).
+    ///
+    /// The `B: ContractBody<Api = R::Api>` bound rejects bodies from other API
+    /// versions. `R: DeclaresSubscribe<B>` rejects undeclared families and
+    /// publish-only declarations. Use [`SubscribeBuilder::depth`] or
+    /// [`Self::subscribe_with`] to override the `Subscriber` ring depth.
     pub fn subscribe<B>(&self, topic: Topic<PubSub<B>>) -> SubscribeBuilder<R, B>
+    where
+        B: ContractBody<Api = R::Api>,
+        R: DeclaresSubscribe<B>,
+    {
+        self.subscribe_with(topic, SubscribeOptions::default())
+    }
+
+    /// Begin building a subscription with explicit options.
+    ///
+    /// This is the options-shaped form of [`Self::subscribe`]. Today the only
+    /// public option is `Subscriber` ring depth; `Latest` remains keep-last-1 by
+    /// design. The same API-version and declared-subscribe compile-time gates
+    /// apply as for [`Self::subscribe`].
+    pub fn subscribe_with<B>(
+        &self,
+        topic: Topic<PubSub<B>>,
+        options: SubscribeOptions,
+    ) -> SubscribeBuilder<R, B>
     where
         B: ContractBody<Api = R::Api>,
         R: DeclaresSubscribe<B>,
@@ -96,13 +125,17 @@ impl<R: RuntimeFields> SetupContext<R> {
         SubscribeBuilder {
             bus: self.bus.clone(),
             topic,
-            depth: DEFAULT_SUBSCRIBER_DEPTH,
+            depth: options.depth,
             _runtime: PhantomData,
         }
     }
 
-    /// Build a querier for a declared query contract of this API version. Carries
-    /// the Phoxal-pinned finite timeout (D31).
+    /// Build a querier for a declared query contract of this API version.
+    ///
+    /// Both request and response bodies must belong to `R::Api`, and the runtime
+    /// must have declared the exact query pair with `Querier<Req, Resp>` or
+    /// `#[phoxal(contracts(queries(Req => Resp)))]`. The handle carries the
+    /// Phoxal-pinned finite timeout (D31).
     pub async fn querier<Req, Resp>(
         &self,
         topic: Topic<Query<Req, Resp>>,
@@ -123,6 +156,36 @@ impl<R: RuntimeFields> SetupContext<R> {
     /// of the normal authoring path).
     pub fn bus(&self) -> &Bus {
         &self.bus
+    }
+}
+
+/// Options for [`SetupContext::subscribe_with`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubscribeOptions {
+    depth: usize,
+}
+
+impl SubscribeOptions {
+    /// Create options using the default drop-oldest ring depth.
+    pub const fn new() -> Self {
+        SubscribeOptions {
+            depth: DEFAULT_SUBSCRIBER_DEPTH,
+        }
+    }
+
+    /// Set the ring depth used by [`SubscribeBuilder::subscriber`].
+    ///
+    /// Values below 1 are clamped by the subscriber implementation. `Latest`
+    /// ignores this option because it is intentionally keep-last-1.
+    pub const fn depth(mut self, depth: usize) -> Self {
+        self.depth = depth;
+        self
+    }
+}
+
+impl Default for SubscribeOptions {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
