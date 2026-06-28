@@ -151,6 +151,11 @@ where
                 MessagePack::ID,
             )))
             .attachment(metadata.encode())
+            // Target ALL matching responders (not just BestMatching) and do not
+            // consolidate, so a duplicate responder on an exclusive topic surfaces
+            // as a second reply (→ `TooManyResponders`) rather than being hidden.
+            .target(zenoh::query::QueryTarget::All)
+            .consolidation(zenoh::query::ConsolidationMode::None)
             .await
             .map_err(|e| QueryError::Protocol(e.to_string()))?;
 

@@ -193,7 +193,12 @@ impl Bus {
         }
         let bytes = key.len() + encoding.len() + attachment.len() + payload.len();
 
-        if self.inner.queued_bytes.load(Ordering::Relaxed) + bytes > OUTBOUND_MAX_BYTES {
+        // Reserve the bytes *before* making the item visible to the drain, so the
+        // drain's `fetch_sub` can never run before this `fetch_add` (no underflow).
+        // Roll the reservation back if the byte bound is exceeded or the send fails.
+        let prev = self.inner.queued_bytes.fetch_add(bytes, Ordering::AcqRel);
+        if prev + bytes > OUTBOUND_MAX_BYTES {
+            self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
             return Err(self.dropped(&key, "byte bound"));
         }
 
@@ -205,14 +210,15 @@ impl Bus {
             bytes,
         };
         match self.inner.outbound.try_send(outbound) {
-            Ok(()) => {
-                self.inner.queued_bytes.fetch_add(bytes, Ordering::Relaxed);
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(out)) => {
+                self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
                 Err(self.dropped(&out.key, "sample bound"))
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => Err(BusError::Closed),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                Err(BusError::Closed)
+            }
         }
     }
 
@@ -273,14 +279,14 @@ async fn drain_loop(
             biased;
             _ = inner.shutdown.notified() => {
                 while let Ok(out) = rx.try_recv() {
-                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::Relaxed);
+                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
                     put(&session, out).await;
                 }
                 break;
             }
             msg = rx.recv() => match msg {
                 Some(out) => {
-                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::Relaxed);
+                    inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
                     put(&session, out).await;
                 }
                 None => break,
