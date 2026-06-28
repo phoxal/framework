@@ -39,19 +39,30 @@ command -v docker >/dev/null 2>&1 || { echo "docker (with buildx) is required" >
 # runtime/<name>/Cargo.toml builds phoxal-runtime-<name> and ships as
 # ghcr.io/phoxal/runtime-<name>. The depth-1 glob excludes nested helper
 # crates (e.g. runtime/localize/orb-slam3-sys) and the empty router/ dir.
+# Images are API-version-scoped (api-version-availability): the tag is
+# `<api>-v<version>` / `<api>-stable`, where <api> is the runtime's compiled-in
+# API version, read here from its `#[phoxal(api = yYYYY_N)]` attribute.
 runtimes=()
+apis=()
 for manifest in "${REPO_ROOT}"/runtime/*/Cargo.toml; do
   [[ -f "${manifest}" ]] || continue
-  runtimes+=("$(basename "$(dirname "${manifest}")")")
+  name="$(basename "$(dirname "${manifest}")")"
+  main_rs="$(dirname "${manifest}")/src/main.rs"
+  api="$(sed -n 's/.*#\[phoxal(.*api = \(y[0-9_]*\).*/\1/p' "${main_rs}" 2>/dev/null | head -n1)"
+  [[ -n "${api}" ]] || { echo "could not read api version from ${main_rs}" >&2; exit 2; }
+  runtimes+=("${name}")
+  apis+=("${api}")
 done
 [[ ${#runtimes[@]} -gt 0 ]] || { echo "no runtime crates found under runtime/" >&2; exit 2; }
 
-echo "Verifying ${#runtimes[@]} runtime images @ ${version} on ${REGISTRY}"
+echo "Verifying ${#runtimes[@]} runtime images @ v${version} on ${REGISTRY}"
 echo
 
 fail=0
-for r in "${runtimes[@]}"; do
-  ref="${REGISTRY}/runtime-${r}:${version}"
+for i in "${!runtimes[@]}"; do
+  r="${runtimes[$i]}"
+  api="${apis[$i]}"
+  ref="${REGISTRY}/runtime-${r}:${api}-v${version}"
   if ! raw="$(docker buildx imagetools inspect "${ref}" --raw 2>/dev/null)"; then
     printf '  %-12s MISSING    %s\n' "${r}" "${ref}"
     fail=$((fail + 1))

@@ -12,17 +12,23 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 ## Releasing
 
-Merging a `release/vX.Y.Z` PR into `main` tags the release and publishes the
-`phoxal` library crate (and its `phoxal-macros` dependency) to crates.io at the
-workspace version. See [`.github/workflows/release.yml`](.github/workflows/release.yml).
+Merging a `release/vX.Y.Z` PR into `main` tags the release and then:
 
-> **Per-runtime images/binaries — deferred (release-engineering / Phase 6).**
-> The greenfield framework rewrite replaced the old crate set and removed
-> `Dockerfile.runtime`, the Webots simulator, and the joypad tool, so the
-> previous per-runtime GHCR image + multi-platform binary + simulator + joypad
-> release matrix is not wired up for the current runtime set yet. Re-introducing
-> it (and the `scripts/verify-runtime-release.sh` image-coherence gate, which
-> checks images this workflow does not currently produce) is tracked separately.
+- publishes the `phoxal` library crate (and its `phoxal-macros` dependency) to
+  crates.io at the workspace version;
+- builds each official runtime as a multi-arch (`linux/amd64` + `linux/arm64`)
+  GHCR image, tagged by **API version**: the immutable `ghcr.io/phoxal/runtime-<name>:<api>-v<version>`
+  and the moving `:<api>-stable` channel (e.g. `runtime-drive:y2026_1-stable`).
+  These are the pull targets `phoxal-cli` resolves for a robot graph's root
+  `api_version` + channel.
+
+See [`.github/workflows/release.yml`](.github/workflows/release.yml) and
+[`Dockerfile.runtime`](Dockerfile.runtime). The image tag's api_version is a
+lookup convention; `phoxal-cli check` re-proves it by running `emit-apis` on the
+resolved image (api-version-availability).
+
+> Per-target standalone binary tarballs, and the (removed) Webots simulator +
+> joypad tool, are not published by this workflow.
 
 ## License
 

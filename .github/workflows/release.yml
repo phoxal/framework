@@ -2,17 +2,20 @@ name: release
 
 # Triggered by merging a `release/vX.Y.Z` PR into main (the convention the
 # release-prep workflow produces). The merged head ref carries the intended
-# version; the `tag` job verifies it against Cargo.toml before tagging, then the
-# library crates are published to crates.io.
+# version; the `tag` job verifies it against Cargo.toml before tagging, then:
+#   - the library crates (`phoxal` + `phoxal-macros`) are published to crates.io;
+#   - each official runtime is published as an API-version-scoped multi-arch GHCR
+#     image (`ghcr.io/phoxal/runtime-<name>:<api_version>-stable` and the immutable
+#     `:<api_version>-v<version>`), the pull targets `phoxal-cli` resolves.
 #
-# NOTE: the greenfield framework rewrite replaced the old crate set and removed
-# `Dockerfile.runtime`, the Webots simulator, and the joypad tool from this
-# workspace. The previous per-runtime GHCR image + multi-platform binary +
-# simulator + joypad release matrix is therefore intentionally NOT here yet —
-# re-introducing per-artifact image/binary publishing for the *current* runtime
-# set is tracked as dedicated release-engineering work (Phase 6). This workflow
-# does the part that is correct today: tag the release and publish the `phoxal`
-# library crate (and its `phoxal-macros` dependency) to crates.io.
+# Image tags are an API-version-scoped lookup convention (api-version-availability):
+# the tag's api_version is the runtime's compiled-in API version, and `phoxal-cli
+# check` re-proves it by running `emit-apis` on the resolved image. Artifact
+# (semver) versions stay independent of the shared api_version axis.
+#
+# NOTE: per-target standalone binary tarballs, the Webots simulator, and the joypad
+# tool (all removed in the greenfield rewrite) are not published here. Re-adding the
+# binary tarballs is future release-engineering work.
 
 on:
   pull_request:
@@ -21,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   plan:
@@ -124,3 +128,99 @@ jobs:
           # Order matters: phoxal depends on phoxal-macros by version.
           publish phoxal-macros
           publish phoxal
+
+  # Build each official runtime as a per-architecture image and push it under an
+  # intermediate `<api>-v<version>-<arch>` tag. The `manifest` job then stitches the
+  # two arches into the API-scoped multi-arch tags. The (runtime -> api_version) map
+  # is a tagging convention; `phoxal-cli check` re-proves it via `emit-apis`.
+  build-images:
+    needs: [plan, tag]
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - { name: asset, api: y2026_1 }
+          - { name: battery, api: y2026_2 }
+          - { name: drive, api: y2026_1 }
+          - { name: driver-ddsm115, api: y2026_1 }
+          - { name: localize, api: y2026_1 }
+          - { name: map, api: y2026_1 }
+          - { name: mission, api: y2026_1 }
+          - { name: odometry, api: y2026_1 }
+          - { name: safety, api: y2026_2 }
+        platform:
+          - { docker: linux/amd64, runner: ubuntu-latest, short: amd64 }
+          - { docker: linux/arm64, runner: ubuntu-24.04-arm, short: arm64 }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:buildx-stable-1
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push per-arch runtime image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.runtime
+          platforms: ${{ matrix.platform.docker }}
+          build-args: |
+            RUNTIME_NAME=${{ matrix.runtime.name }}
+          tags: ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}:${{ matrix.runtime.api }}-v${{ needs.plan.outputs.version }}-${{ matrix.platform.short }}
+          push: true
+          cache-from: type=gha,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/phoxal/framework
+            org.opencontainers.image.version=${{ needs.plan.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=phoxal-runtime-${{ matrix.runtime.name }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+  # Stitch the per-arch images into the two API-scoped multi-arch tag classes:
+  # the immutable `:<api>-v<version>` and the moving `:<api>-stable` channel.
+  manifest:
+    needs: [plan, build-images]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - { name: asset, api: y2026_1 }
+          - { name: battery, api: y2026_2 }
+          - { name: drive, api: y2026_1 }
+          - { name: driver-ddsm115, api: y2026_1 }
+          - { name: localize, api: y2026_1 }
+          - { name: map, api: y2026_1 }
+          - { name: mission, api: y2026_1 }
+          - { name: odometry, api: y2026_1 }
+          - { name: safety, api: y2026_2 }
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create API-scoped multi-arch manifests
+        run: |
+          set -euo pipefail
+          v="${{ needs.plan.outputs.version }}"
+          api="${{ matrix.runtime.api }}"
+          name="ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}"
+          amd64="${name}:${api}-v${v}-amd64"
+          arm64="${name}:${api}-v${v}-arm64"
+          # Immutable artifact tag (api_version + this artifact's version).
+          docker buildx imagetools create -t "${name}:${api}-v${v}" "${amd64}" "${arm64}"
+          # Moving stable channel for this api_version.
+          docker buildx imagetools create -t "${name}:${api}-stable" "${amd64}" "${arm64}"
