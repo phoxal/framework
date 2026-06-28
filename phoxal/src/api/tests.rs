@@ -66,6 +66,56 @@ fn body_round_trips_through_messagepack() {
 }
 
 #[test]
+fn recovered_component_capability_bodies_round_trip_through_messagepack() {
+    let imu = api::component::ImuSample {
+        orientation: Some([1.0, 0.0, 0.0, 0.0]),
+        angular_velocity_radps: [0.1, 0.2, 0.3],
+        linear_acceleration_mps2: [1.0, 2.0, 9.81],
+        covariance: Some([0.0; 9]),
+        noise_density: Some([0.01, 0.02, 0.03]),
+        sensor_frame_id: Some("imu_link".to_string()),
+        measured_at_ns: Some(42),
+        health: api::component::SensorHealth::Degraded,
+        bias: Some(api::component::Bias {
+            angular_velocity_radps: [0.001, 0.002, 0.003],
+            linear_acceleration_mps2: [0.01, 0.02, 0.03],
+        }),
+    };
+    let bytes = rmp_serde::to_vec_named(&imu).unwrap();
+    let decoded: api::component::ImuSample = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(imu, decoded);
+
+    let frame = api::component::CameraFrame {
+        width: 640,
+        height: 480,
+        encoding: api::component::CameraEncoding::Rgb8,
+        intrinsics: Some(api::component::CameraIntrinsics {
+            fx: 500.0,
+            fy: 501.0,
+            cx: 320.0,
+            cy: 240.0,
+        }),
+        distortion: Some(api::component::CameraDistortion {
+            model: "plumb_bob".to_string(),
+            coefficients: vec![0.1, 0.2, 0.3],
+        }),
+        exposure: Some(api::component::CameraExposureTiming {
+            exposure_start_ns: Some(100),
+            exposure_duration_ns: Some(200),
+        }),
+        measured_at_ns: Some(300),
+        calibration: Some(api::component::CameraCalibrationIdentity {
+            id: "front".to_string(),
+            version: "v1".to_string(),
+        }),
+        data: vec![1, 2, 3, 4],
+    };
+    let bytes = rmp_serde::to_vec_named(&frame).unwrap();
+    let decoded: api::component::CameraFrame = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(frame, decoded);
+}
+
+#[test]
 fn topic_builder_keys_match_contract_topics() {
     assert_eq!(api::topic::new().drive().state().key(), "drive/state");
     assert_eq!(api::topic::new().drive().target().key(), "drive/target");
@@ -97,6 +147,99 @@ fn dynamic_topic_builder_fills_the_key_template() {
 }
 
 #[test]
+fn recovered_component_capability_topic_builders_fill_key_templates() {
+    let component = api::topic::new().component();
+    assert_eq!(
+        component.accelerometer_sample("imu0", "accel").key(),
+        "component/imu0/accelerometer/accel/sample"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .gyroscope_sample("imu0", "gyro")
+            .key(),
+        "component/imu0/gyroscope/gyro/sample"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .magnetometer_sample("imu0", "mag")
+            .key(),
+        "component/imu0/magnetometer/mag/sample"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .imu_sample("imu0", "imu")
+            .key(),
+        "component/imu0/imu/imu/sample"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .range_sample("base", "front_tof")
+            .key(),
+        "component/base/range/front_tof/sample"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .gnss_sample("gps", "gnss")
+            .key(),
+        "component/gps/gnss/gnss/sample"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .camera_frame("head", "front")
+            .key(),
+        "component/head/camera/front/frame"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .depth_frame("head", "front_depth")
+            .key(),
+        "component/head/depth/front_depth/frame"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .lidar_scan("front_lidar", "scan")
+            .key(),
+        "component/front_lidar/lidar/scan/scan"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .mmwave_scan("radar", "mmwave")
+            .key(),
+        "component/radar/mmwave/mmwave/scan"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .microphone_frame("head", "mic")
+            .key(),
+        "component/head/microphone/mic/frame"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .led_command("status_panel", "status")
+            .key(),
+        "component/status_panel/led/status/command"
+    );
+    assert_eq!(
+        api::topic::new()
+            .component()
+            .emergency_stop_state("safety_panel", "estop")
+            .key(),
+        "component/safety_panel/emergency_stop/estop/state"
+    );
+}
+
+#[test]
 fn dynamic_topic_contract_body_topic_is_the_template() {
     assert_eq!(
         <api::component::MotorCommand as ContractBody>::TOPIC,
@@ -105,6 +248,14 @@ fn dynamic_topic_contract_body_topic_is_the_template() {
     assert_eq!(
         <api::component::MotorCommand as ContractBody>::FAMILY,
         "component::MotorCommand"
+    );
+    assert_eq!(
+        <api::component::ImuSample as ContractBody>::TOPIC,
+        "component/{instance}/imu/{capability}/sample"
+    );
+    assert_eq!(
+        <api::component::ImuSample as ContractBody>::FAMILY,
+        "component::ImuSample"
     );
 }
 
