@@ -37,9 +37,17 @@
 //! inherits `P`'s effective families: a child family merges into the parent
 //! family of the same name (child types/topics override by name), a new child
 //! family is added, and every inherited type is re-emitted *fresh* under the
-//! child version — same `FAMILY`/`TOPIC`, a different `Api` — so unchanged
-//! contracts are wire-identical by construction while the `Api` bound stays sound
-//! (D61).
+//! child version — same `FAMILY`/`TOPIC`, a different `Api` (D61).
+//!
+//! Wire identity is **per-type, by transitive shape**: an inherited type re-emits
+//! the parent's definition verbatim, so a type that does **not** transitively
+//! reference an overridden type is byte-identical to its parent (e.g. a flat
+//! `localize::State`). A type that *contains* an overridden type resolves that
+//! name to the child's overridden version — e.g. if the child overrides
+//! `drive::Target`, the inherited `drive::State { target: Target, … }` embeds the
+//! **new** `Target` and is therefore *not* identical to the parent's `State`.
+//! That is correct versioning: a contract changes with its dependencies, and the
+//! whole change is coherent because one graph runs one API version (D59).
 
 use proc_macro2::TokenStream;
 use quote::quote;

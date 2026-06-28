@@ -155,6 +155,46 @@ mod extends {
     }
 
     #[test]
+    fn inherited_type_reflects_an_overridden_dependency() {
+        // `drive::State` embeds `drive::Target`. y2026_2 overrides `Target`, so the
+        // inherited `y2026_2::drive::State` embeds the NEW Target (extra field) and
+        // is NOT byte-identical to y2026_1's — correct versioning (a contract
+        // changes with its dependencies).
+        let v1_state = v1::drive::State {
+            target: v1::drive::Target {
+                linear_x_mps: 0.0,
+                angular_z_radps: 0.0,
+            },
+            limited_target: v1::drive::Target {
+                linear_x_mps: 0.0,
+                angular_z_radps: 0.0,
+            },
+            actuator_authority: v1::drive::ActuatorAuthority::Active,
+            stop_reason: None,
+        };
+        let v2_state = v2::drive::State {
+            target: v2::drive::Target {
+                linear_x_mps: 0.0,
+                angular_z_radps: 0.0,
+                curvature_limit_radpm: None,
+            },
+            limited_target: v2::drive::Target {
+                linear_x_mps: 0.0,
+                angular_z_radps: 0.0,
+                curvature_limit_radpm: None,
+            },
+            actuator_authority: v2::drive::ActuatorAuthority::Active,
+            stop_reason: None,
+        };
+        let v1_bytes = rmp_serde::to_vec_named(&v1_state).unwrap();
+        let v2_bytes = rmp_serde::to_vec_named(&v2_state).unwrap();
+        assert_ne!(
+            v1_bytes, v2_bytes,
+            "the inherited State embeds the overridden Target, so it changes with it"
+        );
+    }
+
+    #[test]
     fn new_family_exists_only_in_the_child() {
         assert_eq!(
             <v2::battery::State as ContractBody>::FAMILY,
@@ -172,5 +212,55 @@ mod extends {
         assert_eq!(v2::topic::new().drive().target().key(), "drive/target");
         // new
         assert_eq!(v2::topic::new().battery().state().key(), "battery/state");
+    }
+}
+
+// A self-contained three-version tree exercising multi-level inheritance
+// (`vc extends vb extends va`) without touching the production api tree.
+mod multi_level {
+    use crate::api::{ApiVersion, ContractBody};
+
+    crate::phoxal_api_tree! {
+        version va {
+            sensor {
+                struct Reading { value_a: f32 }
+                topic reading: pubsub Reading;
+            }
+        }
+        version vb extends va {
+            beacon {
+                struct Ping { seq: u64 }
+                topic ping: pubsub Ping;
+            }
+        }
+        version vc extends vb {
+            sensor {
+                struct Reading { value_a: f32, value_b: f32 }
+                topic reading: pubsub Reading;
+            }
+        }
+    }
+
+    #[test]
+    fn transitive_inheritance_carries_through_two_levels() {
+        // `beacon` is declared in vb and inherited by vc (two levels deep).
+        assert_eq!(<vc::beacon::Ping as ContractBody>::TOPIC, "beacon/ping");
+        assert_eq!(<vc::beacon::Ping as ContractBody>::FAMILY, "beacon::Ping");
+        assert_eq!(
+            <<vc::beacon::Ping as ContractBody>::Api as ApiVersion>::ID,
+            "vc"
+        );
+
+        // `sensor::Reading` is inherited unchanged into vb, then overridden in vc.
+        assert_eq!(
+            <vb::sensor::Reading as ContractBody>::TOPIC,
+            "sensor/reading"
+        );
+        let _vc_reading = vc::sensor::Reading {
+            value_a: 1.0,
+            value_b: 2.0,
+        };
+        assert_eq!(vc::topic::new().beacon().ping().key(), "beacon/ping");
+        assert_eq!(vc::topic::new().sensor().reading().key(), "sensor/reading");
     }
 }

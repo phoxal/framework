@@ -171,8 +171,10 @@ phoxal_api_tree! {
 
     // A second API version that inherits y2026_1 (D61). Unchanged families/types
     // are re-emitted *fresh* under `y2026_2` — same `FAMILY`/`TOPIC`, a different
-    // `Api` marker — so they are wire-identical to their y2026_1 counterparts by
-    // construction. This version overrides one type and adds one family.
+    // `Api` marker. A type with no changed dependency is wire-identical to its
+    // y2026_1 counterpart; a type that *contains* an overridden type changes with
+    // it. Here `drive::Target` is overridden, so the inherited `drive::State`
+    // (which embeds `Target`) reflects the new `Target` in y2026_2.
     version y2026_2 extends y2026_1 {
         drive {
             /// y2026_2 adds an optional curvature limit to the drive target.
