@@ -4,7 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+# Published to crates.io: `phoxal` depends on it by version, so it must be a real
+# published crate (a path-only dependency cannot be published).
+publish = true
 description = "Proc-macros for the phoxal framework: phoxal_api_tree!, #[derive(Runtime)], #[phoxal::runtime]."
 documentation.workspace = true
 homepage.workspace = true
