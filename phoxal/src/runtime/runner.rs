@@ -107,7 +107,12 @@ where
         None => None,
     };
 
-    let mut ctx = SetupContext::<R>::new(bus.clone(), robot, launch.bundle_root.clone());
+    let mut ctx = SetupContext::<R>::new(
+        bus.clone(),
+        robot,
+        launch.bundle_root.clone(),
+        launch.component_instance.clone(),
+    );
     let mut runtime = R::__setup(&mut ctx, config).await?;
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
 

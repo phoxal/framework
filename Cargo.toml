@@ -18,6 +18,7 @@ members = [
     "phoxal-macros",
     "runtime/asset",
     "runtime/drive",
+    "runtime/driver-ddsm115",
 ]
 
 [workspace.dependencies]

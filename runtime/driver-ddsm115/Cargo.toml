@@ -1,0 +1,27 @@
+[package]
+name = "phoxal-runtime-driver-ddsm115"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Phoxal component driver: ddsm115 wheel motor — per-instance actuation + encoder feedback."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-runtime-driver-ddsm115"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

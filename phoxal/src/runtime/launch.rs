@@ -40,6 +40,12 @@ pub struct ParticipantLaunch {
     /// for a bare `runtime run` with no model.
     #[serde(default)]
     pub bundle_root: Option<PathBuf>,
+    /// The `components.instances` entry this participant drives (D47/D53). A
+    /// component driver is launched once per instance, each with a distinct
+    /// `participant_id` and its own `component_instance`; read via
+    /// `SetupContext::component()`. Absent for non-driver runtimes.
+    #[serde(default)]
+    pub component_instance: Option<String>,
     /// Bounded shutdown grace, in milliseconds.
     #[serde(default = "default_grace")]
     pub shutdown_grace_ms: u64,
@@ -61,6 +67,7 @@ impl ParticipantLaunch {
             clock: ClockMode::Real,
             config: None,
             bundle_root: None,
+            component_instance: None,
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
         }
     }
@@ -68,6 +75,12 @@ impl ParticipantLaunch {
     /// Set the bundle root (where the robot model lives) for this launch.
     pub fn with_bundle_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.bundle_root = Some(root.into());
+        self
+    }
+
+    /// Set the component instance this participant drives (driver launch, D47/D53).
+    pub fn with_component_instance(mut self, instance: impl Into<String>) -> Self {
+        self.component_instance = Some(instance.into());
         self
     }
 }
