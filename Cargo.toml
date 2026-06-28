@@ -19,6 +19,7 @@ members = [
     "runtime/asset",
     "runtime/battery",
     "runtime/drive",
+    "runtime/localize",
     "runtime/map",
     "runtime/odometry",
     "runtime/driver-ddsm115",
