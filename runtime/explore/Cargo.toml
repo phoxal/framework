@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-runtime-safety"
+name = "phoxal-runtime-explore"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official runtime: safety — battery + drive safety monitor (y2026_1)."
+description = "Phoxal official runtime: explore — frontier-based goal proposal."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-runtime-safety"
+name = "phoxal-runtime-explore"
 path = "src/main.rs"
 
 [dependencies]

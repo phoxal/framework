@@ -140,13 +140,23 @@ jobs:
       matrix:
         runtime:
           - { name: asset, api: y2026_1 }
-          - { name: battery, api: y2026_2 }
+          - { name: battery, api: y2026_1 }
           - { name: drive, api: y2026_1 }
+          - { name: explore, api: y2026_1 }
+          - { name: follow, api: y2026_1 }
+          - { name: frame, api: y2026_1 }
+          - { name: joint, api: y2026_1 }
           - { name: localize, api: y2026_1 }
           - { name: map, api: y2026_1 }
           - { name: mission, api: y2026_1 }
+          - { name: motion, api: y2026_1 }
           - { name: odometry, api: y2026_1 }
-          - { name: safety, api: y2026_2 }
+          - { name: perception, api: y2026_1 }
+          - { name: plan, api: y2026_1 }
+          - { name: power, api: y2026_1 }
+          - { name: presence, api: y2026_1 }
+          - { name: safety, api: y2026_1 }
+          - { name: video, api: y2026_1 }
         platform:
           - { docker: linux/amd64, runner: ubuntu-latest, short: amd64 }
           - { docker: linux/arm64, runner: ubuntu-24.04-arm, short: arm64 }
@@ -196,13 +206,23 @@ jobs:
       matrix:
         runtime:
           - { name: asset, api: y2026_1 }
-          - { name: battery, api: y2026_2 }
+          - { name: battery, api: y2026_1 }
           - { name: drive, api: y2026_1 }
+          - { name: explore, api: y2026_1 }
+          - { name: follow, api: y2026_1 }
+          - { name: frame, api: y2026_1 }
+          - { name: joint, api: y2026_1 }
           - { name: localize, api: y2026_1 }
           - { name: map, api: y2026_1 }
           - { name: mission, api: y2026_1 }
+          - { name: motion, api: y2026_1 }
           - { name: odometry, api: y2026_1 }
-          - { name: safety, api: y2026_2 }
+          - { name: perception, api: y2026_1 }
+          - { name: plan, api: y2026_1 }
+          - { name: power, api: y2026_1 }
+          - { name: presence, api: y2026_1 }
+          - { name: safety, api: y2026_1 }
+          - { name: video, api: y2026_1 }
     steps:
       - uses: docker/login-action@v3
         with:

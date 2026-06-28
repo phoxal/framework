@@ -1,9 +1,10 @@
-//! `map` — the official occupancy-grid mapper.
+//! `map` — localization-trace occupancy-grid placeholder.
 //!
 //! This is the first official runtime using the concurrent snapshot-server
 //! pattern: `#[step]` updates the copy-on-write grid, the runner commits
 //! `#[snapshot]` state, and `#[server_snapshot]` serves `map/submap` concurrently
-//! from that committed snapshot.
+//! from that committed snapshot. It does not integrate range/depth/lidar sensor
+//! observations yet; it only marks the current localization cell free.
 
 use std::sync::Arc;
 

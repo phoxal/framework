@@ -1,137 +1,132 @@
-//! `mission` — the official minimal go-to-goal mission controller.
+//! `mission` - lifecycle owner for autonomy goals.
 //!
-//! This scheduled runtime subscribes to `localize/state`, computes a simple
-//! proportional pose-to-goal command, and publishes `drive/target`. It is the
-//! first producer at the head of the control pipeline:
-//! mission -> drive/target -> drive -> ddsm115 -> odometry -> localize -> mission.
+//! This runtime is deliberately not a drive controller. It accepts operator
+//! mission commands, latches the active goal, republishes that goal for planning,
+//! and reports the mission lifecycle. Because this first API slice does not feed
+//! arrival/completion observations into `mission`, an active goal remains active
+//! until Pause, Resume, Cancel, or a replacement Start command is received.
 
-use std::f64::consts::PI;
-
+use anyhow::Result;
 use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
-const ARRIVAL_TOLERANCE_M: f64 = 0.05;
-const MAX_LINEAR_MPS: f64 = 0.4;
-const MAX_ANGULAR_RADPS: f64 = 1.5;
-const K_LINEAR: f64 = 0.8;
-const K_ANGULAR: f64 = 1.0;
-const FACING_TOLERANCE_RAD: f64 = 0.5;
+#[derive(Clone, Debug, PartialEq)]
+struct MissionLifecycle {
+    phase: api::mission::Phase,
+    goal: Option<api::mission::Goal>,
+    detail: Option<String>,
+}
 
-/// A localization fix older than this, or below [`MIN_CONFIDENCE`], is not trusted
-/// to drive on — mission commands a stop instead. Without this, mission would keep
-/// republishing *fresh* targets from a frozen pose, so `drive`'s own stale-target
-/// guard would never trip and the robot could run open-loop on a dead localizer.
-const FIX_STALE_NS: u64 = 1_000_000_000; // 1 s
-const MIN_CONFIDENCE: f32 = 0.25;
+impl MissionLifecycle {
+    fn idle() -> Self {
+        Self {
+            phase: api::mission::Phase::Idle,
+            goal: None,
+            detail: None,
+        }
+    }
 
-/// Fixed first-version mission goal. Real missions will later load waypoints
-/// from the bundle/config instead of compiling them into the runtime.
-const GOAL: Goal = Goal { x_m: 1.0, y_m: 0.0 };
+    fn apply_command(&mut self, command: api::mission::Command) {
+        match command {
+            api::mission::Command::Start(goal) => {
+                self.phase = api::mission::Phase::Active;
+                self.goal = Some(goal);
+                self.detail = None;
+            }
+            api::mission::Command::Pause => self.pause(),
+            api::mission::Command::Resume => self.resume(),
+            api::mission::Command::Cancel => {
+                self.phase = api::mission::Phase::Idle;
+                self.goal = None;
+                self.detail = None;
+            }
+        }
+    }
 
-#[derive(Clone, Copy)]
-struct Goal {
-    x_m: f64,
-    y_m: f64,
+    fn pause(&mut self) {
+        match self.phase {
+            api::mission::Phase::Active => {
+                self.phase = api::mission::Phase::Paused;
+                self.detail = None;
+            }
+            api::mission::Phase::Paused => {
+                self.detail = None;
+            }
+            api::mission::Phase::Idle
+            | api::mission::Phase::Succeeded
+            | api::mission::Phase::Failed => {
+                self.detail = Some("pause ignored: no active mission".to_string());
+            }
+        }
+    }
+
+    fn resume(&mut self) {
+        match (self.phase, self.goal.is_some()) {
+            (api::mission::Phase::Paused, true) => {
+                self.phase = api::mission::Phase::Active;
+                self.detail = None;
+            }
+            (api::mission::Phase::Active, _) => {
+                self.detail = None;
+            }
+            _ => {
+                self.detail = Some("resume ignored: no paused goal".to_string());
+            }
+        }
+    }
+
+    fn goal_to_publish(&self) -> Option<api::mission::Goal> {
+        (self.phase == api::mission::Phase::Active)
+            .then(|| self.goal.clone())
+            .flatten()
+    }
+
+    fn state(&self) -> api::mission::State {
+        api::mission::State {
+            phase: self.phase,
+            goal: self.goal.clone(),
+            detail: self.detail.clone(),
+        }
+    }
 }
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "mission", api = y2026_1)]
 struct Mission {
-    // Runtime-private typed state (not handles): latest fix + its production time.
-    last_localize: Option<(api::localize::LocalizationState, u64)>,
-    // Handles.
-    localize: Subscriber<api::localize::LocalizationState>,
-    target: Publisher<api::drive::Target>,
+    lifecycle: MissionLifecycle,
+    command: Subscriber<api::mission::Command>,
+    goal: Publisher<api::mission::Goal>,
+    state: Publisher<api::mission::State>,
 }
 
 #[phoxal::runtime]
 impl Mission {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        let localize = ctx
-            .subscribe(api::topic::new().localize().state())
-            .subscriber()
-            .await?;
-        let target = ctx.publisher(api::topic::new().drive().target()).await?;
-
         Ok(Self {
-            last_localize: None,
-            localize,
-            target,
+            lifecycle: MissionLifecycle::idle(),
+            command: ctx
+                .subscribe(api::topic::new().mission().command())
+                .subscriber()
+                .await?,
+            goal: ctx.publisher(api::topic::new().mission().goal()).await?,
+            state: ctx.publisher(api::topic::new().mission().state()).await?,
         })
     }
 
-    #[step(hz = 20)]
+    #[step(hz = 5)]
     async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.localize.try_recv() {
-            self.last_localize = Some((received.body, received.metadata.produced_at_ns));
+        while let Some(received) = self.command.try_recv() {
+            self.lifecycle.apply_command(received.body);
         }
 
-        let target = plan(
-            self.last_localize.as_ref().map(|(pose, at)| (pose, *at)),
-            step.time().time_ns(),
-            GOAL,
-        );
-
-        self.target.publish_at(step.time(), target).await?;
+        if let Some(goal) = self.lifecycle.goal_to_publish() {
+            self.goal.publish_at(step.time(), goal).await?;
+        }
+        self.state
+            .publish_at(step.time(), self.lifecycle.state())
+            .await?;
         Ok(())
-    }
-}
-
-/// Decide the command for the current fix: stop unless there is a fresh,
-/// confident localization estimate to act on; otherwise run the go-to-goal
-/// controller. Keeping this pure makes the trust gate unit-testable.
-fn plan(
-    fix: Option<(&api::localize::LocalizationState, u64)>,
-    now_ns: u64,
-    goal: Goal,
-) -> api::drive::Target {
-    let Some((pose, produced_at_ns)) = fix else {
-        return stop_target();
-    };
-    if pose.confidence < MIN_CONFIDENCE {
-        return stop_target();
-    }
-    if now_ns.saturating_sub(produced_at_ns) > FIX_STALE_NS {
-        return stop_target();
-    }
-    control(pose, goal)
-}
-
-fn control(pose: &api::localize::LocalizationState, goal: Goal) -> api::drive::Target {
-    let dx = goal.x_m - pose.x_m;
-    let dy = goal.y_m - pose.y_m;
-    let dist = dx.hypot(dy);
-
-    if dist < ARRIVAL_TOLERANCE_M {
-        return stop_target();
-    }
-
-    let desired_heading = dy.atan2(dx);
-    let heading_err = normalize_angle(desired_heading - pose.yaw_rad);
-    let angular = (K_ANGULAR * heading_err).clamp(-MAX_ANGULAR_RADPS, MAX_ANGULAR_RADPS);
-    let linear = if heading_err.abs() < FACING_TOLERANCE_RAD {
-        (K_LINEAR * dist).clamp(0.0, MAX_LINEAR_MPS)
-    } else {
-        0.0
-    };
-
-    api::drive::Target {
-        linear_x_mps: linear as f32,
-        angular_z_radps: angular as f32,
-    }
-}
-
-fn normalize_angle(angle_rad: f64) -> f64 {
-    let two_pi = 2.0 * PI;
-    let normalized = (angle_rad + PI).rem_euclid(two_pi) - PI;
-    if normalized <= -PI { PI } else { normalized }
-}
-
-fn stop_target() -> api::drive::Target {
-    api::drive::Target {
-        linear_x_mps: 0.0,
-        angular_z_radps: 0.0,
     }
 }
 
@@ -141,160 +136,122 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::f64::consts::PI;
-
     use phoxal::api::ContractBody;
     use phoxal::api::y2026_1 as api;
 
-    use super::{
-        ARRIVAL_TOLERANCE_M, FIX_STALE_NS, Goal, MAX_ANGULAR_RADPS, MAX_LINEAR_MPS, Mission,
-        control, normalize_angle, plan,
-    };
+    use super::{Mission, MissionLifecycle};
 
-    const GOAL: Goal = Goal { x_m: 1.0, y_m: 0.0 };
+    #[test]
+    fn start_latches_active_goal() {
+        let goal = goal(1.0, 2.0);
+        let mut lifecycle = MissionLifecycle::idle();
 
-    fn pose(x_m: f64, y_m: f64, yaw_rad: f64) -> api::localize::LocalizationState {
-        api::localize::LocalizationState {
-            x_m,
-            y_m,
-            yaw_rad,
-            confidence: 1.0,
-        }
+        lifecycle.apply_command(api::mission::Command::Start(goal.clone()));
+
+        assert_eq!(lifecycle.phase, api::mission::Phase::Active);
+        assert_eq!(lifecycle.goal, Some(goal.clone()));
+        assert_eq!(lifecycle.goal_to_publish(), Some(goal));
+        assert!(lifecycle.detail.is_none());
     }
 
-    fn assert_close(actual: f64, expected: f64) {
+    #[test]
+    fn pause_and_resume_keep_latched_goal() {
+        let goal = goal(0.5, -1.0);
+        let mut lifecycle = MissionLifecycle::idle();
+        lifecycle.apply_command(api::mission::Command::Start(goal.clone()));
+
+        lifecycle.apply_command(api::mission::Command::Pause);
+        assert_eq!(lifecycle.phase, api::mission::Phase::Paused);
+        assert_eq!(lifecycle.goal, Some(goal.clone()));
+        assert_eq!(lifecycle.goal_to_publish(), None);
+
+        lifecycle.apply_command(api::mission::Command::Resume);
+        assert_eq!(lifecycle.phase, api::mission::Phase::Active);
+        assert_eq!(lifecycle.goal_to_publish(), Some(goal));
+    }
+
+    #[test]
+    fn cancel_returns_to_idle_and_clears_goal() {
+        let mut lifecycle = MissionLifecycle::idle();
+        lifecycle.apply_command(api::mission::Command::Start(goal(1.0, 0.0)));
+
+        lifecycle.apply_command(api::mission::Command::Cancel);
+
+        assert_eq!(lifecycle.phase, api::mission::Phase::Idle);
+        assert_eq!(lifecycle.goal, None);
+        assert_eq!(lifecycle.goal_to_publish(), None);
+        assert!(lifecycle.detail.is_none());
+    }
+
+    #[test]
+    fn invalid_pause_or_resume_is_reported_without_phase_change() {
+        let mut lifecycle = MissionLifecycle::idle();
+
+        lifecycle.apply_command(api::mission::Command::Pause);
+        assert_eq!(lifecycle.phase, api::mission::Phase::Idle);
         assert!(
-            (actual - expected).abs() < 1e-6,
-            "expected {expected}, got {actual}"
+            lifecycle
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("pause ignored")
+        );
+
+        lifecycle.apply_command(api::mission::Command::Resume);
+        assert_eq!(lifecycle.phase, api::mission::Phase::Idle);
+        assert!(
+            lifecycle
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("resume ignored")
         );
     }
 
     #[test]
-    fn arrived_commands_stop() {
-        let target = control(&pose(1.0, 0.0, 1.25), Goal { x_m: 1.0, y_m: 0.0 });
+    fn state_mirrors_lifecycle() {
+        let goal = goal(2.0, 3.0);
+        let mut lifecycle = MissionLifecycle::idle();
+        lifecycle.apply_command(api::mission::Command::Start(goal.clone()));
 
-        assert_eq!(target.linear_x_mps, 0.0);
-        assert_eq!(target.angular_z_radps, 0.0);
+        let state = lifecycle.state();
 
-        let near = control(
-            &pose(1.0 - ARRIVAL_TOLERANCE_M / 2.0, 0.0, 0.0),
-            Goal { x_m: 1.0, y_m: 0.0 },
-        );
-        assert_eq!(near.linear_x_mps, 0.0);
-        assert_eq!(near.angular_z_radps, 0.0);
+        assert_eq!(state.phase, api::mission::Phase::Active);
+        assert_eq!(state.goal, Some(goal));
+        assert_eq!(state.detail, None);
     }
 
     #[test]
-    fn facing_goal_drives_forward() {
-        let target = control(&pose(0.0, 0.0, 0.0), Goal { x_m: 1.0, y_m: 0.0 });
-
-        assert!(target.linear_x_mps > 0.0);
-        assert_close(f64::from(target.angular_z_radps), 0.0);
-    }
-
-    #[test]
-    fn goal_behind_turns_in_place() {
-        let target = control(
-            &pose(0.0, 0.0, 0.0),
-            Goal {
-                x_m: -1.0,
-                y_m: 0.0,
-            },
-        );
-
-        assert_close(f64::from(target.linear_x_mps), 0.0);
-        assert!(target.angular_z_radps.abs() > 0.0);
-    }
-
-    #[test]
-    fn goal_to_the_left_turns_left() {
-        let target = control(&pose(0.0, 0.0, 0.0), Goal { x_m: 0.0, y_m: 1.0 });
-
-        assert!(target.angular_z_radps > 0.0);
-        assert_close(f64::from(target.linear_x_mps), 0.0);
-    }
-
-    #[test]
-    fn linear_and_angular_are_clamped() {
-        let forward = control(
-            &pose(0.0, 0.0, 0.0),
-            Goal {
-                x_m: 100.0,
-                y_m: 0.0,
-            },
-        );
-        assert_close(f64::from(forward.linear_x_mps), MAX_LINEAR_MPS);
-        assert_close(f64::from(forward.angular_z_radps), 0.0);
-        assert!(forward.linear_x_mps >= 0.0);
-
-        let turning = control(
-            &pose(0.0, 0.0, 0.0),
-            Goal {
-                x_m: 0.0,
-                y_m: -100.0,
-            },
-        );
-        assert_close(f64::from(turning.angular_z_radps), -MAX_ANGULAR_RADPS);
-        assert!(f64::from(turning.angular_z_radps).abs() <= MAX_ANGULAR_RADPS);
-        assert!(turning.linear_x_mps >= 0.0);
-    }
-
-    #[test]
-    fn normalize_angle_range() {
-        assert_close(normalize_angle(PI), PI);
-        assert_close(normalize_angle(-PI), PI);
-        assert_close(normalize_angle(3.0 * PI), PI);
-        assert!(normalize_angle(PI + 0.25) > -PI);
-        assert!(normalize_angle(PI + 0.25) <= PI);
-    }
-
-    #[test]
-    fn no_fix_commands_stop() {
-        let target = plan(None, 1_000_000_000, GOAL);
-        assert_eq!(target.linear_x_mps, 0.0);
-        assert_eq!(target.angular_z_radps, 0.0);
-    }
-
-    #[test]
-    fn low_confidence_commands_stop() {
-        let mut p = pose(0.0, 0.0, 0.0);
-        p.confidence = 0.1; // below MIN_CONFIDENCE
-        // Fresh fix, but untrusted → stop even though the goal is straight ahead.
-        let target = plan(Some((&p, 1_000)), 1_000, GOAL);
-        assert_eq!(target.linear_x_mps, 0.0);
-        assert_eq!(target.angular_z_radps, 0.0);
-    }
-
-    #[test]
-    fn stale_fix_commands_stop() {
-        let p = pose(0.0, 0.0, 0.0); // confidence 1.0, goal straight ahead
-        let produced_at_ns = 1_000;
-        let now_ns = produced_at_ns + FIX_STALE_NS + 1;
-        // A confident fix, but too old to act on → stop (drive would otherwise keep
-        // getting fresh targets from a frozen pose).
-        let target = plan(Some((&p, produced_at_ns)), now_ns, GOAL);
-        assert_eq!(target.linear_x_mps, 0.0);
-        assert_eq!(target.angular_z_radps, 0.0);
-
-        // The same fix while still fresh drives forward.
-        let fresh = plan(Some((&p, produced_at_ns)), produced_at_ns + 1, GOAL);
-        assert!(fresh.linear_x_mps > 0.0);
-    }
-
-    #[test]
-    fn emit_apis_reports_contracts() {
+    fn emit_apis_reports_mission_lifecycle_contracts() {
         let json = phoxal::runtime::emit_apis_json::<Mission>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "mission");
+        assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::localize::LocalizationState as ContractBody>::FAMILY
-                && c["direction"] == "subscribe"
-        }));
-        assert!(contracts.iter().any(|c| {
+        assert_contract::<api::mission::Command>(contracts, "subscribe");
+        assert_contract::<api::mission::Goal>(contracts, "publish");
+        assert_contract::<api::mission::State>(contracts, "publish");
+        assert!(!contracts.iter().any(|c| {
             c["family"] == <api::drive::Target as ContractBody>::FAMILY
                 && c["direction"] == "publish"
         }));
+    }
+
+    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    where
+        B: ContractBody,
+    {
+        assert!(contracts.iter().any(|c| {
+            c["family"] == B::FAMILY && c["topic"] == B::TOPIC && c["direction"] == direction
+        }));
+    }
+
+    fn goal(x_m: f64, y_m: f64) -> api::mission::Goal {
+        api::mission::Goal {
+            x_m,
+            y_m,
+            yaw_rad: Some(0.25),
+        }
     }
 }

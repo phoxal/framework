@@ -58,6 +58,7 @@ phoxal_api_tree! {
             struct Target {
                 linear_x_mps: f32,
                 angular_z_radps: f32,
+                curvature_limit_radpm: Option<f32>,
             }
 
             /// The drive runtime's published control state.
@@ -70,6 +71,406 @@ phoxal_api_tree! {
 
             topic target: pubsub Target;
             topic state: pubsub State;
+        }
+
+        battery {
+            /// Battery state — a family that exists only from y2026_1 on.
+            struct State {
+                voltage_v: f32,
+                current_a: f32,
+                charge_ratio: f32,
+            }
+
+            topic state: pubsub State;
+        }
+
+        safety {
+            /// Safety runtime decision for a candidate motion command.
+            #[derive(Copy, Eq)]
+            enum SafetyDecision {
+                Allow,
+                Slow,
+                Stop,
+                EmergencyStop,
+                UnknownConservative,
+            }
+
+            struct Constraint {
+                min: f64,
+                max: f64,
+            }
+
+            struct MotionConstraint {
+                linear_x_mps: Constraint,
+                angular_z_radps: Constraint,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum SafetyReasonCode {
+                ObstacleDetected,
+                BatteryLow,
+                BatteryCritical,
+                DriveFault,
+                LocalizationLost,
+                SourceStale,
+                EmergencyStopEngaged,
+                Unknown,
+            }
+
+            struct SafetyReason {
+                code: SafetyReasonCode,
+                detail: Option<String>,
+            }
+
+            struct SafetySourceRevision {
+                localization: Option<u64>,
+                map: Option<u64>,
+            }
+
+            struct SafetyAuthorization {
+                decision: SafetyDecision,
+                approved_motion: MotionConstraint,
+                reasons: Vec<SafetyReason>,
+                source_revision: SafetySourceRevision,
+                expires_at_ns: Option<u64>,
+            }
+
+            struct Status {
+                decision: SafetyDecision,
+                active_reasons: Vec<SafetyReason>,
+            }
+
+            #[derive(Eq)]
+            struct EmergencyStopRequest {
+                engaged: bool,
+            }
+
+            topic authorization: pubsub SafetyAuthorization;
+            topic state: pubsub Status;
+            topic estop: pubsub EmergencyStopRequest;
+        }
+
+        mission {
+            struct Goal {
+                x_m: f64,
+                y_m: f64,
+                yaw_rad: Option<f64>,
+            }
+
+            enum Command {
+                Start(Goal),
+                Pause,
+                Resume,
+                Cancel,
+            }
+
+            #[derive(Copy, Eq)]
+            enum Phase {
+                Idle,
+                Active,
+                Paused,
+                Succeeded,
+                Failed,
+            }
+
+            struct State {
+                phase: Phase,
+                goal: Option<Goal>,
+                detail: Option<String>,
+            }
+
+            topic command: pubsub Command;
+            topic goal: pubsub Goal;
+            topic state: pubsub State;
+        }
+
+        joint {
+            struct JointState {
+                position_rad: f64,
+                velocity_radps: f64,
+                effort_nm: Option<f64>,
+            }
+
+            topic state(joint): pubsub JointState = "joint/{joint}/state";
+        }
+
+        frame {
+            struct FrameTransform {
+                parent_frame_id: String,
+                child_frame_id: String,
+                translation_m: [f64; 3],
+                rotation_quat_xyzw: [f64; 4],
+                stamp_ns: Option<u64>,
+            }
+
+            struct StaticTransforms {
+                transforms: Vec<FrameTransform>,
+            }
+
+            struct Tree {
+                transforms: Vec<FrameTransform>,
+            }
+
+            struct LookupRequest {
+                target_frame_id: String,
+                source_frame_id: String,
+                at_ns: Option<u64>,
+            }
+
+            struct LookupResponse {
+                transform: Option<FrameTransform>,
+            }
+
+            topic tree: pubsub Tree;
+            topic static_transforms: pubsub StaticTransforms;
+            topic lookup: query LookupRequest => LookupResponse;
+        }
+
+        power {
+            #[derive(Copy, Eq)]
+            enum Command {
+                Reboot,
+                Shutdown,
+            }
+
+            #[derive(Copy, Eq)]
+            enum Status {
+                Idle,
+                Rebooting,
+                ShuttingDown,
+                Failed,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum RejectedReason {
+                SupervisorUnavailable,
+                SupervisorReturnedHttp,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum FailedReason {
+                SupervisorTransport,
+            }
+
+            struct State {
+                status: Status,
+                detail: Option<String>,
+            }
+
+            topic command: pubsub Command;
+            topic state: pubsub State;
+        }
+
+        motion {
+            struct Target {
+                linear_x_mps: f32,
+                angular_z_radps: f32,
+                curvature_limit_radpm: Option<f32>,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum SafetyDecision {
+                Allow,
+                Slow,
+                Stop,
+                EmergencyStop,
+                UnknownConservative,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum MotionSource {
+                Manual,
+                Follow,
+                MissionStop,
+                Recovery,
+                EmergencyStop,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum MotionReason {
+                SafetyEmergencyStop,
+                ManualEscapeUnderStop,
+                SafetyConstrained(SafetyDecision),
+                NoFollowTarget,
+                FollowTargetStale,
+                SafetyAuthorizationUnavailable,
+            }
+
+            struct ManualCommand {
+                linear_x_mps: f64,
+                angular_z_radps: f64,
+            }
+
+            struct State {
+                active_source: Option<MotionSource>,
+                selected: Option<Target>,
+                reason: Option<MotionReason>,
+            }
+
+            topic manual: pubsub ManualCommand;
+            topic state: pubsub State;
+        }
+
+        plan {
+            struct PathPose {
+                x_m: f64,
+                y_m: f64,
+                yaw_rad: Option<f64>,
+            }
+
+            struct Path {
+                poses: Vec<PathPose>,
+                map_revision: Option<u64>,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum Refusal {
+                MissionInactive,
+                NoGoal,
+                NoMap,
+                NoLocalization,
+                Unreachable,
+                NonPlanarGoalUnsupported,
+                LocalizationInitializing,
+                LocalizationLost,
+                LocalizationRelocalizing,
+                UnsupportedLocalizationMode,
+                NoLocalizationPose,
+                NoLocalizationRevision,
+                GoalMapRevisionMismatch,
+                MapLocalizeRevisionMismatch,
+            }
+
+            struct State {
+                has_path: bool,
+                refusal: Option<Refusal>,
+            }
+
+            topic path: pubsub Path;
+            topic state: pubsub State;
+        }
+
+        follow {
+            struct Target {
+                map_revision: Option<u64>,
+                built_from_localize_revision: Option<u64>,
+                frame_id: String,
+                linear_x_mps: f64,
+                angular_z_radps: f64,
+            }
+
+            struct State {
+                active: bool,
+                target_index: Option<u32>,
+                finished: bool,
+            }
+
+            topic target: pubsub Target;
+            topic state: pubsub State;
+        }
+
+        explore {
+            struct Frontier {
+                x_m: f64,
+                y_m: f64,
+                size: u32,
+                score: f32,
+            }
+
+            struct Frontiers {
+                frontiers: Vec<Frontier>,
+                map_revision: Option<u64>,
+            }
+
+            struct State {
+                exploring: bool,
+                selected: Option<Frontier>,
+            }
+
+            topic frontiers: pubsub Frontiers;
+            topic state: pubsub State;
+        }
+
+        perception {
+            struct Detection {
+                class_id: String,
+                confidence: f32,
+                position_m: [f64; 3],
+                frame_id: String,
+                track_id: Option<u64>,
+            }
+
+            struct Detections {
+                detections: Vec<Detection>,
+                stamp_ns: Option<u64>,
+            }
+
+            struct State {
+                healthy: bool,
+                detector: String,
+            }
+
+            topic detections: pubsub Detections;
+            topic state: pubsub State;
+        }
+
+        video {
+            struct OpenRequest {
+                capability: String,
+                width_px: Option<u32>,
+                height_px: Option<u32>,
+            }
+
+            struct OpenResponse {
+                stream_id: String,
+            }
+
+            #[derive(Copy, Eq)]
+            enum StreamEvent {
+                Started,
+                KeyFrame,
+                Stopped,
+            }
+
+            topic open: query OpenRequest => OpenResponse;
+            topic stream_event(stream): pubsub StreamEvent = "video/stream/{stream}/event";
+        }
+
+        simulation {
+            struct Clock {
+                now_ns: u64,
+                running: bool,
+            }
+
+            #[derive(Copy, Eq)]
+            enum Control {
+                Pause,
+                Resume,
+                Reset,
+            }
+
+            struct RobotPose {
+                x_m: f64,
+                y_m: f64,
+                yaw_rad: f64,
+            }
+
+            struct Contact {
+                in_contact: bool,
+                detail: Option<String>,
+            }
+
+            topic clock: pubsub Clock;
+            topic control: pubsub Control;
+            topic robot_pose: pubsub RobotPose;
+            topic contact: pubsub Contact;
         }
 
         motor {
@@ -493,66 +894,6 @@ phoxal_api_tree! {
             }
 
             topic get: query GetRequest => GetResponse;
-        }
-    }
-
-    // A second API version that inherits y2026_1 (D61). Unchanged families/types
-    // are re-emitted *fresh* under `y2026_2` — same `FAMILY`/`TOPIC`, a different
-    // `Api` marker. A type with no changed dependency is wire-identical to its
-    // y2026_1 counterpart; a type that *contains* an overridden type changes with
-    // it. Here `drive::Target` is overridden, so the inherited `drive::State`
-    // (which embeds `Target`) reflects the new `Target` in y2026_2.
-    version y2026_2 extends y2026_1 {
-        drive {
-            /// y2026_2 adds an optional curvature limit to the drive target.
-            struct Target {
-                linear_x_mps: f32,
-                angular_z_radps: f32,
-                curvature_limit_radpm: Option<f32>,
-            }
-
-            topic target: pubsub Target;
-        }
-
-        battery {
-            /// Battery state — a family that exists only from y2026_2 on.
-            struct State {
-                voltage_v: f32,
-                current_a: f32,
-                charge_ratio: f32,
-            }
-
-            topic state: pubsub State;
-        }
-
-        safety {
-            /// The robot's overall safety posture, worst-concern-wins. A family
-            /// that exists only from y2026_2 on (it consumes `battery`, which is
-            /// itself y2026_2-only).
-            enum Level {
-                /// No active concerns.
-                Nominal,
-                /// A degraded condition that does not (yet) require stopping.
-                Warning,
-                /// Actuation authority must be revoked immediately.
-                EmergencyStop,
-            }
-
-            /// A specific reason the safety monitor raised the posture.
-            enum Concern {
-                BatteryLow,
-                BatteryCritical,
-                DriveFault,
-            }
-
-            /// The published safety posture: the worst level across all active
-            /// concerns, plus the concerns that drove it.
-            struct Status {
-                level: Level,
-                concerns: Vec<Concern>,
-            }
-
-            topic state: pubsub Status;
         }
     }
 }

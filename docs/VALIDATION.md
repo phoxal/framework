@@ -27,10 +27,12 @@ scenarios live in each `runtime/<name>` crate.
    `timestamp_ns`.
 4. **Backend.** Replaceable runtime backends (notably localization) prove state
    cadence, reset/epoch handling, timestamp handling, revision monotonicity,
-   loop-closure behavior, correction overflow, query behavior, and mode
-   transitions against the v1 reference backend (**ORB-SLAM3, RGB-D + Inertial**)
-   on synthetic and recorded inputs. A backend is profile-complete only after it
-   passes this suite.
+   correction behavior, query behavior, and mode transitions against the shipped
+   v1 reference backend (**builtin odometry/dead-reckoning**) on synthetic and
+   recorded inputs. ORB-SLAM3 and GNSS anchoring are experimental/unimplemented
+   in this workspace and must not be advertised as resolved backend facts until
+   corresponding runtimes and validation exist. A backend is profile-complete
+   only after it passes this suite.
 5. **Scenario.** Webots-backed gates from the framework's scenario catalog,
    organized into tiers and mapped to delivery phases (below).
 
