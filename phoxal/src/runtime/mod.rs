@@ -16,7 +16,7 @@ pub use clock::{ClockSource, RealClock, TestClock};
 pub use context::{SetupContext, ShutdownContext, StepContext, SubscribeBuilder};
 pub use emit::{RuntimeMetadata, emit_apis_json, runtime_metadata};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
-pub use runner::{run, run_async, run_with};
+pub use runner::{run, run_async, run_with, run_with_bus};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
     ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, MissedTick,

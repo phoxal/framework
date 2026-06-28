@@ -76,12 +76,37 @@ where
     })
     .await?;
 
-    let result = run_lifecycle::<R, C, S>(&bus, launch, clock, shutdown).await;
+    let result = run_with_bus::<R, C, S>(&bus, launch, clock, shutdown).await;
 
     if let Err(e) = bus.close().await {
         tracing::warn!(target: "phoxal.runtime", error = %e, "bus close failed");
     }
     result
+}
+
+/// Run a runtime on a **caller-owned** bus, against an explicit launch, clock, and
+/// shutdown trigger. Unlike [`run_with`], this does not open or close the bus — the
+/// caller controls its lifecycle.
+///
+/// This is the embedding seam for co-locating runtimes on a single in-process
+/// [`Bus`] (a single-process simulation, or an integration test exercising
+/// runtime-to-runtime data flow over a shared session). Note that bus metadata
+/// `source` identity is a property of the *bus*, not the launch: participants
+/// sharing one [`Bus`] publish under that bus's participant id, so distinct
+/// per-participant source attribution still requires a bus per participant. The
+/// `launch` here drives config, bundle/model, and component-instance resolution.
+pub async fn run_with_bus<R, C, S>(
+    bus: &Bus,
+    launch: ParticipantLaunch,
+    clock: C,
+    shutdown: S,
+) -> crate::Result<()>
+where
+    R: RuntimeBehavior,
+    C: ClockSource,
+    S: Future<Output = ()>,
+{
+    run_lifecycle::<R, C, S>(bus, launch, clock, shutdown).await
 }
 
 async fn run_lifecycle<R, C, S>(
