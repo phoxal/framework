@@ -76,6 +76,48 @@ fn topic_builder_keys_match_contract_topics() {
     );
 }
 
+// ---- dynamic / parameterized topics ----------------------------------------
+
+#[test]
+fn dynamic_topic_builder_fills_the_key_template() {
+    let topic = api::topic::new()
+        .component()
+        .motor_command("front_left_drive", "motor");
+    assert_eq!(
+        topic.key(),
+        "component/front_left_drive/motor/motor/command"
+    );
+    let enc = api::topic::new()
+        .component()
+        .encoder_sample("front_left_drive", "encoder");
+    assert_eq!(
+        enc.key(),
+        "component/front_left_drive/encoder/encoder/sample"
+    );
+}
+
+#[test]
+fn dynamic_topic_contract_body_topic_is_the_template() {
+    assert_eq!(
+        <api::component::MotorCommand as ContractBody>::TOPIC,
+        "component/{instance}/motor/{capability}/command"
+    );
+    assert_eq!(
+        <api::component::MotorCommand as ContractBody>::FAMILY,
+        "component::MotorCommand"
+    );
+}
+
+#[test]
+fn dynamic_topic_wildcard_is_subscribe_only() {
+    let concrete = api::topic::new().component().motor_command("base", "motor");
+    assert!(concrete.publish_key().is_ok());
+
+    let wildcard = api::topic::new().component().motor_command("*", "motor");
+    assert_eq!(wildcard.key(), "component/*/motor/motor/command");
+    assert!(wildcard.publish_key().is_err());
+}
+
 // ---- API inheritance (`extends`, D61) --------------------------------------
 
 mod extends {
