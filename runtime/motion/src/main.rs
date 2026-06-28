@@ -251,12 +251,12 @@ fn clamp_to_authorization(
 }
 
 fn clamp_to_constraint(value: f64, constraint: &api::safety::Constraint) -> f64 {
-    if !(value.is_finite() && constraint.min.is_finite() && constraint.max.is_finite()) {
+    if !(value.is_finite() && constraint.min.is_finite() && constraint.max.is_finite())
+        || constraint.min > constraint.max
+    {
         return 0.0;
     }
-    let min = constraint.min.min(constraint.max);
-    let max = constraint.min.max(constraint.max);
-    value.clamp(min, max)
+    value.clamp(constraint.min, constraint.max)
 }
 
 fn constrained_reason(decision: api::safety::SafetyDecision) -> Option<api::motion::MotionReason> {
@@ -521,7 +521,7 @@ mod tests {
                     max: -1.0
                 }
             ),
-            1.0
+            0.0
         );
         assert_eq!(
             clamp_to_constraint(
@@ -533,6 +533,21 @@ mod tests {
             ),
             0.0
         );
+    }
+
+    #[test]
+    fn malformed_safety_envelope_zeros_both_axes() {
+        let follow = timed(NOW_NS, follow_target(0.5, 0.2));
+        let safety = timed(NOW_NS, malformed_safety_authorization());
+
+        let arbitration = arbitrate(None, Some(&follow), Some(&safety), NOW_NS);
+
+        assert_eq!(
+            arbitration.active_source,
+            Some(api::motion::MotionSource::Follow)
+        );
+        assert_eq!(arbitration.selected.linear_x_mps, 0.0);
+        assert_eq!(arbitration.selected.angular_z_radps, 0.0);
     }
 
     #[test]
@@ -632,6 +647,28 @@ mod tests {
                 angular_z_radps: api::safety::Constraint {
                     min: -angular_radps,
                     max: angular_radps,
+                },
+            },
+            reasons: Vec::new(),
+            source_revision: api::safety::SafetySourceRevision {
+                localization: None,
+                map: None,
+            },
+            expires_at_ns: Some(NOW_NS + 1_000_000_000),
+        }
+    }
+
+    fn malformed_safety_authorization() -> api::safety::SafetyAuthorization {
+        api::safety::SafetyAuthorization {
+            decision: api::safety::SafetyDecision::Allow,
+            approved_motion: api::safety::MotionConstraint {
+                linear_x_mps: api::safety::Constraint {
+                    min: 1.0,
+                    max: -1.0,
+                },
+                angular_z_radps: api::safety::Constraint {
+                    min: 0.5,
+                    max: -0.5,
                 },
             },
             reasons: Vec::new(),

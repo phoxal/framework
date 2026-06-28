@@ -294,7 +294,9 @@ impl<T: Clone> RingBuffer<T> {
         }
         let (newest_available_ns, _) = self.entries.back()?;
         if timestamp_ns > *newest_available_ns {
-            return None;
+            return (timestamp_ns.saturating_sub(*newest_available_ns) <= self.window_ns)
+                .then(|| self.latest())
+                .flatten();
         }
         self.entries
             .iter()
@@ -329,7 +331,7 @@ fn lookup_transform(
             target.clone(),
             source.clone(),
             Isometry3::identity(),
-            request.at_ns,
+            None,
         ));
     }
 
@@ -351,9 +353,7 @@ fn lookup_transform(
         &snapshot.parent_by_child,
     )?;
 
-    let stamp_ns = request
-        .at_ns
-        .or_else(|| target_stamp.into_iter().chain(source_stamp).max());
+    let stamp_ns = target_stamp.into_iter().chain(source_stamp).max();
     Some(transform_from_isometry(
         target.clone(),
         source.clone(),
@@ -586,7 +586,7 @@ mod tests {
         .expect("static lookup should resolve");
 
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
-        assert_eq!(transform.stamp_ns, Some(0));
+        assert_eq!(transform.stamp_ns, None);
         Ok(())
     }
 
@@ -617,7 +617,7 @@ mod tests {
         .expect("dynamic lookup should resolve");
 
         assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
-        assert_eq!(transform.stamp_ns, Some(175));
+        assert_eq!(transform.stamp_ns, Some(200));
         Ok(())
     }
 
@@ -650,11 +650,42 @@ mod tests {
                 &api::frame::LookupRequest {
                     target_frame_id: "base_link".to_string(),
                     source_frame_id: wheel,
-                    at_ns: Some(101),
+                    at_ns: Some(100 + BUFFER_WINDOW_NS + 1),
                 },
             )
             .is_none()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_at_or_after_newest_sample_uses_latest_within_tolerance() -> Result<()> {
+        let config = single_dynamic_config()?;
+        let wheel = "wheel_link".to_string();
+        let (_, meta) = config.parent_by_child.get(&wheel).expect("wheel metadata");
+        let mut buffer = RingBuffer::new(BUFFER_WINDOW_NS, BUFFER_MAX_ENTRIES);
+        buffer.push(
+            100,
+            joint_transform(meta, &joint_state(FRAC_PI_4)).expect("joint transform"),
+        );
+        buffer.push(
+            200,
+            joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
+        );
+        let snapshot = snapshot_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+
+        let transform = lookup_transform(
+            &snapshot,
+            &api::frame::LookupRequest {
+                target_frame_id: "base_link".to_string(),
+                source_frame_id: wheel,
+                at_ns: Some(250),
+            },
+        )
+        .expect("latest within tolerance should resolve");
+
+        assert_yaw(transform.rotation_quat_xyzw, FRAC_PI_2);
+        assert_eq!(transform.stamp_ns, Some(200));
         Ok(())
     }
 

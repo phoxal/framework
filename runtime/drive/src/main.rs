@@ -160,10 +160,10 @@ impl Drive {
             self.last_target = Some((received.body, received.metadata.produced_at_ns));
         }
 
-        let (target, authority, stop_reason) = self.resolve(now.time_ns());
+        let (target, limited_target, authority, stop_reason) = self.resolve(now.time_ns());
         let (left, right) = self.config.kinematics.invert(
-            f64::from(target.linear_x_mps),
-            f64::from(target.angular_z_radps),
+            f64::from(limited_target.linear_x_mps),
+            f64::from(limited_target.angular_z_radps),
         );
 
         for (publisher, binding) in self.left_motors.iter().zip(&self.config.left) {
@@ -181,8 +181,8 @@ impl Drive {
             .publish_at(
                 now,
                 api::drive::State {
-                    target: target.clone(),
-                    limited_target: target,
+                    target,
+                    limited_target,
                     actuator_authority: authority,
                     stop_reason,
                 },
@@ -211,34 +211,58 @@ impl Drive {
         now_ns: u64,
     ) -> (
         api::drive::Target,
+        api::drive::Target,
         api::drive::ActuatorAuthority,
         Option<api::drive::StopReason>,
     ) {
-        let stopped = api::drive::Target {
-            linear_x_mps: 0.0,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
-        };
-        let Some((target, produced_at_ns)) = &self.last_target else {
-            return (
-                stopped,
-                api::drive::ActuatorAuthority::Stopped,
-                Some(api::drive::StopReason::NoTarget),
-            );
-        };
-        if now_ns.saturating_sub(*produced_at_ns) > TARGET_STALE_NS {
-            return (
-                stopped,
-                api::drive::ActuatorAuthority::Stopped,
-                Some(api::drive::StopReason::Fault),
-            );
-        }
-        let limited = api::drive::Target {
-            linear_x_mps: clamp_f32(target.linear_x_mps, MAX_LINEAR_MPS),
-            angular_z_radps: clamp_f32(target.angular_z_radps, MAX_ANGULAR_RADPS),
-            curvature_limit_radpm: target.curvature_limit_radpm,
-        };
-        (limited, api::drive::ActuatorAuthority::Active, None)
+        resolve_target(self.last_target.as_ref(), now_ns)
+    }
+}
+
+fn resolve_target(
+    last_target: Option<&(api::drive::Target, u64)>,
+    now_ns: u64,
+) -> (
+    api::drive::Target,
+    api::drive::Target,
+    api::drive::ActuatorAuthority,
+    Option<api::drive::StopReason>,
+) {
+    let stopped = stopped_target();
+    let Some((target, produced_at_ns)) = last_target else {
+        return (
+            stopped.clone(),
+            stopped,
+            api::drive::ActuatorAuthority::Stopped,
+            Some(api::drive::StopReason::NoTarget),
+        );
+    };
+    if now_ns.saturating_sub(*produced_at_ns) > TARGET_STALE_NS {
+        return (
+            stopped.clone(),
+            stopped,
+            api::drive::ActuatorAuthority::Stopped,
+            Some(api::drive::StopReason::Fault),
+        );
+    }
+    let limited = api::drive::Target {
+        linear_x_mps: clamp_f32(target.linear_x_mps, MAX_LINEAR_MPS),
+        angular_z_radps: clamp_f32(target.angular_z_radps, MAX_ANGULAR_RADPS),
+        curvature_limit_radpm: target.curvature_limit_radpm,
+    };
+    (
+        target.clone(),
+        limited,
+        api::drive::ActuatorAuthority::Active,
+        None,
+    )
+}
+
+fn stopped_target() -> api::drive::Target {
+    api::drive::Target {
+        linear_x_mps: 0.0,
+        angular_z_radps: 0.0,
+        curvature_limit_radpm: None,
     }
 }
 
@@ -256,7 +280,9 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DifferentialDrive, DriveConfig};
+    use phoxal::api::y2026_1 as api;
+
+    use super::{DifferentialDrive, DriveConfig, resolve_target};
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
@@ -287,5 +313,24 @@ mod tests {
         let topic = config.left[0].topic();
         assert!(topic.key().starts_with("component/"));
         assert!(topic.key().ends_with("/command"));
+    }
+
+    #[test]
+    fn resolve_reports_raw_requested_and_limited_targets() {
+        let requested = api::drive::Target {
+            linear_x_mps: 5.0,
+            angular_z_radps: -5.0,
+            curvature_limit_radpm: Some(0.4),
+        };
+
+        let (target, limited_target, authority, stop_reason) =
+            resolve_target(Some(&(requested.clone(), 1_000)), 1_000);
+
+        assert_eq!(target, requested);
+        assert_eq!(limited_target.linear_x_mps, 0.6);
+        assert_eq!(limited_target.angular_z_radps, -2.0);
+        assert_eq!(limited_target.curvature_limit_radpm, Some(0.4));
+        assert_eq!(authority, api::drive::ActuatorAuthority::Active);
+        assert_eq!(stop_reason, None);
     }
 }

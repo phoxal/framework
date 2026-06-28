@@ -18,6 +18,7 @@ const K_ANGULAR: f64 = 1.5;
 const MAX_LINEAR_MPS: f64 = 0.5;
 const MAX_ANGULAR_RADPS: f64 = 1.5;
 const LOCALIZE_STALE_NS: u64 = 1_000_000_000;
+const PATH_STALE_NS: u64 = 500_000_000;
 const MIN_LOCALIZE_CONFIDENCE: f32 = 0.25;
 
 #[derive(Clone)]
@@ -44,9 +45,11 @@ struct FollowUpdate {
 struct Follow {
     // Runtime-private typed state.
     last_path: Option<Timed<api::plan::Path>>,
+    last_plan_state: Option<Timed<api::plan::State>>,
     last_localize: Option<Timed<api::localize::LocalizationState>>,
     // Handles.
     path: Subscriber<api::plan::Path>,
+    plan_state: Subscriber<api::plan::State>,
     localize: Subscriber<api::localize::LocalizationState>,
     target: Publisher<api::follow::Target>,
     state: Publisher<api::follow::State>,
@@ -60,6 +63,10 @@ impl Follow {
             .subscribe(api::topic::new().plan().path())
             .subscriber()
             .await?;
+        let plan_state = ctx
+            .subscribe(api::topic::new().plan().state())
+            .subscriber()
+            .await?;
         let localize = ctx
             .subscribe(api::topic::new().localize().state())
             .subscriber()
@@ -69,8 +76,10 @@ impl Follow {
 
         Ok(Self {
             last_path: None,
+            last_plan_state: None,
             last_localize: None,
             path,
+            plan_state,
             localize,
             target,
             state,
@@ -85,6 +94,12 @@ impl Follow {
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
+        while let Some(received) = self.plan_state.try_recv() {
+            self.last_plan_state = Some(Timed {
+                body: received.body,
+                produced_at_ns: received.metadata.produced_at_ns,
+            });
+        }
         while let Some(received) = self.localize.try_recv() {
             self.last_localize = Some(Timed {
                 body: received.body,
@@ -94,6 +109,7 @@ impl Follow {
 
         let update = follow(
             self.last_path.as_ref(),
+            self.last_plan_state.as_ref(),
             self.last_localize.as_ref(),
             step.time().time_ns(),
         );
@@ -107,20 +123,34 @@ impl Follow {
 
 fn follow(
     path: Option<&Timed<api::plan::Path>>,
+    plan_state: Option<&Timed<api::plan::State>>,
     localize: Option<&Timed<api::localize::LocalizationState>>,
     now_ns: u64,
 ) -> FollowUpdate {
+    let path_map_revision = path.and_then(|path| path.body.map_revision);
+    let Some(plan_state) = plan_state else {
+        return stopped_update(path_map_revision);
+    };
+    if !plan_state.body.has_path {
+        return stopped_update(path_map_revision);
+    }
     let Some(path) = path else {
-        return inactive_update(false);
+        return stopped_update(None);
+    };
+    if now_ns.saturating_sub(path.produced_at_ns) > PATH_STALE_NS {
+        return stopped_update(path.body.map_revision);
+    }
+    if path.body.poses.is_empty() {
+        return stopped_update(path.body.map_revision);
     };
     let Some(localize) = localize else {
-        return inactive_update(false);
+        return stopped_update(path.body.map_revision);
     };
     if now_ns.saturating_sub(localize.produced_at_ns) > LOCALIZE_STALE_NS {
-        return inactive_update(false);
+        return stopped_update(path.body.map_revision);
     }
     if localize.body.confidence < MIN_LOCALIZE_CONFIDENCE {
-        return inactive_update(false);
+        return stopped_update(path.body.map_revision);
     }
 
     let output = pursue(&path.body.poses, &localize.body);
@@ -213,7 +243,7 @@ fn state_from_output(output: ControlOutput) -> api::follow::State {
 
 fn target_from_output(path: &api::plan::Path, output: ControlOutput) -> api::follow::Target {
     api::follow::Target {
-        map_revision: path.goal_revision,
+        map_revision: path.map_revision,
         built_from_localize_revision: None,
         frame_id: DEFAULT_FRAME_ID.to_string(),
         linear_x_mps: output.linear_x_mps,
@@ -221,14 +251,24 @@ fn target_from_output(path: &api::plan::Path, output: ControlOutput) -> api::fol
     }
 }
 
-fn inactive_update(finished: bool) -> FollowUpdate {
+fn stopped_update(map_revision: Option<u64>) -> FollowUpdate {
     FollowUpdate {
         state: api::follow::State {
             active: false,
             target_index: None,
-            finished,
+            finished: false,
         },
-        target: None,
+        target: Some(zero_target(map_revision)),
+    }
+}
+
+fn zero_target(map_revision: Option<u64>) -> api::follow::Target {
+    api::follow::Target {
+        map_revision,
+        built_from_localize_revision: None,
+        frame_id: DEFAULT_FRAME_ID.to_string(),
+        linear_x_mps: 0.0,
+        angular_z_radps: 0.0,
     }
 }
 
@@ -272,8 +312,8 @@ mod tests {
     use phoxal::api::ContractBody;
 
     use super::{
-        Follow, GOAL_TOLERANCE_M, LOCALIZE_STALE_NS, MAX_ANGULAR_RADPS, MAX_LINEAR_MPS, Timed, api,
-        follow, lookahead_index, normalize_angle, pursue,
+        Follow, GOAL_TOLERANCE_M, LOCALIZE_STALE_NS, MAX_ANGULAR_RADPS, MAX_LINEAR_MPS,
+        PATH_STALE_NS, Timed, api, follow, lookahead_index, normalize_angle, pursue,
     };
 
     #[test]
@@ -346,32 +386,67 @@ mod tests {
 
     #[test]
     fn follow_requires_path_and_fresh_trusted_localization() {
+        let plan_state = timed(1_000, plan_state(true));
         let path = timed(1_000, path(Some(9), vec![path_pose(1.0, 0.0)]));
         let fresh = timed(1_000, localize(0.0, 0.0, 0.0));
 
-        assert!(follow(None, Some(&fresh), 1_000).target.is_none());
-        assert!(follow(Some(&path), None, 1_000).target.is_none());
+        assert_zero_stop(follow(None, Some(&plan_state), Some(&fresh), 1_000));
+        assert_zero_stop(follow(Some(&path), Some(&plan_state), None, 1_000));
 
-        let stale = follow(Some(&path), Some(&fresh), 1_000 + LOCALIZE_STALE_NS + 1);
-        assert!(stale.target.is_none());
-        assert!(!stale.state.active);
+        let stale = follow(
+            Some(&path),
+            Some(&plan_state),
+            Some(&fresh),
+            1_000 + LOCALIZE_STALE_NS + 1,
+        );
+        assert_zero_stop(stale);
 
         let mut low_confidence = localize(0.0, 0.0, 0.0);
         low_confidence.confidence = 0.0;
         let low_confidence = timed(1_000, low_confidence);
-        assert!(
-            follow(Some(&path), Some(&low_confidence), 1_000)
-                .target
-                .is_none()
-        );
+        assert_zero_stop(follow(
+            Some(&path),
+            Some(&plan_state),
+            Some(&low_confidence),
+            1_000,
+        ));
+    }
+
+    #[test]
+    fn follow_stops_when_plan_state_has_no_path_or_path_is_empty_or_stale() {
+        let no_path_state = timed(1_000, plan_state(false));
+        let has_path_state = timed(1_000, plan_state(true));
+        let planned_path = timed(1_000, path(Some(9), vec![path_pose(1.0, 0.0)]));
+        let empty_path = timed(1_000, path(Some(9), Vec::new()));
+        let localize = timed(1_000, localize(0.0, 0.0, 0.0));
+
+        assert_zero_stop(follow(
+            Some(&planned_path),
+            Some(&no_path_state),
+            Some(&localize),
+            1_000,
+        ));
+        assert_zero_stop(follow(
+            Some(&empty_path),
+            Some(&has_path_state),
+            Some(&localize),
+            1_000,
+        ));
+        assert_zero_stop(follow(
+            Some(&planned_path),
+            Some(&has_path_state),
+            Some(&localize),
+            1_000 + PATH_STALE_NS + 1,
+        ));
     }
 
     #[test]
     fn follow_target_carries_path_revision_marker() {
+        let plan_state = timed(1_000, plan_state(true));
         let path = timed(1_000, path(Some(42), vec![path_pose(1.0, 0.0)]));
         let localize = timed(1_000, localize(0.0, 0.0, 0.0));
 
-        let update = follow(Some(&path), Some(&localize), 1_000);
+        let update = follow(Some(&path), Some(&plan_state), Some(&localize), 1_000);
         let target = update.target.unwrap();
 
         assert_eq!(target.map_revision, Some(42));
@@ -399,6 +474,7 @@ mod tests {
 
         let contracts = value["required_contracts"].as_array().unwrap();
         assert_contract::<api::plan::Path>(contracts, "subscribe");
+        assert_contract::<api::plan::State>(contracts, "subscribe");
         assert_contract::<api::localize::LocalizationState>(contracts, "subscribe");
         assert_contract::<api::follow::Target>(contracts, "publish");
         assert_contract::<api::follow::State>(contracts, "publish");
@@ -421,10 +497,17 @@ mod tests {
         }
     }
 
-    fn path(goal_revision: Option<u64>, poses: Vec<api::plan::PathPose>) -> api::plan::Path {
+    fn path(map_revision: Option<u64>, poses: Vec<api::plan::PathPose>) -> api::plan::Path {
         api::plan::Path {
             poses,
-            goal_revision,
+            map_revision,
+        }
+    }
+
+    fn plan_state(has_path: bool) -> api::plan::State {
+        api::plan::State {
+            has_path,
+            refusal: (!has_path).then_some(api::plan::Refusal::MissionInactive),
         }
     }
 
@@ -449,5 +532,15 @@ mod tests {
             (actual - expected).abs() < 1e-9,
             "expected {expected}, got {actual}"
         );
+    }
+
+    fn assert_zero_stop(update: super::FollowUpdate) {
+        assert!(!update.state.active);
+        assert!(!update.state.finished);
+        let target = update
+            .target
+            .expect("stop update should publish zero target");
+        assert_eq!(target.linear_x_mps, 0.0);
+        assert_eq!(target.angular_z_radps, 0.0);
     }
 }

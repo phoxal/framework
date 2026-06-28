@@ -157,7 +157,7 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
             y_m: 2.0,
             yaw_rad: None,
         }],
-        goal_revision: Some(3),
+        map_revision: Some(3),
     });
     round_trip(&api::follow::State {
         active: true,

@@ -326,12 +326,14 @@ phoxal_api_tree! {
 
             struct Path {
                 poses: Vec<PathPose>,
-                goal_revision: Option<u64>,
+                map_revision: Option<u64>,
             }
 
             #[derive(Copy, Eq)]
             #[serde(rename_all = "snake_case")]
             enum Refusal {
+                MissionInactive,
+                NoGoal,
                 NoMap,
                 NoLocalization,
                 Unreachable,

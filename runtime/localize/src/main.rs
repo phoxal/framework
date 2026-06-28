@@ -3,7 +3,8 @@
 //! This scheduled runtime subscribes to `odometry/state` and republishes
 //! `localize/state`, the localization estimate consumed by the `map` runtime.
 //! This first version is transparent: odometry pose is treated as the map-frame
-//! pose, and confidence decays as the odometry estimate goes stale.
+//! pose, and confidence decays as the odometry estimate goes stale. It does not
+//! implement ORB-SLAM3, visual-inertial localization, or GNSS anchoring.
 
 use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;

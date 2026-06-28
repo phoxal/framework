@@ -14,19 +14,24 @@ const WAYPOINT_SPACING_M: f64 = 0.25;
 
 #[derive(Clone, Debug, PartialEq)]
 enum PlanDecision {
-    Idle,
     Refused(api::plan::Refusal),
     Ready(api::plan::Path),
 }
 
 impl PlanDecision {
     fn decide(
-        goal: Option<&api::mission::Goal>,
+        mission_state: Option<&api::mission::State>,
         localize: Option<&api::localize::LocalizationState>,
         map_revision: Option<&api::map::Revision>,
     ) -> Self {
-        let Some(goal) = goal else {
-            return Self::Idle;
+        let Some(mission_state) = mission_state else {
+            return Self::Refused(api::plan::Refusal::MissionInactive);
+        };
+        if mission_state.phase != api::mission::Phase::Active {
+            return Self::Refused(api::plan::Refusal::MissionInactive);
+        }
+        let Some(goal) = mission_state.goal.as_ref() else {
+            return Self::Refused(api::plan::Refusal::NoGoal);
         };
         let Some(localize) = localize else {
             return Self::Refused(api::plan::Refusal::NoLocalization);
@@ -40,16 +45,12 @@ impl PlanDecision {
 
         Self::Ready(api::plan::Path {
             poses: straight_line_path(localize, goal),
-            goal_revision: Some(map_revision.revision),
+            map_revision: Some(map_revision.revision),
         })
     }
 
     fn state(&self) -> api::plan::State {
         match self {
-            Self::Idle => api::plan::State {
-                has_path: false,
-                refusal: None,
-            },
             Self::Refused(refusal) => api::plan::State {
                 has_path: false,
                 refusal: Some(*refusal),
@@ -61,10 +62,10 @@ impl PlanDecision {
         }
     }
 
-    fn path(&self) -> Option<api::plan::Path> {
+    fn path(&self) -> api::plan::Path {
         match self {
-            Self::Ready(path) => Some(path.clone()),
-            Self::Idle | Self::Refused(_) => None,
+            Self::Ready(path) => path.clone(),
+            Self::Refused(_) => empty_path(),
         }
     }
 }
@@ -72,8 +73,8 @@ impl PlanDecision {
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "plan", api = y2026_1)]
 struct Plan {
-    latest_goal: Option<api::mission::Goal>,
-    goal: Subscriber<api::mission::Goal>,
+    latest_mission_state: Option<api::mission::State>,
+    mission_state: Subscriber<api::mission::State>,
     localize: Latest<api::localize::LocalizationState>,
     map_revision: Latest<api::map::Revision>,
     path: Publisher<api::plan::Path>,
@@ -85,9 +86,9 @@ impl Plan {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         Ok(Self {
-            latest_goal: None,
-            goal: ctx
-                .subscribe(api::topic::new().mission().goal())
+            latest_mission_state: None,
+            mission_state: ctx
+                .subscribe(api::topic::new().mission().state())
                 .subscriber()
                 .await?,
             localize: ctx
@@ -105,23 +106,28 @@ impl Plan {
 
     #[step(hz = 10)]
     async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.goal.try_recv() {
-            self.latest_goal = Some(received.body);
+        while let Some(received) = self.mission_state.try_recv() {
+            self.latest_mission_state = Some(received.body);
         }
 
         let localize = self.localize.latest();
         let map_revision = self.map_revision.latest();
         let decision = PlanDecision::decide(
-            self.latest_goal.as_ref(),
+            self.latest_mission_state.as_ref(),
             localize.as_ref(),
             map_revision.as_ref(),
         );
 
-        if let Some(path) = decision.path() {
-            self.path.publish_at(step.time(), path).await?;
-        }
+        self.path.publish_at(step.time(), decision.path()).await?;
         self.state.publish_at(step.time(), decision.state()).await?;
         Ok(())
+    }
+}
+
+fn empty_path() -> api::plan::Path {
+    api::plan::Path {
+        poses: Vec::new(),
+        map_revision: None,
     }
 }
 
@@ -187,7 +193,7 @@ mod tests {
     use phoxal::api::ContractBody;
     use phoxal::api::y2026_1 as api;
 
-    use super::{Plan, PlanDecision, WAYPOINT_SPACING_M, straight_line_path};
+    use super::{Plan, PlanDecision, WAYPOINT_SPACING_M, empty_path, straight_line_path};
 
     const EPS: f64 = 1e-9;
 
@@ -237,21 +243,63 @@ mod tests {
     }
 
     #[test]
-    fn decision_is_idle_without_goal() {
-        assert_eq!(PlanDecision::decide(None, None, None), PlanDecision::Idle);
+    fn decision_refuses_without_active_mission() {
         assert_eq!(
-            PlanDecision::Idle.state(),
+            PlanDecision::decide(None, None, None),
+            PlanDecision::Refused(api::plan::Refusal::MissionInactive)
+        );
+        assert_eq!(
+            PlanDecision::Refused(api::plan::Refusal::MissionInactive).state(),
             api::plan::State {
                 has_path: false,
-                refusal: None,
+                refusal: Some(api::plan::Refusal::MissionInactive),
             }
+        );
+        assert_eq!(
+            PlanDecision::Refused(api::plan::Refusal::MissionInactive).path(),
+            empty_path()
+        );
+    }
+
+    #[test]
+    fn decision_refuses_paused_or_cleared_mission() {
+        let paused = api::mission::State {
+            phase: api::mission::Phase::Paused,
+            goal: Some(goal(1.0, 0.0, None)),
+            detail: None,
+        };
+        let active_without_goal = api::mission::State {
+            phase: api::mission::Phase::Active,
+            goal: None,
+            detail: None,
+        };
+
+        assert_eq!(
+            PlanDecision::decide(
+                Some(&paused),
+                Some(&localize(0.0, 0.0, 0.0)),
+                Some(&revision(1))
+            ),
+            PlanDecision::Refused(api::plan::Refusal::MissionInactive)
+        );
+        assert_eq!(
+            PlanDecision::decide(
+                Some(&active_without_goal),
+                Some(&localize(0.0, 0.0, 0.0)),
+                Some(&revision(1))
+            ),
+            PlanDecision::Refused(api::plan::Refusal::NoGoal)
         );
     }
 
     #[test]
     fn decision_refuses_missing_localization() {
         assert_eq!(
-            PlanDecision::decide(Some(&goal(1.0, 0.0, None)), None, Some(&revision(7))),
+            PlanDecision::decide(
+                Some(&active_state(goal(1.0, 0.0, None))),
+                None,
+                Some(&revision(7))
+            ),
             PlanDecision::Refused(api::plan::Refusal::NoLocalization)
         );
     }
@@ -260,7 +308,7 @@ mod tests {
     fn decision_refuses_missing_map() {
         assert_eq!(
             PlanDecision::decide(
-                Some(&goal(1.0, 0.0, None)),
+                Some(&active_state(goal(1.0, 0.0, None))),
                 Some(&localize(0.0, 0.0, 0.0)),
                 None
             ),
@@ -278,7 +326,7 @@ mod tests {
 
         assert_eq!(
             PlanDecision::decide(
-                Some(&bad_goal),
+                Some(&active_state(bad_goal)),
                 Some(&localize(0.0, 0.0, 0.0)),
                 Some(&revision(1))
             ),
@@ -289,7 +337,7 @@ mod tests {
     #[test]
     fn decision_ready_builds_path_from_latest_revision() {
         let decision = PlanDecision::decide(
-            Some(&goal(1.0, 0.0, Some(PI))),
+            Some(&active_state(goal(1.0, 0.0, Some(PI)))),
             Some(&localize(0.0, 0.0, 0.0)),
             Some(&revision(42)),
         );
@@ -297,7 +345,7 @@ mod tests {
         let PlanDecision::Ready(path) = decision else {
             panic!("expected ready path");
         };
-        assert_eq!(path.goal_revision, Some(42));
+        assert_eq!(path.map_revision, Some(42));
         assert!(!path.poses.is_empty());
         assert_eq!(path.poses.last().unwrap().yaw_rad, Some(PI));
     }
@@ -310,7 +358,7 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::mission::Goal>(contracts, "subscribe");
+        assert_contract::<api::mission::State>(contracts, "subscribe");
         assert_contract::<api::localize::LocalizationState>(contracts, "subscribe");
         assert_contract::<api::map::Revision>(contracts, "subscribe");
         assert_contract::<api::plan::Path>(contracts, "publish");
@@ -328,6 +376,14 @@ mod tests {
 
     fn goal(x_m: f64, y_m: f64, yaw_rad: Option<f64>) -> api::mission::Goal {
         api::mission::Goal { x_m, y_m, yaw_rad }
+    }
+
+    fn active_state(goal: api::mission::Goal) -> api::mission::State {
+        api::mission::State {
+            phase: api::mission::Phase::Active,
+            goal: Some(goal),
+            detail: None,
+        }
     }
 
     fn localize(x_m: f64, y_m: f64, yaw_rad: f64) -> api::localize::LocalizationState {
