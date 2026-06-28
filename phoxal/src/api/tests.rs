@@ -29,6 +29,22 @@ fn contract_body_consts_are_family_and_topic() {
     );
     assert_eq!(<api::safety::Status as ContractBody>::TOPIC, "safety/state");
     assert_eq!(
+        <api::safety::SafetyAuthorization as ContractBody>::TOPIC,
+        "safety/authorization"
+    );
+    assert_eq!(
+        <api::mission::State as ContractBody>::TOPIC,
+        "mission/state"
+    );
+    assert_eq!(
+        <api::joint::JointState as ContractBody>::TOPIC,
+        "joint/{joint}/state"
+    );
+    assert_eq!(
+        <api::video::StreamEvent as ContractBody>::TOPIC,
+        "video/stream/{stream}/event"
+    );
+    assert_eq!(
         <api::localize::LocalizationState as ContractBody>::TOPIC,
         "localize/state"
     );
@@ -71,6 +87,108 @@ fn body_round_trips_through_messagepack() {
     let bytes = rmp_serde::to_vec_named(&state).unwrap();
     let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
     assert_eq!(state, decoded);
+}
+
+#[test]
+fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
+    let authorization = api::safety::SafetyAuthorization {
+        decision: api::safety::SafetyDecision::Slow,
+        approved_motion: api::safety::MotionConstraint {
+            linear_x_mps: api::safety::Constraint {
+                min: -0.1,
+                max: 0.1,
+            },
+            angular_z_radps: api::safety::Constraint {
+                min: -0.5,
+                max: 0.5,
+            },
+        },
+        reasons: vec![api::safety::SafetyReason {
+            code: api::safety::SafetyReasonCode::BatteryLow,
+            detail: Some("pack below low threshold".to_string()),
+        }],
+        source_revision: api::safety::SafetySourceRevision {
+            localization: Some(7),
+            map: Some(9),
+        },
+        expires_at_ns: Some(42),
+    };
+    round_trip(&authorization);
+
+    round_trip(&api::mission::State {
+        phase: api::mission::Phase::Active,
+        goal: Some(api::mission::Goal {
+            x_m: 1.0,
+            y_m: 2.0,
+            yaw_rad: Some(0.25),
+        }),
+        detail: None,
+    });
+    round_trip(&api::joint::JointState {
+        position_rad: 1.0,
+        velocity_radps: 0.2,
+        effort_nm: Some(0.3),
+    });
+    round_trip(&api::frame::Tree {
+        transforms: vec![api::frame::FrameTransform {
+            parent_frame_id: "map".to_string(),
+            child_frame_id: "base_link".to_string(),
+            translation_m: [1.0, 2.0, 0.0],
+            rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0],
+            stamp_ns: Some(10),
+        }],
+    });
+    round_trip(&api::power::State {
+        status: api::power::Status::Idle,
+        detail: None,
+    });
+    round_trip(&api::motion::State {
+        active_source: Some(api::motion::MotionSource::Manual),
+        selected: Some(api::motion::Target {
+            linear_x_mps: 0.1,
+            angular_z_radps: 0.2,
+            curvature_limit_radpm: None,
+        }),
+        reason: None,
+    });
+    round_trip(&api::plan::Path {
+        poses: vec![api::plan::PathPose {
+            x_m: 1.0,
+            y_m: 2.0,
+            yaw_rad: None,
+        }],
+        goal_revision: Some(3),
+    });
+    round_trip(&api::follow::State {
+        active: true,
+        target_index: Some(4),
+        finished: false,
+    });
+    round_trip(&api::explore::Frontiers {
+        frontiers: vec![api::explore::Frontier {
+            x_m: 1.0,
+            y_m: 2.0,
+            size: 12,
+            score: 0.75,
+        }],
+        map_revision: Some(5),
+    });
+    round_trip(&api::perception::Detections {
+        detections: vec![api::perception::Detection {
+            class_id: "crate".to_string(),
+            confidence: 0.8,
+            position_m: [1.0, 2.0, 3.0],
+            frame_id: "camera_link".to_string(),
+            track_id: Some(6),
+        }],
+        stamp_ns: Some(7),
+    });
+    round_trip(&api::video::StreamEvent::KeyFrame);
+    round_trip(&api::simulation::RobotPose {
+        x_m: 1.0,
+        y_m: 2.0,
+        yaw_rad: 0.3,
+    });
 }
 
 #[test]
@@ -129,6 +247,32 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(api::topic::new().drive().target().key(), "drive/target");
     assert_eq!(api::topic::new().battery().state().key(), "battery/state");
     assert_eq!(api::topic::new().safety().state().key(), "safety/state");
+    assert_eq!(
+        api::topic::new().safety().authorization().key(),
+        "safety/authorization"
+    );
+    assert_eq!(api::topic::new().mission().state().key(), "mission/state");
+    assert_eq!(api::topic::new().frame().tree().key(), "frame/tree");
+    assert_eq!(
+        api::topic::new().frame().static_transforms().key(),
+        "frame/static_transforms"
+    );
+    assert_eq!(api::topic::new().power().command().key(), "power/command");
+    assert_eq!(api::topic::new().motion().manual().key(), "motion/manual");
+    assert_eq!(api::topic::new().plan().path().key(), "plan/path");
+    assert_eq!(api::topic::new().follow().state().key(), "follow/state");
+    assert_eq!(
+        api::topic::new().explore().frontiers().key(),
+        "explore/frontiers"
+    );
+    assert_eq!(
+        api::topic::new().perception().detections().key(),
+        "perception/detections"
+    );
+    assert_eq!(
+        api::topic::new().simulation().robot_pose().key(),
+        "simulation/robot_pose"
+    );
     assert_eq!(api::topic::new().motor().command().key(), "motor/command");
     assert_eq!(
         api::topic::new().presence().heartbeat().key(),
@@ -140,6 +284,15 @@ fn topic_builder_keys_match_contract_topics() {
 
 #[test]
 fn dynamic_topic_builder_fills_the_key_template() {
+    assert_eq!(
+        api::topic::new().joint().state("elbow").key(),
+        "joint/elbow/state"
+    );
+    assert_eq!(
+        api::topic::new().video().stream_event("front").key(),
+        "video/stream/front/event"
+    );
+
     let topic = api::topic::new()
         .component()
         .motor_command("front_left_drive", "motor");
@@ -277,6 +430,15 @@ fn dynamic_topic_wildcard_is_subscribe_only() {
     let wildcard = api::topic::new().component().motor_command("*", "motor");
     assert_eq!(wildcard.key(), "component/*/motor/motor/command");
     assert!(wildcard.publish_key().is_err());
+}
+
+fn round_trip<T>(value: &T)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+{
+    let bytes = rmp_serde::to_vec_named(value).unwrap();
+    let decoded: T = rmp_serde::from_slice(&bytes).unwrap();
+    assert_eq!(value, &decoded);
 }
 
 // A self-contained three-version tree exercising multi-level inheritance

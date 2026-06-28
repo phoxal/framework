@@ -1,9 +1,10 @@
 //! `mission` — the official minimal go-to-goal mission controller.
 //!
 //! This scheduled runtime subscribes to `localize/state`, computes a simple
-//! proportional pose-to-goal command, and publishes `drive/target`. It is the
-//! first producer at the head of the control pipeline:
-//! mission -> drive/target -> drive -> ddsm115 -> odometry -> localize -> mission.
+//! proportional pose-to-goal command, and publishes `drive/target` plus the
+//! current `mission/state`. It is the first producer at the head of the control
+//! pipeline: mission -> drive/target -> drive -> ddsm115 -> odometry -> localize
+//! -> mission.
 
 use std::f64::consts::PI;
 
@@ -42,6 +43,7 @@ struct Mission {
     // Handles.
     localize: Subscriber<api::localize::LocalizationState>,
     target: Publisher<api::drive::Target>,
+    state: Publisher<api::mission::State>,
 }
 
 #[phoxal::runtime]
@@ -53,11 +55,13 @@ impl Mission {
             .subscriber()
             .await?;
         let target = ctx.publisher(api::topic::new().drive().target()).await?;
+        let state = ctx.publisher(api::topic::new().mission().state()).await?;
 
         Ok(Self {
             last_localize: None,
             localize,
             target,
+            state,
         })
     }
 
@@ -74,6 +78,9 @@ impl Mission {
         );
 
         self.target.publish_at(step.time(), target).await?;
+        self.state
+            .publish_at(step.time(), mission_state(GOAL))
+            .await?;
         Ok(())
     }
 }
@@ -137,6 +144,18 @@ fn stop_target() -> api::drive::Target {
     }
 }
 
+fn mission_state(goal: Goal) -> api::mission::State {
+    api::mission::State {
+        phase: api::mission::Phase::Active,
+        goal: Some(api::mission::Goal {
+            x_m: goal.x_m,
+            y_m: goal.y_m,
+            yaw_rad: None,
+        }),
+        detail: None,
+    }
+}
+
 fn main() -> phoxal::Result<()> {
     phoxal::run::<Mission>()
 }
@@ -150,7 +169,7 @@ mod tests {
 
     use super::{
         ARRIVAL_TOLERANCE_M, FIX_STALE_NS, Goal, MAX_ANGULAR_RADPS, MAX_LINEAR_MPS, Mission,
-        control, normalize_angle, plan,
+        control, mission_state, normalize_angle, plan,
     };
 
     const GOAL: Goal = Goal { x_m: 1.0, y_m: 0.0 };
@@ -284,6 +303,15 @@ mod tests {
     }
 
     #[test]
+    fn mission_state_reports_fixed_goal() {
+        let state = mission_state(GOAL);
+
+        assert_eq!(state.phase, api::mission::Phase::Active);
+        assert_eq!(state.goal.unwrap().x_m, 1.0);
+        assert!(state.detail.is_none());
+    }
+
+    #[test]
     fn emit_apis_reports_contracts() {
         let json = phoxal::runtime::emit_apis_json::<Mission>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -296,6 +324,10 @@ mod tests {
         }));
         assert!(contracts.iter().any(|c| {
             c["family"] == <api::drive::Target as ContractBody>::FAMILY
+                && c["direction"] == "publish"
+        }));
+        assert!(contracts.iter().any(|c| {
+            c["family"] == <api::mission::State as ContractBody>::FAMILY
                 && c["direction"] == "publish"
         }));
     }
