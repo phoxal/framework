@@ -83,6 +83,29 @@ phoxal_api_tree! {
             topic command: pubsub Command;
         }
 
+        component {
+            /// A command to a specific component-instance capability, addressed by
+            /// a dynamic per-instance key (D17/D38: framework-runtime / driver
+            /// territory). The runtime fills `{instance}`/`{capability}` from its
+            /// manifest-declared component bindings.
+            enum MotorCommand {
+                Velocity(f32),
+                Torque(f32),
+                Stop,
+            }
+
+            /// Per-encoder sample on a dynamic per-instance key.
+            struct EncoderSample {
+                position_rad: f64,
+                velocity_radps: f32,
+            }
+
+            topic motor_command(instance, capability): pubsub MotorCommand
+                = "component/{instance}/motor/{capability}/command";
+            topic encoder_sample(instance, capability): pubsub EncoderSample
+                = "component/{instance}/encoder/{capability}/sample";
+        }
+
         odometry {
             /// A planar pose + twist estimate in the odometry frame.
             struct State {

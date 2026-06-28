@@ -1,7 +1,10 @@
 //! `phoxal_api_tree!` — the single API layer (D60/D61).
 //!
-//! Grammar (`extends` API inheritance is supported; parameterized/dynamic topics
-//! are a later slice):
+//! Grammar. A `topic` is static (`topic state: pubsub State;` → key
+//! `<family>/state`) or **dynamic/parameterized**
+//! (`topic command(instance): pubsub Command = "component/{instance}/command";` →
+//! a builder method taking the params and filling the key template; the body's
+//! `ContractBody::TOPIC` is the template). `extends` API inheritance is supported.
 //!
 //! ```text
 //! phoxal_api_tree! {
@@ -106,6 +109,22 @@ impl TypeDef {
 struct TopicDef {
     leaf: Ident,
     kind: TopicKind,
+    /// Dynamic-topic params (empty for a static topic). When non-empty the topic
+    /// is keyed by a `key_template` instead of `<family>/<leaf>`.
+    params: Vec<Ident>,
+    /// Key template with `{param}` placeholders (set iff `params` is non-empty).
+    key_template: Option<syn::LitStr>,
+}
+
+impl TopicDef {
+    /// The canonical versionless topic key/pattern: the key template for a dynamic
+    /// topic, else `<family>/<leaf>`.
+    fn topic_key(&self, family: &str) -> String {
+        match &self.key_template {
+            Some(t) => t.value(),
+            None => format!("{}/{}", family, self.leaf),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -197,6 +216,23 @@ impl Parse for TopicDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<kw::topic>()?;
         let leaf: Ident = input.parse()?;
+
+        // Optional dynamic params: `topic motor_command(instance, name): …`.
+        let mut params = Vec::new();
+        if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let parsed =
+                syn::punctuated::Punctuated::<Ident, Token![,]>::parse_terminated(&content)?;
+            params = parsed.into_iter().collect();
+            if params.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &leaf,
+                    "a dynamic topic must declare at least one param, e.g. `topic foo(id): …`",
+                ));
+            }
+        }
+
         input.parse::<Token![:]>()?;
         let kind = if input.peek(kw::pubsub) {
             input.parse::<kw::pubsub>()?;
@@ -211,8 +247,35 @@ impl Parse for TopicDef {
         } else {
             return Err(input.error("expected `pubsub <Type>` or `query <Req> => <Resp>`"));
         };
+
+        // A dynamic topic requires a `= "key/{param}/template"`; a static one
+        // forbids it (its key is `<family>/<leaf>`).
+        let key_template = if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            Some(input.parse::<syn::LitStr>()?)
+        } else {
+            None
+        };
+        if params.is_empty() && key_template.is_some() {
+            return Err(syn::Error::new_spanned(
+                &leaf,
+                "a static topic must not declare a key template; add params to make it dynamic",
+            ));
+        }
+        if !params.is_empty() && key_template.is_none() {
+            return Err(syn::Error::new_spanned(
+                &leaf,
+                "a dynamic topic requires a key template, e.g. `= \"component/{id}/command\"`",
+            ));
+        }
+
         input.parse::<Token![;]>()?;
-        Ok(TopicDef { leaf, kind })
+        Ok(TopicDef {
+            leaf,
+            kind,
+            params,
+            key_template,
+        })
     }
 }
 
@@ -326,33 +389,45 @@ fn expand_topic_module(families: &[Family]) -> syn::Result<TokenStream> {
         let mut leaf_methods = TokenStream::new();
         for topic in &family.topics {
             let leaf = &topic.leaf;
-            let key = format!("{}/{}", fam_str, leaf);
-            match &topic.kind {
-                TopicKind::PubSub(body) => {
-                    leaf_methods.extend(quote! {
-                        #[doc = #key]
-                        pub fn #leaf(self)
-                            -> #phoxal::bus::Topic<#phoxal::bus::PubSub<super::super::#fam::#body>>
-                        {
-                            #phoxal::bus::Topic::new_static(#key)
-                        }
-                    });
-                }
-                TopicKind::Query { request, response } => {
-                    leaf_methods.extend(quote! {
-                        #[doc = #key]
-                        pub fn #leaf(self)
-                            -> #phoxal::bus::Topic<
-                                #phoxal::bus::Query<
-                                    super::super::#fam::#request,
-                                    super::super::#fam::#response,
-                                >,
-                            >
-                        {
-                            #phoxal::bus::Topic::new_static(#key)
-                        }
-                    });
-                }
+            let key = topic.topic_key(&fam_str);
+            let kind_ty = match &topic.kind {
+                TopicKind::PubSub(body) => quote! {
+                    #phoxal::bus::PubSub<super::super::#fam::#body>
+                },
+                TopicKind::Query { request, response } => quote! {
+                    #phoxal::bus::Query<
+                        super::super::#fam::#request,
+                        super::super::#fam::#response,
+                    >
+                },
+            };
+
+            if topic.params.is_empty() {
+                // Static topic: a zero-arg leaf returning the fixed key.
+                leaf_methods.extend(quote! {
+                    #[doc = #key]
+                    pub fn #leaf(self) -> #phoxal::bus::Topic<#kind_ty> {
+                        #phoxal::bus::Topic::new_static(#key)
+                    }
+                });
+            } else {
+                // Dynamic topic: the leaf takes the declared params and fills the
+                // key template (named placeholders). Pass `"*"`/`"**"` for a
+                // subscribe wildcard; publishing on a wildcard key is rejected.
+                let params = &topic.params;
+                let template = topic
+                    .key_template
+                    .as_ref()
+                    .expect("dynamic topic has a template");
+                leaf_methods.extend(quote! {
+                    #[doc = #key]
+                    pub fn #leaf(
+                        self,
+                        #(#params: impl ::core::fmt::Display),*
+                    ) -> #phoxal::bus::Topic<#kind_ty> {
+                        #phoxal::bus::Topic::new_owned(::std::format!(#template, #(#params = #params),*))
+                    }
+                });
             }
         }
 
@@ -409,8 +484,9 @@ impl Family {
 
         let mut impls = TokenStream::new();
         for topic in &self.topics {
-            let leaf = &topic.leaf;
-            let key = format!("{}/{}", fam_str, leaf);
+            // For a dynamic topic the canonical TOPIC is the key *template*
+            // (with `{param}` placeholders); for a static topic it is `fam/leaf`.
+            let key = topic.topic_key(&fam_str);
             match &topic.kind {
                 TopicKind::PubSub(body) => {
                     let family_const = format!("{}::{}", fam_str, body);
