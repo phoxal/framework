@@ -29,15 +29,22 @@ pub struct SetupContext<R: RuntimeFields> {
     bus: Bus,
     robot: Option<Arc<Robot>>,
     bundle_root: Option<PathBuf>,
+    component_instance: Option<String>,
     _runtime: PhantomData<fn() -> R>,
 }
 
 impl<R: RuntimeFields> SetupContext<R> {
-    pub(crate) fn new(bus: Bus, robot: Option<Arc<Robot>>, bundle_root: Option<PathBuf>) -> Self {
+    pub(crate) fn new(
+        bus: Bus,
+        robot: Option<Arc<Robot>>,
+        bundle_root: Option<PathBuf>,
+        component_instance: Option<String>,
+    ) -> Self {
         SetupContext {
             bus,
             robot,
             bundle_root,
+            component_instance,
             _runtime: PhantomData,
         }
     }
@@ -48,6 +55,18 @@ impl<R: RuntimeFields> SetupContext<R> {
     pub fn robot(&self) -> crate::Result<&Robot> {
         self.robot.as_deref().ok_or_else(|| {
             anyhow::anyhow!("no robot model is bound (this runtime was launched without a bundle)")
+        })
+    }
+
+    /// The `components.instances` entry this participant drives (D47/D53), for a
+    /// component driver launched once per instance. Combine with [`Self::robot`]
+    /// (`driver_binding`/`component_instance`) for the resolved component spec.
+    /// Errors for a non-driver runtime (no component bound).
+    pub fn component(&self) -> crate::Result<&str> {
+        self.component_instance.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no component instance is bound (this runtime is not a component driver)"
+            )
         })
     }
 
