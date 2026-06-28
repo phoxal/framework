@@ -125,6 +125,48 @@ phoxal_api_tree! {
 
             topic heartbeat: pubsub Heartbeat;
         }
+
+        map {
+            /// A published map revision marker.
+            struct Revision {
+                revision: u64,
+                resolution_m: f32,
+            }
+
+            /// Request a rectangular submap window (map-frame metres).
+            struct SubmapRequest {
+                min_x_m: f64,
+                min_y_m: f64,
+                max_x_m: f64,
+                max_y_m: f64,
+            }
+
+            /// An occupancy-grid window: row-major cells, 0..=100 + 255 = unknown.
+            struct SubmapResponse {
+                width: u32,
+                height: u32,
+                resolution_m: f32,
+                cells: Vec<u8>,
+            }
+
+            topic revision: pubsub Revision;
+            topic submap: query SubmapRequest => SubmapResponse;
+        }
+
+        asset {
+            /// Fetch a stored asset by path.
+            struct GetRequest {
+                path: String,
+            }
+
+            /// The asset bytes, or a not-found marker.
+            enum GetResponse {
+                Found { bytes: Vec<u8> },
+                Missing,
+            }
+
+            topic get: query GetRequest => GetResponse;
+        }
     }
 }
 

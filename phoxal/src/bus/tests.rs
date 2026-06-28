@@ -9,11 +9,14 @@ use serial_test::serial;
 use zenoh::key_expr::KeyExpr;
 use zenoh::sample::SampleBuilder;
 
+use crate::api::ContractBody;
 use crate::api::y2026_1 as api;
 use crate::bus::abi::{CodecId, encoding_string};
 use crate::bus::handle::decode_sample;
 use crate::bus::metadata::{BusMetadata, Source};
-use crate::bus::{BUS_ABI, Bus, BusConfig, BusError, LogicalTime};
+use crate::bus::{
+    BUS_ABI, Bus, BusConfig, BusError, LogicalTime, Querier, QueryCode, QueryError, QueryFailure,
+};
 
 fn metadata(api_version: &str) -> BusMetadata {
     BusMetadata {
@@ -145,5 +148,67 @@ async fn live_publisher_to_latest_round_trip() {
     let body = received.expect("Latest should observe the published body in-process");
     assert_eq!(body.linear_x_mps, 0.9);
 
+    bus.close().await.unwrap();
+}
+
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_query_round_trip_ok_then_error() {
+    let bus = Bus::open(BusConfig::in_process("dev", "q")).await.unwrap();
+    let server = bus.declare_server("asset/get").await.unwrap();
+    let server_bus = bus.clone();
+
+    let server_task = tokio::spawn(async move {
+        // First query → a Found response.
+        let incoming = server.recv().await.unwrap();
+        let response = api::asset::GetResponse::Found {
+            bytes: vec![9, 9, 9],
+        };
+        let payload = rmp_serde::to_vec_named(&response).unwrap();
+        incoming
+            .reply(
+                &server_bus,
+                payload,
+                <api::asset::GetResponse as ContractBody>::FAMILY,
+                "y2026_1",
+            )
+            .await
+            .unwrap();
+
+        // Second query → a structured error on the native error leg.
+        let incoming = server.recv().await.unwrap();
+        incoming
+            .reply_err(&QueryFailure::not_found("no such asset"))
+            .await
+            .unwrap();
+    });
+
+    let querier = Querier::<api::asset::GetRequest, api::asset::GetResponse>::new(
+        bus.clone(),
+        &api::topic::new().asset().get(),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+
+    let ok = querier
+        .query(api::asset::GetRequest {
+            path: "a".to_string(),
+        })
+        .await
+        .expect("first query should succeed");
+    assert!(matches!(ok, api::asset::GetResponse::Found { .. }));
+
+    let err = querier
+        .query(api::asset::GetRequest {
+            path: "b".to_string(),
+        })
+        .await
+        .expect_err("second query should be a server error");
+    match err {
+        QueryError::Server(failure) => assert_eq!(failure.code, QueryCode::NotFound),
+        other => panic!("expected QueryError::Server, got {other:?}"),
+    }
+
+    server_task.await.unwrap();
     bus.close().await.unwrap();
 }

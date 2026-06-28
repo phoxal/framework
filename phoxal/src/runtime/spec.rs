@@ -12,12 +12,16 @@
 //! `REQUIRED_CONTRACTS` is the union of the field-side and server-side contracts;
 //! `emit-apis` builds it at runtime, so no const slice concatenation is needed.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::api::ApiVersion;
 use crate::runtime::context::{SetupContext, ShutdownContext, StepContext};
+use crate::runtime::server::ServerOutcome;
 
 /// The direction a runtime uses a contract on a topic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -77,6 +81,18 @@ pub trait RuntimeBehavior: RuntimeFields {
     /// until the query slice).
     const SERVER_CONTRACTS: &'static [ContractUse];
 
+    /// The committed-snapshot state type (`()` when there is no `#[snapshot]`).
+    type Snapshot: Send + Sync + 'static;
+
+    /// Whether the runtime provides a committed snapshot (`#[snapshot]`).
+    const HAS_SNAPSHOT: bool;
+
+    /// The versionless topic keys of exclusive `#[server]` handlers.
+    fn __exclusive_server_topics() -> &'static [&'static str];
+
+    /// The versionless topic keys of concurrent `#[server_snapshot]` handlers.
+    fn __snapshot_server_topics() -> &'static [&'static str];
+
     /// The scheduled-step cadence, or `None` if the runtime has no `#[step]`.
     fn __step_schedule() -> Option<StepSchedule>;
 
@@ -88,6 +104,22 @@ pub trait RuntimeBehavior: RuntimeFields {
 
     /// Graceful shutdown (`#[shutdown]`; a no-op when none is declared).
     async fn __shutdown(&mut self, ctx: ShutdownContext) -> crate::Result<()>;
+
+    /// Commit the current state as a snapshot (calls the `#[snapshot]` provider;
+    /// returns `()` when there is none).
+    fn __take_snapshot(&self) -> Self::Snapshot;
+
+    /// Serve one exclusive `#[server]` query (holds `&mut self`, serialized with
+    /// `#[step]`). Awaited on the runner's main task.
+    async fn __serve_exclusive(&mut self, topic: &str, request: &[u8]) -> ServerOutcome;
+
+    /// Serve one concurrent `#[server_snapshot]` query against a committed
+    /// snapshot. Returns a boxed `Send` future so the runner can spawn it.
+    fn __serve_snapshot(
+        snapshot: Arc<Self::Snapshot>,
+        topic: String,
+        request: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;
 }
 
 /// Per-runtime marker that a contract body `B` was declared by this runtime

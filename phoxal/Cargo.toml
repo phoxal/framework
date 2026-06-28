@@ -51,3 +51,11 @@ workspace = true
 [[example]]
 name = "runtime_control_loop"
 path = "examples/runtime_control_loop.rs"
+
+[[example]]
+name = "runtime_query_server"
+path = "examples/runtime_query_server.rs"
+
+[[example]]
+name = "runtime_snapshot_server"
+path = "examples/runtime_snapshot_server.rs"

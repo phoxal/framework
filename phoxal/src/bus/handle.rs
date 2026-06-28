@@ -12,10 +12,12 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::Sample;
 
@@ -25,8 +27,12 @@ use crate::bus::abi::{CodecId, encoding_string};
 use crate::bus::codec::{Codec, MessagePack};
 use crate::bus::error::{BusError, Result};
 use crate::bus::metadata::{BusMetadata, Source};
+use crate::bus::query::QueryError;
 use crate::bus::session::Bus;
-use crate::bus::topic::{PubSub, Topic};
+use crate::bus::topic::{PubSub, Query, Topic};
+
+/// The Phoxal-pinned finite query timeout (D31) — not Zenoh's 10 s default.
+pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Publishes plain bodies of `B` on a versionless key; metadata carries the
 /// version identity. A publish is a non-blocking enqueue (D35/D43e).
@@ -74,6 +80,99 @@ impl<B: ContractBody> Publisher<B> {
         self.bus
             .enqueue(self.key.clone(), encoding, metadata.encode(), payload);
         Ok(())
+    }
+}
+
+/// Issues queries on a query topic and returns `Result<Resp, QueryError>` (D31).
+///
+/// Carries a Phoxal-pinned finite timeout. A success reply is the plain `Resp`
+/// body; a handler error rides Zenoh's `ReplyError` as a `QueryFailure`. More
+/// than one responder on the topic is reported as `TooManyResponders`.
+pub struct Querier<Req, Resp> {
+    bus: Bus,
+    key: String,
+    timeout: Duration,
+    _p: PhantomData<fn() -> (Req, Resp)>,
+}
+
+impl<Req, Resp> Querier<Req, Resp>
+where
+    Req: ContractBody,
+    Resp: ContractBody,
+{
+    pub(crate) fn new(
+        bus: Bus,
+        topic: &Topic<Query<Req, Resp>>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let key = bus.full_key(topic.publish_key()?);
+        Ok(Querier {
+            bus,
+            key,
+            timeout,
+            _p: PhantomData,
+        })
+    }
+
+    /// Issue a query and await the single response (or a typed error).
+    pub async fn query(&self, request: Req) -> std::result::Result<Resp, QueryError> {
+        let payload =
+            MessagePack::encode(&request).map_err(|e| QueryError::Protocol(e.to_string()))?;
+        let api_version = <Req::Api as ApiVersion>::ID;
+        let metadata = BusMetadata {
+            api_version: api_version.to_string(),
+            family: Req::FAMILY.to_string(),
+            codec: MessagePack::ID.as_u8(),
+            produced_at_ns: 0,
+            epoch: 0,
+            source: Source {
+                participant: self.bus.participant().to_string(),
+                incarnation: self.bus.incarnation(),
+                sequence: self.bus.next_sequence(),
+            },
+        };
+        let key = OwnedKeyExpr::new(self.key.clone())
+            .map_err(|e| QueryError::Protocol(format!("invalid query key '{}': {e}", self.key)))?;
+
+        let replies = self
+            .bus
+            .session()
+            .get(key)
+            .payload(payload)
+            .encoding(Encoding::from(encoding_string(
+                Req::FAMILY,
+                api_version,
+                MessagePack::ID,
+            )))
+            .attachment(metadata.encode())
+            .timeout(self.timeout)
+            .await
+            .map_err(|e| QueryError::Protocol(e.to_string()))?;
+
+        // An exclusive query topic has a single responder: the first reply wins.
+        // Duplicate responders are caught at build time by the `phoxal-cli check`
+        // topology pass (D63), not by waiting at runtime.
+        if let Ok(reply) = replies.recv_async().await {
+            return match reply.into_result() {
+                Ok(sample) => decode_reply::<Resp>(&sample),
+                Err(reply_error) => {
+                    let bytes = reply_error.payload().to_bytes();
+                    match crate::bus::query::QueryFailure::decode(bytes.as_ref()) {
+                        Ok(failure) => Err(QueryError::Server(failure)),
+                        Err(e) => Err(QueryError::Protocol(format!("malformed error reply: {e}"))),
+                    }
+                }
+            };
+        }
+
+        Err(QueryError::Unavailable)
+    }
+}
+
+fn decode_reply<Resp: ContractBody>(sample: &Sample) -> std::result::Result<Resp, QueryError> {
+    match decode_sample::<Resp>(sample, Resp::TOPIC, <Resp::Api as ApiVersion>::ID) {
+        Ok((body, _)) => Ok(body),
+        Err(e) => Err(QueryError::Decode(e.to_string())),
     }
 }
 

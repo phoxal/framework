@@ -5,7 +5,10 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::api::ContractBody;
-use crate::bus::{Bus, Latest, LogicalTime, PubSub, Publisher, Subscriber, Topic};
+use crate::bus::{
+    Bus, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, PubSub, Publisher, Querier, Query, Subscriber,
+    Topic,
+};
 use crate::runtime::spec::{Declares, RuntimeFields};
 
 /// Default drop-oldest ring depth for a `Subscriber` built in `#[setup]`.
@@ -51,6 +54,24 @@ impl<R: RuntimeFields> SetupContext<R> {
             depth: DEFAULT_SUBSCRIBER_DEPTH,
             _runtime: PhantomData,
         }
+    }
+
+    /// Build a querier for a declared query contract of this API version. Carries
+    /// the Phoxal-pinned finite timeout (D31).
+    pub async fn querier<Req, Resp>(
+        &self,
+        topic: Topic<Query<Req, Resp>>,
+    ) -> crate::Result<Querier<Req, Resp>>
+    where
+        Req: ContractBody<Api = R::Api>,
+        Resp: ContractBody<Api = R::Api>,
+        R: Declares<Req> + Declares<Resp>,
+    {
+        Ok(Querier::new(
+            self.bus.clone(),
+            &topic,
+            DEFAULT_QUERY_TIMEOUT,
+        )?)
     }
 
     /// The underlying bus (escape hatch for framework runtimes/drivers; not part

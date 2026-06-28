@@ -1,5 +1,0 @@
-error: #[server] (query serving) lands in the query slice; the first slice supports #[setup], #[step], and #[shutdown] only
-  --> tests/trybuild/fail/server_in_first_slice.rs:20:5
-   |
-20 |     #[server]
-   |     ^^^^^^^^^

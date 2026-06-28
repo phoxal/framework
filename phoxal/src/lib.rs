@@ -79,6 +79,6 @@ pub mod tokio {
 /// Everything a runtime author imports with `use phoxal::prelude::*;`.
 pub mod prelude {
     pub use crate::Result;
-    pub use crate::bus::{Latest, Publisher, Subscriber};
-    pub use crate::runtime::{LogicalTime, SetupContext, ShutdownContext, StepContext};
+    pub use crate::bus::{Latest, Publisher, Querier, QueryError, ServerResult, Subscriber};
+    pub use crate::runtime::{LogicalTime, SetupContext, ShutdownContext, Snapshot, StepContext};
 }

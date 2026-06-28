@@ -10,14 +10,18 @@ mod codec;
 mod error;
 mod handle;
 mod metadata;
+mod query;
+mod server;
 mod session;
 mod topic;
 
 pub use abi::{BUS_ABI, BusAbi, CodecId, encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
 pub use error::{BusError, Result};
-pub use handle::{Latest, Publisher, Received, Subscriber};
+pub use handle::{DEFAULT_QUERY_TIMEOUT, Latest, Publisher, Querier, Received, Subscriber};
 pub use metadata::{BusMetadata, Source};
+pub use query::{QueryCode, QueryError, QueryFailure, ServerResult};
+pub use server::{IncomingQuery, ServerQueryable};
 pub use session::{Bus, BusConfig, BusHealth};
 pub use topic::{PubSub, Query, Topic, TopicKind, WildcardPublish};
 
