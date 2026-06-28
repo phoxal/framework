@@ -4,6 +4,18 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0](https://github.com/phoxal/framework/releases/tag/v0.12.0) - 2026-06-28
+
+### Changed
+
+- **(model) BREAKING:** `robot.yaml` now opens with `schema: v0` (manifest grammar,
+  replacing the old `version: v1` discriminator) and a required root `api_version`
+  (the graph-wide Phoxal contract API, e.g. `y2026_1`). `api_version` is selection
+  intent — the model checks it is non-empty; `phoxal-cli check` validates it against
+  each artifact's `emit-apis` (D59/D63). Old `version: v1` manifests no longer parse
+  (pre-1.0, no shim). Scope is `robot.yaml` only — `component.yaml`/`simulation.yaml`
+  keep their own grammar versioning. (#99)
+
 ## [0.11.0](https://github.com/phoxal/framework/releases/tag/v0.11.0) - 2026-06-28
 
 Greenfield framework rewrite: a new engine + authoring model on a single dated
