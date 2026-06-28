@@ -100,7 +100,14 @@ where
         None => serde_json::from_value(serde_json::Value::Null)?,
     };
 
-    let mut ctx = SetupContext::<R>::new(bus.clone());
+    // Load the resolved robot model from the bundle, if one was provided, so
+    // official runtimes can read it via `ctx.robot()` (D33).
+    let robot = match &launch.bundle_root {
+        Some(root) => Some(Arc::new(crate::model::v1::Robot::read_from_dir(root)?)),
+        None => None,
+    };
+
+    let mut ctx = SetupContext::<R>::new(bus.clone(), robot, launch.bundle_root.clone());
     let mut runtime = R::__setup(&mut ctx, config).await?;
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
 
