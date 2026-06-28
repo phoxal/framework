@@ -46,6 +46,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     // The declared topic shows up in the metadata.
     assert_eq!(AssetTest::__exclusive_server_topics(), &["asset/get"]);
     assert!(AssetTest::__snapshot_server_topics().is_empty());
+    AssetTest::__validate_server_topics().unwrap();
     assert!(!AssetTest::HAS_SNAPSHOT);
     assert!(
         AssetTest::SERVER_CONTRACTS
@@ -93,6 +94,69 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::Unimplemented);
+}
+
+#[derive(phoxal::Runtime)]
+#[phoxal(id = "bad-topic-test", api = y2026_1)]
+struct BadTopicTest {}
+
+#[phoxal::runtime]
+impl BadTopicTest {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[server(topic = phoxal::bus::Topic::<phoxal::bus::Query<api::asset::GetRequest, api::asset::GetResponse>>::new_static("asset/other"))]
+    async fn get(
+        &mut self,
+        _request: api::asset::GetRequest,
+    ) -> ServerResult<api::asset::GetResponse> {
+        Ok(api::asset::GetResponse::Missing)
+    }
+}
+
+#[test]
+fn explicit_server_topic_key_must_match_request_body_topic() {
+    let err = BadTopicTest::__validate_server_topics().unwrap_err();
+    assert!(err.contains("does not match request body topic"));
+    assert!(err.contains("asset/other"));
+    assert!(err.contains("asset/get"));
+}
+
+#[derive(phoxal::Runtime)]
+#[phoxal(id = "duplicate-server-topic-test", api = y2026_1)]
+struct DuplicateServerTopicTest {}
+
+#[phoxal::runtime]
+impl DuplicateServerTopicTest {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[server(topic = api::topic::new().asset().get())]
+    async fn get_one(
+        &mut self,
+        _request: api::asset::GetRequest,
+    ) -> ServerResult<api::asset::GetResponse> {
+        Ok(api::asset::GetResponse::Missing)
+    }
+
+    #[server(topic = api::topic::new().asset().get())]
+    async fn get_two(
+        &mut self,
+        _request: api::asset::GetRequest,
+    ) -> ServerResult<api::asset::GetResponse> {
+        Ok(api::asset::GetResponse::Missing)
+    }
+}
+
+#[test]
+fn duplicate_server_topics_are_rejected_before_startup() {
+    let err = DuplicateServerTopicTest::__validate_server_topics().unwrap_err();
+    assert!(err.contains("duplicate server topic"));
+    assert!(err.contains("asset/get"));
 }
 
 #[derive(phoxal::Runtime)]

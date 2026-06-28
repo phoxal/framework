@@ -123,6 +123,8 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
+    R::__validate_server_topics().map_err(anyhow::Error::msg)?;
+
     let config: R::Config = match &launch.config {
         Some(value) => serde_json::from_value(value.clone())?,
         None => serde_json::from_value(serde_json::Value::Null)?,

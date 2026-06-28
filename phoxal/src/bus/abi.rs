@@ -67,6 +67,24 @@ impl CodecId {
     }
 }
 
+/// The parsed Zenoh encoding-string half of `bus_abi`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EncodingMetadata {
+    /// Contract family id (`<Body as ContractBody>::FAMILY`).
+    pub family: String,
+    /// Graph API version (`<Body::Api as ApiVersion>::ID`).
+    pub api_version: String,
+    /// Numeric codec id.
+    pub codec: u8,
+}
+
+impl EncodingMetadata {
+    /// The codec id, if recognized by this `bus_abi`.
+    pub fn codec_id(&self) -> Option<CodecId> {
+        CodecId::from_u8(self.codec)
+    }
+}
+
 /// Build the Zenoh encoding string that mirrors the contract metadata so a
 /// receiver can fast-reject before decoding the body.
 ///
@@ -76,4 +94,56 @@ pub fn encoding_string(family: &str, api_version: &str, codec: CodecId) -> Strin
         "phoxal/v0;family={family};api={api_version};codec={}",
         codec.as_u8()
     )
+}
+
+/// Parse and validate the Zenoh encoding string owned by `bus_abi`.
+///
+/// Format: `phoxal/v0;family=<family>;api=<api_version>;codec=<id>`.
+pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadata, String> {
+    let mut parts = value.split(';');
+    let prefix = parts
+        .next()
+        .ok_or_else(|| "encoding string is empty".to_string())?;
+    if prefix != "phoxal/v0" {
+        return Err(format!(
+            "expected encoding prefix 'phoxal/v0', got '{prefix}'"
+        ));
+    }
+
+    let mut family = None;
+    let mut api_version = None;
+    let mut codec = None;
+    for field in parts {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| format!("encoding field '{field}' is missing '='"))?;
+        if value.is_empty() {
+            return Err(format!("encoding field '{key}' is empty"));
+        }
+        match key {
+            "family" => set_once(&mut family, key, value.to_string())?,
+            "api" => set_once(&mut api_version, key, value.to_string())?,
+            "codec" => {
+                let parsed = value
+                    .parse::<u8>()
+                    .map_err(|_| format!("encoding field 'codec' is not a u8: '{value}'"))?;
+                set_once(&mut codec, key, parsed)?;
+            }
+            _ => return Err(format!("unknown encoding field '{key}'")),
+        }
+    }
+
+    Ok(EncodingMetadata {
+        family: family.ok_or_else(|| "encoding string is missing family".to_string())?,
+        api_version: api_version.ok_or_else(|| "encoding string is missing api".to_string())?,
+        codec: codec.ok_or_else(|| "encoding string is missing codec".to_string())?,
+    })
+}
+
+fn set_once<T>(slot: &mut Option<T>, key: &str, value: T) -> std::result::Result<(), String> {
+    if slot.replace(value).is_some() {
+        Err(format!("duplicate encoding field '{key}'"))
+    } else {
+        Ok(())
+    }
 }

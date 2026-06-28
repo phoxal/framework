@@ -120,6 +120,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let serve_exclusive = serve_exclusive(&servers);
     let serve_snapshot = serve_snapshot(&snapshot_servers);
     let topic_assertions = topic_assertions(&self_ty, &servers, &snapshot_servers);
+    let validate_server_topics = validate_server_topics(&servers, &snapshot_servers);
 
     Ok(quote! {
         #item_impl
@@ -138,6 +139,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn __snapshot_server_topics() -> &'static [&'static str] {
                 #snapshot_topics
+            }
+
+            fn __validate_server_topics() -> ::core::result::Result<(), ::std::string::String> {
+                #validate_server_topics
             }
 
             fn __step_schedule() -> ::core::option::Option<::phoxal::runtime::StepSchedule> {
@@ -294,6 +299,54 @@ fn contract_entry(ty: &Type, direction: TokenStream) -> TokenStream {
             family: <#ty as ::phoxal::api::ContractBody>::FAMILY,
             topic: <#ty as ::phoxal::api::ContractBody>::TOPIC,
             direction: ::phoxal::runtime::Direction::#direction,
+        }
+    }
+}
+
+fn validate_server_topics(
+    servers: &[ServerFn],
+    snapshot_servers: &[SnapshotServerFn],
+) -> TokenStream {
+    let exclusive = servers
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| validate_one_server_topic(idx, "server", &s.req_ty, &s.resp_ty, &s.topic));
+    let snapshot = snapshot_servers.iter().enumerate().map(|(idx, s)| {
+        validate_one_server_topic(idx, "server_snapshot", &s.req_ty, &s.resp_ty, &s.topic)
+    });
+    quote! {
+        let mut seen = ::std::collections::BTreeSet::<::std::string::String>::new();
+        #(#exclusive)*
+        #(#snapshot)*
+        ::core::result::Result::Ok(())
+    }
+}
+
+fn validate_one_server_topic(
+    idx: usize,
+    kind: &str,
+    req_ty: &Type,
+    resp_ty: &Type,
+    topic: &Expr,
+) -> TokenStream {
+    let topic_var = syn::Ident::new(&format!("__phoxal_{kind}_topic_{idx}"), topic.span());
+    quote! {
+        let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::Query<#req_ty, #resp_ty>> = #topic;
+        let topic_key = #topic_var.key();
+        let expected = <#req_ty as ::phoxal::api::ContractBody>::TOPIC;
+        if topic_key != expected {
+            return ::core::result::Result::Err(::std::format!(
+                "#[{kind}(topic = ...)] key '{}' does not match request body topic '{}'",
+                topic_key,
+                expected,
+                kind = #kind,
+            ));
+        }
+        if !seen.insert(topic_key.to_string()) {
+            return ::core::result::Result::Err(::std::format!(
+                "duplicate server topic '{}'",
+                topic_key,
+            ));
         }
     }
 }

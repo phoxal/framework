@@ -9,6 +9,8 @@
 //! The emitted JSON schema is **frozen** (fields below). Adding a field is
 //! backward-compatible; renaming/removing one is a `bus_abi`/schema change.
 
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
 use crate::bus::BUS_ABI;
@@ -75,9 +77,17 @@ impl From<&ContractUse> for ContractView {
 
 /// Build the metadata document for a runtime `R`.
 pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
+    let mut seen = BTreeSet::new();
     let required_contracts = R::FIELD_CONTRACTS
         .iter()
         .chain(R::SERVER_CONTRACTS.iter())
+        .filter(|contract| {
+            seen.insert((
+                contract.family.to_string(),
+                contract.topic.to_string(),
+                contract.direction,
+            ))
+        })
         .map(ContractView::from)
         .collect();
 

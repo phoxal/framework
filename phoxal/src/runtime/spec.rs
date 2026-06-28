@@ -25,7 +25,7 @@ use crate::runtime::context::{SetupContext, ShutdownContext, StepContext};
 use crate::runtime::server::ServerOutcome;
 
 /// The direction a runtime uses a contract on a topic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     /// Publishes the body.
@@ -93,6 +93,11 @@ pub trait RuntimeBehavior: RuntimeFields {
 
     /// The versionless topic keys of concurrent `#[server_snapshot]` handlers.
     fn __snapshot_server_topics() -> &'static [&'static str];
+
+    /// Validate explicit server topic expressions before startup declares
+    /// queryables. The macro rejects an explicit key that differs from the
+    /// request body's canonical topic and rejects duplicate server topics.
+    fn __validate_server_topics() -> std::result::Result<(), String>;
 
     /// The scheduled-step cadence, or `None` if the runtime has no `#[step]`.
     fn __step_schedule() -> Option<StepSchedule>;

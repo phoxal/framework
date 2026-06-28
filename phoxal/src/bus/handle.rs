@@ -23,7 +23,7 @@ use zenoh::sample::Sample;
 
 use crate::api::{ApiVersion, ContractBody};
 use crate::bus::LogicalTime;
-use crate::bus::abi::{CodecId, encoding_string};
+use crate::bus::abi::{CodecId, encoding_string, parse_encoding_string};
 use crate::bus::codec::{Codec, MessagePack};
 use crate::bus::error::{BusError, Result};
 use crate::bus::metadata::{BusMetadata, Source};
@@ -52,17 +52,12 @@ impl<B: ContractBody> Publisher<B> {
         })
     }
 
-    /// Publish `body` stamped at logical time `at`. Non-blocking and
-    /// drop-tolerant (periodic-state QoS, D35): if the outbound queue is saturated
-    /// the sample is dropped + counted and this still returns `Ok` — a publish
-    /// never blocks the step loop. Use [`try_publish`](Self::try_publish) to
-    /// observe drops.
+    /// Publish `body` stamped at logical time `at`. Non-blocking (D35/D43e):
+    /// returns immediately, and reports `Saturated`/`Closed` instead of silently
+    /// dropping the caller's error path.
     #[allow(clippy::unused_async)]
     pub async fn publish_at(&self, at: LogicalTime, body: B) -> Result<()> {
-        match self.try_publish(at, body) {
-            Ok(()) | Err(BusError::Saturated { .. }) | Err(BusError::Closed) => Ok(()),
-            Err(other) => Err(other),
-        }
+        self.try_publish(at, body)
     }
 
     /// The explicit non-blocking publish op (D43e). Returns immediately; a
@@ -399,6 +394,38 @@ pub(crate) fn decode_sample<B: ContractBody>(
     topic: &str,
     expected_api: &str,
 ) -> Result<(B, BusMetadata)> {
+    let encoding =
+        parse_encoding_string(&sample.encoding().to_string()).map_err(|e| BusError::Metadata {
+            topic: topic.to_string(),
+            detail: format!("malformed encoding string: {e}"),
+        })?;
+    if encoding.api_version != expected_api {
+        return Err(BusError::ApiVersionMismatch {
+            topic: topic.to_string(),
+            expected: expected_api.to_string(),
+            received: encoding.api_version,
+        });
+    }
+    if encoding.family != B::FAMILY {
+        return Err(BusError::Metadata {
+            topic: topic.to_string(),
+            detail: format!(
+                "encoding family mismatch: expected '{}', received '{}'",
+                B::FAMILY,
+                encoding.family
+            ),
+        });
+    }
+    match encoding.codec_id() {
+        Some(CodecId::MessagePack) => {}
+        None => {
+            return Err(BusError::UnsupportedCodec(
+                encoding.codec,
+                topic.to_string(),
+            ));
+        }
+    }
+
     let attachment = sample.attachment().ok_or_else(|| BusError::Metadata {
         topic: topic.to_string(),
         detail: "missing BusMetadata attachment".to_string(),
@@ -408,6 +435,25 @@ pub(crate) fn decode_sample<B: ContractBody>(
             topic: topic.to_string(),
             detail: format!("malformed BusMetadata: {e}"),
         })?;
+
+    if metadata.api_version != encoding.api_version
+        || metadata.family != encoding.family
+        || metadata.codec != encoding.codec
+    {
+        return Err(BusError::Metadata {
+            topic: topic.to_string(),
+            detail: format!(
+                "encoding/BusMetadata mismatch: encoding family='{}' api='{}' codec={}, \
+                 metadata family='{}' api='{}' codec={}",
+                encoding.family,
+                encoding.api_version,
+                encoding.codec,
+                metadata.family,
+                metadata.api_version,
+                metadata.codec
+            ),
+        });
+    }
 
     if metadata.api_version != expected_api {
         return Err(BusError::ApiVersionMismatch {

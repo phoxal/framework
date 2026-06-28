@@ -83,7 +83,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let mut contract_entries = Vec::new();
     for decl in &decls {
         for (body, dir) in decl.contract_bodies() {
-            let key = format!("{}:{}", dir.key(), body.to_token_stream());
+            let key = format!("{}:{}", dir.key(), normalized_type_key(&body, &api));
             if seen_contracts.insert(key) {
                 let dir = dir.tokens(&phoxal);
                 contract_entries.push(quote! {
@@ -117,22 +117,28 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     // Direction-specific Declares markers (D44): publishing a family declared only
     // as subscribe (or vice versa) is a compile error — and would otherwise be IO
-    // `emit-apis` never reports. Deduplicated by (direction, body) token string.
+    // `emit-apis` never reports. Deduplicate common API-module aliases
+    // (`api::...` vs `phoxal::api::y2026_N::...`) so the same semantic body does
+    // not emit conflicting impls.
     let mut seen = std::collections::BTreeSet::new();
     let mut declares = TokenStream::new();
     for decl in &decls {
         let (marker, key) = match decl {
             Decl::Publish(b) => (
                 quote!(impl #phoxal::runtime::DeclaresPublish<#b> for #struct_name {}),
-                format!("pub:{}", b.to_token_stream()),
+                format!("pub:{}", normalized_type_key(b, &api)),
             ),
             Decl::Subscribe(b) => (
                 quote!(impl #phoxal::runtime::DeclaresSubscribe<#b> for #struct_name {}),
-                format!("sub:{}", b.to_token_stream()),
+                format!("sub:{}", normalized_type_key(b, &api)),
             ),
             Decl::Query { req, resp } => (
                 quote!(impl #phoxal::runtime::DeclaresQuery<#req, #resp> for #struct_name {}),
-                format!("qry:{}=>{}", req.to_token_stream(), resp.to_token_stream()),
+                format!(
+                    "qry:{}=>{}",
+                    normalized_type_key(req, &api),
+                    normalized_type_key(resp, &api)
+                ),
             ),
         };
         if seen.insert(key) {
@@ -361,4 +367,23 @@ fn generic_type(seg: &syn::PathSegment, n: usize) -> Option<Type> {
         })
         .collect();
     types.get(n).cloned().cloned()
+}
+
+fn normalized_type_key(ty: &Type, api: &Ident) -> String {
+    let Some(path) = as_type_path(ty) else {
+        return ty.to_token_stream().to_string();
+    };
+    let mut segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    if segments.first().is_some_and(|segment| segment == "api") {
+        segments.splice(
+            0..1,
+            ["phoxal".to_string(), "api".to_string(), api.to_string()],
+        );
+    }
+    segments.join("::")
 }
