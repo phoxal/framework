@@ -142,7 +142,6 @@ jobs:
           - { name: asset, api: y2026_1 }
           - { name: battery, api: y2026_2 }
           - { name: drive, api: y2026_1 }
-          - { name: driver-ddsm115, api: y2026_1 }
           - { name: localize, api: y2026_1 }
           - { name: map, api: y2026_1 }
           - { name: mission, api: y2026_1 }
@@ -199,7 +198,6 @@ jobs:
           - { name: asset, api: y2026_1 }
           - { name: battery, api: y2026_2 }
           - { name: drive, api: y2026_1 }
-          - { name: driver-ddsm115, api: y2026_1 }
           - { name: localize, api: y2026_1 }
           - { name: map, api: y2026_1 }
           - { name: mission, api: y2026_1 }

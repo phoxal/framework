@@ -24,7 +24,6 @@ members = [
     "runtime/map",
     "runtime/odometry",
     "runtime/safety",
-    "runtime/driver-ddsm115",
 ]
 
 [workspace.dependencies]
