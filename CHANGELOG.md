@@ -4,6 +4,16 @@ All notable changes documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0](https://github.com/phoxal/framework/releases/tag/v0.15.0) - 2026-06-28
+
+### Added
+
+- **(runtime)** `ParticipantLaunch::from_env` — the default entrypoint (`phoxal::run`)
+  now builds its launch from `PHOXAL_*` env vars (namespace, bus endpoints, bundle root,
+  typed config, component instance, clock) over the `local` defaults, so an external
+  launcher (`phoxal-cli runtime run`, systemd, container entrypoint) can configure a
+  host-native participant without recompiling. (#105)
+
 ## [0.14.0](https://github.com/phoxal/framework/releases/tag/v0.14.0) - 2026-06-28
 
 ### Changed
