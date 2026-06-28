@@ -34,21 +34,39 @@ pub struct Identity {
     pub namespace: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PhoxalRuntimes {
-    pub version: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub overrides: BTreeMap<String, PlatformRuntimeOverride>,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    #[default]
+    Stable,
+    Latest,
+    Edge,
+}
+
+impl Channel {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Latest => "latest",
+            Self::Edge => "edge",
+        }
+    }
+}
+
+impl fmt::Display for Channel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PlatformRuntimeOverride {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
+pub struct PhoxalRuntimes {
+    #[serde(default)]
+    pub channel: Channel,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub images: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +165,7 @@ pub enum ValidationError {
     EmptyApiVersion,
     EmptyIdentityId,
     EmptyIdentityNamespace,
-    UnknownPlatformRuntimeOverride {
+    UnknownPlatformRuntimeImage {
         name: String,
     },
     UserRuntimeShadowsPlatformRuntime {
@@ -253,9 +271,9 @@ impl Robot {
             .copied()
             .collect::<BTreeSet<_>>();
 
-        for runtime_name in self.phoxal_runtimes.overrides.keys() {
+        for runtime_name in self.phoxal_runtimes.images.keys() {
             if !platform_runtime_names.contains(runtime_name.as_str()) {
-                errors.push(ValidationError::UnknownPlatformRuntimeOverride {
+                errors.push(ValidationError::UnknownPlatformRuntimeImage {
                     name: runtime_name.clone(),
                 });
             }
@@ -380,9 +398,9 @@ impl fmt::Display for ValidationError {
             Self::EmptyIdentityNamespace => {
                 formatter.write_str("identity.namespace must not be empty")
             }
-            Self::UnknownPlatformRuntimeOverride { name } => write!(
+            Self::UnknownPlatformRuntimeImage { name } => write!(
                 formatter,
-                "phoxal_runtimes.overrides.{name} is not a platform runtime"
+                "phoxal_runtimes.images.{name} is not a platform runtime"
             ),
             Self::UserRuntimeShadowsPlatformRuntime { name } => {
                 write!(formatter, "user_runtimes.{name} shadows a platform runtime")
@@ -468,7 +486,7 @@ fn default_build_context() -> PathBuf {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Robot, UserRuntimeBuild};
+    use super::{Channel, Robot, UserRuntimeBuild};
 
     #[test]
     fn user_runtime_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
@@ -480,7 +498,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 user_runtimes:
   autonomy:
     path: runtimes/autonomy
@@ -516,7 +534,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 user_runtimes:
   autonomy:
     path: runtimes/autonomy
@@ -528,7 +546,8 @@ user_runtimes:
 motion:
   kinematic:
     kind: omnidirectional
-    actuators: []
+    actuators:
+    - drive.motor
     encoders: []
 components:
   sources: {}
@@ -563,7 +582,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 user_runtimes:
   autonomy:
     path: runtimes/autonomy
@@ -598,7 +617,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 user_runtimes:
   autonomy:
     path: runtimes/autonomy
@@ -631,7 +650,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 user_runtimes:
   autonomy:
     path: runtimes/autonomy
@@ -659,6 +678,147 @@ components:
     }
 
     #[test]
+    fn phoxal_runtimes_channel_defaults_to_stable() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes: {}
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        assert_eq!(robot.phoxal_runtimes.channel, Channel::Stable);
+        assert_eq!(robot.phoxal_runtimes.channel.as_str(), "stable");
+        assert_eq!(robot.phoxal_runtimes.channel.to_string(), "stable");
+        assert!(robot.phoxal_runtimes.images.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn phoxal_runtimes_rejects_invalid_channel() {
+        let error = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  channel: experimental
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )
+        .expect_err("invalid runtime channel should fail to parse");
+
+        assert!(
+            format!("{error:#}").contains("unknown variant `experimental`"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn phoxal_runtimes_rejects_old_version_field() {
+        let error = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  version: "latest"
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )
+        .expect_err("old runtime version field should fail to parse");
+
+        assert!(
+            format!("{error:#}").contains("unknown field `version`"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn phoxal_runtimes_images_parse_and_validate_against_platform_runtimes() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  channel: latest
+  images:
+    drive: ghcr.io/phoxal/runtime-drive:y2026_1-v0.8.4
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators:
+    - drive.motor
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        assert_eq!(robot.phoxal_runtimes.channel, Channel::Latest);
+        assert_eq!(
+            robot.phoxal_runtimes.images.get("drive"),
+            Some(&"ghcr.io/phoxal/runtime-drive:y2026_1-v0.8.4".to_string())
+        );
+        robot
+            .validate_with(&["drive"])
+            .expect("known runtime image key should validate");
+
+        let errors = robot
+            .validate_with(&["odometry"])
+            .expect_err("unknown runtime image key should fail validation");
+
+        assert!(
+            errors.contains(&super::ValidationError::UnknownPlatformRuntimeImage {
+                name: "drive".to_string(),
+            })
+        );
+        assert_eq!(
+            super::ValidationError::UnknownPlatformRuntimeImage {
+                name: "drive".to_string(),
+            }
+            .to_string(),
+            "phoxal_runtimes.images.drive is not a platform runtime"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn robot_manifest_requires_schema_v0_and_api_version() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
@@ -668,7 +828,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 motion:
   kinematic:
     kind: omnidirectional
@@ -695,7 +855,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 motion:
   kinematic:
     kind: omnidirectional
@@ -726,7 +886,7 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_runtimes:
-  version: "0.9.0"
+  channel: stable
 motion:
   kinematic:
     kind: omnidirectional
