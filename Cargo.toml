@@ -11,12 +11,12 @@ repository = "https://github.com/phoxal/framework"
 
 [workspace]
 resolver = "3"
-# Greenfield rewrite (tmp/framework-rewrite): the engine crate + its proc-macros.
-# The official runtime/simulator/tool crates are re-ported onto the new authoring
-# surface in a later phase and are intentionally out of the workspace for now.
+# Greenfield rewrite (tmp/framework-rewrite): the engine crate + its proc-macros,
+# plus official runtimes being re-ported onto the new authoring surface (Phase 4).
 members = [
     "phoxal",
     "phoxal-macros",
+    "runtime/asset",
 ]
 
 [workspace.dependencies]
@@ -48,6 +48,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
 urdf-rs = "0.9.0"
 zenoh = { version = "1.9.0" }
+phoxal = { path = "phoxal" }
 phoxal-macros = { path = "phoxal-macros" }
 
 [workspace.lints.rust]
