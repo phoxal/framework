@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1987,7 +1987,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1997,14 +1997,14 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-asset"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "phoxal",
 ]
 
 [[package]]
 name = "phoxal-runtime-battery"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-drive"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2021,7 +2021,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-explore"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2030,7 +2030,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-follow"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-frame"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-joint"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2056,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-localize"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-map"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2074,7 +2074,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-mission"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-motion"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-odometry"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-perception"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-plan"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2120,7 +2120,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-power"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-presence"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2137,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-safety"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2146,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-video"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "anyhow",
  "phoxal",
