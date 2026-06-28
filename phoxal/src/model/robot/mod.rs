@@ -15,10 +15,15 @@ pub use v1::ValidationError;
 
 const ROBOT_FILE: &str = "robot.yaml";
 
+/// Version dispatcher for `robot.yaml`.
+///
+/// On the wire, manifests use `schema: v0` for the manifest grammar. The
+/// greenfield reset restarted the schema at v0, while the Rust types keep their
+/// historical `v1` names.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "version")]
+#[serde(tag = "schema")]
 pub enum Robot {
-    #[serde(rename = "v1")]
+    #[serde(rename = "v0")]
     V1(v1::Robot),
 }
 
