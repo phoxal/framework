@@ -1,173 +1,113 @@
-use std::future::Future;
-use std::time::Duration;
+//! Query error wire shape (D31/D43f).
+//!
+//! A query success reply is the plain `Resp` body (D62). A handler `Err` rides
+//! Zenoh's native `ReplyError`, carrying a [`QueryFailure`] (MessagePack-encoded).
+//! Both are part of `bus_abi` and golden-tested. The caller sees a
+//! [`QueryError`]; there is no `Version` variant — one graph runs one
+//! `api_version` (D63).
 
-use derive_new::new;
-use derive_setters::Setters;
-use tokio::time::sleep;
-use tracing::warn;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, new, Setters)]
-#[setters(prefix = "with_")]
-pub struct Retry {
-    #[setters(skip)]
-    pub max_attempts: u32,
-
-    #[new(value = "Duration::from_millis(100)")]
-    pub initial_backoff: Duration,
-
-    #[new(value = "Duration::from_secs(2)")]
-    pub max_backoff: Duration,
-
-    #[new(value = "true")]
-    pub retry_on_no_reply: bool,
-
-    #[new(value = "true")]
-    pub retry_on_transport_error: bool,
+/// The small, fixed set of handler error codes (D31).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryCode {
+    /// The requested entity does not exist.
+    NotFound,
+    /// The request was malformed or semantically invalid.
+    InvalidArgument,
+    /// An unexpected server-side failure.
+    Internal,
+    /// The server is temporarily unable to serve.
+    Unavailable,
+    /// The operation is not implemented.
+    Unimplemented,
+    /// The server could not produce a reply in time.
+    DeadlineExceeded,
 }
 
-impl Retry {
-    fn validate(&self) -> crate::bus::Result<()> {
-        if self.max_attempts == 0 {
-            return Err(crate::bus::Error::InvalidRetry(
-                "max_attempts must be greater than zero".to_string(),
-            ));
+/// A structured handler failure carried on the error reply leg (D31).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryFailure {
+    /// The fixed error code.
+    pub code: QueryCode,
+    /// A human-readable message.
+    pub message: String,
+    /// Optional opaque details payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<u8>>,
+    /// The encoding of `details`, if present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details_encoding: Option<String>,
+}
+
+impl QueryFailure {
+    /// A failure with `code` and `message`.
+    pub fn new(code: QueryCode, message: impl Into<String>) -> Self {
+        QueryFailure {
+            code,
+            message: message.into(),
+            details: None,
+            details_encoding: None,
         }
-        if self.initial_backoff.is_zero() {
-            return Err(crate::bus::Error::InvalidRetry(
-                "initial_backoff must be greater than zero".to_string(),
-            ));
-        }
-        if self.max_backoff.is_zero() {
-            return Err(crate::bus::Error::InvalidRetry(
-                "max_backoff must be greater than zero".to_string(),
-            ));
-        }
-        if self.initial_backoff > self.max_backoff {
-            return Err(crate::bus::Error::InvalidRetry(
-                "initial_backoff must be less than or equal to max_backoff".to_string(),
-            ));
-        }
-        Ok(())
+    }
+
+    /// `NotFound`.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(QueryCode::NotFound, message)
+    }
+    /// `InvalidArgument`.
+    pub fn invalid_argument(message: impl Into<String>) -> Self {
+        Self::new(QueryCode::InvalidArgument, message)
+    }
+    /// `Internal`.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(QueryCode::Internal, message)
+    }
+    /// `Unavailable`.
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(QueryCode::Unavailable, message)
+    }
+    /// `Unimplemented`.
+    pub fn unimplemented(message: impl Into<String>) -> Self {
+        Self::new(QueryCode::Unimplemented, message)
+    }
+
+    /// Encode to the MessagePack error-reply payload.
+    pub fn encode(&self) -> Vec<u8> {
+        rmp_serde::to_vec_named(self).expect("QueryFailure is always serializable")
+    }
+
+    /// Decode from the MessagePack error-reply payload.
+    pub fn decode(bytes: &[u8]) -> Result<Self, rmp_serde::decode::Error> {
+        rmp_serde::from_slice(bytes)
     }
 }
 
-pub async fn retry_query<T, F, Fut>(
-    name: &str,
-    retry: &Retry,
-    mut attempt: F,
-) -> crate::bus::Result<Option<T>>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = crate::bus::Result<Option<T>>>,
-{
-    retry.validate()?;
-
-    let mut backoff = retry.initial_backoff;
-    for attempt_index in 1..=retry.max_attempts {
-        match attempt().await {
-            Ok(Some(response)) => return Ok(Some(response)),
-            Ok(None) => {
-                if !retry.retry_on_no_reply || attempt_index == retry.max_attempts {
-                    return Ok(None);
-                }
-                warn!(
-                    query = name,
-                    attempt = attempt_index,
-                    max_attempts = retry.max_attempts,
-                    backoff_ms = backoff.as_millis(),
-                    "query returned no reply, retrying"
-                );
-            }
-            Err(crate::bus::Error::Transport(error)) => {
-                if !retry.retry_on_transport_error || attempt_index == retry.max_attempts {
-                    return Err(crate::bus::Error::Transport(error));
-                }
-                warn!(
-                    query = name,
-                    attempt = attempt_index,
-                    max_attempts = retry.max_attempts,
-                    backoff_ms = backoff.as_millis(),
-                    error = %error,
-                    "query failed with transport error, retrying"
-                );
-            }
-            Err(error) => return Err(error),
-        }
-
-        sleep(backoff).await;
-        backoff = std::cmp::min(backoff.saturating_mul(2), retry.max_backoff);
-    }
-
-    Ok(None)
+/// What a `Querier` returns to the caller (D31). No `Version` variant — one graph
+/// runs one `api_version` (D63).
+#[derive(Debug, thiserror::Error)]
+pub enum QueryError {
+    /// No responder answered the query.
+    #[error("no responder is available for this query topic")]
+    Unavailable,
+    /// The query exceeded the caller-side timeout.
+    #[error("query timed out")]
+    Timeout,
+    /// The handler returned a structured failure.
+    #[error("query server error: {0:?}")]
+    Server(QueryFailure),
+    /// The response body could not be decoded.
+    #[error("failed to decode query response: {0}")]
+    Decode(String),
+    /// A protocol-level error (bad metadata, encode failure, transport).
+    #[error("query protocol error: {0}")]
+    Protocol(String),
+    /// More than one responder answered an exclusive query topic.
+    #[error("multiple responders answered an exclusive query topic")]
+    TooManyResponders,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Retry, retry_query};
-    use crate::bus::{Error, Result};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    };
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn retry_query_retries_no_reply_until_success() -> Result<()> {
-        let attempts = Arc::new(AtomicU32::new(0));
-        let retry = Retry::new(3).with_initial_backoff(Duration::from_millis(1));
-        let result = retry_query("robot/r1/asset/bundle", &retry, {
-            let attempts = attempts.clone();
-            move || {
-                let attempts = attempts.clone();
-                async move {
-                    let current = attempts.fetch_add(1, Ordering::SeqCst);
-                    if current < 2 {
-                        Ok(None)
-                    } else {
-                        Ok(Some("model"))
-                    }
-                }
-            }
-        })
-        .await?;
-
-        assert_eq!(result, Some("model"));
-        assert_eq!(attempts.load(Ordering::SeqCst), 3);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn retry_query_retries_transport_errors_until_success() -> Result<()> {
-        let attempts = Arc::new(AtomicU32::new(0));
-        let retry = Retry::new(2).with_initial_backoff(Duration::from_millis(1));
-        let result = retry_query("robot/r1/asset/bundle", &retry, {
-            let attempts = attempts.clone();
-            move || {
-                let attempts = attempts.clone();
-                async move {
-                    let current = attempts.fetch_add(1, Ordering::SeqCst);
-                    if current == 0 {
-                        Err(Error::Transport(std::io::Error::other("transient").into()))
-                    } else {
-                        Ok(Some("model"))
-                    }
-                }
-            }
-        })
-        .await?;
-
-        assert_eq!(result, Some("model"));
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn retry_query_rejects_invalid_retry() {
-        let error = retry_query::<(), _, _>("robot/r1/asset/bundle", &Retry::new(0), || async {
-            Ok(Some(()))
-        })
-        .await
-        .expect_err("invalid retry should fail");
-        assert!(matches!(error, Error::InvalidRetry(_)));
-    }
-}
+/// What a `#[server]`/`#[server_snapshot]` handler returns (D43f): `Ok(resp)` or a
+/// structured [`QueryFailure`].
+pub type ServerResult<T> = std::result::Result<T, QueryFailure>;

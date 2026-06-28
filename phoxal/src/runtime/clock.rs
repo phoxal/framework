@@ -1,148 +1,95 @@
-use std::time::Duration;
+//! The clock + time source (D34).
+//!
+//! No runtime mints its own clock; the runner owns one [`ClockSource`] and stamps
+//! every `StepContext`/`produced_at_ns` from it, so all participants share one
+//! logical-time domain. Three sources are envisaged: **real** (host-monotonic),
+//! **simulation** (subscribe the authoritative `simulation/clock`), and **test**
+//! (an injectable fake). The first slice ships real + test; the simulation source
+//! lands with the Webots port.
 
-use crate::api::simulation::{clock, clock::v1::Clock};
-use crate::api::topic;
-use crate::bus::Bus;
-use crate::bus::typed::TypedTopicSubscriber;
-use anyhow::{Result, anyhow};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Step {
-    pub tick: Clock,
+use crate::bus::LogicalTime;
+
+/// A source of logical robot time.
+pub trait ClockSource: Send + Sync + 'static {
+    /// The current logical time. Within an epoch this strictly increases.
+    fn now(&self) -> LogicalTime;
 }
 
-impl Step {
-    pub const fn new(tick: Clock) -> Self {
-        Self { tick }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchedulePolicy {
-    CatchUp,
-    Collapse,
-    Skip,
-}
-
-#[derive(Debug, Clone)]
-pub struct Schedule {
-    period_ns: u64,
-    policy: SchedulePolicy,
-    next_deadline_ns: u64,
-}
-
-impl Schedule {
-    pub const fn new(period_ns: u64, policy: SchedulePolicy) -> Self {
-        Self {
-            period_ns,
-            policy,
-            next_deadline_ns: period_ns,
-        }
-    }
-
-    pub const fn from_publish_hz(publish_hz: f64, policy: SchedulePolicy) -> Self {
-        Self::new((1_000_000_000_f64 / publish_hz) as u64, policy)
-    }
-
-    pub fn due_steps(&mut self, time_ns: u64) -> u64 {
-        if self.period_ns == 0 || time_ns < self.next_deadline_ns {
-            return 0;
-        }
-
-        let overdue = time_ns - self.next_deadline_ns;
-        let missed = overdue / self.period_ns;
-        let due = match self.policy {
-            SchedulePolicy::CatchUp => missed + 1,
-            SchedulePolicy::Collapse | SchedulePolicy::Skip => 1,
-        };
-
-        self.next_deadline_ns = match self.policy {
-            SchedulePolicy::CatchUp | SchedulePolicy::Collapse => {
-                self.next_deadline_ns + ((missed + 1) * self.period_ns)
-            }
-            SchedulePolicy::Skip => time_ns + self.period_ns,
-        };
-
-        due
-    }
-}
-
-#[derive(Debug)]
-struct RealClock {
-    step: u64,
-    time_ns: u64,
-    dt_ns: u64,
-    interval: tokio::time::Interval,
+/// Host-monotonic clock.
+///
+/// The slice bases time on a process-local monotonic `Instant`; aligning the
+/// monotonic domain across processes on one host (`CLOCK_MONOTONIC` absolute) is
+/// a documented follow-up (D34, "host-monotonic domain shared across processes").
+pub struct RealClock {
+    epoch: u64,
+    start: Instant,
 }
 
 impl RealClock {
-    fn new(period: Duration) -> Self {
-        let mut interval = tokio::time::interval(period);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        Self {
-            step: 0,
-            time_ns: 0,
-            dt_ns: period.as_nanos() as u64,
-            interval,
+    /// A real clock starting at epoch 0.
+    pub fn new() -> Self {
+        RealClock {
+            epoch: 0,
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Default for RealClock {
+    fn default() -> Self {
+        RealClock::new()
+    }
+}
+
+impl ClockSource for RealClock {
+    fn now(&self) -> LogicalTime {
+        let ns = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        LogicalTime::new(self.epoch, ns)
+    }
+}
+
+/// An injectable fake clock for tests + the runtime test harness (D34/D41).
+#[derive(Clone)]
+pub struct TestClock {
+    state: Arc<Mutex<(u64, u64)>>, // (epoch, time_ns)
+}
+
+impl TestClock {
+    /// A test clock at epoch 0, time 0.
+    pub fn new() -> Self {
+        TestClock {
+            state: Arc::new(Mutex::new((0, 0))),
         }
     }
 
-    async fn tick(&mut self) -> Step {
-        self.interval.tick().await;
-        self.step = self.step.saturating_add(1);
-        self.time_ns = self.time_ns.saturating_add(self.dt_ns);
-        Step::new(Clock::new(0, self.step, self.time_ns, self.dt_ns))
+    /// Advance the current time by `delta`.
+    pub fn advance(&self, delta: Duration) {
+        let mut state = self.state.lock().expect("test clock poisoned");
+        let ns = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
+        state.1 = state.1.saturating_add(ns);
+    }
+
+    /// Bump the epoch (reset) and restart time at 0.
+    pub fn bump_epoch(&self) {
+        let mut state = self.state.lock().expect("test clock poisoned");
+        state.0 = state.0.saturating_add(1);
+        state.1 = 0;
     }
 }
 
-enum StepSource {
-    Local(RealClock),
-    Simulation(TypedTopicSubscriber<clock::Clock>),
-}
-
-pub(crate) struct StepStream {
-    source: StepSource,
-    bound_epoch: Option<u64>,
-    last_step: Option<u64>,
-}
-
-impl StepStream {
-    pub(crate) async fn new(bus: &Bus, simulation: bool, period: Duration) -> Result<Self> {
-        Ok(Self {
-            source: if simulation {
-                StepSource::Simulation(bus.subscriber(&topic::new().simulation().clock()).await?)
-            } else {
-                StepSource::Local(RealClock::new(period))
-            },
-            bound_epoch: None,
-            last_step: None,
-        })
+impl Default for TestClock {
+    fn default() -> Self {
+        TestClock::new()
     }
+}
 
-    pub(crate) async fn next(&mut self) -> Result<Step> {
-        loop {
-            return match &mut self.source {
-                StepSource::Local(clock) => Ok(clock.tick().await),
-                StepSource::Simulation(subscriber) => match subscriber.recv().await {
-                    Ok(received) => {
-                        let clock::Clock::V1(tick) = received.value;
-                        if self.bound_epoch != Some(tick.epoch()) {
-                            self.bound_epoch = Some(tick.epoch());
-                            self.last_step = None;
-                        }
-
-                        if let Some(last_step) = self.last_step
-                            && tick.step() <= last_step
-                        {
-                            continue;
-                        }
-
-                        self.last_step = Some(tick.step());
-                        Ok(Step::new(tick))
-                    }
-                    Err(error) => Err(anyhow!("simulation clock subscription failed: {error}")),
-                },
-            };
-        }
+impl ClockSource for TestClock {
+    fn now(&self) -> LogicalTime {
+        let state = self.state.lock().expect("test clock poisoned");
+        LogicalTime::new(state.0, state.1)
     }
 }
