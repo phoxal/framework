@@ -75,3 +75,102 @@ fn topic_builder_keys_match_contract_topics() {
         "presence/heartbeat"
     );
 }
+
+// ---- API inheritance (`extends`, D61) --------------------------------------
+
+mod extends {
+    use crate::api::y2026_1 as v1;
+    use crate::api::y2026_2 as v2;
+    use crate::api::{ApiVersion, ContractBody};
+
+    #[test]
+    fn child_version_has_its_own_id() {
+        assert_eq!(<v2::Api as ApiVersion>::ID, "y2026_2");
+    }
+
+    #[test]
+    fn inherited_type_is_a_fresh_type_with_the_same_family_and_topic() {
+        // Same FAMILY/TOPIC consts as the parent...
+        assert_eq!(
+            <v2::localize::LocalizationState as ContractBody>::FAMILY,
+            <v1::localize::LocalizationState as ContractBody>::FAMILY,
+        );
+        assert_eq!(
+            <v2::localize::LocalizationState as ContractBody>::TOPIC,
+            <v1::localize::LocalizationState as ContractBody>::TOPIC,
+        );
+        // ...but bound to a different API version.
+        assert_eq!(
+            <<v2::localize::LocalizationState as ContractBody>::Api as ApiVersion>::ID,
+            "y2026_2",
+        );
+        assert_eq!(
+            <<v1::localize::LocalizationState as ContractBody>::Api as ApiVersion>::ID,
+            "y2026_1",
+        );
+    }
+
+    #[test]
+    fn inherited_type_is_wire_identical_to_the_parent() {
+        // The parent struct is re-emitted verbatim, so the same field values
+        // serialize byte-for-byte identically across versions (D61).
+        let v1_body = v1::localize::LocalizationState {
+            x_m: 1.0,
+            y_m: 2.0,
+            yaw_rad: 0.5,
+            confidence: 0.9,
+        };
+        let v2_body = v2::localize::LocalizationState {
+            x_m: 1.0,
+            y_m: 2.0,
+            yaw_rad: 0.5,
+            confidence: 0.9,
+        };
+        let v1_bytes = rmp_serde::to_vec_named(&v1_body).unwrap();
+        let v2_bytes = rmp_serde::to_vec_named(&v2_body).unwrap();
+        assert_eq!(v1_bytes, v2_bytes);
+
+        // And a v1 payload decodes into the v2 type (wire-compatible).
+        let decoded: v2::localize::LocalizationState = rmp_serde::from_slice(&v1_bytes).unwrap();
+        assert_eq!(decoded, v2_body);
+    }
+
+    #[test]
+    fn overridden_type_replaces_the_parent_but_keeps_family_and_topic() {
+        // y2026_2 overrides drive::Target with an extra field, same family/topic.
+        let target = v2::drive::Target {
+            linear_x_mps: 0.3,
+            angular_z_radps: 0.1,
+            curvature_limit_radpm: Some(2.0),
+        };
+        assert_eq!(target.curvature_limit_radpm, Some(2.0));
+        assert_eq!(
+            <v2::drive::Target as ContractBody>::FAMILY,
+            <v1::drive::Target as ContractBody>::FAMILY,
+        );
+        assert_eq!(
+            <v2::drive::Target as ContractBody>::TOPIC,
+            <v1::drive::Target as ContractBody>::TOPIC,
+        );
+    }
+
+    #[test]
+    fn new_family_exists_only_in_the_child() {
+        assert_eq!(
+            <v2::battery::State as ContractBody>::FAMILY,
+            "battery::State"
+        );
+        assert_eq!(<v2::battery::State as ContractBody>::TOPIC, "battery/state");
+    }
+
+    #[test]
+    fn child_topic_builders_cover_inherited_overridden_and_new_families() {
+        // inherited
+        assert_eq!(v2::topic::new().localize().state().key(), "localize/state");
+        assert_eq!(v2::topic::new().motor().command().key(), "motor/command");
+        // overridden
+        assert_eq!(v2::topic::new().drive().target().key(), "drive/target");
+        // new
+        assert_eq!(v2::topic::new().battery().state().key(), "battery/state");
+    }
+}

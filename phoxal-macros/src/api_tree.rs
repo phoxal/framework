@@ -1,7 +1,7 @@
 //! `phoxal_api_tree!` — the single API layer (D60/D61).
 //!
-//! Grammar (first slice — `extends` and parameterized/dynamic topics are
-//! deferred to a later slice):
+//! Grammar (`extends` API inheritance is supported; parameterized/dynamic topics
+//! are a later slice):
 //!
 //! ```text
 //! phoxal_api_tree! {
@@ -20,13 +20,26 @@
 //!             topic submap: query SubmapRequest => SubmapResponse;
 //!         }
 //!     }
+//!     version y2026_2 extends y2026_1 {
+//!         // inherits every y2026_1 family/type; overrides drive::Target and adds
+//!         // a new `battery` family — inherited types are re-emitted fresh.
+//!         drive { struct Target { linear_x_mps: f32, angular_z_radps: f32, curvature: Option<f32> }
+//!                 topic target: pubsub Target; }
+//!         battery { struct State { soc: f32 } topic state: pubsub State; }
+//!     }
 //! }
 //! ```
 //!
 //! Each `version` becomes a `pub mod y2026_N` carrying a marker `enum Api {}`
 //! (`ApiVersion`), the version-local body/helper types (plain serde types, no
 //! `{"v":…}` wrapper — D62), `ContractBody` impls binding each on-bus body to
-//! that version, and an api-local `topic` builder module.
+//! that version, and an api-local `topic` builder module. A `version … extends P`
+//! inherits `P`'s effective families: a child family merges into the parent
+//! family of the same name (child types/topics override by name), a new child
+//! family is added, and every inherited type is re-emitted *fresh* under the
+//! child version — same `FAMILY`/`TOPIC`, a different `Api` — so unchanged
+//! contracts are wire-identical by construction while the `Api` bound stays sound
+//! (D61).
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -54,25 +67,40 @@ struct ApiTree {
 
 struct Version {
     name: Ident,
+    extends: Option<Ident>,
     families: Vec<Family>,
 }
 
+#[derive(Clone)]
 struct Family {
     name: Ident,
     types: Vec<TypeDef>,
     topics: Vec<TopicDef>,
 }
 
+#[derive(Clone)]
 enum TypeDef {
     Struct(ItemStruct),
     Enum(ItemEnum),
 }
 
+impl TypeDef {
+    /// The declared name of the type (for inheritance overlay by name).
+    fn ident(&self) -> &Ident {
+        match self {
+            TypeDef::Struct(item) => &item.ident,
+            TypeDef::Enum(item) => &item.ident,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct TopicDef {
     leaf: Ident,
     kind: TopicKind,
 }
 
+#[derive(Clone)]
 enum TopicKind {
     PubSub(Ident),
     Query { request: Ident, response: Ident },
@@ -95,21 +123,23 @@ impl Parse for Version {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<kw::version>()?;
         let name: Ident = input.parse()?;
-        if input.peek(kw::extends) {
-            let kw = input.parse::<kw::extends>()?;
-            return Err(syn::Error::new(
-                kw.span,
-                "`extends` (API inheritance) is deferred to a later slice; the first cut is \
-                 single-version (y2026_1). See implementation-order.md Phase 1.",
-            ));
-        }
+        let extends = if input.peek(kw::extends) {
+            input.parse::<kw::extends>()?;
+            Some(input.parse::<Ident>()?)
+        } else {
+            None
+        };
         let body;
         syn::braced!(body in input);
         let mut families = Vec::new();
         while !body.is_empty() {
             families.push(body.parse()?);
         }
-        Ok(Version { name, families })
+        Ok(Version {
+            name,
+            extends,
+            families,
+        })
     }
 }
 
@@ -181,121 +211,172 @@ impl Parse for TopicDef {
 impl ApiTree {
     fn expand(&self) -> syn::Result<TokenStream> {
         let mut out = TokenStream::new();
+        // Resolve each version's effective families (inheriting from `extends`)
+        // and generate from the resolved set. Inherited types are re-emitted
+        // *fresh* under the child version — same `FAMILY`/`TOPIC`, a different
+        // `Api` marker — so unchanged contracts are wire-identical by construction
+        // while the compile-time `Api` bound stays sound (D61).
+        let mut resolved: std::collections::HashMap<String, Vec<Family>> =
+            std::collections::HashMap::new();
+
         for version in &self.versions {
-            out.extend(version.expand()?);
+            let effective = match &version.extends {
+                None => version.families.clone(),
+                Some(parent) => {
+                    let base = resolved.get(&parent.to_string()).ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            parent,
+                            format!(
+                                "`extends {parent}`: unknown API version (it must be declared \
+                                 earlier in the same phoxal_api_tree! invocation)"
+                            ),
+                        )
+                    })?;
+                    overlay_families(base, &version.families)
+                }
+            };
+            resolved.insert(version.name.to_string(), effective.clone());
+            out.extend(expand_version(&version.name, &effective)?);
         }
         Ok(out)
     }
 }
 
-impl Version {
-    fn expand(&self) -> syn::Result<TokenStream> {
-        let phoxal = phoxal();
-        let mod_name = &self.name;
-        let id = self.name.to_string();
-
-        let mut family_mods = TokenStream::new();
-        for family in &self.families {
-            family_mods.extend(family.expand_module()?);
-        }
-
-        let topic_mod = self.expand_topic_module()?;
-
-        Ok(quote! {
-            pub mod #mod_name {
-                //! Dated API version `#id` — version-local wire bodies + topics.
-
-                /// Zero-variant marker identifying this API version (D60).
-                #[derive(Clone, Copy, Debug)]
-                pub enum Api {}
-                impl #phoxal::api::ApiVersion for Api {
-                    const ID: &'static str = #id;
+/// Overlay a child version's declared families onto the parent's effective set:
+/// a child family merges into the parent family of the same name (child types
+/// override parent types by name; child topics override by leaf), and a wholly
+/// new child family is appended (D61).
+fn overlay_families(base: &[Family], child: &[Family]) -> Vec<Family> {
+    let mut result: Vec<Family> = base.to_vec();
+    for cf in child {
+        if let Some(bf) = result.iter_mut().find(|f| f.name == cf.name) {
+            for ct in &cf.types {
+                if let Some(slot) = bf.types.iter_mut().find(|t| t.ident() == ct.ident()) {
+                    *slot = ct.clone();
+                } else {
+                    bf.types.push(ct.clone());
                 }
-
-                #family_mods
-
-                #topic_mod
             }
-        })
+            for ctp in &cf.topics {
+                if let Some(slot) = bf.topics.iter_mut().find(|t| t.leaf == ctp.leaf) {
+                    *slot = ctp.clone();
+                } else {
+                    bf.topics.push(ctp.clone());
+                }
+            }
+        } else {
+            result.push(cf.clone());
+        }
+    }
+    result
+}
+
+fn expand_version(name: &Ident, families: &[Family]) -> syn::Result<TokenStream> {
+    let phoxal = phoxal();
+    let mod_name = name;
+    let id = name.to_string();
+
+    let mut family_mods = TokenStream::new();
+    for family in families {
+        family_mods.extend(family.expand_module()?);
     }
 
-    fn expand_topic_module(&self) -> syn::Result<TokenStream> {
-        let phoxal = phoxal();
-        let mut root_methods = TokenStream::new();
-        let mut builder_mods = TokenStream::new();
+    let topic_mod = expand_topic_module(families)?;
 
-        for family in &self.families {
-            let fam = &family.name;
-            let fam_str = fam.to_string();
+    Ok(quote! {
+        pub mod #mod_name {
+            //! Dated API version `#id` — version-local wire bodies + topics.
 
-            root_methods.extend(quote! {
-                /// Enter the `#fam_str` family topic builder.
-                pub fn #fam(self) -> #fam::Builder { #fam::Builder }
-            });
-
-            let mut leaf_methods = TokenStream::new();
-            for topic in &family.topics {
-                let leaf = &topic.leaf;
-                let key = format!("{}/{}", fam_str, leaf);
-                match &topic.kind {
-                    TopicKind::PubSub(body) => {
-                        leaf_methods.extend(quote! {
-                            #[doc = #key]
-                            pub fn #leaf(self)
-                                -> #phoxal::bus::Topic<#phoxal::bus::PubSub<super::super::#fam::#body>>
-                            {
-                                #phoxal::bus::Topic::new_static(#key)
-                            }
-                        });
-                    }
-                    TopicKind::Query { request, response } => {
-                        leaf_methods.extend(quote! {
-                            #[doc = #key]
-                            pub fn #leaf(self)
-                                -> #phoxal::bus::Topic<
-                                    #phoxal::bus::Query<
-                                        super::super::#fam::#request,
-                                        super::super::#fam::#response,
-                                    >,
-                                >
-                            {
-                                #phoxal::bus::Topic::new_static(#key)
-                            }
-                        });
-                    }
-                }
+            /// Zero-variant marker identifying this API version (D60).
+            #[derive(Clone, Copy, Debug)]
+            pub enum Api {}
+            impl #phoxal::api::ApiVersion for Api {
+                const ID: &'static str = #id;
             }
 
-            builder_mods.extend(quote! {
-                pub mod #fam {
-                    /// Topic builder for the `#fam_str` family.
-                    pub struct Builder;
-                    impl Builder {
-                        #leaf_methods
-                    }
+            #family_mods
+
+            #topic_mod
+        }
+    })
+}
+
+fn expand_topic_module(families: &[Family]) -> syn::Result<TokenStream> {
+    let phoxal = phoxal();
+    let mut root_methods = TokenStream::new();
+    let mut builder_mods = TokenStream::new();
+
+    for family in families {
+        let fam = &family.name;
+        let fam_str = fam.to_string();
+
+        root_methods.extend(quote! {
+            /// Enter the `#fam_str` family topic builder.
+            pub fn #fam(self) -> #fam::Builder { #fam::Builder }
+        });
+
+        let mut leaf_methods = TokenStream::new();
+        for topic in &family.topics {
+            let leaf = &topic.leaf;
+            let key = format!("{}/{}", fam_str, leaf);
+            match &topic.kind {
+                TopicKind::PubSub(body) => {
+                    leaf_methods.extend(quote! {
+                        #[doc = #key]
+                        pub fn #leaf(self)
+                            -> #phoxal::bus::Topic<#phoxal::bus::PubSub<super::super::#fam::#body>>
+                        {
+                            #phoxal::bus::Topic::new_static(#key)
+                        }
+                    });
                 }
-            });
+                TopicKind::Query { request, response } => {
+                    leaf_methods.extend(quote! {
+                        #[doc = #key]
+                        pub fn #leaf(self)
+                            -> #phoxal::bus::Topic<
+                                #phoxal::bus::Query<
+                                    super::super::#fam::#request,
+                                    super::super::#fam::#response,
+                                >,
+                            >
+                        {
+                            #phoxal::bus::Topic::new_static(#key)
+                        }
+                    });
+                }
+            }
         }
 
-        Ok(quote! {
-            /// Api-local topic builders (D61). `topic::new()` is the entrypoint;
-            /// every leaf binds the topic's family/kind to a version-local body.
-            pub mod topic {
-                /// Begin a topic path for this API version.
-                pub fn new() -> Root {
-                    Root
+        builder_mods.extend(quote! {
+            pub mod #fam {
+                /// Topic builder for the `#fam_str` family.
+                pub struct Builder;
+                impl Builder {
+                    #leaf_methods
                 }
-
-                /// Root of the topic builder chain.
-                pub struct Root;
-                impl Root {
-                    #root_methods
-                }
-
-                #builder_mods
             }
-        })
+        });
     }
+
+    Ok(quote! {
+        /// Api-local topic builders (D61). `topic::new()` is the entrypoint;
+        /// every leaf binds the topic's family/kind to a version-local body.
+        pub mod topic {
+            /// Begin a topic path for this API version.
+            pub fn new() -> Root {
+                Root
+            }
+
+            /// Root of the topic builder chain.
+            pub struct Root;
+            impl Root {
+                #root_methods
+            }
+
+            #builder_mods
+        }
+    })
 }
 
 impl Family {

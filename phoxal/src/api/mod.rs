@@ -168,6 +168,34 @@ phoxal_api_tree! {
             topic get: query GetRequest => GetResponse;
         }
     }
+
+    // A second API version that inherits y2026_1 (D61). Unchanged families/types
+    // are re-emitted *fresh* under `y2026_2` — same `FAMILY`/`TOPIC`, a different
+    // `Api` marker — so they are wire-identical to their y2026_1 counterparts by
+    // construction. This version overrides one type and adds one family.
+    version y2026_2 extends y2026_1 {
+        drive {
+            /// y2026_2 adds an optional curvature limit to the drive target.
+            struct Target {
+                linear_x_mps: f32,
+                angular_z_radps: f32,
+                curvature_limit_radpm: Option<f32>,
+            }
+
+            topic target: pubsub Target;
+        }
+
+        battery {
+            /// Battery state — a family that exists only from y2026_2 on.
+            struct State {
+                voltage_v: f32,
+                current_a: f32,
+                charge_ratio: f32,
+            }
+
+            topic state: pubsub State;
+        }
+    }
 }
 
 #[cfg(test)]
