@@ -185,14 +185,14 @@ phoxal_api_tree! {
             topic state: pubsub State;
         }
 
-        joint {
+        joint(joint) {
             struct JointState {
                 position_rad: f64,
                 velocity_radps: f64,
                 effort_nm: Option<f64>,
             }
 
-            topic state(joint): pubsub JointState = "joint/{joint}/state";
+            topic state: pubsub JointState;
         }
 
         frame {
@@ -432,15 +432,18 @@ phoxal_api_tree! {
                 stream_id: String,
             }
 
-            #[derive(Copy, Eq)]
-            enum StreamEvent {
-                Started,
-                KeyFrame,
-                Stopped,
-            }
-
             topic open: query OpenRequest => OpenResponse;
-            topic stream_event(stream): pubsub StreamEvent = "video/stream/{stream}/event";
+
+            stream(stream) {
+                #[derive(Copy, Eq)]
+                enum StreamEvent {
+                    Started,
+                    KeyFrame,
+                    Stopped,
+                }
+
+                topic event: pubsub StreamEvent;
+            }
         }
 
         simulation {
@@ -473,341 +476,331 @@ phoxal_api_tree! {
             topic contact: pubsub Contact;
         }
 
-        motor {
-            /// A per-actuator command.
-            enum Command {
-                Velocity(f32),
-                Torque(f32),
-                Stop,
+        // Per-instance component capabilities (D17/D38: framework-runtime / driver
+        // territory). `component(instance)` selects a manifest-declared component;
+        // each child `kind(capability)` is a self-contained node whose key is
+        // `component/{instance}/<kind>/{capability}/<leaf>`. Nodes duplicate any
+        // types they share by design — the node path disambiguates, so the names
+        // are path-local.
+        component(instance) {
+            motor(capability) {
+                /// A per-actuator command.
+                enum Command {
+                    Velocity(f32),
+                    Torque(f32),
+                    Stop,
+                }
+
+                topic command: pubsub Command;
             }
 
-            topic command: pubsub Command;
-        }
+            encoder(capability) {
+                /// Per-encoder sample on a dynamic per-instance key.
+                struct Sample {
+                    position_rad: f64,
+                    velocity_radps: f32,
+                }
 
-        component {
-            /// A command to a specific component-instance capability, addressed by
-            /// a dynamic per-instance key (D17/D38: framework-runtime / driver
-            /// territory). The runtime fills `{instance}`/`{capability}` from its
-            /// manifest-declared component bindings.
-            enum MotorCommand {
-                Velocity(f32),
-                Torque(f32),
-                Stop,
+                topic sample: pubsub Sample;
             }
 
-            /// Per-encoder sample on a dynamic per-instance key.
-            struct EncoderSample {
-                position_rad: f64,
-                velocity_radps: f32,
+            accelerometer(capability) {
+                /// Raw accelerometer sample in the sensor-local frame in m/s^2.
+                struct Sample {
+                    linear_acceleration: [f32; 3],
+                }
+
+                topic sample: pubsub Sample;
             }
 
-            /// Raw accelerometer sample in the sensor-local frame in m/s^2.
-            struct AccelerometerSample {
-                linear_acceleration: [f32; 3],
+            gyroscope(capability) {
+                /// Raw angular velocity sample in the sensor-local frame in rad/s.
+                struct Sample {
+                    angular_velocity: [f32; 3],
+                }
+
+                topic sample: pubsub Sample;
             }
 
-            /// Raw angular velocity sample in the sensor-local frame in rad/s.
-            struct GyroscopeSample {
-                angular_velocity: [f32; 3],
+            magnetometer(capability) {
+                struct Sample {
+                    magnetic_field: [f32; 3],
+                }
+
+                topic sample: pubsub Sample;
             }
 
-            struct MagnetometerSample {
-                magnetic_field: [f32; 3],
+            imu(capability) {
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum SensorHealth {
+                    Nominal,
+                    Degraded,
+                    Fault,
+                }
+
+                #[derive(Copy)]
+                struct Bias {
+                    angular_velocity_radps: [f32; 3],
+                    linear_acceleration_mps2: [f32; 3],
+                }
+
+                struct Sample {
+                    orientation: Option<[f32; 4]>,
+                    angular_velocity_radps: [f32; 3],
+                    linear_acceleration_mps2: [f32; 3],
+                    covariance: Option<[f32; 9]>,
+                    noise_density: Option<[f32; 3]>,
+                    sensor_frame_id: Option<String>,
+                    measured_at_ns: Option<u64>,
+                    health: SensorHealth,
+                    bias: Option<Bias>,
+                }
+
+                topic sample: pubsub Sample;
             }
 
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum SensorHealth {
-                Nominal,
-                Degraded,
-                Fault,
+            range(capability) {
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum SensorHealth {
+                    Nominal,
+                    Degraded,
+                    Fault,
+                }
+
+                #[derive(Copy)]
+                struct Limits {
+                    min_m: f32,
+                    max_m: f32,
+                }
+
+                #[derive(Copy)]
+                struct SampleQuality {
+                    valid: bool,
+                    confidence: Option<f32>,
+                }
+
+                struct Sample {
+                    distance_m: f32,
+                    limits: Option<Limits>,
+                    measured_at_ns: Option<u64>,
+                    quality: Option<SampleQuality>,
+                    health: SensorHealth,
+                }
+
+                topic sample: pubsub Sample;
             }
 
-            #[derive(Copy)]
-            struct Bias {
-                angular_velocity_radps: [f32; 3],
-                linear_acceleration_mps2: [f32; 3],
+            gnss(capability) {
+                struct Sample {
+                    latitude: f64,
+                    longitude: f64,
+                    altitude: f64,
+                    position_covariance: [f64; 9],
+                }
+
+                topic sample: pubsub Sample;
             }
 
-            struct ImuSample {
-                orientation: Option<[f32; 4]>,
-                angular_velocity_radps: [f32; 3],
-                linear_acceleration_mps2: [f32; 3],
-                covariance: Option<[f32; 9]>,
-                noise_density: Option<[f32; 3]>,
-                sensor_frame_id: Option<String>,
-                measured_at_ns: Option<u64>,
-                health: SensorHealth,
-                bias: Option<Bias>,
+            camera(capability) {
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum Encoding {
+                    Jpeg,
+                    Png,
+                    L8,
+                    Rgb8,
+                    Rgba8,
+                }
+
+                #[derive(Copy)]
+                struct Intrinsics {
+                    fx: f32,
+                    fy: f32,
+                    cx: f32,
+                    cy: f32,
+                }
+
+                struct Distortion {
+                    model: String,
+                    coefficients: Vec<f32>,
+                }
+
+                #[derive(Copy)]
+                struct ExposureTiming {
+                    exposure_start_ns: Option<u64>,
+                    exposure_duration_ns: Option<u64>,
+                }
+
+                struct CalibrationIdentity {
+                    id: String,
+                    version: String,
+                }
+
+                struct Frame {
+                    width: u32,
+                    height: u32,
+                    encoding: Encoding,
+                    intrinsics: Option<Intrinsics>,
+                    distortion: Option<Distortion>,
+                    exposure: Option<ExposureTiming>,
+                    measured_at_ns: Option<u64>,
+                    calibration: Option<CalibrationIdentity>,
+                    #[serde(with = "serde_bytes")]
+                    data: Vec<u8>,
+                }
+
+                topic frame: pubsub Frame;
             }
 
-            #[derive(Copy)]
-            struct Limits {
-                min_m: f32,
-                max_m: f32,
+            depth(capability) {
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum Encoding {
+                    U16Millimeters,
+                }
+
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum InvalidSamplePolicy {
+                    ZeroIsInvalid,
+                    NonFiniteIsInvalid,
+                }
+
+                #[derive(Copy)]
+                struct Intrinsics {
+                    fx: f32,
+                    fy: f32,
+                    cx: f32,
+                    cy: f32,
+                }
+
+                struct Distortion {
+                    model: String,
+                    coefficients: Vec<f32>,
+                }
+
+                #[derive(Copy)]
+                struct ExposureTiming {
+                    exposure_start_ns: Option<u64>,
+                    exposure_duration_ns: Option<u64>,
+                }
+
+                struct CalibrationIdentity {
+                    id: String,
+                    version: String,
+                }
+
+                struct Frame {
+                    samples_mm: Vec<u16>,
+                    encoding: Encoding,
+                    invalid_sample_policy: InvalidSamplePolicy,
+                    width: Option<u32>,
+                    height: Option<u32>,
+                    intrinsics: Option<Intrinsics>,
+                    distortion: Option<Distortion>,
+                    exposure: Option<ExposureTiming>,
+                    measured_at_ns: Option<u64>,
+                    calibration: Option<CalibrationIdentity>,
+                }
+
+                topic frame: pubsub Frame;
             }
 
-            #[derive(Copy)]
-            struct SampleQuality {
-                valid: bool,
-                confidence: Option<f32>,
+            lidar(capability) {
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum SensorHealth {
+                    Nominal,
+                    Degraded,
+                    Fault,
+                }
+
+                #[derive(Copy)]
+                struct ScanGeometry {
+                    angle_min_rad: f32,
+                    angle_increment_rad: f32,
+                }
+
+                #[derive(Copy)]
+                struct RangeLimits {
+                    min_m: f32,
+                    max_m: f32,
+                }
+
+                #[derive(Copy)]
+                struct ScanQuality {
+                    valid_points: u32,
+                }
+
+                struct Ranges {
+                    ranges: Vec<f32>,
+                    geometry: Option<ScanGeometry>,
+                    limits: Option<RangeLimits>,
+                    measured_at_ns: Option<u64>,
+                    quality: Option<ScanQuality>,
+                    health: SensorHealth,
+                }
+
+                struct Points {
+                    points: Vec<[f32; 3]>,
+                    limits: Option<RangeLimits>,
+                    measured_at_ns: Option<u64>,
+                    quality: Option<ScanQuality>,
+                    health: SensorHealth,
+                }
+
+                #[serde(tag = "kind", rename_all = "snake_case")]
+                enum Scan {
+                    Ranges(Ranges),
+                    Points(Points),
+                }
+
+                topic scan: pubsub Scan;
             }
 
-            struct RangeSample {
-                distance_m: f32,
-                limits: Option<Limits>,
-                measured_at_ns: Option<u64>,
-                quality: Option<SampleQuality>,
-                health: SensorHealth,
+            mmwave(capability) {
+                #[derive(Copy)]
+                struct Detection {
+                    position: [f32; 3],
+                    velocity: [f32; 3],
+                    snr: f32,
+                }
+
+                struct Scan {
+                    detections: Vec<Detection>,
+                }
+
+                topic scan: pubsub Scan;
             }
 
-            #[derive(Default, Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum CoordinateSystem {
-                #[default]
-                Local,
-                Wgs84,
+            microphone(capability) {
+                struct Frame {
+                    data: Vec<u8>,
+                }
+
+                topic frame: pubsub Frame;
             }
 
-            struct GnssSample {
-                latitude: f64,
-                longitude: f64,
-                altitude: f64,
-                position_covariance: [f64; 9],
+            led(capability) {
+                #[derive(Copy, Eq)]
+                enum Command {
+                    On,
+                    Off,
+                }
+
+                topic command: pubsub Command;
             }
 
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum CameraEncoding {
-                Jpeg,
-                Png,
-                L8,
-                Rgb8,
-                Rgba8,
+            emergency_stop(capability) {
+                #[derive(Eq)]
+                struct State {
+                    engaged: bool,
+                }
+
+                topic state: pubsub State;
             }
-
-            #[derive(Copy)]
-            struct CameraIntrinsics {
-                fx: f32,
-                fy: f32,
-                cx: f32,
-                cy: f32,
-            }
-
-            struct CameraDistortion {
-                model: String,
-                coefficients: Vec<f32>,
-            }
-
-            #[derive(Copy)]
-            struct CameraExposureTiming {
-                exposure_start_ns: Option<u64>,
-                exposure_duration_ns: Option<u64>,
-            }
-
-            struct CameraCalibrationIdentity {
-                id: String,
-                version: String,
-            }
-
-            struct CameraFrame {
-                width: u32,
-                height: u32,
-                encoding: CameraEncoding,
-                intrinsics: Option<CameraIntrinsics>,
-                distortion: Option<CameraDistortion>,
-                exposure: Option<CameraExposureTiming>,
-                measured_at_ns: Option<u64>,
-                calibration: Option<CameraCalibrationIdentity>,
-                #[serde(with = "serde_bytes")]
-                data: Vec<u8>,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum DepthEncoding {
-                U16Millimeters,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum DepthInvalidSamplePolicy {
-                ZeroIsInvalid,
-                NonFiniteIsInvalid,
-            }
-
-            struct DepthFrame {
-                samples_mm: Vec<u16>,
-                encoding: DepthEncoding,
-                invalid_sample_policy: DepthInvalidSamplePolicy,
-                width: Option<u32>,
-                height: Option<u32>,
-                intrinsics: Option<CameraIntrinsics>,
-                distortion: Option<CameraDistortion>,
-                exposure: Option<CameraExposureTiming>,
-                measured_at_ns: Option<u64>,
-                calibration: Option<CameraCalibrationIdentity>,
-            }
-
-            #[serde(tag = "kind", rename_all = "snake_case")]
-            enum LidarScan {
-                Ranges(LidarRanges),
-                Points(LidarPoints),
-            }
-
-            struct LidarRanges {
-                ranges: Vec<f32>,
-                geometry: Option<LidarScanGeometry>,
-                limits: Option<LidarRangeLimits>,
-                measured_at_ns: Option<u64>,
-                quality: Option<LidarScanQuality>,
-                health: SensorHealth,
-            }
-
-            struct LidarPoints {
-                points: Vec<[f32; 3]>,
-                limits: Option<LidarRangeLimits>,
-                measured_at_ns: Option<u64>,
-                quality: Option<LidarScanQuality>,
-                health: SensorHealth,
-            }
-
-            #[derive(Copy)]
-            struct LidarScanGeometry {
-                angle_min_rad: f32,
-                angle_increment_rad: f32,
-            }
-
-            #[derive(Copy)]
-            struct LidarRangeLimits {
-                min_m: f32,
-                max_m: f32,
-            }
-
-            #[derive(Copy)]
-            struct LidarScanQuality {
-                valid_points: u32,
-            }
-
-            struct MmwaveScan {
-                detections: Vec<MmwaveDetection>,
-            }
-
-            #[derive(Copy)]
-            struct MmwaveDetection {
-                position: [f32; 3],
-                velocity: [f32; 3],
-                snr: f32,
-            }
-
-            struct MicrophoneFrame {
-                data: Vec<u8>,
-            }
-
-            #[derive(Copy, Eq)]
-            enum LedCommand {
-                On,
-                Off,
-            }
-
-            #[derive(Eq)]
-            struct EmergencyStopState {
-                engaged: bool,
-            }
-
-            #[derive(Eq, PartialOrd, Ord, Hash)]
-            struct ProfileId(pub String);
-
-            struct ImageCrop {
-                origin_x_px: u32,
-                origin_y_px: u32,
-                width_px: u32,
-                height_px: u32,
-            }
-
-            struct AngularRoi {
-                start_rad: f32,
-                end_rad: f32,
-            }
-
-            #[derive(Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum CameraProfileEncoding {
-                L8,
-                Rgb8,
-                Rgba8,
-                Jpeg,
-                Png,
-            }
-
-            #[derive(Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum DepthProfileEncoding {
-                U16Millimeters,
-            }
-
-            struct CameraProfileSpec {
-                width_px: u32,
-                height_px: u32,
-                publish_rate_hz: f64,
-                encoding: CameraProfileEncoding,
-            }
-
-            enum ParsedCameraProfileSpec {
-                Native,
-                Spec(CameraProfileSpec),
-            }
-
-            struct DepthProfileSpec {
-                width_px: u32,
-                height_px: u32,
-                publish_rate_hz: f64,
-            }
-
-            enum ParsedDepthProfileSpec {
-                Native,
-                Spec(DepthProfileSpec),
-            }
-
-            struct RateProfileSpec {
-                publish_rate_hz: f64,
-            }
-
-            enum ParsedRateProfileSpec {
-                Native,
-                Spec(RateProfileSpec),
-            }
-
-            topic motor_command(instance, capability): pubsub MotorCommand
-                = "component/{instance}/motor/{capability}/command";
-            topic encoder_sample(instance, capability): pubsub EncoderSample
-                = "component/{instance}/encoder/{capability}/sample";
-            topic accelerometer_sample(instance, capability): pubsub AccelerometerSample
-                = "component/{instance}/accelerometer/{capability}/sample";
-            topic gyroscope_sample(instance, capability): pubsub GyroscopeSample
-                = "component/{instance}/gyroscope/{capability}/sample";
-            topic magnetometer_sample(instance, capability): pubsub MagnetometerSample
-                = "component/{instance}/magnetometer/{capability}/sample";
-            topic imu_sample(instance, capability): pubsub ImuSample
-                = "component/{instance}/imu/{capability}/sample";
-            topic range_sample(instance, capability): pubsub RangeSample
-                = "component/{instance}/range/{capability}/sample";
-            topic gnss_sample(instance, capability): pubsub GnssSample
-                = "component/{instance}/gnss/{capability}/sample";
-            topic camera_frame(instance, capability): pubsub CameraFrame
-                = "component/{instance}/camera/{capability}/frame";
-            topic depth_frame(instance, capability): pubsub DepthFrame
-                = "component/{instance}/depth/{capability}/frame";
-            topic lidar_scan(instance, capability): pubsub LidarScan
-                = "component/{instance}/lidar/{capability}/scan";
-            topic mmwave_scan(instance, capability): pubsub MmwaveScan
-                = "component/{instance}/mmwave/{capability}/scan";
-            topic microphone_frame(instance, capability): pubsub MicrophoneFrame
-                = "component/{instance}/microphone/{capability}/frame";
-            topic led_command(instance, capability): pubsub LedCommand
-                = "component/{instance}/led/{capability}/command";
-            topic emergency_stop_state(instance, capability): pubsub EmergencyStopState
-                = "component/{instance}/emergency_stop/{capability}/state";
         }
 
         odometry {

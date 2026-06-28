@@ -61,10 +61,11 @@ impl MotorBinding {
     }
 
     /// The dynamic per-instance motor-command topic for this binding.
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::MotorCommand>> {
+    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::motor::Command>> {
         api::topic::new()
-            .component()
-            .motor_command(&self.component_id, &self.capability_id)
+            .component(&self.component_id)
+            .motor(&self.capability_id)
+            .command()
     }
 }
 
@@ -116,8 +117,8 @@ struct Drive {
     // Handles.
     target: Subscriber<api::drive::Target>,
     state: Publisher<api::drive::State>,
-    left_motors: Vec<Publisher<api::component::MotorCommand>>,
-    right_motors: Vec<Publisher<api::component::MotorCommand>>,
+    left_motors: Vec<Publisher<api::component::motor::Command>>,
+    right_motors: Vec<Publisher<api::component::motor::Command>>,
 }
 
 #[phoxal::runtime]
@@ -197,7 +198,7 @@ impl Drive {
         let now = LogicalTime::new(0, 0);
         for publisher in self.left_motors.iter().chain(&self.right_motors) {
             let _ = publisher
-                .publish_at(now, api::component::MotorCommand::Stop)
+                .publish_at(now, api::component::motor::Command::Stop)
                 .await;
         }
         Ok(())
@@ -266,8 +267,8 @@ fn stopped_target() -> api::drive::Target {
     }
 }
 
-fn command(wheel_radps: f64, direction_sign: i8) -> api::component::MotorCommand {
-    api::component::MotorCommand::Velocity((wheel_radps * f64::from(direction_sign)) as f32)
+fn command(wheel_radps: f64, direction_sign: i8) -> api::component::motor::Command {
+    api::component::motor::Command::Velocity((wheel_radps * f64::from(direction_sign)) as f32)
 }
 
 fn clamp_f32(value: f32, limit: f64) -> f32 {

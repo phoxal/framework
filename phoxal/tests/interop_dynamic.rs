@@ -29,7 +29,7 @@ const SAMPLE_VELOCITY_RADPS: f32 = 2.5;
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "encoder-producer", api = y2026_1)]
 struct EncoderProducer {
-    encoder: Publisher<api::component::EncoderSample>,
+    encoder: Publisher<api::component::encoder::Sample>,
 }
 
 #[phoxal::runtime]
@@ -40,8 +40,9 @@ impl EncoderProducer {
             encoder: ctx
                 .publisher(
                     api::topic::new()
-                        .component()
-                        .encoder_sample(INSTANCE, CAPABILITY),
+                        .component(INSTANCE)
+                        .encoder(CAPABILITY)
+                        .sample(),
                 )
                 .await?,
         })
@@ -52,7 +53,7 @@ impl EncoderProducer {
         self.encoder
             .publish_at(
                 step.time(),
-                api::component::EncoderSample {
+                api::component::encoder::Sample {
                     position_rad: 1.0,
                     velocity_radps: SAMPLE_VELOCITY_RADPS,
                 },
@@ -66,7 +67,7 @@ impl EncoderProducer {
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "encoder-consumer", api = y2026_1)]
 struct EncoderConsumer {
-    encoder: Subscriber<api::component::EncoderSample>,
+    encoder: Subscriber<api::component::encoder::Sample>,
 }
 
 #[phoxal::runtime]
@@ -77,8 +78,9 @@ impl EncoderConsumer {
             encoder: ctx
                 .subscribe(
                     api::topic::new()
-                        .component()
-                        .encoder_sample(INSTANCE, CAPABILITY),
+                        .component(INSTANCE)
+                        .encoder(CAPABILITY)
+                        .sample(),
                 )
                 .subscriber()
                 .await?,

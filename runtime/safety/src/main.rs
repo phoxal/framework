@@ -55,7 +55,7 @@ struct Safety {
     battery: Subscriber<api::battery::State>,
     drive: Subscriber<api::drive::State>,
     software_estop: Subscriber<api::safety::EmergencyStopRequest>,
-    component_estops: Vec<Subscriber<api::component::EmergencyStopState>>,
+    component_estops: Vec<Subscriber<api::component::emergency_stop::State>>,
     authorization: Publisher<api::safety::SafetyAuthorization>,
     state: Publisher<api::safety::Status>,
 }
@@ -85,8 +85,9 @@ impl Safety {
             component_estops.push(
                 ctx.subscribe(
                     api::topic::new()
-                        .component()
-                        .emergency_stop_state(&binding.component_id, &binding.capability_id),
+                        .component(&binding.component_id)
+                        .emergency_stop(&binding.capability_id)
+                        .state(),
                 )
                 .subscriber()
                 .await?,
@@ -564,7 +565,7 @@ mod tests {
         assert_contract::<api::battery::State>(contracts, "subscribe");
         assert_contract::<api::drive::State>(contracts, "subscribe");
         assert_contract::<api::safety::EmergencyStopRequest>(contracts, "subscribe");
-        assert_contract::<api::component::EmergencyStopState>(contracts, "subscribe");
+        assert_contract::<api::component::emergency_stop::State>(contracts, "subscribe");
         assert_contract::<api::safety::SafetyAuthorization>(contracts, "publish");
         assert_contract::<api::safety::Status>(contracts, "publish");
     }

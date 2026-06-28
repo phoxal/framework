@@ -37,16 +37,20 @@ impl SensorBinding {
         })
     }
 
-    fn camera_topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::CameraFrame>> {
+    fn camera_topic(
+        &self,
+    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::camera::Frame>> {
         api::topic::new()
-            .component()
-            .camera_frame(&self.component_id, &self.capability_id)
+            .component(&self.component_id)
+            .camera(&self.capability_id)
+            .frame()
     }
 
-    fn depth_topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::DepthFrame>> {
+    fn depth_topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::depth::Frame>> {
         api::topic::new()
-            .component()
-            .depth_frame(&self.component_id, &self.capability_id)
+            .component(&self.component_id)
+            .depth(&self.capability_id)
+            .frame()
     }
 }
 
@@ -76,8 +80,8 @@ impl HealthState {
 }
 
 struct DetectorInput<'a> {
-    camera: &'a api::component::CameraFrame,
-    depth: Option<&'a api::component::DepthFrame>,
+    camera: &'a api::component::camera::Frame,
+    depth: Option<&'a api::component::depth::Frame>,
     frame_id: &'a str,
     stamp_ns: u64,
     localization: Option<&'a api::localize::LocalizationState>,
@@ -225,15 +229,15 @@ struct Perception {
     // Runtime-private state.
     camera_sources: Vec<SensorBinding>,
     depth_sources: Vec<SensorBinding>,
-    latest_cameras: Vec<Option<FrameSample<api::component::CameraFrame>>>,
-    latest_depths: Vec<Option<FrameSample<api::component::DepthFrame>>>,
+    latest_cameras: Vec<Option<FrameSample<api::component::camera::Frame>>>,
+    latest_depths: Vec<Option<FrameSample<api::component::depth::Frame>>>,
     latest_localization: Option<FrameSample<api::localize::LocalizationState>>,
     detector: PlaceholderDetector,
     tracker: PointTracker,
     health: HealthState,
     // Handles.
-    cameras: Vec<Subscriber<api::component::CameraFrame>>,
-    depths: Vec<Subscriber<api::component::DepthFrame>>,
+    cameras: Vec<Subscriber<api::component::camera::Frame>>,
+    depths: Vec<Subscriber<api::component::depth::Frame>>,
     localization: Subscriber<api::localize::LocalizationState>,
     detections: Publisher<api::perception::Detections>,
     state: Publisher<api::perception::State>,
@@ -426,10 +430,10 @@ fn latest_fresh_camera_index<B>(
 
 fn latest_matching_depth(
     depth_sources: &[SensorBinding],
-    samples: &[Option<FrameSample<api::component::DepthFrame>>],
+    samples: &[Option<FrameSample<api::component::depth::Frame>>],
     component_id: &str,
     now_ns: u64,
-) -> Option<FrameSample<api::component::DepthFrame>> {
+) -> Option<FrameSample<api::component::depth::Frame>> {
     depth_sources
         .iter()
         .zip(samples)
@@ -519,10 +523,10 @@ mod tests {
     #[test]
     fn placeholder_detector_emits_no_detections() {
         let mut detector = PlaceholderDetector;
-        let camera = api::component::CameraFrame {
+        let camera = api::component::camera::Frame {
             width: 2,
             height: 2,
-            encoding: api::component::CameraEncoding::Rgb8,
+            encoding: api::component::camera::Encoding::Rgb8,
             intrinsics: None,
             distortion: None,
             exposure: None,
@@ -607,8 +611,8 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::component::CameraFrame>(contracts, "subscribe");
-        assert_contract::<api::component::DepthFrame>(contracts, "subscribe");
+        assert_contract::<api::component::camera::Frame>(contracts, "subscribe");
+        assert_contract::<api::component::depth::Frame>(contracts, "subscribe");
         assert_contract::<api::localize::LocalizationState>(contracts, "subscribe");
         assert_contract::<api::perception::Detections>(contracts, "publish");
         assert_contract::<api::perception::State>(contracts, "publish");

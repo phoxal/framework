@@ -33,15 +33,19 @@ impl VideoSource {
         }
     }
 
-    fn camera_topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::CameraFrame>> {
-        api::topic::new().component().camera_frame(
-            &self.capability.component_id,
-            &self.capability.capability_id,
-        )
+    fn camera_topic(
+        &self,
+    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::camera::Frame>> {
+        api::topic::new()
+            .component(&self.capability.component_id)
+            .camera(&self.capability.capability_id)
+            .frame()
     }
 
-    fn event_topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::video::StreamEvent>> {
-        api::topic::new().video().stream_event(&self.stream_id)
+    fn event_topic(
+        &self,
+    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::video::stream::StreamEvent>> {
+        api::topic::new().video().stream(&self.stream_id).event()
     }
 
     fn capability_key(&self) -> String {
@@ -59,8 +63,8 @@ struct Video {
     last_frame_ns: Vec<Option<u64>>,
     last_time: LogicalTime,
     // Handles.
-    cameras: Vec<Subscriber<api::component::CameraFrame>>,
-    events: Vec<Publisher<api::video::StreamEvent>>,
+    cameras: Vec<Subscriber<api::component::camera::Frame>>,
+    events: Vec<Publisher<api::video::stream::StreamEvent>>,
 }
 
 #[phoxal::runtime]
@@ -94,7 +98,7 @@ impl Video {
         for index in 0..self.sources.len() {
             if self.active[index] && !self.started[index] {
                 self.events[index]
-                    .publish_at(step.time(), api::video::StreamEvent::Started)
+                    .publish_at(step.time(), api::video::stream::StreamEvent::Started)
                     .await?;
                 self.started[index] = true;
             }
@@ -113,7 +117,7 @@ impl Video {
                     continue;
                 }
                 self.events[index]
-                    .publish_at(step.time(), api::video::StreamEvent::KeyFrame)
+                    .publish_at(step.time(), api::video::stream::StreamEvent::KeyFrame)
                     .await?;
             }
         }
@@ -139,7 +143,7 @@ impl Video {
         {
             if *active || *started {
                 let _ = publisher
-                    .publish_at(self.last_time, api::video::StreamEvent::Stopped)
+                    .publish_at(self.last_time, api::video::stream::StreamEvent::Stopped)
                     .await;
             }
             *active = false;
@@ -336,8 +340,8 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::component::CameraFrame>(contracts, "subscribe");
-        assert_contract::<api::video::StreamEvent>(contracts, "publish");
+        assert_contract::<api::component::camera::Frame>(contracts, "subscribe");
+        assert_contract::<api::video::stream::StreamEvent>(contracts, "publish");
         assert_contract::<api::video::OpenRequest>(contracts, "server_request");
         assert_contract::<api::video::OpenResponse>(contracts, "server_response");
     }
