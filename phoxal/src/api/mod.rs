@@ -159,10 +159,11 @@ phoxal_api_tree! {
                 path: String,
             }
 
-            /// The asset bytes, or a not-found marker.
+            /// The asset bytes, a not-found marker, or a rejected path.
             enum GetResponse {
                 Found { bytes: Vec<u8> },
                 Missing,
+                InvalidPath,
             }
 
             topic get: query GetRequest => GetResponse;
