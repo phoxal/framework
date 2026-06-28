@@ -22,6 +22,7 @@ members = [
     "runtime/localize",
     "runtime/map",
     "runtime/odometry",
+    "runtime/safety",
     "runtime/driver-ddsm115",
 ]
 
