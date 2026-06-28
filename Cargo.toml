@@ -17,6 +17,7 @@ members = [
     "phoxal",
     "phoxal-macros",
     "runtime/asset",
+    "runtime/drive",
 ]
 
 [workspace.dependencies]
