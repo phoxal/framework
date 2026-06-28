@@ -137,7 +137,7 @@ impl Frame {
         let mut buffers = BTreeMap::new();
         for dynamic in &config.dynamic_joints {
             joints.push(
-                ctx.subscribe(api::topic::new().joint().state(&dynamic.joint_id))
+                ctx.subscribe(api::topic::new().joint(&dynamic.joint_id).state())
                     .subscriber()
                     .await?,
             );

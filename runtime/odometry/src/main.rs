@@ -47,10 +47,11 @@ impl EncoderBinding {
     }
 
     /// The dynamic per-instance encoder-sample topic for this binding.
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::EncoderSample>> {
+    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::encoder::Sample>> {
         api::topic::new()
-            .component()
-            .encoder_sample(&self.component_id, &self.capability_id)
+            .component(&self.component_id)
+            .encoder(&self.capability_id)
+            .sample()
     }
 }
 
@@ -106,8 +107,8 @@ struct Odometry {
     left_sample_ns: Vec<u64>,
     right_sample_ns: Vec<u64>,
     // Handles.
-    left_encoders: Vec<Subscriber<api::component::EncoderSample>>,
-    right_encoders: Vec<Subscriber<api::component::EncoderSample>>,
+    left_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
+    right_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
     state: Publisher<api::odometry::State>,
 }
 
@@ -196,7 +197,7 @@ impl Odometry {
 }
 
 fn drain_encoders(
-    subscribers: &mut [Subscriber<api::component::EncoderSample>],
+    subscribers: &mut [Subscriber<api::component::encoder::Sample>],
     bindings: &[EncoderBinding],
     velocities: &mut [f64],
     sample_ns: &mut [u64],
@@ -361,7 +362,7 @@ mod tests {
         assert_eq!(value["artifact"]["id"], "odometry");
         let contracts = value["required_contracts"].as_array().unwrap();
         assert!(contracts.iter().any(|c| {
-            c["family"] == <api::component::EncoderSample as ContractBody>::FAMILY
+            c["family"] == <api::component::encoder::Sample as ContractBody>::FAMILY
                 && c["direction"] == "subscribe"
         }));
         assert!(contracts.iter().any(|c| {

@@ -19,10 +19,11 @@ struct EncoderBinding {
 }
 
 impl EncoderBinding {
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::EncoderSample>> {
+    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::encoder::Sample>> {
         api::topic::new()
-            .component()
-            .encoder_sample(&self.component_id, &self.capability_id)
+            .component(&self.component_id)
+            .encoder(&self.capability_id)
+            .sample()
     }
 }
 
@@ -77,7 +78,7 @@ impl JointConfig {
 #[phoxal(id = "joint", api = y2026_1)]
 struct Joint {
     config: JointConfig,
-    encoders: Vec<Subscriber<api::component::EncoderSample>>,
+    encoders: Vec<Subscriber<api::component::encoder::Sample>>,
     states: BTreeMap<String, Publisher<api::joint::JointState>>,
 }
 
@@ -101,7 +102,7 @@ impl Joint {
         for joint_id in joint_ids {
             states.insert(
                 joint_id.clone(),
-                ctx.publisher(api::topic::new().joint().state(&joint_id))
+                ctx.publisher(api::topic::new().joint(&joint_id).state())
                     .await?,
             );
         }
@@ -137,7 +138,7 @@ impl Joint {
 }
 
 fn joint_state(
-    sample: &api::component::EncoderSample,
+    sample: &api::component::encoder::Sample,
     binding: &EncoderBinding,
 ) -> api::joint::JointState {
     let scale = f64::from(binding.direction_sign) / binding.gear_ratio;
@@ -185,7 +186,7 @@ mod tests {
     #[test]
     fn encoder_radians_are_scaled_to_joint_radians() {
         let state = joint_state(
-            &api::component::EncoderSample {
+            &api::component::encoder::Sample {
                 position_rad: 4.0,
                 velocity_radps: 6.0,
             },
@@ -200,7 +201,7 @@ mod tests {
     #[test]
     fn direction_sign_flips_position_and_velocity() {
         let state = joint_state(
-            &api::component::EncoderSample {
+            &api::component::encoder::Sample {
                 position_rad: 1.25,
                 velocity_radps: 2.5,
             },
@@ -238,7 +239,7 @@ mod tests {
 
         let contracts = metadata.required_contracts;
         assert!(contracts.iter().any(|c| {
-            c.family == <api::component::EncoderSample as ContractBody>::FAMILY
+            c.family == <api::component::encoder::Sample as ContractBody>::FAMILY
                 && c.direction == phoxal::runtime::Direction::Subscribe
         }));
         assert!(contracts.iter().any(|c| {

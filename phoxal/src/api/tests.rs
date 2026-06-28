@@ -20,10 +20,6 @@ fn contract_body_consts_are_family_and_topic() {
     );
     assert_eq!(<api::drive::Target as ContractBody>::TOPIC, "drive/target");
     assert_eq!(
-        <api::motor::Command as ContractBody>::TOPIC,
-        "motor/command"
-    );
-    assert_eq!(
         <api::battery::State as ContractBody>::TOPIC,
         "battery/state"
     );
@@ -41,8 +37,16 @@ fn contract_body_consts_are_family_and_topic() {
         "joint/{joint}/state"
     );
     assert_eq!(
-        <api::video::StreamEvent as ContractBody>::TOPIC,
+        <api::joint::JointState as ContractBody>::FAMILY,
+        "joint::JointState"
+    );
+    assert_eq!(
+        <api::video::stream::StreamEvent as ContractBody>::TOPIC,
         "video/stream/{stream}/event"
+    );
+    assert_eq!(
+        <api::video::stream::StreamEvent as ContractBody>::FAMILY,
+        "video::stream::StreamEvent"
     );
     assert_eq!(
         <api::localize::LocalizationState as ContractBody>::TOPIC,
@@ -183,7 +187,7 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
         }],
         stamp_ns: Some(7),
     });
-    round_trip(&api::video::StreamEvent::KeyFrame);
+    round_trip(&api::video::stream::StreamEvent::KeyFrame);
     round_trip(&api::simulation::RobotPose {
         x_m: 1.0,
         y_m: 2.0,
@@ -192,8 +196,8 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
 }
 
 #[test]
-fn recovered_component_capability_bodies_round_trip_through_messagepack() {
-    let imu = api::component::ImuSample {
+fn component_capability_bodies_round_trip_through_messagepack() {
+    let imu = api::component::imu::Sample {
         orientation: Some([1.0, 0.0, 0.0, 0.0]),
         angular_velocity_radps: [0.1, 0.2, 0.3],
         linear_acceleration_mps2: [1.0, 2.0, 9.81],
@@ -201,43 +205,43 @@ fn recovered_component_capability_bodies_round_trip_through_messagepack() {
         noise_density: Some([0.01, 0.02, 0.03]),
         sensor_frame_id: Some("imu_link".to_string()),
         measured_at_ns: Some(42),
-        health: api::component::SensorHealth::Degraded,
-        bias: Some(api::component::Bias {
+        health: api::component::imu::SensorHealth::Degraded,
+        bias: Some(api::component::imu::Bias {
             angular_velocity_radps: [0.001, 0.002, 0.003],
             linear_acceleration_mps2: [0.01, 0.02, 0.03],
         }),
     };
     let bytes = rmp_serde::to_vec_named(&imu).unwrap();
-    let decoded: api::component::ImuSample = rmp_serde::from_slice(&bytes).unwrap();
+    let decoded: api::component::imu::Sample = rmp_serde::from_slice(&bytes).unwrap();
     assert_eq!(imu, decoded);
 
-    let frame = api::component::CameraFrame {
+    let frame = api::component::camera::Frame {
         width: 640,
         height: 480,
-        encoding: api::component::CameraEncoding::Rgb8,
-        intrinsics: Some(api::component::CameraIntrinsics {
+        encoding: api::component::camera::Encoding::Rgb8,
+        intrinsics: Some(api::component::camera::Intrinsics {
             fx: 500.0,
             fy: 501.0,
             cx: 320.0,
             cy: 240.0,
         }),
-        distortion: Some(api::component::CameraDistortion {
+        distortion: Some(api::component::camera::Distortion {
             model: "plumb_bob".to_string(),
             coefficients: vec![0.1, 0.2, 0.3],
         }),
-        exposure: Some(api::component::CameraExposureTiming {
+        exposure: Some(api::component::camera::ExposureTiming {
             exposure_start_ns: Some(100),
             exposure_duration_ns: Some(200),
         }),
         measured_at_ns: Some(300),
-        calibration: Some(api::component::CameraCalibrationIdentity {
+        calibration: Some(api::component::camera::CalibrationIdentity {
             id: "front".to_string(),
             version: "v1".to_string(),
         }),
         data: vec![1, 2, 3, 4],
     };
     let bytes = rmp_serde::to_vec_named(&frame).unwrap();
-    let decoded: api::component::CameraFrame = rmp_serde::from_slice(&bytes).unwrap();
+    let decoded: api::component::camera::Frame = rmp_serde::from_slice(&bytes).unwrap();
     assert_eq!(frame, decoded);
 }
 
@@ -273,36 +277,43 @@ fn topic_builder_keys_match_contract_topics() {
         api::topic::new().simulation().robot_pose().key(),
         "simulation/robot_pose"
     );
-    assert_eq!(api::topic::new().motor().command().key(), "motor/command");
+    assert_eq!(api::topic::new().video().open().key(), "video/open");
     assert_eq!(
         api::topic::new().presence().heartbeat().key(),
         "presence/heartbeat"
     );
+    assert_eq!(api::topic::new().map().revision().key(), "map/revision");
+    assert_eq!(api::topic::new().map().submap().key(), "map/submap");
+    assert_eq!(api::topic::new().asset().get().key(), "asset/get");
+    assert_eq!(api::topic::new().odometry().state().key(), "odometry/state");
+    assert_eq!(api::topic::new().localize().state().key(), "localize/state");
 }
 
 // ---- dynamic / parameterized topics ----------------------------------------
 
 #[test]
-fn dynamic_topic_builder_fills_the_key_template() {
+fn dynamic_topic_builder_fills_the_key_from_node_vars() {
     assert_eq!(
-        api::topic::new().joint().state("elbow").key(),
+        api::topic::new().joint("elbow").state().key(),
         "joint/elbow/state"
     );
     assert_eq!(
-        api::topic::new().video().stream_event("front").key(),
+        api::topic::new().video().stream("front").event().key(),
         "video/stream/front/event"
     );
 
     let topic = api::topic::new()
-        .component()
-        .motor_command("front_left_drive", "motor");
+        .component("front_left_drive")
+        .motor("motor")
+        .command();
     assert_eq!(
         topic.key(),
         "component/front_left_drive/motor/motor/command"
     );
     let enc = api::topic::new()
-        .component()
-        .encoder_sample("front_left_drive", "encoder");
+        .component("front_left_drive")
+        .encoder("encoder")
+        .sample();
     assert_eq!(
         enc.key(),
         "component/front_left_drive/encoder/encoder/sample"
@@ -310,124 +321,155 @@ fn dynamic_topic_builder_fills_the_key_template() {
 }
 
 #[test]
-fn recovered_component_capability_topic_builders_fill_key_templates() {
-    let component = api::topic::new().component();
+fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
-        component.accelerometer_sample("imu0", "accel").key(),
+        api::topic::new()
+            .component("imu0")
+            .accelerometer("accel")
+            .sample()
+            .key(),
         "component/imu0/accelerometer/accel/sample"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .gyroscope_sample("imu0", "gyro")
+            .component("imu0")
+            .gyroscope("gyro")
+            .sample()
             .key(),
         "component/imu0/gyroscope/gyro/sample"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .magnetometer_sample("imu0", "mag")
+            .component("imu0")
+            .magnetometer("mag")
+            .sample()
             .key(),
         "component/imu0/magnetometer/mag/sample"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .imu_sample("imu0", "imu")
+            .component("imu0")
+            .imu("imu")
+            .sample()
             .key(),
         "component/imu0/imu/imu/sample"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .range_sample("base", "front_tof")
+            .component("base")
+            .range("front_tof")
+            .sample()
             .key(),
         "component/base/range/front_tof/sample"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .gnss_sample("gps", "gnss")
+            .component("gps")
+            .gnss("gnss")
+            .sample()
             .key(),
         "component/gps/gnss/gnss/sample"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .camera_frame("head", "front")
+            .component("head")
+            .camera("front")
+            .frame()
             .key(),
         "component/head/camera/front/frame"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .depth_frame("head", "front_depth")
+            .component("head")
+            .depth("front_depth")
+            .frame()
             .key(),
         "component/head/depth/front_depth/frame"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .lidar_scan("front_lidar", "scan")
+            .component("front_lidar")
+            .lidar("scan")
+            .scan()
             .key(),
         "component/front_lidar/lidar/scan/scan"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .mmwave_scan("radar", "mmwave")
+            .component("radar")
+            .mmwave("mmwave")
+            .scan()
             .key(),
         "component/radar/mmwave/mmwave/scan"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .microphone_frame("head", "mic")
+            .component("head")
+            .microphone("mic")
+            .frame()
             .key(),
         "component/head/microphone/mic/frame"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .led_command("status_panel", "status")
+            .component("status_panel")
+            .led("status")
+            .command()
             .key(),
         "component/status_panel/led/status/command"
     );
     assert_eq!(
         api::topic::new()
-            .component()
-            .emergency_stop_state("safety_panel", "estop")
+            .component("safety_panel")
+            .emergency_stop("estop")
+            .state()
             .key(),
         "component/safety_panel/emergency_stop/estop/state"
     );
 }
 
 #[test]
-fn dynamic_topic_contract_body_topic_is_the_template() {
+fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
     assert_eq!(
-        <api::component::MotorCommand as ContractBody>::TOPIC,
+        <api::component::motor::Command as ContractBody>::TOPIC,
         "component/{instance}/motor/{capability}/command"
     );
     assert_eq!(
-        <api::component::MotorCommand as ContractBody>::FAMILY,
-        "component::MotorCommand"
+        <api::component::motor::Command as ContractBody>::FAMILY,
+        "component::motor::Command"
     );
     assert_eq!(
-        <api::component::ImuSample as ContractBody>::TOPIC,
+        <api::component::imu::Sample as ContractBody>::TOPIC,
         "component/{instance}/imu/{capability}/sample"
     );
     assert_eq!(
-        <api::component::ImuSample as ContractBody>::FAMILY,
-        "component::ImuSample"
+        <api::component::imu::Sample as ContractBody>::FAMILY,
+        "component::imu::Sample"
+    );
+    assert_eq!(
+        <api::component::camera::Frame as ContractBody>::TOPIC,
+        "component/{instance}/camera/{capability}/frame"
+    );
+    assert_eq!(
+        <api::component::camera::Frame as ContractBody>::FAMILY,
+        "component::camera::Frame"
+    );
+    assert_eq!(
+        <api::component::encoder::Sample as ContractBody>::TOPIC,
+        "component/{instance}/encoder/{capability}/sample"
+    );
+    assert_eq!(
+        <api::component::encoder::Sample as ContractBody>::FAMILY,
+        "component::encoder::Sample"
     );
 }
 
 #[test]
 fn dynamic_topic_wildcard_is_subscribe_only() {
-    let concrete = api::topic::new().component().motor_command("base", "motor");
+    let concrete = api::topic::new().component("base").motor("motor").command();
     assert!(concrete.publish_key().is_ok());
 
-    let wildcard = api::topic::new().component().motor_command("*", "motor");
+    let wildcard = api::topic::new().component("*").motor("motor").command();
     assert_eq!(wildcard.key(), "component/*/motor/motor/command");
     assert!(wildcard.publish_key().is_err());
 }
@@ -488,5 +530,122 @@ mod multi_level {
         };
         assert_eq!(vc::topic::new().beacon().ping().key(), "beacon/ping");
         assert_eq!(vc::topic::new().sensor().reading().key(), "sensor/reading");
+    }
+}
+
+// A self-contained two-version tree exercising `extends` over a *nested,
+// dynamic* node subtree: the child inherits the whole `component(instance)`
+// subtree, overrides one leaf type, and appends a sibling node — every inherited
+// type re-emits fresh under the child `Api` (D61).
+mod extends_nested {
+    use crate::api::{ApiVersion, ContractBody};
+
+    crate::phoxal_api_tree! {
+        version base {
+            component(instance) {
+                motor(capability) {
+                    enum Command { Velocity(f32), Stop }
+                    topic command: pubsub Command;
+                }
+                imu(capability) {
+                    struct Sample { angular_velocity_radps: [f32; 3] }
+                    topic sample: pubsub Sample;
+                }
+            }
+        }
+        version next extends base {
+            // Override only the nested `motor::Command` body; everything else in the
+            // `component` subtree (including `imu`) is inherited unchanged.
+            component(instance) {
+                motor(capability) {
+                    enum Command { Velocity(f32), Torque(f32), Stop }
+                    topic command: pubsub Command;
+                }
+            }
+            // A brand-new top-level node added in the child version.
+            battery {
+                struct State { soc: f32 }
+                topic state: pubsub State;
+            }
+        }
+    }
+
+    #[test]
+    fn nested_dynamic_subtree_is_inherited_and_overlaid() {
+        // The whole nested subtree is inherited: keys/families are byte-identical
+        // across versions, only the `Api` marker differs.
+        assert_eq!(
+            <next::component::motor::Command as ContractBody>::TOPIC,
+            "component/{instance}/motor/{capability}/command"
+        );
+        assert_eq!(
+            <next::component::motor::Command as ContractBody>::FAMILY,
+            "component::motor::Command"
+        );
+        assert_eq!(
+            <next::component::imu::Sample as ContractBody>::TOPIC,
+            "component/{instance}/imu/{capability}/sample"
+        );
+        assert_eq!(
+            <next::component::imu::Sample as ContractBody>::FAMILY,
+            "component::imu::Sample"
+        );
+        assert_eq!(
+            <<next::component::imu::Sample as ContractBody>::Api as ApiVersion>::ID,
+            "next"
+        );
+
+        // The override took: the child `motor::Command` carries the new `Torque`
+        // variant that the base did not have.
+        let _overridden = next::component::motor::Command::Torque(1.0);
+
+        // The brand-new `battery` node added in the child is present.
+        assert_eq!(
+            <next::battery::State as ContractBody>::TOPIC,
+            "battery/state"
+        );
+
+        // The builder chain reproduces the same nested keys under both versions.
+        assert_eq!(
+            base::topic::new()
+                .component("front")
+                .imu("imu0")
+                .sample()
+                .key(),
+            "component/front/imu/imu0/sample"
+        );
+        assert_eq!(
+            next::topic::new()
+                .component("front")
+                .motor("m0")
+                .command()
+                .key(),
+            "component/front/motor/m0/command"
+        );
+        assert_eq!(next::topic::new().battery().state().key(), "battery/state");
+    }
+}
+
+// A nested dynamic tree that REUSES the same var name across levels. This module
+// must *compile*: it proves the builder's positional field storage (`__seg0`,
+// `__seg1`) does not collide into duplicate struct fields, and that each level's
+// value is carried independently (a regression would fail to build or collapse the
+// key).
+mod reused_var_name {
+    crate::phoxal_api_tree! {
+        version rv {
+            outer(id) {
+                inner(id) {
+                    struct Body { x: u8 }
+                    topic event: pubsub Body;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_reused_var_carries_each_level_independently() {
+        let topic = rv::topic::new().outer("a").inner("b").event();
+        assert_eq!(topic.key(), "outer/a/inner/b/event");
     }
 }
