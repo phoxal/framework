@@ -2020,6 +2020,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-runtime-explore"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-runtime-follow"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-runtime-frame"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "nalgebra",
+ "phoxal",
+]
+
+[[package]]
+name = "phoxal-runtime-joint"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+]
+
+[[package]]
 name = "phoxal-runtime-localize"
 version = "0.16.0"
 dependencies = [
@@ -2047,6 +2082,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-runtime-motion"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
 name = "phoxal-runtime-odometry"
 version = "0.16.0"
 dependencies = [
@@ -2057,7 +2101,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-runtime-perception"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-runtime-plan"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-runtime-power"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "tokio",
+]
+
+[[package]]
+name = "phoxal-runtime-presence"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+]
+
+[[package]]
 name = "phoxal-runtime-safety"
+version = "0.16.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-runtime-video"
 version = "0.16.0"
 dependencies = [
  "anyhow",

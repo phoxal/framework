@@ -1,18 +1,22 @@
 [package]
-name = "phoxal-runtime-mission"
+name = "phoxal-runtime-video"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official runtime: mission — autonomy goal lifecycle."
+description = "Phoxal official runtime: video — operator preview event service."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-runtime-mission"
+name = "phoxal-runtime-video"
 path = "src/main.rs"
+
+[features]
+default = []
+h264 = []
 
 [dependencies]
 phoxal = { workspace = true }

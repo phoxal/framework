@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-runtime-mission"
+name = "phoxal-runtime-plan"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official runtime: mission — autonomy goal lifecycle."
+description = "Phoxal official runtime: plan — straight-line path planner boundary."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-runtime-mission"
+name = "phoxal-runtime-plan"
 path = "src/main.rs"
 
 [dependencies]

@@ -19,11 +19,21 @@ members = [
     "runtime/asset",
     "runtime/battery",
     "runtime/drive",
+    "runtime/explore",
+    "runtime/follow",
+    "runtime/frame",
+    "runtime/joint",
     "runtime/localize",
-    "runtime/mission",
     "runtime/map",
+    "runtime/mission",
+    "runtime/motion",
     "runtime/odometry",
+    "runtime/perception",
+    "runtime/plan",
+    "runtime/power",
+    "runtime/presence",
     "runtime/safety",
+    "runtime/video",
 ]
 
 [workspace.dependencies]
