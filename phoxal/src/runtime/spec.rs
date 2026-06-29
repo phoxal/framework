@@ -5,18 +5,21 @@
 //! - [`RuntimeBehavior`] is emitted by `#[phoxal::runtime]`: the server-side
 //!   contracts plus the lifecycle dispatch (`__setup`/`__step`/`__shutdown`) the
 //!   runner drives.
-//! - [`Declares`] is a per-runtime marker (also emitted by the derive) that makes
-//!   `SetupContext` builders reject undeclared contract families at compile time
-//!   (D44).
+//! - [`DeclaresPublish`]/[`DeclaresSubscribe`]/[`DeclaresQuery`] are per-runtime
+//!   markers (also emitted by the derive) that make `SetupContext` builders reject
+//!   undeclared contract families/directions at compile time (D44).
 //!
-//! `REQUIRED_CONTRACTS` is the union of the field-side and server-side contracts;
-//! `emit-apis` builds it at runtime, so no const slice concatenation is needed.
+//! The full required-contract set is the union of [`RuntimeFields::FIELD_CONTRACTS`]
+//! and [`RuntimeBehavior::SERVER_CONTRACTS`]; `emit-apis` builds that union at
+//! runtime (see [`runtime_metadata`](crate::runtime::emit::runtime_metadata)), so
+//! there is no concatenated const slice.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::api::ApiVersion;
@@ -24,7 +27,7 @@ use crate::runtime::context::{SetupContext, ShutdownContext, StepContext};
 use crate::runtime::server::ServerOutcome;
 
 /// The direction a runtime uses a contract on a topic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     /// Publishes the body.
@@ -66,7 +69,7 @@ pub trait RuntimeFields: Sized + Send + 'static {
     const API_VERSION: &'static str;
     /// The runtime's typed config (`()` for official runtimes that read the
     /// robot model directly).
-    type Config: serde::de::DeserializeOwned + Send + 'static;
+    type Config: serde::de::DeserializeOwned + JsonSchema + Send + 'static;
     /// The contracts derived from the struct's handle fields.
     const FIELD_CONTRACTS: &'static [ContractUse];
 }
@@ -92,6 +95,11 @@ pub trait RuntimeBehavior: RuntimeFields {
 
     /// The versionless topic keys of concurrent `#[server_snapshot]` handlers.
     fn __snapshot_server_topics() -> &'static [&'static str];
+
+    /// Validate explicit server topic expressions before startup declares
+    /// queryables. The macro rejects an explicit key that differs from the
+    /// request body's canonical topic and rejects duplicate server topics.
+    fn __validate_server_topics() -> std::result::Result<(), String>;
 
     /// The scheduled-step cadence, or `None` if the runtime has no `#[step]`.
     fn __step_schedule() -> Option<StepSchedule>;

@@ -25,6 +25,8 @@ pub struct Robot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<Network>,
     pub components: Components,
+    #[serde(default, skip_serializing_if = "Bus::is_empty")]
+    pub bus: Bus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +75,12 @@ pub struct PhoxalRuntimes {
 #[serde(deny_unknown_fields)]
 pub struct UserRuntime {
     pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bus_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
     #[serde(
         default = "default_user_runtime_framework",
         skip_serializing_if = "is_match_platform"
@@ -91,6 +99,26 @@ pub struct UserRuntimeBuild {
     pub dockerfile: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bus {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, BusProfile>,
+}
+
+impl Bus {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.profiles.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BusProfile {
+    pub connect: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +199,25 @@ pub enum ValidationError {
     UserRuntimeShadowsPlatformRuntime {
         name: String,
     },
+    EmptyUserRuntimeImage {
+        runtime: String,
+    },
+    EmptyUserRuntimeBusProfile {
+        runtime: String,
+    },
+    UnknownUserRuntimeBusProfile {
+        runtime: String,
+        profile: String,
+    },
+    InvalidBusProfileName {
+        profile: String,
+    },
+    ReservedBusProfileName {
+        profile: String,
+    },
+    EmptyBusProfileConnect {
+        profile: String,
+    },
     MissingComponentSource {
         instance: String,
         source: String,
@@ -249,6 +296,8 @@ impl Robot {
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
+        self.validate_bus_profiles(&mut errors);
+        self.validate_user_runtimes(&mut errors);
         self.validate_component_sources(&mut errors);
         self.validate_component_structure(&mut errors);
         self.validate_driver_structure(&mut errors);
@@ -349,6 +398,52 @@ impl Robot {
             }
         }
     }
+
+    fn validate_bus_profiles(&self, errors: &mut Vec<ValidationError>) {
+        for (profile, config) in &self.bus.profiles {
+            if profile == "default" {
+                errors.push(ValidationError::ReservedBusProfileName {
+                    profile: profile.clone(),
+                });
+            }
+            if !crate::model::component::v1::is_valid_token(profile) {
+                errors.push(ValidationError::InvalidBusProfileName {
+                    profile: profile.clone(),
+                });
+            }
+            if config.connect.trim().is_empty() {
+                errors.push(ValidationError::EmptyBusProfileConnect {
+                    profile: profile.clone(),
+                });
+            }
+        }
+    }
+
+    fn validate_user_runtimes(&self, errors: &mut Vec<ValidationError>) {
+        for (runtime, config) in &self.user_runtimes {
+            if config
+                .image
+                .as_deref()
+                .is_some_and(|image| image.trim().is_empty())
+            {
+                errors.push(ValidationError::EmptyUserRuntimeImage {
+                    runtime: runtime.clone(),
+                });
+            }
+            if let Some(profile) = &config.bus_profile {
+                if profile.trim().is_empty() {
+                    errors.push(ValidationError::EmptyUserRuntimeBusProfile {
+                        runtime: runtime.clone(),
+                    });
+                } else if profile != "default" && !self.bus.profiles.contains_key(profile) {
+                    errors.push(ValidationError::UnknownUserRuntimeBusProfile {
+                        runtime: runtime.clone(),
+                        profile: profile.clone(),
+                    });
+                }
+            }
+        }
+    }
 }
 
 impl Components {
@@ -404,6 +499,35 @@ impl fmt::Display for ValidationError {
             ),
             Self::UserRuntimeShadowsPlatformRuntime { name } => {
                 write!(formatter, "user_runtimes.{name} shadows a platform runtime")
+            }
+            Self::EmptyUserRuntimeImage { runtime } => {
+                write!(formatter, "user_runtimes.{runtime}.image must not be empty")
+            }
+            Self::EmptyUserRuntimeBusProfile { runtime } => {
+                write!(
+                    formatter,
+                    "user_runtimes.{runtime}.bus_profile must not be empty"
+                )
+            }
+            Self::UnknownUserRuntimeBusProfile { runtime, profile } => write!(
+                formatter,
+                "user_runtimes.{runtime}.bus_profile references unknown bus profile '{profile}'"
+            ),
+            Self::InvalidBusProfileName { profile } => write!(
+                formatter,
+                "bus.profiles.{profile} must contain only lowercase ASCII letters, digits, '_' or '-'"
+            ),
+            Self::ReservedBusProfileName { profile } => {
+                write!(
+                    formatter,
+                    "bus.profiles.{profile} is reserved; omit the implicit default profile"
+                )
+            }
+            Self::EmptyBusProfileConnect { profile } => {
+                write!(
+                    formatter,
+                    "bus.profiles.{profile}.connect must not be empty"
+                )
             }
             Self::MissingComponentSource { instance, source } => write!(
                 formatter,
@@ -505,11 +629,20 @@ user_runtimes:
 motion:
   kinematic:
     kind: omnidirectional
-    actuators: []
+    actuators:
+    - drive.motor
     encoders: []
 components:
-  sources: {}
-  instances: {}
+  sources:
+    drive:
+      path: ../component/drive
+  instances:
+    drive:
+      component: drive
+      mount_link: drive_link
+      parameters:
+        motor:
+          kind: motor
 "#,
         )?;
 
@@ -519,7 +652,11 @@ components:
             .expect("user runtime should parse");
         assert_eq!(runtime.path, PathBuf::from("runtimes/autonomy"));
         assert_eq!(runtime.framework, "match-platform");
+        assert_eq!(runtime.image, None);
+        assert_eq!(runtime.bus_profile, None);
+        assert_eq!(runtime.config, None);
         assert_eq!(runtime.build, None);
+        assert!(robot.bus.profiles.is_empty());
 
         Ok(())
     }
@@ -567,6 +704,169 @@ components:
                 dockerfile: Some(PathBuf::from("Dockerfile.runtime")),
                 target: Some("runtime".to_string()),
             })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn bus_profiles_and_user_runtime_deploy_fields_parse_and_validate() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  channel: stable
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+    image: ghcr.io/acme/autonomy@sha256:abc
+    bus_profile: mcu_serial
+    config:
+      max_linear_speed_mps: 0.6
+      enabled: true
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators:
+    - drive.motor
+    encoders: []
+components:
+  sources:
+    drive:
+      path: ../component/drive
+  instances:
+    drive:
+      component: drive
+      mount_link: drive_link
+      parameters:
+        motor:
+          kind: motor
+bus:
+  profiles:
+    mcu_serial:
+      connect: serial//dev/ttyACM0#baudrate=115200
+"#,
+        )?;
+
+        let runtime = robot
+            .user_runtimes
+            .get("autonomy")
+            .expect("user runtime should parse");
+        assert_eq!(
+            runtime.image.as_deref(),
+            Some("ghcr.io/acme/autonomy@sha256:abc")
+        );
+        assert_eq!(runtime.bus_profile.as_deref(), Some("mcu_serial"));
+        assert_eq!(
+            runtime
+                .config
+                .as_ref()
+                .and_then(|config| config.get("enabled"))
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            robot
+                .bus
+                .profiles
+                .get("mcu_serial")
+                .map(|profile| profile.connect.as_str()),
+            Some("serial//dev/ttyACM0#baudrate=115200")
+        );
+        robot
+            .validate()
+            .expect("bus profile reference should validate");
+
+        Ok(())
+    }
+
+    #[test]
+    fn user_runtime_rejects_unknown_bus_profile() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  channel: stable
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+    bus_profile: mcu_serial
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        let errors = robot
+            .validate()
+            .expect_err("unknown bus profile should fail validation");
+        assert!(
+            errors.contains(&super::ValidationError::UnknownUserRuntimeBusProfile {
+                runtime: "autonomy".to_string(),
+                profile: "mcu_serial".to_string(),
+            })
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn default_bus_profile_is_implicit_and_must_not_be_declared() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+api_version: y2026_1
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_runtimes:
+  channel: stable
+user_runtimes:
+  autonomy:
+    path: runtimes/autonomy
+    bus_profile: default
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+bus:
+  profiles:
+    default:
+      connect: tcp/127.0.0.1:7447
+"#,
+        )?;
+
+        let errors = robot
+            .validate()
+            .expect_err("declared default profile should fail validation");
+        assert!(
+            errors.contains(&super::ValidationError::ReservedBusProfileName {
+                profile: "default".to_string(),
+            })
+        );
+        assert!(
+            !errors.iter().any(|error| matches!(
+                error,
+                super::ValidationError::UnknownUserRuntimeBusProfile { .. }
+            )),
+            "bus_profile: default should refer to the implicit default"
         );
 
         Ok(())

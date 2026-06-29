@@ -1,10 +1,15 @@
-//! `localize` — the official odometry-anchored localization runtime.
+//! `localize` - the official odometry-anchored localization runtime.
 //!
-//! This scheduled runtime subscribes to `odometry/state` and republishes
-//! `localize/state`, the localization estimate consumed by the `map` runtime.
-//! This first version is transparent: odometry pose is treated as the map-frame
-//! pose, and confidence decays as the odometry estimate goes stale. It does not
-//! implement ORB-SLAM3, visual-inertial localization, or GNSS anchoring.
+//! A scheduled runtime that subscribes to `odometry/state` and republishes
+//! `localize/state`, the localization estimate consumed by downstream runtimes
+//! such as `map`, `explore`, and `follow`.
+//! This first version is transparent: the odometry pose is treated directly as
+//! the map-frame pose, and confidence decays linearly to zero as the latest
+//! odometry sample ages past the staleness window.
+//! Until the first odometry fix arrives it publishes nothing, so downstream
+//! runtimes never mistake a fabricated origin pose for a real estimate.
+//! It does not implement ORB-SLAM3, visual-inertial localization, or GNSS
+//! anchoring; map-frame and odometry-frame are assumed identical.
 
 use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;

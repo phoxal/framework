@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::bus::LogicalTime;
 
@@ -19,23 +19,40 @@ pub trait ClockSource: Send + Sync + 'static {
     fn now(&self) -> LogicalTime;
 }
 
-/// Host-monotonic clock.
+/// Host-wide real clock (D34, "host-monotonic domain shared across processes").
 ///
-/// The slice bases time on a process-local monotonic `Instant`; aligning the
-/// monotonic domain across processes on one host (`CLOCK_MONOTONIC` absolute) is
-/// a documented follow-up (D34, "host-monotonic domain shared across processes").
+/// `produced_at_ns` is stamped from this clock and is compared *across
+/// processes* by the safety/motion/follow staleness checks, so the source must
+/// be the same for every participant on a host, not a process-local origin. A
+/// per-process monotonic `Instant` would make two processes' timestamps
+/// incomparable (each counts from its own start), silently breaking freshness.
+///
+/// We therefore base `time_ns` on `SystemTime` (nanoseconds since the UNIX
+/// epoch): a single host-wide domain every process agrees on, and the natural
+/// fit for the simulation source that will publish wall-style time later. Wall
+/// clocks can step backwards (NTP/manual set); within an epoch `time_ns` must
+/// not regress, so the clock latches the last value and never reports a smaller
+/// one. A real backward jump is the operator's signal to bump the epoch.
 pub struct RealClock {
     epoch: u64,
-    start: Instant,
+    last_ns: Mutex<u64>,
 }
 
 impl RealClock {
-    /// A real clock starting at epoch 0.
+    /// A real clock starting at epoch 0, in the host-wide UNIX-epoch domain.
     pub fn new() -> Self {
         RealClock {
             epoch: 0,
-            start: Instant::now(),
+            last_ns: Mutex::new(0),
         }
+    }
+
+    /// Nanoseconds since the UNIX epoch, saturating at `u64::MAX` (year ~2554).
+    fn unix_now_ns() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
     }
 }
 
@@ -47,8 +64,12 @@ impl Default for RealClock {
 
 impl ClockSource for RealClock {
     fn now(&self) -> LogicalTime {
-        let ns = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        LogicalTime::new(self.epoch, ns)
+        let now = Self::unix_now_ns();
+        // Latch monotonically within the epoch: a backward wall-clock step never
+        // produces a smaller `time_ns` than already observed.
+        let mut last = self.last_ns.lock().expect("real clock poisoned");
+        *last = (*last).max(now);
+        LogicalTime::new(self.epoch, *last)
     }
 }
 
@@ -91,5 +112,62 @@ impl ClockSource for TestClock {
     fn now(&self) -> LogicalTime {
         let state = self.state.lock().expect("test clock poisoned");
         LogicalTime::new(state.0, state.1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_clock_uses_host_wide_unix_domain() {
+        // Two independently constructed clocks model two processes on one host.
+        // Because both read the shared UNIX-epoch domain (not a process-local
+        // origin), their timestamps are directly comparable - the property the
+        // cross-process staleness checks rely on (D34).
+        let unix_before = RealClock::unix_now_ns();
+        let a = RealClock::new();
+        let b = RealClock::new();
+        let ta = a.now().time_ns();
+        let tb = b.now().time_ns();
+        let unix_after = RealClock::unix_now_ns();
+
+        assert!(
+            ta >= unix_before && ta <= unix_after,
+            "clock a ({ta}) is not in the UNIX-epoch domain [{unix_before}, {unix_after}]"
+        );
+        assert!(
+            tb >= unix_before && tb <= unix_after,
+            "clock b ({tb}) is not in the UNIX-epoch domain [{unix_before}, {unix_after}]"
+        );
+        // Comparable: both near "now", not separated by per-process origins.
+        let gap = ta.abs_diff(tb);
+        assert!(
+            gap <= unix_after.saturating_sub(unix_before),
+            "two host clocks disagree by {gap}ns, more than the sampling window"
+        );
+    }
+
+    #[test]
+    fn real_clock_never_regresses_within_epoch() {
+        let clock = RealClock::new();
+        let mut last = clock.now().time_ns();
+        for _ in 0..1000 {
+            let next = clock.now().time_ns();
+            assert!(next >= last, "time_ns regressed: {next} < {last}");
+            last = next;
+        }
+    }
+
+    #[test]
+    fn test_clock_is_deterministic() {
+        let clock = TestClock::new();
+        assert_eq!(clock.now(), LogicalTime::new(0, 0));
+        clock.advance(Duration::from_nanos(5));
+        assert_eq!(clock.now(), LogicalTime::new(0, 5));
+        clock.advance(Duration::from_nanos(7));
+        assert_eq!(clock.now(), LogicalTime::new(0, 12));
+        clock.bump_epoch();
+        assert_eq!(clock.now(), LogicalTime::new(1, 0));
     }
 }

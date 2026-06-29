@@ -1,9 +1,17 @@
 //! `explore` - frontier-based goal proposal.
 //!
+//! A scheduled runtime that subscribes to `map/revision` and `localize/state`,
+//! queries the `map/submap` server, and publishes ranked `explore/frontiers`
+//! plus an `explore/state` (whether it is exploring and the selected frontier).
+//! Each step it detects free/unknown boundary cells in the returned grid, scores
+//! them by size over distance to the robot, and selects the top-ranked frontier.
 //! The current map query response contains a grid but not an explicit grid
 //! origin. This runtime therefore requests a fixed map-frame window anchored at
-//! `(0, 0)` and interprets the response in that same frame. If the map server is
-//! unavailable or returns an invalid grid, no frontiers are fabricated.
+//! `(0, 0)` and interprets the response in that same frame.
+//! It does nothing until both a map revision and a trusted (positive-confidence,
+//! finite) localization estimate are available.
+//! If the map server is unavailable or returns an invalid grid, no frontiers are
+//! fabricated and it reports that it is not exploring.
 
 mod frontiers;
 mod scoring;

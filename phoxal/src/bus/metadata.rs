@@ -1,4 +1,4 @@
-//! `BusMetadata` — the per-sample attachment (D43c/D62).
+//! `BusMetadata` - the per-sample attachment (D43c/D62).
 //!
 //! The wire body is the plain MessagePack payload (D62); the version identity and
 //! provenance ride here, in the Zenoh attachment. A receiver reads
@@ -33,7 +33,7 @@ pub struct BusMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// runtime/artifact id — repeated component drivers must not collide, D53).
+    /// runtime/artifact id - repeated component drivers must not collide, D53).
     pub participant: String,
     /// Per-process incarnation (bumped on restart).
     pub incarnation: u64,

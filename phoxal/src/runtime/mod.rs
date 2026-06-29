@@ -13,7 +13,7 @@ pub mod server;
 pub mod spec;
 
 pub use clock::{ClockSource, RealClock, TestClock};
-pub use context::{SetupContext, ShutdownContext, StepContext, SubscribeBuilder};
+pub use context::{SetupContext, ShutdownContext, StepContext, SubscribeBuilder, SubscribeOptions};
 pub use emit::{RuntimeMetadata, emit_apis_json, runtime_metadata};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use runner::{run, run_async, run_with, run_with_bus};

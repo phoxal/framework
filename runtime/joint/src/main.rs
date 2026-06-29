@@ -1,4 +1,14 @@
 //! `joint` - convert component encoder samples into per-joint kinematic state.
+//!
+//! A scheduled runtime that bridges component-level encoders to joint-level state.
+//! At setup it enumerates every joint-targeted encoder capability in the robot
+//! model (D33), rejecting any with a non-positive gear ratio or zero counts per
+//! revolution, and fails if the robot exposes no such encoder.
+//! It subscribes to the per-capability `component/<id>/encoder/<cap>/sample` topic
+//! for each binding, and publishes the per-joint `joint/<id>/state` topic.
+//! Each step it takes the latest encoder sample per joint, scales position and
+//! velocity by the binding's direction sign over its gear ratio, and publishes the
+//! resulting joint state; effort is left unset (no torque is estimated).
 
 use std::collections::{BTreeMap, BTreeSet};
 

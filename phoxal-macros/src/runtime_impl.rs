@@ -5,7 +5,8 @@
 //! the original methods verbatim (helper attributes stripped).
 //!
 //! Attributes: `#[setup]` (mandatory, once), `#[step(hz = N)]` (≤ 1),
-//! `#[shutdown]` (≤ 1), `#[server(topic = …)]` (exclusive, `&mut self`),
+//! `#[shutdown] async fn shutdown(&mut self, ctx: ShutdownContext)` (≤ 1),
+//! `#[server(topic = …)]` (exclusive, `&mut self`),
 //! `#[server_snapshot(topic = …)]` (concurrent, reads a committed `Snapshot`),
 //! and `#[snapshot]` (the committed-snapshot provider, ≤ 1).
 
@@ -63,14 +64,17 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                         "duplicate #[step]: a runtime has at most one scheduled loop",
                     ));
                 }
-                step = Some(StepFn {
-                    name: method.sig.ident.clone(),
-                    hz,
-                });
+                step = Some(StepFn::parse(method, hz)?);
             }
             Lifecycle::Shutdown => {
                 if shutdown.is_some() {
                     return Err(syn::Error::new(method.sig.span(), "duplicate #[shutdown]"));
+                }
+                if method.sig.ident != "shutdown" {
+                    return Err(syn::Error::new(
+                        method.sig.ident.span(),
+                        "the #[shutdown] method must be named `shutdown`",
+                    ));
                 }
                 shutdown = Some(LifecycleFn::parse_self_method(method)?);
             }
@@ -113,6 +117,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let serve_exclusive = serve_exclusive(&servers);
     let serve_snapshot = serve_snapshot(&snapshot_servers);
     let topic_assertions = topic_assertions(&self_ty, &servers, &snapshot_servers);
+    let validate_server_topics = validate_server_topics(&servers, &snapshot_servers);
 
     Ok(quote! {
         #item_impl
@@ -131,6 +136,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
             fn __snapshot_server_topics() -> &'static [&'static str] {
                 #snapshot_topics
+            }
+
+            fn __validate_server_topics() -> ::core::result::Result<(), ::std::string::String> {
+                #validate_server_topics
             }
 
             fn __step_schedule() -> ::core::option::Option<::phoxal::runtime::StepSchedule> {
@@ -287,6 +296,54 @@ fn contract_entry(ty: &Type, direction: TokenStream) -> TokenStream {
             family: <#ty as ::phoxal::api::ContractBody>::FAMILY,
             topic: <#ty as ::phoxal::api::ContractBody>::TOPIC,
             direction: ::phoxal::runtime::Direction::#direction,
+        }
+    }
+}
+
+fn validate_server_topics(
+    servers: &[ServerFn],
+    snapshot_servers: &[SnapshotServerFn],
+) -> TokenStream {
+    let exclusive = servers
+        .iter()
+        .enumerate()
+        .map(|(idx, s)| validate_one_server_topic(idx, "server", &s.req_ty, &s.resp_ty, &s.topic));
+    let snapshot = snapshot_servers.iter().enumerate().map(|(idx, s)| {
+        validate_one_server_topic(idx, "server_snapshot", &s.req_ty, &s.resp_ty, &s.topic)
+    });
+    quote! {
+        let mut seen = ::std::collections::BTreeSet::<::std::string::String>::new();
+        #(#exclusive)*
+        #(#snapshot)*
+        ::core::result::Result::Ok(())
+    }
+}
+
+fn validate_one_server_topic(
+    idx: usize,
+    kind: &str,
+    req_ty: &Type,
+    resp_ty: &Type,
+    topic: &Expr,
+) -> TokenStream {
+    let topic_var = syn::Ident::new(&format!("__phoxal_{kind}_topic_{idx}"), topic.span());
+    quote! {
+        let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::Query<#req_ty, #resp_ty>> = #topic;
+        let topic_key = #topic_var.key();
+        let expected = <#req_ty as ::phoxal::api::ContractBody>::TOPIC;
+        if topic_key != expected {
+            return ::core::result::Result::Err(::std::format!(
+                "#[{kind}(topic = ...)] key '{}' does not match request body topic '{}'",
+                topic_key,
+                expected,
+                kind = #kind,
+            ));
+        }
+        if !seen.insert(topic_key.to_string()) {
+            return ::core::result::Result::Err(::std::format!(
+                "duplicate server topic '{}'",
+                topic_key,
+            ));
         }
     }
 }
@@ -488,7 +545,7 @@ struct LifecycleFn {
 }
 
 impl LifecycleFn {
-    fn parse_setup(method: &ImplItemFn) -> syn::Result<Self> {
+    fn parse_setup(method: &mut ImplItemFn) -> syn::Result<Self> {
         if method.sig.asyncness.is_none() {
             return Err(syn::Error::new(
                 method.sig.span(),
@@ -508,6 +565,26 @@ impl LifecycleFn {
                 "#[setup] must take `ctx: &mut SetupContext<Self>` as its first argument",
             ));
         }
+        if typed > 2 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[setup] takes `ctx: &mut SetupContext<Self>` and optional runtime config",
+            ));
+        }
+        let arg_types = typed_arg_types(method);
+        if let Some(ctx_ty) = arg_types.first()
+            && !ref_type_ends_with(ctx_ty, "SetupContext")
+        {
+            return Err(syn::Error::new_spanned(
+                ctx_ty,
+                "#[setup] first argument must be `ctx: &mut SetupContext<Self>`",
+            ));
+        }
+        require_result_return(
+            &method.sig.output,
+            "#[setup] must return `Result<Self>` (D22)",
+        )?;
+        rewrite_setup_self_config(method);
         Ok(LifecycleFn {
             name: method.sig.ident.clone(),
             takes_extra_arg: typed >= 2,
@@ -527,7 +604,23 @@ impl LifecycleFn {
                 "#[shutdown] takes `&mut self`",
             ));
         }
-        let extra = method.sig.inputs.len() >= 2;
+        if method.sig.inputs.len() > 2 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[shutdown] takes `&mut self` and optional `ctx: ShutdownContext`",
+            ));
+        }
+        let typed = typed_arg_types(method);
+        if let Some(ctx_ty) = typed.first()
+            && !type_ends_with(ctx_ty, "ShutdownContext")
+        {
+            return Err(syn::Error::new_spanned(
+                ctx_ty,
+                "#[shutdown] context parameter must be `ctx: ShutdownContext`",
+            ));
+        }
+        require_result_return(&method.sig.output, "#[shutdown] must return `Result<()>`")?;
+        let extra = !typed.is_empty();
         Ok(LifecycleFn {
             name: method.sig.ident.clone(),
             takes_extra_arg: extra,
@@ -538,6 +631,41 @@ impl LifecycleFn {
 struct StepFn {
     name: syn::Ident,
     hz: f64,
+}
+
+impl StepFn {
+    fn parse(method: &ImplItemFn, hz: f64) -> syn::Result<Self> {
+        if method.sig.asyncness.is_none() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[step] must be `async`",
+            ));
+        }
+        if !has_exclusive_receiver(method) {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[step] takes `&mut self` (the scheduled control loop - D34)",
+            ));
+        }
+        let typed = typed_arg_types(method);
+        if typed.len() != 1 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[step] takes exactly `&mut self` and `step: StepContext`",
+            ));
+        }
+        if !type_ends_with(&typed[0], "StepContext") {
+            return Err(syn::Error::new_spanned(
+                &typed[0],
+                "#[step] argument must be `step: StepContext`",
+            ));
+        }
+        require_result_return(&method.sig.output, "#[step] must return `Result<()>`")?;
+        Ok(StepFn {
+            name: method.sig.ident.clone(),
+            hz,
+        })
+    }
 }
 
 struct ServerFn {
@@ -555,16 +683,20 @@ impl ServerFn {
                 "#[server] must be `async`",
             ));
         }
-        if method.sig.receiver().is_none() {
+        if !has_exclusive_receiver(method) {
             return Err(syn::Error::new(
                 method.sig.span(),
                 "#[server] takes `&mut self` (exclusive, serialized with #[step] — D16)",
             ));
         }
         let typed = typed_arg_types(method);
-        let req_ty = typed.first().cloned().ok_or_else(|| {
-            syn::Error::new(method.sig.span(), "#[server] must take a request argument")
-        })?;
+        if typed.len() != 1 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[server] takes exactly `&mut self` and one request argument",
+            ));
+        }
+        let req_ty = typed[0].clone();
         let resp_ty = server_result_ty(&method.sig.output)?;
         Ok(ServerFn {
             name: method.sig.ident.clone(),
@@ -598,10 +730,16 @@ impl SnapshotServerFn {
             ));
         }
         let typed = typed_arg_types(method);
-        if typed.len() < 2 {
+        if typed.len() != 2 {
             return Err(syn::Error::new(
                 method.sig.span(),
-                "#[server_snapshot] takes `state: Snapshot<State>` and a request argument",
+                "#[server_snapshot] takes exactly `state: Snapshot<State>` and one request argument",
+            ));
+        }
+        if snapshot_state_ty(&typed[0]).is_none() {
+            return Err(syn::Error::new_spanned(
+                &typed[0],
+                "#[server_snapshot] first argument must be `state: Snapshot<State>`",
             ));
         }
         let req_ty = typed[1].clone();
@@ -622,10 +760,22 @@ struct SnapshotFn {
 
 impl SnapshotFn {
     fn parse(method: &ImplItemFn) -> syn::Result<Self> {
-        if method.sig.receiver().is_none() {
+        if method.sig.asyncness.is_some() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[snapshot] must be synchronous",
+            ));
+        }
+        if !has_shared_receiver(method) {
             return Err(syn::Error::new(
                 method.sig.span(),
                 "#[snapshot] takes `&self` and returns the committed state",
+            ));
+        }
+        if !typed_arg_types(method).is_empty() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[snapshot] takes only `&self` and returns the committed state",
             ));
         }
         let state_ty = match &method.sig.output {
@@ -646,6 +796,22 @@ impl SnapshotFn {
 
 // ---- helpers ----------------------------------------------------------------
 
+fn has_exclusive_receiver(method: &ImplItemFn) -> bool {
+    method.sig.receiver().is_some_and(|receiver| {
+        receiver.reference.is_some()
+            && receiver.mutability.is_some()
+            && receiver.colon_token.is_none()
+    })
+}
+
+fn has_shared_receiver(method: &ImplItemFn) -> bool {
+    method.sig.receiver().is_some_and(|receiver| {
+        receiver.reference.is_some()
+            && receiver.mutability.is_none()
+            && receiver.colon_token.is_none()
+    })
+}
+
 /// Types of the typed (non-receiver) arguments of a method, in order.
 fn typed_arg_types(method: &ImplItemFn) -> Vec<Type> {
     method
@@ -657,6 +823,31 @@ fn typed_arg_types(method: &ImplItemFn) -> Vec<Type> {
             FnArg::Receiver(_) => None,
         })
         .collect()
+}
+
+fn rewrite_setup_self_config(method: &mut ImplItemFn) {
+    let Some(FnArg::Typed(arg)) = method.sig.inputs.iter_mut().nth(1) else {
+        return;
+    };
+    if type_is_self_config(&arg.ty) {
+        *arg.ty = syn::parse_quote!(<Self as ::phoxal::runtime::RuntimeFields>::Config);
+    }
+}
+
+fn type_is_self_config(ty: &Type) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    let mut segments = path.path.segments.iter();
+    matches!(
+        (segments.next(), segments.next(), segments.next()),
+        (Some(first), Some(second), None)
+            if first.ident == "Self" && second.ident == "Config"
+    )
+}
+
+fn snapshot_state_ty(ty: &Type) -> Option<Type> {
+    single_generic_arg(ty, "Snapshot")
 }
 
 /// Extract `T` from a `-> ServerResult<T>` return type.
@@ -682,7 +873,21 @@ fn output_span(output: &ReturnType) -> proc_macro2::Span {
     }
 }
 
-/// If `ty` is `Name<Arg>` (by last path segment), return `Arg`.
+/// Require a `-> Result<Inner>` return (by last path segment), reporting `what`
+/// in the error so each lifecycle method names its canonical shape. Matches the
+/// surface form (`Result<…>` / `phoxal::Result<…>` / `crate::Result<…>` /
+/// `anyhow::Result<…>`), the single-generic alias re-exported as `phoxal::Result`.
+fn require_result_return(output: &ReturnType, what: &str) -> syn::Result<Type> {
+    let ty = match output {
+        ReturnType::Type(_, ty) => ty.as_ref(),
+        ReturnType::Default => {
+            return Err(syn::Error::new(output_span(output), what.to_string()));
+        }
+    };
+    single_generic_arg(ty, "Result").ok_or_else(|| syn::Error::new_spanned(ty, what.to_string()))
+}
+
+/// If `ty` is exactly `Name<Arg>` (by last path segment), return `Arg`.
 fn single_generic_arg(ty: &Type, name: &str) -> Option<Type> {
     let Type::Path(path) = ty else {
         return None;
@@ -694,10 +899,31 @@ fn single_generic_arg(ty: &Type, name: &str) -> Option<Type> {
     let PathArguments::AngleBracketed(args) = &seg.arguments else {
         return None;
     };
-    args.args.iter().find_map(|a| match a {
-        GenericArgument::Type(t) => Some(t.clone()),
+    let mut args = args.args.iter();
+    match (args.next(), args.next()) {
+        (Some(GenericArgument::Type(t)), None) => Some(t.clone()),
         _ => None,
-    })
+    }
+}
+
+fn type_ends_with(ty: &Type, name: &str) -> bool {
+    let Type::Path(path) = ty else {
+        return false;
+    };
+    path.path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
+}
+
+/// Like [`type_ends_with`], but peels one leading reference (`&T` / `&mut T`)
+/// first — so `&mut SetupContext<Self>` matches `SetupContext`.
+fn ref_type_ends_with(ty: &Type, name: &str) -> bool {
+    let inner = match ty {
+        Type::Reference(r) => r.elem.as_ref(),
+        other => other,
+    };
+    type_ends_with(inner, name)
 }
 
 /// Find and remove the single phoxal helper attribute on a method.

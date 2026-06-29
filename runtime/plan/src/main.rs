@@ -1,10 +1,16 @@
 //! `plan` - straight-line path planner boundary.
 //!
-//! This runtime consumes the active mission goal, current localization, and map
-//! revision, then emits a path contract for downstream controllers. The default
-//! planner is intentionally honest: it interpolates a straight line from the
-//! current pose to the goal and reports typed refusals when required inputs are
+//! This runtime subscribes to `mission/state` (for the active goal),
+//! `localize/state`, and `map/revision`, then publishes `plan/path` and
+//! `plan/state` for downstream controllers. The default planner is intentionally
+//! honest: it interpolates a straight line from the current pose to the goal at a
+//! fixed waypoint spacing and reports typed refusals when required inputs are
 //! missing or unusable.
+//!
+//! When the mission is not Active, has no goal, or localization/map is missing,
+//! it publishes an empty path and the matching `Refusal`; non-finite or otherwise
+//! invalid inputs are refused as `Unreachable`. The emitted path carries the map
+//! revision it was built against.
 
 use anyhow::Result;
 use phoxal::api::y2026_1 as api;

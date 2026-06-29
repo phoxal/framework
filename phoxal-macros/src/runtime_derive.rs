@@ -19,7 +19,8 @@ use heck::ToKebabCase;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{
-    Data, DeriveInput, Fields, GenericArgument, Ident, LitStr, PathArguments, Type, TypePath,
+    Data, DeriveInput, Fields, GenericArgument, Ident, LitStr, PathArguments, Token, Type,
+    TypePath, parenthesized,
 };
 
 use crate::util::phoxal;
@@ -63,35 +64,39 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
     };
 
-    // Collect a declaration for every recognized handle field.
+    // Collect a declaration for every recognized handle field, plus any
+    // explicit IO the derive cannot see in fields (`contracts(...)`).
     let mut decls: Vec<Decl> = Vec::new();
     for field in fields {
         if let Some(found) = classify_handle(&field.ty) {
             decls.extend(found);
         }
     }
+    decls.extend(args.contracts);
 
     let phoxal = phoxal();
 
     // FIELD_CONTRACTS entries reference the body type's ContractBody consts so the
     // family/topic/api_version are single-sourced from the api tree (D61). A query
     // field contributes both legs.
-    let contract_entries = decls.iter().flat_map(|d| {
-        d.contract_bodies()
-            .into_iter()
-            .map(|(body, dir)| {
+    let mut seen_contracts = std::collections::BTreeSet::new();
+    let mut contract_entries = Vec::new();
+    for decl in &decls {
+        for (body, dir) in decl.contract_bodies() {
+            let key = format!("{}:{}", dir.key(), normalized_type_key(&body, &api));
+            if seen_contracts.insert(key) {
                 let dir = dir.tokens(&phoxal);
-                quote! {
+                contract_entries.push(quote! {
                     #phoxal::runtime::ContractUse {
                         api_version: <<#body as #phoxal::api::ContractBody>::Api as #phoxal::api::ApiVersion>::ID,
                         family: <#body as #phoxal::api::ContractBody>::FAMILY,
                         topic: <#body as #phoxal::api::ContractBody>::TOPIC,
                         direction: #dir,
                     }
-                }
-            })
-            .collect::<Vec<_>>()
-    });
+                });
+            }
+        }
+    }
 
     // One ContractBody<Api = Self::Api> assertion per body (D60), so a body from
     // another API version is a compile error.
@@ -112,22 +117,28 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     // Direction-specific Declares markers (D44): publishing a family declared only
     // as subscribe (or vice versa) is a compile error — and would otherwise be IO
-    // `emit-apis` never reports. Deduplicated by (direction, body) token string.
+    // `emit-apis` never reports. Deduplicate common API-module aliases
+    // (`api::...` vs `phoxal::api::y2026_N::...`) so the same semantic body does
+    // not emit conflicting impls.
     let mut seen = std::collections::BTreeSet::new();
     let mut declares = TokenStream::new();
     for decl in &decls {
         let (marker, key) = match decl {
             Decl::Publish(b) => (
                 quote!(impl #phoxal::runtime::DeclaresPublish<#b> for #struct_name {}),
-                format!("pub:{}", b.to_token_stream()),
+                format!("pub:{}", normalized_type_key(b, &api)),
             ),
             Decl::Subscribe(b) => (
                 quote!(impl #phoxal::runtime::DeclaresSubscribe<#b> for #struct_name {}),
-                format!("sub:{}", b.to_token_stream()),
+                format!("sub:{}", normalized_type_key(b, &api)),
             ),
             Decl::Query { req, resp } => (
                 quote!(impl #phoxal::runtime::DeclaresQuery<#req, #resp> for #struct_name {}),
-                format!("qry:{}=>{}", req.to_token_stream(), resp.to_token_stream()),
+                format!(
+                    "qry:{}=>{}",
+                    normalized_type_key(req, &api),
+                    normalized_type_key(resp, &api)
+                ),
             ),
         };
         if seen.insert(key) {
@@ -159,6 +170,7 @@ struct PhoxalArgs {
     id: Option<String>,
     api: Ident,
     config: Option<Type>,
+    contracts: Vec<Decl>,
 }
 
 impl PhoxalArgs {
@@ -166,6 +178,7 @@ impl PhoxalArgs {
         let mut id = None;
         let mut api = None;
         let mut config = None;
+        let mut contracts = Vec::new();
 
         for attr in &input.attrs {
             if !attr.path().is_ident("phoxal") {
@@ -184,8 +197,12 @@ impl PhoxalArgs {
                     let value: Type = meta.value()?.parse()?;
                     config = Some(value);
                     Ok(())
+                } else if meta.path.is_ident("contracts") {
+                    parse_contracts(meta.input, &mut contracts)
                 } else {
-                    Err(meta.error("unknown #[phoxal(...)] key (expected id, api, or config)"))
+                    Err(meta.error(
+                        "unknown #[phoxal(...)] key (expected id, api, config, or contracts)",
+                    ))
                 }
             })?;
         }
@@ -198,8 +215,61 @@ impl PhoxalArgs {
             )
         })?;
 
-        Ok(PhoxalArgs { id, api, config })
+        Ok(PhoxalArgs {
+            id,
+            api,
+            config,
+            contracts,
+        })
     }
+}
+
+fn parse_contracts(input: syn::parse::ParseStream<'_>, decls: &mut Vec<Decl>) -> syn::Result<()> {
+    let content;
+    parenthesized!(content in input);
+    while !content.is_empty() {
+        let directive: Ident = content.parse()?;
+        let body;
+        parenthesized!(body in content);
+        if directive == "publishes" {
+            let body_ty: Type = body.parse()?;
+            if !body.is_empty() {
+                return Err(body.error("unexpected tokens after publish body type"));
+            }
+            decls.push(Decl::Publish(body_ty));
+        } else if directive == "subscribes" {
+            let body_ty: Type = body.parse()?;
+            if !body.is_empty() {
+                return Err(body.error("unexpected tokens after subscribe body type"));
+            }
+            decls.push(Decl::Subscribe(body_ty));
+        } else if directive == "queries" {
+            let req: Type = body.parse()?;
+            if body.peek(Token![=>]) {
+                let _arrow: Token![=>] = body.parse()?;
+            } else if body.peek(Token![->]) {
+                let _arrow: Token![->] = body.parse()?;
+            } else {
+                return Err(body.error("queries(...) expects `Req => Resp`"));
+            }
+            let resp: Type = body.parse()?;
+            if !body.is_empty() {
+                return Err(body.error("unexpected tokens after query response type"));
+            }
+            decls.push(Decl::Query { req, resp });
+        } else {
+            return Err(syn::Error::new(
+                directive.span(),
+                "unknown contracts(...) directive (expected publishes, subscribes, or queries)",
+            ));
+        }
+
+        if content.is_empty() {
+            break;
+        }
+        content.parse::<Token![,]>()?;
+    }
+    Ok(())
 }
 
 /// A handle declaration recognized from a struct field.
@@ -219,6 +289,15 @@ enum Direction {
 }
 
 impl Direction {
+    fn key(self) -> &'static str {
+        match self {
+            Direction::Publish => "pub",
+            Direction::Subscribe => "sub",
+            Direction::QueryRequest => "qreq",
+            Direction::QueryResponse => "qresp",
+        }
+    }
+
     fn tokens(self, phoxal: &TokenStream) -> TokenStream {
         let variant = match self {
             Direction::Publish => quote!(Publish),
@@ -296,4 +375,30 @@ fn generic_type(seg: &syn::PathSegment, n: usize) -> Option<Type> {
         })
         .collect();
     types.get(n).cloned().cloned()
+}
+
+fn normalized_type_key(ty: &Type, api: &Ident) -> String {
+    let Some(path) = as_type_path(ty) else {
+        return ty.to_token_stream().to_string();
+    };
+    let mut segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    let selected_api = api.to_string();
+    if segments.len() >= 3
+        && segments[0] == "phoxal"
+        && segments[1] == "api"
+        && segments[2] == selected_api
+    {
+        segments.drain(0..3);
+    } else if segments
+        .first()
+        .is_some_and(|segment| segment == "api" || segment == &selected_api)
+    {
+        segments.drain(0..1);
+    }
+    segments.join("::")
 }

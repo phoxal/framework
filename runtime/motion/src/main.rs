@@ -1,8 +1,18 @@
 //! `motion` - the official body-twist arbiter.
 //!
-//! This runtime is the single authority that writes `drive/target`. It chooses
-//! between manual and follow candidates, applies the current safety envelope, and
-//! publishes both the final actuator command and an arbitration state.
+//! This runtime is the single authority that writes `drive/target`. It subscribes
+//! to `motion/manual`, `follow/target`, and `safety/authorization`, chooses
+//! between the manual and follow candidates under the current safety envelope, and
+//! publishes both the final `drive/target` and a `motion/state` arbitration
+//! record.
+//!
+//! Safety is applied first and conservatively. A missing, stale, or expired
+//! authorization forces a zero target, and an `EmergencyStop` decision overrides
+//! every candidate. A fresh manual command wins over follow and is clamped to the
+//! approved-motion envelope - including the limited escape envelope under a
+//! protective `Stop`, where follow is otherwise blocked. The selected twist is
+//! always clamped to the authorized min/max per axis, and a malformed envelope
+//! (non-finite or inverted bounds) clamps that axis to zero.
 
 use anyhow::Result;
 use phoxal::api::y2026_1 as api;

@@ -1,10 +1,16 @@
-//! `video` — operator preview stream lifecycle service.
+//! `video` - operator preview stream lifecycle service.
 //!
-//! The y2026_1 video contract exposes a compact open query and stream event
-//! topic. The default backend is intentionally event-only: it subscribes to raw
-//! camera frames and emits `Started`, `KeyFrame`, and `Stopped` events without
-//! linking a codec. A real H.264 backend belongs behind the optional `h264`
-//! feature in a follow-up, not in the default dependency set.
+//! The y2026_1 video contract exposes a compact `video/open` query plus a
+//! per-stream event topic. This runtime enumerates the robot's camera
+//! capabilities, answers `open` requests (resolving the requested capability and
+//! validating dimensions against the native sensor size), subscribes to the
+//! matching raw camera frames, and publishes `video/stream/<id>/event` events.
+//!
+//! The default backend is intentionally event-only: it emits `Started`,
+//! `KeyFrame` (one per received frame while the stream is active), and `Stopped`
+//! (on shutdown) without linking a codec or encoding any pixels. A real H.264
+//! backend belongs behind the optional `h264` feature in a follow-up, not in the
+//! default dependency set.
 
 use anyhow::{Result, anyhow};
 use phoxal::api::y2026_1 as api;

@@ -43,8 +43,13 @@ jobs:
           # The release-prep branch (release/vX.Y.Z) carries the intended version.
           echo "version=${HEAD_REF#release/v}" >> "$GITHUB_OUTPUT"
 
+  # Tag the release ONLY after every pre-release gate passes (preflight -> tag
+  # -> publish). `build-images` builds + validates the publishable artifacts
+  # (emit-apis per arch) before the tag exists, so a failing gate can never
+  # leave a pushed `vX.Y.Z` tag behind. Publishing (crates.io + the multi-arch
+  # GHCR manifests) then hangs off `tag`.
   tag:
-    needs: plan
+    needs: [plan, catalog-drift, official-set-fixture, build-images]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +79,42 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v${v}" -m "v${v}"
           git push origin "v${v}"
+
+  catalog-drift:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - uses: actions/checkout@v4
+        with:
+          repository: phoxal/phoxal-cli
+          path: phoxal-cli
+
+      - name: Check official runtime catalog drift
+        run: scripts/check-catalog-drift.sh phoxal-cli/src/catalog.rs
+
+  official-set-fixture:
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install native build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake nasm pkg-config
+
+      - name: Check official-set fixture topology
+        run: cargo test -p phoxal --test official_set_topology -- --nocapture
 
   # Publish the library crates to crates.io. The runtime crates are `publish =
   # false` (they ship as deployables, not libraries); only `phoxal` and its
@@ -133,8 +174,12 @@ jobs:
   # intermediate `<api>-v<version>-<arch>` tag. The `manifest` job then stitches the
   # two arches into the API-scoped multi-arch tags. The (runtime -> api_version) map
   # is a tagging convention; `phoxal-cli check` re-proves it via `emit-apis`.
+  # A pre-release gate: build every official runtime image per arch and validate
+  # its `emit-apis` document. Runs BEFORE `tag` so a bad artifact blocks tagging.
+  # Only intermediate `<api>-v<version>-<arch>` tags are pushed here; the public
+  # release manifests are stitched by `manifest` after the tag exists.
   build-images:
-    needs: [plan, tag]
+    needs: [plan, catalog-drift, official-set-fixture]
     strategy:
       fail-fast: false
       matrix:
@@ -196,10 +241,91 @@ jobs:
             org.opencontainers.image.title=phoxal-runtime-${{ matrix.runtime.name }}
             org.opencontainers.image.licenses=AGPL-3.0-only
 
+      - name: Verify emit-apis for per-arch image
+        run: |
+          set -euo pipefail
+          v="${{ needs.plan.outputs.version }}"
+          api="${{ matrix.runtime.api }}"
+          arch="${{ matrix.platform.short }}"
+          name="${{ matrix.runtime.name }}"
+          ref="ghcr.io/phoxal/runtime-${name}:${api}-v${v}-${arch}"
+          out="emit-apis-${name}-${arch}.json"
+          docker run --rm "${ref}" emit-apis > "${out}"
+          # Validate the whole frozen document (D50/D57), not just api_version:
+          # schema id, artifact identity, the bus_abi constant, and that every
+          # required contract agrees with the runtime's api_version. A drift here
+          # blocks tagging (this job is a pre-release gate).
+          EXPECTED_API="${api}" EXPECTED_NAME="${name}" OUT="${out}" \
+          SORTED="emit-apis-${name}-${arch}.sorted.json" python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          out = os.environ["OUT"]
+          expected_api = os.environ["EXPECTED_API"]
+          expected_name = os.environ["EXPECTED_NAME"]
+          errors = []
+
+          with open(out, "r", encoding="utf-8") as fh:
+              metadata = json.load(fh)
+
+          schema = metadata.get("schema")
+          if schema != "phoxal.emit-apis/v0":
+              errors.append(f"schema is {schema!r}, expected 'phoxal.emit-apis/v0'")
+
+          artifact = metadata.get("artifact") or {}
+          if artifact.get("id") != expected_name:
+              errors.append(
+                  f"artifact.id is {artifact.get('id')!r}, expected {expected_name!r}"
+              )
+
+          api_version = metadata.get("api_version")
+          if api_version != expected_api:
+              errors.append(
+                  f"api_version is {api_version!r}, expected {expected_api!r}"
+              )
+
+          bus_abi = metadata.get("bus_abi")
+          if bus_abi != "phoxal-bus/v0":
+              errors.append(f"bus_abi is {bus_abi!r}, expected 'phoxal-bus/v0'")
+
+          contracts = metadata.get("required_contracts")
+          if not isinstance(contracts, list) or not contracts:
+              errors.append("required_contracts must be a non-empty list")
+          else:
+              for i, contract in enumerate(contracts):
+                  cav = contract.get("api_version")
+                  if cav != api_version:
+                      errors.append(
+                          f"required_contracts[{i}] api_version {cav!r} "
+                          f"!= runtime api_version {api_version!r}"
+                      )
+
+          config_schema = metadata.get("config_schema")
+          if not isinstance(config_schema, dict):
+              errors.append("config_schema must be a JSON object")
+
+          if errors:
+              for err in errors:
+                  print(f"::error::{out}: {err}")
+              sys.exit(1)
+
+          with open(os.environ["SORTED"], "w", encoding="utf-8") as fh:
+              json.dump(metadata, fh, sort_keys=True, separators=(",", ":"))
+              fh.write("\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emit-apis-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          path: |
+            emit-apis-${{ matrix.runtime.name }}-${{ matrix.platform.short }}.json
+            emit-apis-${{ matrix.runtime.name }}-${{ matrix.platform.short }}.sorted.json
+
   # Stitch the per-arch images into the two API-scoped multi-arch tag classes:
   # the immutable `:<api>-v<version>` and the moving `:<api>-stable` channel.
   manifest:
-    needs: [plan, build-images]
+    needs: [plan, tag, build-images]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -230,6 +356,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: emit-apis-${{ matrix.runtime.name }}-*
+          path: emit-apis
+          merge-multiple: true
+
+      - name: Verify emit-apis metadata is arch-independent
+        run: |
+          set -euo pipefail
+          name="${{ matrix.runtime.name }}"
+          diff -u \
+            "emit-apis/emit-apis-${name}-amd64.sorted.json" \
+            "emit-apis/emit-apis-${name}-arm64.sorted.json"
+
       - name: Create API-scoped multi-arch manifests
         run: |
           set -euo pipefail
@@ -242,3 +382,11 @@ jobs:
           docker buildx imagetools create -t "${name}:${api}-v${v}" "${amd64}" "${arm64}"
           # Moving stable channel for this api_version.
           docker buildx imagetools create -t "${name}:${api}-stable" "${amd64}" "${arm64}"
+
+      - name: Inspect API-scoped multi-arch manifest
+        run: |
+          set -euo pipefail
+          v="${{ needs.plan.outputs.version }}"
+          api="${{ matrix.runtime.api }}"
+          name="ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}"
+          docker buildx imagetools inspect "${name}:${api}-v${v}"

@@ -1,11 +1,25 @@
 //! Server-side query handling: a thin wrapper over a Zenoh queryable that the
 //! runner uses to drive `#[server]`/`#[server_snapshot]` handlers (D16/D31).
+//!
+//! This is the responder side of the request/response leg whose caller is
+//! [`Querier`](crate::bus::Querier). [`Bus::declare_server`] declares a
+//! `complete` queryable on one topic key; [`ServerQueryable::recv`] yields each
+//! [`IncomingQuery`], which exposes the raw request bytes + its [`BusMetadata`]
+//! and the two reply legs:
+//!
+//! - [`IncomingQuery::reply`] sends the plain `Resp` body (D62), with mirroring
+//!   metadata, on the success leg;
+//! - [`IncomingQuery::reply_err`] sends a [`QueryFailure`] on Zenoh's native
+//!   error leg (D31), which the caller decodes back into the failure.
+//!
+//! These public types carry untyped payload bytes; the generated server dispatch
+//! validates `api_version`/`family` and does the typed encode/decode around them.
 
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::query::{Query as ZenohQuery, Queryable};
 
-use crate::bus::abi::{CodecId, encoding_string};
+use crate::bus::abi::{CodecId, encoding_string, parse_encoding_string};
 use crate::bus::error::{BusError, Result};
 use crate::bus::metadata::{BusMetadata, Source};
 use crate::bus::query::QueryFailure;
@@ -62,14 +76,54 @@ impl IncomingQuery {
     /// the Zenoh attachment. The generated server dispatch validates `api_version`
     /// and `family` against the handler's request body before decode.
     pub fn request_metadata(&self) -> Result<BusMetadata> {
+        let encoding = self.query.encoding().ok_or_else(|| BusError::Metadata {
+            topic: self.topic_key.clone(),
+            detail: "query is missing a request encoding".to_string(),
+        })?;
+        let encoding =
+            parse_encoding_string(&encoding.to_string()).map_err(|e| BusError::Metadata {
+                topic: self.topic_key.clone(),
+                detail: format!("malformed request encoding string: {e}"),
+            })?;
+        match encoding.codec_id() {
+            Some(CodecId::MessagePack) => {}
+            None => {
+                return Err(BusError::UnsupportedCodec(
+                    encoding.codec,
+                    self.topic_key.clone(),
+                ));
+            }
+        }
+
         let attachment = self.query.attachment().ok_or_else(|| BusError::Metadata {
             topic: self.topic_key.clone(),
             detail: "query is missing a BusMetadata attachment".to_string(),
         })?;
-        BusMetadata::decode(attachment.to_bytes().as_ref()).map_err(|e| BusError::Metadata {
-            topic: self.topic_key.clone(),
-            detail: format!("malformed request BusMetadata: {e}"),
-        })
+        let metadata = BusMetadata::decode(attachment.to_bytes().as_ref()).map_err(|e| {
+            BusError::Metadata {
+                topic: self.topic_key.clone(),
+                detail: format!("malformed request BusMetadata: {e}"),
+            }
+        })?;
+        if metadata.api_version != encoding.api_version
+            || metadata.family != encoding.family
+            || metadata.codec != encoding.codec
+        {
+            return Err(BusError::Metadata {
+                topic: self.topic_key.clone(),
+                detail: format!(
+                    "request encoding/BusMetadata mismatch: encoding family='{}' api='{}' codec={}, \
+                     metadata family='{}' api='{}' codec={}",
+                    encoding.family,
+                    encoding.api_version,
+                    encoding.codec,
+                    metadata.family,
+                    metadata.api_version,
+                    metadata.codec
+                ),
+            });
+        }
+        Ok(metadata)
     }
 
     /// Send a success reply: the plain `Resp` body, with bus metadata mirroring

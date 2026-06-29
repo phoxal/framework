@@ -9,6 +9,8 @@
 //! The emitted JSON schema is **frozen** (fields below). Adding a field is
 //! backward-compatible; renaming/removing one is a `bus_abi`/schema change.
 
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
 use crate::bus::BUS_ABI;
@@ -32,7 +34,7 @@ pub struct RuntimeMetadata {
     pub bus_abi: String,
     /// The union of field-side + server-side contracts.
     pub required_contracts: Vec<ContractView>,
-    /// The runtime's config schema (empty object until config schemas land).
+    /// The runtime's JSON Schema config contract.
     pub config_schema: serde_json::Value,
 }
 
@@ -55,6 +57,8 @@ pub struct Framework {
 /// One contract in the emitted document.
 #[derive(Debug, Serialize)]
 pub struct ContractView {
+    /// API version this contract body belongs to.
+    pub api_version: String,
     /// Contract family id.
     pub family: String,
     /// Versionless topic key.
@@ -66,6 +70,7 @@ pub struct ContractView {
 impl From<&ContractUse> for ContractView {
     fn from(c: &ContractUse) -> Self {
         ContractView {
+            api_version: c.api_version.to_string(),
             family: c.family.to_string(),
             topic: c.topic.to_string(),
             direction: c.direction,
@@ -75,9 +80,18 @@ impl From<&ContractUse> for ContractView {
 
 /// Build the metadata document for a runtime `R`.
 pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
+    let mut seen = BTreeSet::new();
     let required_contracts = R::FIELD_CONTRACTS
         .iter()
         .chain(R::SERVER_CONTRACTS.iter())
+        .filter(|contract| {
+            seen.insert((
+                contract.api_version.to_string(),
+                contract.family.to_string(),
+                contract.topic.to_string(),
+                contract.direction,
+            ))
+        })
         .map(ContractView::from)
         .collect();
 
@@ -93,7 +107,8 @@ pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
         api_version: R::API_VERSION.to_string(),
         bus_abi: BUS_ABI.id().to_string(),
         required_contracts,
-        config_schema: serde_json::json!({}),
+        config_schema: serde_json::to_value(schemars::schema_for!(R::Config))
+            .expect("config JSON schema is always serializable"),
     }
 }
 

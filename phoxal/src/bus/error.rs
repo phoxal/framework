@@ -14,7 +14,7 @@ pub enum BusError {
     Codec(#[from] CodecError),
 
     /// An inbound sample's `api_version` did not match the receiver's selected
-    /// API version (never a silent drop — D62).
+    /// API version (never a silent drop - D62).
     #[error("api_version mismatch on '{topic}': expected '{expected}', received '{received}'")]
     ApiVersionMismatch {
         /// The topic key.

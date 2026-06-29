@@ -1,10 +1,17 @@
-//! `map` — localization-trace occupancy-grid placeholder.
+//! `map` - localization-trace occupancy-grid placeholder.
 //!
-//! This is the first official runtime using the concurrent snapshot-server
-//! pattern: `#[step]` updates the copy-on-write grid, the runner commits
-//! `#[snapshot]` state, and `#[server_snapshot]` serves `map/submap` concurrently
-//! from that committed snapshot. It does not integrate range/depth/lidar sensor
-//! observations yet; it only marks the current localization cell free.
+//! A scheduled runtime with a concurrent snapshot server. It subscribes to
+//! `localize/state`, publishes `map/revision` (the current revision and grid
+//! resolution), and serves `map/submap` from a committed grid snapshot.
+//! It uses the concurrent snapshot-server pattern: `#[step]` updates the
+//! copy-on-write grid, the runner commits `#[snapshot]` state, and
+//! `#[server_snapshot]` serves `map/submap` concurrently from that snapshot
+//! without blocking the step loop.
+//! Each step it marks the cell under the latest localization pose as free,
+//! bumping the revision only when a cell actually changes.
+//! This is a placeholder: it does not integrate range/depth/lidar observations
+//! yet, the grid is a fixed 64x64 window, and `map/submap` ignores the request
+//! bounds and always returns the whole grid.
 
 use std::sync::Arc;
 

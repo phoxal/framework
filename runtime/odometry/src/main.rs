@@ -1,9 +1,15 @@
-//! `odometry` — the official differential-drive wheel-odometry runtime.
+//! `odometry` - the official differential-drive wheel-odometry runtime.
 //!
 //! This is the forward-kinematics counterpart to `drive`: it subscribes to each
 //! wheel encoder on dynamic per-component topics, reconstructs the body twist,
 //! integrates planar pose, and publishes `odometry/state`. It exercises the
 //! SUBSCRIBE side of dynamic per-component topics on the new runtime surface.
+//!
+//! Encoder bindings come from the robot model's differential kinematic config
+//! (per-side encoder lists, wheel radius, wheel base); a non-differential model
+//! or non-positive geometry is rejected at setup. Each side's body twist averages
+//! only the wheels with a fresh sample, so a silent encoder reads as stationary
+//! rather than integrating a frozen velocity (see [`ENCODER_STALE_NS`]).
 
 use std::f64::consts::PI;
 

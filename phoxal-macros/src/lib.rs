@@ -2,16 +2,22 @@
 //!
 //! Three macros make up the authoring surface:
 //!
-//! - [`phoxal_api_tree!`] — declares the dated API-version modules
+//! - [`phoxal_api_tree!`] - declares the dated API-version modules
 //!   (`phoxal::api::y2026_1`, …), their version-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
-//! - [`derive@Runtime`] — reads a runtime struct's typed handle fields plus the
-//!   `#[phoxal(id = …, api = …, config = …)]` attribute and emits the static
-//!   metadata (`RuntimeFields`) the runner and `emit-apis` consume.
-//! - [`macro@runtime`] — the bare `#[phoxal::runtime]` attribute on the inherent
-//!   impl; it reads `#[setup]`/`#[step]`/`#[shutdown]` (and, in the query slice,
-//!   `#[server]`/`#[server_snapshot]`/`#[snapshot]`) and emits the lifecycle
-//!   dispatch (`RuntimeBehavior`).
+//! - [`derive@Runtime`] - reads a runtime struct's typed handle fields plus the
+//!   `#[phoxal(id = …, api = …, config = …, contracts(…))]` attribute and emits
+//!   the static metadata (`RuntimeFields`) the runner and `emit-apis` consume.
+//! - [`macro@runtime`] - the bare `#[phoxal::runtime]` attribute on the inherent
+//!   impl; it reads `#[setup]`/`#[step(hz = N)]`/`#[shutdown]` plus the query-side
+//!   `#[server]`/`#[server_snapshot]`/`#[snapshot]` and emits the lifecycle and
+//!   server dispatch (`RuntimeBehavior`).
+//!
+//! The two struct/impl macros are paired: `#[derive(Runtime)]` selects the API
+//! version and contributes the field-derived contracts, while `#[phoxal::runtime]`
+//! adds the lifecycle methods and the server-side contracts. Both reference the
+//! one API version chosen by the derive, and the generated `ContractBody<Api =
+//! Self::Api>` assertions make a body from a different version a compile error.
 //!
 //! Generated code references the framework through `::phoxal::…`; the engine crate
 //! makes that path resolve to itself with `extern crate self as phoxal;`.
@@ -25,9 +31,51 @@ use proc_macro::TokenStream;
 
 /// Declare a dated API-version tree of version-local wire bodies + topics.
 ///
-/// See [`api_tree`] for the supported grammar. One invocation owns one or more
-/// `version y2026_N { … }` blocks; each becomes a `pub mod y2026_N` under
-/// wherever the macro is invoked (the engine invokes it inside `phoxal::api`).
+/// One invocation owns one or more `version y2026_N { … }` blocks; each becomes a
+/// `pub mod y2026_N` under wherever the macro is invoked (the engine invokes it
+/// inside `phoxal::api`). A `version y2026_N extends y2026_M { … }` inherits the
+/// earlier version's effective tree (the parent must be declared earlier in the
+/// same invocation); see the `api_tree` module docs for the inheritance rules.
+///
+/// # Node grammar
+///
+/// A version body is a tree of **nodes**. A node is either static (`name { … }`)
+/// or dynamic (`name(var) { … }`, binding exactly one variable), and may nest to
+/// any depth. Inside a node block, in any order:
+///
+/// - `struct …` / `enum …` - a version-local wire body. Macro-declared structs
+///   get public fields; every body gets the standard derive set (`Clone`,
+///   `Debug`, `PartialEq`, `serde::Serialize`/`Deserialize`).
+/// - `topic <leaf>: pubsub <Body>;` - a pub/sub topic carrying `Body`.
+/// - `topic <leaf>: query <Req> => <Resp>;` - a request/response topic.
+/// - a child node (`name { … }` / `name(var) { … }`).
+///
+/// Doc-comments and attributes attach to the next `struct`/`enum`; `topic`
+/// declarations and child nodes take none.
+///
+/// # What each topic derives from its node path
+///
+/// A topic carries no per-topic params; its identity is derived from the path of
+/// nodes enclosing it:
+///
+/// - **key** - the `/`-joined node segments plus the leaf, where a static node
+///   contributes `name` and a dynamic node contributes `name/{var}` (e.g.
+///   `component/{instance}/motor/{capability}/command`).
+/// - **`FAMILY`** - the `::`-joined node names plus the body type, with the
+///   `(var)` parts excluded (e.g. `component::motor::Command`).
+/// - **body type path** - `api::y2026_N::<node>::…::<Body>`; variables never
+///   appear in the module path.
+///
+/// A topic is dynamic when its node path contains at least one `(var)` node, and
+/// static otherwise.
+///
+/// # Generated topic builders
+///
+/// Each version also gets an api-local `topic` module. `topic::new()` returns a
+/// `Root`; a method per node walks the tree (a dynamic node's method takes its
+/// variable as `impl Display`), and a leaf method returns a typed
+/// `bus::Topic<PubSub<Body>>` / `bus::Topic<Query<Req, Resp>>` with the key
+/// formatted from the carried variables.
 #[proc_macro]
 pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
     api_tree::expand(input.into())
@@ -37,9 +85,29 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 
 /// Derive the static metadata for a runtime struct.
 ///
-/// Requires `#[phoxal(api = y2026_N)]` (mandatory) and accepts
-/// `#[phoxal(id = "…")]` (optional; defaults to the kebab-cased type name) and
-/// `#[phoxal(config = Type)]` (optional; user runtimes only).
+/// Applies to a non-generic struct with named fields. Emits an `impl
+/// RuntimeFields` (`ID`, `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS`),
+/// `DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery` marker impls, and a
+/// `ContractBody<Api = Self::Api>` assertion per body.
+///
+/// # `#[phoxal(...)]` attributes
+///
+/// - `api = y2026_N` - **mandatory**. Selects the one API version this runtime
+///   (and the whole graph) runs against; sets `type Api = phoxal::api::y2026_N::Api`.
+/// - `id = "…"` - optional. The runtime id; defaults to the kebab-cased type name.
+/// - `config = Type` - optional. The runtime's config type; defaults to `()`.
+/// - `contracts(…)` - optional. Declares IO the derive cannot see in fields, as a
+///   comma-separated list of `publishes(Body)`, `subscribes(Body)`, and
+///   `queries(Req => Resp)` (`->` is also accepted) directives.
+///
+/// # Field-derived contracts
+///
+/// Each field is matched by **canonical syntactic form** of its type; everything
+/// else is ignored as runtime-private state. `Publisher<T>` is a publish,
+/// `Subscriber<T>` and `Latest<T>` are subscribes, and `Querier<A, B>` is a query.
+/// A `Vec<Handle>` carries the element handle, and a `BTreeMap<K, Handle>` /
+/// `HashMap<K, Handle>` carries the value handle. Field-derived and `contracts(…)`
+/// declarations are merged and deduplicated into `FIELD_CONTRACTS`.
 #[proc_macro_derive(Runtime, attributes(phoxal))]
 pub fn derive_runtime(input: TokenStream) -> TokenStream {
     runtime_derive::expand(input.into())
@@ -49,8 +117,34 @@ pub fn derive_runtime(input: TokenStream) -> TokenStream {
 
 /// The bare `#[phoxal::runtime]` attribute on a runtime's inherent impl.
 ///
-/// Recognizes the lifecycle helper attributes and emits the runner-facing
-/// dispatch while preserving the original methods.
+/// Takes no arguments (configure the runtime on the struct via
+/// `#[derive(Runtime)] #[phoxal(...)]`). Reads the lifecycle/server helper
+/// attributes on the impl's methods, emits a `RuntimeBehavior` impl that the
+/// runner drives, and re-emits the original methods verbatim with the helper
+/// attributes stripped. A method may carry at most one helper attribute.
+///
+/// # Lifecycle / server attributes and their required signatures
+///
+/// - `#[setup]` - **mandatory, exactly once**. An `async` associated function
+///   named `setup` taking `ctx: &mut SetupContext<Self>` and, optionally, the
+///   runtime config; returns `Result<Self>`.
+/// - `#[step(hz = N)]` - at most once. `async fn (&mut self, step: StepContext)
+///   -> Result<()>`; the scheduled control loop runs at the positive, finite
+///   frequency `N`.
+/// - `#[shutdown]` - at most once. An `async` method named `shutdown` taking
+///   `&mut self` and, optionally, `ctx: ShutdownContext`; returns `Result<()>`.
+/// - `#[server(topic = …)]` - an exclusive query server: `async fn (&mut self,
+///   request: Req) -> ServerResult<Resp>`. Serialized with `#[step]`.
+/// - `#[server_snapshot(topic = …)]` - a concurrent, read-only query server: an
+///   `async` associated function taking `state: Snapshot<State>` and `request:
+///   Req`, returning `ServerResult<Resp>`. Requires a `#[snapshot]` provider.
+/// - `#[snapshot]` - at most once. The committed-snapshot provider: a synchronous
+///   `fn (&self) -> State` returning the committed state.
+///
+/// For `#[server]`/`#[server_snapshot]` the `topic = …` is an api-local topic
+/// builder; its key must match the request body's `TOPIC`, and both request and
+/// response bodies must be `ContractBody<Api = Self::Api>` (checked at compile
+/// time, with a runtime backstop validating the incoming api_version + family).
 #[proc_macro_attribute]
 pub fn runtime(attr: TokenStream, item: TokenStream) -> TokenStream {
     runtime_impl::expand(attr.into(), item.into())
