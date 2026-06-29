@@ -64,7 +64,3 @@ path = "examples/runtime_snapshot_server.rs"
 [[example]]
 name = "runtime_async_entrypoint"
 path = "examples/runtime_async_entrypoint.rs"
-
-[[example]]
-name = "runtime_dynamic_handles"
-path = "examples/runtime_dynamic_handles.rs"

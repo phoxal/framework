@@ -1,5 +1,6 @@
-// Alias and fully-qualified paths for the same body should not emit duplicate
+// Aliases and fully-qualified paths for the same body should not emit duplicate
 // ContractUse metadata or conflicting Declares marker impls.
+use phoxal::api::y2026_1;
 use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
@@ -9,7 +10,9 @@ use phoxal::prelude::*;
     api = y2026_1,
     contracts(
         publishes(phoxal::api::y2026_1::drive::Target),
+        publishes(y2026_1::drive::Target),
         subscribes(phoxal::api::y2026_1::drive::State),
+        subscribes(y2026_1::drive::State),
     )
 )]
 struct Dedup {

@@ -379,11 +379,18 @@ fn normalized_type_key(ty: &Type, api: &Ident) -> String {
         .iter()
         .map(|segment| segment.ident.to_string())
         .collect::<Vec<_>>();
-    if segments.first().is_some_and(|segment| segment == "api") {
-        segments.splice(
-            0..1,
-            ["phoxal".to_string(), "api".to_string(), api.to_string()],
-        );
+    let selected_api = api.to_string();
+    if segments.len() >= 3
+        && segments[0] == "phoxal"
+        && segments[1] == "api"
+        && segments[2] == selected_api
+    {
+        segments.drain(0..3);
+    } else if segments
+        .first()
+        .is_some_and(|segment| segment == "api" || segment == &selected_api)
+    {
+        segments.drain(0..1);
     }
     segments.join("::")
 }

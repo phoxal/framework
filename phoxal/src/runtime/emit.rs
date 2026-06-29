@@ -57,6 +57,8 @@ pub struct Framework {
 /// One contract in the emitted document.
 #[derive(Debug, Serialize)]
 pub struct ContractView {
+    /// API version this contract body belongs to.
+    pub api_version: String,
     /// Contract family id.
     pub family: String,
     /// Versionless topic key.
@@ -68,6 +70,7 @@ pub struct ContractView {
 impl From<&ContractUse> for ContractView {
     fn from(c: &ContractUse) -> Self {
         ContractView {
+            api_version: c.api_version.to_string(),
             family: c.family.to_string(),
             topic: c.topic.to_string(),
             direction: c.direction,
@@ -83,6 +86,7 @@ pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
         .chain(R::SERVER_CONTRACTS.iter())
         .filter(|contract| {
             seen.insert((
+                contract.api_version.to_string(),
                 contract.family.to_string(),
                 contract.topic.to_string(),
                 contract.direction,

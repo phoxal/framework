@@ -23,6 +23,15 @@ struct Artifact {
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct Contract {
+    api_version: String,
+    family: String,
+    topic: String,
+    direction: String,
+}
+
+#[derive(Clone, Debug)]
+struct TopologyContract {
+    artifact_id: String,
     family: String,
     topic: String,
     direction: String,
@@ -30,7 +39,7 @@ struct Contract {
 
 #[derive(Default)]
 struct Topology {
-    contracts: Vec<Contract>,
+    contracts: Vec<TopologyContract>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,11 +102,12 @@ fn official_runtime_set_matches_y2026_1_fixture_topology() {
 #[test]
 fn subscriber_without_publisher_is_topology_error() {
     let mut topology = Topology::default();
-    topology.add(Contract {
-        family: "drive::Target".to_string(),
-        topic: "drive/target".to_string(),
-        direction: "subscribe".to_string(),
-    });
+    topology.add(topology_contract(
+        "fixture/external",
+        "drive::Target",
+        "drive/target",
+        "subscribe",
+    ));
 
     let report = topology.report();
     assert!(report.warnings.is_empty());
@@ -114,11 +124,12 @@ fn subscriber_without_publisher_is_topology_error() {
 #[test]
 fn publisher_without_subscriber_is_topology_warning() {
     let mut topology = Topology::default();
-    topology.add(Contract {
-        family: "drive::State".to_string(),
-        topic: "drive/state".to_string(),
-        direction: "publish".to_string(),
-    });
+    topology.add(topology_contract(
+        "fixture/external",
+        "drive::State",
+        "drive/state",
+        "publish",
+    ));
 
     let report = topology.report();
     assert!(report.errors.is_empty());
@@ -135,16 +146,18 @@ fn publisher_without_subscriber_is_topology_warning() {
 #[test]
 fn server_only_query_topic_is_topology_error() {
     let mut topology = Topology::default();
-    topology.add(Contract {
-        family: "asset::GetRequest".to_string(),
-        topic: "asset/get".to_string(),
-        direction: "server_request".to_string(),
-    });
-    topology.add(Contract {
-        family: "asset::GetResponse".to_string(),
-        topic: "asset/get".to_string(),
-        direction: "server_response".to_string(),
-    });
+    topology.add(topology_contract(
+        "asset",
+        "asset::GetRequest",
+        "asset/get",
+        "server_request",
+    ));
+    topology.add(topology_contract(
+        "asset",
+        "asset::GetResponse",
+        "asset/get",
+        "server_response",
+    ));
 
     let report = topology.report();
     assert!(report.warnings.is_empty());
@@ -165,10 +178,58 @@ fn server_only_query_topic_is_topology_error() {
     );
 }
 
+#[test]
+fn duplicate_server_responder_is_topology_error() {
+    let mut topology = Topology::default();
+    topology.add(topology_contract(
+        "fixture/external",
+        "asset::GetRequest",
+        "asset/get",
+        "query_request",
+    ));
+    topology.add(topology_contract(
+        "fixture/external",
+        "asset::GetResponse",
+        "asset/get",
+        "query_response",
+    ));
+    for artifact_id in ["asset", "asset-copy"] {
+        topology.add(topology_contract(
+            artifact_id,
+            "asset::GetRequest",
+            "asset/get",
+            "server_request",
+        ));
+        topology.add(topology_contract(
+            artifact_id,
+            "asset::GetResponse",
+            "asset/get",
+            "server_response",
+        ));
+    }
+
+    let report = topology.report();
+    assert!(report.warnings.is_empty());
+    assert_eq!(
+        report.errors,
+        vec![Finding {
+            kind: "multiple_server_responders",
+            family: "asset::GetResponse".to_string(),
+            topic: "asset/get".to_string(),
+        }]
+    );
+}
+
 impl Topology {
     fn add_runtime_contracts(&mut self, metadata: &RuntimeMetadata, robot: &Robot) {
         for contract in &metadata.required_contracts {
-            self.contracts.extend(materialize_contract(contract, robot));
+            assert_eq!(
+                contract.api_version, metadata.api_version,
+                "runtime {} emitted a per-contract api_version that differs from the artifact api_version",
+                metadata.artifact.id
+            );
+            self.contracts
+                .extend(materialize_contract(contract, robot, &metadata.artifact.id));
         }
     }
 
@@ -193,7 +254,8 @@ impl Topology {
                 else {
                     continue;
                 };
-                self.add(Contract {
+                self.add(TopologyContract {
+                    artifact_id: format!("fixture/component/{instance_id}"),
                     family,
                     topic,
                     direction: if command_like {
@@ -206,17 +268,26 @@ impl Topology {
         }
     }
 
-    fn add(&mut self, contract: Contract) {
+    fn add(&mut self, contract: TopologyContract) {
         self.contracts.push(contract);
     }
 
     fn report(&self) -> Report {
         let mut by_topic = BTreeMap::<(String, String), BTreeSet<String>>::new();
+        let mut by_contract = BTreeMap::<(String, String, String), BTreeSet<String>>::new();
         for contract in &self.contracts {
             by_topic
                 .entry((contract.family.clone(), contract.topic.clone()))
                 .or_default()
                 .insert(contract.direction.clone());
+            by_contract
+                .entry((
+                    contract.family.clone(),
+                    contract.topic.clone(),
+                    contract.direction.clone(),
+                ))
+                .or_default()
+                .insert(contract.artifact_id.clone());
         }
 
         let mut report = Report::default();
@@ -250,13 +321,31 @@ impl Topology {
                 });
             }
         }
+        for ((family, topic, direction), artifact_ids) in by_contract {
+            if direction == "server_response" && artifact_ids.len() > 1 {
+                report.errors.push(Finding {
+                    kind: "multiple_server_responders",
+                    family,
+                    topic,
+                });
+            }
+        }
         report
     }
 }
 
-fn materialize_contract(contract: &Contract, robot: &Robot) -> Vec<Contract> {
+fn materialize_contract(
+    contract: &Contract,
+    robot: &Robot,
+    artifact_id: &str,
+) -> Vec<TopologyContract> {
     let Some(kind) = component_topic_kind(&contract.topic) else {
-        return vec![contract.clone()];
+        return vec![TopologyContract {
+            artifact_id: artifact_id.to_string(),
+            family: contract.family.clone(),
+            topic: contract.topic.clone(),
+            direction: contract.direction.clone(),
+        }];
     };
 
     let mut materialized = Vec::new();
@@ -267,7 +356,8 @@ fn materialize_contract(contract: &Contract, robot: &Robot) -> Vec<Contract> {
             .unwrap_or_else(|| panic!("component type {} should be loaded", instance.component));
         for (capability_id, capability) in &component.capabilities {
             if capability.kind_name() == kind {
-                materialized.push(Contract {
+                materialized.push(TopologyContract {
+                    artifact_id: artifact_id.to_string(),
                     family: contract.family.clone(),
                     topic: contract
                         .topic
@@ -279,6 +369,20 @@ fn materialize_contract(contract: &Contract, robot: &Robot) -> Vec<Contract> {
         }
     }
     materialized
+}
+
+fn topology_contract(
+    artifact_id: &str,
+    family: &str,
+    topic: &str,
+    direction: &str,
+) -> TopologyContract {
+    TopologyContract {
+        artifact_id: artifact_id.to_string(),
+        family: family.to_string(),
+        topic: topic.to_string(),
+        direction: direction.to_string(),
+    }
 }
 
 fn component_topic_kind(topic: &str) -> Option<&str> {
@@ -320,7 +424,7 @@ fn component_contract(
     ))
 }
 
-fn external_pubsub_inputs() -> Vec<Contract> {
+fn external_pubsub_inputs() -> Vec<TopologyContract> {
     [
         ("mission::Command", "mission/command"),
         ("motion::ManualCommand", "motion/manual"),
@@ -328,15 +432,11 @@ fn external_pubsub_inputs() -> Vec<Contract> {
         ("safety::EmergencyStopRequest", "safety/estop"),
     ]
     .into_iter()
-    .map(|(family, topic)| Contract {
-        family: family.to_string(),
-        topic: topic.to_string(),
-        direction: "publish".to_string(),
-    })
+    .map(|(family, topic)| topology_contract("fixture/external", family, topic, "publish"))
     .collect()
 }
 
-fn external_query_clients() -> Vec<Contract> {
+fn external_query_clients() -> Vec<TopologyContract> {
     [
         ("asset::GetRequest", "asset/get", "query_request"),
         ("asset::GetResponse", "asset/get", "query_response"),
@@ -346,10 +446,8 @@ fn external_query_clients() -> Vec<Contract> {
         ("video::OpenResponse", "video/open", "query_response"),
     ]
     .into_iter()
-    .map(|(family, topic, direction)| Contract {
-        family: family.to_string(),
-        topic: topic.to_string(),
-        direction: direction.to_string(),
+    .map(|(family, topic, direction)| {
+        topology_contract("fixture/external", family, topic, direction)
     })
     .collect()
 }

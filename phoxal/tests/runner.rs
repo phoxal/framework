@@ -130,9 +130,11 @@ fn emit_apis_reports_frozen_schema() {
 
     let contracts = value["required_contracts"].as_array().unwrap();
     assert!(
-        contracts
-            .iter()
-            .any(|c| c["topic"] == "drive/target" && c["direction"] == "publish"),
+        contracts.iter().any(|c| {
+            c["api_version"] == "y2026_1"
+                && c["topic"] == "drive/target"
+                && c["direction"] == "publish"
+        }),
         "emit-apis should report the drive/target publish contract"
     );
 }
@@ -158,22 +160,26 @@ fn emit_apis_reports_explicit_contracts_once() {
 
     let publish_drive_target = contracts
         .iter()
-        .filter(|c| c["topic"] == "drive/target" && c["direction"] == "publish")
+        .filter(|c| {
+            c["api_version"] == "y2026_1"
+                && c["topic"] == "drive/target"
+                && c["direction"] == "publish"
+        })
         .count();
     assert_eq!(publish_drive_target, 1);
-    assert!(
-        contracts
-            .iter()
-            .any(|c| c["topic"] == "map/revision" && c["direction"] == "subscribe")
-    );
-    assert!(
-        contracts
-            .iter()
-            .any(|c| c["topic"] == "map/submap" && c["direction"] == "query_request")
-    );
-    assert!(
-        contracts
-            .iter()
-            .any(|c| c["topic"] == "map/submap" && c["direction"] == "query_response")
-    );
+    assert!(contracts.iter().any(|c| {
+        c["api_version"] == "y2026_1"
+            && c["topic"] == "map/revision"
+            && c["direction"] == "subscribe"
+    }));
+    assert!(contracts.iter().any(|c| {
+        c["api_version"] == "y2026_1"
+            && c["topic"] == "map/submap"
+            && c["direction"] == "query_request"
+    }));
+    assert!(contracts.iter().any(|c| {
+        c["api_version"] == "y2026_1"
+            && c["topic"] == "map/submap"
+            && c["direction"] == "query_response"
+    }));
 }
