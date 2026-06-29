@@ -1,5 +1,6 @@
-// An explicit server topic expression can be a typed Topic expression, as long
-// as its key matches the request body's canonical topic.
+// An explicit server topic expression can be any typed `Topic` value, as long as
+// its key matches the request body's canonical topic. The supported way to build
+// that value is the api-local topic builder - raw `Topic` constructors are sealed.
 use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
@@ -14,7 +15,7 @@ impl AssetExplicitTopic {
         Ok(Self {})
     }
 
-    #[server(topic = phoxal::bus::Topic::<phoxal::bus::Query<api::asset::GetRequest, api::asset::GetResponse>>::new_static("asset/get"))]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get(
         &mut self,
         _request: api::asset::GetRequest,

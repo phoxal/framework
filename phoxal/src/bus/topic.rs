@@ -33,8 +33,16 @@ pub struct Topic<Kind> {
 }
 
 impl<Kind> Topic<Kind> {
-    /// Construct a topic from a static key. Called by the generated builders.
-    pub fn new_static(key: &'static str) -> Self {
+    /// Construct a topic from a static key.
+    ///
+    /// Crate-internal: the only supported way to build a [`Topic`] is the
+    /// api-local builder (`api::topic::new()....()`), which the
+    /// [`phoxal_api_tree!`](macro@crate::phoxal_api_tree) macro generates inside
+    /// this crate and which calls this constructor over the contract's canonical
+    /// key. Sealing it off the public surface keeps the typed `Kind` and the
+    /// actual bus key in lockstep: an author cannot bind one contract's metadata
+    /// to an arbitrary, mismatched key (D61/D62).
+    pub(crate) fn new_static(key: &'static str) -> Self {
         Topic {
             key: Cow::Borrowed(key),
             _kind: PhantomData,
@@ -42,7 +50,12 @@ impl<Kind> Topic<Kind> {
     }
 
     /// Construct a topic from an owned (dynamically built) key.
-    pub fn new_owned(key: String) -> Self {
+    ///
+    /// Crate-internal for the same reason as [`new_static`](Self::new_static):
+    /// the api builder calls this for nodes with dynamic segments, filling the
+    /// carried variables into the canonical key. Not part of the author-facing
+    /// surface.
+    pub(crate) fn new_owned(key: String) -> Self {
         Topic {
             key: Cow::Owned(key),
             _kind: PhantomData,

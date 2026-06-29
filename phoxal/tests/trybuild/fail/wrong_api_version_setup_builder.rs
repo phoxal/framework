@@ -1,4 +1,8 @@
-// A wrong-API body cannot be smuggled in through SetupContext builders.
+// A wrong-API body cannot be smuggled in through SetupContext builders: there is
+// no author-facing way to build a `Topic` for an arbitrary body. The only public
+// path is the api-local builder (`api::topic::new()....()`); the raw `Topic`
+// constructors are sealed (`pub(crate)`), so this attempt to forge one for a
+// foreign body fails to even construct the topic.
 use phoxal::bus::{PubSub, Topic};
 use phoxal::prelude::*;
 
