@@ -1,8 +1,16 @@
 //! `follow` - the official pure-pursuit path follower.
 //!
-//! It consumes a planned path plus the current planar localization estimate and
-//! publishes a body-twist follow target. `motion` arbitrates this target into the
-//! final `drive/target`; this runtime never commands actuators directly.
+//! A scheduled runtime that subscribes to `plan/path`, `plan/state`, and
+//! `localize/state`, and publishes a body-twist `follow/target` plus a
+//! `follow/state` (active, current target index, finished).
+//! Each step it picks a lookahead pose along the path and emits a linear and
+//! angular velocity that steer toward it, reversing when the target is behind and
+//! capping both velocities; reaching the final pose within tolerance finishes.
+//! `motion` arbitrates this target into the final `drive/target`; this runtime
+//! never commands actuators directly.
+//! It publishes a zero-velocity target (an explicit stop, not silence) whenever
+//! there is no active plan, the path is empty or stale, or localization is
+//! missing, stale, or below the minimum confidence.
 
 use std::f64::consts::{FRAC_PI_2, PI};
 

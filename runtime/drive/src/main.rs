@@ -1,11 +1,17 @@
-//! `drive` — the official differential-drive runtime.
+//! `drive` - the official differential-drive runtime.
 //!
-//! A scheduled official runtime that closes the body-twist → wheel-velocity loop:
-//! it reads `drive/target`, limits + mixes it into per-wheel angular speeds, and
-//! commands each motor on its dynamic per-component topic. It exercises the full
-//! Phase 4 surface — `ctx.robot()` (D33: build typed state from the model),
-//! dynamic per-instance topic builders (D17/D38), `#[step]`, and `#[shutdown]`
-//! (park the motors).
+//! A scheduled runtime that closes the body-twist to wheel-velocity loop.
+//! It subscribes to `drive/target`, clamps it to the configured linear and
+//! angular limits, mixes the limited twist into per-wheel angular speeds via
+//! differential inverse kinematics, and commands each wheel motor on its dynamic
+//! `component/<id>/motor/<cap>/command` topic.
+//! It also publishes `drive/state` (the raw requested target, the limited target,
+//! the actuator authority, and any stop reason).
+//! The per-side motor bindings and wheel geometry are built from the robot model
+//! (D33) and must be differential kinematics, or setup fails.
+//! With no target, or a target older than the staleness window, it stops the
+//! wheels rather than carrying the last command. On shutdown it makes a
+//! best-effort pass to park every wheel before the bus closes.
 
 use anyhow::{Result, bail};
 use phoxal::api::y2026_1 as api;

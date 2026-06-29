@@ -1,10 +1,20 @@
-//! `bus_abi` — the framework-owned wire envelope (D26/D45/D62).
+//! `bus_abi` - the framework-owned wire envelope (D26/D45/D62).
 //!
-//! `bus_abi` is the **one globally-coordinated layer**: the Zenoh key scheme, the
-//! encoding-string format, the attachment/[`BusMetadata`](super::BusMetadata)
-//! layout, and the codec id. It is a **constant**, not a manifest field, and is
-//! **orthogonal** to `api_version` (D62) — the contract bodies are
-//! api-version-local types; only the envelope around them is `bus_abi`.
+//! `bus_abi` is the **one globally-coordinated layer**, the identity of which is
+//! the combination of three things wrapped around every body:
+//!
+//! 1. the Zenoh **encoding string** ([`encoding_string`]:
+//!    `phoxal/v0;family=<family>;api=<api_version>;codec=<id>`), which lets a
+//!    receiver fast-reject on family/api/codec before touching the payload;
+//! 2. the Zenoh **attachment** - a MessagePack [`BusMetadata`](super::BusMetadata)
+//!    carrying the same version identity plus provenance (source + logical time);
+//! 3. the **codec** id ([`CodecId`]) naming how the body payload is encoded
+//!    (MessagePack, the one codec in v1).
+//!
+//! Together with the key scheme (`<namespace>/robots/<robot-id>/<topic>`) these
+//! make up the wire contract. `bus_abi` is a **constant** ([`BUS_ABI`]), not a
+//! manifest field, and is **orthogonal** to `api_version` (D62) - the contract
+//! bodies are api-version-local types; only the envelope around them is `bus_abi`.
 //!
 //! The cross-artifact `bus_abi` compatibility check is deferred to freeze (D45):
 //! within a coherent platform release every participant is rebuilt from one
@@ -13,7 +23,9 @@
 
 use std::fmt;
 
-/// The framework-owned wire-envelope identifier.
+/// The framework-owned wire-envelope identifier (a versioned string such as
+/// `"phoxal-bus/v0"`). One value, [`BUS_ABI`], is the live ABI; it freezes
+/// per-axis to `v1` (D27), independently of any API version.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BusAbi {
     id: &'static str,

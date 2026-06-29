@@ -1,12 +1,34 @@
 //! Body-typed handles over the `bus_abi` boundary (D35).
 //!
-//! - [`Publisher<B>`] — MessagePack-encodes the plain body and enqueues it on the
+//! - [`Publisher<B>`] - MessagePack-encodes the plain body and enqueues it on the
 //!   non-blocking outbound queue (a publish never blocks the step loop).
-//! - [`Subscriber<B>`] — a drop-oldest ring (depth 32) of decoded bodies.
-//! - [`Latest<B>`] — keep-last-1: the most recent decoded body.
+//! - [`Subscriber<B>`] - a drop-oldest ring (depth 32 by default) of decoded
+//!   bodies, for consumers that want a short backlog under congestion.
+//! - [`Latest<B>`] - keep-last-1: only the most recent decoded body is retained.
+//! - [`Querier<Req, Resp>`] - the caller side of the request/response leg,
+//!   returning `Result<Resp, `[`QueryError`]`>`.
 //!
-//! All three fast-reject on the metadata `api_version` before decoding the body;
-//! a mismatch is counted + logged as a health signal, never a silent accept.
+//! # Periodic-state QoS
+//!
+//! Pub/sub here is tuned for periodic state streams, where the freshest sample
+//! matters more than every sample arriving. Both ends shed load instead of
+//! blocking or growing without bound:
+//!
+//! - **Publish never blocks.** [`Publisher::publish_at`] is just
+//!   [`Publisher::try_publish`]: it MessagePack-encodes the body and enqueues it
+//!   on the bounded outbound queue, returning immediately. A saturated queue
+//!   (sample or byte bound) drops the sample, bumps `outbound_drops`, and returns
+//!   [`BusError::Saturated`] so the caller can observe the loss - it never stalls
+//!   the step loop (D35/D43e). There is no reliable/blocking publish variant.
+//! - **Receivers bound their backlog.** [`Latest<B>`] keeps only the last sample
+//!   (keep-last-1); [`Subscriber<B>`] keeps a drop-oldest ring, evicting the
+//!   oldest buffered sample and bumping `inbound_drops` when a slow consumer lets
+//!   the ring fill. Choose `Latest` when only current state matters and
+//!   `Subscriber` when a bounded history is useful.
+//!
+//! All receive paths fast-reject on the metadata `api_version` before decoding
+//! the body; a mismatch is counted (`api_mismatches`) + logged as a health
+//! signal, never a silent accept (D62).
 
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -31,11 +53,13 @@ use crate::bus::query::{QueryError, QueryFailure};
 use crate::bus::session::Bus;
 use crate::bus::topic::{PubSub, Query, Topic};
 
-/// The Phoxal-pinned finite query timeout (D31) — not Zenoh's 10 s default.
+/// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Publishes plain bodies of `B` on a versionless key; metadata carries the
-/// version identity. A publish is a non-blocking enqueue (D35/D43e).
+/// Publishes plain bodies of `B` on a versionless key; the version identity
+/// rides in the [`BusMetadata`] attachment + encoding string, never in the key
+/// or body (D62). A publish is a non-blocking enqueue, so it is safe to call
+/// from the step loop (D35/D43e).
 pub struct Publisher<B> {
     bus: Bus,
     key: String,
@@ -52,17 +76,25 @@ impl<B: ContractBody> Publisher<B> {
         })
     }
 
-    /// Publish `body` stamped at logical time `at`. Non-blocking (D35/D43e):
-    /// returns immediately, and reports `Saturated`/`Closed` instead of silently
-    /// dropping the caller's error path.
+    /// Publish `body` stamped at logical time `at`.
+    ///
+    /// The `async` form for symmetry with the rest of the bus surface; it does no
+    /// awaiting and is exactly [`try_publish`](Self::try_publish). Non-blocking
+    /// (D35/D43e): it returns immediately and reports `Saturated`/`Closed` rather
+    /// than silently dropping, so loss is on the caller's error path.
     #[allow(clippy::unused_async)]
     pub async fn publish_at(&self, at: LogicalTime, body: B) -> Result<()> {
         self.try_publish(at, body)
     }
 
-    /// The explicit non-blocking publish op (D43e). Returns immediately; a
-    /// saturated outbound queue returns [`BusError::Saturated`] (the sample was
-    /// dropped + counted) so the caller can observe loss.
+    /// The explicit non-blocking publish op (D43e).
+    ///
+    /// Encodes `body`, builds the [`BusMetadata`] (api version, family, codec,
+    /// `at`'s epoch + `produced_at_ns`, and this producer's next sequence), and
+    /// enqueues it on the outbound queue. Returns immediately. A saturated
+    /// outbound queue (sample or byte bound) returns [`BusError::Saturated`] - the
+    /// sample was dropped and `outbound_drops` bumped - so the caller can observe
+    /// the loss; a closed session returns [`BusError::Closed`].
     pub fn try_publish(&self, at: LogicalTime, body: B) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
         let api_version = <B::Api as ApiVersion>::ID;
@@ -84,11 +116,20 @@ impl<B: ContractBody> Publisher<B> {
     }
 }
 
-/// Issues queries on a query topic and returns `Result<Resp, QueryError>` (D31).
+/// Issues queries on an exclusive query topic and returns
+/// `Result<Resp, QueryError>` (D31).
 ///
-/// Carries a Phoxal-pinned finite timeout. A success reply is the plain `Resp`
-/// body; a handler error rides Zenoh's `ReplyError` as a `QueryFailure`. More
-/// than one responder on the topic is reported as `TooManyResponders`.
+/// The caller side of the request/response leg. A query carries a finite,
+/// Phoxal-pinned [`timeout`](DEFAULT_QUERY_TIMEOUT) - not Zenoh's 10 s default -
+/// and expects exactly one responder (an exclusive topic, D31/D43f):
+///
+/// - a success reply decodes to the plain `Resp` body;
+/// - a handler error rides Zenoh's native `ReplyError` and surfaces as
+///   [`QueryError::Server`] carrying the [`QueryFailure`];
+/// - the deadline elapsing with no reply is [`QueryError::Timeout`], and the
+///   reply stream closing with no reply is [`QueryError::Unavailable`];
+/// - a second reply (a duplicate responder, also a `phoxal-cli check` topology
+///   error) is [`QueryError::TooManyResponders`].
 pub struct Querier<Req, Resp> {
     bus: Bus,
     key: String,
@@ -116,6 +157,10 @@ where
     }
 
     /// Issue a query and await the single response (or a typed error).
+    ///
+    /// The request body is MessagePack-encoded with mirroring metadata; requests
+    /// carry no logical time, so `produced_at_ns`/`epoch` are `0`. The wait is
+    /// bounded by this querier's timeout.
     pub async fn query(&self, request: Req) -> std::result::Result<Resp, QueryError> {
         let payload =
             MessagePack::encode(&request).map_err(|e| QueryError::Protocol(e.to_string()))?;
@@ -156,7 +201,7 @@ where
 
         // An exclusive query topic has exactly one responder (D31/D43f): collect
         // replies until the stream closes, returning the single reply. A second
-        // reply is `TooManyResponders` (a duplicate responder — also a
+        // reply is `TooManyResponders` (a duplicate responder - also a
         // `phoxal-cli check` topology error). The Phoxal-pinned finite timeout
         // bounds the wait: deadline with no reply → `Timeout`; the stream closing
         // with no reply → `Unavailable`.
@@ -216,6 +261,13 @@ pub struct Received<B> {
 }
 
 /// Keep-last-1 view of a topic: the most recently received decoded body.
+///
+/// A background task overwrites a single slot with each decoded sample, so a
+/// reader always sees current state and never a backlog. Use this when only the
+/// latest value matters (the common case for periodic state); reach for
+/// [`Subscriber`] when a bounded history is needed. Decode/`api_version`
+/// failures are counted + logged, not stored. The subscription lives until the
+/// `Latest` is dropped.
 pub struct Latest<B> {
     slot: Arc<ArcSwapOption<B>>,
     _guard: SubscriptionGuard,
@@ -241,7 +293,15 @@ impl<B: ContractBody> Latest<B> {
     }
 }
 
-/// A drop-oldest ring subscription (depth 32 by default) of decoded bodies.
+/// A drop-oldest ring subscription of decoded bodies.
+///
+/// A background task pushes each decoded sample onto a bounded ring (the depth
+/// is set at construction). When a slow consumer lets the ring fill, the oldest
+/// buffered sample is evicted and `inbound_drops` is bumped - the newest sample
+/// always wins, the backlog never grows without bound. Use this when a short
+/// history is useful; reach for [`Latest`] when only current state matters.
+/// Decode/`api_version` failures are counted + logged, not buffered. The
+/// subscription lives until the `Subscriber` is dropped.
 pub struct Subscriber<B> {
     ring: Arc<Ring<B>>,
     _guard: SubscriptionGuard,
@@ -463,7 +523,7 @@ pub(crate) fn decode_sample<B: ContractBody>(
         });
     }
 
-    // The metadata family must match the body we are decoding into — a body whose
+    // The metadata family must match the body we are decoding into - a body whose
     // family disagrees with the topic is a producer bug, not a silent accept.
     if metadata.family != B::FAMILY {
         return Err(BusError::Metadata {

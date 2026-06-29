@@ -1,4 +1,18 @@
 //! `power` - host lifecycle commands through the Balena supervisor.
+//!
+//! This runtime subscribes to `power/command` (Reboot/Shutdown) and publishes the
+//! latched `power/state`. Each command is forwarded to the Balena supervisor over
+//! plain HTTP (its `/v1/reboot` and `/v1/shutdown` endpoints), addressed from the
+//! `BALENA_SUPERVISOR_ADDRESS` and `BALENA_SUPERVISOR_API_KEY` environment
+//! variables.
+//!
+//! The executor is built only when both env vars are present, so on a host
+//! without a supervisor the runtime stays in `Idle` and reports that it is
+//! unconfigured rather than failing. The HTTP target is plain-HTTP only: an
+//! `https://` address is rejected during parsing. A supervisor non-2xx response
+//! or transport/timeout error latches `Failed`; an accepted request latches
+//! `Rebooting` or `ShuttingDown`. The runtime never executes the lifecycle action
+//! itself - it only relays the request to the supervisor.
 
 use std::env;
 use std::future::Future;

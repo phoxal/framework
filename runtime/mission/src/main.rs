@@ -1,10 +1,14 @@
 //! `mission` - lifecycle owner for autonomy goals.
 //!
-//! This runtime is deliberately not a drive controller. It accepts operator
-//! mission commands, latches the active goal, republishes that goal for planning,
-//! and reports the mission lifecycle. Because this first API slice does not feed
-//! arrival/completion observations into `mission`, an active goal remains active
-//! until Pause, Resume, Cancel, or a replacement Start command is received.
+//! This runtime is deliberately not a drive controller. It subscribes to
+//! `mission/command` (Start/Pause/Resume/Cancel), latches the active goal, and
+//! publishes `mission/goal` (only while Active) plus the `mission/state`
+//! lifecycle. Pause/Resume/Cancel keep or clear the latched goal; an invalid
+//! Pause or Resume is reported in the state `detail` without changing phase.
+//!
+//! Because this first API slice does not feed arrival/completion observations
+//! into `mission`, an active goal remains active until Pause, Resume, Cancel, or a
+//! replacement Start command is received.
 
 use anyhow::Result;
 use phoxal::api::y2026_1 as api;

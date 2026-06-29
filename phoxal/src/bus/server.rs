@@ -1,5 +1,19 @@
 //! Server-side query handling: a thin wrapper over a Zenoh queryable that the
 //! runner uses to drive `#[server]`/`#[server_snapshot]` handlers (D16/D31).
+//!
+//! This is the responder side of the request/response leg whose caller is
+//! [`Querier`](crate::bus::Querier). [`Bus::declare_server`] declares a
+//! `complete` queryable on one topic key; [`ServerQueryable::recv`] yields each
+//! [`IncomingQuery`], which exposes the raw request bytes + its [`BusMetadata`]
+//! and the two reply legs:
+//!
+//! - [`IncomingQuery::reply`] sends the plain `Resp` body (D62), with mirroring
+//!   metadata, on the success leg;
+//! - [`IncomingQuery::reply_err`] sends a [`QueryFailure`] on Zenoh's native
+//!   error leg (D31), which the caller decodes back into the failure.
+//!
+//! These public types carry untyped payload bytes; the generated server dispatch
+//! validates `api_version`/`family` and does the typed encode/decode around them.
 
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::OwnedKeyExpr;

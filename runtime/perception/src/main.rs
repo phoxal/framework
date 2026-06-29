@@ -1,10 +1,17 @@
-//! `perception` — detector shell for camera/depth sensing.
+//! `perception` - detector shell for camera/depth sensing.
 //!
-//! This runtime wires camera/depth component streams into the y2026_1
-//! perception contract while keeping the default detector honest: no heavyweight
-//! model backend is linked, and the deterministic placeholder emits no
-//! detections. Future detector heads can plug in behind the small `DetectorHead`
-//! trait without changing the runtime IO surface.
+//! This runtime subscribes to per-component camera and depth frames plus
+//! `localize/state`, runs them through a detector head, and publishes
+//! `perception/detections` and `perception/state`. Detections from a fresh,
+//! confident localization are reported in the `map` frame; otherwise they stay in
+//! the source sensor frame. A small point tracker assigns stable `track_id`s by
+//! nearest same-class association within a time/distance window.
+//!
+//! The default detector is intentionally honest: no heavyweight model backend is
+//! linked, and the deterministic placeholder emits no detections, so the runtime
+//! publishes empty detection sets while still reporting camera health. Future
+//! detector heads can plug in behind the small `DetectorHead` trait without
+//! changing the runtime IO surface.
 
 use anyhow::Result;
 use phoxal::api::y2026_1 as api;

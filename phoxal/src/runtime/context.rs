@@ -280,6 +280,11 @@ impl StepContext {
 }
 
 /// Context for `#[shutdown]`: graceful park/stop/flush before bus close (D24/D43i).
+///
+/// The runner bounds the whole `#[shutdown]` hook by [`grace`](Self::grace): if the
+/// hook is still running at the deadline, the runner logs, drops the hook, and
+/// proceeds to bus close anyway so the process never leaks. Treat [`grace`](Self::grace)
+/// as a budget for any internal flush/park deadlines and return before it elapses.
 #[derive(Clone, Copy, Debug)]
 pub struct ShutdownContext {
     grace: Duration,
@@ -290,7 +295,8 @@ impl ShutdownContext {
         ShutdownContext { grace }
     }
 
-    /// The bounded grace period the runner allows before forcing shutdown.
+    /// The bounded grace period the runner allows the hook before it forces bus
+    /// close. Sourced from `ParticipantLaunch::shutdown_grace_ms`.
     pub fn grace(&self) -> Duration {
         self.grace
     }

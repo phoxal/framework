@@ -1,9 +1,20 @@
-//! `safety` — the official battery + drive safety monitor.
+//! `safety` - the official battery + drive safety monitor.
 //!
-//! This official runtime targets API version `y2026_1`. It consumes
-//! required `battery`/`drive/state` inputs plus emergency-stop sources, and
+//! This official runtime targets API version `y2026_1`. It consumes required
+//! `battery/state` and `drive/state` inputs plus emergency-stop sources (the
+//! software `safety/estop` request and per-component emergency-stop states), and
 //! publishes the robot's aggregate `safety/state` posture plus the current
-//! motion authorization.
+//! `safety/authorization` motion envelope.
+//!
+//! The monitor is fail-closed. A missing or stale required source forces `Stop`,
+//! and any engaged emergency stop forces `EmergencyStop`. Otherwise it takes the
+//! worst decision across battery charge (`Slow` when low, `Stop` when critical)
+//! and drive stop-reason (`Stop` on fault, `EmergencyStop` on drive e-stop). The
+//! authorization carries the approved-motion constraint for that decision
+//! (`Stop`/`EmergencyStop` authorize zero motion) and a short TTL, so a stalled
+//! `safety` runtime lets the authorization expire downstream rather than leaving
+//! a stale envelope in force. Battery is required only when the robot model
+//! declares a battery capability; `drive/state` is always required.
 
 use std::f64::consts::PI;
 

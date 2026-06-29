@@ -1,4 +1,18 @@
 //! `frame` - maintain the robot transform tree and serve frame lookups.
+//!
+//! A scheduled runtime with a concurrent snapshot server. It builds the link
+//! tree from the robot model (D33): fixed joints become static transforms, while
+//! movable joints (revolute, continuous, prismatic) are tracked dynamically.
+//! It subscribes to the per-joint `joint/<id>/state` topic for each movable joint
+//! and folds each sample into the joint origin to produce a child-to-parent
+//! transform, buffered in a time-windowed ring buffer per child frame.
+//! Each step it publishes the latest combined tree on `frame/tree`, and emits the
+//! static transforms once on `frame/static_transforms`.
+//! A `#[server_snapshot]` serves `frame/lookup` concurrently against the committed
+//! snapshot, composing the transform between any two known frames through their
+//! lowest common ancestor; it returns no transform for unknown frames or for
+//! timestamps outside a dynamic frame's buffered window.
+//! Floating, planar, and spherical joints are not supported and fail setup.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;

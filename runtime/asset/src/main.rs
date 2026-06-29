@@ -1,10 +1,13 @@
-//! `asset` — the official asset runtime.
+//! `asset` - the official asset runtime.
 //!
 //! A server-only official runtime: no `#[step]`, one exclusive `#[server]` serving
-//! `asset/get` from the deploy bundle. It reads the bundle root via
-//! `ctx.bundle_root()` (D33: official runtimes build their state from the model /
-//! bundle, not a typed config block) and returns file bytes, rejecting path
-//! traversal before touching the filesystem.
+//! `asset/get` from the deploy bundle. It consumes no topics; it reads the bundle
+//! root via `ctx.bundle_root()` (D33: official runtimes build their state from the
+//! model / bundle, not a typed config block).
+//! On each request it resolves the requested path against the bundle root and
+//! returns the file bytes, reporting a missing file or an invalid path instead.
+//! It rejects path traversal (empty paths, backslashes, `..` segments) before
+//! touching the filesystem, so requests cannot escape the bundle root.
 
 use std::path::PathBuf;
 

@@ -2,7 +2,7 @@
 //!
 //! Samples are Zenoh-native: the key (`<namespace>/robots/<robot-id>/<topic>`),
 //! an encoding string + a [`BusMetadata`] attachment (the version identity +
-//! provenance), and a plain MessagePack body payload — there is no Phoxal frame
+//! provenance), and a plain MessagePack body payload - there is no Phoxal frame
 //! independent of Zenoh, and no `{"v":…}` version tag in the body (D62).
 
 mod abi;

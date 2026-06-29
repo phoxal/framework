@@ -5,12 +5,14 @@
 //! - [`RuntimeBehavior`] is emitted by `#[phoxal::runtime]`: the server-side
 //!   contracts plus the lifecycle dispatch (`__setup`/`__step`/`__shutdown`) the
 //!   runner drives.
-//! - [`Declares`] is a per-runtime marker (also emitted by the derive) that makes
-//!   `SetupContext` builders reject undeclared contract families at compile time
-//!   (D44).
+//! - [`DeclaresPublish`]/[`DeclaresSubscribe`]/[`DeclaresQuery`] are per-runtime
+//!   markers (also emitted by the derive) that make `SetupContext` builders reject
+//!   undeclared contract families/directions at compile time (D44).
 //!
-//! `REQUIRED_CONTRACTS` is the union of the field-side and server-side contracts;
-//! `emit-apis` builds it at runtime, so no const slice concatenation is needed.
+//! The full required-contract set is the union of [`RuntimeFields::FIELD_CONTRACTS`]
+//! and [`RuntimeBehavior::SERVER_CONTRACTS`]; `emit-apis` builds that union at
+//! runtime (see [`runtime_metadata`](crate::runtime::emit::runtime_metadata)), so
+//! there is no concatenated const slice.
 
 use std::future::Future;
 use std::pin::Pin;

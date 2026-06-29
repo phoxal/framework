@@ -1,9 +1,9 @@
-//! Typed topics — the api-local builder output (D61).
+//! Typed topics - the api-local builder output (D61).
 //!
 //! A [`Topic`] is a versionless topic key plus a phantom [`TopicKind`] that ties
 //! the key to its body type(s). The api tree's `topic` builders return these; the
 //! `SetupContext` handle builders consume them. The wire body never appears in the
-//! key — the key is `drive/state`, not `drive/state/v1` (D62).
+//! key - the key is `drive/state`, not `drive/state/v1` (D62).
 
 use std::borrow::Cow;
 use std::marker::PhantomData;

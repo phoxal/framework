@@ -1,7 +1,13 @@
-//! `battery` — the official simulated battery-state monitor.
+//! `battery` - the official simulated battery-state monitor.
 //!
-//! This official runtime targets API version `y2026_1`, exercising the
-//! `battery` family in the single shipped API.
+//! A scheduled runtime that consumes nothing: it has no subscriptions and models
+//! a pack discharging under a constant load entirely from internal state.
+//! Each step it advances the charge ratio for the elapsed `dt`, derives a voltage
+//! by interpolating between the empty and full pack voltage, and publishes
+//! `battery/state` (voltage, current, charge ratio) at 1 Hz.
+//! The pack starts full and the modelled current drops to zero once depleted.
+//! The numbers are placeholders for a real fuel gauge: a fixed draw and capacity,
+//! not a reading from any hardware sensor.
 
 use anyhow::Result;
 use phoxal::api::y2026_1 as api;

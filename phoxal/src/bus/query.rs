@@ -3,7 +3,7 @@
 //! A query success reply is the plain `Resp` body (D62). A handler `Err` rides
 //! Zenoh's native `ReplyError`, carrying a [`QueryFailure`] (MessagePack-encoded).
 //! Both are part of `bus_abi` and golden-tested. The caller sees a
-//! [`QueryError`]; there is no `Version` variant — one graph runs one
+//! [`QueryError`]; there is no `Version` variant - one graph runs one
 //! `api_version` (D63).
 
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ impl QueryFailure {
     }
 }
 
-/// What a `Querier` returns to the caller (D31). No `Version` variant — one graph
+/// What a `Querier` returns to the caller (D31). No `Version` variant - one graph
 /// runs one `api_version` (D63).
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {

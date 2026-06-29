@@ -12,7 +12,7 @@ use zenoh::key_expr::OwnedKeyExpr;
 use crate::bus::error::{BusError, Result};
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
-/// exceed this drops the sample and bumps the drop counter — it never blocks the
+/// exceed this drops the sample and bumps the drop counter - it never blocks the
 /// step loop (D35/D43e).
 const OUTBOUND_CAPACITY: usize = 1024;
 
@@ -28,7 +28,7 @@ pub struct BusConfig {
     /// The robot id (`identity.id`); one concrete key segment.
     pub robot_id: String,
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// runtime/artifact id — D53).
+    /// runtime/artifact id - D53).
     pub participant: String,
     /// Per-process incarnation (bumped on restart).
     pub incarnation: u64,
@@ -180,7 +180,7 @@ impl Bus {
 
     /// Non-blocking enqueue onto the outbound queue. A full queue (samples or
     /// bytes) drops the sample, bumps the drop counter, and returns
-    /// `Saturated` — it never blocks the step loop (D35/D43e).
+    /// `Saturated` - it never blocks the step loop (D35/D43e).
     pub(crate) fn enqueue(
         &self,
         key: String,
@@ -246,7 +246,7 @@ impl Bus {
         // the drain task. `notify_one` stores a permit even if the drain task has
         // not yet registered as a waiter, so the shutdown signal is never lost (a
         // `notify_waiters` here would be dropped if the drain task had not been
-        // polled yet — e.g. on a single-worker runtime).
+        // polled yet - e.g. on a single-worker runtime).
         self.inner.closing.store(true, Ordering::Release);
         self.inner.shutdown.notify_one();
         let handle = self

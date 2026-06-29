@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 
 use crate::bus::abi::CodecId;
 
-/// A wire codec for contract bodies. The body is always the plain payload — the
+/// A wire codec for contract bodies. The body is always the plain payload - the
 /// codec never adds a version envelope (D62).
 pub trait Codec {
     /// The codec id carried in bus metadata.
@@ -18,7 +18,7 @@ pub trait Codec {
     fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError>;
 }
 
-/// MessagePack (named fields) — the single v1 codec.
+/// MessagePack (named fields) - the single v1 codec.
 pub struct MessagePack;
 
 impl Codec for MessagePack {

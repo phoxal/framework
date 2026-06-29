@@ -1,4 +1,15 @@
 //! `presence` - aggregate explicit runtime heartbeats.
+//!
+//! This runtime subscribes to `presence/heartbeat` and republishes a single
+//! aggregate heartbeat on the same topic under the `presence` participant id. It
+//! tracks the last-seen time and readiness of every other participant and folds
+//! them into one readiness value.
+//!
+//! Aggregation is worst-wins and fail-aware: any `Failed` participant makes the
+//! aggregate `Failed`; a participant whose last heartbeat is older than the stale
+//! threshold (3 s) counts as `Degraded`; otherwise `Degraded` beats
+//! `Initializing`/`NotStarted`, which beats `Ready`. The runtime's own heartbeat
+//! is excluded from the fold so it cannot poison its own aggregate.
 
 use std::collections::BTreeMap;
 
