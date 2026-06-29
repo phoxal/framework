@@ -220,6 +220,35 @@ fn duplicate_server_responder_is_topology_error() {
     );
 }
 
+#[test]
+fn dynamic_component_contracts_are_checked_at_family_level() {
+    let mut topology = Topology::default();
+    topology.add(topology_contract(
+        "drive",
+        "component::motor::Command",
+        "component/{instance}/motor/{capability}/command",
+        "publish",
+    ));
+    topology.add(topology_contract(
+        "fixture/component/front_left_drive",
+        "component::motor::Command",
+        "component/front_left_drive/motor/wheel/command",
+        "subscribe",
+    ));
+
+    let report = topology.report();
+    assert!(report.errors.is_empty());
+    assert!(report.warnings.is_empty());
+    assert_eq!(
+        topology.contracts[0].topic,
+        "component/{instance}/motor/{capability}/command"
+    );
+    assert_eq!(
+        topology.contracts[1].topic,
+        "component/{instance}/motor/{capability}/command"
+    );
+}
+
 impl Topology {
     fn add_runtime_contracts(&mut self, metadata: &RuntimeMetadata, robot: &Robot) {
         for contract in &metadata.required_contracts {
@@ -228,8 +257,17 @@ impl Topology {
                 "runtime {} emitted a per-contract api_version that differs from the artifact api_version",
                 metadata.artifact.id
             );
-            self.contracts
-                .extend(materialize_contract(contract, robot, &metadata.artifact.id));
+            if let Some(kind) = component_topic_kind(&contract.topic)
+                && !robot_has_capability_kind(robot, kind)
+            {
+                continue;
+            }
+            self.add(TopologyContract {
+                artifact_id: metadata.artifact.id.clone(),
+                family: contract.family.clone(),
+                topic: contract.topic.clone(),
+                direction: contract.direction.clone(),
+            });
         }
     }
 
@@ -269,7 +307,9 @@ impl Topology {
     }
 
     fn add(&mut self, contract: TopologyContract) {
-        self.contracts.push(contract);
+        let topic =
+            normalize_component_topic(&contract.topic).unwrap_or_else(|| contract.topic.clone());
+        self.contracts.push(TopologyContract { topic, ..contract });
     }
 
     fn report(&self) -> Report {
@@ -334,43 +374,6 @@ impl Topology {
     }
 }
 
-fn materialize_contract(
-    contract: &Contract,
-    robot: &Robot,
-    artifact_id: &str,
-) -> Vec<TopologyContract> {
-    let Some(kind) = component_topic_kind(&contract.topic) else {
-        return vec![TopologyContract {
-            artifact_id: artifact_id.to_string(),
-            family: contract.family.clone(),
-            topic: contract.topic.clone(),
-            direction: contract.direction.clone(),
-        }];
-    };
-
-    let mut materialized = Vec::new();
-    for (instance_id, instance) in &robot.manifest.components.instances {
-        let component = robot
-            .components
-            .get(&instance.component)
-            .unwrap_or_else(|| panic!("component type {} should be loaded", instance.component));
-        for (capability_id, capability) in &component.capabilities {
-            if capability.kind_name() == kind {
-                materialized.push(TopologyContract {
-                    artifact_id: artifact_id.to_string(),
-                    family: contract.family.clone(),
-                    topic: contract
-                        .topic
-                        .replace("{instance}", instance_id)
-                        .replace("{capability}", capability_id),
-                    direction: contract.direction.clone(),
-                });
-            }
-        }
-    }
-    materialized
-}
-
 fn topology_contract(
     artifact_id: &str,
     family: &str,
@@ -385,12 +388,55 @@ fn topology_contract(
     }
 }
 
+fn normalize_component_topic(topic: &str) -> Option<String> {
+    let mut parts = topic.split('/');
+    let component = parts.next()?;
+    let _instance = parts.next()?;
+    let kind = parts.next()?;
+    let _capability = parts.next()?;
+    let leaf = parts.next()?;
+    if component == "component" && parts.next().is_none() {
+        Some(format!(
+            "component/{{instance}}/{kind}/{{capability}}/{leaf}"
+        ))
+    } else {
+        None
+    }
+}
+
 fn component_topic_kind(topic: &str) -> Option<&str> {
     let mut parts = topic.split('/');
-    match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("component"), Some("{instance}"), Some(kind), Some("{capability}")) => Some(kind),
+    match (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) {
+        (Some("component"), Some(_), Some(kind), Some(_), Some(_)) if parts.next().is_none() => {
+            Some(kind)
+        }
         _ => None,
     }
+}
+
+fn robot_has_capability_kind(robot: &Robot, kind: &str) -> bool {
+    robot
+        .manifest
+        .components
+        .instances
+        .values()
+        .any(|instance| {
+            robot
+                .components
+                .get(&instance.component)
+                .is_some_and(|component| {
+                    component
+                        .capabilities
+                        .values()
+                        .any(|capability| capability.kind_name() == kind)
+                })
+        })
 }
 
 fn component_contract(

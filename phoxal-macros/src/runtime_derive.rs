@@ -232,9 +232,17 @@ fn parse_contracts(input: syn::parse::ParseStream<'_>, decls: &mut Vec<Decl>) ->
         let body;
         parenthesized!(body in content);
         if directive == "publishes" {
-            decls.push(Decl::Publish(body.parse()?));
+            let body_ty: Type = body.parse()?;
+            if !body.is_empty() {
+                return Err(body.error("unexpected tokens after publish body type"));
+            }
+            decls.push(Decl::Publish(body_ty));
         } else if directive == "subscribes" {
-            decls.push(Decl::Subscribe(body.parse()?));
+            let body_ty: Type = body.parse()?;
+            if !body.is_empty() {
+                return Err(body.error("unexpected tokens after subscribe body type"));
+            }
+            decls.push(Decl::Subscribe(body_ty));
         } else if directive == "queries" {
             let req: Type = body.parse()?;
             if body.peek(Token![=>]) {

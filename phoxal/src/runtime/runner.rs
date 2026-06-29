@@ -25,7 +25,7 @@ use crate::bus::{Bus, BusConfig, IncomingQuery, QueryFailure};
 use crate::runtime::clock::{ClockSource, RealClock};
 use crate::runtime::context::{SetupContext, ShutdownContext, StepContext};
 use crate::runtime::emit::print_emit_apis;
-use crate::runtime::launch::ParticipantLaunch;
+use crate::runtime::launch::{ClockMode, ParticipantLaunch};
 use crate::runtime::spec::{MissedTick, RuntimeBehavior, StepSchedule};
 
 /// Run a runtime to completion on a framework-owned blocking Tokio runtime.
@@ -55,7 +55,17 @@ pub async fn run_async<R: RuntimeBehavior>() -> crate::Result<()> {
     // defaults — this is how `phoxal-cli runtime run` / a deploy hands the process
     // its namespace, bus endpoints, bundle, and typed config without recompiling.
     let launch = ParticipantLaunch::from_env(R::ID, "robot")?;
-    run_with::<R, _, _>(launch, RealClock::new(), shutdown_signal()).await
+    let clock = launch_clock(&launch)?;
+    run_with::<R, _, _>(launch, clock, shutdown_signal()).await
+}
+
+fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
+    match launch.clock {
+        ClockMode::Real => Ok(RealClock::new()),
+        ClockMode::Simulation => anyhow::bail!(
+            "PHOXAL_CLOCK=simulation requested, but the simulation clock is not yet supported"
+        ),
+    }
 }
 
 /// Run a runtime against an explicit launch, clock, and shutdown trigger. The
@@ -431,4 +441,21 @@ fn init_tracing() {
             .with_target(true)
             .try_init();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simulation_clock_launch_is_rejected_until_supported() {
+        let mut launch = ParticipantLaunch::local("runtime", "robot");
+        launch.clock = ClockMode::Simulation;
+
+        let Err(err) = launch_clock(&launch) else {
+            panic!("simulation clock launch should be rejected");
+        };
+        let err = err.to_string();
+        assert!(err.contains("simulation clock is not yet supported"));
+    }
 }

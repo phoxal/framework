@@ -151,7 +151,9 @@ pub struct BusProfile {
     pub connect_endpoints: Vec<String>,
 }
 
-/// The clock source the runner uses.
+/// The clock source the runner uses. The default runner currently supports
+/// only [`ClockMode::Real`]; a launch requesting [`ClockMode::Simulation`]
+/// is rejected until the Webots/simulation clock source lands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClockMode {

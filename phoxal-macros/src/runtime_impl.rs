@@ -637,16 +637,20 @@ impl ServerFn {
                 "#[server] must be `async`",
             ));
         }
-        if method.sig.receiver().is_none() {
+        if !has_exclusive_receiver(method) {
             return Err(syn::Error::new(
                 method.sig.span(),
                 "#[server] takes `&mut self` (exclusive, serialized with #[step] — D16)",
             ));
         }
         let typed = typed_arg_types(method);
-        let req_ty = typed.first().cloned().ok_or_else(|| {
-            syn::Error::new(method.sig.span(), "#[server] must take a request argument")
-        })?;
+        if typed.len() != 1 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[server] takes exactly `&mut self` and one request argument",
+            ));
+        }
+        let req_ty = typed[0].clone();
         let resp_ty = server_result_ty(&method.sig.output)?;
         Ok(ServerFn {
             name: method.sig.ident.clone(),
@@ -680,10 +684,16 @@ impl SnapshotServerFn {
             ));
         }
         let typed = typed_arg_types(method);
-        if typed.len() < 2 {
+        if typed.len() != 2 {
             return Err(syn::Error::new(
                 method.sig.span(),
-                "#[server_snapshot] takes `state: Snapshot<State>` and a request argument",
+                "#[server_snapshot] takes exactly `state: Snapshot<State>` and one request argument",
+            ));
+        }
+        if snapshot_state_ty(&typed[0]).is_none() {
+            return Err(syn::Error::new_spanned(
+                &typed[0],
+                "#[server_snapshot] first argument must be `state: Snapshot<State>`",
             ));
         }
         let req_ty = typed[1].clone();
@@ -704,10 +714,22 @@ struct SnapshotFn {
 
 impl SnapshotFn {
     fn parse(method: &ImplItemFn) -> syn::Result<Self> {
-        if method.sig.receiver().is_none() {
+        if method.sig.asyncness.is_some() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[snapshot] must be synchronous",
+            ));
+        }
+        if !has_shared_receiver(method) {
             return Err(syn::Error::new(
                 method.sig.span(),
                 "#[snapshot] takes `&self` and returns the committed state",
+            ));
+        }
+        if !typed_arg_types(method).is_empty() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[snapshot] takes only `&self` and returns the committed state",
             ));
         }
         let state_ty = match &method.sig.output {
@@ -727,6 +749,22 @@ impl SnapshotFn {
 }
 
 // ---- helpers ----------------------------------------------------------------
+
+fn has_exclusive_receiver(method: &ImplItemFn) -> bool {
+    method.sig.receiver().is_some_and(|receiver| {
+        receiver.reference.is_some()
+            && receiver.mutability.is_some()
+            && receiver.colon_token.is_none()
+    })
+}
+
+fn has_shared_receiver(method: &ImplItemFn) -> bool {
+    method.sig.receiver().is_some_and(|receiver| {
+        receiver.reference.is_some()
+            && receiver.mutability.is_none()
+            && receiver.colon_token.is_none()
+    })
+}
 
 /// Types of the typed (non-receiver) arguments of a method, in order.
 fn typed_arg_types(method: &ImplItemFn) -> Vec<Type> {
@@ -762,6 +800,10 @@ fn type_is_self_config(ty: &Type) -> bool {
     )
 }
 
+fn snapshot_state_ty(ty: &Type) -> Option<Type> {
+    single_generic_arg(ty, "Snapshot")
+}
+
 /// Extract `T` from a `-> ServerResult<T>` return type.
 fn server_result_ty(output: &ReturnType) -> syn::Result<Type> {
     let ty = match output {
@@ -785,7 +827,7 @@ fn output_span(output: &ReturnType) -> proc_macro2::Span {
     }
 }
 
-/// If `ty` is `Name<Arg>` (by last path segment), return `Arg`.
+/// If `ty` is exactly `Name<Arg>` (by last path segment), return `Arg`.
 fn single_generic_arg(ty: &Type, name: &str) -> Option<Type> {
     let Type::Path(path) = ty else {
         return None;
@@ -797,10 +839,11 @@ fn single_generic_arg(ty: &Type, name: &str) -> Option<Type> {
     let PathArguments::AngleBracketed(args) = &seg.arguments else {
         return None;
     };
-    args.args.iter().find_map(|a| match a {
-        GenericArgument::Type(t) => Some(t.clone()),
+    let mut args = args.args.iter();
+    match (args.next(), args.next()) {
+        (Some(GenericArgument::Type(t)), None) => Some(t.clone()),
         _ => None,
-    })
+    }
 }
 
 fn type_ends_with(ty: &Type, name: &str) -> bool {

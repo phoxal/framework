@@ -81,6 +81,21 @@ impl SnapshotMap {
         Ok(())
     }
 
+    #[server(topic = api::topic::new().asset().get())]
+    async fn get_asset(
+        &mut self,
+        request: api::asset::GetRequest,
+    ) -> ServerResult<api::asset::GetResponse> {
+        self.rev = self.rev.saturating_add(1);
+        if request.path == "map.cells" {
+            Ok(api::asset::GetResponse::Found {
+                bytes: self.grid.cells.clone(),
+            })
+        } else {
+            Ok(api::asset::GetResponse::Missing)
+        }
+    }
+
     #[server_snapshot(topic = api::topic::new().map().submap())]
     async fn submap(
         state: Snapshot<MapSnapshot>,
