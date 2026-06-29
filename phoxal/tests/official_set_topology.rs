@@ -13,6 +13,7 @@ use phoxal::model::v1::Robot;
 struct RuntimeMetadata {
     artifact: Artifact,
     api_version: String,
+    bus_abi: String,
     required_contracts: Vec<Contract>,
 }
 
@@ -80,8 +81,18 @@ fn official_runtime_set_matches_y2026_1_fixture_topology() {
             emitted.api_version, "y2026_1",
             "runtime {name} must report y2026_1"
         );
+        assert_eq!(
+            emitted.bus_abi, "phoxal-bus/v0",
+            "runtime {name} must report the frozen bus_abi"
+        );
         topology.add_runtime_contracts(&emitted, &fixture);
     }
+    // The participants injected below are FIXTURES, not real official producers:
+    // their artifact ids are namespaced `fixture/...` (see `topology_contract`
+    // calls in `add_fixture_external_participants`). They stand in for the
+    // external clients/components a real robot would run, so a topic that only a
+    // fixture would publish never masks a missing REAL official producer: the
+    // cardinality report attributes responders by artifact id.
     topology.add_fixture_external_participants(&fixture);
 
     let report = topology.report();

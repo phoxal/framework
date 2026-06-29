@@ -64,10 +64,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                         "duplicate #[step]: a runtime has at most one scheduled loop",
                     ));
                 }
-                step = Some(StepFn {
-                    name: method.sig.ident.clone(),
-                    hz,
-                });
+                step = Some(StepFn::parse(method, hz)?);
             }
             Lifecycle::Shutdown => {
                 if shutdown.is_some() {
@@ -574,6 +571,19 @@ impl LifecycleFn {
                 "#[setup] takes `ctx: &mut SetupContext<Self>` and optional runtime config",
             ));
         }
+        let arg_types = typed_arg_types(method);
+        if let Some(ctx_ty) = arg_types.first()
+            && !ref_type_ends_with(ctx_ty, "SetupContext")
+        {
+            return Err(syn::Error::new_spanned(
+                ctx_ty,
+                "#[setup] first argument must be `ctx: &mut SetupContext<Self>`",
+            ));
+        }
+        require_result_return(
+            &method.sig.output,
+            "#[setup] must return `Result<Self>` (D22)",
+        )?;
         rewrite_setup_self_config(method);
         Ok(LifecycleFn {
             name: method.sig.ident.clone(),
@@ -609,6 +619,7 @@ impl LifecycleFn {
                 "#[shutdown] context parameter must be `ctx: ShutdownContext`",
             ));
         }
+        require_result_return(&method.sig.output, "#[shutdown] must return `Result<()>`")?;
         let extra = !typed.is_empty();
         Ok(LifecycleFn {
             name: method.sig.ident.clone(),
@@ -620,6 +631,41 @@ impl LifecycleFn {
 struct StepFn {
     name: syn::Ident,
     hz: f64,
+}
+
+impl StepFn {
+    fn parse(method: &ImplItemFn, hz: f64) -> syn::Result<Self> {
+        if method.sig.asyncness.is_none() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[step] must be `async`",
+            ));
+        }
+        if !has_exclusive_receiver(method) {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[step] takes `&mut self` (the scheduled control loop - D34)",
+            ));
+        }
+        let typed = typed_arg_types(method);
+        if typed.len() != 1 {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[step] takes exactly `&mut self` and `step: StepContext`",
+            ));
+        }
+        if !type_ends_with(&typed[0], "StepContext") {
+            return Err(syn::Error::new_spanned(
+                &typed[0],
+                "#[step] argument must be `step: StepContext`",
+            ));
+        }
+        require_result_return(&method.sig.output, "#[step] must return `Result<()>`")?;
+        Ok(StepFn {
+            name: method.sig.ident.clone(),
+            hz,
+        })
+    }
 }
 
 struct ServerFn {
@@ -827,6 +873,20 @@ fn output_span(output: &ReturnType) -> proc_macro2::Span {
     }
 }
 
+/// Require a `-> Result<Inner>` return (by last path segment), reporting `what`
+/// in the error so each lifecycle method names its canonical shape. Matches the
+/// surface form (`Result<…>` / `phoxal::Result<…>` / `crate::Result<…>` /
+/// `anyhow::Result<…>`), the single-generic alias re-exported as `phoxal::Result`.
+fn require_result_return(output: &ReturnType, what: &str) -> syn::Result<Type> {
+    let ty = match output {
+        ReturnType::Type(_, ty) => ty.as_ref(),
+        ReturnType::Default => {
+            return Err(syn::Error::new(output_span(output), what.to_string()));
+        }
+    };
+    single_generic_arg(ty, "Result").ok_or_else(|| syn::Error::new_spanned(ty, what.to_string()))
+}
+
 /// If `ty` is exactly `Name<Arg>` (by last path segment), return `Arg`.
 fn single_generic_arg(ty: &Type, name: &str) -> Option<Type> {
     let Type::Path(path) = ty else {
@@ -854,6 +914,16 @@ fn type_ends_with(ty: &Type, name: &str) -> bool {
         .segments
         .last()
         .is_some_and(|segment| segment.ident == name)
+}
+
+/// Like [`type_ends_with`], but peels one leading reference (`&T` / `&mut T`)
+/// first — so `&mut SetupContext<Self>` matches `SetupContext`.
+fn ref_type_ends_with(ty: &Type, name: &str) -> bool {
+    let inner = match ty {
+        Type::Reference(r) => r.elem.as_ref(),
+        other => other,
+    };
+    type_ends_with(inner, name)
 }
 
 /// Find and remove the single phoxal helper attribute on a method.

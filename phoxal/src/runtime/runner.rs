@@ -222,9 +222,23 @@ where
         task.abort();
     }
 
+    // Bound the shutdown hook by the grace deadline (D24/D43i): a hook that
+    // parks/flushes hardware can hang, but the runner must still proceed to
+    // bus close deterministically rather than leak the process. On timeout we
+    // log and move on; the hook's task is dropped (cancelled at the next await).
     let grace = Duration::from_millis(launch.shutdown_grace_ms);
-    if let Err(e) = runtime.__shutdown(ShutdownContext::new(grace)).await {
-        tracing::warn!(target: "phoxal.runtime", error = %e, "shutdown hook returned error");
+    match tokio::time::timeout(grace, runtime.__shutdown(ShutdownContext::new(grace))).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::warn!(target: "phoxal.runtime", error = %e, "shutdown hook returned error");
+        }
+        Err(_elapsed) => {
+            tracing::warn!(
+                target: "phoxal.runtime",
+                grace_ms = launch.shutdown_grace_ms,
+                "shutdown hook exceeded the grace deadline; proceeding to bus close"
+            );
+        }
     }
     tracing::info!(target: "phoxal.runtime", id = R::ID, "runtime stopped");
     Ok(())

@@ -10,6 +10,7 @@ use phoxal::runtime::{ParticipantLaunch, RealClock, emit_apis_json, run_with};
 
 static STEPS: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
+static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "counter", api = y2026_1)]
@@ -77,6 +78,28 @@ impl Counter {
     }
 }
 
+#[derive(phoxal::Runtime)]
+#[phoxal(id = "slow-shutdown", api = y2026_1)]
+struct SlowShutdown {}
+
+#[phoxal::runtime]
+impl SlowShutdown {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[shutdown]
+    async fn shutdown(&mut self, ctx: ShutdownContext) -> Result<()> {
+        // Park far longer than the runner's grace. If the grace were not
+        // enforced, `run_with` would block here for 60s.
+        let _ = ctx.grace();
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        SLOW_SHUTDOWN_COMPLETED.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 #[phoxal::runtime]
 impl ConfiguredCounter {
     #[setup]
@@ -114,6 +137,36 @@ async fn runner_runs_steps_then_shuts_down_cleanly() {
     assert!(
         SHUTDOWN_CALLED.load(Ordering::Relaxed),
         "the #[shutdown] hook should have run"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_shutdown_hook_is_bounded_by_grace() {
+    let mut launch = ParticipantLaunch::local("slow-shutdown-1", "robot");
+    launch.shutdown_grace_ms = 100;
+    let shutdown = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    // The hook parks for 60s; the runner must abandon it after the 100ms grace
+    // and still return cleanly (closing the bus) rather than hang.
+    let started = std::time::Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        run_with::<SlowShutdown, _, _>(launch, RealClock::new(), shutdown),
+    )
+    .await
+    .expect("runner must not hang on a slow shutdown hook")
+    .expect("runner should complete cleanly after the grace elapses");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "shutdown was not bounded by the grace (took {elapsed:?})"
+    );
+    assert!(
+        !SLOW_SHUTDOWN_COMPLETED.load(Ordering::Relaxed),
+        "the slow hook should have been abandoned at the grace, not run to completion"
     );
 }
 
