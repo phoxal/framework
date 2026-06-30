@@ -4,7 +4,7 @@
 //! `decode_sample`, and a live in-process Publisher → Latest round-trip.
 //!
 //! These exercise the bus client against a hand-written [`ContractBody`] (no
-//! `phoxal_api_tree!`, which lives in the `phoxal` engine crate): phoxal-bus is
+//! `phoxal_api_tree!`, which lives in the `phoxal-api` crate): phoxal-bus is
 //! the ABI floor and must be testable without the concrete dated API versions.
 //! The golden tests that bind the bus to the real `y2026_1` tree live in the
 //! `phoxal` crate (`phoxal/tests/bus_api.rs`).

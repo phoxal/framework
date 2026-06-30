@@ -61,7 +61,7 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{Ident, ItemEnum, ItemStruct, Token};
 
-use crate::util::{body_derives, phoxal};
+use crate::util::body_derives;
 
 mod kw {
     syn::custom_keyword!(version);
@@ -342,7 +342,6 @@ fn overlay_nodes(base: &[Node], child: &[Node]) -> syn::Result<Vec<Node>> {
 }
 
 fn expand_version(name: &Ident, nodes: &[Node]) -> syn::Result<TokenStream> {
-    let phoxal = phoxal();
     let mod_name = name;
     let id = name.to_string();
 
@@ -364,7 +363,7 @@ fn expand_version(name: &Ident, nodes: &[Node]) -> syn::Result<TokenStream> {
             /// Zero-variant marker identifying this API version (D60).
             #[derive(Clone, Copy, Debug)]
             pub enum Api {}
-            impl #phoxal::api::ApiVersion for Api {
+            impl ::phoxal_bus::ApiVersion for Api {
                 const ID: &'static str = #id;
             }
 
@@ -389,7 +388,6 @@ fn expand_node_module(
     family_prefix: &str,
     key_prefix: &str,
 ) -> syn::Result<TokenStream> {
-    let phoxal = phoxal();
     let name = &node.name;
     let name_str = name.to_string();
     let derives = body_derives();
@@ -426,7 +424,7 @@ fn expand_node_module(
             TopicKind::PubSub(body) => {
                 let family_const = format!("{}::{}", family_path, body);
                 impls.extend(quote! {
-                    impl #phoxal::api::ContractBody for #body {
+                    impl ::phoxal_bus::ContractBody for #body {
                         type Api = #api_supers Api;
                         const FAMILY: &'static str = #family_const;
                         const TOPIC: &'static str = #key;
@@ -437,12 +435,12 @@ fn expand_node_module(
                 let req_family = format!("{}::{}", family_path, request);
                 let resp_family = format!("{}::{}", family_path, response);
                 impls.extend(quote! {
-                    impl #phoxal::api::ContractBody for #request {
+                    impl ::phoxal_bus::ContractBody for #request {
                         type Api = #api_supers Api;
                         const FAMILY: &'static str = #req_family;
                         const TOPIC: &'static str = #key;
                     }
-                    impl #phoxal::api::ContractBody for #response {
+                    impl ::phoxal_bus::ContractBody for #response {
                         type Api = #api_supers Api;
                         const FAMILY: &'static str = #resp_family;
                         const TOPIC: &'static str = #key;
@@ -572,7 +570,6 @@ fn node_entry_method(node: &Node) -> TokenStream {
 /// builder is a struct that stores every in-scope var as a `String`; leaf methods
 /// format the key from those fields.
 fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<TokenStream> {
-    let phoxal = phoxal();
     let name = &node.name;
     let name_str = name.to_string();
     let depth = ancestors.len() + 1;
@@ -645,15 +642,15 @@ fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<Toke
         let kind_ty = builder_leaf_kind(topic, &path, depth);
         let (fmt_str, doc_key) = builder_leaf_key_parts(&path, &topic.leaf);
         let constructor = if field_idents.is_empty() {
-            quote! { #phoxal::bus::Topic::new_static(#fmt_str) }
+            quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
         } else {
             quote! {
-                #phoxal::bus::Topic::new_owned(::std::format!(#fmt_str, #(self.#field_idents),*))
+                ::phoxal_bus::Topic::new_owned(::std::format!(#fmt_str, #(self.#field_idents),*))
             }
         };
         leaf_methods.extend(quote! {
             #[doc = #doc_key]
-            pub fn #leaf(self) -> #phoxal::bus::Topic<#kind_ty> {
+            pub fn #leaf(self) -> ::phoxal_bus::Topic<#kind_ty> {
                 #constructor
             }
         });
@@ -692,19 +689,18 @@ fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<Toke
 /// so reaching the version root is `depth + 1` supers (`depth` builder mods + the
 /// `topic` mod); from there, descend the node-module path (`n1::n2::…::nk`).
 fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], depth: usize) -> TokenStream {
-    let phoxal = phoxal();
     let up = supers(depth + 1);
     let node_path: Vec<&Ident> = path.iter().map(|s| &s.name).collect();
     let body_path = |body: &Ident| quote! { #up #(#node_path::)* #body };
     match &topic.kind {
         TopicKind::PubSub(body) => {
             let b = body_path(body);
-            quote! { #phoxal::bus::PubSub<#b> }
+            quote! { ::phoxal_bus::PubSub<#b> }
         }
         TopicKind::Query { request, response } => {
             let req = body_path(request);
             let resp = body_path(response);
-            quote! { #phoxal::bus::Query<#req, #resp> }
+            quote! { ::phoxal_bus::Query<#req, #resp> }
         }
     }
 }

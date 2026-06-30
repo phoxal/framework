@@ -2,7 +2,8 @@
 
 The Phoxal robot framework as one coherent workspace: the published `phoxal-bus`
 ABI crate (the typed bus client + contract/addressing primitives), the published
-`phoxal` library crate (engine, model, the dated `api::<version>` contract tree)
+`phoxal-api` crate (the dated `api::<version>` contract tree of version-local wire
+bodies + topic builders), the published `phoxal` library crate (engine + model)
 and its `phoxal-macros` companion, plus a growing set of unpublished platform
 runtime binaries (`phoxal-runtime-<name>`) that ship as deployables.
 All workspace crates share one version; the library crates are published to
@@ -15,8 +16,8 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 Merging a `release/vX.Y.Z` PR into `main` tags the release and then:
 
-- publishes the `phoxal-bus`, `phoxal`, and `phoxal-macros` library crates to
-  crates.io at the workspace version;
+- publishes the `phoxal-bus`, `phoxal-api`, `phoxal`, and `phoxal-macros` library
+  crates to crates.io at the workspace version;
 - builds each official runtime as a multi-arch (`linux/amd64` + `linux/arm64`)
   GHCR image, tagged by **API version**: the immutable `ghcr.io/phoxal/runtime-<name>:<api>-v<version>`
   and the moving `:<api>-stable` channel (e.g. `runtime-drive:y2026_1-stable`).

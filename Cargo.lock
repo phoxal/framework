@@ -1968,6 +1968,7 @@ dependencies = [
  "derive-new",
  "dotenvy",
  "nalgebra",
+ "phoxal-api",
  "phoxal-bus",
  "phoxal-macros",
  "rmp-serde",
@@ -1985,6 +1986,18 @@ dependencies = [
  "trybuild",
  "urdf-rs",
  "zenoh",
+]
+
+[[package]]
+name = "phoxal-api"
+version = "0.18.0"
+dependencies = [
+ "phoxal-bus",
+ "phoxal-macros",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
+ "serde_json",
 ]
 
 [[package]]

@@ -2,8 +2,8 @@
 //! payload, no `{"v":…}` wrapper — D62), the `ContractBody` consts, the
 //! `ApiVersion` id, and the topic keys produced by the api-local builders.
 
-use crate::api::y2026_1 as api;
-use crate::api::{ApiVersion, ContractBody};
+use crate::y2026_1 as api;
+use crate::{ApiVersion, ContractBody};
 
 #[test]
 fn api_version_id_is_the_dated_module_name() {
@@ -486,7 +486,7 @@ where
 // A self-contained three-version tree exercising multi-level inheritance
 // (`vc extends vb extends va`) without touching the production api tree.
 mod multi_level {
-    use crate::api::{ApiVersion, ContractBody};
+    use crate::{ApiVersion, ContractBody};
 
     crate::phoxal_api_tree! {
         version va {
@@ -538,7 +538,7 @@ mod multi_level {
 // subtree, overrides one leaf type, and appends a sibling node — every inherited
 // type re-emits fresh under the child `Api` (D61).
 mod extends_nested {
-    use crate::api::{ApiVersion, ContractBody};
+    use crate::{ApiVersion, ContractBody};
 
     crate::phoxal_api_tree! {
         version base {
