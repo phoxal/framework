@@ -15,6 +15,7 @@ resolver = "3"
 # plus official runtimes being re-ported onto the new authoring surface (Phase 4).
 members = [
     "phoxal",
+    "phoxal-bus",
     "phoxal-macros",
     "runtime/asset",
     "runtime/battery",
@@ -68,6 +69,7 @@ zenoh = { version = "1.9.0" }
 phoxal = { path = "phoxal" }
 # Carry a version (not just a path) so `phoxal` can be published to crates.io:
 # cargo strips the path on publish and resolves the dep by version from the index.
+phoxal-bus = { path = "phoxal-bus", version = "0.18.0" }
 phoxal-macros = { path = "phoxal-macros", version = "0.18.0" }
 
 [workspace.lints.rust]

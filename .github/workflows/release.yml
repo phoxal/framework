@@ -3,7 +3,7 @@ name: release
 # Triggered by merging a `release/vX.Y.Z` PR into main (the convention the
 # release-prep workflow produces). The merged head ref carries the intended
 # version; the `tag` job verifies it against Cargo.toml before tagging, then:
-#   - the library crates (`phoxal` + `phoxal-macros`) are published to crates.io;
+#   - the library crates (`phoxal` + `phoxal-bus` + `phoxal-macros`) are published to crates.io;
 #   - each official runtime is published as an API-version-scoped multi-arch GHCR
 #     image (`ghcr.io/phoxal/runtime-<name>:<api_version>-stable` and the immutable
 #     `:<api_version>-v<version>`), the pull targets `phoxal-cli` resolves.
@@ -118,8 +118,8 @@ jobs:
 
   # Publish the library crates to crates.io. The runtime crates are `publish =
   # false` (they ship as deployables, not libraries); only `phoxal` and its
-  # `phoxal-macros` dependency are published. Order matters: `phoxal` depends on
-  # `phoxal-macros` by version, so the macro crate must land on the index first.
+  # `phoxal-bus` / `phoxal-macros` dependencies are published. Order matters:
+  # `phoxal` depends on both by version, so they must land on the index first.
   publish-crate:
     needs: [plan, tag]
     runs-on: ubuntu-latest
@@ -166,7 +166,10 @@ jobs:
             fi
           }
 
-          # Order matters: phoxal depends on phoxal-macros by version.
+          # Order matters: phoxal depends on phoxal-bus and phoxal-macros by
+          # version, so both must land on the index before phoxal. phoxal-bus and
+          # phoxal-macros depend on neither each other nor phoxal.
+          publish phoxal-bus
           publish phoxal-macros
           publish phoxal
 

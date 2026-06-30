@@ -1,26 +1,61 @@
-error[E0624]: associated function `new_static` is private
-  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:34:51
+error[E0271]: type mismatch resolving `<ForeignBody as ContractBody>::Api == Api`
+  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:49:38
    |
-34 |         let topic = Topic::<PubSub<ForeignBody>>::new_static("foreign/body");
-   |                                                   ^^^^^^^^^^ private associated function
-   |
-  ::: src/bus/topic.rs
-   |
-   |     pub(crate) fn new_static(key: &'static str) -> Self {
-   |     --------------------------------------------------- private associated function defined here
-
-error[E0308]: mismatched types
-  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:35:38
-   |
-35 |         let _foreign = ctx.publisher(topic).await?;
-   |                            --------- ^^^^^ expected `Topic<PubSub<Target>>`, found `Topic<PubSub<ForeignBody>>`
+49 |         let _foreign = ctx.publisher(topic).await?;
+   |                            --------- ^^^^^ type mismatch resolving `<ForeignBody as ContractBody>::Api == Api`
    |                            |
-   |                            arguments to this method are incorrect
+   |                            required by a bound introduced by this call
    |
-   = note: expected struct `Topic<PubSub<phoxal::api::y2026_1::drive::Target>>`
-              found struct `Topic<PubSub<ForeignBody>>`
-note: method defined here
+note: expected this to be `Api`
+  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:27:16
+   |
+27 |     type Api = ForeignApi;
+   |                ^^^^^^^^^^
+note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
    |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
-   |                  ^^^^^^^^^
+   |                  --------- required by a bound in this associated function
+   |     where
+   |         B: ContractBody<Api = R::Api>,
+   |                         ^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
+
+error[E0271]: type mismatch resolving `<ForeignBody as ContractBody>::Api == Api`
+  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:49:24
+   |
+49 |         let _foreign = ctx.publisher(topic).await?;
+   |                        ^^^^^^^^^^^^^^^^^^^^ type mismatch resolving `<ForeignBody as ContractBody>::Api == Api`
+   |
+note: expected this to be `Api`
+  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:27:16
+   |
+27 |     type Api = ForeignApi;
+   |                ^^^^^^^^^^
+note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
+  --> src/runtime/context.rs
+   |
+   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |                  --------- required by a bound in this associated function
+   |     where
+   |         B: ContractBody<Api = R::Api>,
+   |                         ^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
+
+error[E0271]: type mismatch resolving `<ForeignBody as ContractBody>::Api == Api`
+  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:49:45
+   |
+49 |         let _foreign = ctx.publisher(topic).await?;
+   |                                             ^^^^^ type mismatch resolving `<ForeignBody as ContractBody>::Api == Api`
+   |
+note: expected this to be `Api`
+  --> tests/trybuild/fail/wrong_api_version_setup_builder.rs:27:16
+   |
+27 |     type Api = ForeignApi;
+   |                ^^^^^^^^^^
+note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
+  --> src/runtime/context.rs
+   |
+   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |                  --------- required by a bound in this associated function
+   |     where
+   |         B: ContractBody<Api = R::Api>,
+   |                         ^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`

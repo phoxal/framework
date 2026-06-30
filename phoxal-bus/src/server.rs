@@ -2,7 +2,7 @@
 //! runner uses to drive `#[server]`/`#[server_snapshot]` handlers (D16/D31).
 //!
 //! This is the responder side of the request/response leg whose caller is
-//! [`Querier`](crate::bus::Querier). [`Bus::declare_server`] declares a
+//! [`Querier`](crate::Querier). [`Bus::declare_server`] declares a
 //! `complete` queryable on one topic key; [`ServerQueryable::recv`] yields each
 //! [`IncomingQuery`], which exposes the raw request bytes + its [`BusMetadata`]
 //! and the two reply legs:
@@ -19,11 +19,11 @@ use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::query::{Query as ZenohQuery, Queryable};
 
-use crate::bus::abi::{CodecId, encoding_string, parse_encoding_string};
-use crate::bus::error::{BusError, Result};
-use crate::bus::metadata::{BusMetadata, Source};
-use crate::bus::query::QueryFailure;
-use crate::bus::session::Bus;
+use crate::abi::{CodecId, encoding_string, parse_encoding_string};
+use crate::error::{BusError, Result};
+use crate::metadata::{BusMetadata, Source};
+use crate::query::QueryFailure;
+use crate::session::Bus;
 
 /// A declared queryable bound to one server topic key.
 pub struct ServerQueryable {

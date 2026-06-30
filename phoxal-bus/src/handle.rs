@@ -43,15 +43,15 @@ use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::Sample;
 
-use crate::api::{ApiVersion, ContractBody};
-use crate::bus::LogicalTime;
-use crate::bus::abi::{CodecId, encoding_string, parse_encoding_string};
-use crate::bus::codec::{Codec, MessagePack};
-use crate::bus::error::{BusError, Result};
-use crate::bus::metadata::{BusMetadata, Source};
-use crate::bus::query::{QueryError, QueryFailure};
-use crate::bus::session::Bus;
-use crate::bus::topic::{PubSub, Query, Topic};
+use crate::LogicalTime;
+use crate::abi::{CodecId, encoding_string, parse_encoding_string};
+use crate::codec::{Codec, MessagePack};
+use crate::contract::{ApiVersion, ContractBody};
+use crate::error::{BusError, Result};
+use crate::metadata::{BusMetadata, Source};
+use crate::query::{QueryError, QueryFailure};
+use crate::session::Bus;
+use crate::topic::{PubSub, Query, Topic};
 
 /// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,7 +67,10 @@ pub struct Publisher<B> {
 }
 
 impl<B: ContractBody> Publisher<B> {
-    pub(crate) fn new(bus: Bus, topic: &Topic<PubSub<B>>) -> Result<Self> {
+    /// Framework-internal (macro/runner-only): build a publisher over a topic.
+    /// The author-facing path is `ctx.publisher(...)` in `#[setup]`. `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub fn new(bus: Bus, topic: &Topic<PubSub<B>>) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Publisher {
             bus,
@@ -142,11 +145,10 @@ where
     Req: ContractBody,
     Resp: ContractBody,
 {
-    pub(crate) fn new(
-        bus: Bus,
-        topic: &Topic<Query<Req, Resp>>,
-        timeout: Duration,
-    ) -> Result<Self> {
+    /// Framework-internal (macro/runner-only): build a querier over a query topic.
+    /// The author-facing path is `ctx.querier(...)` in `#[setup]`. `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub fn new(bus: Bus, topic: &Topic<Query<Req, Resp>>, timeout: Duration) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Querier {
             bus,
@@ -236,7 +238,7 @@ fn decode_reply_result<Resp: ContractBody>(
         Ok(sample) => decode_reply::<Resp>(&sample),
         Err(reply_error) => {
             let bytes = reply_error.payload().to_bytes();
-            match crate::bus::query::QueryFailure::decode(bytes.as_ref()) {
+            match crate::query::QueryFailure::decode(bytes.as_ref()) {
                 Ok(failure) => Err(QueryError::Server(failure)),
                 Err(e) => Err(QueryError::Protocol(format!("malformed error reply: {e}"))),
             }
@@ -274,7 +276,10 @@ pub struct Latest<B> {
 }
 
 impl<B: ContractBody> Latest<B> {
-    pub(crate) async fn new(bus: &Bus, topic: &Topic<PubSub<B>>) -> Result<Self> {
+    /// Framework-internal (macro/runner-only): build a keep-last view over a topic.
+    /// The author-facing path is `ctx.subscribe(...).latest()` in `#[setup]`. `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub async fn new(bus: &Bus, topic: &Topic<PubSub<B>>) -> Result<Self> {
         let slot: Arc<ArcSwapOption<B>> = Arc::new(ArcSwapOption::from(None));
         let store = Arc::clone(&slot);
         let guard = spawn_subscription::<B, _>(bus, topic.key(), move |body, _meta| {
@@ -308,7 +313,10 @@ pub struct Subscriber<B> {
 }
 
 impl<B: ContractBody> Subscriber<B> {
-    pub(crate) async fn new(bus: &Bus, topic: &Topic<PubSub<B>>, depth: usize) -> Result<Self> {
+    /// Framework-internal (macro/runner-only): build a drop-oldest ring over a topic.
+    /// The author-facing path is `ctx.subscribe(...)` in `#[setup]`. `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub async fn new(bus: &Bus, topic: &Topic<PubSub<B>>, depth: usize) -> Result<Self> {
         let ring = Arc::new(Ring::new(depth.max(1)));
         let push = Arc::clone(&ring);
         let drops = bus.clone();

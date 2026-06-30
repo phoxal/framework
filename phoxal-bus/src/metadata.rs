@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bus::abi::CodecId;
+use crate::abi::CodecId;
 
 /// Per-sample metadata carried in the Zenoh attachment (MessagePack-encoded).
 ///

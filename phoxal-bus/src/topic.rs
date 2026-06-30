@@ -35,14 +35,18 @@ pub struct Topic<Kind> {
 impl<Kind> Topic<Kind> {
     /// Construct a topic from a static key.
     ///
-    /// Crate-internal: the only supported way to build a [`Topic`] is the
-    /// api-local builder (`api::topic::new()....()`), which the
-    /// [`phoxal_api_tree!`](macro@crate::phoxal_api_tree) macro generates inside
-    /// this crate and which calls this constructor over the contract's canonical
-    /// key. Sealing it off the public surface keeps the typed `Kind` and the
-    /// actual bus key in lockstep: an author cannot bind one contract's metadata
-    /// to an arbitrary, mismatched key (D61/D62).
-    pub(crate) fn new_static(key: &'static str) -> Self {
+    /// `#[doc(hidden)] pub` raw constructor - an unsupported escape hatch, NOT
+    /// part of the authored surface. It is `pub` only because it must be callable
+    /// across the `phoxal` / `phoxal-bus` crate split: the `phoxal_api_tree!` macro
+    /// (generated in the `phoxal` engine crate, where the dated API versions live)
+    /// calls it over each contract's canonical key, and a `pub(crate)` constructor
+    /// cannot cross that boundary. Author correctness does not come from hiding
+    /// this: it comes from the typed handles and the api-tree builders
+    /// (`api::topic::new()....()`), which keep the typed `Kind` and the bus key in
+    /// lockstep (D61/D62). Stronger owner-side enforcement - a runner-minted owner
+    /// capability that closes this raw-bus hole - is deferred to plan #00's L2.
+    #[doc(hidden)]
+    pub fn new_static(key: &'static str) -> Self {
         Topic {
             key: Cow::Borrowed(key),
             _kind: PhantomData,
@@ -51,11 +55,15 @@ impl<Kind> Topic<Kind> {
 
     /// Construct a topic from an owned (dynamically built) key.
     ///
-    /// Crate-internal for the same reason as [`new_static`](Self::new_static):
-    /// the api builder calls this for nodes with dynamic segments, filling the
-    /// carried variables into the canonical key. Not part of the author-facing
-    /// surface.
-    pub(crate) fn new_owned(key: String) -> Self {
+    /// `#[doc(hidden)] pub` raw constructor, the owned-key counterpart of
+    /// [`new_static`](Self::new_static): an unsupported escape hatch that is `pub`
+    /// only to cross the `phoxal` / `phoxal-bus` crate split. The generated api
+    /// builder calls it for nodes with dynamic segments, filling the carried
+    /// variables into the canonical key. Not part of the authored surface;
+    /// correctness for authors comes from the typed handles + api-tree builders,
+    /// and stronger owner-side enforcement is deferred to plan #00's L2.
+    #[doc(hidden)]
+    pub fn new_owned(key: String) -> Self {
         Topic {
             key: Cow::Owned(key),
             _kind: PhantomData,

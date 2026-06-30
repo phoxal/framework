@@ -3,7 +3,7 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::bus::abi::CodecId;
+use crate::abi::CodecId;
 
 /// A wire codec for contract bodies. The body is always the plain payload - the
 /// codec never adds a version envelope (D62).
