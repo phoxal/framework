@@ -25,6 +25,10 @@ on:
 permissions:
   contents: write
   packages: write
+  # `build-images` exports a Docker layer cache via `cache-to: type=gha`, which
+  # needs the Actions cache write scope. Without it GitHub denies the cache write
+  # ("token has no writable scopes") and `docker buildx` treats that as fatal.
+  actions: write
 
 jobs:
   plan:
@@ -241,7 +245,9 @@ jobs:
           tags: ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}:${{ matrix.runtime.api }}-v${{ needs.plan.outputs.version }}-${{ matrix.platform.short }}
           push: true
           cache-from: type=gha,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
-          cache-to: type=gha,mode=max,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          # `ignore-error=true` keeps a cache-export hiccup (denied scope, quota,
+          # transient GHA cache outage) from failing the image build + push.
+          cache-to: type=gha,mode=max,ignore-error=true,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
           labels: |
             org.opencontainers.image.source=https://github.com/phoxal/framework
             org.opencontainers.image.version=${{ needs.plan.outputs.version }}
