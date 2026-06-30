@@ -1,0 +1,368 @@
+name: release-plz
+
+# Per-artifact release pipeline (plan #01-B), replacing the legacy bespoke
+# release.yml.
+#
+# Two halves driven by release-plz:
+#   1. release-plz-pr   - on every main push, opens/updates the "chore(release):
+#      release" PR that bumps only the crates whose commits changed (per-crate
+#      versions, plan #01-A).
+#   2. release-plz-release + downstream jobs - when a release PR's bump commit
+#      lands on main, release-plz publishes each bumped crate:
+#        - the 4 library crates publish to crates.io (default behaviour);
+#        - the 18 runtime crates get a git tag + GitHub release only (git_only,
+#          publish = false in release-plz.toml).
+#      `parse-runtimes` then reads the released runtime tags + each runtime's
+#      `[package.metadata.phoxal].api` and drives the GHCR image build/manifest
+#      jobs off that, so the image set is discovered, never hand-listed.
+#
+# release_always = false in release-plz.toml means `release-plz-release` only
+# acts on commits that came from a release-plz PR, so an ordinary main push runs
+# the release job as a no-op and only refreshes the release PR.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# contents: write       - push tags + create GitHub releases
+# pull-requests: write  - open/update the release PR
+# packages: write       - push runtime images to GHCR
+# actions: write        - build-images exports a buildx layer cache via
+#                         `cache-to: type=gha`, which needs the Actions cache
+#                         write scope (without it GHA denies the cache write).
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+  actions: write
+
+# No workflow-level concurrency over release + images: release-plz warns that a
+# cancelling concurrency group can SKIP a release. Concurrency is scoped to the
+# release-pr job only (below).
+
+jobs:
+  # Publish bumped crates: crates.io for the 4 libs, git tag + GitHub release for
+  # the 18 runtimes. Acts only on release-plz bump commits (release_always =
+  # false), so a normal main push runs this as a no-op.
+  release-plz-release:
+    name: release-plz release
+    runs-on: ubuntu-latest
+    # The `secrets` context is not allowed in step `if:`, so surface presence of
+    # the app credential as an env flag the step can gate on.
+    env:
+      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
+    outputs:
+      releases: ${{ steps.release-plz.outputs.releases }}
+      releases_created: ${{ steps.release-plz.outputs.releases_created }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # App token (preferred) so tags/releases are attributable to the release
+      # app; falls back to RELEASE_TOKEN, then the default GITHUB_TOKEN.
+      - name: Generate GitHub App token
+        id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Run release-plz
+        id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # Turn the released runtime crates into the GHCR image matrix. Reads the
+  # release-plz `releases` JSON (list of {package_name, version, tag, ...}),
+  # keeps only `phoxal-runtime-*` entries, and joins each against `cargo
+  # metadata` to read its `[package.metadata.phoxal].api`. Emits:
+  #   runtime_matrix - JSON list of {name (svc), package, version, api}
+  #   runtime_count  - number of released runtimes
+  parse-runtimes:
+    name: parse released runtimes
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      runtime_matrix: ${{ steps.parse.outputs.runtime_matrix }}
+      runtime_count: ${{ steps.parse.outputs.runtime_count }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build runtime image matrix from releases
+        id: parse
+        env:
+          RELEASES: ${{ needs.release-plz-release.outputs.releases }}
+        run: |
+          set -euo pipefail
+          # cargo metadata gives the authoritative (package -> api) map; join it
+          # with the released runtime crates so the matrix is discovered, not
+          # hand-written.
+          cargo metadata --format-version 1 --no-deps > metadata.json
+          RELEASES="${RELEASES}" python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import os
+
+          releases = json.loads(os.environ["RELEASES"])
+          with open("metadata.json", "r", encoding="utf-8") as fh:
+              meta = json.load(fh)
+
+          api_by_pkg = {}
+          for pkg in meta["packages"]:
+              phoxal = (pkg.get("metadata") or {}).get("phoxal") or {}
+              if "api" in phoxal:
+                  api_by_pkg[pkg["name"]] = phoxal["api"]
+
+          prefix = "phoxal-runtime-"
+          matrix = []
+          for rel in releases:
+              name = rel["package_name"]
+              if not name.startswith(prefix):
+                  continue
+              api = api_by_pkg.get(name)
+              if not api:
+                  raise SystemExit(
+                      f"::error::released runtime {name} has no "
+                      f"[package.metadata.phoxal].api in cargo metadata"
+                  )
+              matrix.append(
+                  {
+                      "name": name[len(prefix):],
+                      "package": name,
+                      "version": rel["version"],
+                      "api": api,
+                  }
+              )
+
+          matrix.sort(key=lambda e: e["name"])
+          print(f"runtime_matrix={json.dumps(matrix, separators=(',', ':'))}")
+          print(f"runtime_count={len(matrix)}")
+          PY
+
+  # Build each released runtime as a per-arch image under the intermediate
+  # `<api>-v<version>-<arch>` tag and validate its emit-apis document. Carries the
+  # legacy release.yml image mechanics verbatim (Dockerfile.runtime RUNTIME_NAME
+  # build-arg, buildx per-arch, GHCR login via GITHUB_TOKEN, gha cache with
+  # ignore-error, emit-apis validation + sorted upload). `manifest` stitches the
+  # public multi-arch tags afterward.
+  build-images:
+    name: build ${{ matrix.runtime.name }} (${{ matrix.platform.short }})
+    needs: [release-plz-release, parse-runtimes]
+    if: needs.parse-runtimes.outputs.runtime_count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ${{ fromJSON(needs.parse-runtimes.outputs.runtime_matrix) }}
+        platform:
+          - { docker: linux/amd64, runner: ubuntu-latest, short: amd64 }
+          - { docker: linux/arm64, runner: ubuntu-24.04-arm, short: arm64 }
+    runs-on: ${{ matrix.platform.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:buildx-stable-1
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push per-arch runtime image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.runtime
+          platforms: ${{ matrix.platform.docker }}
+          build-args: |
+            RUNTIME_NAME=${{ matrix.runtime.name }}
+          tags: ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}:${{ matrix.runtime.api }}-v${{ matrix.runtime.version }}-${{ matrix.platform.short }}
+          push: true
+          cache-from: type=gha,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          # `ignore-error=true` keeps a cache-export hiccup (denied scope, quota,
+          # transient GHA cache outage) from failing the image build + push.
+          cache-to: type=gha,mode=max,ignore-error=true,scope=runtime-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/phoxal/framework
+            org.opencontainers.image.version=${{ matrix.runtime.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=phoxal-runtime-${{ matrix.runtime.name }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+      - name: Verify emit-apis for per-arch image
+        run: |
+          set -euo pipefail
+          v="${{ matrix.runtime.version }}"
+          api="${{ matrix.runtime.api }}"
+          arch="${{ matrix.platform.short }}"
+          name="${{ matrix.runtime.name }}"
+          ref="ghcr.io/phoxal/runtime-${name}:${api}-v${v}-${arch}"
+          out="emit-apis-${name}-${arch}.json"
+          docker run --rm "${ref}" emit-apis > "${out}"
+          # Validate the whole frozen document (D50/D57), not just api_version:
+          # schema id, artifact identity, the bus_abi constant, and that every
+          # required contract agrees with the runtime's api_version. A drift here
+          # fails the release.
+          EXPECTED_API="${api}" EXPECTED_NAME="${name}" OUT="${out}" \
+          SORTED="emit-apis-${name}-${arch}.sorted.json" python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          out = os.environ["OUT"]
+          expected_api = os.environ["EXPECTED_API"]
+          expected_name = os.environ["EXPECTED_NAME"]
+          errors = []
+
+          with open(out, "r", encoding="utf-8") as fh:
+              metadata = json.load(fh)
+
+          schema = metadata.get("schema")
+          if schema != "phoxal.emit-apis/v0":
+              errors.append(f"schema is {schema!r}, expected 'phoxal.emit-apis/v0'")
+
+          artifact = metadata.get("artifact") or {}
+          if artifact.get("id") != expected_name:
+              errors.append(
+                  f"artifact.id is {artifact.get('id')!r}, expected {expected_name!r}"
+              )
+
+          api_version = metadata.get("api_version")
+          if api_version != expected_api:
+              errors.append(
+                  f"api_version is {api_version!r}, expected {expected_api!r}"
+              )
+
+          bus_abi = metadata.get("bus_abi")
+          if bus_abi != "phoxal-bus/v0":
+              errors.append(f"bus_abi is {bus_abi!r}, expected 'phoxal-bus/v0'")
+
+          contracts = metadata.get("required_contracts")
+          if not isinstance(contracts, list) or not contracts:
+              errors.append("required_contracts must be a non-empty list")
+          else:
+              for i, contract in enumerate(contracts):
+                  cav = contract.get("api_version")
+                  if cav != api_version:
+                      errors.append(
+                          f"required_contracts[{i}] api_version {cav!r} "
+                          f"!= runtime api_version {api_version!r}"
+                      )
+
+          config_schema = metadata.get("config_schema")
+          if not isinstance(config_schema, dict):
+              errors.append("config_schema must be a JSON object")
+
+          if errors:
+              for err in errors:
+                  print(f"::error::{out}: {err}")
+              sys.exit(1)
+
+          with open(os.environ["SORTED"], "w", encoding="utf-8") as fh:
+              json.dump(metadata, fh, sort_keys=True, separators=(",", ":"))
+              fh.write("\n")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emit-apis-${{ matrix.runtime.name }}-${{ matrix.platform.short }}
+          path: |
+            emit-apis-${{ matrix.runtime.name }}-${{ matrix.platform.short }}.json
+            emit-apis-${{ matrix.runtime.name }}-${{ matrix.platform.short }}.sorted.json
+
+  # Stitch the per-arch images into the two API-scoped multi-arch tag classes:
+  # the immutable `:<api>-v<version>` and the moving `:<api>-stable` channel.
+  # Verbatim from legacy release.yml ~341-406.
+  manifest:
+    name: manifest ${{ matrix.runtime.name }}
+    needs: [parse-runtimes, build-images]
+    if: needs.parse-runtimes.outputs.runtime_count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ${{ fromJSON(needs.parse-runtimes.outputs.runtime_matrix) }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: emit-apis-${{ matrix.runtime.name }}-*
+          path: emit-apis
+          merge-multiple: true
+
+      - name: Verify emit-apis metadata is arch-independent
+        run: |
+          set -euo pipefail
+          name="${{ matrix.runtime.name }}"
+          diff -u \
+            "emit-apis/emit-apis-${name}-amd64.sorted.json" \
+            "emit-apis/emit-apis-${name}-arm64.sorted.json"
+
+      - name: Create API-scoped multi-arch manifests
+        run: |
+          set -euo pipefail
+          v="${{ matrix.runtime.version }}"
+          api="${{ matrix.runtime.api }}"
+          name="ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}"
+          amd64="${name}:${api}-v${v}-amd64"
+          arm64="${name}:${api}-v${v}-arm64"
+          # Immutable artifact tag (api_version + this artifact's version).
+          docker buildx imagetools create -t "${name}:${api}-v${v}" "${amd64}" "${arm64}"
+          # Moving stable channel for this api_version.
+          docker buildx imagetools create -t "${name}:${api}-stable" "${amd64}" "${arm64}"
+
+      - name: Inspect API-scoped multi-arch manifest
+        run: |
+          set -euo pipefail
+          v="${{ matrix.runtime.version }}"
+          api="${{ matrix.runtime.api }}"
+          name="ghcr.io/phoxal/runtime-${{ matrix.runtime.name }}"
+          docker buildx imagetools inspect "${name}:${api}-v${v}"
+
+  # Open/update the release PR on every main push. Runs independently of the
+  # release half. Job-level concurrency only here, per the release-plz guidance.
+  release-plz-pr:
+    name: release-plz PR
+    runs-on: ubuntu-latest
+    # The `secrets` context is not allowed in step `if:`, so surface presence of
+    # the app credential as an env flag the step can gate on.
+    env:
+      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Run release-plz (release-pr)
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

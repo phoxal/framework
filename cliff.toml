@@ -43,4 +43,8 @@ commit_parsers = [
 ]
 protect_breaking_commits = true
 filter_commits = false
-tag_pattern = "v[0-9]*"
+# Per-artifact release (plan #01): release-plz tags each crate as
+# `<crate>-v<version>` (set by git_tag_name in release-plz.toml), not the old
+# shared `v<version>`. Match those per-package tags so git-cliff/release-plz pick
+# them up when generating per-crate changelog sections.
+tag_pattern = "*-v[0-9]*"
