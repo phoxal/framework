@@ -1,6 +1,6 @@
 //! Bus error type.
 
-use crate::bus::codec::CodecError;
+use crate::codec::CodecError;
 
 /// A bus-layer error.
 #[derive(Debug, thiserror::Error)]
@@ -54,7 +54,7 @@ pub enum BusError {
 
     /// Attempted to publish on a wildcard (subscribe-only) topic.
     #[error(transparent)]
-    WildcardPublish(#[from] crate::bus::topic::WildcardPublish),
+    WildcardPublish(#[from] crate::topic::WildcardPublish),
 
     /// The subscriber's source task ended (session closed).
     #[error("subscriber closed")]

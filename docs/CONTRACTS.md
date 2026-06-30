@@ -46,7 +46,7 @@ or the key.
   The canonical version identity is the body type's API module.
 - Production time rides metadata too: `BusMetadata` carries
   `produced_at_ns` + `epoch` + `source { participant, incarnation, sequence }`
-  ([`phoxal/src/bus/metadata.rs`](../phoxal/src/bus/metadata.rs)), so a payload
+  ([`phoxal-bus/src/metadata.rs`](../phoxal-bus/src/metadata.rs)), so a payload
   struct never carries a generic `timestamp_ns`.
   A publish stamps these from the runtime's `LogicalTime`
   (`publisher.publish_at(at, body)`).
@@ -61,7 +61,7 @@ or the key.
 The `bus_abi` envelope (the Zenoh key layout + encoding-string format +
 `BusMetadata` layout + codec id) is a separate, orthogonal framework-owned
 constant; see [CONVENTIONS.md](./CONVENTIONS.md) and
-[`phoxal/src/bus/abi.rs`](../phoxal/src/bus/abi.rs).
+[`phoxal-bus/src/abi.rs`](../phoxal-bus/src/abi.rs).
 
 ## Typed variants and closed-set reasons
 
@@ -88,7 +88,7 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
 - A handler returns `ServerResult<T> = Result<T, QueryFailure>`, so the handler
   **selects the failure code** (`NotFound`/`InvalidArgument`/`Internal`/… ); the
   failure rides Zenoh's native `ReplyError` as a `QueryFailure { code, message,
-  details?, details_encoding? }` ([`phoxal/src/bus/query.rs`](../phoxal/src/bus/query.rs)).
+  details?, details_encoding? }` ([`phoxal-bus/src/query.rs`](../phoxal-bus/src/query.rs)).
 - `QueryError` (caller side) is `Unavailable | Timeout | Server(QueryFailure) |
   Decode | Protocol | TooManyResponders`.
   Timeouts are caller-owned (the `Querier`'s finite deadline, not Zenoh's 10 s).
@@ -138,7 +138,7 @@ concern, not normal authoring.
 A subscriber fails loud on a body it cannot decode or whose metadata `api_version`
 does not match what the handle expects: the sample is counted
 (`api_mismatches`/`decode_errors`) and logged as a health signal, never silently
-accepted ([`phoxal/src/bus/handle.rs`](../phoxal/src/bus/handle.rs)).
+accepted ([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
 This decode-time loudness is the framework's compatibility backstop - contracts are
 statically known to consumers, so mismatches surface at decode time rather than via
 a runtime descriptor protocol.

@@ -1,22 +1,33 @@
-//! The Zenoh-native `bus_abi` boundary (D26/D62).
+//! # phoxal-bus
+//!
+//! The Phoxal bus ABI floor: the Zenoh-native `bus_abi` boundary (D26/D62) plus
+//! the two contract primitive traits ([`ApiVersion`] / [`ContractBody`]) the bus
+//! client is generic over.
 //!
 //! Samples are Zenoh-native: the key (`<namespace>/robots/<robot-id>/<topic>`),
 //! an encoding string + a [`BusMetadata`] attachment (the version identity +
 //! provenance), and a plain MessagePack body payload - there is no Phoxal frame
 //! independent of Zenoh, and no `{"v":…}` version tag in the body (D62).
+//!
+//! The concrete dated API versions (`y2026_1`, …) and the `phoxal_api_tree!`
+//! macro that generates their [`ApiVersion`] / [`ContractBody`] impls live in the
+//! `phoxal` engine crate, which re-exports this crate at `phoxal::bus` and these
+//! traits at `phoxal::api::ApiVersion` / `phoxal::api::ContractBody`.
 
-mod abi;
-mod codec;
-mod error;
-mod handle;
-mod metadata;
-mod query;
-mod server;
-mod session;
-mod topic;
+pub mod abi;
+pub mod codec;
+pub mod contract;
+pub mod error;
+pub mod handle;
+pub mod metadata;
+pub mod query;
+pub mod server;
+pub mod session;
+pub mod topic;
 
 pub use abi::{BUS_ABI, BusAbi, CodecId, encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
+pub use contract::{ApiVersion, ContractBody};
 pub use error::{BusError, Result};
 pub use handle::{DEFAULT_QUERY_TIMEOUT, Latest, Publisher, Querier, Received, Subscriber};
 pub use metadata::{BusMetadata, Source};

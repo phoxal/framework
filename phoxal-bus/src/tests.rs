@@ -1,31 +1,88 @@
-//! Bus golden + live tests: the `bus_abi` slots (encoding string, metadata,
-//! codec id), the `<namespace>/robots/<robot-id>/<typed-key>` root + namespace
-//! validation (D38/D43b), the `api_version` mismatch health event, and a live
-//! in-process Publisher → Latest round-trip.
+//! Pure-bus-mechanic tests: the `bus_abi` slots (encoding string, metadata, codec
+//! id), the `<namespace>/robots/<robot-id>/<typed-key>` root + namespace
+//! validation (D38/D43b), the `api_version`/family/codec fast-reject in
+//! `decode_sample`, and a live in-process Publisher → Latest round-trip.
+//!
+//! These exercise the bus client against a hand-written [`ContractBody`] (no
+//! `phoxal_api_tree!`, which lives in the `phoxal` engine crate): phoxal-bus is
+//! the ABI floor and must be testable without the concrete dated API versions.
+//! The golden tests that bind the bus to the real `y2026_1` tree live in the
+//! `phoxal` crate (`phoxal/tests/bus_api.rs`).
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serial_test::serial;
 use zenoh::bytes::Encoding;
 use zenoh::key_expr::KeyExpr;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleBuilder;
 
-use crate::api::ApiVersion;
-use crate::api::ContractBody;
-use crate::api::y2026_1 as api;
-use crate::bus::abi::{CodecId, encoding_string, parse_encoding_string};
-use crate::bus::codec::CodecError;
-use crate::bus::handle::decode_sample;
-use crate::bus::metadata::{BusMetadata, Source};
-use crate::bus::{
-    BUS_ABI, Bus, BusConfig, BusError, LogicalTime, Querier, QueryCode, QueryError, QueryFailure,
+use crate::abi::{CodecId, encoding_string, parse_encoding_string};
+use crate::codec::CodecError;
+use crate::contract::{ApiVersion, ContractBody};
+use crate::handle::decode_sample;
+use crate::metadata::{BusMetadata, Source};
+use crate::topic::Topic;
+use crate::{
+    BUS_ABI, Bus, BusConfig, BusError, Latest, LogicalTime, PubSub, Publisher, Querier, Query,
+    QueryCode, QueryError, QueryFailure,
 };
+
+// A hand-written API version + contract body, standing in for the macro-generated
+// `y2026_1` tree (which lives in `phoxal`). The bus client is generic over these
+// traits; that is all it needs to be exercised end to end.
+enum TestApi {}
+impl ApiVersion for TestApi {
+    const ID: &'static str = "yTEST";
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Target {
+    linear_x_mps: f32,
+    angular_z_radps: f32,
+}
+impl ContractBody for Target {
+    type Api = TestApi;
+    const FAMILY: &'static str = "drive::Target";
+    const TOPIC: &'static str = "drive/target";
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct OtherBody {
+    flag: bool,
+}
+impl ContractBody for OtherBody {
+    type Api = TestApi;
+    const FAMILY: &'static str = "safety::Status";
+    const TOPIC: &'static str = "safety/state";
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct GetRequest {
+    path: String,
+}
+impl ContractBody for GetRequest {
+    type Api = TestApi;
+    const FAMILY: &'static str = "asset::GetRequest";
+    const TOPIC: &'static str = "asset/get";
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+enum GetResponse {
+    Found { bytes: Vec<u8> },
+    Missing,
+}
+impl ContractBody for GetResponse {
+    type Api = TestApi;
+    const FAMILY: &'static str = "asset::GetResponse";
+    const TOPIC: &'static str = "asset/get";
+}
 
 fn metadata(api_version: &str) -> BusMetadata {
     BusMetadata {
         api_version: api_version.to_string(),
-        family: <api::drive::Target as crate::api::ContractBody>::FAMILY.to_string(),
+        family: <Target as ContractBody>::FAMILY.to_string(),
         codec: CodecId::MessagePack.as_u8(),
         produced_at_ns: 42,
         epoch: 0,
@@ -69,16 +126,15 @@ fn sample_with_encoding(
 }
 
 fn sample(api_version: &str, codec: u8) -> zenoh::sample::Sample {
-    let body = api::drive::Target {
+    let body = Target {
         linear_x_mps: 1.0,
         angular_z_radps: 0.5,
-        curvature_limit_radpm: None,
     };
     let payload = rmp_serde::to_vec_named(&body).unwrap();
     sample_with(
         api_version,
         codec,
-        <api::drive::Target as crate::api::ContractBody>::FAMILY,
+        <Target as ContractBody>::FAMILY,
         payload,
     )
 }
@@ -101,12 +157,12 @@ fn encoding_string_mirrors_metadata_slots() {
 #[test]
 fn encoding_string_includes_body_family_id() {
     let enc = encoding_string(
-        <api::drive::Target as ContractBody>::FAMILY,
-        <<api::drive::Target as ContractBody>::Api as ApiVersion>::ID,
+        <Target as ContractBody>::FAMILY,
+        <<Target as ContractBody>::Api as ApiVersion>::ID,
         CodecId::MessagePack,
     );
     assert!(enc.contains("family=drive::Target"));
-    assert_eq!(enc, "phoxal/v0;family=drive::Target;api=y2026_1;codec=1");
+    assert_eq!(enc, "phoxal/v0;family=drive::Target;api=yTEST;codec=1");
 }
 
 #[test]
@@ -118,23 +174,23 @@ fn metadata_round_trips() {
 
 #[test]
 fn decode_accepts_matching_api_version() {
-    let s = sample("y2026_1", CodecId::MessagePack.as_u8());
-    let (body, meta) = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap();
+    let s = sample("yTEST", CodecId::MessagePack.as_u8());
+    let (body, meta) = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap();
     assert_eq!(body.linear_x_mps, 1.0);
-    assert_eq!(meta.api_version, "y2026_1");
+    assert_eq!(meta.api_version, "yTEST");
 }
 
 #[test]
 fn decode_rejects_api_version_mismatch() {
-    let s = sample("not-y2026_1", CodecId::MessagePack.as_u8());
-    let err = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap_err();
+    let s = sample("not-yTEST", CodecId::MessagePack.as_u8());
+    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
     assert!(matches!(err, BusError::ApiVersionMismatch { .. }));
 }
 
 #[test]
 fn decode_rejects_family_mismatch() {
-    let s = sample("y2026_1", CodecId::MessagePack.as_u8());
-    let err = decode_sample::<api::safety::Status>(&s, "safety/state", "y2026_1").unwrap_err();
+    let s = sample("yTEST", CodecId::MessagePack.as_u8());
+    let err = decode_sample::<OtherBody>(&s, "safety/state", "yTEST").unwrap_err();
     match err {
         BusError::Metadata { detail, .. } => {
             assert!(detail.contains("encoding family mismatch"));
@@ -145,49 +201,47 @@ fn decode_rejects_family_mismatch() {
 
 #[test]
 fn decode_rejects_encoding_api_mismatch_before_body_decode() {
-    let body = api::drive::Target {
+    let body = Target {
         linear_x_mps: 1.0,
         angular_z_radps: 0.5,
-        curvature_limit_radpm: None,
     };
     let payload = rmp_serde::to_vec_named(&body).unwrap();
     let s = sample_with_encoding(
-        "y2026_1",
+        "yTEST",
         CodecId::MessagePack.as_u8(),
-        <api::drive::Target as ContractBody>::FAMILY,
+        <Target as ContractBody>::FAMILY,
         encoding_string(
-            <api::drive::Target as ContractBody>::FAMILY,
-            "not-y2026_1",
+            <Target as ContractBody>::FAMILY,
+            "not-yTEST",
             CodecId::MessagePack,
         ),
         payload,
     );
 
-    let err = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap_err();
+    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
     assert!(matches!(err, BusError::ApiVersionMismatch { .. }));
 }
 
 #[test]
 fn decode_rejects_encoding_attachment_mismatch_before_body_decode() {
-    let body = api::drive::Target {
+    let body = Target {
         linear_x_mps: 1.0,
         angular_z_radps: 0.5,
-        curvature_limit_radpm: None,
     };
     let payload = rmp_serde::to_vec_named(&body).unwrap();
     let s = sample_with_encoding(
-        "y2026_1",
+        "yTEST",
         CodecId::MessagePack.as_u8(),
         "safety::Status",
         encoding_string(
-            <api::drive::Target as ContractBody>::FAMILY,
-            "y2026_1",
+            <Target as ContractBody>::FAMILY,
+            "yTEST",
             CodecId::MessagePack,
         ),
         payload,
     );
 
-    let err = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap_err();
+    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
     match err {
         BusError::Metadata { detail, .. } => {
             assert!(detail.contains("encoding/BusMetadata mismatch"));
@@ -198,20 +252,20 @@ fn decode_rejects_encoding_attachment_mismatch_before_body_decode() {
 
 #[test]
 fn decode_rejects_unsupported_codec() {
-    let s = sample("y2026_1", 99);
-    let err = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap_err();
+    let s = sample("yTEST", 99);
+    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
     assert!(matches!(err, BusError::UnsupportedCodec(99, _)));
 }
 
 #[test]
 fn decode_rejects_corrupt_payload() {
     let s = sample_with(
-        "y2026_1",
+        "yTEST",
         CodecId::MessagePack.as_u8(),
-        <api::drive::Target as ContractBody>::FAMILY,
+        <Target as ContractBody>::FAMILY,
         vec![0xc1, 0xc1, 0xc1],
     );
-    let err = decode_sample::<api::drive::Target>(&s, "drive/target", "y2026_1").unwrap_err();
+    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
     assert!(matches!(err, BusError::Codec(CodecError::Decode(_))));
 }
 
@@ -267,20 +321,17 @@ async fn key_root_is_namespace_robots_robot_id() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_publisher_to_latest_round_trip() {
     let bus = Bus::open(BusConfig::in_process("dev", "rt")).await.unwrap();
-    let topic = api::topic::new().drive().target();
+    let topic = Topic::<PubSub<Target>>::new_static(<Target as ContractBody>::TOPIC);
 
-    let publisher = crate::bus::Publisher::<api::drive::Target>::new(bus.clone(), &topic).unwrap();
-    let latest = crate::bus::Latest::<api::drive::Target>::new(&bus, &topic)
-        .await
-        .unwrap();
+    let publisher = Publisher::<Target>::new(bus.clone(), &topic).unwrap();
+    let latest = Latest::<Target>::new(&bus, &topic).await.unwrap();
 
     publisher
         .publish_at(
             LogicalTime::new(0, 100),
-            api::drive::Target {
+            Target {
                 linear_x_mps: 0.9,
                 angular_z_radps: -0.1,
-                curvature_limit_radpm: None,
             },
         )
         .await
@@ -307,17 +358,16 @@ async fn publish_at_reports_closed_bus() {
     let bus = Bus::open(BusConfig::in_process("dev", "closed"))
         .await
         .unwrap();
-    let topic = api::topic::new().drive().target();
-    let publisher = crate::bus::Publisher::<api::drive::Target>::new(bus.clone(), &topic).unwrap();
+    let topic = Topic::<PubSub<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let publisher = Publisher::<Target>::new(bus.clone(), &topic).unwrap();
     bus.close().await.unwrap();
 
     let err = publisher
         .publish_at(
             LogicalTime::new(0, 100),
-            api::drive::Target {
+            Target {
                 linear_x_mps: 0.9,
                 angular_z_radps: -0.1,
-                curvature_limit_radpm: None,
             },
         )
         .await
@@ -338,15 +388,14 @@ async fn live_query_timeout_maps_to_deadline_exceeded() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     });
 
-    let querier = Querier::<api::asset::GetRequest, api::asset::GetResponse>::new(
-        bus.clone(),
-        &api::topic::new().asset().get(),
-        Duration::from_millis(20),
-    )
-    .unwrap();
+    let topic =
+        Topic::<Query<GetRequest, GetResponse>>::new_static(<GetRequest as ContractBody>::TOPIC);
+    let querier =
+        Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_millis(20))
+            .unwrap();
 
     let err = querier
-        .query(api::asset::GetRequest {
+        .query(GetRequest {
             path: "slow".to_string(),
         })
         .await
@@ -368,13 +417,13 @@ async fn incoming_query_rejects_encoding_attachment_mismatch() {
         .unwrap();
     let server = bus.declare_server("asset/get").await.unwrap();
 
-    let request = api::asset::GetRequest {
+    let request = GetRequest {
         path: "asset.bin".to_string(),
     };
     let payload = rmp_serde::to_vec_named(&request).unwrap();
     let meta = BusMetadata {
-        api_version: "y2026_1".to_string(),
-        family: <api::asset::GetRequest as ContractBody>::FAMILY.to_string(),
+        api_version: "yTEST".to_string(),
+        family: <GetRequest as ContractBody>::FAMILY.to_string(),
         codec: CodecId::MessagePack.as_u8(),
         produced_at_ns: 0,
         epoch: 0,
@@ -392,7 +441,7 @@ async fn incoming_query_rejects_encoding_attachment_mismatch() {
         .payload(payload)
         .encoding(Encoding::from(encoding_string(
             "drive::Target",
-            "y2026_1",
+            "yTEST",
             CodecId::MessagePack,
         )))
         .attachment(meta.encode())
@@ -425,7 +474,7 @@ async fn live_query_round_trip_ok_then_error() {
         // after replying, letting the complete queryable's reply stream close.
         {
             let incoming = server.recv().await.unwrap();
-            let response = api::asset::GetResponse::Found {
+            let response = GetResponse::Found {
                 bytes: vec![9, 9, 9],
             };
             let payload = rmp_serde::to_vec_named(&response).unwrap();
@@ -433,8 +482,8 @@ async fn live_query_round_trip_ok_then_error() {
                 .reply(
                     &server_bus,
                     payload,
-                    <api::asset::GetResponse as ContractBody>::FAMILY,
-                    "y2026_1",
+                    <GetResponse as ContractBody>::FAMILY,
+                    "yTEST",
                 )
                 .await
                 .unwrap();
@@ -450,23 +499,22 @@ async fn live_query_round_trip_ok_then_error() {
         }
     });
 
-    let querier = Querier::<api::asset::GetRequest, api::asset::GetResponse>::new(
-        bus.clone(),
-        &api::topic::new().asset().get(),
-        Duration::from_secs(5),
-    )
-    .unwrap();
+    let topic =
+        Topic::<Query<GetRequest, GetResponse>>::new_static(<GetRequest as ContractBody>::TOPIC);
+    let querier =
+        Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
+            .unwrap();
 
     let ok = querier
-        .query(api::asset::GetRequest {
+        .query(GetRequest {
             path: "a".to_string(),
         })
         .await
         .expect("first query should succeed");
-    assert!(matches!(ok, api::asset::GetResponse::Found { .. }));
+    assert!(matches!(ok, GetResponse::Found { .. }));
 
     let err = querier
-        .query(api::asset::GetRequest {
+        .query(GetRequest {
             path: "b".to_string(),
         })
         .await

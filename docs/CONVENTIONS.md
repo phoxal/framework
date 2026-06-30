@@ -33,7 +33,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 Topic keys are **versionless** and api-local; the api tree's `topic` builders are
 the only source of keys, and the wire body never appears in the key
 ([`phoxal/src/api/mod.rs`](../phoxal/src/api/mod.rs),
-[`phoxal/src/bus/topic.rs`](../phoxal/src/bus/topic.rs)).
+[`phoxal-bus/src/topic.rs`](../phoxal-bus/src/topic.rs)).
 
 - Domain streams: `<domain>/<stream>` (e.g. `drive/state`, `drive/target`,
   `safety/authorization`, `mission/state`), built as `api::topic::new().drive().state()`.
@@ -58,7 +58,7 @@ the only source of keys, and the wire body never appears in the key
   a bounded outbound queue.
   A saturated queue drops the sample, bumps `outbound_drops`, and returns
   `BusError::Saturated` so the loss is observable - there is no reliable/blocking
-  publish variant ([`phoxal/src/bus/handle.rs`](../phoxal/src/bus/handle.rs)).
+  publish variant ([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
 - Receivers bound their backlog: `Latest<B>` keeps last-1; `Subscriber<B>` is a
   drop-oldest ring (depth 32 by default, overridable), bumping `inbound_drops` when
   a slow consumer lets the ring fill.

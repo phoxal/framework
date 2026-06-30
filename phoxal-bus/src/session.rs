@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::key_expr::OwnedKeyExpr;
 
-use crate::bus::error::{BusError, Result};
+use crate::error::{BusError, Result};
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter - it never blocks the

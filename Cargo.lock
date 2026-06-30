@@ -1968,6 +1968,7 @@ dependencies = [
  "derive-new",
  "dotenvy",
  "nalgebra",
+ "phoxal-bus",
  "phoxal-macros",
  "rmp-serde",
  "schemars 1.2.1",
@@ -1983,6 +1984,21 @@ dependencies = [
  "tracing-subscriber",
  "trybuild",
  "urdf-rs",
+ "zenoh",
+]
+
+[[package]]
+name = "phoxal-bus"
+version = "0.18.0"
+dependencies = [
+ "arc-swap",
+ "rmp-serde",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "zenoh",
 ]
 

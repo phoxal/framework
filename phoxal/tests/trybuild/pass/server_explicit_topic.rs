@@ -1,6 +1,7 @@
 // An explicit server topic expression can be any typed `Topic` value, as long as
 // its key matches the request body's canonical topic. The supported way to build
-// that value is the api-local topic builder - raw `Topic` constructors are sealed.
+// that value is the api-local topic builder; the raw `Topic` constructors are
+// `#[doc(hidden)]` and off the authored surface (a crate-split escape hatch).
 use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 
