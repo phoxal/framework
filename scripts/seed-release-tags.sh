@@ -3,15 +3,17 @@
 # release).
 #
 # Before plan #01 the workspace released under a single shared tag (`v<version>`).
-# release-plz now tracks each crate by its OWN tag `<crate>-v<version>` (set by
-# git_tag_name in release-plz.toml). The 18 runtime crates are git_only
-# (publish = false), so release-plz uses their git tags - not a registry - as the
-# "last released" baseline. With no per-package tags present, the FIRST release-plz
-# run would treat every runtime as an initial release and build all 18 images.
+# release-plz now tracks each publishable library crate by its OWN tag
+# `<crate>-v<version>` (set by git_tag_name in release-plz.toml) and uses that tag
+# as the changelog/diff baseline. Seeding it avoids the first release-plz run
+# treating an already-published crate as having unreleased changes.
 #
-# Run this ONCE at activation (after merging the #01-B PR, before the next push to
-# main) to seed `<crate>-v<version>` for every workspace member at the last shared
-# release commit, so release-plz's first run no-ops for unchanged crates.
+# Only the publishable crates are seeded; the runtime crates are publish = false
+# and are not part of the crate release (release-plz skips them).
+#
+# Run this ONCE at activation (after merging the release PR, before the next push
+# to main) to seed `<crate>-v<version>` for every publishable crate at the last
+# shared release commit, so release-plz's first run no-ops for unchanged crates.
 #
 # Idempotent: skips tags that already exist; safe to re-run.
 #
@@ -31,10 +33,10 @@ base_commit="$(git rev-parse "${base_ref}^{commit}")"
 echo "seeding per-package tags at ${base_ref} (${base_commit})"
 
 desired=()
-# cargo metadata -> "<name> <version>" for every workspace member. Build the FULL
-# desired tag set; create any missing local tags, and verify pre-existing ones
-# point at base_commit (a tag at a different commit is a hard error, not a silent
-# skip).
+# cargo metadata -> "<name> <version>" for every PUBLISHABLE workspace member
+# (publish = false crates are skipped). Build the FULL desired tag set; create any
+# missing local tags, and verify pre-existing ones point at base_commit (a tag at a
+# different commit is a hard error, not a silent skip).
 while read -r name version; do
   tag="${name}-v${version}"
   desired+=("${tag}")
@@ -55,7 +57,9 @@ done < <(
 meta = json.load(sys.stdin)
 members = set(meta["workspace_members"])
 for pkg in meta["packages"]:
-    if pkg["id"] in members:
+    # publish == [] means publish = false (a runtime); skip those. Publishable
+    # crates have publish == None (any registry) or a non-empty allowlist.
+    if pkg["id"] in members and pkg.get("publish") != []:
         print(pkg["name"], pkg["version"])'
 )
 

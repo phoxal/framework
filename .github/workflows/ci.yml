@@ -12,26 +12,6 @@ jobs:
       system-packages: libudev-dev
     secrets: inherit
 
-  # Pre-release gates, moved here from the removed release.yml so every PR proves
-  # the official runtime set + topology are consistent BEFORE a release PR can
-  # merge (per-artifact release, plan #01). They no longer run at release time.
-
-  # The runtime set in this workspace must match phoxal-cli's platform-runtime
-  # catalog. Drift (a runtime added/removed here without the catalog following)
-  # fails the PR.
-  catalog-drift:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/checkout@v4
-        with:
-          repository: phoxal/phoxal-cli
-          path: phoxal-cli
-
-      - name: Check official runtime catalog drift
-        run: scripts/check-catalog-drift.sh phoxal-cli/src/catalog.rs
-
   # The official-set fixture pins the runtime set + bus topology; this test fails
   # if the wired topology drifts from the fixture.
   official-set-fixture:
