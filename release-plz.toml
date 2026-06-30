@@ -1,15 +1,13 @@
-# Per-artifact release configuration (plan #01-B).
+# Per-artifact release configuration (plan #01).
 #
-# Each crate carries its own version (plan #01-A); release-plz cuts one release
-# PR that bumps only the crates whose commits changed, then on merge releases
-# each bumped crate independently:
-#   - the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros)
-#     publish to crates.io (default behaviour, so they need no [[package]] block);
-#   - the 18 runtime crates are publish = false (deployables, not libraries), so
-#     release-plz would skip them entirely without an explicit entry. Each gets a
-#     git_only release: a per-package git tag + GitHub release, no crates.io push.
-#     The release-plz.yml `parse-runtimes` job reads the released runtime tags and
-#     drives the GHCR image matrix off them.
+# release-plz publishes the LIBRARY crates only. Each carries its own version
+# (plan #01-A); release-plz cuts one release PR that bumps only the crates whose
+# commits changed, then on merge publishes each bumped crate independently:
+#   - the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros) publish
+#     to crates.io (default behaviour, so they need no [[package]] block);
+#   - the 18 runtime crates are publish = false; release-plz skips publish = false
+#     crates by default, so they are intentionally left out of release scope.
+#     (Runtime distribution is being reworked; it is not a crate release.)
 [workspace]
 release_always = false          # release ONLY for commits from a release-plz PR (not every main push)
 dependencies_update = false
@@ -17,113 +15,3 @@ git_tag_name = "{{ package }}-v{{ version }}"
 git_release_name = "{{ package }} v{{ version }}"
 pr_name = "chore(release): release"
 # no version_group (it reintroduces a shared version axis)
-
-# The 18 official runtime crates. They are publish = false, so they release via
-# a git tag + GitHub release only (git_only); crates.io is never touched for them.
-[[package]]
-name = "phoxal-runtime-asset"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-battery"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-drive"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-explore"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-follow"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-frame"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-joint"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-localize"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-map"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-mission"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-motion"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-odometry"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-perception"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-plan"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-power"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-presence"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-safety"
-release = true
-git_only = true
-publish = false
-
-[[package]]
-name = "phoxal-runtime-video"
-release = true
-git_only = true
-publish = false

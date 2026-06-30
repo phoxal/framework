@@ -21,10 +21,3 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
-
-# Image-matrix params for the release-plz pipeline. The release-plz.yml
-# `parse-runtimes` job reads `[package.metadata.phoxal].api` to scope each
-# runtime's GHCR image tag (`runtime-<svc>:<api>-v<version>`), instead of a
-# hand-maintained matrix in the workflow.
-[package.metadata.phoxal]
-api = "y2026_1"

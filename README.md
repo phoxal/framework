@@ -19,28 +19,17 @@ versions**: each crate carries its own version and is released only when it
 changes.
 
 On every push to `main`, release-plz opens or updates a single
-`chore(release): release` PR that bumps just the crates whose code changed since
-their last release and refreshes their changelogs.
-Merging that PR triggers the release:
+`chore(release): release` PR that bumps just the library crates whose code changed
+since their last release and refreshes their changelogs.
+Merging that PR publishes the changed library crates (`phoxal-bus`, `phoxal-api`,
+`phoxal`, `phoxal-macros`) to crates.io at their own versions and tags each
+`<crate>-v<version>` with a GitHub release.
 
-- the changed library crates (`phoxal-bus`, `phoxal-api`, `phoxal`,
-  `phoxal-macros`) are published to crates.io at their own versions, and every
-  released crate is tagged `<crate>-v<version>`;
-- the official runtime crates are `publish = false`, so they are tagged
-  (`phoxal-runtime-<name>-v<version>`) but never pushed to crates.io;
-- each runtime released in that run is then built as a multi-arch
-  (`linux/amd64` + `linux/arm64`) GHCR image, tagged by **API version**: the
-  immutable `ghcr.io/phoxal/runtime-<name>:<api>-v<version>` and the moving
-  `:<api>-stable` channel (e.g. `runtime-drive:y2026_1-stable`).
-  Only runtimes that actually changed are rebuilt.
-  These are the pull targets `phoxal-cli` resolves for a robot graph's root
-  `api_version` + channel.
+The runtime crates (`phoxal-runtime-<name>`) are `publish = false` and are not part
+of this crate release; their distribution is handled separately.
 
-See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml),
-[`release-plz.toml`](release-plz.toml), and
-[`Dockerfile.runtime`](Dockerfile.runtime). The image tag's api_version is a
-lookup convention; `phoxal-cli check` re-proves it by running `emit-apis` on the
-resolved image (api-version-availability).
+See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
+[`release-plz.toml`](release-plz.toml).
 
 > Per-target standalone binary tarballs, and the (removed) Webots simulator +
 > joypad tool, are not published by this workflow.
