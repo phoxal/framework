@@ -12,7 +12,7 @@ jobs:
       system-packages: libudev-dev
     secrets: inherit
 
-  # Pre-release gates, moved here from the dormant release.yml so every PR proves
+  # Pre-release gates, moved here from the removed release.yml so every PR proves
   # the official runtime set + topology are consistent BEFORE a release PR can
   # merge (per-artifact release, plan #01). They no longer run at release time.
 

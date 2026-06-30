@@ -14,17 +14,30 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 ## Releasing
 
-Merging a `release/vX.Y.Z` PR into `main` tags the release and then:
+Releases are driven by [release-plz](https://release-plz.dev) with **per-artifact
+versions**: each crate carries its own version and is released only when it
+changes.
 
-- publishes the `phoxal-bus`, `phoxal-api`, `phoxal`, and `phoxal-macros` library
-  crates to crates.io at the workspace version;
-- builds each official runtime as a multi-arch (`linux/amd64` + `linux/arm64`)
-  GHCR image, tagged by **API version**: the immutable `ghcr.io/phoxal/runtime-<name>:<api>-v<version>`
-  and the moving `:<api>-stable` channel (e.g. `runtime-drive:y2026_1-stable`).
+On every push to `main`, release-plz opens or updates a single
+`chore(release): release` PR that bumps just the crates whose code changed since
+their last release and refreshes their changelogs.
+Merging that PR triggers the release:
+
+- the changed library crates (`phoxal-bus`, `phoxal-api`, `phoxal`,
+  `phoxal-macros`) are published to crates.io at their own versions, and every
+  released crate is tagged `<crate>-v<version>`;
+- the official runtime crates are `publish = false`, so they are tagged
+  (`phoxal-runtime-<name>-v<version>`) but never pushed to crates.io;
+- each runtime released in that run is then built as a multi-arch
+  (`linux/amd64` + `linux/arm64`) GHCR image, tagged by **API version**: the
+  immutable `ghcr.io/phoxal/runtime-<name>:<api>-v<version>` and the moving
+  `:<api>-stable` channel (e.g. `runtime-drive:y2026_1-stable`).
+  Only runtimes that actually changed are rebuilt.
   These are the pull targets `phoxal-cli` resolves for a robot graph's root
   `api_version` + channel.
 
-See [`.github/workflows/release.yml`](.github/workflows/release.yml) and
+See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml),
+[`release-plz.toml`](release-plz.toml), and
 [`Dockerfile.runtime`](Dockerfile.runtime). The image tag's api_version is a
 lookup convention; `phoxal-cli check` re-proves it by running `emit-apis` on the
 resolved image (api-version-availability).
