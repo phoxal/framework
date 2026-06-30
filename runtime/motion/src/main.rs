@@ -67,8 +67,12 @@ struct Motion {
 impl Motion {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Motion OWNS the `motion` node (its manual input + its state telemetry) ->
+        // owner (`internal`) builder. It CONSUMES `follow/target` and
+        // `safety/authorization` and CLIENT-publishes `drive/target` (a command it
+        // sends to the drive owner) -> public builder.
         let manual = ctx
-            .subscribe(api::topic::new().motion().manual())
+            .subscribe(api::topic::internal::new().motion().manual())
             .subscriber()
             .await?;
         let follow = ctx
@@ -80,7 +84,9 @@ impl Motion {
             .subscriber()
             .await?;
         let drive = ctx.publisher(api::topic::new().drive().target()).await?;
-        let state = ctx.publisher(api::topic::new().motion().state()).await?;
+        let state = ctx
+            .publisher(api::topic::internal::new().motion().state())
+            .await?;
 
         Ok(Self {
             last_manual: None,

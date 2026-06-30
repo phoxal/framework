@@ -105,8 +105,15 @@ impl Plan {
                 .subscribe(api::topic::new().map().revision())
                 .latest()
                 .await?,
-            path: ctx.publisher(api::topic::new().plan().path()).await?,
-            state: ctx.publisher(api::topic::new().plan().state()).await?,
+            // Plan OWNS the `plan` node (its path + state telemetry) -> owner
+            // (`internal`) builder; the subscriptions above are CONSUMED via the
+            // public builder.
+            path: ctx
+                .publisher(api::topic::internal::new().plan().path())
+                .await?,
+            state: ctx
+                .publisher(api::topic::internal::new().plan().state())
+                .await?,
         })
     }
 

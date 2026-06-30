@@ -31,7 +31,9 @@ struct Battery {
 impl Battery {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        let state = ctx.publisher(api::topic::new().battery().state()).await?;
+        let state = ctx
+            .publisher(api::topic::internal::new().battery().state())
+            .await?;
 
         Ok(Self {
             charge_ratio: 1.0,

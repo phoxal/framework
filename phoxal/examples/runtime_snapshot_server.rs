@@ -58,7 +58,12 @@ impl SnapshotMap {
                 .subscribe(api::topic::new().localize().state())
                 .latest()
                 .await?,
-            revision: ctx.publisher(api::topic::new().map().revision()).await?,
+            // This runtime owns the map node's telemetry + queries it serves below,
+            // so they go through the owner (`internal`) builder; `localize/state` is
+            // consumed via the public builder.
+            revision: ctx
+                .publisher(api::topic::internal::new().map().revision())
+                .await?,
             grid: Arc::new(Grid::empty()),
             rev: 0,
         })
@@ -81,7 +86,7 @@ impl SnapshotMap {
         Ok(())
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(topic = api::topic::internal::new().asset().get())]
     async fn get_asset(
         &mut self,
         request: api::asset::GetRequest,
@@ -96,7 +101,7 @@ impl SnapshotMap {
         }
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
     async fn submap(
         state: Snapshot<MapSnapshot>,
         _request: api::map::SubmapRequest,

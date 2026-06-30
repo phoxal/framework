@@ -49,10 +49,15 @@ impl Explore {
                 .latest()
                 .await?,
             submap: ctx.querier(api::topic::new().map().submap()).await?,
+            // Explore OWNS the `explore` node (its frontiers + state telemetry) ->
+            // owner (`internal`) builder; `map/submap` is CLIENT-queried and the
+            // subscriptions are CONSUMED via the public builder.
             frontiers: ctx
-                .publisher(api::topic::new().explore().frontiers())
+                .publisher(api::topic::internal::new().explore().frontiers())
                 .await?,
-            state: ctx.publisher(api::topic::new().explore().state()).await?,
+            state: ctx
+                .publisher(api::topic::internal::new().explore().state())
+                .await?,
         })
     }
 

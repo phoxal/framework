@@ -52,8 +52,10 @@ impl EncoderBinding {
             .collect()
     }
 
-    /// The dynamic per-instance encoder-sample topic for this binding.
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::encoder::Sample>> {
+    /// The dynamic per-instance encoder-sample topic for this binding. Odometry
+    /// CONSUMES encoder samples (the encoder driver owns/publishes them), so this
+    /// is the client `Subscribe` side from the public builder.
+    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
         api::topic::new()
             .component(&self.component_id)
             .encoder(&self.capability_id)
@@ -132,7 +134,9 @@ impl Odometry {
         for binding in &config.right {
             right_encoders.push(ctx.subscribe(binding.topic()).subscriber().await?);
         }
-        let state = ctx.publisher(api::topic::new().odometry().state()).await?;
+        let state = ctx
+            .publisher(api::topic::internal::new().odometry().state())
+            .await?;
 
         Ok(Self {
             left_velocity_radps: vec![0.0; config.left.len()],

@@ -54,8 +54,8 @@ use proc_macro::TokenStream;
 /// - `topic <leaf>: command <Body>;` - a pub/sub topic the owning service
 ///   subscribes (a control input).
 /// - `topic <leaf>: state <Body>;` - a pub/sub topic the owning service publishes
-///   (telemetry/output). Identical wire shape and builder return type to
-///   `command`; only the recorded `ROLE` differs.
+///   (telemetry/output). Same wire shape as `command`, but the side-branded
+///   builders give it the inverse brand (see *Generated topic builders* below).
 /// - `topic <leaf>: query <Req> => <Resp>;` - a request/response topic.
 /// - a child node (`name { … }` / `name(var) { … }`).
 ///
@@ -80,11 +80,16 @@ use proc_macro::TokenStream;
 ///
 /// # Generated topic builders
 ///
-/// Each version also gets an api-local `topic` module. `topic::new()` returns a
-/// `Root`; a method per node walks the tree (a dynamic node's method takes its
-/// variable as `impl Display`), and a leaf method returns a typed
-/// `bus::Topic<PubSub<Body>>` / `bus::Topic<Query<Req, Resp>>` with the key
-/// formatted from the carried variables.
+/// Each version also gets an api-local `topic` module emitted with BOTH side trees
+/// (L1, plan #00). `topic::new()` returns a `Root` for the PUBLIC **client** side;
+/// `topic::internal::new()` returns a `Root` for the OWNER side (a deliberate,
+/// greppable owner opt-in). Both have a method per node that walks the identical
+/// tree (a dynamic node's method takes its variable as `impl Display`) and a leaf
+/// method that returns a typed `bus::Topic<Kind>` with the key formatted from the
+/// carried variables. The leaf brand is side-specific: on the client side a
+/// `command` leaf is `Publish<Body>`, a `state` leaf is `Subscribe<Body>`, and a
+/// `query` leaf is `AskQuery<Req, Resp>`; on the owner side those flip to
+/// `Subscribe<Body>` / `Publish<Body>` / `ServeQuery<Req, Resp>`.
 #[proc_macro]
 pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
     api_tree::expand(input.into())

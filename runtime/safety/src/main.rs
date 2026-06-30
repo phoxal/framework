@@ -87,8 +87,12 @@ impl Safety {
             .subscribe(api::topic::new().drive().state())
             .subscriber()
             .await?;
+        // Safety OWNS the `safety` node: it reads its e-stop command input here, and
+        // publishes `authorization`/`state` below, all through the owner
+        // (`internal`) builder. `battery/state`, `drive/state` and the component
+        // e-stop states are CONSUMED via the public builder.
         let software_estop = ctx
-            .subscribe(api::topic::new().safety().estop())
+            .subscribe(api::topic::internal::new().safety().estop())
             .subscriber()
             .await?;
         let mut component_estops = Vec::with_capacity(emergency_stop_bindings.len());
@@ -105,9 +109,11 @@ impl Safety {
             );
         }
         let authorization = ctx
-            .publisher(api::topic::new().safety().authorization())
+            .publisher(api::topic::internal::new().safety().authorization())
             .await?;
-        let state = ctx.publisher(api::topic::new().safety().state()).await?;
+        let state = ctx
+            .publisher(api::topic::internal::new().safety().state())
+            .await?;
 
         Ok(Self {
             required,

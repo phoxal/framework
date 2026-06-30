@@ -11,7 +11,7 @@
 // `#[doc(hidden)]` (off the author surface) only because the `phoxal_api_tree!`
 // macro must call them across the `phoxal` / `phoxal-bus` crate boundary; the
 // guarantee proven here is the type bound, not constructor privacy.
-use phoxal::bus::{PubSub, Topic};
+use phoxal::bus::{Publish, Topic};
 use phoxal::prelude::*;
 
 enum ForeignApi {}
@@ -45,7 +45,7 @@ impl phoxal::runtime::DeclaresPublish<ForeignBody> for WrongApiSetup {}
 impl WrongApiSetup {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        let topic = Topic::<PubSub<ForeignBody>>::new_static("foreign/body");
+        let topic = Topic::<Publish<ForeignBody>>::new_static("foreign/body");
         let _foreign = ctx.publisher(topic).await?;
         Ok(Self {
             target: ctx

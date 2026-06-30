@@ -70,7 +70,12 @@ impl Map {
                 .subscribe(api::topic::new().localize().state())
                 .latest()
                 .await?,
-            revision: ctx.publisher(api::topic::new().map().revision()).await?,
+            // Map OWNS the `map` node (its revision telemetry and the `map/submap`
+            // query it serves below) -> owner (`internal`) builder; `localize/state`
+            // is CONSUMED via the public builder.
+            revision: ctx
+                .publisher(api::topic::internal::new().map().revision())
+                .await?,
             grid: Arc::new(Grid::empty(64, 64, 0.05)),
             rev: 0,
         })
@@ -99,7 +104,7 @@ impl Map {
     }
 
     // Concurrent read against the committed snapshot: does not block the step loop.
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
     async fn submap(
         state: Snapshot<MapState>,
         request: api::map::SubmapRequest,

@@ -316,6 +316,43 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(api::topic::new().localize().state().key(), "localize/state");
 }
 
+#[test]
+fn internal_owner_builder_produces_identical_keys() {
+    // The OWNER (`internal`) builder mirrors the PUBLIC client builder's structure
+    // and keys exactly (L1, plan #00) - only the leaf brand differs (verified by
+    // the trybuild compile-fail/pass fixtures, not at runtime). The keys must match
+    // the client side and the canonical contract topics.
+    assert_eq!(
+        api::topic::internal::new().drive().state().key(),
+        "drive/state"
+    );
+    assert_eq!(
+        api::topic::internal::new().drive().target().key(),
+        "drive/target"
+    );
+    assert_eq!(
+        api::topic::internal::new().map().submap().key(),
+        "map/submap"
+    );
+    assert_eq!(
+        api::topic::internal::new().video().open().key(),
+        "video/open"
+    );
+    // Dynamic node path: the owner builder fills carried vars the same way.
+    assert_eq!(
+        api::topic::internal::new().joint("elbow").state().key(),
+        "joint/elbow/state"
+    );
+    assert_eq!(
+        api::topic::internal::new()
+            .video()
+            .stream("front")
+            .state()
+            .key(),
+        "video/stream/front/state"
+    );
+}
+
 // ---- dynamic / parameterized topics ----------------------------------------
 
 #[test]

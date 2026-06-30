@@ -29,7 +29,9 @@ struct EncoderBinding {
 }
 
 impl EncoderBinding {
-    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::encoder::Sample>> {
+    /// Joint CONSUMES encoder samples (the encoder driver owns/publishes them), so
+    /// this is the client `Subscribe` side from the public builder.
+    fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
         api::topic::new()
             .component(&self.component_id)
             .encoder(&self.capability_id)
@@ -112,7 +114,9 @@ impl Joint {
         for joint_id in joint_ids {
             states.insert(
                 joint_id.clone(),
-                ctx.publisher(api::topic::new().joint(&joint_id).state())
+                // Joint OWNS each `joint/{id}` node's state telemetry -> owner
+                // (`internal`) builder.
+                ctx.publisher(api::topic::internal::new().joint(&joint_id).state())
                     .await?,
             );
         }

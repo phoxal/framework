@@ -37,10 +37,12 @@ impl Presence {
         Ok(Self {
             tracker: ReadinessTracker::default(),
             heartbeats: ctx
-                .subscribe(api::topic::new().presence().heartbeat())
+                .subscribe(api::topic::internal::new().presence().heartbeat())
                 .subscriber()
                 .await?,
-            state_pub: ctx.publisher(api::topic::new().presence().state()).await?,
+            state_pub: ctx
+                .publisher(api::topic::internal::new().presence().state())
+                .await?,
         })
     }
 

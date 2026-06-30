@@ -69,13 +69,27 @@
 //! Each version module exposes a `topic` builder that mirrors the node tree:
 //! `api::topic::new()` returns a root, one method per top-level node walks down the
 //! tree, a dynamic node's method takes its variable as `impl Display`, and a leaf
-//! method binds the topic's kind to its version-local body. For example
-//! `api::topic::new().drive().state()` yields a `Topic<PubSub<drive::State>>` over
+//! method binds the topic's side-branded kind to its version-local body. For
+//! example `api::topic::new().drive().state()` yields a
+//! `Topic<Subscribe<drive::State>>` (the CLIENT observes the owner's `state`) over
 //! the static key `drive/state`, and
 //! `api::topic::new().component("base").motor("left").command()` fills the dynamic
 //! segments to produce `component/base/motor/left/command`. Because the builder is
 //! generated from the same tree as `FAMILY`/`TOPIC`, the built key and the
 //! documented key stay in lockstep.
+//!
+//! ## Owner side: `topic::internal`
+//!
+//! The PUBLIC `topic::new()...` chain above is the **client** side. The matching
+//! **owner** side lives at `api::topic::internal::new()...` (L1, plan #00): the
+//! same node tree and keys, but the leaf brands flip so the owner gets the side it
+//! must take - `api::topic::internal::new().drive().state()` is
+//! `Topic<Publish<drive::State>>` (the owner publishes its telemetry), and
+//! `api::topic::internal::new().drive().target()` is `Topic<Subscribe<drive::Target>>`
+//! (the owner reads its command input). A query owner reaches its `ServeQuery`
+//! brand the same way. The `internal` chain is the deliberate, greppable owner
+//! opt-in; a runtime acquires the topics of its OWN node through it and everything
+//! it consumes through the public chain.
 
 use phoxal_macros::phoxal_api_tree;
 

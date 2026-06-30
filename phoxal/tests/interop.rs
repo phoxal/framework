@@ -54,7 +54,9 @@ impl Producer {
 }
 
 /// Subscribes `drive/target` and records what it receives into shared statics so
-/// the test can assert delivery after both runtimes have shut down.
+/// the test can assert delivery after both runtimes have shut down. It plays the
+/// OWNER/reader of the `drive/target` command (the side that subscribes a command),
+/// so it acquires the topic through the owner (`internal`) builder.
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "consumer", api = y2026_1)]
 struct Consumer {
@@ -67,7 +69,7 @@ impl Consumer {
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         Ok(Self {
             target: ctx
-                .subscribe(api::topic::new().drive().target())
+                .subscribe(api::topic::internal::new().drive().target())
                 .subscriber()
                 .await?,
         })

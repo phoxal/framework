@@ -37,9 +37,12 @@ impl EncoderProducer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         Ok(Self {
+            // The producer is the OWNER of the encoder sample (the encoder driver),
+            // so it publishes the `state` topic through the owner (`internal`)
+            // builder.
             encoder: ctx
                 .publisher(
-                    api::topic::new()
+                    api::topic::internal::new()
                         .component(INSTANCE)
                         .encoder(CAPABILITY)
                         .sample(),

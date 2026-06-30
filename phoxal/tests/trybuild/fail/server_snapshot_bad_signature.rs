@@ -14,7 +14,7 @@ impl SnapshotBadSignature {
         Ok(Self {})
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
     async fn submap(
         &self,
         _request: api::map::SubmapRequest,

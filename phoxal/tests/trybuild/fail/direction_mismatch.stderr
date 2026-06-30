@@ -1,60 +1,60 @@
 error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<_>` is not satisfied
-  --> tests/trybuild/fail/direction_mismatch.rs:15:38
+  --> tests/trybuild/fail/direction_mismatch.rs:22:38
    |
-15 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
+22 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
    |                            --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |                            |
    |                            required by a bound introduced by this call
    |
 help: the trait `DeclaresPublish<_>` is not implemented for `DirectionMismatch`
-  --> tests/trybuild/fail/direction_mismatch.rs:7:1
+  --> tests/trybuild/fail/direction_mismatch.rs:14:1
    |
- 7 | struct DirectionMismatch {
+14 | struct DirectionMismatch {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
 ...
    |         R: DeclaresPublish<B>,
    |            ^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
 
 error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not satisfied
-  --> tests/trybuild/fail/direction_mismatch.rs:15:24
+  --> tests/trybuild/fail/direction_mismatch.rs:22:24
    |
-15 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
+22 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not implemented for `DirectionMismatch`
-  --> tests/trybuild/fail/direction_mismatch.rs:7:1
+  --> tests/trybuild/fail/direction_mismatch.rs:14:1
    |
- 7 | struct DirectionMismatch {
+14 | struct DirectionMismatch {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
 ...
    |         R: DeclaresPublish<B>,
    |            ^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
 
 error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not satisfied
-  --> tests/trybuild/fail/direction_mismatch.rs:15:74
+  --> tests/trybuild/fail/direction_mismatch.rs:22:74
    |
-15 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
+22 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
    |                                                                          ^^^^^ unsatisfied trait bound
    |
 help: the trait `DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not implemented for `DirectionMismatch`
-  --> tests/trybuild/fail/direction_mismatch.rs:7:1
+  --> tests/trybuild/fail/direction_mismatch.rs:14:1
    |
- 7 | struct DirectionMismatch {
+14 | struct DirectionMismatch {
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
 ...
    |         R: DeclaresPublish<B>,

@@ -15,11 +15,13 @@ impl NoSnap {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         Ok(Self {
-            revision: ctx.publisher(api::topic::new().map().revision()).await?,
+            revision: ctx
+                .publisher(api::topic::internal::new().map().revision())
+                .await?,
         })
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
     async fn submap(
         _state: Snapshot<State>,
         _request: api::map::SubmapRequest,

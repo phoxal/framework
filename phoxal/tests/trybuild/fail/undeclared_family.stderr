@@ -14,7 +14,7 @@ help: the trait `DeclaresPublish<_>` is not implemented for `Undeclared`
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
 ...
    |         R: DeclaresPublish<B>,
@@ -34,7 +34,7 @@ help: the trait `DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not im
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
 ...
    |         R: DeclaresPublish<B>,
@@ -54,7 +54,7 @@ help: the trait `DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not im
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
 ...
    |         R: DeclaresPublish<B>,

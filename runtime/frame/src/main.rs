@@ -167,9 +167,14 @@ impl Frame {
             dynamic_joints: config.dynamic_joints,
             buffers,
             joints,
-            tree: ctx.publisher(api::topic::new().frame().tree()).await?,
+            // Frame OWNS the `frame` node (tree, static transforms, and the
+            // `frame/lookup` query it serves below) -> owner (`internal`) builder;
+            // joint states are CONSUMED via the public builder.
+            tree: ctx
+                .publisher(api::topic::internal::new().frame().tree())
+                .await?,
             static_pub: ctx
-                .publisher(api::topic::new().frame().static_transforms())
+                .publisher(api::topic::internal::new().frame().static_transforms())
                 .await?,
             published_static: false,
         })
@@ -215,7 +220,7 @@ impl Frame {
         Ok(())
     }
 
-    #[server_snapshot(topic = api::topic::new().frame().lookup())]
+    #[server_snapshot(topic = api::topic::internal::new().frame().lookup())]
     async fn lookup(
         state: Snapshot<FrameSnapshot>,
         request: api::frame::LookupRequest,

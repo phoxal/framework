@@ -92,7 +92,7 @@ The `phoxal::api` modules (re-exported from the `phoxal-api` crate) are generate
 A node is `name { … }` (static) or `name(var) { … }` (dynamic, where `var` is a key segment filled at build time), nestable to any depth.
 A node body holds any mix of `struct`/`enum` type declarations, `topic` declarations, and child nodes.
 Each topic declares a **role**: `topic <leaf>: command <Body>;` (a control input the owning service subscribes), `topic <leaf>: state <Body>;` (telemetry the owning service publishes), or `topic <leaf>: query <Req> => <Resp>;` (request/response).
-`command` and `state` are both pub/sub on the wire and identical in body type and builder return type - the role records intent and is emitted as a `ROLE` const on each body.
+`command` and `state` are both pub/sub on the wire; the role selects the side brand of the generated builders (L1), so the public client builder (`api::topic::new()`) and the `internal` owner builder (`api::topic::internal::new()`) return different branded topics (`Publish`/`Subscribe`) and taking the wrong side does not compile.
 There are no key-template strings and no topic parameter lists; dynamism comes entirely from the `(var)` nodes on the path.
 
 ```rust,ignore
