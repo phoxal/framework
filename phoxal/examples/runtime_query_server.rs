@@ -25,9 +25,11 @@ impl AssetStore {
     }
 
     // The default exclusive server: serialized with any `#[step]`, holds `&mut self`.
-    // This runtime OWNS `asset/get` (it serves it), so the server topic comes from
-    // the owner (`internal`) builder, which yields the `ServeQuery` brand.
-    #[server(topic = api::topic::internal::new().asset().get())]
+    // The `topic = …` expr is only key/contract validation; the live serve authority
+    // is the runner-controlled `<Req>::TOPIC` (plan #00 L2, Option C). It needs only
+    // the topic KEY, identical on both sides, so it uses the PUBLIC builder and needs
+    // no `OwnerCap`.
+    #[server(topic = api::topic::new().asset().get())]
     async fn get(
         &mut self,
         request: api::asset::GetRequest,

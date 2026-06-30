@@ -67,6 +67,9 @@ struct Follow {
 impl Follow {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let path = ctx
             .subscribe(api::topic::new().plan().path())
             .subscriber()
@@ -82,10 +85,10 @@ impl Follow {
         // Follow OWNS the `follow` node (its target + state telemetry) -> owner
         // (`internal`) builder; everything above is CONSUMED via the public builder.
         let target = ctx
-            .publisher(api::topic::internal::new().follow().target())
+            .publisher(api::topic::internal::new(cap).follow().target())
             .await?;
         let state = ctx
-            .publisher(api::topic::internal::new().follow().state())
+            .publisher(api::topic::internal::new(cap).follow().state())
             .await?;
 
         Ok(Self {

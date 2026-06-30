@@ -322,29 +322,33 @@ fn internal_owner_builder_produces_identical_keys() {
     // and keys exactly (L1, plan #00) - only the leaf brand differs (verified by
     // the trybuild compile-fail/pass fixtures, not at runtime). The keys must match
     // the client side and the canonical contract topics.
+    //
+    // The owner entry requires the runner-minted `OwnerCap` (Layer 2); this test
+    // mints one directly via the doc-hidden `__mint`, standing in for the runner.
+    let cap = ::phoxal_bus::OwnerCap::__mint();
     assert_eq!(
-        api::topic::internal::new().drive().state().key(),
+        api::topic::internal::new(cap).drive().state().key(),
         "drive/state"
     );
     assert_eq!(
-        api::topic::internal::new().drive().target().key(),
+        api::topic::internal::new(cap).drive().target().key(),
         "drive/target"
     );
     assert_eq!(
-        api::topic::internal::new().map().submap().key(),
+        api::topic::internal::new(cap).map().submap().key(),
         "map/submap"
     );
     assert_eq!(
-        api::topic::internal::new().video().open().key(),
+        api::topic::internal::new(cap).video().open().key(),
         "video/open"
     );
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(
-        api::topic::internal::new().joint("elbow").state().key(),
+        api::topic::internal::new(cap).joint("elbow").state().key(),
         "joint/elbow/state"
     );
     assert_eq!(
-        api::topic::internal::new()
+        api::topic::internal::new(cap)
             .video()
             .stream("front")
             .state()

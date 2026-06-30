@@ -29,7 +29,7 @@ impl Asset {
         })
     }
 
-    #[server(topic = api::topic::internal::new().asset().get())]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get(
         &mut self,
         request: api::asset::GetRequest,

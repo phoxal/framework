@@ -19,10 +19,11 @@ struct DirectionMismatch {
 impl DirectionMismatch {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        let cap = ctx.owner_capability();
         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
         Ok(Self {
             target: ctx
-                .subscribe(api::topic::internal::new().drive().target())
+                .subscribe(api::topic::internal::new(cap).drive().target())
                 .latest()
                 .await?,
         })

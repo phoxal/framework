@@ -67,12 +67,15 @@ struct Motion {
 impl Motion {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         // Motion OWNS the `motion` node (its manual input + its state telemetry) ->
         // owner (`internal`) builder. It CONSUMES `follow/target` and
         // `safety/authorization` and CLIENT-publishes `drive/target` (a command it
         // sends to the drive owner) -> public builder.
         let manual = ctx
-            .subscribe(api::topic::internal::new().motion().manual())
+            .subscribe(api::topic::internal::new(cap).motion().manual())
             .subscriber()
             .await?;
         let follow = ctx
@@ -85,7 +88,7 @@ impl Motion {
             .await?;
         let drive = ctx.publisher(api::topic::new().drive().target()).await?;
         let state = ctx
-            .publisher(api::topic::internal::new().motion().state())
+            .publisher(api::topic::internal::new(cap).motion().state())
             .await?;
 
         Ok(Self {

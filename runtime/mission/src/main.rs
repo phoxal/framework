@@ -107,17 +107,20 @@ struct Mission {
 impl Mission {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             lifecycle: MissionLifecycle::idle(),
             command: ctx
-                .subscribe(api::topic::internal::new().mission().command())
+                .subscribe(api::topic::internal::new(cap).mission().command())
                 .subscriber()
                 .await?,
             goal: ctx
-                .publisher(api::topic::internal::new().mission().goal())
+                .publisher(api::topic::internal::new(cap).mission().goal())
                 .await?,
             state: ctx
-                .publisher(api::topic::internal::new().mission().state())
+                .publisher(api::topic::internal::new(cap).mission().state())
                 .await?,
         })
     }

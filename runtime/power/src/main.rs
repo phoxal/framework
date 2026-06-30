@@ -44,15 +44,18 @@ struct Power {
 impl Power {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             latched: idle_state(None),
             executor: BalenaExecutor::from_env().map(|executor| Arc::new(executor) as _),
             commands: ctx
-                .subscribe(api::topic::internal::new().power().command())
+                .subscribe(api::topic::internal::new(cap).power().command())
                 .subscriber()
                 .await?,
             state: ctx
-                .publisher(api::topic::internal::new().power().state())
+                .publisher(api::topic::internal::new(cap).power().state())
                 .await?,
         })
     }

@@ -67,9 +67,10 @@ struct Consumer {
 impl Consumer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        let cap = ctx.owner_capability();
         Ok(Self {
             target: ctx
-                .subscribe(api::topic::internal::new().drive().target())
+                .subscribe(api::topic::internal::new(cap).drive().target())
                 .subscriber()
                 .await?,
         })

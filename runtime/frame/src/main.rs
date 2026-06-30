@@ -145,6 +145,9 @@ struct Frame {
 impl Frame {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let config = FrameConfig::from_robot(ctx.robot()?)?;
 
         let mut joints = Vec::with_capacity(config.dynamic_joints.len());
@@ -171,10 +174,10 @@ impl Frame {
             // `frame/lookup` query it serves below) -> owner (`internal`) builder;
             // joint states are CONSUMED via the public builder.
             tree: ctx
-                .publisher(api::topic::internal::new().frame().tree())
+                .publisher(api::topic::internal::new(cap).frame().tree())
                 .await?,
             static_pub: ctx
-                .publisher(api::topic::internal::new().frame().static_transforms())
+                .publisher(api::topic::internal::new(cap).frame().static_transforms())
                 .await?,
             published_static: false,
         })
@@ -220,7 +223,7 @@ impl Frame {
         Ok(())
     }
 
-    #[server_snapshot(topic = api::topic::internal::new().frame().lookup())]
+    #[server_snapshot(topic = api::topic::new().frame().lookup())]
     async fn lookup(
         state: Snapshot<FrameSnapshot>,
         request: api::frame::LookupRequest,

@@ -75,6 +75,9 @@ struct Safety {
 impl Safety {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let robot = ctx.robot()?;
         let required = required_sources(robot);
         let emergency_stop_bindings = emergency_stop_bindings(robot);
@@ -92,7 +95,7 @@ impl Safety {
         // (`internal`) builder. `battery/state`, `drive/state` and the component
         // e-stop states are CONSUMED via the public builder.
         let software_estop = ctx
-            .subscribe(api::topic::internal::new().safety().estop())
+            .subscribe(api::topic::internal::new(cap).safety().estop())
             .subscriber()
             .await?;
         let mut component_estops = Vec::with_capacity(emergency_stop_bindings.len());
@@ -109,10 +112,10 @@ impl Safety {
             );
         }
         let authorization = ctx
-            .publisher(api::topic::internal::new().safety().authorization())
+            .publisher(api::topic::internal::new(cap).safety().authorization())
             .await?;
         let state = ctx
-            .publisher(api::topic::internal::new().safety().state())
+            .publisher(api::topic::internal::new(cap).safety().state())
             .await?;
 
         Ok(Self {

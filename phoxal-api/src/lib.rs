@@ -82,15 +82,21 @@
 //! ## Owner side: `topic::internal`
 //!
 //! The PUBLIC `topic::new()...` chain above is the **client** side. The matching
-//! **owner** side lives at `api::topic::internal::new()...` (L1, plan #00): the
-//! same node tree and keys, but the leaf brands flip so the owner gets the side it
-//! must take - `api::topic::internal::new().drive().state()` is
+//! **owner** side lives at `api::topic::internal::new(cap)...` (L1 + L2, plan #00):
+//! the same node tree and keys, but the leaf brands flip so the owner gets the side
+//! it must take - `api::topic::internal::new(cap).drive().state()` is
 //! `Topic<Publish<drive::State>>` (the owner publishes its telemetry), and
-//! `api::topic::internal::new().drive().target()` is `Topic<Subscribe<drive::Target>>`
+//! `api::topic::internal::new(cap).drive().target()` is `Topic<Subscribe<drive::Target>>`
 //! (the owner reads its command input). A query owner reaches its `ServeQuery`
 //! brand the same way. The `internal` chain is the deliberate, greppable owner
 //! opt-in; a runtime acquires the topics of its OWN node through it and everything
 //! it consumes through the public chain.
+//!
+//! The `internal::new` entry requires the runner-minted owner capability
+//! ([`OwnerCap`](phoxal_bus::OwnerCap), Layer 2): a runtime obtains it from
+//! `phoxal::SetupContext::owner_capability()` and passes it in. On the documented
+//! surface, owning a topic therefore cannot happen by accident - only with a
+//! capability the runner mints.
 
 use phoxal_macros::phoxal_api_tree;
 

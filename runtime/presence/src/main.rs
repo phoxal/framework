@@ -34,14 +34,17 @@ struct Presence {
 impl Presence {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             tracker: ReadinessTracker::default(),
             heartbeats: ctx
-                .subscribe(api::topic::internal::new().presence().heartbeat())
+                .subscribe(api::topic::internal::new(cap).presence().heartbeat())
                 .subscriber()
                 .await?,
             state_pub: ctx
-                .publisher(api::topic::internal::new().presence().state())
+                .publisher(api::topic::internal::new(cap).presence().state())
                 .await?,
         })
     }

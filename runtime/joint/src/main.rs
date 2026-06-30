@@ -98,6 +98,9 @@ struct Joint {
 impl Joint {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let config = JointConfig::from_robot(ctx.robot()?)?;
 
         let mut encoders = Vec::with_capacity(config.encoders.len());
@@ -116,7 +119,7 @@ impl Joint {
                 joint_id.clone(),
                 // Joint OWNS each `joint/{id}` node's state telemetry -> owner
                 // (`internal`) builder.
-                ctx.publisher(api::topic::internal::new().joint(&joint_id).state())
+                ctx.publisher(api::topic::internal::new(cap).joint(&joint_id).state())
                     .await?,
             );
         }

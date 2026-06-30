@@ -124,6 +124,9 @@ struct Odometry {
 impl Odometry {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let config = OdometryConfig::from_robot(ctx.robot()?)?;
 
         let mut left_encoders = Vec::with_capacity(config.left.len());
@@ -135,7 +138,7 @@ impl Odometry {
             right_encoders.push(ctx.subscribe(binding.topic()).subscriber().await?);
         }
         let state = ctx
-            .publisher(api::topic::internal::new().odometry().state())
+            .publisher(api::topic::internal::new(cap).odometry().state())
             .await?;
 
         Ok(Self {

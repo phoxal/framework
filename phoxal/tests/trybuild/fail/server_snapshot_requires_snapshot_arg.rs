@@ -14,7 +14,7 @@ impl SnapshotWrongStateArg {
         Ok(Self {})
     }
 
-    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
+    #[server_snapshot(topic = api::topic::new().map().submap())]
     async fn submap(
         _state: MapState,
         _request: api::map::SubmapRequest,
