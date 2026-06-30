@@ -6,8 +6,8 @@ ABI crate (the typed bus client + contract/addressing primitives), the published
 bodies + topic builders), the published `phoxal` library crate (engine + model)
 and its `phoxal-macros` companion, plus a growing set of unpublished platform
 runtime binaries (`phoxal-runtime-<name>`) that ship as deployables.
-All workspace crates share one version; the library crates are published to
-crates.io (see [Releasing](#releasing)).
+Each crate carries its own version and is released only when it changes; the
+library crates are published to crates.io (see [Releasing](#releasing)).
 
 Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 [conventions](docs/CONVENTIONS.md), and [validation](docs/VALIDATION.md).

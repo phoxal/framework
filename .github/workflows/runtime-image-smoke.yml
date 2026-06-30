@@ -1,0 +1,86 @@
+name: runtime-image-smoke
+
+# Pre-release packaging gate (plan #01-B).
+#
+# release-plz tags + GitHub-releases each bumped runtime (git_only, NO crates.io)
+# BEFORE its GHCR image is built post-merge (release-plz.yml: release-plz-release
+# -> build-images). So a broken image-packaging path would only surface after a
+# runtime is already tagged. This job catches that on the PR instead: it builds a
+# representative runtime image and runs its in-image `emit-apis`, with NO push.
+#
+# Why one runtime is a sufficient smoke:
+#   - all 18 runtimes share Dockerfile.runtime (only the RUNTIME_NAME build-arg
+#     differs), so the packaging path is identical across them;
+#   - each runtime binary's compilation is already proven by the workspace build,
+#     and its emit-apis contract by the per-runtime `emit_apis_reports_*` unit
+#     tests, both run by ci.yml on every PR.
+# The full all-18 pre-release image gate (so a release PR cannot merge unless
+# EVERY official runtime image builds) is plan #01-C's official-set gate.
+#
+# Path-scoped: only runs when something that can affect packaging changes.
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile.runtime
+      - runtime/**
+      - phoxal/**
+      - phoxal-api/**
+      - phoxal-bus/**
+      - phoxal-macros/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/runtime-image-smoke.yml
+
+jobs:
+  smoke:
+    name: build odometry image + emit-apis (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:buildx-stable-1
+
+      - name: Build runtime image (no push, load locally)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.runtime
+          platforms: linux/amd64
+          build-args: |
+            RUNTIME_NAME=odometry
+          tags: phoxal-runtime-odometry:ci-smoke
+          push: false
+          load: true
+          cache-from: type=gha,scope=ci-smoke-odometry
+          cache-to: type=gha,mode=max,ignore-error=true,scope=ci-smoke-odometry
+
+      - name: Validate in-image emit-apis
+        run: |
+          set -euo pipefail
+          docker run --rm phoxal-runtime-odometry:ci-smoke emit-apis > emit.json
+          python3 - <<'PY'
+          import json
+
+          with open("emit.json", "r", encoding="utf-8") as fh:
+              meta = json.load(fh)
+
+          errors = []
+          if meta.get("schema") != "phoxal.emit-apis/v0":
+              errors.append(f"schema is {meta.get('schema')!r}")
+          if meta.get("api_version") != "y2026_1":
+              errors.append(f"api_version is {meta.get('api_version')!r}")
+          if meta.get("bus_abi") != "phoxal-bus/v0":
+              errors.append(f"bus_abi is {meta.get('bus_abi')!r}")
+          if (meta.get("artifact") or {}).get("id") != "odometry":
+              errors.append(f"artifact.id is {(meta.get('artifact') or {}).get('id')!r}")
+
+          if errors:
+              for err in errors:
+                  print(f"::error::in-image emit-apis: {err}")
+              raise SystemExit(1)
+          print("emit-apis smoke ok:", meta["artifact"]["id"], meta["api_version"])
+          PY

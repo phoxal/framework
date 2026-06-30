@@ -152,6 +152,20 @@ jobs:
   # build-arg, buildx per-arch, GHCR login via GITHUB_TOKEN, gha cache with
   # ignore-error, emit-apis validation + sorted upload). `manifest` stitches the
   # public multi-arch tags afterward.
+  #
+  # ORDERING NOTE: release-plz tags + GitHub-releases a runtime BEFORE this job
+  # builds its image (release-plz owns the publish step; it cannot be interleaved
+  # with the image build). That is acceptable here because:
+  #   - a runtime release is git_only (publish = false): it creates a git tag +
+  #     GitHub release + changelog, but touches NO irreversible registry state
+  #     (crates.io is libs-only and unrelated to images);
+  #   - the correctness-critical checks run BEFORE the release can merge: every
+  #     runtime's emit-apis contract is unit-tested (`emit_apis_reports_*`) and the
+  #     image-packaging path is smoke-built (runtime-image-smoke.yml) on the PR;
+  #   - build-images + manifest are idempotent (buildx push + `imagetools create`
+  #     overwrite), so a transient/registry failure after a runtime tag is fully
+  #     recovered by re-running this workflow (Actions -> Re-run failed jobs) - no
+  #     state is left corrupted, only an image temporarily missing for that tag.
   build-images:
     name: build ${{ matrix.runtime.name }} (${{ matrix.platform.short }})
     needs: [release-plz-release, parse-runtimes]
