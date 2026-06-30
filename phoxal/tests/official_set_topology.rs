@@ -487,6 +487,13 @@ fn external_pubsub_inputs() -> Vec<TopologyContract> {
         ("motion::ManualCommand", "motion/manual"),
         ("power::Command", "power/command"),
         ("safety::EmergencyStopRequest", "safety/estop"),
+        // Each participant publishes its own `command`-role heartbeat; the
+        // presence runtime subscribes them and republishes one aggregate on the
+        // `state`-role `presence/state`. The producers are external participants
+        // (see the `runtime_async_entrypoint` example), so they stand in here as a
+        // fixture input - otherwise presence's heartbeat subscribe would look like
+        // a subscriber without a publisher.
+        ("presence::Heartbeat", "presence/heartbeat"),
     ]
     .into_iter()
     .map(|(family, topic)| topology_contract("fixture/external", family, topic, "publish"))

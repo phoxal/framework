@@ -3,23 +3,29 @@
 //! Grammar. The body of a `version` is a tree of **nodes**. A node is either
 //! static (`name { … }`) or dynamic (`name(var) { … }`); it can be nested to any
 //! depth and may hold any mix of types (`struct`/`enum`), `topic` declarations,
-//! and child nodes. A topic is `topic <leaf>: pubsub <Body>;` or
-//! `topic <leaf>: query <Req> => <Resp>;` — its key and dynamism are derived from
-//! the node path, not from per-topic params. A topic whose node path contains at
-//! least one `(var)` node is dynamic; one with none is static. `extends` API
-//! inheritance is supported (and recurses the node tree).
+//! and child nodes. Every topic declares a **role**: `topic <leaf>: command
+//! <Body>;` (a control input the owner subscribes), `topic <leaf>: state <Body>;`
+//! (telemetry the owner publishes), or `topic <leaf>: query <Req> => <Resp>;`
+//! (request/response). `command` and `state` are both pub/sub on the wire and
+//! identical in public type and builder return type - the role records intent and
+//! is emitted as a `ROLE` const on each body (D63). A topic's key and dynamism are
+//! derived from the node path, not from per-topic params; a topic whose node path
+//! contains at least one `(var)` node is dynamic, one with none is static.
+//! `extends` API inheritance is supported (and recurses the node tree).
 //!
 //! ```text
 //! phoxal_api_tree! {
 //!     version y2026_1 {
 //!         drive {                                  // static node
 //!             struct Target { linear_x_mps: f32, angular_z_radps: f32 }
-//!             topic target: pubsub Target;         // key drive/target, FAMILY drive::Target
+//!             topic target: command Target;        // key drive/target, FAMILY drive::Target
+//!             struct State { /* … */ }
+//!             topic state: state State;            // owner-published telemetry
 //!         }
 //!         component(instance) {                    // literal "component" + var {instance}
 //!             motor(capability) {                  // literal "motor" + var {capability}
 //!                 enum Command { Velocity(f32), Torque(f32), Stop }
-//!                 topic command: pubsub Command;
+//!                 topic command: command Command;
 //!                 // path   api::y2026_1::component::motor::Command
 //!                 // key    component/{instance}/motor/{capability}/command
 //!                 // FAMILY component::motor::Command
@@ -30,8 +36,8 @@
 //!         // inherits every y2026_1 node/type; overrides drive::Target and adds a
 //!         // new `battery` node — inherited types are re-emitted fresh.
 //!         drive { struct Target { linear_x_mps: f32, angular_z_radps: f32, curvature: Option<f32> }
-//!                 topic target: pubsub Target; }
-//!         battery { struct State { soc: f32 } topic state: pubsub State; }
+//!                 topic target: command Target; }
+//!         battery { struct State { soc: f32 } topic state: state State; }
 //!     }
 //! }
 //! ```
@@ -67,7 +73,8 @@ mod kw {
     syn::custom_keyword!(version);
     syn::custom_keyword!(extends);
     syn::custom_keyword!(topic);
-    syn::custom_keyword!(pubsub);
+    syn::custom_keyword!(command);
+    syn::custom_keyword!(state);
     syn::custom_keyword!(query);
 }
 
@@ -120,6 +127,35 @@ impl TypeDef {
 struct TopicDef {
     leaf: Ident,
     kind: TopicKind,
+    /// The semantic role declared by the topic's role keyword (`command` /
+    /// `state` / `query`). It rides alongside `kind`: `command` and `state` both
+    /// produce a [`TopicKind::PubSub`] (identical wire shape and builder return
+    /// type), while `query` produces a [`TopicKind::Query`]. The role is recorded
+    /// (emitted as a `ROLE` const on each body) for the upcoming type-level (L1)
+    /// enforcement; it is not yet surfaced by `emit-apis` (a later increment of
+    /// plan #00) and does not change any public type or builder method this
+    /// increment.
+    role: TopicRole,
+}
+
+/// The semantic role of a topic, mirroring `phoxal_bus::TopicRole`. Parsed from
+/// the role keyword and threaded into the generated `ROLE` const.
+#[derive(Clone, Copy)]
+enum TopicRole {
+    Command,
+    State,
+    Query,
+}
+
+impl TopicRole {
+    /// The `phoxal_bus::TopicRole` variant path this role maps to.
+    fn bus_variant(self) -> TokenStream {
+        match self {
+            TopicRole::Command => quote! { ::phoxal_bus::TopicRole::Command },
+            TopicRole::State => quote! { ::phoxal_bus::TopicRole::State },
+            TopicRole::Query => quote! { ::phoxal_bus::TopicRole::Query },
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -243,21 +279,33 @@ impl Parse for TopicDef {
         input.parse::<kw::topic>()?;
         let leaf: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
-        let kind = if input.peek(kw::pubsub) {
-            input.parse::<kw::pubsub>()?;
+        // Every topic declares a role. `command`/`state` carry a single pub/sub
+        // body and differ only in role; `query` carries request/response. The
+        // role rides alongside the kind - `command` and `state` produce the same
+        // `TopicKind::PubSub`, so the public body type and builder return type are
+        // identical regardless of which the author wrote.
+        let (kind, role) = if input.peek(kw::command) {
+            input.parse::<kw::command>()?;
             let body: Ident = input.parse()?;
-            TopicKind::PubSub(body)
+            (TopicKind::PubSub(body), TopicRole::Command)
+        } else if input.peek(kw::state) {
+            input.parse::<kw::state>()?;
+            let body: Ident = input.parse()?;
+            (TopicKind::PubSub(body), TopicRole::State)
         } else if input.peek(kw::query) {
             input.parse::<kw::query>()?;
             let request: Ident = input.parse()?;
             input.parse::<Token![=>]>()?;
             let response: Ident = input.parse()?;
-            TopicKind::Query { request, response }
+            (TopicKind::Query { request, response }, TopicRole::Query)
         } else {
-            return Err(input.error("expected `pubsub <Type>` or `query <Req> => <Resp>`"));
+            return Err(input.error(
+                "expected a topic role: `command <Body>`, `state <Body>`, or \
+                 `query <Req> => <Resp>`",
+            ));
         };
         input.parse::<Token![;]>()?;
-        Ok(TopicDef { leaf, kind })
+        Ok(TopicDef { leaf, kind, role })
     }
 }
 
@@ -420,14 +468,26 @@ fn expand_node_module(
     let mut impls = TokenStream::new();
     for topic in &node.topics {
         let key = format!("{}/{}", node_key_prefix, topic.leaf);
+        let role = topic.role.bus_variant();
         match &topic.kind {
             TopicKind::PubSub(body) => {
                 let family_const = format!("{}::{}", family_path, body);
+                // The role rides as an inherent `#[doc(hidden)] pub const ROLE` on
+                // the body: additive surface that records intent for the upcoming
+                // type-level (L1) enforcement (it is not yet emitted by
+                // `emit-apis`; that enrichment is a later increment of plan #00),
+                // without touching `ContractBody` or any public type/builder
+                // method.
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = #api_supers Api;
                         const FAMILY: &'static str = #family_const;
                         const TOPIC: &'static str = #key;
+                    }
+                    impl #body {
+                        /// The topic role recorded by `phoxal_api_tree!` (D63).
+                        #[doc(hidden)]
+                        pub const ROLE: ::phoxal_bus::TopicRole = #role;
                     }
                 });
             }
@@ -444,6 +504,16 @@ fn expand_node_module(
                         type Api = #api_supers Api;
                         const FAMILY: &'static str = #resp_family;
                         const TOPIC: &'static str = #key;
+                    }
+                    impl #request {
+                        /// The topic role recorded by `phoxal_api_tree!` (D63).
+                        #[doc(hidden)]
+                        pub const ROLE: ::phoxal_bus::TopicRole = #role;
+                    }
+                    impl #response {
+                        /// The topic role recorded by `phoxal_api_tree!` (D63).
+                        #[doc(hidden)]
+                        pub const ROLE: ::phoxal_bus::TopicRole = #role;
                     }
                 });
             }
@@ -753,8 +823,8 @@ mod tests {
     #[test]
     fn extends_rejects_var_ness_flip() {
         let input = quote! {
-            version a { comp(instance) { struct S { x: u8 } topic s: pubsub S; } }
-            version b extends a { comp { struct S { x: u8, y: u8 } topic s: pubsub S; } }
+            version a { comp(instance) { struct S { x: u8 } topic s: state S; } }
+            version b extends a { comp { struct S { x: u8, y: u8 } topic s: state S; } }
         };
         let err = expand(input).expect_err("a var-ness flip across `extends` must be rejected");
         assert!(
@@ -767,9 +837,9 @@ mod tests {
     #[test]
     fn extends_accepts_matching_var_ness() {
         let input = quote! {
-            version a { comp(instance) { motor(cap) { enum C { Stop } topic command: pubsub C; } } }
+            version a { comp(instance) { motor(cap) { enum C { Stop } topic command: command C; } } }
             version b extends a {
-                comp(instance) { motor(cap) { enum C { Stop, Go } topic command: pubsub C; } }
+                comp(instance) { motor(cap) { enum C { Stop, Go } topic command: command C; } }
             }
         };
         assert!(expand(input).is_ok());

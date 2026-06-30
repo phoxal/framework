@@ -1,15 +1,17 @@
 //! `presence` - aggregate explicit runtime heartbeats.
 //!
-//! This runtime subscribes to `presence/heartbeat` and republishes a single
-//! aggregate heartbeat on the same topic under the `presence` participant id. It
-//! tracks the last-seen time and readiness of every other participant and folds
-//! them into one readiness value.
+//! Per plan #00 the heartbeat seam is split by role. Participants publish their
+//! own beacon on the `command`-role `presence/heartbeat` topic; this runtime
+//! subscribes them (its control input) and publishes one aggregate readiness on
+//! the `state`-role `presence/state` topic, which clients subscribe.
 //!
-//! Aggregation is worst-wins and fail-aware: any `Failed` participant makes the
-//! aggregate `Failed`; a participant whose last heartbeat is older than the stale
-//! threshold (3 s) counts as `Degraded`; otherwise `Degraded` beats
-//! `Initializing`/`NotStarted`, which beats `Ready`. The runtime's own heartbeat
-//! is excluded from the fold so it cannot poison its own aggregate.
+//! It tracks the last-seen time and readiness of every participant and folds
+//! them into one readiness value. Aggregation is worst-wins and fail-aware: any
+//! `Failed` participant makes the aggregate `Failed`; a participant whose last
+//! heartbeat is older than the stale threshold (3 s) counts as `Degraded`;
+//! otherwise `Degraded` beats `Initializing`/`NotStarted`, which beats `Ready`.
+//! The runtime's own id is excluded from the fold so it cannot poison its own
+//! aggregate.
 
 use std::collections::BTreeMap;
 
@@ -25,7 +27,7 @@ const STALE_NS: u64 = 3_000_000_000;
 struct Presence {
     tracker: ReadinessTracker,
     heartbeats: Subscriber<api::presence::Heartbeat>,
-    heartbeat_pub: Publisher<api::presence::Heartbeat>,
+    state_pub: Publisher<api::presence::State>,
 }
 
 #[phoxal::runtime]
@@ -38,9 +40,7 @@ impl Presence {
                 .subscribe(api::topic::new().presence().heartbeat())
                 .subscriber()
                 .await?,
-            heartbeat_pub: ctx
-                .publisher(api::topic::new().presence().heartbeat())
-                .await?,
+            state_pub: ctx.publisher(api::topic::new().presence().state()).await?,
         })
     }
 
@@ -52,14 +52,8 @@ impl Presence {
         }
 
         let readiness = self.tracker.aggregate(step.time().time_ns());
-        self.heartbeat_pub
-            .publish_at(
-                step.time(),
-                api::presence::Heartbeat {
-                    participant: PARTICIPANT.to_string(),
-                    readiness,
-                },
-            )
+        self.state_pub
+            .publish_at(step.time(), api::presence::State { readiness })
             .await?;
         Ok(())
     }
@@ -223,7 +217,7 @@ mod tests {
                 && c.direction == phoxal::runtime::Direction::Subscribe
         }));
         assert!(contracts.iter().any(|c| {
-            c.family == <api::presence::Heartbeat as ContractBody>::FAMILY
+            c.family == <api::presence::State as ContractBody>::FAMILY
                 && c.direction == phoxal::runtime::Direction::Publish
         }));
     }

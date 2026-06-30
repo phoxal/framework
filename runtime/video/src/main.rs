@@ -1,16 +1,17 @@
 //! `video` - operator preview stream lifecycle service.
 //!
 //! The y2026_1 video contract exposes a compact `video/open` query plus a
-//! per-stream event topic. This runtime enumerates the robot's camera
+//! per-stream `state` topic. This runtime enumerates the robot's camera
 //! capabilities, answers `open` requests (resolving the requested capability and
 //! validating dimensions against the native sensor size), subscribes to the
-//! matching raw camera frames, and publishes `video/stream/<id>/event` events.
+//! matching raw camera frames, and publishes `video/stream/<id>/state` snapshots.
 //!
-//! The default backend is intentionally event-only: it emits `Started`,
-//! `KeyFrame` (one per received frame while the stream is active), and `Stopped`
-//! (on shutdown) without linking a codec or encoding any pixels. A real H.264
-//! backend belongs behind the optional `h264` feature in a follow-up, not in the
-//! default dependency set.
+//! The default backend is intentionally pixel-free: it publishes the stream's
+//! lifecycle `phase` (`Starting` → `Active` → `Stopped`) and a monotonic
+//! `frames_seen` counter (incremented per received source frame while active)
+//! without linking a codec or encoding any pixels. A real H.264 backend belongs
+//! behind the optional `h264` feature in a follow-up, not in the default
+//! dependency set.
 
 use anyhow::{Result, anyhow};
 use phoxal::api::y2026_1 as api;
@@ -48,10 +49,10 @@ impl VideoSource {
             .frame()
     }
 
-    fn event_topic(
+    fn state_topic(
         &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::video::stream::StreamEvent>> {
-        api::topic::new().video().stream(&self.stream_id).event()
+    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::video::stream::StreamState>> {
+        api::topic::new().video().stream(&self.stream_id).state()
     }
 
     fn capability_key(&self) -> String {
@@ -59,18 +60,36 @@ impl VideoSource {
     }
 }
 
+use api::video::stream::{StreamPhase, StreamState};
+
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "video", api = y2026_1)]
 struct Video {
     // Runtime-private state.
     sources: Vec<VideoSource>,
     active: Vec<bool>,
-    started: Vec<bool>,
-    last_frame_ns: Vec<Option<u64>>,
+    phase: Vec<StreamPhase>,
+    frames_seen: Vec<u64>,
     last_time: LogicalTime,
     // Handles.
     cameras: Vec<Subscriber<api::component::camera::Frame>>,
-    events: Vec<Publisher<api::video::stream::StreamEvent>>,
+    states: Vec<Publisher<StreamState>>,
+}
+
+impl Video {
+    /// Publish the current `StreamState` snapshot for `index`.
+    async fn publish_state(&mut self, index: usize, time: LogicalTime) -> Result<()> {
+        self.states[index]
+            .publish_at(
+                time,
+                StreamState {
+                    phase: self.phase[index],
+                    frames_seen: self.frames_seen[index],
+                },
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 #[phoxal::runtime]
@@ -80,19 +99,19 @@ impl Video {
         let sources = build_video_sources(ctx.robot()?)?;
 
         let mut cameras = Vec::with_capacity(sources.len());
-        let mut events = Vec::with_capacity(sources.len());
+        let mut states = Vec::with_capacity(sources.len());
         for source in &sources {
             cameras.push(ctx.subscribe(source.camera_topic()).subscriber().await?);
-            events.push(ctx.publisher(source.event_topic()).await?);
+            states.push(ctx.publisher(source.state_topic()).await?);
         }
 
         Ok(Self {
             active: vec![false; sources.len()],
-            started: vec![false; sources.len()],
-            last_frame_ns: vec![None; sources.len()],
+            phase: vec![StreamPhase::Stopped; sources.len()],
+            frames_seen: vec![0; sources.len()],
             last_time: LogicalTime::new(0, 0),
             cameras,
-            events,
+            states,
             sources,
         })
     }
@@ -101,16 +120,19 @@ impl Video {
     async fn step(&mut self, step: StepContext) -> Result<()> {
         self.last_time = step.time();
 
+        // Bring newly-opened streams up: a still-`Stopped` active stream goes
+        // `Starting` then `Active`, publishing a snapshot at each transition.
         for index in 0..self.sources.len() {
-            if self.active[index] && !self.started[index] {
-                self.events[index]
-                    .publish_at(step.time(), api::video::stream::StreamEvent::Started)
-                    .await?;
-                self.started[index] = true;
+            if self.active[index] && self.phase[index] == StreamPhase::Stopped {
+                self.phase[index] = StreamPhase::Starting;
+                self.publish_state(index, step.time()).await?;
+                self.phase[index] = StreamPhase::Active;
+                self.publish_state(index, step.time()).await?;
             }
         }
 
         for index in 0..self.cameras.len() {
+            let mut saw_frame = false;
             while let Some(received) = self.cameras[index].try_recv() {
                 let _raw_frame_identity = (
                     received.body.width,
@@ -118,13 +140,14 @@ impl Video {
                     received.body.encoding,
                     received.body.measured_at_ns,
                 );
-                self.last_frame_ns[index] = Some(received.metadata.produced_at_ns);
                 if !self.active[index] {
                     continue;
                 }
-                self.events[index]
-                    .publish_at(step.time(), api::video::stream::StreamEvent::KeyFrame)
-                    .await?;
+                self.frames_seen[index] = self.frames_seen[index].saturating_add(1);
+                saw_frame = true;
+            }
+            if saw_frame {
+                self.publish_state(index, step.time()).await?;
             }
         }
 
@@ -136,24 +159,23 @@ impl Video {
         &mut self,
         request: api::video::OpenRequest,
     ) -> ServerResult<api::video::OpenResponse> {
-        open_stream(&self.sources, &mut self.active, &mut self.started, request)
+        open_stream(
+            &self.sources,
+            &mut self.active,
+            &mut self.phase,
+            &mut self.frames_seen,
+            request,
+        )
     }
 
     #[shutdown]
     async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
-        for ((active, started), publisher) in self
-            .active
-            .iter_mut()
-            .zip(&mut self.started)
-            .zip(&self.events)
-        {
-            if *active || *started {
-                let _ = publisher
-                    .publish_at(self.last_time, api::video::stream::StreamEvent::Stopped)
-                    .await;
+        for index in 0..self.sources.len() {
+            if self.active[index] || self.phase[index] != StreamPhase::Stopped {
+                self.phase[index] = StreamPhase::Stopped;
+                let _ = self.publish_state(index, self.last_time).await;
             }
-            *active = false;
-            *started = false;
+            self.active[index] = false;
         }
         Ok(())
     }
@@ -182,12 +204,16 @@ fn build_video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {
 fn open_stream(
     sources: &[VideoSource],
     active: &mut [bool],
-    started: &mut [bool],
+    phase: &mut [StreamPhase],
+    frames_seen: &mut [u64],
     request: api::video::OpenRequest,
 ) -> ServerResult<api::video::OpenResponse> {
     let index = resolve_open(&request, sources)?;
+    // (Re)opening a stream restarts its lifecycle: the next step republishes the
+    // `Starting` → `Active` transition from a fresh frame count.
     if !active[index] {
-        started[index] = false;
+        phase[index] = StreamPhase::Stopped;
+        frames_seen[index] = 0;
     }
     active[index] = true;
     Ok(api::video::OpenResponse {
@@ -290,8 +316,8 @@ mod tests {
             "component/front_camera/camera/rgb/frame"
         );
         assert_eq!(
-            rgb.event_topic().key(),
-            "video/stream/front_camera_rgb/event"
+            rgb.state_topic().key(),
+            "video/stream/front_camera_rgb/state"
         );
     }
 
@@ -299,19 +325,22 @@ mod tests {
     fn open_stream_activates_matching_source_and_returns_stream_id() {
         let sources = vec![source()];
         let mut active = vec![false];
-        let mut started = vec![false];
+        let mut phase = vec![StreamPhase::Stopped];
+        let mut frames_seen = vec![0];
 
         let response = open_stream(
             &sources,
             &mut active,
-            &mut started,
+            &mut phase,
+            &mut frames_seen,
             request("front_camera.rgb"),
         )
         .unwrap();
 
         assert_eq!(response.stream_id, "front_camera_rgb");
         assert_eq!(active, vec![true]);
-        assert_eq!(started, vec![false]);
+        assert_eq!(phase, vec![StreamPhase::Stopped]);
+        assert_eq!(frames_seen, vec![0]);
     }
 
     #[test]
@@ -347,7 +376,7 @@ mod tests {
 
         let contracts = value["required_contracts"].as_array().unwrap();
         assert_contract::<api::component::camera::Frame>(contracts, "subscribe");
-        assert_contract::<api::video::stream::StreamEvent>(contracts, "publish");
+        assert_contract::<api::video::stream::StreamState>(contracts, "publish");
         assert_contract::<api::video::OpenRequest>(contracts, "server_request");
         assert_contract::<api::video::OpenResponse>(contracts, "server_response");
     }
