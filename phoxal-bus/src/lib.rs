@@ -28,7 +28,7 @@ pub mod topic;
 
 pub use abi::{BUS_ABI, BusAbi, CodecId, encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
-pub use contract::{ApiVersion, ContractBody};
+pub use contract::{ApiVersion, ContractBody, TopicRole};
 pub use error::{BusError, Result};
 pub use handle::{DEFAULT_QUERY_TIMEOUT, Latest, Publisher, Querier, Received, Subscriber};
 pub use metadata::{BusMetadata, Source};

@@ -23,6 +23,42 @@ pub trait ApiVersion: 'static {
     const ID: &'static str;
 }
 
+/// The semantic role a topic plays in its owning service's contract.
+///
+/// Every topic in a [`phoxal_api_tree!`] declares one of these (D63, plan #00).
+/// The role records *intent*, separate from the wire shape: a `Command` and a
+/// `State` topic are both pub/sub on the wire, but the owner subscribes a
+/// `Command` (it is the service's control input) and publishes a `State` (it is
+/// the service's telemetry output). `Query` is the request/response role.
+///
+/// This increment only *records* the role - it rides alongside each generated
+/// contract body as a `ROLE` const, ready for the upcoming type-level (L1)
+/// enforcement. It is not yet emitted by `emit-apis` (that enrichment is a later
+/// increment of plan #00), nor does it yet brand the typed handles by role.
+///
+/// [`phoxal_api_tree!`]: https://docs.rs/phoxal
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TopicRole {
+    /// A control input the owning service subscribes (e.g. `drive/target`).
+    Command,
+    /// A telemetry/output the owning service publishes (e.g. `drive/state`).
+    State,
+    /// A request/response topic the owning service answers (e.g. `map/submap`).
+    Query,
+}
+
+impl TopicRole {
+    /// The lowercase grammar keyword for this role (`"command"` / `"state"` /
+    /// `"query"`), matching how it is written in `phoxal_api_tree!`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            TopicRole::Command => "command",
+            TopicRole::State => "state",
+            TopicRole::Query => "query",
+        }
+    }
+}
+
 /// A version-local wire body: a plain serde type bound to exactly one
 /// [`ApiVersion`] and one contract family/topic (D61).
 ///

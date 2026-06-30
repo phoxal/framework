@@ -127,8 +127,8 @@ phoxal_api_tree! {
                 stop_reason: Option<StopReason>,
             }
 
-            topic target: pubsub Target;
-            topic state: pubsub State;
+            topic target: command Target;
+            topic state: state State;
         }
 
         battery {
@@ -139,7 +139,7 @@ phoxal_api_tree! {
                 charge_ratio: f32,
             }
 
-            topic state: pubsub State;
+            topic state: state State;
         }
 
         safety {
@@ -212,9 +212,9 @@ phoxal_api_tree! {
                 engaged: bool,
             }
 
-            topic authorization: pubsub SafetyAuthorization;
-            topic state: pubsub Status;
-            topic estop: pubsub EmergencyStopRequest;
+            topic authorization: state SafetyAuthorization;
+            topic state: state Status;
+            topic estop: command EmergencyStopRequest;
         }
 
         mission {
@@ -250,9 +250,9 @@ phoxal_api_tree! {
                 detail: Option<String>,
             }
 
-            topic command: pubsub Command;
-            topic goal: pubsub Goal;
-            topic state: pubsub State;
+            topic command: command Command;
+            topic goal: state Goal;
+            topic state: state State;
         }
 
         joint(joint) {
@@ -264,7 +264,7 @@ phoxal_api_tree! {
                 effort_nm: Option<f64>,
             }
 
-            topic state: pubsub JointState;
+            topic state: state JointState;
         }
 
         frame {
@@ -299,8 +299,8 @@ phoxal_api_tree! {
                 transform: Option<FrameTransform>,
             }
 
-            topic tree: pubsub Tree;
-            topic static_transforms: pubsub StaticTransforms;
+            topic tree: state Tree;
+            topic static_transforms: state StaticTransforms;
             topic lookup: query LookupRequest => LookupResponse;
         }
 
@@ -342,8 +342,8 @@ phoxal_api_tree! {
                 detail: Option<String>,
             }
 
-            topic command: pubsub Command;
-            topic state: pubsub State;
+            topic command: command Command;
+            topic state: state State;
         }
 
         motion {
@@ -401,8 +401,8 @@ phoxal_api_tree! {
                 reason: Option<MotionReason>,
             }
 
-            topic manual: pubsub ManualCommand;
-            topic state: pubsub State;
+            topic manual: command ManualCommand;
+            topic state: state State;
         }
 
         plan {
@@ -445,8 +445,8 @@ phoxal_api_tree! {
                 refusal: Option<Refusal>,
             }
 
-            topic path: pubsub Path;
-            topic state: pubsub State;
+            topic path: state Path;
+            topic state: state State;
         }
 
         follow {
@@ -466,8 +466,8 @@ phoxal_api_tree! {
                 finished: bool,
             }
 
-            topic target: pubsub Target;
-            topic state: pubsub State;
+            topic target: state Target;
+            topic state: state State;
         }
 
         explore {
@@ -491,8 +491,8 @@ phoxal_api_tree! {
                 selected: Option<Frontier>,
             }
 
-            topic frontiers: pubsub Frontiers;
-            topic state: pubsub State;
+            topic frontiers: state Frontiers;
+            topic state: state State;
         }
 
         perception {
@@ -517,8 +517,8 @@ phoxal_api_tree! {
                 detector: String,
             }
 
-            topic detections: pubsub Detections;
-            topic state: pubsub State;
+            topic detections: state Detections;
+            topic state: state State;
         }
 
         video {
@@ -537,15 +537,24 @@ phoxal_api_tree! {
             topic open: query OpenRequest => OpenResponse;
 
             stream(stream) {
-                /// A lifecycle event for one open video stream.
+                /// Where one open video stream is in its lifecycle.
                 #[derive(Copy, Eq)]
-                enum StreamEvent {
-                    Started,
-                    KeyFrame,
+                #[serde(rename_all = "snake_case")]
+                enum StreamPhase {
+                    Starting,
+                    Active,
                     Stopped,
                 }
 
-                topic event: pubsub StreamEvent;
+                /// The published state of one video stream: its lifecycle phase
+                /// and the number of source frames seen so far. The video runtime
+                /// publishes it per stream; clients subscribe, hence `state`.
+                struct StreamState {
+                    phase: StreamPhase,
+                    frames_seen: u64,
+                }
+
+                topic state: state StreamState;
             }
         }
 
@@ -577,10 +586,10 @@ phoxal_api_tree! {
                 detail: Option<String>,
             }
 
-            topic clock: pubsub Clock;
-            topic control: pubsub Control;
-            topic robot_pose: pubsub RobotPose;
-            topic contact: pubsub Contact;
+            topic clock: state Clock;
+            topic control: command Control;
+            topic robot_pose: state RobotPose;
+            topic contact: state Contact;
         }
 
         // Per-instance component capabilities (D17/D38: framework-runtime / driver
@@ -598,7 +607,7 @@ phoxal_api_tree! {
                     Stop,
                 }
 
-                topic command: pubsub Command;
+                topic command: command Command;
             }
 
             encoder(capability) {
@@ -608,7 +617,7 @@ phoxal_api_tree! {
                     velocity_radps: f32,
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             accelerometer(capability) {
@@ -617,7 +626,7 @@ phoxal_api_tree! {
                     linear_acceleration: [f32; 3],
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             gyroscope(capability) {
@@ -626,7 +635,7 @@ phoxal_api_tree! {
                     angular_velocity: [f32; 3],
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             magnetometer(capability) {
@@ -635,7 +644,7 @@ phoxal_api_tree! {
                     magnetic_field: [f32; 3],
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             imu(capability) {
@@ -665,7 +674,7 @@ phoxal_api_tree! {
                     bias: Option<Bias>,
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             range(capability) {
@@ -697,7 +706,7 @@ phoxal_api_tree! {
                     health: SensorHealth,
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             gnss(capability) {
@@ -709,7 +718,7 @@ phoxal_api_tree! {
                     position_covariance: [f64; 9],
                 }
 
-                topic sample: pubsub Sample;
+                topic sample: state Sample;
             }
 
             camera(capability) {
@@ -762,7 +771,7 @@ phoxal_api_tree! {
                     data: Vec<u8>,
                 }
 
-                topic frame: pubsub Frame;
+                topic frame: state Frame;
             }
 
             depth(capability) {
@@ -818,7 +827,7 @@ phoxal_api_tree! {
                     calibration: Option<CalibrationIdentity>,
                 }
 
-                topic frame: pubsub Frame;
+                topic frame: state Frame;
             }
 
             lidar(capability) {
@@ -871,7 +880,7 @@ phoxal_api_tree! {
                     Points(Points),
                 }
 
-                topic scan: pubsub Scan;
+                topic scan: state Scan;
             }
 
             mmwave(capability) {
@@ -888,7 +897,7 @@ phoxal_api_tree! {
                     detections: Vec<Detection>,
                 }
 
-                topic scan: pubsub Scan;
+                topic scan: state Scan;
             }
 
             microphone(capability) {
@@ -897,7 +906,7 @@ phoxal_api_tree! {
                     data: Vec<u8>,
                 }
 
-                topic frame: pubsub Frame;
+                topic frame: state Frame;
             }
 
             led(capability) {
@@ -908,7 +917,7 @@ phoxal_api_tree! {
                     Off,
                 }
 
-                topic command: pubsub Command;
+                topic command: command Command;
             }
 
             emergency_stop(capability) {
@@ -918,7 +927,7 @@ phoxal_api_tree! {
                     engaged: bool,
                 }
 
-                topic state: pubsub State;
+                topic state: state State;
             }
         }
 
@@ -932,7 +941,7 @@ phoxal_api_tree! {
                 angular_z_radps: f32,
             }
 
-            topic state: pubsub State;
+            topic state: state State;
         }
 
         localize {
@@ -944,7 +953,7 @@ phoxal_api_tree! {
                 confidence: f32,
             }
 
-            topic state: pubsub LocalizationState;
+            topic state: state LocalizationState;
         }
 
         presence {
@@ -957,12 +966,22 @@ phoxal_api_tree! {
                 Failed,
             }
 
+            /// A single participant's liveness beacon. Participants publish their
+            /// own heartbeat; the presence runtime subscribes them as its control
+            /// input, hence the `command` role.
             struct Heartbeat {
                 participant: String,
                 readiness: Readiness,
             }
 
-            topic heartbeat: pubsub Heartbeat;
+            /// The presence runtime's aggregate readiness across all participants.
+            /// Presence publishes it; clients subscribe, hence the `state` role.
+            struct State {
+                readiness: Readiness,
+            }
+
+            topic heartbeat: command Heartbeat;
+            topic state: state State;
         }
 
         map {
@@ -988,7 +1007,7 @@ phoxal_api_tree! {
                 cells: Vec<u8>,
             }
 
-            topic revision: pubsub Revision;
+            topic revision: state Revision;
             topic submap: query SubmapRequest => SubmapResponse;
         }
 

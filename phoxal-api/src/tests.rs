@@ -4,6 +4,7 @@
 
 use crate::y2026_1 as api;
 use crate::{ApiVersion, ContractBody};
+use phoxal_bus::TopicRole;
 
 #[test]
 fn api_version_id_is_the_dated_module_name() {
@@ -41,17 +42,40 @@ fn contract_body_consts_are_family_and_topic() {
         "joint::JointState"
     );
     assert_eq!(
-        <api::video::stream::StreamEvent as ContractBody>::TOPIC,
-        "video/stream/{stream}/event"
+        <api::video::stream::StreamState as ContractBody>::TOPIC,
+        "video/stream/{stream}/state"
     );
     assert_eq!(
-        <api::video::stream::StreamEvent as ContractBody>::FAMILY,
-        "video::stream::StreamEvent"
+        <api::video::stream::StreamState as ContractBody>::FAMILY,
+        "video::stream::StreamState"
     );
     assert_eq!(
         <api::localize::LocalizationState as ContractBody>::TOPIC,
         "localize/state"
     );
+}
+
+#[test]
+fn generated_role_const_matches_each_topic_role() {
+    // The `ROLE` const is an inherent const generated per body by
+    // `phoxal_api_tree!`. Assert representative topics across all three roles so a
+    // generator bug that emitted an all-`State` (or all-`Command`) tree is caught
+    // by `cargo test`, without relying on any external script.
+
+    // Command: a control input the owning service subscribes.
+    assert_eq!(api::drive::Target::ROLE, TopicRole::Command);
+    assert_eq!(api::power::Command::ROLE, TopicRole::Command);
+
+    // State: telemetry the owning service publishes.
+    assert_eq!(api::drive::State::ROLE, TopicRole::State);
+    assert_eq!(api::battery::State::ROLE, TopicRole::State);
+
+    // Query: both the request and the response body of a request/response topic
+    // carry the `Query` role.
+    assert_eq!(api::frame::LookupRequest::ROLE, TopicRole::Query);
+    assert_eq!(api::frame::LookupResponse::ROLE, TopicRole::Query);
+    assert_eq!(api::map::SubmapRequest::ROLE, TopicRole::Query);
+    assert_eq!(api::map::SubmapResponse::ROLE, TopicRole::Query);
 }
 
 #[test]
@@ -187,7 +211,10 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
         }],
         stamp_ns: Some(7),
     });
-    round_trip(&api::video::stream::StreamEvent::KeyFrame);
+    round_trip(&api::video::stream::StreamState {
+        phase: api::video::stream::StreamPhase::Active,
+        frames_seen: 12,
+    });
     round_trip(&api::simulation::RobotPose {
         x_m: 1.0,
         y_m: 2.0,
@@ -298,8 +325,8 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         "joint/elbow/state"
     );
     assert_eq!(
-        api::topic::new().video().stream("front").event().key(),
-        "video/stream/front/event"
+        api::topic::new().video().stream("front").state().key(),
+        "video/stream/front/state"
     );
 
     let topic = api::topic::new()
@@ -492,19 +519,19 @@ mod multi_level {
         version va {
             sensor {
                 struct Reading { value_a: f32 }
-                topic reading: pubsub Reading;
+                topic reading: state Reading;
             }
         }
         version vb extends va {
             beacon {
                 struct Ping { seq: u64 }
-                topic ping: pubsub Ping;
+                topic ping: state Ping;
             }
         }
         version vc extends vb {
             sensor {
                 struct Reading { value_a: f32, value_b: f32 }
-                topic reading: pubsub Reading;
+                topic reading: state Reading;
             }
         }
     }
@@ -545,11 +572,11 @@ mod extends_nested {
             component(instance) {
                 motor(capability) {
                     enum Command { Velocity(f32), Stop }
-                    topic command: pubsub Command;
+                    topic command: command Command;
                 }
                 imu(capability) {
                     struct Sample { angular_velocity_radps: [f32; 3] }
-                    topic sample: pubsub Sample;
+                    topic sample: state Sample;
                 }
             }
         }
@@ -559,13 +586,13 @@ mod extends_nested {
             component(instance) {
                 motor(capability) {
                     enum Command { Velocity(f32), Torque(f32), Stop }
-                    topic command: pubsub Command;
+                    topic command: command Command;
                 }
             }
             // A brand-new top-level node added in the child version.
             battery {
                 struct State { soc: f32 }
-                topic state: pubsub State;
+                topic state: state State;
             }
         }
     }
@@ -637,7 +664,7 @@ mod reused_var_name {
             outer(id) {
                 inner(id) {
                     struct Body { x: u8 }
-                    topic event: pubsub Body;
+                    topic event: state Body;
                 }
             }
         }

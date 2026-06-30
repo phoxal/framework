@@ -51,7 +51,11 @@ use proc_macro::TokenStream;
 /// - `struct …` / `enum …` - a version-local wire body. Macro-declared structs
 ///   get public fields; every body gets the standard derive set (`Clone`,
 ///   `Debug`, `PartialEq`, `serde::Serialize`/`Deserialize`).
-/// - `topic <leaf>: pubsub <Body>;` - a pub/sub topic carrying `Body`.
+/// - `topic <leaf>: command <Body>;` - a pub/sub topic the owning service
+///   subscribes (a control input).
+/// - `topic <leaf>: state <Body>;` - a pub/sub topic the owning service publishes
+///   (telemetry/output). Identical wire shape and builder return type to
+///   `command`; only the recorded `ROLE` differs.
 /// - `topic <leaf>: query <Req> => <Resp>;` - a request/response topic.
 /// - a child node (`name { … }` / `name(var) { … }`).
 ///
