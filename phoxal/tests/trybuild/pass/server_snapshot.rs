@@ -15,7 +15,7 @@ impl MapPass {
         Ok(Self {})
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
     async fn submap(
         _state: Snapshot<MapState>,
         _request: api::map::SubmapRequest,

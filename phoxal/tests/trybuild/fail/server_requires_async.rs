@@ -12,7 +12,7 @@ impl ServerSync {
         Ok(Self {})
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(topic = api::topic::internal::new().asset().get())]
     fn get(&mut self, _request: api::asset::GetRequest) -> ServerResult<api::asset::GetResponse> {
         Ok(api::asset::GetResponse::Missing)
     }

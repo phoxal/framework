@@ -48,10 +48,12 @@ impl Power {
             latched: idle_state(None),
             executor: BalenaExecutor::from_env().map(|executor| Arc::new(executor) as _),
             commands: ctx
-                .subscribe(api::topic::new().power().command())
+                .subscribe(api::topic::internal::new().power().command())
                 .subscriber()
                 .await?,
-            state: ctx.publisher(api::topic::new().power().state()).await?,
+            state: ctx
+                .publisher(api::topic::internal::new().power().state())
+                .await?,
         })
     }
 

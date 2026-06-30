@@ -35,7 +35,7 @@ pub use metadata::{BusMetadata, Source};
 pub use query::{QueryCode, QueryError, QueryFailure, ServerResult};
 pub use server::{IncomingQuery, ServerQueryable};
 pub use session::{Bus, BusConfig, BusHealth};
-pub use topic::{PubSub, Query, Topic, TopicKind, WildcardPublish};
+pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};
 
 /// Logical robot time: an epoch + a nanosecond timestamp in the clock's domain.
 ///

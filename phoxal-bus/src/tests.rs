@@ -25,8 +25,8 @@ use crate::handle::decode_sample;
 use crate::metadata::{BusMetadata, Source};
 use crate::topic::Topic;
 use crate::{
-    BUS_ABI, Bus, BusConfig, BusError, Latest, LogicalTime, PubSub, Publisher, Querier, Query,
-    QueryCode, QueryError, QueryFailure,
+    AskQuery, BUS_ABI, Bus, BusConfig, BusError, Latest, LogicalTime, Publish, Publisher, Querier,
+    QueryCode, QueryError, QueryFailure, Subscribe,
 };
 
 // A hand-written API version + contract body, standing in for the macro-generated
@@ -321,10 +321,11 @@ async fn key_root_is_namespace_robots_robot_id() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_publisher_to_latest_round_trip() {
     let bus = Bus::open(BusConfig::in_process("dev", "rt")).await.unwrap();
-    let topic = Topic::<PubSub<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
 
-    let publisher = Publisher::<Target>::new(bus.clone(), &topic).unwrap();
-    let latest = Latest::<Target>::new(&bus, &topic).await.unwrap();
+    let publisher = Publisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+    let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
 
     publisher
         .publish_at(
@@ -358,7 +359,7 @@ async fn publish_at_reports_closed_bus() {
     let bus = Bus::open(BusConfig::in_process("dev", "closed"))
         .await
         .unwrap();
-    let topic = Topic::<PubSub<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
     let publisher = Publisher::<Target>::new(bus.clone(), &topic).unwrap();
     bus.close().await.unwrap();
 
@@ -389,7 +390,7 @@ async fn live_query_timeout_maps_to_deadline_exceeded() {
     });
 
     let topic =
-        Topic::<Query<GetRequest, GetResponse>>::new_static(<GetRequest as ContractBody>::TOPIC);
+        Topic::<AskQuery<GetRequest, GetResponse>>::new_static(<GetRequest as ContractBody>::TOPIC);
     let querier =
         Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_millis(20))
             .unwrap();
@@ -500,7 +501,7 @@ async fn live_query_round_trip_ok_then_error() {
     });
 
     let topic =
-        Topic::<Query<GetRequest, GetResponse>>::new_static(<GetRequest as ContractBody>::TOPIC);
+        Topic::<AskQuery<GetRequest, GetResponse>>::new_static(<GetRequest as ContractBody>::TOPIC);
     let querier =
         Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
             .unwrap();

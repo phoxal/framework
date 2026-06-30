@@ -79,8 +79,14 @@ impl Follow {
             .subscribe(api::topic::new().localize().state())
             .subscriber()
             .await?;
-        let target = ctx.publisher(api::topic::new().follow().target()).await?;
-        let state = ctx.publisher(api::topic::new().follow().state()).await?;
+        // Follow OWNS the `follow` node (its target + state telemetry) -> owner
+        // (`internal`) builder; everything above is CONSUMED via the public builder.
+        let target = ctx
+            .publisher(api::topic::internal::new().follow().target())
+            .await?;
+        let state = ctx
+            .publisher(api::topic::internal::new().follow().state())
+            .await?;
 
         Ok(Self {
             last_path: None,

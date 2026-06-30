@@ -34,7 +34,9 @@ impl Localize {
             .subscribe(api::topic::new().odometry().state())
             .subscriber()
             .await?;
-        let state = ctx.publisher(api::topic::new().localize().state()).await?;
+        let state = ctx
+            .publisher(api::topic::internal::new().localize().state())
+            .await?;
 
         Ok(Self {
             last_odometry: None,

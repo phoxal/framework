@@ -110,11 +110,15 @@ impl Mission {
         Ok(Self {
             lifecycle: MissionLifecycle::idle(),
             command: ctx
-                .subscribe(api::topic::new().mission().command())
+                .subscribe(api::topic::internal::new().mission().command())
                 .subscriber()
                 .await?,
-            goal: ctx.publisher(api::topic::new().mission().goal()).await?,
-            state: ctx.publisher(api::topic::new().mission().state()).await?,
+            goal: ctx
+                .publisher(api::topic::internal::new().mission().goal())
+                .await?,
+            state: ctx
+                .publisher(api::topic::internal::new().mission().state())
+                .await?,
         })
     }
 

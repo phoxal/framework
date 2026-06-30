@@ -40,19 +40,26 @@ impl VideoSource {
         }
     }
 
+    /// Video CONSUMES camera frames (the camera driver owns/publishes them), so
+    /// this is the client `Subscribe` side from the public builder.
     fn camera_topic(
         &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::camera::Frame>> {
+    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
         api::topic::new()
             .component(&self.capability.component_id)
             .camera(&self.capability.capability_id)
             .frame()
     }
 
+    /// Video OWNS each `video/stream/{id}` node's state telemetry, so this is the
+    /// owner `Publish` side from the `internal` builder.
     fn state_topic(
         &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::video::stream::StreamState>> {
-        api::topic::new().video().stream(&self.stream_id).state()
+    ) -> phoxal::bus::Topic<phoxal::bus::Publish<api::video::stream::StreamState>> {
+        api::topic::internal::new()
+            .video()
+            .stream(&self.stream_id)
+            .state()
     }
 
     fn capability_key(&self) -> String {
@@ -154,7 +161,7 @@ impl Video {
         Ok(())
     }
 
-    #[server(topic = api::topic::new().video().open())]
+    #[server(topic = api::topic::internal::new().video().open())]
     async fn open(
         &mut self,
         request: api::video::OpenRequest,

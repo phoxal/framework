@@ -6,9 +6,12 @@
 //! and child nodes. Every topic declares a **role**: `topic <leaf>: command
 //! <Body>;` (a control input the owner subscribes), `topic <leaf>: state <Body>;`
 //! (telemetry the owner publishes), or `topic <leaf>: query <Req> => <Resp>;`
-//! (request/response). `command` and `state` are both pub/sub on the wire and
-//! identical in public type and builder return type - the role records intent and
-//! is emitted as a `ROLE` const on each body (D63). A topic's key and dynamism are
+//! (request/response). `command` and `state` are both pub/sub on the wire; the
+//! role drives the side-branded builders (L1): the public client builder
+//! (`api::topic::new()...`) and the owner builder (`api::topic::internal::new()...`)
+//! return side-branded topics (`Publish`/`Subscribe`/`AskQuery`/`ServeQuery`), so
+//! taking the wrong side does not compile. The role is also emitted as a `ROLE`
+//! const on each body (D63). A topic's key and dynamism are
 //! derived from the node path, not from per-topic params; a topic whose node path
 //! contains at least one `(var)` node is dynamic, one with none is static.
 //! `extends` API inheritance is supported (and recurses the node tree).
@@ -128,13 +131,13 @@ struct TopicDef {
     leaf: Ident,
     kind: TopicKind,
     /// The semantic role declared by the topic's role keyword (`command` /
-    /// `state` / `query`). It rides alongside `kind`: `command` and `state` both
-    /// produce a [`TopicKind::PubSub`] (identical wire shape and builder return
-    /// type), while `query` produces a [`TopicKind::Query`]. The role is recorded
-    /// (emitted as a `ROLE` const on each body) for the upcoming type-level (L1)
-    /// enforcement; it is not yet surfaced by `emit-apis` (a later increment of
-    /// plan #00) and does not change any public type or builder method this
-    /// increment.
+    /// `state` / `query`). `command` and `state` both produce a [`TopicKind::PubSub`]
+    /// on the wire, while `query` produces a [`TopicKind::Query`]. The role selects
+    /// the SIDE BRAND in the generated builders (L1): per (role, side) a leaf
+    /// returns `Publish` / `Subscribe` / `AskQuery` / `ServeQuery`, so the public
+    /// (client) and `internal` (owner) builders return different branded topics.
+    /// The role is also emitted as a `ROLE` const on each body; it is not yet
+    /// surfaced by `emit-apis` (a later increment of plan #00).
     role: TopicRole,
 }
 
@@ -280,10 +283,10 @@ impl Parse for TopicDef {
         let leaf: Ident = input.parse()?;
         input.parse::<Token![:]>()?;
         // Every topic declares a role. `command`/`state` carry a single pub/sub
-        // body and differ only in role; `query` carries request/response. The
-        // role rides alongside the kind - `command` and `state` produce the same
-        // `TopicKind::PubSub`, so the public body type and builder return type are
-        // identical regardless of which the author wrote.
+        // body and differ by role; `query` carries request/response. The role
+        // rides alongside the kind and selects the side brand in the generated
+        // builders (L1): a `command` leaf is `Publish` on the public builder and
+        // `Subscribe` on `internal`; a `state` leaf is the reverse.
         let (kind, role) = if input.peek(kw::command) {
             input.parse::<kw::command>()?;
             let body: Ident = input.parse()?;
@@ -473,11 +476,10 @@ fn expand_node_module(
             TopicKind::PubSub(body) => {
                 let family_const = format!("{}::{}", family_path, body);
                 // The role rides as an inherent `#[doc(hidden)] pub const ROLE` on
-                // the body: additive surface that records intent for the upcoming
-                // type-level (L1) enforcement (it is not yet emitted by
-                // `emit-apis`; that enrichment is a later increment of plan #00),
-                // without touching `ContractBody` or any public type/builder
-                // method.
+                // the body: additive surface that does not touch `ContractBody`.
+                // The side-branded builders are what enforce owner/client (L1);
+                // the role is not yet emitted by `emit-apis` (a later increment of
+                // plan #00).
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = #api_supers Api;
@@ -570,34 +572,85 @@ fn join_seg(prefix: &str, sep: &str, seg: &str) -> String {
     }
 }
 
-/// Emit the api-local `topic` builder module: a `Root` whose methods enter each
-/// top-level node's builder, plus a nested builder module per node mirroring the
-/// node tree. A dynamic node's method takes its variable as `impl Display` and
-/// carries it forward; a leaf method formats the final key from the carried vars.
+/// Which side a generated builder tree brands its leaves with (L1, plan #00).
+///
+/// The api tree emits the builder tree TWICE over identical node/leaf structure
+/// and keys, differing only by the brand each leaf carries:
+///
+/// - [`Side::Client`] - the PUBLIC `topic::new()...` tree. A `command` leaf yields
+///   `Topic<Publish<B>>` (the client sends commands), a `state` leaf yields
+///   `Topic<Subscribe<B>>` (the client observes state), and a `query` leaf yields
+///   `Topic<AskQuery<Req, Resp>>` (the client calls).
+/// - [`Side::Owner`] - the `topic::internal::new()...` tree (a deliberate,
+///   greppable owner opt-in). The brands flip: `command` -> `Subscribe` (the owner
+///   reads its control input), `state` -> `Publish` (the owner emits telemetry),
+///   `query` -> `ServeQuery` (the owner serves).
+#[derive(Clone, Copy)]
+enum Side {
+    Client,
+    Owner,
+}
+
+/// Emit the api-local `topic` builder module with BOTH side trees (L1).
+///
+/// The PUBLIC client tree lives directly under `topic` (`topic::new()` + a builder
+/// module per node); the OWNER tree lives under `topic::internal`
+/// (`topic::internal::new()` + the same builder modules, one level deeper). Both
+/// mirror the node tree and format identical keys - only the leaf brand differs by
+/// side. A dynamic node's method takes its variable as `impl Display` and carries
+/// it forward; a leaf method formats the final key from the carried vars.
 fn expand_topic_module(nodes: &[Node]) -> syn::Result<TokenStream> {
-    let mut root_methods = TokenStream::new();
-    let mut builder_mods = TokenStream::new();
+    let mut client_root_methods = TokenStream::new();
+    let mut client_builder_mods = TokenStream::new();
+    let mut owner_root_methods = TokenStream::new();
+    let mut owner_builder_mods = TokenStream::new();
     for node in nodes {
-        root_methods.extend(node_entry_method(node));
-        builder_mods.extend(expand_builder_module(node, &[])?);
+        client_root_methods.extend(node_entry_method(node));
+        client_builder_mods.extend(expand_builder_module(node, &[], Side::Client)?);
+        owner_root_methods.extend(node_entry_method(node));
+        owner_builder_mods.extend(expand_builder_module(node, &[], Side::Owner)?);
     }
 
     Ok(quote! {
-        /// Api-local topic builders (D61). `topic::new()` is the entrypoint;
-        /// every leaf binds the topic's node-path/kind to a version-local body.
+        /// Api-local topic builders (D61), side-branded for L1 (plan #00). The
+        /// PUBLIC `topic::new()...` chain is the CLIENT side; the OWNER side is the
+        /// deliberate, greppable opt-in at [`topic::internal::new()`](internal::new).
+        /// Every leaf binds the topic's node-path/kind to a version-local body and
+        /// the side it grants.
         pub mod topic {
-            /// Begin a topic path for this API version.
+            /// Begin a CLIENT topic path for this API version.
             pub fn new() -> Root {
                 Root
             }
 
-            /// Root of the topic builder chain.
+            /// Root of the client topic builder chain.
             pub struct Root;
             impl Root {
-                #root_methods
+                #client_root_methods
             }
 
-            #builder_mods
+            #client_builder_mods
+
+            /// Owner-side topic builders (L1, plan #00). `internal::new()...` is the
+            /// deliberate, greppable owner opt-in: a runtime acquires the topics of
+            /// its OWN node here, getting the publish/subscribe/serve side the owner
+            /// must take (the inverse of the client brands). Consumed topics still
+            /// go through the public [`new()`](self::new) chain. It is `pub` (no L2
+            /// capability gate yet - that is the next increment).
+            pub mod internal {
+                /// Begin an OWNER topic path for this API version.
+                pub fn new() -> Root {
+                    Root
+                }
+
+                /// Root of the owner topic builder chain.
+                pub struct Root;
+                impl Root {
+                    #owner_root_methods
+                }
+
+                #owner_builder_mods
+            }
         }
     })
 }
@@ -634,12 +687,17 @@ fn node_entry_method(node: &Node) -> TokenStream {
     }
 }
 
-/// Emit the builder module for `node` (and recursively its children). `ancestors`
-/// is the chain of nodes from the version root down to (but excluding) `node`, in
-/// order. The node's depth under the version is `ancestors.len() + 1`. Each
-/// builder is a struct that stores every in-scope var as a `String`; leaf methods
-/// format the key from those fields.
-fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<TokenStream> {
+/// Emit the builder module for `node` (and recursively its children) on `side`.
+/// `ancestors` is the chain of nodes from the version root down to (but excluding)
+/// `node`, in order. The node's depth under the version is `ancestors.len() + 1`.
+/// Each builder is a struct that stores every in-scope var as a `String`; leaf
+/// methods format the key from those fields and brand the returned `Topic` per
+/// `side` (the same structure/keys on both sides; only the leaf brand differs).
+fn expand_builder_module(
+    node: &Node,
+    ancestors: &[NodeSeg],
+    side: Side,
+) -> syn::Result<TokenStream> {
     let name = &node.name;
     let name_str = name.to_string();
     let depth = ancestors.len() + 1;
@@ -709,7 +767,7 @@ fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<Toke
     let mut leaf_methods = TokenStream::new();
     for topic in &node.topics {
         let leaf = &topic.leaf;
-        let kind_ty = builder_leaf_kind(topic, &path, depth);
+        let kind_ty = builder_leaf_kind(topic, &path, depth, side);
         let (fmt_str, doc_key) = builder_leaf_key_parts(&path, &topic.leaf);
         let constructor = if field_idents.is_empty() {
             quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
@@ -731,7 +789,7 @@ fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<Toke
     let mut child_mods = TokenStream::new();
     for child in &node.children {
         child_methods.extend(node_entry_method(child));
-        child_mods.extend(expand_builder_module(child, &path)?);
+        child_mods.extend(expand_builder_module(child, &path, side)?);
     }
 
     let builder_doc = format!("Topic builder for the `{name_str}` node.");
@@ -752,25 +810,53 @@ fn expand_builder_module(node: &Node, ancestors: &[NodeSeg]) -> syn::Result<Toke
     })
 }
 
-/// The `Kind` type for a builder leaf: `PubSub<BodyPath>` / `Query<ReqPath,
-/// RespPath>`, where each path resolves from inside the builder module up to the
-/// version root and back down to the node module holding the body. A builder at
-/// `depth` (node depth under the version) is nested `depth` levels under `topic`,
-/// so reaching the version root is `depth + 1` supers (`depth` builder mods + the
-/// `topic` mod); from there, descend the node-module path (`n1::n2::…::nk`).
-fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], depth: usize) -> TokenStream {
-    let up = supers(depth + 1);
+/// The branded `Kind` type for a builder leaf, side-aware (L1, plan #00).
+///
+/// Each body path resolves from inside the builder module up to the version root
+/// and back down to the node module holding the body. A builder at `depth` (node
+/// depth under the version) is nested `depth` levels under `topic` on the CLIENT
+/// side, so reaching the version root is `depth + 1` supers (`depth` builder mods
+/// plus the `topic` mod); on the OWNER side the whole tree sits one level deeper
+/// under `topic::internal`, so it is `depth + 2`. From the version root, descend
+/// the node-module path (`n1::n2::…::nk`).
+///
+/// The brand is picked from `(role, side)`:
+///
+/// - `command`: client publishes (`Publish`), owner subscribes (`Subscribe`).
+/// - `state`: client subscribes (`Subscribe`), owner publishes (`Publish`).
+/// - `query`: client asks (`AskQuery`), owner serves (`ServeQuery`).
+fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], depth: usize, side: Side) -> TokenStream {
+    let supers_to_root = match side {
+        Side::Client => depth + 1,
+        Side::Owner => depth + 2,
+    };
+    let up = supers(supers_to_root);
     let node_path: Vec<&Ident> = path.iter().map(|s| &s.name).collect();
     let body_path = |body: &Ident| quote! { #up #(#node_path::)* #body };
     match &topic.kind {
         TopicKind::PubSub(body) => {
             let b = body_path(body);
-            quote! { ::phoxal_bus::PubSub<#b> }
+            // `command` and `state` share the pub/sub wire shape but invert which
+            // side publishes vs subscribes; the role + side pick the brand.
+            match (topic.role, side) {
+                (TopicRole::Command, Side::Client) | (TopicRole::State, Side::Owner) => {
+                    quote! { ::phoxal_bus::Publish<#b> }
+                }
+                (TopicRole::State, Side::Client) | (TopicRole::Command, Side::Owner) => {
+                    quote! { ::phoxal_bus::Subscribe<#b> }
+                }
+                // A `query` role never carries a `PubSub` kind (the parser pairs
+                // `query` with `TopicKind::Query`); fall back to the client view.
+                (TopicRole::Query, _) => quote! { ::phoxal_bus::Subscribe<#b> },
+            }
         }
         TopicKind::Query { request, response } => {
             let req = body_path(request);
             let resp = body_path(response);
-            quote! { ::phoxal_bus::Query<#req, #resp> }
+            match side {
+                Side::Client => quote! { ::phoxal_bus::AskQuery<#req, #resp> },
+                Side::Owner => quote! { ::phoxal_bus::ServeQuery<#req, #resp> },
+            }
         }
     }
 }

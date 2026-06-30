@@ -14,7 +14,7 @@ note: expected this to be `Api`
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
    |     where
    |         B: ContractBody<Api = R::Api>,
@@ -34,7 +34,7 @@ note: expected this to be `Api`
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
    |     where
    |         B: ContractBody<Api = R::Api>,
@@ -54,7 +54,7 @@ note: expected this to be `Api`
 note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
   --> src/runtime/context.rs
    |
-   |     pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+   |     pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
    |                  --------- required by a bound in this associated function
    |     where
    |         B: ContractBody<Api = R::Api>,

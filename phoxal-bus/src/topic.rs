@@ -1,30 +1,67 @@
-//! Typed topics - the api-local builder output (D61).
+//! Typed topics - the api-local builder output (D61), side-branded for L1 (plan #00).
 //!
 //! A [`Topic`] is a versionless topic key plus a phantom [`TopicKind`] that ties
-//! the key to its body type(s). The api tree's `topic` builders return these; the
-//! `SetupContext` handle builders consume them. The wire body never appears in the
-//! key - the key is `drive/state`, not `drive/state/v1` (D62).
+//! the key to its body type(s) **and to the side** the holder may take. The api
+//! tree's `topic` builders return these; the `SetupContext` handle builders
+//! consume them. The wire body never appears in the key - the key is
+//! `drive/state`, not `drive/state/v1` (D62).
+//!
+//! # Side branding (L1)
+//!
+//! The kind marker is the compile-time gate that makes taking the **wrong side**
+//! of a topic a type error. The four markers split each wire shape by side:
+//!
+//! - [`Publish<B>`] - the participant *publishes* `B` (a client sending a command,
+//!   or an owner publishing its state).
+//! - [`Subscribe<B>`] - the participant *subscribes/observes* `B` (a client
+//!   observing state, or an owner reading its command input).
+//! - [`AskQuery<Req, Resp>`] - the **client** side of a query: it *calls* the owner.
+//! - [`ServeQuery<Req, Resp>`] - the **owner** side of a query: it *serves* requests.
+//!
+//! The brand is a COMPILE-TIME marker only: the underlying key and the actual
+//! `Publisher`/`Subscriber`/`Latest`/`Querier`/server ops are unchanged. The api
+//! tree emits the builder tree twice - a public *client* builder and an
+//! `internal` *owner* builder over identical keys - so the side a participant gets
+//! is decided by which builder it calls, and a wrong side fails to compile in the
+//! `SetupContext` handle builder that consumes the `Topic`.
 
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-/// A pub/sub topic carrying body `B`.
-pub struct PubSub<B>(PhantomData<fn() -> B>);
+/// A pub/sub topic the participant **publishes** `B` on (client command, or owner
+/// state). The publish side of the former side-agnostic `PubSub<B>`.
+pub struct Publish<B>(PhantomData<fn() -> B>);
 
-/// A query topic carrying request `Req` and response `Resp`.
-pub struct Query<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
+/// A pub/sub topic the participant **subscribes/observes** `B` on (client
+/// observing state, or owner reading its command input). The subscribe side of
+/// the former side-agnostic `PubSub<B>`.
+pub struct Subscribe<B>(PhantomData<fn() -> B>);
+
+/// The **client** side of a query topic carrying request `Req`/response `Resp`:
+/// the holder *calls* the owner. The caller side of the former side-agnostic
+/// `Query<Req, Resp>`.
+pub struct AskQuery<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
+
+/// The **owner** side of a query topic carrying request `Req`/response `Resp`:
+/// the holder *serves* requests. The server side of the former side-agnostic
+/// `Query<Req, Resp>`.
+pub struct ServeQuery<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
 
 mod sealed {
     pub trait Sealed {}
 }
 
-/// Marker for the kind of a [`Topic`] (pub/sub vs query). Sealed.
+/// Marker for the kind (wire shape + side) of a [`Topic`]. Sealed.
 pub trait TopicKind: sealed::Sealed {}
 
-impl<B> sealed::Sealed for PubSub<B> {}
-impl<B> TopicKind for PubSub<B> {}
-impl<Req, Resp> sealed::Sealed for Query<Req, Resp> {}
-impl<Req, Resp> TopicKind for Query<Req, Resp> {}
+impl<B> sealed::Sealed for Publish<B> {}
+impl<B> TopicKind for Publish<B> {}
+impl<B> sealed::Sealed for Subscribe<B> {}
+impl<B> TopicKind for Subscribe<B> {}
+impl<Req, Resp> sealed::Sealed for AskQuery<Req, Resp> {}
+impl<Req, Resp> TopicKind for AskQuery<Req, Resp> {}
+impl<Req, Resp> sealed::Sealed for ServeQuery<Req, Resp> {}
+impl<Req, Resp> TopicKind for ServeQuery<Req, Resp> {}
 
 /// A typed topic: a versionless key bound to its body type(s) via `Kind`.
 pub struct Topic<Kind> {

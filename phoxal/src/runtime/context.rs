@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::api::ContractBody;
 use crate::bus::{
-    Bus, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, PubSub, Publisher, Querier, Query, Subscriber,
-    Topic,
+    AskQuery, Bus, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, Publish, Publisher, Querier,
+    Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
 use crate::runtime::spec::{DeclaresPublish, DeclaresQuery, DeclaresSubscribe, RuntimeFields};
@@ -25,6 +25,15 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 /// another API version, an undeclared family, or a declared family used in an
 /// undeclared direction is a compile error. Normal runtime code never opens Zenoh
 /// directly; the runner opened the bus before `#[setup]`.
+///
+/// On top of those gates, each builder accepts only the matching **side brand**
+/// (L1, plan #00): `publisher` takes `Topic<Publish<B>>`, the subscription
+/// builders take `Topic<Subscribe<B>>`, and `querier` takes
+/// `Topic<AskQuery<Req, Resp>>`. The api tree's PUBLIC `topic::new()...` chain
+/// yields the client brands and its `topic::internal::new()...` chain yields the
+/// owner brands, so taking the WRONG side of a topic (e.g. publishing a `state`
+/// the public chain hands you as `Subscribe`) fails to compile - the owner side is
+/// reachable only through the explicit `internal` builder.
 pub struct SetupContext<R: RuntimeFields> {
     bus: Bus,
     robot: Option<Arc<Robot>>,
@@ -85,7 +94,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     /// publish direction through a `Publisher<B>` field or
     /// `#[phoxal(contracts(publishes(B)))]`. A body from another API version or
     /// an undeclared publish family fails to compile.
-    pub async fn publisher<B>(&self, topic: Topic<PubSub<B>>) -> crate::Result<Publisher<B>>
+    pub async fn publisher<B>(&self, topic: Topic<Publish<B>>) -> crate::Result<Publisher<B>>
     where
         B: ContractBody<Api = R::Api>,
         R: DeclaresPublish<B>,
@@ -99,7 +108,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     /// versions. `R: DeclaresSubscribe<B>` rejects undeclared families and
     /// publish-only declarations. Use [`SubscribeBuilder::depth`] or
     /// [`Self::subscribe_with`] to override the `Subscriber` ring depth.
-    pub fn subscribe<B>(&self, topic: Topic<PubSub<B>>) -> SubscribeBuilder<R, B>
+    pub fn subscribe<B>(&self, topic: Topic<Subscribe<B>>) -> SubscribeBuilder<R, B>
     where
         B: ContractBody<Api = R::Api>,
         R: DeclaresSubscribe<B>,
@@ -115,7 +124,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     /// apply as for [`Self::subscribe`].
     pub fn subscribe_with<B>(
         &self,
-        topic: Topic<PubSub<B>>,
+        topic: Topic<Subscribe<B>>,
         options: SubscribeOptions,
     ) -> SubscribeBuilder<R, B>
     where
@@ -138,7 +147,7 @@ impl<R: RuntimeFields> SetupContext<R> {
     /// Phoxal-pinned finite timeout (D31).
     pub async fn querier<Req, Resp>(
         &self,
-        topic: Topic<Query<Req, Resp>>,
+        topic: Topic<AskQuery<Req, Resp>>,
     ) -> crate::Result<Querier<Req, Resp>>
     where
         Req: ContractBody<Api = R::Api>,
@@ -193,7 +202,7 @@ impl Default for SubscribeOptions {
 /// or `subscriber()` (drop-oldest ring).
 pub struct SubscribeBuilder<R: RuntimeFields, B> {
     bus: Bus,
-    topic: Topic<PubSub<B>>,
+    topic: Topic<Subscribe<B>>,
     depth: usize,
     _runtime: PhantomData<fn() -> R>,
 }

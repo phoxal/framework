@@ -16,7 +16,7 @@ impl AssetExplicitTopic {
         Ok(Self {})
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(topic = api::topic::internal::new().asset().get())]
     async fn get(
         &mut self,
         _request: api::asset::GetRequest,

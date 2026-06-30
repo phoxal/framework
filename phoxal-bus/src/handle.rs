@@ -51,7 +51,7 @@ use crate::error::{BusError, Result};
 use crate::metadata::{BusMetadata, Source};
 use crate::query::{QueryError, QueryFailure};
 use crate::session::Bus;
-use crate::topic::{PubSub, Query, Topic};
+use crate::topic::{AskQuery, Publish, Subscribe, Topic};
 
 /// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -70,7 +70,7 @@ impl<B: ContractBody> Publisher<B> {
     /// Framework-internal (macro/runner-only): build a publisher over a topic.
     /// The author-facing path is `ctx.publisher(...)` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
-    pub fn new(bus: Bus, topic: &Topic<PubSub<B>>) -> Result<Self> {
+    pub fn new(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Publisher {
             bus,
@@ -148,7 +148,7 @@ where
     /// Framework-internal (macro/runner-only): build a querier over a query topic.
     /// The author-facing path is `ctx.querier(...)` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
-    pub fn new(bus: Bus, topic: &Topic<Query<Req, Resp>>, timeout: Duration) -> Result<Self> {
+    pub fn new(bus: Bus, topic: &Topic<AskQuery<Req, Resp>>, timeout: Duration) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
         Ok(Querier {
             bus,
@@ -279,7 +279,7 @@ impl<B: ContractBody> Latest<B> {
     /// Framework-internal (macro/runner-only): build a keep-last view over a topic.
     /// The author-facing path is `ctx.subscribe(...).latest()` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
-    pub async fn new(bus: &Bus, topic: &Topic<PubSub<B>>) -> Result<Self> {
+    pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         let slot: Arc<ArcSwapOption<B>> = Arc::new(ArcSwapOption::from(None));
         let store = Arc::clone(&slot);
         let guard = spawn_subscription::<B, _>(bus, topic.key(), move |body, _meta| {
@@ -316,7 +316,7 @@ impl<B: ContractBody> Subscriber<B> {
     /// Framework-internal (macro/runner-only): build a drop-oldest ring over a topic.
     /// The author-facing path is `ctx.subscribe(...)` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
-    pub async fn new(bus: &Bus, topic: &Topic<PubSub<B>>, depth: usize) -> Result<Self> {
+    pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>, depth: usize) -> Result<Self> {
         let ring = Arc::new(Ring::new(depth.max(1)));
         let push = Arc::clone(&ring);
         let drops = bus.clone();

@@ -328,7 +328,7 @@ fn validate_one_server_topic(
 ) -> TokenStream {
     let topic_var = syn::Ident::new(&format!("__phoxal_{kind}_topic_{idx}"), topic.span());
     quote! {
-        let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::Query<#req_ty, #resp_ty>> = #topic;
+        let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::ServeQuery<#req_ty, #resp_ty>> = #topic;
         let topic_key = #topic_var.key();
         let expected = <#req_ty as ::phoxal::api::ContractBody>::TOPIC;
         if topic_key != expected {
@@ -490,7 +490,7 @@ fn topic_assertions(
         // (D59/D60).
         checks.push(quote! {
             fn #topic_id() {
-                let _t: ::phoxal::bus::Topic<::phoxal::bus::Query<#req, #resp>> = #topic;
+                let _t: ::phoxal::bus::Topic<::phoxal::bus::ServeQuery<#req, #resp>> = #topic;
             }
             fn #api_id() {
                 fn assert<R, B>()

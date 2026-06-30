@@ -31,10 +31,11 @@ pub trait ApiVersion: 'static {
 /// `Command` (it is the service's control input) and publishes a `State` (it is
 /// the service's telemetry output). `Query` is the request/response role.
 ///
-/// This increment only *records* the role - it rides alongside each generated
-/// contract body as a `ROLE` const, ready for the upcoming type-level (L1)
-/// enforcement. It is not yet emitted by `emit-apis` (that enrichment is a later
-/// increment of plan #00), nor does it yet brand the typed handles by role.
+/// The role drives the side branding (L1): the api tree's builders read it to pick
+/// each leaf's side-branded topic kind (`Publish`/`Subscribe`/`AskQuery`/`ServeQuery`),
+/// so taking the wrong side of a topic is a compile error. The role also rides
+/// alongside each generated contract body as a `ROLE` const; that const is not yet
+/// emitted by `emit-apis` (a later increment of plan #00).
 ///
 /// [`phoxal_api_tree!`]: https://docs.rs/phoxal
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

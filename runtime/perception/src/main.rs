@@ -44,16 +44,20 @@ impl SensorBinding {
         })
     }
 
+    // Perception CONSUMES sensor frames (the camera/depth drivers own/publish
+    // them), so these are the client `Subscribe` side from the public builder.
     fn camera_topic(
         &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::camera::Frame>> {
+    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
         api::topic::new()
             .component(&self.component_id)
             .camera(&self.capability_id)
             .frame()
     }
 
-    fn depth_topic(&self) -> phoxal::bus::Topic<phoxal::bus::PubSub<api::component::depth::Frame>> {
+    fn depth_topic(
+        &self,
+    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>> {
         api::topic::new()
             .component(&self.component_id)
             .depth(&self.capability_id)
@@ -280,11 +284,14 @@ impl Perception {
                 .subscribe(api::topic::new().localize().state())
                 .subscriber()
                 .await?,
+            // Perception OWNS the `perception` node (detections + state telemetry)
+            // -> owner (`internal`) builder; sensor frames and `localize/state` are
+            // CONSUMED via the public builder.
             detections: ctx
-                .publisher(api::topic::new().perception().detections())
+                .publisher(api::topic::internal::new().perception().detections())
                 .await?,
             state: ctx
-                .publisher(api::topic::new().perception().state())
+                .publisher(api::topic::internal::new().perception().state())
                 .await?,
             camera_sources,
             depth_sources,
