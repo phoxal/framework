@@ -30,17 +30,25 @@ fi
 base_commit="$(git rev-parse "${base_ref}^{commit}")"
 echo "seeding per-package tags at ${base_ref} (${base_commit})"
 
-created=()
-# cargo metadata -> "<name> <version>" for every workspace member.
+desired=()
+# cargo metadata -> "<name> <version>" for every workspace member. Build the FULL
+# desired tag set; create any missing local tags, and verify pre-existing ones
+# point at base_commit (a tag at a different commit is a hard error, not a silent
+# skip).
 while read -r name version; do
   tag="${name}-v${version}"
-  if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-    echo "  skip ${tag} (exists)"
-    continue
+  desired+=("${tag}")
+  if existing="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"; then
+    if [[ "${existing}" != "${base_commit}" ]]; then
+      echo "error: tag ${tag} already exists at ${existing}, expected ${base_commit}" >&2
+      echo "       refusing to move it; resolve manually before re-running" >&2
+      exit 1
+    fi
+    echo "  ok   ${tag} (already at base)"
+  else
+    git tag "${tag}" "${base_commit}"
+    echo "  tag  ${tag} -> ${base_commit}"
   fi
-  git tag "${tag}" "${base_commit}"
-  created+=("${tag}")
-  echo "  tag  ${tag} -> ${base_commit}"
 done < <(
   cargo metadata --format-version 1 --no-deps \
     | python3 -c 'import json, sys
@@ -51,11 +59,9 @@ for pkg in meta["packages"]:
         print(pkg["name"], pkg["version"])'
 )
 
-if [[ ${#created[@]} -eq 0 ]]; then
-  echo "nothing to do: all per-package tags already exist"
-  exit 0
-fi
-
-echo "pushing ${#created[@]} new tag(s) to ${remote}..."
-git push "${remote}" "${created[@]}"
-echo "done: seeded ${#created[@]} per-package tag(s)."
+# Always push the full desired set, never just the newly-created locals: pushing
+# an already-present identical tag is a no-op, so this converges the remote even
+# after an earlier run created local tags but failed to push them.
+echo "pushing ${#desired[@]} tag(s) to ${remote} (idempotent)..."
+git push "${remote}" "${desired[@]}"
+echo "done: ${#desired[@]} per-package tag(s) present on ${remote}."
