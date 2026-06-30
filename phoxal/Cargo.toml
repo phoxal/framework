@@ -21,7 +21,6 @@ path = "src/lib.rs"
 default = []
 
 [dependencies]
-phoxal-api = { workspace = true }
 phoxal-bus = { workspace = true }
 phoxal-macros = { workspace = true }
 anyhow = { workspace = true }
@@ -44,6 +43,10 @@ urdf-rs = { workspace = true }
 zenoh = { workspace = true }
 
 [dev-dependencies]
+# The api contract tree is used only by phoxal's examples + integration/trybuild
+# tests, not by the library (src/), so it is a dev-dependency: this keeps the
+# `phoxal` engine generic over `ContractBody` and free of a `phoxal-api` link.
+phoxal-api = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 trybuild = { workspace = true }

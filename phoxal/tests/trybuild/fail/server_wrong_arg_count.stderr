@@ -4,11 +4,11 @@ error: #[server] takes exactly `&mut self` and one request argument
 16 |     async fn get(
    |     ^^^^^
 
-warning: unused import: `phoxal::api::y2026_1 as api`
+warning: unused import: `phoxal_api::y2026_1 as api`
  --> tests/trybuild/fail/server_wrong_arg_count.rs:1:5
   |
-1 | use phoxal::api::y2026_1 as api;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1 | use phoxal_api::y2026_1 as api;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 

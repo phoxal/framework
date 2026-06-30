@@ -22,7 +22,7 @@ use std::time::Duration;
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::api::ApiVersion;
+use crate::bus::ApiVersion;
 use crate::runtime::context::{SetupContext, ShutdownContext, StepContext};
 use crate::runtime::server::ServerOutcome;
 
@@ -45,7 +45,7 @@ pub enum Direction {
 }
 
 /// One `{api_version, family, topic, direction}` contract a runtime participates
-/// in. Built by the macros from a body type's [`ContractBody`](crate::api::ContractBody)
+/// in. Built by the macros from a body type's [`ContractBody`](crate::bus::ContractBody)
 /// consts so the family/topic/version are single-sourced from the api tree.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ContractUse {

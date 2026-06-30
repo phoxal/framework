@@ -3,7 +3,7 @@ use phoxal::prelude::*;
 
 enum ForeignApi {}
 
-impl phoxal::api::ApiVersion for ForeignApi {
+impl phoxal_api::ApiVersion for ForeignApi {
     const ID: &'static str = "foreign";
 }
 
@@ -12,7 +12,7 @@ macro_rules! foreign_body {
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
         struct $name;
 
-        impl phoxal::api::ContractBody for $name {
+        impl phoxal_api::ContractBody for $name {
             type Api = ForeignApi;
             const FAMILY: &'static str = $family;
             const TOPIC: &'static str = $topic;

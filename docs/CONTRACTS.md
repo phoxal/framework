@@ -1,6 +1,6 @@
 # Contract Discipline
 
-The cross-cutting rules every contract in the `phoxal::api` tree follows.
+The cross-cutting rules every contract in the `phoxal_api` tree follows.
 The per-domain contracts (the actual payload/query bodies for drive, safety, map,
 mission, perception, localize, sensor capabilities, …) are all declared in one
 `phoxal_api_tree!` invocation in [`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs);
@@ -21,8 +21,8 @@ There is no per-contract version axis, no version-tagged wire enum, and no
 `{"v":…,"data":…}` body wrapper.
 A robot graph runs **one** API version across every participant.
 
-- API versions are **dated modules** under the `phoxal` crate -
-  `phoxal::api::y2026_1`, `phoxal::api::y2026_2` - each with a zero-variant marker
+- API versions are **dated modules** in the `phoxal-api` crate -
+  `phoxal_api::y2026_1`, `phoxal_api::y2026_2` - each with a zero-variant marker
   `enum Api {}` implementing `ApiVersion { const ID }` (the canonical version
   string, `"y2026_1"`).
 - Contract bodies are **version-local plain serde structs/enums**

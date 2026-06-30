@@ -2,7 +2,7 @@
 // its key matches the request body's canonical topic. The supported way to build
 // that value is the api-local topic builder; the raw `Topic` constructors are
 // `#[doc(hidden)]` and off the authored surface (a crate-split escape hatch).
-use phoxal::api::y2026_1 as api;
+use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
 #[derive(phoxal::Runtime)]

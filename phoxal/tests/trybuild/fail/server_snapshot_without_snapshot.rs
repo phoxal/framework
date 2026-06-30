@@ -1,5 +1,5 @@
 // #[server_snapshot] requires a #[snapshot] provider on the same runtime.
-use phoxal::api::y2026_1 as api;
+use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
 struct State;

@@ -10,8 +10,8 @@
 //! not a reading from any hardware sensor.
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const FULL_VOLTAGE_V: f64 = 16.8;
 const EMPTY_VOLTAGE_V: f64 = 12.0;
@@ -95,8 +95,8 @@ mod tests {
         Battery, CAPACITY_AH, DRAW_CURRENT_A, EMPTY_VOLTAGE_V, FULL_VOLTAGE_V, discharge,
         voltage_for,
     };
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     #[test]
     fn discharge_reduces_charge_over_time() {

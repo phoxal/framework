@@ -3,10 +3,12 @@
 //!
 //! These are the two traits the bus client is generic over - the ABI floor every
 //! contract body and api-version marker implements. The concrete dated API
-//! versions (`phoxal::api::y2026_1`, …) and the `phoxal_api_tree!` macro that
+//! versions (`phoxal_api::y2026_1`, …) and the `phoxal_api_tree!` macro that
 //! generates their `ApiVersion` / `ContractBody` impls live in the `phoxal-api`
-//! crate, which the `phoxal` engine re-exports at `phoxal::api` - so these traits
-//! are reachable as `phoxal::api::ApiVersion` / `phoxal::api::ContractBody`.
+//! crate, which re-exports these traits - so they are reachable as
+//! `phoxal_api::ApiVersion` / `phoxal_api::ContractBody`. The `phoxal` engine
+//! re-exports this bus crate at `phoxal::bus`, so they are also reachable as
+//! `phoxal::bus::ApiVersion` / `phoxal::bus::ContractBody`.
 
 /// Marker trait identifying one dated API version (D60).
 ///

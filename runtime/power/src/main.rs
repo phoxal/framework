@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
@@ -270,8 +270,8 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
 
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     use super::{ExecutorOutcome, HttpTarget, Power, PowerExecutor, idle_state, state_for_command};
 

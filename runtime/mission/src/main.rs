@@ -11,8 +11,8 @@
 //! replacement Start command is received.
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(Clone, Debug, PartialEq)]
 struct MissionLifecycle {
@@ -144,8 +144,8 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     use super::{Mission, MissionLifecycle};
 

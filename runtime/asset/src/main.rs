@@ -11,8 +11,8 @@
 
 use std::path::PathBuf;
 
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "asset", api = y2026_1)]
@@ -67,7 +67,7 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{is_safe_relative, resolve};
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::y2026_1 as api;
 
     #[test]
     fn rejects_traversal_and_bad_paths() {

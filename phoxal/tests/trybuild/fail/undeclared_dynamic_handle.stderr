@@ -20,7 +20,7 @@ note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
    |         R: DeclaresPublish<B>,
    |            ^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
 
-error[E0277]: the trait bound `UndeclaredDynamic: DeclaresPublish<phoxal::api::y2026_1::component::motor::Command>` is not satisfied
+error[E0277]: the trait bound `UndeclaredDynamic: DeclaresPublish<phoxal_api::y2026_1::component::motor::Command>` is not satisfied
   --> tests/trybuild/fail/undeclared_dynamic_handle.rs:13:22
    |
 13 |           let _motor = ctx
@@ -28,7 +28,7 @@ error[E0277]: the trait bound `UndeclaredDynamic: DeclaresPublish<phoxal::api::y
 14 | |             .publisher(api::topic::new().component("base").motor("left").command())
    | |___________________________________________________________________________________^ unsatisfied trait bound
    |
-help: the trait `DeclaresPublish<phoxal::api::y2026_1::component::motor::Command>` is not implemented for `UndeclaredDynamic`
+help: the trait `DeclaresPublish<phoxal_api::y2026_1::component::motor::Command>` is not implemented for `UndeclaredDynamic`
   --> tests/trybuild/fail/undeclared_dynamic_handle.rs:7:1
    |
  7 | struct UndeclaredDynamic {}
@@ -42,13 +42,13 @@ note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
    |         R: DeclaresPublish<B>,
    |            ^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
 
-error[E0277]: the trait bound `UndeclaredDynamic: DeclaresPublish<phoxal::api::y2026_1::component::motor::Command>` is not satisfied
+error[E0277]: the trait bound `UndeclaredDynamic: DeclaresPublish<phoxal_api::y2026_1::component::motor::Command>` is not satisfied
   --> tests/trybuild/fail/undeclared_dynamic_handle.rs:15:14
    |
 15 |             .await?;
    |              ^^^^^ unsatisfied trait bound
    |
-help: the trait `DeclaresPublish<phoxal::api::y2026_1::component::motor::Command>` is not implemented for `UndeclaredDynamic`
+help: the trait `DeclaresPublish<phoxal_api::y2026_1::component::motor::Command>` is not implemented for `UndeclaredDynamic`
   --> tests/trybuild/fail/undeclared_dynamic_handle.rs:7:1
    |
  7 | struct UndeclaredDynamic {}

@@ -5,7 +5,7 @@ crate's own `README.md`; org-level vision, architecture, and process live in
 [`phoxal/organization`](https://github.com/phoxal/organization).
 
 - [CONTRACTS.md](./CONTRACTS.md) - the cross-cutting contract discipline the
-  `phoxal::api` tree follows (one API version per graph, plain wire bodies with
+  `phoxal_api` tree follows (one API version per graph, plain wire bodies with
   metadata-carried produce time, typed reasons, query results, revision linkage,
   large products, API evolution).
 - [CONVENTIONS.md](./CONVENTIONS.md) - bus, topic, logical-time, runtime

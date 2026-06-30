@@ -3,7 +3,7 @@
 //! Three macros make up the authoring surface:
 //!
 //! - [`phoxal_api_tree!`] - declares the dated API-version modules
-//!   (`phoxal::api::y2026_1`, …), their version-local body types, the
+//!   (`phoxal_api::y2026_1`, …), their version-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
 //! - [`derive@Runtime`] - reads a runtime struct's typed handle fields plus the
 //!   `#[phoxal(id = …, api = …, config = …, contracts(…))]` attribute and emits
@@ -36,8 +36,9 @@ use proc_macro::TokenStream;
 ///
 /// One invocation owns one or more `version y2026_N { … }` blocks; each becomes a
 /// `pub mod y2026_N` under wherever the macro is invoked. In this workspace it is
-/// invoked in the `phoxal-api` crate (re-exported by the engine as `phoxal::api`),
-/// and the generated tree references the bus ABI floor as `::phoxal_bus`. A
+/// invoked in the `phoxal-api` crate (the canonical import is
+/// `use phoxal_api::y2026_1 as api;`), and the generated tree references the bus
+/// ABI floor as `::phoxal_bus`. A
 /// `version y2026_N extends y2026_M { … }` inherits the
 /// earlier version's effective tree (the parent must be declared earlier in the
 /// same invocation); see the `api_tree` module docs for the inheritance rules.
@@ -72,7 +73,7 @@ use proc_macro::TokenStream;
 ///   `component/{instance}/motor/{capability}/command`).
 /// - **`FAMILY`** - the `::`-joined node names plus the body type, with the
 ///   `(var)` parts excluded (e.g. `component::motor::Command`).
-/// - **body type path** - `api::y2026_N::<node>::…::<Body>`; variables never
+/// - **body type path** - `phoxal_api::y2026_N::<node>::…::<Body>`; variables never
 ///   appear in the module path.
 ///
 /// A topic is dynamic when its node path contains at least one `(var)` node, and
@@ -107,7 +108,7 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// # `#[phoxal(...)]` attributes
 ///
 /// - `api = y2026_N` - **mandatory**. Selects the one API version this runtime
-///   (and the whole graph) runs against; sets `type Api = phoxal::api::y2026_N::Api`.
+///   (and the whole graph) runs against; sets `type Api = phoxal_api::y2026_N::Api`.
 /// - `id = "…"` - optional. The runtime id; defaults to the kebab-cased type name.
 /// - `config = Type` - optional. The runtime's config type; defaults to `()`.
 /// - `contracts(…)` - optional. Declares IO the derive cannot see in fields, as a

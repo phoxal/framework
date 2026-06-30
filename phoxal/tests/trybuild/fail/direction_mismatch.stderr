@@ -20,13 +20,13 @@ note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
    |         R: DeclaresPublish<B>,
    |            ^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
 
-error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not satisfied
+error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<phoxal_api::y2026_1::drive::Target>` is not satisfied
   --> tests/trybuild/fail/direction_mismatch.rs:22:24
    |
 22 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
-help: the trait `DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not implemented for `DirectionMismatch`
+help: the trait `DeclaresPublish<phoxal_api::y2026_1::drive::Target>` is not implemented for `DirectionMismatch`
   --> tests/trybuild/fail/direction_mismatch.rs:14:1
    |
 14 | struct DirectionMismatch {
@@ -40,13 +40,13 @@ note: required by a bound in `phoxal::runtime::SetupContext::<R>::publisher`
    |         R: DeclaresPublish<B>,
    |            ^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::publisher`
 
-error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not satisfied
+error[E0277]: the trait bound `DirectionMismatch: DeclaresPublish<phoxal_api::y2026_1::drive::Target>` is not satisfied
   --> tests/trybuild/fail/direction_mismatch.rs:22:74
    |
 22 |         let _publish = ctx.publisher(api::topic::new().drive().target()).await?;
    |                                                                          ^^^^^ unsatisfied trait bound
    |
-help: the trait `DeclaresPublish<phoxal::api::y2026_1::drive::Target>` is not implemented for `DirectionMismatch`
+help: the trait `DeclaresPublish<phoxal_api::y2026_1::drive::Target>` is not implemented for `DirectionMismatch`
   --> tests/trybuild/fail/direction_mismatch.rs:14:1
    |
 14 | struct DirectionMismatch {

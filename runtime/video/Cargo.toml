@@ -20,6 +20,7 @@ h264 = []
 
 [dependencies]
 phoxal = { workspace = true }
+phoxal-api = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]

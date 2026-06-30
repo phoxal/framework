@@ -14,11 +14,11 @@
 //! best-effort pass to park every wheel before the bus closes.
 
 use anyhow::{Result, bail};
-use phoxal::api::y2026_1 as api;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const MAX_LINEAR_MPS: f64 = 0.6;
 const MAX_ANGULAR_RADPS: f64 = 2.0;
@@ -293,7 +293,7 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::y2026_1 as api;
 
     use super::{DifferentialDrive, DriveConfig, resolve_target};
     use std::path::PathBuf;

@@ -15,8 +15,8 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const DEFAULT_FRAME_ID: &str = "map";
 const GOAL_TOLERANCE_M: f64 = 0.15;
@@ -323,7 +323,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::f64::consts::PI;
 
-    use phoxal::api::ContractBody;
+    use phoxal_api::ContractBody;
 
     use super::{
         Follow, GOAL_TOLERANCE_M, LOCALIZE_STALE_NS, MAX_ANGULAR_RADPS, MAX_LINEAR_MPS,

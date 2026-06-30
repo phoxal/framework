@@ -269,7 +269,7 @@ fn snapshot_items(snapshot: Option<&SnapshotFn>) -> (TokenStream, TokenStream, T
 }
 
 fn topic_list<'a>(req_tys: impl Iterator<Item = &'a Type>) -> TokenStream {
-    let entries = req_tys.map(|ty| quote!(<#ty as ::phoxal::api::ContractBody>::TOPIC));
+    let entries = req_tys.map(|ty| quote!(<#ty as ::phoxal::bus::ContractBody>::TOPIC));
     quote!({
         const TOPICS: &[&str] = &[ #(#entries),* ];
         TOPICS
@@ -292,9 +292,9 @@ fn server_contracts(servers: &[ServerFn], snapshot_servers: &[SnapshotServerFn])
 fn contract_entry(ty: &Type, direction: TokenStream) -> TokenStream {
     quote! {
         ::phoxal::runtime::ContractUse {
-            api_version: <<#ty as ::phoxal::api::ContractBody>::Api as ::phoxal::api::ApiVersion>::ID,
-            family: <#ty as ::phoxal::api::ContractBody>::FAMILY,
-            topic: <#ty as ::phoxal::api::ContractBody>::TOPIC,
+            api_version: <<#ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
+            family: <#ty as ::phoxal::bus::ContractBody>::FAMILY,
+            topic: <#ty as ::phoxal::bus::ContractBody>::TOPIC,
             direction: ::phoxal::runtime::Direction::#direction,
         }
     }
@@ -330,7 +330,7 @@ fn validate_one_server_topic(
     quote! {
         let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::ServeQuery<#req_ty, #resp_ty>> = #topic;
         let topic_key = #topic_var.key();
-        let expected = <#req_ty as ::phoxal::api::ContractBody>::TOPIC;
+        let expected = <#req_ty as ::phoxal::bus::ContractBody>::TOPIC;
         if topic_key != expected {
             return ::core::result::Result::Err(::std::format!(
                 "#[{kind}(topic = ...)] key '{}' does not match request body topic '{}'",
@@ -355,7 +355,7 @@ fn serve_exclusive(servers: &[ServerFn]) -> TokenStream {
         let validate = validate_request(req_ty);
         let encode = encode_reply(&s.resp_ty);
         quote! {
-            if topic == <#req_ty as ::phoxal::api::ContractBody>::TOPIC {
+            if topic == <#req_ty as ::phoxal::bus::ContractBody>::TOPIC {
                 #validate
                 let request: #req_ty = match <::phoxal::bus::MessagePack as ::phoxal::bus::Codec>::decode::<#req_ty>(request) {
                     ::core::result::Result::Ok(r) => r,
@@ -385,21 +385,21 @@ fn serve_exclusive(servers: &[ServerFn]) -> TokenStream {
 /// rather than silently decoded (server-side backstop for D59/D62).
 fn validate_request(req_ty: &Type) -> TokenStream {
     quote! {
-        if api_version != <<#req_ty as ::phoxal::api::ContractBody>::Api as ::phoxal::api::ApiVersion>::ID {
+        if api_version != <<#req_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID {
             return ::core::result::Result::Err(::phoxal::bus::QueryFailure::invalid_argument(
                 ::std::format!(
                     "request api_version '{}' does not match server api_version '{}'",
                     api_version,
-                    <<#req_ty as ::phoxal::api::ContractBody>::Api as ::phoxal::api::ApiVersion>::ID,
+                    <<#req_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
                 ),
             ));
         }
-        if family != <#req_ty as ::phoxal::api::ContractBody>::FAMILY {
+        if family != <#req_ty as ::phoxal::bus::ContractBody>::FAMILY {
             return ::core::result::Result::Err(::phoxal::bus::QueryFailure::invalid_argument(
                 ::std::format!(
                     "request family '{}' does not match server family '{}'",
                     family,
-                    <#req_ty as ::phoxal::api::ContractBody>::FAMILY,
+                    <#req_ty as ::phoxal::bus::ContractBody>::FAMILY,
                 ),
             ));
         }
@@ -425,7 +425,7 @@ fn serve_snapshot(snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
         let validate = validate_request(req_ty);
         let encode = encode_reply(resp_ty);
         quote! {
-            if topic == <#req_ty as ::phoxal::api::ContractBody>::TOPIC {
+            if topic == <#req_ty as ::phoxal::bus::ContractBody>::TOPIC {
                 #validate
                 let request: #req_ty = match <::phoxal::bus::MessagePack as ::phoxal::bus::Codec>::decode::<#req_ty>(&request) {
                     ::core::result::Result::Ok(r) => r,
@@ -459,8 +459,8 @@ fn encode_reply(resp_ty: &Type) -> TokenStream {
         match <::phoxal::bus::MessagePack as ::phoxal::bus::Codec>::encode(&response) {
             ::core::result::Result::Ok(payload) => ::core::result::Result::Ok(::phoxal::runtime::ServerReply {
                 payload,
-                family: <#resp_ty as ::phoxal::api::ContractBody>::FAMILY,
-                api_version: <<#resp_ty as ::phoxal::api::ContractBody>::Api as ::phoxal::api::ApiVersion>::ID,
+                family: <#resp_ty as ::phoxal::bus::ContractBody>::FAMILY,
+                api_version: <<#resp_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
             }),
             ::core::result::Result::Err(e) => ::core::result::Result::Err(
                 ::phoxal::bus::QueryFailure::internal(::std::format!("encode response: {e}")),
@@ -496,7 +496,7 @@ fn topic_assertions(
                 fn assert<R, B>()
                 where
                     R: ::phoxal::runtime::RuntimeFields,
-                    B: ::phoxal::api::ContractBody<Api = <R as ::phoxal::runtime::RuntimeFields>::Api>,
+                    B: ::phoxal::bus::ContractBody<Api = <R as ::phoxal::runtime::RuntimeFields>::Api>,
                 {}
                 assert::<#self_ty, #req>();
                 assert::<#self_ty, #resp>();

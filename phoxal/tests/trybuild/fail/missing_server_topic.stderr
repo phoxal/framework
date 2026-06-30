@@ -4,11 +4,11 @@ error: expected attribute arguments in parentheses: #[server(...)]
 16 |     #[server]
    |       ^^^^^^
 
-warning: unused import: `phoxal::api::y2026_1 as api`
+warning: unused import: `phoxal_api::y2026_1 as api`
  --> tests/trybuild/fail/missing_server_topic.rs:2:5
   |
-2 | use phoxal::api::y2026_1 as api;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2 | use phoxal_api::y2026_1 as api;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 
