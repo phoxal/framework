@@ -18,9 +18,11 @@
 # run `docker login ghcr.io` first.
 #
 # Usage:
-#   scripts/verify-runtime-release.sh [VERSION]
+#   scripts/verify-runtime-release.sh <VERSION>
 #
-# VERSION defaults to the workspace version in Cargo.toml (e.g. 0.3.0).
+# VERSION is required (e.g. 0.19.2). There is no shared workspace version to
+# default to now that each crate is versioned independently (per-artifact
+# release, plan #01).
 
 set -euo pipefail
 
@@ -28,10 +30,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REGISTRY="${PHOXAL_RUNTIME_REGISTRY:-ghcr.io/phoxal}"
 
 version="${1:-}"
-if [[ -z "${version}" ]]; then
-  version="$(sed -n 's/^version = "\(.*\)"/\1/p' "${REPO_ROOT}/Cargo.toml" | head -n1)"
-fi
-[[ -n "${version}" ]] || { echo "could not determine version from Cargo.toml" >&2; exit 2; }
+[[ -n "${version}" ]] || { echo "usage: $(basename "$0") <VERSION> (e.g. 0.19.2)" >&2; exit 2; }
 
 command -v docker >/dev/null 2>&1 || { echo "docker (with buildx) is required" >&2; exit 2; }
 
