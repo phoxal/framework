@@ -3,7 +3,7 @@
 The cross-cutting rules every contract in the `phoxal::api` tree follows.
 The per-domain contracts (the actual payload/query bodies for drive, safety, map,
 mission, perception, localize, sensor capabilities, …) are all declared in one
-`phoxal_api_tree!` invocation in [`phoxal/src/api/mod.rs`](../phoxal/src/api/mod.rs);
+`phoxal_api_tree!` invocation in [`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs);
 this file is the shared discipline they obey.
 
 For the architecture these contracts serve, see the org-level

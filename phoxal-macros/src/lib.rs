@@ -19,8 +19,11 @@
 //! one API version chosen by the derive, and the generated `ContractBody<Api =
 //! Self::Api>` assertions make a body from a different version a compile error.
 //!
-//! Generated code references the framework through `::phoxal::…`; the engine crate
-//! makes that path resolve to itself with `extern crate self as phoxal;`.
+//! The runtime macros (`derive@Runtime` / `macro@runtime`) reference the framework
+//! through `::phoxal::…`; the engine crate makes that path resolve to itself with
+//! `extern crate self as phoxal;`. The `phoxal_api_tree!` output instead targets
+//! the bus ABI floor directly as `::phoxal_bus`, since it is invoked in the
+//! `phoxal-api` crate, which does not depend on the engine.
 
 mod api_tree;
 mod runtime_derive;
@@ -32,8 +35,10 @@ use proc_macro::TokenStream;
 /// Declare a dated API-version tree of version-local wire bodies + topics.
 ///
 /// One invocation owns one or more `version y2026_N { … }` blocks; each becomes a
-/// `pub mod y2026_N` under wherever the macro is invoked (the engine invokes it
-/// inside `phoxal::api`). A `version y2026_N extends y2026_M { … }` inherits the
+/// `pub mod y2026_N` under wherever the macro is invoked. In this workspace it is
+/// invoked in the `phoxal-api` crate (re-exported by the engine as `phoxal::api`),
+/// and the generated tree references the bus ABI floor as `::phoxal_bus`. A
+/// `version y2026_N extends y2026_M { … }` inherits the
 /// earlier version's effective tree (the parent must be declared earlier in the
 /// same invocation); see the `api_tree` module docs for the inheritance rules.
 ///

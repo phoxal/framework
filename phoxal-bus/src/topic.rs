@@ -37,8 +37,8 @@ impl<Kind> Topic<Kind> {
     ///
     /// `#[doc(hidden)] pub` raw constructor - an unsupported escape hatch, NOT
     /// part of the authored surface. It is `pub` only because it must be callable
-    /// across the `phoxal` / `phoxal-bus` crate split: the `phoxal_api_tree!` macro
-    /// (generated in the `phoxal` engine crate, where the dated API versions live)
+    /// across the `phoxal-api` / `phoxal-bus` crate split: the `phoxal_api_tree!`
+    /// macro (invoked in the `phoxal-api` crate, where the dated API versions live)
     /// calls it over each contract's canonical key, and a `pub(crate)` constructor
     /// cannot cross that boundary. Author correctness does not come from hiding
     /// this: it comes from the typed handles and the api-tree builders
@@ -57,7 +57,7 @@ impl<Kind> Topic<Kind> {
     ///
     /// `#[doc(hidden)] pub` raw constructor, the owned-key counterpart of
     /// [`new_static`](Self::new_static): an unsupported escape hatch that is `pub`
-    /// only to cross the `phoxal` / `phoxal-bus` crate split. The generated api
+    /// only to cross the `phoxal-api` / `phoxal-bus` crate split. The generated api
     /// builder calls it for nodes with dynamic segments, filling the carried
     /// variables into the canonical key. Not part of the authored surface;
     /// correctness for authors comes from the typed handles + api-tree builders,

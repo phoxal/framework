@@ -24,7 +24,7 @@ workspace is converging to, not all wired up yet.
    (`phoxal/phoxal-cli`) via `phoxal.sources.lock` (resolved image digests,
    component commits, tool digests), not by this workspace.
 3. **Contract.** The api tree carries golden + drift tests
-   ([`phoxal/src/api/tests.rs`](../phoxal/src/api/tests.rs), see
+   ([`phoxal-api/src/tests.rs`](../phoxal-api/src/tests.rs), see
    [CONTRACTS.md](./CONTRACTS.md)): the **plain** MessagePack body bytes are pinned
    (no `{"v":…,"data":…}` wrapper - the body is just the struct's fields), each
    body's `ContractBody` consts (`FAMILY`/`TOPIC`) and its `Api::ID` are asserted,

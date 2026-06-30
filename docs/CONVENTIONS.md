@@ -32,7 +32,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 Topic keys are **versionless** and api-local; the api tree's `topic` builders are
 the only source of keys, and the wire body never appears in the key
-([`phoxal/src/api/mod.rs`](../phoxal/src/api/mod.rs),
+([`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs),
 [`phoxal-bus/src/topic.rs`](../phoxal-bus/src/topic.rs)).
 
 - Domain streams: `<domain>/<stream>` (e.g. `drive/state`, `drive/target`,
@@ -122,7 +122,7 @@ the only source of keys, and the wire body never appears in the key
 ## Components
 
 - Component capability contracts live under the api tree's `component(instance)`
-  node ([`phoxal/src/api/mod.rs`](../phoxal/src/api/mod.rs)); each `kind(capability)`
+  node ([`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs)); each `kind(capability)`
   child is a self-contained node whose key is
   `component/<instance>/<kind>/<capability>/<leaf>`.
 - A component driver is an ordinary runtime launched once per `components.instances`
