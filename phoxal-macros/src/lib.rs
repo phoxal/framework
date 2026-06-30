@@ -83,8 +83,10 @@ use proc_macro::TokenStream;
 ///
 /// Each version also gets an api-local `topic` module emitted with BOTH side trees
 /// (L1, plan #00). `topic::new()` returns a `Root` for the PUBLIC **client** side;
-/// `topic::internal::new()` returns a `Root` for the OWNER side (a deliberate,
-/// greppable owner opt-in). Both have a method per node that walks the identical
+/// `topic::internal::new(cap)` returns a `Root` for the OWNER side (a deliberate,
+/// greppable owner opt-in). The owner entry requires the runner-minted
+/// `phoxal_bus::OwnerCap` (L2): a runtime passes `ctx.owner_capability()`. Both
+/// have a method per node that walks the identical
 /// tree (a dynamic node's method takes its variable as `impl Display`) and a leaf
 /// method that returns a typed `bus::Topic<Kind>` with the key formatted from the
 /// carried variables. The leaf brand is side-specific: on the client side a

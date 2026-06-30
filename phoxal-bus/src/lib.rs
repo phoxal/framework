@@ -17,6 +17,7 @@
 //! `phoxal::bus::ContractBody`.
 
 pub mod abi;
+pub mod capability;
 pub mod codec;
 pub mod contract;
 pub mod error;
@@ -28,6 +29,7 @@ pub mod session;
 pub mod topic;
 
 pub use abi::{BUS_ABI, BusAbi, CodecId, encoding_string};
+pub use capability::OwnerCap;
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{ApiVersion, ContractBody, TopicRole};
 pub use error::{BusError, Result};

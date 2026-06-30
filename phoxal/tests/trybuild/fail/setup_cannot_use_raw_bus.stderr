@@ -1,0 +1,10 @@
+error[E0624]: method `bus` is private
+  --> tests/trybuild/fail/setup_cannot_use_raw_bus.rs:20:24
+   |
+20 |         let _raw = ctx.bus();
+   |                        ^^^ private method
+   |
+  ::: src/runtime/context.rs
+   |
+   |     pub(crate) fn bus(&self) -> &Bus {
+   |     -------------------------------- private method defined here

@@ -52,11 +52,13 @@ impl VideoSource {
     }
 
     /// Video OWNS each `video/stream/{id}` node's state telemetry, so this is the
-    /// owner `Publish` side from the `internal` builder.
+    /// owner `Publish` side from the `internal` builder, which requires the
+    /// runner-minted owner capability (L2, plan #00).
     fn state_topic(
         &self,
+        cap: phoxal::bus::OwnerCap,
     ) -> phoxal::bus::Topic<phoxal::bus::Publish<api::video::stream::StreamState>> {
-        api::topic::internal::new()
+        api::topic::internal::new(cap)
             .video()
             .stream(&self.stream_id)
             .state()
@@ -103,13 +105,16 @@ impl Video {
 impl Video {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let sources = build_video_sources(ctx.robot()?)?;
 
         let mut cameras = Vec::with_capacity(sources.len());
         let mut states = Vec::with_capacity(sources.len());
         for source in &sources {
             cameras.push(ctx.subscribe(source.camera_topic()).subscriber().await?);
-            states.push(ctx.publisher(source.state_topic()).await?);
+            states.push(ctx.publisher(source.state_topic(cap)).await?);
         }
 
         Ok(Self {
@@ -161,7 +166,7 @@ impl Video {
         Ok(())
     }
 
-    #[server(topic = api::topic::internal::new().video().open())]
+    #[server(topic = api::topic::new().video().open())]
     async fn open(
         &mut self,
         request: api::video::OpenRequest,
@@ -322,8 +327,12 @@ mod tests {
             rgb.camera_topic().key(),
             "component/front_camera/camera/rgb/frame"
         );
+        // The owner topic builder requires the runner-minted `OwnerCap` (L2); the
+        // test mints one directly via the doc-hidden `__mint`, standing in for the
+        // runner.
+        let cap = phoxal::bus::OwnerCap::__mint();
         assert_eq!(
-            rgb.state_topic().key(),
+            rgb.state_topic(cap).key(),
             "video/stream/front_camera_rgb/state"
         );
     }

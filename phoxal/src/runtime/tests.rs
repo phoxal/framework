@@ -23,7 +23,7 @@ impl AssetTest {
         Ok(Self { present: true })
     }
 
-    #[server(topic = api::topic::internal::new().asset().get())]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get(
         &mut self,
         request: api::asset::GetRequest,
@@ -106,7 +106,7 @@ impl BadTopicTest {
         Ok(Self {})
     }
 
-    #[server(topic = phoxal::bus::Topic::<phoxal::bus::ServeQuery<api::asset::GetRequest, api::asset::GetResponse>>::new_static("asset/other"))]
+    #[server(topic = phoxal::bus::Topic::<phoxal::bus::AskQuery<api::asset::GetRequest, api::asset::GetResponse>>::new_static("asset/other"))]
     async fn get(
         &mut self,
         _request: api::asset::GetRequest,
@@ -134,7 +134,7 @@ impl DuplicateServerTopicTest {
         Ok(Self {})
     }
 
-    #[server(topic = api::topic::internal::new().asset().get())]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get_one(
         &mut self,
         _request: api::asset::GetRequest,
@@ -142,7 +142,7 @@ impl DuplicateServerTopicTest {
         Ok(api::asset::GetResponse::Missing)
     }
 
-    #[server(topic = api::topic::internal::new().asset().get())]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get_two(
         &mut self,
         _request: api::asset::GetRequest,
@@ -177,7 +177,7 @@ impl MapTest {
         })
     }
 
-    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
+    #[server_snapshot(topic = api::topic::new().map().submap())]
     async fn submap(
         state: Snapshot<MapTestState>,
         _request: api::map::SubmapRequest,

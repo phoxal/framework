@@ -39,6 +39,9 @@ struct Explore {
 impl Explore {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             map_revision: ctx
                 .subscribe(api::topic::new().map().revision())
@@ -53,10 +56,10 @@ impl Explore {
             // owner (`internal`) builder; `map/submap` is CLIENT-queried and the
             // subscriptions are CONSUMED via the public builder.
             frontiers: ctx
-                .publisher(api::topic::internal::new().explore().frontiers())
+                .publisher(api::topic::internal::new(cap).explore().frontiers())
                 .await?,
             state: ctx
-                .publisher(api::topic::internal::new().explore().state())
+                .publisher(api::topic::internal::new(cap).explore().state())
                 .await?,
         })
     }

@@ -91,6 +91,9 @@ struct Plan {
 impl Plan {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             latest_mission_state: None,
             mission_state: ctx
@@ -109,10 +112,10 @@ impl Plan {
             // (`internal`) builder; the subscriptions above are CONSUMED via the
             // public builder.
             path: ctx
-                .publisher(api::topic::internal::new().plan().path())
+                .publisher(api::topic::internal::new(cap).plan().path())
                 .await?,
             state: ctx
-                .publisher(api::topic::internal::new().plan().state())
+                .publisher(api::topic::internal::new(cap).plan().state())
                 .await?,
         })
     }

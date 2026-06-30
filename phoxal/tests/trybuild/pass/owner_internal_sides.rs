@@ -22,14 +22,17 @@ struct Owner {
 impl Owner {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability the owner
+        // (`internal`) builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             // Owner side: `command` -> Subscribe, `state` -> Publish.
             target: ctx
-                .subscribe(api::topic::internal::new().drive().target())
+                .subscribe(api::topic::internal::new(cap).drive().target())
                 .subscriber()
                 .await?,
             state: ctx
-                .publisher(api::topic::internal::new().drive().state())
+                .publisher(api::topic::internal::new(cap).drive().state())
                 .await?,
         })
     }

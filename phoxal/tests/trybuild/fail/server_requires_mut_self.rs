@@ -12,7 +12,7 @@ impl ServerSharedSelf {
         Ok(Self {})
     }
 
-    #[server(topic = api::topic::internal::new().asset().get())]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get(
         &self,
         _request: api::asset::GetRequest,

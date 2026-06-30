@@ -328,7 +328,14 @@ fn validate_one_server_topic(
 ) -> TokenStream {
     let topic_var = syn::Ident::new(&format!("__phoxal_{kind}_topic_{idx}"), topic.span());
     quote! {
-        let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::ServeQuery<#req_ty, #resp_ty>> = #topic;
+        // The `#[server(topic = …)]` expr is built with the PUBLIC api builder
+        // (`api::topic::new()...`), so the query leaf is the client `AskQuery`
+        // brand. This validation only reads the topic KEY (identical on both
+        // sides) and type-checks Req/Resp; the live serve authority is
+        // `<Req as ContractBody>::TOPIC` (runner-controlled), not this expr, so
+        // owning the served topic does not need an `OwnerCap` here (plan #00 L2
+        // Option C: runner-controlled).
+        let #topic_var: ::phoxal::bus::Topic<::phoxal::bus::AskQuery<#req_ty, #resp_ty>> = #topic;
         let topic_key = #topic_var.key();
         let expected = <#req_ty as ::phoxal::bus::ContractBody>::TOPIC;
         if topic_key != expected {
@@ -490,7 +497,12 @@ fn topic_assertions(
         // (D59/D60).
         checks.push(quote! {
             fn #topic_id() {
-                let _t: ::phoxal::bus::Topic<::phoxal::bus::ServeQuery<#req, #resp>> = #topic;
+                // Built with the PUBLIC api builder (`api::topic::new()...`), so the
+                // query leaf is the client `AskQuery` brand. This is a type-only
+                // assertion that the `topic = …` expr agrees with Req/Resp; the
+                // serve authority is the runner-controlled `<Req>::TOPIC`, not this
+                // expr (plan #00 L2 Option C).
+                let _t: ::phoxal::bus::Topic<::phoxal::bus::AskQuery<#req, #resp>> = #topic;
             }
             fn #api_id() {
                 fn assert<R, B>()

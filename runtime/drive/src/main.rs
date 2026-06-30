@@ -133,16 +133,19 @@ struct Drive {
 impl Drive {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let config = DriveConfig::from_robot(ctx.robot()?)?;
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner (`internal`) builder.
         let target = ctx
-            .subscribe(api::topic::internal::new().drive().target())
+            .subscribe(api::topic::internal::new(cap).drive().target())
             .subscriber()
             .await?;
         let state = ctx
-            .publisher(api::topic::internal::new().drive().state())
+            .publisher(api::topic::internal::new(cap).drive().state())
             .await?;
 
         let mut left_motors = Vec::with_capacity(config.left.len());

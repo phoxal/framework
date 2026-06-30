@@ -36,13 +36,14 @@ struct EncoderProducer {
 impl EncoderProducer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        let cap = ctx.owner_capability();
         Ok(Self {
             // The producer is the OWNER of the encoder sample (the encoder driver),
             // so it publishes the `state` topic through the owner (`internal`)
             // builder.
             encoder: ctx
                 .publisher(
-                    api::topic::internal::new()
+                    api::topic::internal::new(cap)
                         .component(INSTANCE)
                         .encoder(CAPABILITY)
                         .sample(),

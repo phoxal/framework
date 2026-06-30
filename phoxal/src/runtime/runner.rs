@@ -147,8 +147,12 @@ where
         None => None,
     };
 
+    // Mint the single plan #00 Layer 2 owner capability the runtime uses to opt
+    // into owning its own topics (via `ctx.owner_capability()` ->
+    // `api::topic::internal::new(cap)`). The runner is the only minter.
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
+        ::phoxal_bus::OwnerCap::__mint(),
         robot,
         launch.bundle_root.clone(),
         launch.component_instance.clone(),

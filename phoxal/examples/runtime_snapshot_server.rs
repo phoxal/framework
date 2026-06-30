@@ -53,6 +53,9 @@ struct SnapshotMap {
 impl SnapshotMap {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability the owner
+        // (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             localize: ctx
                 .subscribe(api::topic::new().localize().state())
@@ -62,7 +65,7 @@ impl SnapshotMap {
             // so they go through the owner (`internal`) builder; `localize/state` is
             // consumed via the public builder.
             revision: ctx
-                .publisher(api::topic::internal::new().map().revision())
+                .publisher(api::topic::internal::new(cap).map().revision())
                 .await?,
             grid: Arc::new(Grid::empty()),
             rev: 0,
@@ -86,7 +89,7 @@ impl SnapshotMap {
         Ok(())
     }
 
-    #[server(topic = api::topic::internal::new().asset().get())]
+    #[server(topic = api::topic::new().asset().get())]
     async fn get_asset(
         &mut self,
         request: api::asset::GetRequest,
@@ -101,7 +104,7 @@ impl SnapshotMap {
         }
     }
 
-    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
+    #[server_snapshot(topic = api::topic::new().map().submap())]
     async fn submap(
         state: Snapshot<MapSnapshot>,
         _request: api::map::SubmapRequest,

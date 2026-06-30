@@ -258,6 +258,9 @@ struct Perception {
 impl Perception {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let camera_sources = camera_bindings(ctx.robot()?)?;
         let depth_sources = depth_bindings(ctx.robot()?)?;
 
@@ -288,10 +291,10 @@ impl Perception {
             // -> owner (`internal`) builder; sensor frames and `localize/state` are
             // CONSUMED via the public builder.
             detections: ctx
-                .publisher(api::topic::internal::new().perception().detections())
+                .publisher(api::topic::internal::new(cap).perception().detections())
                 .await?,
             state: ctx
-                .publisher(api::topic::internal::new().perception().state())
+                .publisher(api::topic::internal::new(cap).perception().state())
                 .await?,
             camera_sources,
             depth_sources,

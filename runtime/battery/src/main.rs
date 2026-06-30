@@ -31,8 +31,11 @@ struct Battery {
 impl Battery {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         let state = ctx
-            .publisher(api::topic::internal::new().battery().state())
+            .publisher(api::topic::internal::new(cap).battery().state())
             .await?;
 
         Ok(Self {

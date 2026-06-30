@@ -14,14 +14,15 @@ struct NoSnap {
 impl NoSnap {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        let cap = ctx.owner_capability();
         Ok(Self {
             revision: ctx
-                .publisher(api::topic::internal::new().map().revision())
+                .publisher(api::topic::internal::new(cap).map().revision())
                 .await?,
         })
     }
 
-    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
+    #[server_snapshot(topic = api::topic::new().map().submap())]
     async fn submap(
         _state: Snapshot<State>,
         _request: api::map::SubmapRequest,

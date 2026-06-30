@@ -7,8 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bus::{
-    AskQuery, Bus, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, Publish, Publisher,
-    Querier, Subscribe, Subscriber, Topic,
+    AskQuery, Bus, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publish,
+    Publisher, Querier, Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
 use crate::runtime::spec::{DeclaresPublish, DeclaresQuery, DeclaresSubscribe, RuntimeFields};
@@ -29,12 +29,14 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 /// (L1, plan #00): `publisher` takes `Topic<Publish<B>>`, the subscription
 /// builders take `Topic<Subscribe<B>>`, and `querier` takes
 /// `Topic<AskQuery<Req, Resp>>`. The api tree's PUBLIC `topic::new()...` chain
-/// yields the client brands and its `topic::internal::new()...` chain yields the
+/// yields the client brands and its `topic::internal::new(cap)...` chain yields the
 /// owner brands, so taking the WRONG side of a topic (e.g. publishing a `state`
 /// the public chain hands you as `Subscribe`) fails to compile - the owner side is
-/// reachable only through the explicit `internal` builder.
+/// reachable only through the explicit `internal` builder, whose entry requires the
+/// runner-minted owner capability from [`Self::owner_capability`] (L2, plan #00).
 pub struct SetupContext<R: RuntimeFields> {
     bus: Bus,
+    owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
     bundle_root: Option<PathBuf>,
     component_instance: Option<String>,
@@ -44,12 +46,14 @@ pub struct SetupContext<R: RuntimeFields> {
 impl<R: RuntimeFields> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
+        owner_cap: OwnerCap,
         robot: Option<Arc<Robot>>,
         bundle_root: Option<PathBuf>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
             bus,
+            owner_cap,
             robot,
             bundle_root,
             component_instance,
@@ -160,9 +164,35 @@ impl<R: RuntimeFields> SetupContext<R> {
         )?)
     }
 
-    /// The underlying bus (escape hatch for framework runtimes/drivers; not part
-    /// of the normal authoring path).
-    pub fn bus(&self) -> &Bus {
+    /// The runner-minted owner capability (plan #00 Layer 2).
+    ///
+    /// This is the controlled path a runtime uses to opt into being the OWNER of
+    /// its own topics. Bind it once in `#[setup]` and pass it to the owner builder
+    /// entry, `api::topic::internal::new(cap)`:
+    ///
+    /// ```ignore
+    /// let cap = ctx.owner_capability();
+    /// let pub_ = ctx.publisher(api::topic::internal::new(cap).drive().state()).await?;
+    /// ```
+    ///
+    /// The runner mints the single [`OwnerCap`] it stores here before `#[setup]`
+    /// runs, so owning a topic is a deliberate, greppable opt-in rather than
+    /// something any participant can do silently. See [`OwnerCap`] for the honest
+    /// residual: this is a not-by-accident gate, not a hard guarantee.
+    pub fn owner_capability(&self) -> OwnerCap {
+        self.owner_cap
+    }
+
+    /// The underlying bus. Not on the default checked-runtime surface (plan #00
+    /// DoD #11 / plan #07): the raw bus is `pub(crate)` so normal runtimes and
+    /// examples cannot reach around the typed handle builders. Privileged
+    /// participants that genuinely need raw access go through `phoxal-bus`
+    /// directly (`Bus::open` + `run_with_bus`), not through this context.
+    ///
+    /// Retained as an in-crate accessor (no current caller) so privileged phoxal
+    /// code/tests have the seam without re-widening the documented surface.
+    #[allow(dead_code)]
+    pub(crate) fn bus(&self) -> &Bus {
         &self.bus
     }
 }

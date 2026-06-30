@@ -65,6 +65,9 @@ struct MapState {
 impl Map {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        // Owner opt-in (plan #00 L2): the runner-minted capability that the
+        // owner (`internal`) topic builder requires.
+        let cap = ctx.owner_capability();
         Ok(Self {
             localize: ctx
                 .subscribe(api::topic::new().localize().state())
@@ -74,7 +77,7 @@ impl Map {
             // query it serves below) -> owner (`internal`) builder; `localize/state`
             // is CONSUMED via the public builder.
             revision: ctx
-                .publisher(api::topic::internal::new().map().revision())
+                .publisher(api::topic::internal::new(cap).map().revision())
                 .await?,
             grid: Arc::new(Grid::empty(64, 64, 0.05)),
             rev: 0,
@@ -104,7 +107,7 @@ impl Map {
     }
 
     // Concurrent read against the committed snapshot: does not block the step loop.
-    #[server_snapshot(topic = api::topic::internal::new().map().submap())]
+    #[server_snapshot(topic = api::topic::new().map().submap())]
     async fn submap(
         state: Snapshot<MapState>,
         request: api::map::SubmapRequest,
