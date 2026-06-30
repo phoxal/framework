@@ -4,9 +4,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
 use phoxal::runtime::{ParticipantLaunch, RealClock, emit_apis_json, run_with};
+use phoxal_api::y2026_1 as api;
 
 static STEPS: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);

@@ -23,7 +23,7 @@ use syn::{
     TypePath, parenthesized,
 };
 
-use crate::util::phoxal;
+use crate::util::{phoxal, phoxal_api};
 
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
@@ -75,6 +75,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     decls.extend(args.contracts);
 
     let phoxal = phoxal();
+    let phoxal_api = phoxal_api();
 
     // FIELD_CONTRACTS entries reference the body type's ContractBody consts so the
     // family/topic/api_version are single-sourced from the api tree (D61). A query
@@ -88,9 +89,9 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 let dir = dir.tokens(&phoxal);
                 contract_entries.push(quote! {
                     #phoxal::runtime::ContractUse {
-                        api_version: <<#body as #phoxal::api::ContractBody>::Api as #phoxal::api::ApiVersion>::ID,
-                        family: <#body as #phoxal::api::ContractBody>::FAMILY,
-                        topic: <#body as #phoxal::api::ContractBody>::TOPIC,
+                        api_version: <<#body as #phoxal::bus::ContractBody>::Api as #phoxal::bus::ApiVersion>::ID,
+                        family: <#body as #phoxal::bus::ContractBody>::FAMILY,
+                        topic: <#body as #phoxal::bus::ContractBody>::TOPIC,
                         direction: #dir,
                     }
                 });
@@ -108,7 +109,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 fn assert<R, B>()
                 where
                     R: #phoxal::runtime::RuntimeFields,
-                    B: #phoxal::api::ContractBody<Api = <R as #phoxal::runtime::RuntimeFields>::Api>,
+                    B: #phoxal::bus::ContractBody<Api = <R as #phoxal::runtime::RuntimeFields>::Api>,
                 {}
                 assert::<#struct_name, #body>();
             }
@@ -116,9 +117,9 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     });
 
     // Direction-specific Declares markers (D44): publishing a family declared only
-    // as subscribe (or vice versa) is a compile error — and would otherwise be IO
+    // as subscribe (or vice versa) is a compile error - and would otherwise be IO
     // `emit-apis` never reports. Deduplicate common API-module aliases
-    // (`api::...` vs `phoxal::api::y2026_N::...`) so the same semantic body does
+    // (`api::...` vs `phoxal_api::y2026_N::...`) so the same semantic body does
     // not emit conflicting impls.
     let mut seen = std::collections::BTreeSet::new();
     let mut declares = TokenStream::new();
@@ -149,9 +150,9 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     Ok(quote! {
         impl #phoxal::runtime::RuntimeFields for #struct_name {
             const ID: &'static str = #id;
-            type Api = #phoxal::api::#api::Api;
+            type Api = #phoxal_api::#api::Api;
             const API_VERSION: &'static str =
-                <#phoxal::api::#api::Api as #phoxal::api::ApiVersion>::ID;
+                <#phoxal_api::#api::Api as #phoxal::bus::ApiVersion>::ID;
             type Config = #config_ty;
             const FIELD_CONTRACTS: &'static [#phoxal::runtime::ContractUse] = &[
                 #(#contract_entries),*
@@ -388,12 +389,8 @@ fn normalized_type_key(ty: &Type, api: &Ident) -> String {
         .map(|segment| segment.ident.to_string())
         .collect::<Vec<_>>();
     let selected_api = api.to_string();
-    if segments.len() >= 3
-        && segments[0] == "phoxal"
-        && segments[1] == "api"
-        && segments[2] == selected_api
-    {
-        segments.drain(0..3);
+    if segments.len() >= 2 && segments[0] == "phoxal_api" && segments[1] == selected_api {
+        segments.drain(0..2);
     } else if segments
         .first()
         .is_some_and(|segment| segment == "api" || segment == &selected_api)

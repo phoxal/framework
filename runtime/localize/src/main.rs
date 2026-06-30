@@ -11,8 +11,8 @@
 //! It does not implement ORB-SLAM3, visual-inertial localization, or GNSS
 //! anchoring; map-frame and odometry-frame are assumed identical.
 
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const LOCALIZE_STALE_NS: u64 = 1_000_000_000; // 1 s
 
@@ -88,8 +88,8 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     use super::{LOCALIZE_STALE_NS, Localize, confidence_for, localization_from};
 

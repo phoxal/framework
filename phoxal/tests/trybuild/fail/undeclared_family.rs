@@ -1,7 +1,7 @@
 // Building a handle for a contract family the runtime never declared is a
 // compile error (R: Declares<B> unsatisfied — D44). The struct only declares a
 // `drive::State` subscriber, but setup tries to publish `drive::Target`.
-use phoxal::api::y2026_1 as api;
+use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
 #[derive(phoxal::Runtime)]

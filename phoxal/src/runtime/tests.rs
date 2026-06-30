@@ -5,11 +5,10 @@
 
 use std::sync::Arc;
 
-use crate::api::y2026_1 as api;
-use crate::api::{ApiVersion, ContractBody};
-use crate::bus::{Codec, MessagePack, QueryCode};
+use crate::bus::{ApiVersion, Codec, ContractBody, MessagePack, QueryCode};
 use crate::prelude::*;
 use crate::runtime::RuntimeBehavior;
+use phoxal_api::y2026_1 as api;
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "asset-test", api = y2026_1)]

@@ -15,8 +15,8 @@
 //! (non-finite or inverted bounds) clamps that axis to zero.
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const MANUAL_STALE_NS: u64 = 500_000_000;
 const FOLLOW_STALE_NS: u64 = 500_000_000;
@@ -330,7 +330,7 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::ContractBody;
+    use phoxal_api::ContractBody;
 
     use super::{
         FOLLOW_STALE_NS, Motion, SAFETY_STALE_NS, Timed, api, arbitrate, clamp_to_constraint,

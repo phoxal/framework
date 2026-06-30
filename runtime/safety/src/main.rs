@@ -18,10 +18,10 @@
 
 use std::f64::consts::PI;
 
-use phoxal::api::y2026_1 as api;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const BATTERY_CRITICAL_RATIO: f32 = 0.10;
 const BATTERY_LOW_RATIO: f32 = 0.25;
@@ -370,7 +370,7 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::ContractBody;
+    use phoxal_api::ContractBody;
 
     use super::{
         RequiredSources, SOURCE_FRESH_NS, Safety, SafetyInputs, Timed, api, assess, authorize,

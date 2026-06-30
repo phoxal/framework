@@ -9,9 +9,9 @@
 //! exactly as published on the wire. The live publish/subscribe + query paths are
 //! covered end-to-end by `interop.rs` / `interop_dynamic.rs`.
 
-use phoxal::api::y2026_1 as api;
-use phoxal::api::{ApiVersion, ContractBody};
 use phoxal::bus::{BUS_ABI, BusMetadata, CodecId, Source, encoding_string};
+use phoxal_api::y2026_1 as api;
+use phoxal_api::{ApiVersion, ContractBody};
 
 #[test]
 fn bus_abi_id_is_frozen() {

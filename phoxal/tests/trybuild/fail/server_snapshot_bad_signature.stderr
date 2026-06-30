@@ -4,11 +4,11 @@ error: #[server_snapshot] is an associated function: it takes `state: Snapshot<â
 18 |     async fn submap(
    |     ^^^^^
 
-warning: unused import: `phoxal::api::y2026_1 as api`
+warning: unused import: `phoxal_api::y2026_1 as api`
  --> tests/trybuild/fail/server_snapshot_bad_signature.rs:1:5
   |
-1 | use phoxal::api::y2026_1 as api;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+1 | use phoxal_api::y2026_1 as api;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
 

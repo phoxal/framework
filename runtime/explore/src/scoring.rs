@@ -1,4 +1,4 @@
-use phoxal::api::y2026_1 as api;
+use phoxal_api::y2026_1 as api;
 
 use crate::frontiers::{OccupancyGrid, is_free};
 
@@ -46,7 +46,7 @@ fn distance(left: (f64, f64), right: (f64, f64)) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::y2026_1 as api;
 
     use super::score_frontiers;
     use crate::frontiers::OccupancyGrid;

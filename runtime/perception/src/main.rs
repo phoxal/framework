@@ -14,11 +14,11 @@
 //! changing the runtime IO surface.
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const CAMERA_STALE_NS: u64 = 1_000_000_000;
 const DEPTH_STALE_NS: u64 = 1_000_000_000;
@@ -518,7 +518,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use phoxal::api::ContractBody;
+    use phoxal_api::ContractBody;
 
     use super::*;
 

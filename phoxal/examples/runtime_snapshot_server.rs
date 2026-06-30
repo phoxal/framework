@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(Clone)]
 struct Grid {

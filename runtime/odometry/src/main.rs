@@ -14,11 +14,11 @@
 use std::f64::consts::PI;
 
 use anyhow::{Result, bail};
-use phoxal::api::y2026_1 as api;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 /// A wheel whose last encoder sample is older than this is dropped from the twist
 /// estimate, so a dead encoder publisher stops contributing motion (and the pose
@@ -282,8 +282,8 @@ mod tests {
     use std::f64::consts::PI;
     use std::path::PathBuf;
 
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     use super::{
         ENCODER_STALE_NS, OdometryConfig, average_side, forward, integrate_pose, normalize_yaw,

@@ -16,14 +16,14 @@ use phoxal::prelude::*;
 
 enum ForeignApi {}
 
-impl phoxal::api::ApiVersion for ForeignApi {
+impl phoxal_api::ApiVersion for ForeignApi {
     const ID: &'static str = "foreign";
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ForeignBody;
 
-impl phoxal::api::ContractBody for ForeignBody {
+impl phoxal_api::ContractBody for ForeignBody {
     type Api = ForeignApi;
     const FAMILY: &'static str = "foreign::Body";
     const TOPIC: &'static str = "foreign/body";
@@ -32,7 +32,7 @@ impl phoxal::api::ContractBody for ForeignBody {
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "wrong-api-setup", api = y2026_1)]
 struct WrongApiSetup {
-    target: Publisher<phoxal::api::y2026_1::drive::Target>,
+    target: Publisher<phoxal_api::y2026_1::drive::Target>,
 }
 
 // Satisfy the publish-declaration gate for `ForeignBody` by hand, so the only
@@ -49,7 +49,7 @@ impl WrongApiSetup {
         let _foreign = ctx.publisher(topic).await?;
         Ok(Self {
             target: ctx
-                .publisher(phoxal::api::y2026_1::topic::new().drive().target())
+                .publisher(phoxal_api::y2026_1::topic::new().drive().target())
                 .await?,
         })
     }

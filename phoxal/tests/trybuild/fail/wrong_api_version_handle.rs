@@ -4,14 +4,14 @@ use phoxal::prelude::*;
 
 enum ForeignApi {}
 
-impl phoxal::api::ApiVersion for ForeignApi {
+impl phoxal_api::ApiVersion for ForeignApi {
     const ID: &'static str = "foreign";
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct ForeignBody;
 
-impl phoxal::api::ContractBody for ForeignBody {
+impl phoxal_api::ContractBody for ForeignBody {
     type Api = ForeignApi;
     const FAMILY: &'static str = "foreign::Body";
     const TOPIC: &'static str = "foreign/body";

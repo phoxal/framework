@@ -3,8 +3,8 @@
 //! Run with `cargo run --example runtime_async_entrypoint` or inspect metadata
 //! with `cargo run --example runtime_async_entrypoint emit-apis`.
 
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "async-heartbeat", api = y2026_1)]

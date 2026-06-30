@@ -5,8 +5,8 @@
 
 use std::collections::BTreeMap;
 
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "asset-store", api = y2026_1)]

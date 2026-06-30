@@ -16,8 +16,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use phoxal::api::y2026_1 as api;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(phoxal::Runtime)]
 #[phoxal(id = "map", api = y2026_1)]
@@ -151,8 +151,8 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Grid, Map, mark_free};
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     #[test]
     fn submap_returns_full_grid_window() {

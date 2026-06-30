@@ -6,7 +6,7 @@
 // the brand alone. The valid declared field is built through the owner (`internal`)
 // builder, whose `command` leaf is the matching `Topic<Subscribe<Target>>`, so the
 // ONLY error is the unsatisfied publish declaration (not a side-brand mismatch).
-use phoxal::api::y2026_1 as api;
+use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
 #[derive(phoxal::Runtime)]

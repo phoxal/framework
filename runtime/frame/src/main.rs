@@ -19,10 +19,10 @@ use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal::api::y2026_1 as api;
 use phoxal::model::structure::{Joint as UrdfJoint, JointType, Pose, Structure};
 use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 const BUFFER_WINDOW_NS: u64 = 5_000_000_000;
 const BUFFER_MAX_ENTRIES: usize = 16_384;
@@ -570,8 +570,8 @@ mod tests {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
     use std::sync::Arc;
 
-    use phoxal::api::ContractBody;
-    use phoxal::api::y2026_1 as api;
+    use phoxal_api::ContractBody;
+    use phoxal_api::y2026_1 as api;
 
     use super::*;
 

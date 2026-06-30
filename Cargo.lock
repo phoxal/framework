@@ -2030,6 +2030,7 @@ name = "phoxal-runtime-asset"
 version = "0.18.0"
 dependencies = [
  "phoxal",
+ "phoxal-api",
 ]
 
 [[package]]
@@ -2038,6 +2039,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2047,6 +2049,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
 ]
 
 [[package]]
@@ -2055,6 +2058,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2064,6 +2068,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2074,6 +2079,7 @@ dependencies = [
  "anyhow",
  "nalgebra",
  "phoxal",
+ "phoxal-api",
 ]
 
 [[package]]
@@ -2082,6 +2088,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
 ]
 
 [[package]]
@@ -2090,6 +2097,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2099,6 +2107,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2108,6 +2117,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2117,6 +2127,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2126,6 +2137,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
  "tokio",
 ]
@@ -2136,6 +2148,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2145,6 +2158,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2154,6 +2168,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "tokio",
 ]
 
@@ -2163,6 +2178,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
 ]
 
 [[package]]
@@ -2171,6 +2187,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 
@@ -2180,6 +2197,7 @@ version = "0.18.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "phoxal-api",
  "serde_json",
 ]
 

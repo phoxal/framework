@@ -14,12 +14,12 @@
 //! dependency set.
 
 use anyhow::{Result, anyhow};
-use phoxal::api::y2026_1 as api;
 use phoxal::bus::QueryFailure;
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
+use phoxal_api::y2026_1 as api;
 
 #[derive(Clone)]
 struct VideoSource {
@@ -286,8 +286,8 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use phoxal::api::ContractBody;
     use phoxal::bus::QueryCode;
+    use phoxal_api::ContractBody;
 
     use super::*;
 

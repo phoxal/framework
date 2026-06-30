@@ -8,7 +8,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 ## Bus and contracts
 
-- Use `phoxal::bus` plus the `phoxal::api::<version>` modules for all inter-service
+- Use `phoxal::bus` plus the `phoxal_api::<version>` modules for all inter-service
   communication.
   Do **not** add a direct `zenoh` dependency outside `phoxal::bus`.
 - `phoxal::bus` owns the Zenoh session/builder (`Bus`), the body-typed handles

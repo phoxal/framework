@@ -1,5 +1,5 @@
 // A minimal valid runtime: derive + runtime impl + setup + step + shutdown.
-use phoxal::api::y2026_1 as api;
+use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
 #[derive(phoxal::Runtime)]

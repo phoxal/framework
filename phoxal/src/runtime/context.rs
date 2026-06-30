@@ -6,10 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::api::ContractBody;
 use crate::bus::{
-    AskQuery, Bus, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, Publish, Publisher, Querier,
-    Subscribe, Subscriber, Topic,
+    AskQuery, Bus, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, Publish, Publisher,
+    Querier, Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
 use crate::runtime::spec::{DeclaresPublish, DeclaresQuery, DeclaresSubscribe, RuntimeFields};
