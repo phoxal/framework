@@ -1,5 +1,13 @@
 name: release
 
+# LEGACY / DORMANT (plan #01): this bespoke pipeline assumed one shared
+# `[workspace.package] version` and a `release/vX.Y.Z` PR from `release-prep.yml`.
+# Per-artifact release dropped the shared version and removed `release-prep.yml`,
+# so nothing now creates a `release/v*` PR and this workflow does not run. The
+# `tag` job's root-version check below no longer applies (versions are per-crate).
+# A release-plz-driven pipeline replaces this; do not re-enable without updating
+# the version logic for per-crate versions.
+#
 # Triggered by merging a `release/vX.Y.Z` PR into main (the convention the
 # release-prep workflow produces). The merged head ref carries the intended
 # version; the `tag` job verifies it against Cargo.toml before tagging, then:
