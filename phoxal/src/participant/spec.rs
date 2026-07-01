@@ -2,8 +2,8 @@
 //!
 //! - [`ParticipantSpec`] is emitted by `#[derive(phoxal::Service)]`,
 //!   `#[derive(phoxal::Driver)]`, `#[derive(phoxal::Tool)]`, or
-//!   `#[derive(phoxal::Simulator)]`: the artifact kind, id, the one API version,
-//!   the config type, and the field-side contracts.
+//!   `#[derive(phoxal::Simulator)]`: the artifact kind/class, id, the one API
+//!   version, the config type, and the field-side contracts.
 //! - [`ParticipantBehavior`] is emitted by `#[phoxal::behavior]`: the server-side
 //!   contracts plus the lifecycle dispatch (`__setup`/`__step`/`__shutdown`) the
 //!   runner drives.
@@ -68,6 +68,8 @@ pub struct ContractUse {
 pub trait ParticipantSpec: Sized + Send + 'static {
     /// The authoring kind that produced this artifact.
     const KIND: &'static str;
+    /// Whether normal graph topology applies to this participant.
+    const PARTICIPANT_CLASS: &'static str;
     /// The participant id (`#[phoxal(id = "…")]`, default kebab of the type name).
     const ID: &'static str;
     /// The one API version this participant - and the whole graph - runs against.

@@ -31,6 +31,8 @@ pub struct ParticipantMetadata {
     pub framework: Framework,
     /// The one API version the artifact runs against.
     pub api_version: String,
+    /// Whether normal graph topology applies to this participant.
+    pub participant_class: &'static str,
     /// The framework-owned wire-envelope id.
     pub bus_abi: String,
     /// The union of field-side + server-side contracts.
@@ -110,6 +112,7 @@ pub fn participant_metadata<R: ParticipantBehavior>() -> ParticipantMetadata {
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
         api_version: R::API_VERSION.to_string(),
+        participant_class: R::PARTICIPANT_CLASS,
         bus_abi: BUS_ABI.id().to_string(),
         required_contracts,
         config_schema: serde_json::to_value(schemars::schema_for!(R::Config))

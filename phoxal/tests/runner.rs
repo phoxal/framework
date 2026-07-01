@@ -223,6 +223,7 @@ fn emit_apis_reports_frozen_schema() {
     assert_eq!(value["artifact"]["kind"], "service");
     assert_eq!(value["artifact"]["id"], "counter");
     assert_eq!(value["api_version"], "y2026_1");
+    assert_eq!(value["participant_class"], "checked");
     assert_eq!(value["bus_abi"], "phoxal-bus/v0");
 
     let contracts = value["required_contracts"].as_array().unwrap();
@@ -262,6 +263,7 @@ fn emit_apis_reports_tool_kind() {
 
     assert_eq!(value["artifact"]["kind"], "tool");
     assert_eq!(value["artifact"]["id"], "robot-inspector");
+    assert_eq!(value["participant_class"], "privileged");
     assert_eq!(value["required_contracts"].as_array().unwrap().len(), 0);
 }
 

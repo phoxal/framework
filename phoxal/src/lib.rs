@@ -149,6 +149,7 @@ extern crate self as phoxal;
 /// (the ABI floor). Stays addressable at `phoxal::bus::*` so authoring code,
 /// the runner, and the generated macro output keep their existing paths.
 pub use phoxal_bus as bus;
+pub mod check;
 pub mod model;
 pub mod participant;
 pub mod util;

@@ -2,9 +2,9 @@
 //!
 //! Reads the mandatory `#[phoxal(api = y2026_N)]` selector (plus optional
 //! `id` / `config`) and the struct's typed handle fields, then emits:
-//! - an `impl ParticipantSpec` carrying `KIND`, `ID`, `Api`/`API_VERSION`,
-//!   `Config`, and `FIELD_CONTRACTS` (one `{family, topic, direction}` per
-//!   handle, all sharing the one API version);
+//! - an `impl ParticipantSpec` carrying `KIND`, `PARTICIPANT_CLASS`, `ID`,
+//!   `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS` (one
+//!   `{family, topic, direction}` per handle, all sharing the one API version);
 //! - compile assertions that every handle body satisfies
 //!   `ContractBody<Api = Self::Api>` (a body from another API version is a
 //!   compile error - D60);
@@ -49,6 +49,13 @@ impl AuthoringKind {
             AuthoringKind::Driver => "driver",
             AuthoringKind::Tool => "tool",
             AuthoringKind::Simulator => "simulator",
+        }
+    }
+
+    fn participant_class(self) -> &'static str {
+        match self {
+            AuthoringKind::Tool => "privileged",
+            AuthoringKind::Service | AuthoringKind::Driver | AuthoringKind::Simulator => "checked",
         }
     }
 
@@ -119,6 +126,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
     let phoxal = phoxal();
     let phoxal_api = phoxal_api();
     let artifact_kind = kind.artifact_kind();
+    let participant_class = kind.participant_class();
 
     // FIELD_CONTRACTS entries reference the body type's ContractBody consts so the
     // family/topic/api_version are single-sourced from the api tree (D61). A query
@@ -196,6 +204,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
     Ok(quote! {
         impl #phoxal::participant::ParticipantSpec for #struct_name {
             const KIND: &'static str = #artifact_kind;
+            const PARTICIPANT_CLASS: &'static str = #participant_class;
             const ID: &'static str = #id;
             type Api = #phoxal_api::#api::Api;
             const API_VERSION: &'static str =
