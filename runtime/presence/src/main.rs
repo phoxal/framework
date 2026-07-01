@@ -22,7 +22,7 @@ use phoxal_api::y2026_1 as api;
 const PARTICIPANT: &str = "presence";
 const STALE_NS: u64 = 3_000_000_000;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "presence", api = y2026_1)]
 struct Presence {
     tracker: ReadinessTracker,

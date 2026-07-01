@@ -94,7 +94,7 @@ impl MissionLifecycle {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "mission", api = y2026_1)]
 struct Mission {
     lifecycle: MissionLifecycle,

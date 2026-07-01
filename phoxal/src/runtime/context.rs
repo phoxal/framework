@@ -11,7 +11,9 @@ use crate::bus::{
     Publisher, Querier, Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
-use crate::runtime::spec::{DeclaresPublish, DeclaresQuery, DeclaresSubscribe, RuntimeFields};
+use crate::runtime::spec::{
+    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, RuntimeFields,
+};
 
 /// Default drop-oldest ring depth for a `Subscriber` built in `#[setup]`.
 const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
@@ -67,18 +69,6 @@ impl<R: RuntimeFields> SetupContext<R> {
     pub fn robot(&self) -> crate::Result<&Robot> {
         self.robot.as_deref().ok_or_else(|| {
             anyhow::anyhow!("no robot model is bound (this runtime was launched without a bundle)")
-        })
-    }
-
-    /// The `components.instances` entry this participant drives (D47/D53), for a
-    /// component driver launched once per instance. Combine with [`Self::robot`]
-    /// (`driver_binding`/`component_instance`) for the resolved component spec.
-    /// Errors for a non-driver runtime (no component bound).
-    pub fn component(&self) -> crate::Result<&str> {
-        self.component_instance.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "no component instance is bound (this runtime is not a component driver)"
-            )
         })
     }
 
@@ -194,6 +184,20 @@ impl<R: RuntimeFields> SetupContext<R> {
     #[allow(dead_code)]
     pub(crate) fn bus(&self) -> &Bus {
         &self.bus
+    }
+}
+
+impl<R> SetupContext<R>
+where
+    R: RuntimeFields + IsDriver,
+{
+    /// The `components.instances` entry this participant drives (D47/D53), for a
+    /// component driver launched once per instance. Combine with [`Self::robot`]
+    /// (`driver_binding`/`component_instance`) for the resolved component spec.
+    pub fn component(&self) -> crate::Result<&str> {
+        self.component_instance.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("no component instance is bound (this driver was launched without one)")
+        })
     }
 }
 

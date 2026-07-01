@@ -19,6 +19,7 @@ struct RuntimeMetadata {
 
 #[derive(Debug, serde::Deserialize)]
 struct Artifact {
+    kind: String,
     id: String,
 }
 
@@ -76,6 +77,10 @@ fn official_runtime_set_matches_y2026_1_fixture_topology() {
         assert_eq!(
             emitted.artifact.id, *name,
             "runtime package {name} emitted a different artifact id"
+        );
+        assert_eq!(
+            emitted.artifact.kind, "service",
+            "runtime package {name} must emit the service artifact kind"
         );
         assert_eq!(
             emitted.api_version, "y2026_1",

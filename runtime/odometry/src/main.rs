@@ -101,7 +101,7 @@ impl OdometryConfig {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "odometry", api = y2026_1)]
 struct Odometry {
     // Runtime-private typed state (not handles).

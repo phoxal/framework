@@ -18,7 +18,7 @@ const EMPTY_VOLTAGE_V: f64 = 12.0;
 const DRAW_CURRENT_A: f64 = 2.0;
 const CAPACITY_AH: f64 = 10.0;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "battery", api = y2026_1)]
 struct Battery {
     // Runtime-private simulated pack state.

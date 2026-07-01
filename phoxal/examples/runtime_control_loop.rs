@@ -12,7 +12,7 @@
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "avoid-obstacles", api = y2026_1)]
 struct AvoidObstacles {
     // Keep-last-1 view of the observed drive state.

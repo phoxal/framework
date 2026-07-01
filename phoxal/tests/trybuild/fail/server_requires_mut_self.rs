@@ -1,7 +1,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "server-shared-self", api = y2026_1)]
 struct ServerSharedSelf {}
 

@@ -4,9 +4,9 @@
 //!
 //! Phoxal gives a robot a small, strongly-typed core: a contract bus over
 //! [Zenoh](https://zenoh.io), a single dated API version per robot graph, and a
-//! runtime authoring model where one struct of typed handles plus a couple of
-//! attribute macros is a complete participant. The framework owns the awkward
-//! parts - argument parsing, bus connection, scheduling, query serving,
+//! participant authoring model where one struct of typed handles plus a couple
+//! of attribute macros is a complete service or driver. The framework owns the
+//! awkward parts - argument parsing, bus connection, scheduling, query serving,
 //! shutdown, and health - so the code you write is the robot's behavior, not its
 //! plumbing.
 //!
@@ -20,13 +20,18 @@
 //! - **One dated API version per graph.** API versions are dated modules
 //!   (`phoxal_api::y2026_1`, …), not semver crates. A runtime authors against
 //!   exactly one of them; mixing bodies from two versions is a compile error.
-//! - **Runtimes are authored, not wired.** You write a struct and an `impl`; the
-//!   [`#[derive(Runtime)]`](macro@Runtime) and [`#[phoxal::runtime]`](macro@runtime)
-//!   macros derive the static metadata, and [`run`] turns the type into a binary.
+//! - **Participants are authored, not wired.** You write a struct and an `impl`;
+//!   [`#[derive(Service)]`](derive@Service) or
+//!   [`#[derive(Driver)]`](derive@Driver) plus [`#[phoxal::runtime]`](macro@runtime)
+//!   derive the static metadata, and [`run`] turns the type into a binary. Use
+//!   `#[derive(phoxal::Service)]` for an ordinary participant; use
+//!   `#[derive(phoxal::Driver)]` for a participant launched once per
+//!   `components.instances` entry, which alone can call
+//!   [`SetupContext::component`](runtime::SetupContext::component).
 //!
 //! ## Author a runtime
 //!
-//! A runtime is one struct of typed handles and one annotated inherent `impl`.
+//! A service is one struct of typed handles and one annotated inherent `impl`.
 //! The struct declares the contracts it uses (as handle fields) and its one API
 //! version; the `impl` declares the lifecycle. This is the whole getting-started
 //! surface:
@@ -35,7 +40,7 @@
 //! use phoxal_api::y2026_1 as api;   // select ONE dated API version
 //! use phoxal::prelude::*;
 //!
-//! #[derive(phoxal::Runtime)]
+//! #[derive(phoxal::Service)]
 //! #[phoxal(id = "avoid-obstacles", api = y2026_1)]
 //! struct AvoidObstacles {
 //!     state:  Latest<api::drive::State>,    // keep-last view of the drive state
@@ -71,7 +76,7 @@
 //! What each piece does:
 //!
 //! - `use phoxal_api::y2026_1 as api;` and `#[phoxal(api = y2026_1)]` pick the
-//!   runtime's single API version. Every handle body type comes through `api::…`;
+//!   participant's single API version. Every handle body type comes through `api::…`;
 //!   switching versions is a one-line edit at the top plus the attribute.
 //! - Handle fields name version-local bodies ([`Publisher<api::drive::Target>`](bus::Publisher),
 //!   [`Latest<api::drive::State>`](bus::Latest)). A body from another API version
@@ -86,10 +91,14 @@
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
 //!
+//! Drivers use `#[derive(phoxal::Driver)]` on the same runtime surface. Only a
+//! driver can call [`SetupContext::component`](runtime::SetupContext::component)
+//! to read the bound component instance.
+//!
 //! The runner also exposes an `emit-apis` subcommand
-//! (`cargo run --example runtime_control_loop emit-apis`) that prints a runtime's
-//! static metadata as one JSON document and exits, without opening the bus. Worked
-//! examples live in `phoxal/examples/`.
+//! (`cargo run --example runtime_control_loop emit-apis`) that prints a participant's
+//! static metadata as one JSON document and exits, without opening the bus.
+//! Worked examples live in `phoxal/examples/`.
 //!
 //! ## Where to look next
 //!
@@ -114,8 +123,9 @@
 //!   runtimes authored on exactly this surface, useful as reference reading.
 
 // Generated macro output refers to the framework as `::phoxal::…`; make that path
-// resolve to this crate so the engine's `#[derive(Runtime)]` / `#[phoxal::runtime]`
-// macros work when invoked inside the engine (e.g. the crate's own tests), the
+// resolve to this crate so the engine's `#[derive(Service)]` /
+// `#[derive(Driver)]` / `#[phoxal::runtime]` macros work when invoked inside the
+// engine (e.g. the crate's own tests), the
 // same as in downstream runtime crates. Only the in-crate test build units expand
 // macros to `::phoxal::…`, so the alias is needed only under `cfg(test)`; gating
 // it there keeps the non-test build free of an unused `extern crate` (no need for
@@ -135,8 +145,11 @@ pub mod util;
 /// `Result<T>` via the [`prelude`].
 pub use anyhow::Result;
 
-/// Derive the static metadata for a runtime struct. See the crate docs.
-pub use phoxal_macros::Runtime;
+/// Derive the static metadata for a driver struct. See the crate docs.
+pub use phoxal_macros::Driver;
+
+/// Derive the static metadata for a service struct. See the crate docs.
+pub use phoxal_macros::Service;
 
 /// The bare `#[phoxal::runtime]` attribute for a runtime's inherent impl.
 pub use phoxal_macros::runtime;
@@ -151,11 +164,11 @@ pub use schemars;
 /// Run a runtime to completion on a framework-owned blocking Tokio runtime.
 ///
 /// This is the default binary entrypoint:
-/// `fn main() -> phoxal::Result<()> { phoxal::run::<Runtime>() }`.
+/// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use runtime::run;
 
 /// Async host runner entrypoints for custom Tokio mains
-/// (`phoxal::tokio::run::<Runtime>().await`).
+/// (`phoxal::tokio::run::<Participant>().await`).
 pub mod tokio {
     #[doc(inline)]
     pub use crate::runtime::run_async as run;

@@ -1,0 +1,16 @@
+error[E0599]: the method `component` exists for mutable reference `&mut phoxal::runtime::SetupContext<ComponentRequiresDriver>`, but its trait bounds were not satisfied
+  --> tests/trybuild/fail/component_requires_driver.rs:18:30
+   |
+ 9 | struct ComponentRequiresDriver {
+   | ------------------------------ doesn't satisfy `ComponentRequiresDriver: IsDriver`
+...
+18 |         let _component = ctx.component()?;
+   |                              ^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   |
+   = note: the following trait bounds were not satisfied:
+           `ComponentRequiresDriver: IsDriver`
+note: the trait `IsDriver` must be implemented
+  --> src/runtime/spec.rs
+   |
+   | pub trait IsDriver {}
+   | ^^^^^^^^^^^^^^^^^^

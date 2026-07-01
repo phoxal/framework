@@ -17,7 +17,7 @@ impl phoxal_api::ContractBody for ForeignBody {
     const TOPIC: &'static str = "foreign/body";
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "wrong-api", api = y2026_1)]
 struct WrongApi {
     body: Publisher<ForeignBody>,

@@ -1,8 +1,9 @@
 //! The runtime engine: static metadata traits, contexts, clock, launch contract,
 //! `emit-apis`, and the runner.
 //!
-//! Authoring uses `#[derive(phoxal::Runtime)]` + `#[phoxal::runtime]` (see the
-//! crate docs); this module is the runner-facing machinery those macros target.
+//! Authoring uses `#[derive(phoxal::Service)]` or `#[derive(phoxal::Driver)]`
+//! with `#[phoxal::runtime]` (see the crate docs); this module is the
+//! runner-facing machinery those macros target.
 
 pub mod clock;
 pub mod context;
@@ -19,8 +20,8 @@ pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use runner::{run, run_async, run_with, run_with_bus};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
-    ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, MissedTick,
-    RuntimeBehavior, RuntimeFields, StepSchedule,
+    ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, IsDriver,
+    MissedTick, RuntimeBehavior, RuntimeFields, StepSchedule,
 };
 
 /// Re-exported so authoring code can name logical time without reaching into

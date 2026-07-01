@@ -4,7 +4,7 @@ use phoxal::prelude::*;
 
 struct MapState;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "map-pass", api = y2026_1)]
 struct MapPass {}
 

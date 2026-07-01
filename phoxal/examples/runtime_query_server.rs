@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "asset-store", api = y2026_1)]
 struct AssetStore {
     // Runtime-private state — not a handle, so the derive ignores it.

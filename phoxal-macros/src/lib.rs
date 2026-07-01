@@ -1,29 +1,32 @@
 //! Proc-macros for the phoxal framework.
 //!
-//! Three macros make up the authoring surface:
+//! Three macro families make up the authoring surface:
 //!
 //! - [`phoxal_api_tree!`] - declares the dated API-version modules
 //!   (`phoxal_api::y2026_1`, …), their version-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
-//! - [`derive@Runtime`] - reads a runtime struct's typed handle fields plus the
-//!   `#[phoxal(id = …, api = …, config = …, contracts(…))]` attribute and emits
-//!   the static metadata (`RuntimeFields`) the runner and `emit-apis` consume.
+//! - [`derive@Service`] / [`derive@Driver`] - read a participant struct's typed
+//!   handle fields plus the `#[phoxal(id = …, api = …, config = …,
+//!   contracts(…))]` attribute and emits the static metadata (`RuntimeFields`) the
+//!   runner and `emit-apis` consume.
 //! - [`macro@runtime`] - the bare `#[phoxal::runtime]` attribute on the inherent
 //!   impl; it reads `#[setup]`/`#[step(hz = N)]`/`#[shutdown]` plus the query-side
 //!   `#[server]`/`#[server_snapshot]`/`#[snapshot]` and emits the lifecycle and
 //!   server dispatch (`RuntimeBehavior`).
 //!
-//! The two struct/impl macros are paired: `#[derive(Runtime)]` selects the API
-//! version and contributes the field-derived contracts, while `#[phoxal::runtime]`
-//! adds the lifecycle methods and the server-side contracts. Both reference the
-//! one API version chosen by the derive, and the generated `ContractBody<Api =
-//! Self::Api>` assertions make a body from a different version a compile error.
+//! The struct/impl macros are paired: `#[derive(Service)]` or `#[derive(Driver)]`
+//! selects the API version, records the artifact kind, and contributes the
+//! field-derived contracts, while `#[phoxal::runtime]` adds the lifecycle methods
+//! and the server-side contracts. Both reference the one API version chosen by
+//! the derive, and the generated `ContractBody<Api = Self::Api>` assertions make
+//! a body from a different version a compile error.
 //!
-//! The runtime macros (`derive@Runtime` / `macro@runtime`) reference the framework
-//! through `::phoxal::…`; the engine crate makes that path resolve to itself with
-//! `extern crate self as phoxal;`. The `phoxal_api_tree!` output instead targets
-//! the bus ABI floor directly as `::phoxal_bus`, since it is invoked in the
-//! `phoxal-api` crate, which does not depend on the engine.
+//! The runtime macros (`derive@Service` / `derive@Driver` / `macro@runtime`)
+//! reference the framework through `::phoxal::…`; the engine crate makes that
+//! path resolve to itself with `extern crate self as phoxal;`. The
+//! `phoxal_api_tree!` output instead targets the bus ABI floor directly as
+//! `::phoxal_bus`, since it is invoked in the `phoxal-api` crate, which does not
+//! depend on the engine.
 
 mod api_tree;
 mod runtime_derive;
@@ -100,12 +103,12 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derive the static metadata for a runtime struct.
+/// Derive the static metadata for a service struct.
 ///
 /// Applies to a non-generic struct with named fields. Emits an `impl
-/// RuntimeFields` (`ID`, `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS`),
-/// `DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery` marker impls, and a
-/// `ContractBody<Api = Self::Api>` assertion per body.
+/// RuntimeFields` (`KIND`, `ID`, `Api`/`API_VERSION`, `Config`, and
+/// `FIELD_CONTRACTS`), `DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery`
+/// marker impls, and a `ContractBody<Api = Self::Api>` assertion per body.
 ///
 /// # `#[phoxal(...)]` attributes
 ///
@@ -125,9 +128,21 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// A `Vec<Handle>` carries the element handle, and a `BTreeMap<K, Handle>` /
 /// `HashMap<K, Handle>` carries the value handle. Field-derived and `contracts(…)`
 /// declarations are merged and deduplicated into `FIELD_CONTRACTS`.
-#[proc_macro_derive(Runtime, attributes(phoxal))]
-pub fn derive_runtime(input: TokenStream) -> TokenStream {
-    runtime_derive::expand(input.into())
+#[proc_macro_derive(Service, attributes(phoxal))]
+pub fn derive_service(input: TokenStream) -> TokenStream {
+    runtime_derive::expand(input.into(), runtime_derive::AuthoringKind::Service)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derive the static metadata for a component driver struct.
+///
+/// This is the driver-shaped counterpart to [`derive@Service`]. It records
+/// `KIND = "driver"` and emits the marker that makes `SetupContext::component()`
+/// available to the runtime type.
+#[proc_macro_derive(Driver, attributes(phoxal))]
+pub fn derive_driver(input: TokenStream) -> TokenStream {
+    runtime_derive::expand(input.into(), runtime_derive::AuthoringKind::Driver)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -135,7 +150,8 @@ pub fn derive_runtime(input: TokenStream) -> TokenStream {
 /// The bare `#[phoxal::runtime]` attribute on a runtime's inherent impl.
 ///
 /// Takes no arguments (configure the runtime on the struct via
-/// `#[derive(Runtime)] #[phoxal(...)]`). Reads the lifecycle/server helper
+/// `#[derive(Service)] #[phoxal(...)]` or
+/// `#[derive(Driver)] #[phoxal(...)]`). Reads the lifecycle/server helper
 /// attributes on the impl's methods, emits a `RuntimeBehavior` impl that the
 /// runner drives, and re-emits the original methods verbatim with the helper
 /// attributes stripped. A method may carry at most one helper attribute.

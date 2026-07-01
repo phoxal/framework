@@ -48,7 +48,7 @@ struct Arbitration {
     reason: Option<api::motion::MotionReason>,
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "motion", api = y2026_1)]
 struct Motion {
     // Runtime-private typed state.

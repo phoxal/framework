@@ -86,7 +86,7 @@ the only source of keys, and the wire body never appears in the key
 
 ## Runtime authoring
 
-- A runtime is a struct with `#[derive(phoxal::Runtime)]` plus a bare
+- A runtime is a struct with `#[derive(phoxal::Service)]` plus a bare
   `#[phoxal::runtime]` on its inherent impl
   ([`phoxal/src/lib.rs`](../phoxal/src/lib.rs),
   [`runtime/drive/src/main.rs`](../runtime/drive/src/main.rs)).
@@ -107,7 +107,7 @@ the only source of keys, and the wire body never appears in the key
   undeclared family is a compile error
   ([`phoxal/src/runtime/context.rs`](../phoxal/src/runtime/context.rs)).
 - The entrypoint is plain Rust: `fn main() -> phoxal::Result<()> {
-  phoxal::run::<Runtime>() }`.
+  phoxal::run::<Participant>() }`.
   The runner owns args/env, bundle + robot-model loading, the bus connection, the
   clock, step scheduling, server dispatch, snapshot commits, and shutdown.
   Every binary also answers a top-level `emit-apis` subcommand that prints its
@@ -126,8 +126,9 @@ the only source of keys, and the wire body never appears in the key
   child is a self-contained node whose key is
   `component/<instance>/<kind>/<capability>/<leaf>`.
 - A component driver is an ordinary runtime launched once per `components.instances`
-  entry; the bound instance is provided via `ctx.component()`, and the driver derives
-  its per-instance handles from the robot model.
+  entry with `#[derive(phoxal::Driver)]`; the bound instance is provided via
+  `ctx.component()`, and the driver derives its per-instance handles from the
+  robot model.
 - `component.yaml` is the only source of component-local capability definitions;
   `robot.yaml` does not override component-local fields.
   `robot.yaml` component entries are instance-only (type, mount link, per-instance

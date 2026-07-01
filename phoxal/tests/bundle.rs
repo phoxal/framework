@@ -11,7 +11,7 @@ use serial_test::serial;
 
 static SEEN: OnceLock<(String, String)> = OnceLock::new();
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "reads-robot", api = y2026_1)]
 struct ReadsRobot {}
 

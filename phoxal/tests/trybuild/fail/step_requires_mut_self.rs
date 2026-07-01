@@ -1,7 +1,7 @@
 // #[step] takes `&mut self` (the scheduled control loop — D34).
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "step-no-self", api = y2026_1)]
 struct StepNoSelf {}
 

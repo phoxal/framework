@@ -25,7 +25,7 @@ use crate::scoring::score_frontiers;
 
 const SUBMAP_WINDOW_CELLS: f64 = 128.0;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "explore", api = y2026_1)]
 struct Explore {
     map_revision: Latest<api::map::Revision>,

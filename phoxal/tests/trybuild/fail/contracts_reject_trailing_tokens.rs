@@ -1,6 +1,6 @@
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(
     id = "bad-contract-tokens",
     api = y2026_1,

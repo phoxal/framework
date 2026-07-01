@@ -71,7 +71,7 @@ impl VideoSource {
 
 use api::video::stream::{StreamPhase, StreamState};
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "video", api = y2026_1)]
 struct Video {
     // Runtime-private state.

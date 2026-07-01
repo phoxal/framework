@@ -9,7 +9,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "owner-needs-cap", api = y2026_1)]
 struct OwnerNeedsCap {
     state: Publisher<api::drive::State>,

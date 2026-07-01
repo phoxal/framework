@@ -53,7 +53,7 @@ struct SafetyInputs<'a> {
     emergency_stop_engaged: bool,
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "safety", api = y2026_1)]
 struct Safety {
     // Runtime-private typed state (not handles).

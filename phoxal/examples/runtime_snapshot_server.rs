@@ -40,7 +40,7 @@ struct MapSnapshot {
     grid: Arc<Grid>,
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "snapshot-map", api = y2026_1)]
 struct SnapshotMap {
     localize: Latest<api::localize::LocalizationState>,

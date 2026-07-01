@@ -76,7 +76,7 @@ impl PlanDecision {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "plan", api = y2026_1)]
 struct Plan {
     latest_mission_state: Option<api::mission::State>,

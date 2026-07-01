@@ -9,7 +9,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "direction-mismatch", api = y2026_1)]
 struct DirectionMismatch {
     target: Latest<api::drive::Target>,
