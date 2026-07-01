@@ -1,13 +1,14 @@
-//! `#[derive(phoxal::Runtime)]` — static metadata from the runtime struct.
+//! `#[derive(phoxal::Service)]` / `#[derive(phoxal::Driver)]` - static metadata
+//! from the runtime struct.
 //!
 //! Reads the mandatory `#[phoxal(api = y2026_N)]` selector (plus optional
 //! `id` / `config`) and the struct's typed handle fields, then emits:
-//! - an `impl RuntimeFields` carrying `ID`, `Api`/`API_VERSION`, `Config`, and
-//!   `FIELD_CONTRACTS` (one `{family, topic, direction}` per handle, all sharing
-//!   the one API version);
+//! - an `impl RuntimeFields` carrying `KIND`, `ID`, `Api`/`API_VERSION`,
+//!   `Config`, and `FIELD_CONTRACTS` (one `{family, topic, direction}` per
+//!   handle, all sharing the one API version);
 //! - compile assertions that every handle body satisfies
 //!   `ContractBody<Api = Self::Api>` (a body from another API version is a
-//!   compile error — D60);
+//!   compile error - D60);
 //! - `Declares<Body>` marker impls so `SetupContext` builders reject undeclared
 //!   contract families at compile time (D44).
 //!
@@ -25,18 +26,45 @@ use syn::{
 
 use crate::util::{phoxal, phoxal_api};
 
-pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
+#[derive(Clone, Copy)]
+pub enum AuthoringKind {
+    Service,
+    Driver,
+}
+
+impl AuthoringKind {
+    fn derive_path(self) -> &'static str {
+        match self {
+            AuthoringKind::Service => "#[derive(phoxal::Service)]",
+            AuthoringKind::Driver => "#[derive(phoxal::Driver)]",
+        }
+    }
+
+    fn artifact_kind(self) -> &'static str {
+        match self {
+            AuthoringKind::Service => "service",
+            AuthoringKind::Driver => "driver",
+        }
+    }
+
+    fn is_driver(self) -> bool {
+        matches!(self, AuthoringKind::Driver)
+    }
+}
+
+pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
     let struct_name = &input.ident;
+    let derive_path = kind.derive_path();
 
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &input.generics,
-            "#[derive(phoxal::Runtime)] does not support generic runtime structs",
+            format!("{derive_path} does not support generic runtime structs"),
         ));
     }
 
-    let args = PhoxalArgs::parse(&input)?;
+    let args = PhoxalArgs::parse(&input, derive_path)?;
     let api = args.api;
     let id = args
         .id
@@ -52,14 +80,14 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
             _ => {
                 return Err(syn::Error::new_spanned(
                     struct_name,
-                    "#[derive(phoxal::Runtime)] requires a struct with named fields",
+                    format!("{derive_path} requires a struct with named fields"),
                 ));
             }
         },
         _ => {
             return Err(syn::Error::new_spanned(
                 struct_name,
-                "#[derive(phoxal::Runtime)] can only be applied to structs",
+                format!("{derive_path} can only be applied to structs"),
             ));
         }
     };
@@ -76,6 +104,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
     let phoxal = phoxal();
     let phoxal_api = phoxal_api();
+    let artifact_kind = kind.artifact_kind();
 
     // FIELD_CONTRACTS entries reference the body type's ContractBody consts so the
     // family/topic/api_version are single-sourced from the api tree (D61). A query
@@ -147,8 +176,15 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
     }
 
+    let driver_marker = if kind.is_driver() {
+        quote!(impl #phoxal::runtime::IsDriver for #struct_name {})
+    } else {
+        TokenStream::new()
+    };
+
     Ok(quote! {
         impl #phoxal::runtime::RuntimeFields for #struct_name {
+            const KIND: &'static str = #artifact_kind;
             const ID: &'static str = #id;
             type Api = #phoxal_api::#api::Api;
             const API_VERSION: &'static str =
@@ -160,6 +196,8 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
         }
 
         #declares
+
+        #driver_marker
 
         const _: () = {
             #(#assertions)*
@@ -175,7 +213,7 @@ struct PhoxalArgs {
 }
 
 impl PhoxalArgs {
-    fn parse(input: &DeriveInput) -> syn::Result<Self> {
+    fn parse(input: &DeriveInput, derive_path: &str) -> syn::Result<Self> {
         let mut id = None;
         let mut api = None;
         let mut config = None;
@@ -211,8 +249,10 @@ impl PhoxalArgs {
         let api = api.ok_or_else(|| {
             syn::Error::new_spanned(
                 &input.ident,
-                "#[derive(phoxal::Runtime)] requires #[phoxal(api = y2026_N)] (D59/D60): \
-                 it selects the one API version this runtime — and the whole graph — runs against",
+                format!(
+                    "{derive_path} requires #[phoxal(api = y2026_N)] (D59/D60): \
+                     it selects the one API version this runtime - and the whole graph - runs against"
+                ),
             )
         })?;
 

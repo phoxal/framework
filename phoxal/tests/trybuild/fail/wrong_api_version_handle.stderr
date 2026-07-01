@@ -12,6 +12,6 @@ note: expected this to be `Api`
 note: required by a bound in `assert`
   --> tests/trybuild/fail/wrong_api_version_handle.rs:20:10
    |
-20 | #[derive(phoxal::Runtime)]
+20 | #[derive(phoxal::Service)]
    |          ^^^^^^^^^^^^^^^ required by this bound in `assert`
-   = note: this error originates in the derive macro `phoxal::Runtime` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the derive macro `phoxal::Service` (in Nightly builds, run with -Z macro-backtrace for more info)

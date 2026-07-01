@@ -25,7 +25,7 @@ foreign_body!(ForeignSubscribe, "foreign::Subscribe", "foreign/subscribe");
 foreign_body!(ForeignRequest, "foreign::Request", "foreign/query");
 foreign_body!(ForeignResponse, "foreign::Response", "foreign/query");
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(
     id = "wrong-api-explicit",
     api = y2026_1,

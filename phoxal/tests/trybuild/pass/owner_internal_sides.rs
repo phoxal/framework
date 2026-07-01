@@ -11,7 +11,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "drive-owner", api = y2026_1)]
 struct Owner {
     target: Subscriber<api::drive::Target>,
@@ -38,7 +38,7 @@ impl Owner {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "drive-client", api = y2026_1)]
 struct Client {
     target: Publisher<api::drive::Target>,

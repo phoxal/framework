@@ -12,7 +12,7 @@ static STEPS: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "counter", api = y2026_1)]
 struct Counter {
     target: Publisher<api::drive::Target>,
@@ -24,14 +24,14 @@ struct CounterConfig {
     enabled: bool,
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "configured-counter", api = y2026_1, config = CounterConfig)]
 struct ConfiguredCounter {
     _gain: f64,
 }
 
 #[allow(dead_code)]
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(
     id = "explicit-contracts",
     api = y2026_1,
@@ -78,9 +78,13 @@ impl Counter {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "slow-shutdown", api = y2026_1)]
 struct SlowShutdown {}
+
+#[derive(phoxal::Driver)]
+#[phoxal(id = "component-driver", api = y2026_1)]
+struct ComponentDriver {}
 
 #[phoxal::runtime]
 impl SlowShutdown {
@@ -97,6 +101,15 @@ impl SlowShutdown {
         tokio::time::sleep(Duration::from_secs(60)).await;
         SLOW_SHUTDOWN_COMPLETED.store(true, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+#[phoxal::runtime]
+impl ComponentDriver {
+    #[setup]
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        let _component = ctx.component()?;
+        Ok(Self {})
     }
 }
 
@@ -176,7 +189,7 @@ fn emit_apis_reports_frozen_schema() {
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
     assert_eq!(value["schema"], "phoxal.emit-apis/v0");
-    assert_eq!(value["artifact"]["kind"], "runtime");
+    assert_eq!(value["artifact"]["kind"], "service");
     assert_eq!(value["artifact"]["id"], "counter");
     assert_eq!(value["api_version"], "y2026_1");
     assert_eq!(value["bus_abi"], "phoxal-bus/v0");
@@ -190,6 +203,15 @@ fn emit_apis_reports_frozen_schema() {
         }),
         "emit-apis should report the drive/target publish contract"
     );
+}
+
+#[test]
+fn emit_apis_reports_driver_kind() {
+    let json = emit_apis_json::<ComponentDriver>();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(value["artifact"]["kind"], "driver");
+    assert_eq!(value["artifact"]["id"], "component-driver");
 }
 
 #[test]

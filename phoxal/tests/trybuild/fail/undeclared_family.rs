@@ -4,7 +4,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "undeclared", api = y2026_1)]
 struct Undeclared {
     state: Latest<api::drive::State>,

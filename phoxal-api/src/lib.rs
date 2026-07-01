@@ -111,10 +111,10 @@ use phoxal_macros::phoxal_api_tree;
 /// - [`ContractBody`] is a version-local wire body (D61): a plain serde type
 ///   bound to exactly one [`ApiVersion`] and one contract family/topic. Every
 ///   body declared inside a [`phoxal_api_tree!`] node gets a generated impl;
-///   handles, `SetupContext` builders, and the `#[derive(Runtime)]` assertions
-///   key off its `Api`/`FAMILY`/`TOPIC` to reject a body from the wrong API
-///   version at compile time. Its serde encoding *is* the wire payload; there is
-///   no version envelope (D62).
+///   handles, `SetupContext` builders, and the `Service`/`Driver` derive
+///   assertions key off its `Api`/`FAMILY`/`TOPIC` to reject a body from the
+///   wrong API version at compile time. Its serde encoding *is* the wire payload;
+///   there is no version envelope (D62).
 pub use phoxal_bus::{ApiVersion, ContractBody};
 
 phoxal_api_tree! {

@@ -66,8 +66,8 @@ impl TopicRole {
 /// [`ApiVersion`] and one contract family/topic (D61).
 ///
 /// Every body declared inside a `phoxal_api_tree!` node gets a generated impl.
-/// Handles, `SetupContext` builders, and the `#[derive(Runtime)]` assertions all
-/// key off [`Api`](ContractBody::Api)/[`FAMILY`](ContractBody::FAMILY)/[`TOPIC`](ContractBody::TOPIC),
+/// Handles, `SetupContext` builders, and the `Service`/`Driver` derive assertions
+/// all key off [`Api`](ContractBody::Api)/[`FAMILY`](ContractBody::FAMILY)/[`TOPIC`](ContractBody::TOPIC),
 /// which is how a body from the wrong API version is rejected at compile time.
 ///
 /// The serde encoding of an implementor *is* the wire payload; there is no version

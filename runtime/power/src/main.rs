@@ -31,7 +31,7 @@ const SUPERVISOR_ADDRESS_ENV: &str = "BALENA_SUPERVISOR_ADDRESS";
 const SUPERVISOR_API_KEY_ENV: &str = "BALENA_SUPERVISOR_API_KEY";
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "power", api = y2026_1)]
 struct Power {
     latched: api::power::State,

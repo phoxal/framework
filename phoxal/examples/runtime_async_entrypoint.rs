@@ -6,7 +6,7 @@
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "async-heartbeat", api = y2026_1)]
 struct AsyncHeartbeat {
     heartbeat: Publisher<api::presence::Heartbeat>,

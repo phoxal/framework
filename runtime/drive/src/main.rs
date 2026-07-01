@@ -116,7 +116,7 @@ impl DriveConfig {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "drive", api = y2026_1)]
 struct Drive {
     // Runtime-private typed state (not handles).

@@ -2,7 +2,7 @@
 //!
 //! Every runtime/tool/driver binary exposes a top-level `emit-apis` subcommand
 //! that serializes its compiled-in static metadata to stdout as exactly one JSON
-//! document and exits — before loading robot config, `.env`, tracing, Zenoh, or
+//! document and exits - before loading robot config, `.env`, tracing, Zenoh, or
 //! running `#[setup]`. `phoxal-cli check`/`deploy build` run it on the resolved
 //! artifacts; there is no release descriptor or sidecar file (D57).
 //!
@@ -41,9 +41,9 @@ pub struct RuntimeMetadata {
 /// Artifact identity.
 #[derive(Debug, Serialize)]
 pub struct Artifact {
-    /// `runtime` | `tool` | `driver`.
+    /// `service` | `tool` | `driver`.
     pub kind: &'static str,
-    /// The artifact id (the runtime id).
+    /// The artifact id (the participant id).
     pub id: String,
 }
 
@@ -98,7 +98,7 @@ pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
     RuntimeMetadata {
         schema: EMIT_SCHEMA,
         artifact: Artifact {
-            kind: "runtime",
+            kind: R::KIND,
             id: R::ID.to_string(),
         },
         framework: Framework {

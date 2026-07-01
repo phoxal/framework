@@ -1,7 +1,7 @@
 // #[shutdown] must return `Result<()>`.
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "shutdown-bad-return", api = y2026_1)]
 struct ShutdownBadReturn {}
 

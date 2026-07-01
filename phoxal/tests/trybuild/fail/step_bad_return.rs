@@ -1,7 +1,7 @@
 // #[step] must return `Result<()>` (a malformed return shape is rejected).
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "step-bad-return", api = y2026_1)]
 struct StepBadReturn {}
 

@@ -5,7 +5,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "asset-explicit-topic", api = y2026_1)]
 struct AssetExplicitTopic {}
 

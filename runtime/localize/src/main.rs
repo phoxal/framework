@@ -16,7 +16,7 @@ use phoxal_api::y2026_1 as api;
 
 const LOCALIZE_STALE_NS: u64 = 1_000_000_000; // 1 s
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "localize", api = y2026_1)]
 struct Localize {
     // Runtime-private typed state (not handles).

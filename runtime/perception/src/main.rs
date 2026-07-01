@@ -234,7 +234,7 @@ impl Default for PointTracker {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "perception", api = y2026_1)]
 struct Perception {
     // Runtime-private state.

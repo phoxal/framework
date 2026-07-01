@@ -31,7 +31,7 @@ use crate::runtime::spec::{MissedTick, RuntimeBehavior, StepSchedule};
 /// Run a runtime to completion on a framework-owned blocking Tokio runtime.
 ///
 /// The default binary entrypoint:
-/// `fn main() -> phoxal::Result<()> { phoxal::run::<Runtime>() }`.
+/// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub fn run<R: RuntimeBehavior>() -> crate::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -40,7 +40,7 @@ pub fn run<R: RuntimeBehavior>() -> crate::Result<()> {
 }
 
 /// Async host runner for custom Tokio mains
-/// (`phoxal::tokio::run::<Runtime>().await`).
+/// (`phoxal::tokio::run::<Participant>().await`).
 pub async fn run_async<R: RuntimeBehavior>() -> crate::Result<()> {
     // The `emit-apis` subcommand short-circuits before config / `.env` / tracing /
     // Zenoh / setup — the compiled-in metadata is authoritative (D50).

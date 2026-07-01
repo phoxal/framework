@@ -23,7 +23,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         return Err(syn::Error::new_spanned(
             attr,
             "#[phoxal::runtime] takes no arguments; configure the runtime on the struct via \
-             #[derive(phoxal::Runtime)] #[phoxal(...)]",
+             #[derive(phoxal::Service)] #[phoxal(...)] or \
+             #[derive(phoxal::Driver)] #[phoxal(...)]",
         ));
     }
 

@@ -48,7 +48,7 @@ struct FollowUpdate {
     target: Option<api::follow::Target>,
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "follow", api = y2026_1)]
 struct Follow {
     // Runtime-private typed state.

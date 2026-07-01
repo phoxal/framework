@@ -128,7 +128,7 @@ struct FrameSnapshot {
     dynamics: Arc<BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>>,
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "frame", api = y2026_1)]
 struct Frame {
     static_transforms: Arc<BTreeMap<String, api::frame::FrameTransform>>,

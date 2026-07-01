@@ -26,7 +26,7 @@ const CAPABILITY: &str = "encoder";
 const SAMPLE_VELOCITY_RADPS: f32 = 2.5;
 
 /// Publishes an `EncoderSample` on a dynamic per-component key every step.
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "encoder-producer", api = y2026_1)]
 struct EncoderProducer {
     encoder: Publisher<api::component::encoder::Sample>,
@@ -68,7 +68,7 @@ impl EncoderProducer {
 }
 
 /// Subscribes the *same* dynamic per-component key and records what it receives.
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "encoder-consumer", api = y2026_1)]
 struct EncoderConsumer {
     encoder: Subscriber<api::component::encoder::Sample>,

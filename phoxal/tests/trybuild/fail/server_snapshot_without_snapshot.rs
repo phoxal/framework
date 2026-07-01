@@ -4,7 +4,7 @@ use phoxal::prelude::*;
 
 struct State;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "no-snap", api = y2026_1)]
 struct NoSnap {
     revision: Publisher<api::map::Revision>,

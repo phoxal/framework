@@ -10,20 +10,20 @@ The framework owns the awkward parts - argument parsing, bus connection, schedul
 
 ```toml
 [dependencies]
-phoxal = "0.17"      # the engine: runner, derive, SetupContext, prelude
+phoxal = "0.17"      # the engine: runner, derives, SetupContext, prelude
 phoxal-api = "0.17"  # the contract tree: `use phoxal_api::y2026_1 as api;`
 ```
 
 ## The authoring model
 
-A runtime is **one struct of typed handles + one annotated inherent impl**.
+A service is **one struct of typed handles + one annotated inherent impl**.
 The struct declares the contracts it uses (as handle fields) and the one API version it runs against; the impl declares the lifecycle.
 
 ```rust,ignore
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "avoid-obstacles", api = y2026_1, config = Config)]
 struct AvoidObstacles {
     state:  Latest<api::drive::State>,
@@ -73,7 +73,7 @@ Key rules the example shows:
   Normal runtimes never open Zenoh - the runner opens the bundle-selected bus profile before `#[setup]`.
 - `config` is **user-runtime only**.
   Official runtimes take no `config` param and read the robot model through `ctx.robot()`.
-- `cargo run --example runtime_control_loop emit-apis` prints the runtime's static metadata as one JSON document (the `emit-apis` subcommand) and exits.
+- `cargo run --example runtime_control_loop emit-apis` prints the participant's static metadata as one JSON document (the `emit-apis` subcommand) and exits.
 
 The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the scheduled control loop, `#[server]` / `#[server_snapshot]` serve queries, and `#[shutdown]` runs graceful park/stop/flush before the bus closes.
 

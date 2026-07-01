@@ -22,7 +22,7 @@ static LAST_LINEAR_BITS: AtomicU32 = AtomicU32::new(0);
 const TARGET_LINEAR_MPS: f32 = 0.5;
 
 /// Publishes a fixed `drive/target` every step.
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "producer", api = y2026_1)]
 struct Producer {
     target: Publisher<api::drive::Target>,
@@ -57,7 +57,7 @@ impl Producer {
 /// the test can assert delivery after both runtimes have shut down. It plays the
 /// OWNER/reader of the `drive/target` command (the side that subscribes a command),
 /// so it acquires the topic through the owner (`internal`) builder.
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "consumer", api = y2026_1)]
 struct Consumer {
     target: Subscriber<api::drive::Target>,

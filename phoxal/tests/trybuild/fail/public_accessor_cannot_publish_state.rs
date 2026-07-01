@@ -14,7 +14,7 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "public-publish-state", api = y2026_1)]
 struct PublicPublishState {
     state: Publisher<api::drive::State>,

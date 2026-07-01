@@ -3,7 +3,7 @@ use phoxal::prelude::*;
 
 struct NotABody;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "not-a-body", api = y2026_1)]
 struct NotBodyRuntime {
     target: Publisher<NotABody>,

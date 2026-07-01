@@ -1,7 +1,8 @@
 //! The static metadata traits the macros target (D50/D59/D60).
 //!
-//! - [`RuntimeFields`] is emitted by `#[derive(phoxal::Runtime)]`: the id, the one
-//!   API version, the config type, and the field-side contracts.
+//! - [`RuntimeFields`] is emitted by `#[derive(phoxal::Service)]` or
+//!   `#[derive(phoxal::Driver)]`: the artifact kind, id, the one API version, the
+//!   config type, and the field-side contracts.
 //! - [`RuntimeBehavior`] is emitted by `#[phoxal::runtime]`: the server-side
 //!   contracts plus the lifecycle dispatch (`__setup`/`__step`/`__shutdown`) the
 //!   runner drives.
@@ -59,11 +60,13 @@ pub struct ContractUse {
     pub direction: Direction,
 }
 
-/// Static metadata derived from a runtime struct (`#[derive(phoxal::Runtime)]`).
+/// Static metadata derived from a runtime struct.
 pub trait RuntimeFields: Sized + Send + 'static {
+    /// The authoring kind that produced this artifact (`"service"` or `"driver"`).
+    const KIND: &'static str;
     /// The runtime id (`#[phoxal(id = "…")]`, default kebab of the type name).
     const ID: &'static str;
-    /// The one API version this runtime — and the whole graph — runs against.
+    /// The one API version this runtime - and the whole graph - runs against.
     type Api: ApiVersion;
     /// `<Self::Api as ApiVersion>::ID`, for metadata.
     const API_VERSION: &'static str;
@@ -73,6 +76,10 @@ pub trait RuntimeFields: Sized + Send + 'static {
     /// The contracts derived from the struct's handle fields.
     const FIELD_CONTRACTS: &'static [ContractUse];
 }
+
+/// Marker emitted only by `#[derive(phoxal::Driver)]`.
+#[doc(hidden)]
+pub trait IsDriver {}
 
 /// Lifecycle dispatch + server-side metadata (`#[phoxal::runtime]`).
 ///

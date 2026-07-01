@@ -86,7 +86,7 @@ impl JointConfig {
     }
 }
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "joint", api = y2026_1)]
 struct Joint {
     config: JointConfig,

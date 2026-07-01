@@ -19,7 +19,7 @@ use anyhow::Result;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "map", api = y2026_1)]
 struct Map {
     localize: Latest<api::localize::LocalizationState>,

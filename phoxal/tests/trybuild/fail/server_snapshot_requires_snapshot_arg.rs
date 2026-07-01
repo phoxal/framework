@@ -3,7 +3,7 @@ use phoxal::prelude::*;
 
 struct MapState;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "snapshot-wrong-state-arg", api = y2026_1)]
 struct SnapshotWrongStateArg {}
 

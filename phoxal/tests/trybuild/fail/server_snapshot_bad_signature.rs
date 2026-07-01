@@ -3,7 +3,7 @@ use phoxal::prelude::*;
 
 struct MapState;
 
-#[derive(phoxal::Runtime)]
+#[derive(phoxal::Service)]
 #[phoxal(id = "snapshot-bad-signature", api = y2026_1)]
 struct SnapshotBadSignature {}
 
