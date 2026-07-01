@@ -71,7 +71,7 @@ zenoh = { version = "1.9.0" }
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service crates' dependency on `phoxal`.
-phoxal = { path = "phoxal", version = "0.20" }
+phoxal = { path = "phoxal", version = "0.21" }
 phoxal-api = { path = "phoxal-api", version = "0.19" }
 phoxal-bus = { path = "phoxal-bus", version = "0.20" }
 phoxal-macros = { path = "phoxal-macros", version = "0.19" }
