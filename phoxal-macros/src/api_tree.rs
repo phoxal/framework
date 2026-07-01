@@ -2163,7 +2163,10 @@ mod tests {
 
         // serde derives the default wire key from the unraw'd identifier (`type`);
         // an explicit rename to "r#type" stays verbatim - so the two must NOT collide.
-        assert_eq!(canonical_body(&catalog, "wire", "Raw"), "struct{f4:type=u8;}");
+        assert_eq!(
+            canonical_body(&catalog, "wire", "Raw"),
+            "struct{f4:type=u8;}"
+        );
         assert_eq!(
             canonical_body(&catalog, "wire", "Renamed"),
             "struct{f6:r#type=u8;}"
