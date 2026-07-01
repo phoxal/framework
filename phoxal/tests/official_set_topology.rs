@@ -1,18 +1,26 @@
 //! Framework-side official-set gate: every official participant emits y2026_1
-//! metadata, and a representative fixture exercises pub/sub plus query/server
-//! topology cardinality.
+//! metadata, and the shared graph checker validates a representative fixture.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use phoxal::check::{
+    self, ComponentCapability, Contract as CheckContract, Direction, ParticipantApis,
+    ParticipantClass, ParticipantScope, RobotGraph,
+};
+use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::robot::v1::KinematicConfig;
 use phoxal::model::v1::Robot;
+
+type SchemaIds = BTreeMap<(String, String), String>;
 
 #[derive(Debug, serde::Deserialize)]
 struct ParticipantMetadata {
     artifact: Artifact,
     api_version: String,
+    participant_class: String,
     bus_abi: String,
     required_contracts: Vec<Contract>,
 }
@@ -32,32 +40,6 @@ struct Contract {
     direction: String,
 }
 
-#[derive(Clone, Debug)]
-struct TopologyContract {
-    artifact_id: String,
-    family: String,
-    topic: String,
-    direction: String,
-}
-
-#[derive(Default)]
-struct Topology {
-    contracts: Vec<TopologyContract>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Finding {
-    kind: &'static str,
-    family: String,
-    topic: String,
-}
-
-#[derive(Default)]
-struct Report {
-    errors: Vec<Finding>,
-    warnings: Vec<Finding>,
-}
-
 #[test]
 fn official_service_set_matches_y2026_1_fixture_topology() {
     let root = workspace_root();
@@ -72,7 +54,8 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
         "service/ must contain the official service source of truth"
     );
 
-    let mut topology = Topology::default();
+    let mut schema_ids = SchemaIds::new();
+    let mut participants = Vec::new();
     for name in &names {
         let emitted = emit_apis(&root, name);
         assert_eq!(
@@ -84,6 +67,10 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
             "service package {name} must emit the service artifact kind"
         );
         assert_eq!(
+            emitted.participant_class, "checked",
+            "service package {name} must emit checked participant_class"
+        );
+        assert_eq!(
             emitted.api_version, "y2026_1",
             "service {name} must report y2026_1"
         );
@@ -91,341 +78,326 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
             emitted.bus_abi, "phoxal-bus/v0",
             "service {name} must report the frozen bus_abi"
         );
-        topology.add_service_contracts(&emitted, &fixture);
-    }
-    // The participants injected below are FIXTURES, not real official producers:
-    // their artifact ids are namespaced `fixture/...` (see `topology_contract`
-    // calls in `add_fixture_external_participants`). They stand in for the
-    // external clients/components a real robot would run, so a topic that only a
-    // fixture would publish never masks a missing REAL official producer: the
-    // cardinality report attributes responders by artifact id.
-    topology.add_fixture_external_participants(&fixture);
 
-    let report = topology.report();
+        validate_required_contract_metadata(&emitted);
+        remember_schema_ids(&mut schema_ids, &emitted);
+        participants.push(participant_from_metadata(&emitted, &fixture));
+    }
+
+    add_fixture_external_participants(&mut participants, &schema_ids, &fixture);
+
+    let report = check::check_graph_with_topology(&participants, &robot_graph(&fixture));
     assert!(
-        report.errors.is_empty(),
-        "fixture topology has cardinality errors: {:#?}",
-        report.errors
+        report.problems.is_empty(),
+        "fixture topology has shared-check errors: {:#?}",
+        report.problems
     );
+    let expected_observable_output_warning = check::Warning::MissingConsumer {
+        family: "mission::Goal".to_string(),
+        topic: "mission/goal".to_string(),
+        producers: vec!["mission".to_string()],
+    };
     assert!(
         report
             .warnings
+            .contains(&expected_observable_output_warning),
+        "fixture should warn for mission/goal output without a consumer: {:#?}",
+        report.warnings
+    );
+}
+
+fn participant_from_metadata(metadata: &ParticipantMetadata, robot: &Robot) -> ParticipantApis {
+    let participant_class =
+        ParticipantClass::parse(&metadata.participant_class).unwrap_or_else(|| {
+            panic!(
+                "participant {} emitted unknown participant_class '{}'",
+                metadata.artifact.id, metadata.participant_class
+            )
+        });
+
+    ParticipantApis {
+        participant_id: metadata.artifact.id.clone(),
+        artifact_id: metadata.artifact.id.clone(),
+        participant_class,
+        api_version: metadata.api_version.clone(),
+        bus_abi: Some(metadata.bus_abi.clone()),
+        config_schema: None,
+        scope: ParticipantScope::Graph,
+        contracts: metadata
+            .required_contracts
             .iter()
-            .any(|warning| warning.kind == "publisher_without_subscriber"),
-        "fixture should exercise output-without-consumer warnings"
-    );
+            .filter(|contract| contract_is_in_fixture_scope(contract, robot))
+            .map(|contract| contract_from_metadata(metadata, contract))
+            .collect(),
+    }
 }
 
-#[test]
-fn subscriber_without_publisher_is_topology_error() {
-    let mut topology = Topology::default();
-    topology.add(topology_contract(
-        "fixture/external",
-        "drive::Target",
-        "drive/target",
-        "subscribe",
-    ));
-
-    let report = topology.report();
-    assert!(report.warnings.is_empty());
-    assert_eq!(
-        report.errors,
-        vec![Finding {
-            kind: "subscriber_without_publisher",
-            family: "drive::Target".to_string(),
-            topic: "drive/target".to_string(),
-        }]
-    );
+fn contract_is_in_fixture_scope(contract: &Contract, robot: &Robot) -> bool {
+    component_topic_kind(&contract.topic).is_none_or(|kind| robot_has_capability_kind(robot, kind))
 }
 
-#[test]
-fn publisher_without_subscriber_is_topology_warning() {
-    let mut topology = Topology::default();
-    topology.add(topology_contract(
-        "fixture/external",
-        "drive::State",
-        "drive/state",
-        "publish",
-    ));
-
-    let report = topology.report();
-    assert!(report.errors.is_empty());
-    assert_eq!(
-        report.warnings,
-        vec![Finding {
-            kind: "publisher_without_subscriber",
-            family: "drive::State".to_string(),
-            topic: "drive/state".to_string(),
-        }]
-    );
+fn contract_from_metadata(metadata: &ParticipantMetadata, contract: &Contract) -> CheckContract {
+    CheckContract {
+        family: contract.family.clone(),
+        topic: contract.topic.clone(),
+        direction: Direction::parse(&contract.direction).unwrap_or_else(|| {
+            panic!(
+                "service {} emitted unknown direction '{}'",
+                metadata.artifact.id, contract.direction
+            )
+        }),
+        schema_id: contract.schema_id.clone(),
+    }
 }
 
-#[test]
-fn server_only_query_topic_is_topology_error() {
-    let mut topology = Topology::default();
-    topology.add(topology_contract(
-        "asset",
-        "asset::GetRequest",
-        "asset/get",
-        "server_request",
-    ));
-    topology.add(topology_contract(
-        "asset",
-        "asset::GetResponse",
-        "asset/get",
-        "server_response",
-    ));
-
-    let report = topology.report();
-    assert!(report.warnings.is_empty());
-    assert_eq!(
-        report.errors,
-        vec![
-            Finding {
-                kind: "query_server_missing_peer",
-                family: "asset::GetRequest".to_string(),
-                topic: "asset/get".to_string(),
-            },
-            Finding {
-                kind: "query_server_missing_peer",
-                family: "asset::GetResponse".to_string(),
-                topic: "asset/get".to_string(),
-            },
-        ]
-    );
+fn validate_required_contract_metadata(metadata: &ParticipantMetadata) {
+    for contract in &metadata.required_contracts {
+        assert_eq!(
+            contract.api_version, metadata.api_version,
+            "service {} emitted a per-contract api_version that differs from the artifact api_version",
+            metadata.artifact.id
+        );
+        assert!(
+            is_schema_id(&contract.schema_id),
+            "service {} emitted invalid schema_id '{}' for {}",
+            metadata.artifact.id,
+            contract.schema_id,
+            contract.family
+        );
+    }
 }
 
-#[test]
-fn duplicate_server_responder_is_topology_error() {
-    let mut topology = Topology::default();
-    topology.add(topology_contract(
-        "fixture/external",
-        "asset::GetRequest",
-        "asset/get",
-        "query_request",
-    ));
-    topology.add(topology_contract(
-        "fixture/external",
-        "asset::GetResponse",
-        "asset/get",
-        "query_response",
-    ));
-    for artifact_id in ["asset", "asset-copy"] {
-        topology.add(topology_contract(
-            artifact_id,
-            "asset::GetRequest",
-            "asset/get",
-            "server_request",
-        ));
-        topology.add(topology_contract(
-            artifact_id,
-            "asset::GetResponse",
-            "asset/get",
-            "server_response",
+fn remember_schema_ids(schema_ids: &mut SchemaIds, metadata: &ParticipantMetadata) {
+    for contract in &metadata.required_contracts {
+        schema_ids
+            .entry((contract.family.clone(), contract.topic.clone()))
+            .or_insert_with(|| contract.schema_id.clone());
+    }
+}
+
+fn add_fixture_external_participants(
+    participants: &mut Vec<ParticipantApis>,
+    schema_ids: &SchemaIds,
+    robot: &Robot,
+) {
+    let mut external_contracts = Vec::new();
+    for (family, topic) in external_pubsub_inputs() {
+        external_contracts.push(fixture_contract(
+            "fixture/external",
+            schema_ids,
+            family,
+            topic,
+            topic,
+            Direction::Publish,
         ));
     }
+    for (family, topic, direction) in external_query_clients() {
+        external_contracts.push(fixture_contract(
+            "fixture/external",
+            schema_ids,
+            family,
+            topic,
+            topic,
+            direction,
+        ));
+    }
+    participants.push(fixture_participant("fixture/external", external_contracts));
 
-    let report = topology.report();
-    assert!(report.warnings.is_empty());
-    assert_eq!(
-        report.errors,
-        vec![Finding {
-            kind: "multiple_server_responders",
-            family: "asset::GetResponse".to_string(),
-            topic: "asset/get".to_string(),
-        }]
-    );
-}
-
-#[test]
-fn dynamic_component_contracts_are_checked_at_family_level() {
-    let mut topology = Topology::default();
-    topology.add(topology_contract(
-        "drive",
-        "component::motor::Command",
-        "component/{instance}/motor/{capability}/command",
-        "publish",
-    ));
-    topology.add(topology_contract(
-        "fixture/component/front_left_drive",
-        "component::motor::Command",
-        "component/front_left_drive/motor/wheel/command",
-        "subscribe",
-    ));
-
-    let report = topology.report();
-    assert!(report.errors.is_empty());
-    assert!(report.warnings.is_empty());
-    assert_eq!(
-        topology.contracts[0].topic,
-        "component/{instance}/motor/{capability}/command"
-    );
-    assert_eq!(
-        topology.contracts[1].topic,
-        "component/{instance}/motor/{capability}/command"
-    );
-}
-
-impl Topology {
-    fn add_service_contracts(&mut self, metadata: &ParticipantMetadata, robot: &Robot) {
-        for contract in &metadata.required_contracts {
-            assert_eq!(
-                contract.api_version, metadata.api_version,
-                "service {} emitted a per-contract api_version that differs from the artifact api_version",
-                metadata.artifact.id
-            );
-            assert!(
-                is_schema_id(&contract.schema_id),
-                "service {} emitted invalid schema_id '{}' for {}",
-                metadata.artifact.id,
-                contract.schema_id,
-                contract.family
-            );
-            if let Some(kind) = component_topic_kind(&contract.topic)
-                && !robot_has_capability_kind(robot, kind)
+    let mut component_contracts = BTreeMap::<String, Vec<CheckContract>>::new();
+    for (instance_id, instance) in &robot.manifest.components.instances {
+        let component = robot
+            .components
+            .get(&instance.component)
+            .unwrap_or_else(|| panic!("component type {} should be loaded", instance.component));
+        for (capability_id, capability) in &component.capabilities {
+            if let Some(contract) =
+                component_contract(schema_ids, capability, instance_id, capability_id)
             {
-                continue;
+                component_contracts
+                    .entry(instance_id.clone())
+                    .or_default()
+                    .push(contract);
             }
-            self.add(TopologyContract {
-                artifact_id: metadata.artifact.id.clone(),
-                family: contract.family.clone(),
-                topic: contract.topic.clone(),
-                direction: contract.direction.clone(),
+        }
+    }
+
+    for (instance_id, contracts) in component_contracts {
+        participants.push(fixture_participant(
+            &format!("fixture/component/{instance_id}"),
+            contracts,
+        ));
+    }
+}
+
+fn fixture_participant(id: &str, contracts: Vec<CheckContract>) -> ParticipantApis {
+    ParticipantApis {
+        participant_id: id.to_string(),
+        artifact_id: id.to_string(),
+        participant_class: ParticipantClass::Checked,
+        api_version: "y2026_1".to_string(),
+        bus_abi: None,
+        config_schema: None,
+        scope: ParticipantScope::Graph,
+        contracts,
+    }
+}
+
+fn fixture_contract(
+    participant_id: &str,
+    schema_ids: &SchemaIds,
+    family: &str,
+    schema_topic: &str,
+    topic: &str,
+    direction: Direction,
+) -> CheckContract {
+    let schema_id = schema_ids
+        .get(&(family.to_string(), schema_topic.to_string()))
+        .unwrap_or_else(|| {
+            panic!(
+                "fixture participant {participant_id} needs schema for {family} on {schema_topic}"
+            )
+        })
+        .clone();
+
+    CheckContract {
+        family: family.to_string(),
+        topic: topic.to_string(),
+        direction,
+        schema_id,
+    }
+}
+
+fn component_contract(
+    schema_ids: &SchemaIds,
+    capability: &Capability,
+    instance: &str,
+    capability_id: &str,
+) -> Option<CheckContract> {
+    let kind = capability.kind_name();
+    let (family_tail, leaf, direction) = match kind {
+        "motor" => ("motor::Command", "command", Direction::Subscribe),
+        "encoder" => ("encoder::Sample", "sample", Direction::Publish),
+        "accelerometer" => ("accelerometer::Sample", "sample", Direction::Publish),
+        "gyroscope" => ("gyroscope::Sample", "sample", Direction::Publish),
+        "magnetometer" => ("magnetometer::Sample", "sample", Direction::Publish),
+        "imu" => ("imu::Sample", "sample", Direction::Publish),
+        "gnss" => ("gnss::Sample", "sample", Direction::Publish),
+        "camera" => ("camera::Frame", "frame", Direction::Publish),
+        "depth" => ("depth::Frame", "frame", Direction::Publish),
+        "emergency_stop" => ("emergency_stop::State", "state", Direction::Publish),
+        "range" => ("range::Sample", "sample", Direction::Publish),
+        "lidar" => ("lidar::Scan", "scan", Direction::Publish),
+        "mmwave" => ("mmwave::Scan", "scan", Direction::Publish),
+        "microphone" => ("microphone::Frame", "frame", Direction::Publish),
+        "led" => ("led::Command", "command", Direction::Subscribe),
+        _ => return None,
+    };
+    let family = format!("component::{family_tail}");
+    let schema_topic = format!("component/{{instance}}/{kind}/{{capability}}/{leaf}");
+    let topic = format!("component/{instance}/{kind}/{capability_id}/{leaf}");
+
+    schema_ids
+        .contains_key(&(family.clone(), schema_topic.clone()))
+        .then(|| {
+            fixture_contract(
+                &format!("fixture/component/{instance}"),
+                schema_ids,
+                &family,
+                &schema_topic,
+                &topic,
+                direction,
+            )
+        })
+}
+
+fn robot_graph(robot: &Robot) -> RobotGraph {
+    let mut component_capabilities = Vec::new();
+    for (instance_id, instance) in &robot.manifest.components.instances {
+        let component = robot
+            .components
+            .get(&instance.component)
+            .unwrap_or_else(|| panic!("component type {} should be loaded", instance.component));
+        for (capability_id, capability) in &component.capabilities {
+            component_capabilities.push(ComponentCapability {
+                instance: instance_id.clone(),
+                capability: capability_id.clone(),
+                kind: capability.kind_name().to_string(),
             });
         }
     }
+    component_capabilities.sort();
 
-    fn add_fixture_external_participants(&mut self, robot: &Robot) {
-        for contract in external_pubsub_inputs() {
-            self.add(contract);
-        }
-        for contract in external_query_clients() {
-            self.add(contract);
-        }
-
-        for (instance_id, instance) in &robot.manifest.components.instances {
-            let component = robot
-                .components
-                .get(&instance.component)
-                .unwrap_or_else(|| {
-                    panic!("component type {} should be loaded", instance.component)
-                });
-            for (capability_id, capability) in &component.capabilities {
-                let Some((family, topic, command_like)) =
-                    component_contract(capability, instance_id, capability_id)
-                else {
-                    continue;
-                };
-                self.add(TopologyContract {
-                    artifact_id: format!("fixture/component/{instance_id}"),
-                    family,
-                    topic,
-                    direction: if command_like {
-                        "subscribe".to_string()
-                    } else {
-                        "publish".to_string()
-                    },
-                });
-            }
-        }
-    }
-
-    fn add(&mut self, contract: TopologyContract) {
-        let topic =
-            normalize_component_topic(&contract.topic).unwrap_or_else(|| contract.topic.clone());
-        self.contracts.push(TopologyContract { topic, ..contract });
-    }
-
-    fn report(&self) -> Report {
-        let mut by_topic = BTreeMap::<(String, String), BTreeSet<String>>::new();
-        let mut by_contract = BTreeMap::<(String, String, String), BTreeSet<String>>::new();
-        for contract in &self.contracts {
-            by_topic
-                .entry((contract.family.clone(), contract.topic.clone()))
-                .or_default()
-                .insert(contract.direction.clone());
-            by_contract
-                .entry((
-                    contract.family.clone(),
-                    contract.topic.clone(),
-                    contract.direction.clone(),
-                ))
-                .or_default()
-                .insert(contract.artifact_id.clone());
-        }
-
-        let mut report = Report::default();
-        for ((family, topic), directions) in by_topic {
-            let has_publish = directions.contains("publish");
-            let has_subscribe = directions.contains("subscribe");
-            if has_subscribe && !has_publish {
-                report.errors.push(Finding {
-                    kind: "subscriber_without_publisher",
-                    family: family.clone(),
-                    topic: topic.clone(),
-                });
-            }
-            if has_publish && !has_subscribe {
-                report.warnings.push(Finding {
-                    kind: "publisher_without_subscriber",
-                    family: family.clone(),
-                    topic: topic.clone(),
-                });
-            }
-
-            let query_side =
-                directions.contains("query_request") || directions.contains("query_response");
-            let server_side =
-                directions.contains("server_request") || directions.contains("server_response");
-            if query_side != server_side {
-                report.errors.push(Finding {
-                    kind: "query_server_missing_peer",
-                    family,
-                    topic,
-                });
-            }
-        }
-        for ((family, topic, direction), artifact_ids) in by_contract {
-            if direction == "server_response" && artifact_ids.len() > 1 {
-                report.errors.push(Finding {
-                    kind: "multiple_server_responders",
-                    family,
-                    topic,
-                });
-            }
-        }
-        report
+    RobotGraph {
+        component_capabilities,
+        motion_capabilities: motion_capabilities(&robot.manifest.motion.kinematic),
     }
 }
 
-fn topology_contract(
-    artifact_id: &str,
-    family: &str,
-    topic: &str,
-    direction: &str,
-) -> TopologyContract {
-    TopologyContract {
-        artifact_id: artifact_id.to_string(),
-        family: family.to_string(),
-        topic: topic.to_string(),
-        direction: direction.to_string(),
-    }
-}
+fn motion_capabilities(kinematic: &KinematicConfig) -> BTreeSet<(String, String)> {
+    let mut capabilities = BTreeSet::new();
+    let mut add = |capability: &CapabilityRef| {
+        capabilities.insert((
+            capability.component_id.clone(),
+            capability.capability_id.clone(),
+        ));
+    };
 
-fn normalize_component_topic(topic: &str) -> Option<String> {
-    let mut parts = topic.split('/');
-    let component = parts.next()?;
-    let _instance = parts.next()?;
-    let kind = parts.next()?;
-    let _capability = parts.next()?;
-    let leaf = parts.next()?;
-    if component == "component" && parts.next().is_none() {
-        Some(format!(
-            "component/{{instance}}/{kind}/{{capability}}/{leaf}"
-        ))
-    } else {
-        None
+    match kinematic {
+        KinematicConfig::Differential {
+            left_actuators,
+            right_actuators,
+            left_encoders,
+            right_encoders,
+            ..
+        } => {
+            for capability in left_actuators
+                .iter()
+                .chain(right_actuators)
+                .chain(left_encoders)
+                .chain(right_encoders)
+            {
+                add(capability);
+            }
+        }
+        KinematicConfig::Mecanum {
+            front_left_actuator,
+            front_right_actuator,
+            rear_left_actuator,
+            rear_right_actuator,
+            ..
+        } => {
+            add(front_left_actuator);
+            add(front_right_actuator);
+            add(rear_left_actuator);
+            add(rear_right_actuator);
+        }
+        KinematicConfig::Ackermann {
+            steering_actuator,
+            drive_actuator,
+            steering_encoder,
+            drive_encoder,
+            ..
+        } => {
+            add(steering_actuator);
+            add(drive_actuator);
+            if let Some(encoder) = steering_encoder {
+                add(encoder);
+            }
+            if let Some(encoder) = drive_encoder {
+                add(encoder);
+            }
+        }
+        KinematicConfig::Omnidirectional {
+            actuators,
+            encoders,
+        } => {
+            for capability in actuators.iter().chain(encoders) {
+                add(capability);
+            }
+        }
     }
+
+    capabilities
 }
 
 fn is_schema_id(value: &str) -> bool {
@@ -437,14 +409,8 @@ fn is_schema_id(value: &str) -> bool {
 
 fn component_topic_kind(topic: &str) -> Option<&str> {
     let mut parts = topic.split('/');
-    match (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) {
-        (Some("component"), Some(_), Some(kind), Some(_), Some(_)) if parts.next().is_none() => {
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("component"), Some("{instance}" | "*"), Some(kind)) if !kind.starts_with('{') => {
             Some(kind)
         }
         _ => None,
@@ -470,70 +436,37 @@ fn robot_has_capability_kind(robot: &Robot, kind: &str) -> bool {
         })
 }
 
-fn component_contract(
-    capability: &Capability,
-    instance: &str,
-    capability_id: &str,
-) -> Option<(String, String, bool)> {
-    let kind = capability.kind_name();
-    let (family_tail, leaf, command_like) = match kind {
-        "motor" => ("motor::Command", "command", true),
-        "encoder" => ("encoder::Sample", "sample", false),
-        "accelerometer" => ("accelerometer::Sample", "sample", false),
-        "gyroscope" => ("gyroscope::Sample", "sample", false),
-        "magnetometer" => ("magnetometer::Sample", "sample", false),
-        "imu" => ("imu::Sample", "sample", false),
-        "gnss" => ("gnss::Sample", "sample", false),
-        "camera" => ("camera::Frame", "frame", false),
-        "depth" => ("depth::Frame", "frame", false),
-        "emergency_stop" => ("emergency_stop::State", "state", false),
-        "range" => ("range::Sample", "sample", false),
-        "lidar" => ("lidar::Scan", "scan", false),
-        "mmwave" => ("mmwave::Scan", "scan", false),
-        "microphone" => ("microphone::Frame", "frame", false),
-        "led" => ("led::Command", "command", true),
-        _ => return None,
-    };
-    Some((
-        format!("component::{family_tail}"),
-        format!("component/{instance}/{kind}/{capability_id}/{leaf}"),
-        command_like,
-    ))
-}
-
-fn external_pubsub_inputs() -> Vec<TopologyContract> {
-    [
+fn external_pubsub_inputs() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("mission::Command", "mission/command"),
         ("motion::ManualCommand", "motion/manual"),
         ("power::Command", "power/command"),
         ("safety::EmergencyStopRequest", "safety/estop"),
-        // Each participant publishes its own `command`-role heartbeat; the
-        // presence participant subscribes them and republishes one aggregate on the
-        // `state`-role `presence/state`. The producers are external participants
-        // (see the `runtime_async_entrypoint` example), so they stand in here as a
-        // fixture input - otherwise presence's heartbeat subscribe would look like
-        // a subscriber without a publisher.
         ("presence::Heartbeat", "presence/heartbeat"),
     ]
-    .into_iter()
-    .map(|(family, topic)| topology_contract("fixture/external", family, topic, "publish"))
-    .collect()
 }
 
-fn external_query_clients() -> Vec<TopologyContract> {
-    [
-        ("asset::GetRequest", "asset/get", "query_request"),
-        ("asset::GetResponse", "asset/get", "query_response"),
-        ("frame::LookupRequest", "frame/lookup", "query_request"),
-        ("frame::LookupResponse", "frame/lookup", "query_response"),
-        ("video::OpenRequest", "video/open", "query_request"),
-        ("video::OpenResponse", "video/open", "query_response"),
+fn external_query_clients() -> Vec<(&'static str, &'static str, Direction)> {
+    vec![
+        ("asset::GetRequest", "asset/get", Direction::QueryRequest),
+        ("asset::GetResponse", "asset/get", Direction::QueryResponse),
+        (
+            "frame::LookupRequest",
+            "frame/lookup",
+            Direction::QueryRequest,
+        ),
+        (
+            "frame::LookupResponse",
+            "frame/lookup",
+            Direction::QueryResponse,
+        ),
+        ("video::OpenRequest", "video/open", Direction::QueryRequest),
+        (
+            "video::OpenResponse",
+            "video/open",
+            Direction::QueryResponse,
+        ),
     ]
-    .into_iter()
-    .map(|(family, topic, direction)| {
-        topology_contract("fixture/external", family, topic, direction)
-    })
-    .collect()
 }
 
 fn workspace_root() -> PathBuf {

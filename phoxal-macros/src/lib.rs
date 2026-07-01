@@ -108,8 +108,9 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// Derive the static metadata for a service struct.
 ///
 /// Applies to a non-generic struct with named fields. Emits an `impl
-/// ParticipantSpec` (`KIND`, `ID`, `Api`/`API_VERSION`, `Config`, and
-/// `FIELD_CONTRACTS`), `DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery`
+/// ParticipantSpec` (`KIND`, `PARTICIPANT_CLASS`, `ID`, `Api`/`API_VERSION`,
+/// `Config`, and `FIELD_CONTRACTS`),
+/// `DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery`
 /// marker impls, and a `ContractBody<Api = Self::Api>` assertion per body.
 ///
 /// # `#[phoxal(...)]` attributes
