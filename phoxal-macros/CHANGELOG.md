@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.3](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.2...phoxal-macros-v0.19.3) - 2026-07-01
+
+### Added
+
+- *(02,05)* participant_class + shared phoxal::check graph core (framework) ([#132](https://github.com/phoxal/framework/pull/132))
+
 ## [0.19.2](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.1...phoxal-macros-v0.19.2) - 2026-07-01
 
 ### Added
