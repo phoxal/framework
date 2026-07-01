@@ -1,4 +1,4 @@
-//! A runtime using the advanced async entrypoint.
+//! A participant using the advanced async entrypoint.
 //!
 //! Run with `cargo run --example runtime_async_entrypoint` or inspect metadata
 //! with `cargo run --example runtime_async_entrypoint emit-apis`.
@@ -12,7 +12,7 @@ struct AsyncHeartbeat {
     heartbeat: Publisher<api::presence::Heartbeat>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl AsyncHeartbeat {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

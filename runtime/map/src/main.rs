@@ -1,6 +1,6 @@
 //! `map` - localization-trace occupancy-grid placeholder.
 //!
-//! A scheduled runtime with a concurrent snapshot server. It subscribes to
+//! A scheduled participant with a concurrent snapshot server. It subscribes to
 //! `localize/state`, publishes `map/revision` (the current revision and grid
 //! resolution), and serves `map/submap` from a committed grid snapshot.
 //! It uses the concurrent snapshot-server pattern: `#[step]` updates the
@@ -61,7 +61,7 @@ struct MapState {
     grid: Arc<Grid>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Map {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_map_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Map>();
+        let json = phoxal::participant::emit_apis_json::<Map>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "map");
 

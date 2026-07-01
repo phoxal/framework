@@ -1,5 +1,5 @@
-// Building a handle for a contract family the runtime never declared is a
-// compile error (R: Declares<B> unsatisfied — D44). The struct only declares a
+// Building a handle for a contract family the participant never declared is a
+// compile error (R: Declares<B> unsatisfied - D44). The struct only declares a
 // `drive::State` subscriber, but setup tries to publish `drive::Target`.
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
@@ -10,7 +10,7 @@ struct Undeclared {
     state: Latest<api::drive::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Undeclared {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

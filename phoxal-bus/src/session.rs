@@ -28,7 +28,7 @@ pub struct BusConfig {
     /// The robot id (`identity.id`); one concrete key segment.
     pub robot_id: String,
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// runtime/artifact id - D53).
+    /// participant/artifact id - D53).
     pub participant: String,
     /// Per-process incarnation (bumped on restart).
     pub incarnation: u64,

@@ -6,7 +6,7 @@ struct State;
 #[phoxal(id = "snapshot-mut-self", api = y2026_1)]
 struct SnapshotMutSelf {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SnapshotMutSelf {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

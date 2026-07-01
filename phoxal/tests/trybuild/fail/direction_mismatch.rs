@@ -15,7 +15,7 @@ struct DirectionMismatch {
     target: Latest<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl DirectionMismatch {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

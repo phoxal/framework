@@ -1,7 +1,7 @@
 //! The runner (D23/D34): owns the bus connection, the clock, step scheduling,
 //! server-query dispatch, snapshot commits, and graceful shutdown.
 //!
-//! `phoxal::run::<R>()` builds a blocking Tokio runtime and runs the runtime to
+//! `phoxal::run::<R>()` builds a blocking Tokio runtime and runs the participant to
 //! completion; `phoxal::tokio::run::<R>().await` is the async entrypoint for
 //! custom Tokio mains.
 //!
@@ -22,28 +22,28 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::bus::{Bus, BusConfig, IncomingQuery, QueryFailure};
-use crate::runtime::clock::{ClockSource, RealClock};
-use crate::runtime::context::{SetupContext, ShutdownContext, StepContext};
-use crate::runtime::emit::print_emit_apis;
-use crate::runtime::launch::{ClockMode, ParticipantLaunch};
-use crate::runtime::spec::{MissedTick, RuntimeBehavior, StepSchedule};
+use crate::participant::clock::{ClockSource, RealClock};
+use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
+use crate::participant::emit::print_emit_apis;
+use crate::participant::launch::{ClockMode, ParticipantLaunch};
+use crate::participant::spec::{MissedTick, ParticipantBehavior, StepSchedule};
 
-/// Run a runtime to completion on a framework-owned blocking Tokio runtime.
+/// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// The default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
-pub fn run<R: RuntimeBehavior>() -> crate::Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+pub fn run<R: ParticipantBehavior>() -> crate::Result<()> {
+    let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run_async::<R>())
+    tokio_runtime.block_on(run_async::<R>())
 }
 
 /// Async host runner for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
-pub async fn run_async<R: RuntimeBehavior>() -> crate::Result<()> {
+pub async fn run_async<R: ParticipantBehavior>() -> crate::Result<()> {
     // The `emit-apis` subcommand short-circuits before config / `.env` / tracing /
-    // Zenoh / setup — the compiled-in metadata is authoritative (D50).
+    // Zenoh / setup - the compiled-in metadata is authoritative (D50).
     if std::env::args().nth(1).as_deref() == Some("emit-apis") {
         print_emit_apis::<R>();
         return Ok(());
@@ -52,7 +52,7 @@ pub async fn run_async<R: RuntimeBehavior>() -> crate::Result<()> {
     init_tracing();
 
     // Read the launch from the environment (PHOXAL_*), falling back to local
-    // defaults — this is how `phoxal-cli runtime run` / a deploy hands the process
+    // defaults - this is how `phoxal-cli` / a deploy hands the process
     // its namespace, bus endpoints, bundle, and typed config without recompiling.
     let launch = ParticipantLaunch::from_env(R::ID, "robot")?;
     let clock = launch_clock(&launch)?;
@@ -68,7 +68,7 @@ fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
     }
 }
 
-/// Run a runtime against an explicit launch, clock, and shutdown trigger. The
+/// Run a participant against an explicit launch, clock, and shutdown trigger. The
 /// seam the test harness + integration tests drive (D41).
 pub async fn run_with<R, C, S>(
     launch: ParticipantLaunch,
@@ -76,7 +76,7 @@ pub async fn run_with<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: RuntimeBehavior,
+    R: ParticipantBehavior,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -97,13 +97,13 @@ where
     result
 }
 
-/// Run a runtime on a **caller-owned** bus, against an explicit launch, clock, and
-/// shutdown trigger. Unlike [`run_with`], this does not open or close the bus — the
+/// Run a participant on a **caller-owned** bus, against an explicit launch, clock, and
+/// shutdown trigger. Unlike [`run_with`], this does not open or close the bus - the
 /// caller controls its lifecycle.
 ///
-/// This is the embedding seam for co-locating runtimes on a single in-process
+/// This is the embedding seam for co-locating participants on a single in-process
 /// [`Bus`] (a single-process simulation, or an integration test exercising
-/// runtime-to-runtime data flow over a shared session). Note that bus metadata
+/// participant-to-participant data flow over a shared session). Note that bus metadata
 /// `source` identity is a property of the *bus*, not the launch: participants
 /// sharing one [`Bus`] publish under that bus's participant id, so distinct
 /// per-participant source attribution still requires a bus per participant. The
@@ -115,7 +115,7 @@ pub async fn run_with_bus<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: RuntimeBehavior,
+    R: ParticipantBehavior,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -129,7 +129,7 @@ async fn run_lifecycle<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: RuntimeBehavior,
+    R: ParticipantBehavior,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -141,13 +141,13 @@ where
     };
 
     // Load the resolved robot model from the bundle, if one was provided, so
-    // official runtimes can read it via `ctx.robot()` (D33).
+    // official participants can read it via `ctx.robot()` (D33).
     let robot = match &launch.bundle_root {
         Some(root) => Some(Arc::new(crate::model::v1::Robot::read_from_dir(root)?)),
         None => None,
     };
 
-    // Mint the single plan #00 Layer 2 owner capability the runtime uses to opt
+    // Mint the single plan #00 Layer 2 owner capability the participant uses to opt
     // into owning its own topics (via `ctx.owner_capability()` ->
     // `api::topic::internal::new(cap)`). The runner is the only minter.
     let mut ctx = SetupContext::<R>::new(
@@ -157,12 +157,12 @@ where
         launch.bundle_root.clone(),
         launch.component_instance.clone(),
     );
-    let mut runtime = R::__setup(&mut ctx, config).await?;
+    let mut participant = R::__setup(&mut ctx, config).await?;
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
 
     // Committed snapshot, shared with concurrent snapshot-server tasks (D16).
     let committed: Arc<ArcSwapOption<R::Snapshot>> = Arc::new(ArcSwapOption::empty());
-    commit_snapshot::<R>(&runtime, &committed);
+    commit_snapshot::<R>(&participant, &committed);
 
     // Forward exclusive-server queries to the main loop; keep one sender alive so
     // the receiver pends (never returns `None`) when there are no servers.
@@ -211,7 +211,7 @@ where
     let schedule = R::__step_schedule();
     let shutdown = pin!(shutdown);
     main_loop::<R, C, S>(
-        &mut runtime,
+        &mut participant,
         bus,
         &clock,
         schedule,
@@ -231,7 +231,7 @@ where
     // bus close deterministically rather than leak the process. On timeout we
     // log and move on; the hook's task is dropped (cancelled at the next await).
     let grace = Duration::from_millis(launch.shutdown_grace_ms);
-    match tokio::time::timeout(grace, runtime.__shutdown(ShutdownContext::new(grace))).await {
+    match tokio::time::timeout(grace, participant.__shutdown(ShutdownContext::new(grace))).await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             tracing::warn!(target: "phoxal.runtime", error = %e, "shutdown hook returned error");
@@ -250,7 +250,7 @@ where
 
 #[allow(clippy::too_many_arguments)]
 async fn main_loop<R, C, S>(
-    runtime: &mut R,
+    participant: &mut R,
     bus: &Bus,
     clock: &C,
     schedule: Option<StepSchedule>,
@@ -258,7 +258,7 @@ async fn main_loop<R, C, S>(
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
 ) where
-    R: RuntimeBehavior,
+    R: ParticipantBehavior,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -299,8 +299,8 @@ async fn main_loop<R, C, S>(
                 // (D32); the snapshot is committed only after a *successful* step so
                 // a failed mutation is never published as committed state. A panic
                 // would unwind and abort the process.
-                match runtime.__step(step).await {
-                    Ok(()) => commit_snapshot::<R>(runtime, committed),
+                match participant.__step(step).await {
+                    Ok(()) => commit_snapshot::<R>(participant, committed),
                     Err(e) => {
                         tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
                     }
@@ -309,8 +309,8 @@ async fn main_loop<R, C, S>(
             Some(incoming) = excl_rx.recv() => {
                 // Commit only if the handler succeeded (D14/D32: retain the prior
                 // snapshot on a handler error).
-                if serve_exclusive_query::<R>(runtime, bus, incoming).await {
-                    commit_snapshot::<R>(runtime, committed);
+                if serve_exclusive_query::<R>(participant, bus, incoming).await {
+                    commit_snapshot::<R>(participant, committed);
                 }
             }
         }
@@ -326,16 +326,19 @@ async fn step_tick(period: Option<Duration>, next: tokio::time::Instant) {
     }
 }
 
-fn commit_snapshot<R: RuntimeBehavior>(runtime: &R, committed: &Arc<ArcSwapOption<R::Snapshot>>) {
+fn commit_snapshot<R: ParticipantBehavior>(
+    participant: &R,
+    committed: &Arc<ArcSwapOption<R::Snapshot>>,
+) {
     if R::HAS_SNAPSHOT {
-        committed.store(Some(Arc::new(runtime.__take_snapshot())));
+        committed.store(Some(Arc::new(participant.__take_snapshot())));
     }
 }
 
 /// Serve one exclusive query. Returns `true` iff the handler succeeded (so the
 /// runner should commit a fresh snapshot).
-async fn serve_exclusive_query<R: RuntimeBehavior>(
-    runtime: &mut R,
+async fn serve_exclusive_query<R: ParticipantBehavior>(
+    participant: &mut R,
     bus: &Bus,
     incoming: IncomingQuery,
 ) -> bool {
@@ -367,7 +370,7 @@ async fn serve_exclusive_query<R: RuntimeBehavior>(
             return false;
         }
     };
-    match runtime
+    match participant
         .__serve_exclusive(&topic, &metadata.api_version, &metadata.family, &request)
         .await
     {
@@ -384,7 +387,7 @@ async fn serve_exclusive_query<R: RuntimeBehavior>(
     }
 }
 
-async fn serve_snapshot_query<R: RuntimeBehavior>(
+async fn serve_snapshot_query<R: ParticipantBehavior>(
     bus: &Bus,
     incoming: IncomingQuery,
     snapshot: Option<Arc<R::Snapshot>>,
@@ -467,7 +470,7 @@ mod tests {
 
     #[test]
     fn simulation_clock_launch_is_rejected_until_supported() {
-        let mut launch = ParticipantLaunch::local("runtime", "robot");
+        let mut launch = ParticipantLaunch::local("participant", "robot");
         launch.clock = ClockMode::Simulation;
 
         let Err(err) = launch_clock(&launch) else {

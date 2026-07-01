@@ -6,7 +6,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "asset-pass", api = y2026_1)]
 struct AssetPass {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl AssetPass {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

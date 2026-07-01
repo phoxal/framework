@@ -5,7 +5,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "setup-bad-ctx", api = y2026_1)]
 struct SetupBadCtx {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SetupBadCtx {
     #[setup]
     async fn setup(_ctx: &mut StepContext) -> Result<Self> {

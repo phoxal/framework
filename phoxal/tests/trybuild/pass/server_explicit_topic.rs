@@ -9,7 +9,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "asset-explicit-topic", api = y2026_1)]
 struct AssetExplicitTopic {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl AssetExplicitTopic {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

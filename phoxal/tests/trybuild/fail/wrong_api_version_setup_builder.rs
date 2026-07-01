@@ -1,8 +1,8 @@
 // A wrong-API body cannot be smuggled in through SetupContext builders. The
 // load-bearing guard is the type bound `B: ContractBody<Api = R::Api>` on
-// `ctx.publisher` (see `phoxal/src/runtime/context.rs`): even if an author forges
+// `ctx.publisher` (see `phoxal/src/participant/context.rs`): even if an author forges
 // a `Topic` for a foreign body and satisfies the publish-declaration marker, a
-// body whose `Api` is not the runtime's selected API version fails to compile.
+// body whose `Api` is not the participant's selected API version fails to compile.
 //
 // To isolate THAT bound, we hand-declare `DeclaresPublish<ForeignBody>` below so
 // the other `ctx.publisher` bound (`R: DeclaresPublish<B>`) is already satisfied;
@@ -39,9 +39,9 @@ struct WrongApiSetup {
 // remaining unsatisfied bound on `ctx.publisher` is the wrong-API guard
 // `B: ContractBody<Api = R::Api>`. This makes the compile error isolate that
 // bound rather than the `R: DeclaresPublish<B>` inference path.
-impl phoxal::runtime::DeclaresPublish<ForeignBody> for WrongApiSetup {}
+impl phoxal::participant::DeclaresPublish<ForeignBody> for WrongApiSetup {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl WrongApiSetup {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

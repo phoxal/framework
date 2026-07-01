@@ -1,6 +1,6 @@
 //! `joint` - convert component encoder samples into per-joint kinematic state.
 //!
-//! A scheduled runtime that bridges component-level encoders to joint-level state.
+//! A scheduled participant that bridges component-level encoders to joint-level state.
 //! At setup it enumerates every joint-targeted encoder capability in the robot
 //! model (D33), rejecting any with a non-positive gear ratio or zero counts per
 //! revolution, and fails if the robot exposes no such encoder.
@@ -79,7 +79,7 @@ impl JointConfig {
         }
 
         if encoders.is_empty() {
-            bail!("joint runtime requires at least one joint-targeted encoder capability");
+            bail!("joint participant requires at least one joint-targeted encoder capability");
         }
 
         Ok(Self { encoders })
@@ -94,7 +94,7 @@ struct Joint {
     states: BTreeMap<String, Publisher<api::joint::JointState>>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Joint {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -251,17 +251,17 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::runtime::runtime_metadata::<Joint>();
+        let metadata = phoxal::participant::participant_metadata::<Joint>();
         assert_eq!(metadata.artifact.id, "joint");
 
         let contracts = metadata.required_contracts;
         assert!(contracts.iter().any(|c| {
             c.family == <api::component::encoder::Sample as ContractBody>::FAMILY
-                && c.direction == phoxal::runtime::Direction::Subscribe
+                && c.direction == phoxal::participant::Direction::Subscribe
         }));
         assert!(contracts.iter().any(|c| {
             c.family == <api::joint::JointState as ContractBody>::FAMILY
-                && c.direction == phoxal::runtime::Direction::Publish
+                && c.direction == phoxal::participant::Direction::Publish
         }));
     }
 }

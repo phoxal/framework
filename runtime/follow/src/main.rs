@@ -1,12 +1,12 @@
 //! `follow` - the official pure-pursuit path follower.
 //!
-//! A scheduled runtime that subscribes to `plan/path`, `plan/state`, and
+//! A scheduled participant that subscribes to `plan/path`, `plan/state`, and
 //! `localize/state`, and publishes a body-twist `follow/target` plus a
 //! `follow/state` (active, current target index, finished).
 //! Each step it picks a lookahead pose along the path and emits a linear and
 //! angular velocity that steer toward it, reversing when the target is behind and
 //! capping both velocities; reaching the final pose within tolerance finishes.
-//! `motion` arbitrates this target into the final `drive/target`; this runtime
+//! `motion` arbitrates this target into the final `drive/target`; this participant
 //! never commands actuators directly.
 //! It publishes a zero-velocity target (an explicit stop, not silence) whenever
 //! there is no active plan, the path is empty or stale, or localization is
@@ -63,7 +63,7 @@ struct Follow {
     state: Publisher<api::follow::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Follow {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_follow_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Follow>();
+        let json = phoxal::participant::emit_apis_json::<Follow>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "follow");
         assert_eq!(value["api_version"], "y2026_1");

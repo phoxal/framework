@@ -200,13 +200,13 @@ pub enum ValidationError {
         name: String,
     },
     EmptyUserRuntimeImage {
-        runtime: String,
+        participant: String,
     },
     EmptyUserRuntimeBusProfile {
-        runtime: String,
+        participant: String,
     },
     UnknownUserRuntimeBusProfile {
-        runtime: String,
+        participant: String,
         profile: String,
     },
     InvalidBusProfileName {
@@ -420,24 +420,24 @@ impl Robot {
     }
 
     fn validate_user_runtimes(&self, errors: &mut Vec<ValidationError>) {
-        for (runtime, config) in &self.user_runtimes {
+        for (participant, config) in &self.user_runtimes {
             if config
                 .image
                 .as_deref()
                 .is_some_and(|image| image.trim().is_empty())
             {
                 errors.push(ValidationError::EmptyUserRuntimeImage {
-                    runtime: runtime.clone(),
+                    participant: participant.clone(),
                 });
             }
             if let Some(profile) = &config.bus_profile {
                 if profile.trim().is_empty() {
                     errors.push(ValidationError::EmptyUserRuntimeBusProfile {
-                        runtime: runtime.clone(),
+                        participant: participant.clone(),
                     });
                 } else if profile != "default" && !self.bus.profiles.contains_key(profile) {
                     errors.push(ValidationError::UnknownUserRuntimeBusProfile {
-                        runtime: runtime.clone(),
+                        participant: participant.clone(),
                         profile: profile.clone(),
                     });
                 }
@@ -495,23 +495,32 @@ impl fmt::Display for ValidationError {
             }
             Self::UnknownPlatformRuntimeImage { name } => write!(
                 formatter,
-                "phoxal_runtimes.images.{name} is not a platform runtime"
+                "phoxal_runtimes.images.{name} is not a platform participant"
             ),
             Self::UserRuntimeShadowsPlatformRuntime { name } => {
-                write!(formatter, "user_runtimes.{name} shadows a platform runtime")
-            }
-            Self::EmptyUserRuntimeImage { runtime } => {
-                write!(formatter, "user_runtimes.{runtime}.image must not be empty")
-            }
-            Self::EmptyUserRuntimeBusProfile { runtime } => {
                 write!(
                     formatter,
-                    "user_runtimes.{runtime}.bus_profile must not be empty"
+                    "user_runtimes.{name} shadows a platform participant"
                 )
             }
-            Self::UnknownUserRuntimeBusProfile { runtime, profile } => write!(
+            Self::EmptyUserRuntimeImage { participant } => {
+                write!(
+                    formatter,
+                    "user_runtimes.{participant}.image must not be empty"
+                )
+            }
+            Self::EmptyUserRuntimeBusProfile { participant } => {
+                write!(
+                    formatter,
+                    "user_runtimes.{participant}.bus_profile must not be empty"
+                )
+            }
+            Self::UnknownUserRuntimeBusProfile {
+                participant,
+                profile,
+            } => write!(
                 formatter,
-                "user_runtimes.{runtime}.bus_profile references unknown bus profile '{profile}'"
+                "user_runtimes.{participant}.bus_profile references unknown bus profile '{profile}'"
             ),
             Self::InvalidBusProfileName { profile } => write!(
                 formatter,
@@ -646,16 +655,16 @@ components:
 "#,
         )?;
 
-        let runtime = robot
+        let participant = robot
             .user_runtimes
             .get("autonomy")
-            .expect("user runtime should parse");
-        assert_eq!(runtime.path, PathBuf::from("runtimes/autonomy"));
-        assert_eq!(runtime.framework, "match-platform");
-        assert_eq!(runtime.image, None);
-        assert_eq!(runtime.bus_profile, None);
-        assert_eq!(runtime.config, None);
-        assert_eq!(runtime.build, None);
+            .expect("user participant should parse");
+        assert_eq!(participant.path, PathBuf::from("runtimes/autonomy"));
+        assert_eq!(participant.framework, "match-platform");
+        assert_eq!(participant.image, None);
+        assert_eq!(participant.bus_profile, None);
+        assert_eq!(participant.config, None);
+        assert_eq!(participant.build, None);
         assert!(robot.bus.profiles.is_empty());
 
         Ok(())
@@ -678,8 +687,8 @@ user_runtimes:
     framework: "0.9.0"
     build:
       context: container
-      dockerfile: Dockerfile.runtime
-      target: runtime
+      dockerfile: Dockerfile.participant
+      target: participant
 motion:
   kinematic:
     kind: omnidirectional
@@ -692,17 +701,17 @@ components:
 "#,
         )?;
 
-        let runtime = robot
+        let participant = robot
             .user_runtimes
             .get("autonomy")
-            .expect("user runtime should parse");
-        assert_eq!(runtime.framework, "0.9.0");
+            .expect("user participant should parse");
+        assert_eq!(participant.framework, "0.9.0");
         assert_eq!(
-            runtime.build,
+            participant.build,
             Some(UserRuntimeBuild {
                 context: PathBuf::from("container"),
-                dockerfile: Some(PathBuf::from("Dockerfile.runtime")),
-                target: Some("runtime".to_string()),
+                dockerfile: Some(PathBuf::from("Dockerfile.participant")),
+                target: Some("participant".to_string()),
             })
         );
 
@@ -752,17 +761,17 @@ bus:
 "#,
         )?;
 
-        let runtime = robot
+        let participant = robot
             .user_runtimes
             .get("autonomy")
-            .expect("user runtime should parse");
+            .expect("user participant should parse");
         assert_eq!(
-            runtime.image.as_deref(),
+            participant.image.as_deref(),
             Some("ghcr.io/acme/autonomy@sha256:abc")
         );
-        assert_eq!(runtime.bus_profile.as_deref(), Some("mcu_serial"));
+        assert_eq!(participant.bus_profile.as_deref(), Some("mcu_serial"));
         assert_eq!(
-            runtime
+            participant
                 .config
                 .as_ref()
                 .and_then(|config| config.get("enabled"))
@@ -815,7 +824,7 @@ components:
             .expect_err("unknown bus profile should fail validation");
         assert!(
             errors.contains(&super::ValidationError::UnknownUserRuntimeBusProfile {
-                runtime: "autonomy".to_string(),
+                participant: "autonomy".to_string(),
                 profile: "mcu_serial".to_string(),
             })
         );
@@ -957,8 +966,8 @@ user_runtimes:
     framework: "0.9.0"
     build:
       context: container
-      dockerfile: Dockerfile.runtime
-      target: runtime
+      dockerfile: Dockerfile.participant
+      target: participant
 motion:
   kinematic:
     kind: omnidirectional
@@ -1027,7 +1036,7 @@ components:
   instances: {}
 "#,
         )
-        .expect_err("invalid runtime channel should fail to parse");
+        .expect_err("invalid phoxal_runtimes channel should fail to parse");
 
         assert!(
             format!("{error:#}").contains("unknown variant `experimental`"),
@@ -1056,7 +1065,7 @@ components:
   instances: {}
 "#,
         )
-        .expect_err("old runtime version field should fail to parse");
+        .expect_err("old phoxal_runtimes version field should fail to parse");
 
         assert!(
             format!("{error:#}").contains("unknown field `version`"),
@@ -1096,11 +1105,11 @@ components:
         );
         robot
             .validate_with(&["drive"])
-            .expect("known runtime image key should validate");
+            .expect("known platform image key should validate");
 
         let errors = robot
             .validate_with(&["odometry"])
-            .expect_err("unknown runtime image key should fail validation");
+            .expect_err("unknown platform image key should fail validation");
 
         assert!(
             errors.contains(&super::ValidationError::UnknownPlatformRuntimeImage {
@@ -1112,7 +1121,7 @@ components:
                 name: "drive".to_string(),
             }
             .to_string(),
-            "phoxal_runtimes.images.drive is not a platform runtime"
+            "phoxal_runtimes.images.drive is not a platform participant"
         );
 
         Ok(())

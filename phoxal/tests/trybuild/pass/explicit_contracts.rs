@@ -14,7 +14,7 @@ use phoxal::prelude::*;
 )]
 struct SetupOnly {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SetupOnly {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -22,7 +22,7 @@ impl SetupOnly {
         let _state = ctx
             .subscribe_with(
                 api::topic::new().drive().state(),
-                phoxal::runtime::SubscribeOptions::new().depth(8),
+                phoxal::participant::SubscribeOptions::new().depth(8),
             )
             .latest()
             .await?;

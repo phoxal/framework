@@ -3,7 +3,7 @@
 //! This crate is the dated API contract tree. It depends only on the
 //! [`phoxal-bus`](phoxal_bus) ABI floor (the contract primitive traits and the
 //! typed-topic builders) and the [`phoxal-macros`](phoxal_macros) proc-macros; it
-//! does **not** depend on the `phoxal` engine. A runtime depends on both crates
+//! does **not** depend on the `phoxal` engine. A participant depends on both crates
 //! and imports the API tree directly with `use phoxal_api::y2026_1 as api;`, so
 //! `phoxal_api::y2026_1`, `phoxal_api::ApiVersion`, and `phoxal_api::ContractBody`
 //! are the canonical paths.
@@ -28,14 +28,14 @@
 //!
 //! [`Api`]: y2026_1::Api
 //!
-//! # One API version per runtime, one per graph
+//! # One API version per participant, one per graph
 //!
-//! A runtime authors against exactly one version module
+//! A participant authors against exactly one version module
 //! (`use phoxal_api::y2026_1 as api;`) and declares it on the derive
 //! (`#[phoxal(api = y2026_1)]`). Every handle body is bound
 //! `ContractBody<Api = R::Api>`, so passing a body from another API version is a
 //! compile error (D59/D60). At deploy time a single graph runs a single API
-//! version: all of its runtimes share one `Api`, so contracts on the bus are
+//! version: all of its participants share one `Api`, so contracts on the bus are
 //! mutually consistent by construction (D59).
 //!
 //! # Plain serde wire bodies, version in metadata
@@ -89,11 +89,11 @@
 //! `api::topic::internal::new(cap).drive().target()` is `Topic<Subscribe<drive::Target>>`
 //! (the owner reads its command input). A query owner reaches its `ServeQuery`
 //! brand the same way. The `internal` chain is the deliberate, greppable owner
-//! opt-in; a runtime acquires the topics of its OWN node through it and everything
+//! opt-in; a participant acquires the topics of its OWN node through it and everything
 //! it consumes through the public chain.
 //!
 //! The `internal::new` entry requires the runner-minted owner capability
-//! ([`OwnerCap`](phoxal_bus::OwnerCap), Layer 2): a runtime obtains it from
+//! ([`OwnerCap`](phoxal_bus::OwnerCap), Layer 2): a participant obtains it from
 //! `phoxal::SetupContext::owner_capability()` and passes it in. On the documented
 //! surface, owning a topic therefore cannot happen by accident - only with a
 //! capability the runner mints.
@@ -140,7 +140,7 @@ phoxal_api_tree! {
                 curvature_limit_radpm: Option<f32>,
             }
 
-            /// The drive runtime's published control state.
+            /// The drive participant's published control state.
             struct State {
                 target: Target,
                 limited_target: Target,
@@ -164,7 +164,7 @@ phoxal_api_tree! {
         }
 
         safety {
-            /// Safety runtime decision for a candidate motion command.
+            /// Safety participant decision for a candidate motion command.
             #[derive(Copy, Eq)]
             enum SafetyDecision {
                 Allow,
@@ -180,7 +180,7 @@ phoxal_api_tree! {
                 max: f64,
             }
 
-            /// Per-axis velocity bounds the safety runtime will allow.
+            /// Per-axis velocity bounds the safety participant will allow.
             struct MotionConstraint {
                 linear_x_mps: Constraint,
                 angular_z_radps: Constraint,
@@ -211,7 +211,7 @@ phoxal_api_tree! {
                 map: Option<u64>,
             }
 
-            /// The safety runtime's authorization for downstream motion: the
+            /// The safety participant's authorization for downstream motion: the
             /// decision, the motion it approves, why, and when it expires.
             struct SafetyAuthorization {
                 decision: SafetyDecision,
@@ -221,7 +221,7 @@ phoxal_api_tree! {
                 expires_at_ns: Option<u64>,
             }
 
-            /// The safety runtime's published status: current decision + reasons.
+            /// The safety participant's published status: current decision + reasons.
             struct Status {
                 decision: SafetyDecision,
                 active_reasons: Vec<SafetyReason>,
@@ -264,7 +264,7 @@ phoxal_api_tree! {
                 Failed,
             }
 
-            /// The mission runtime's published state.
+            /// The mission participant's published state.
             struct State {
                 phase: Phase,
                 goal: Option<Goal>,
@@ -333,7 +333,7 @@ phoxal_api_tree! {
                 Shutdown,
             }
 
-            /// Where the power runtime is in handling a command.
+            /// Where the power participant is in handling a command.
             #[derive(Copy, Eq)]
             enum Status {
                 Idle,
@@ -357,7 +357,7 @@ phoxal_api_tree! {
                 SupervisorTransport,
             }
 
-            /// The power runtime's published state.
+            /// The power participant's published state.
             struct State {
                 status: Status,
                 detail: Option<String>,
@@ -506,7 +506,7 @@ phoxal_api_tree! {
                 map_revision: Option<u64>,
             }
 
-            /// The exploration runtime's published state.
+            /// The exploration participant's published state.
             struct State {
                 exploring: bool,
                 selected: Option<Frontier>,
@@ -532,7 +532,7 @@ phoxal_api_tree! {
                 stamp_ns: Option<u64>,
             }
 
-            /// The perception runtime's published health.
+            /// The perception participant's published health.
             struct State {
                 healthy: bool,
                 detector: String,
@@ -568,7 +568,7 @@ phoxal_api_tree! {
                 }
 
                 /// The published state of one video stream: its lifecycle phase
-                /// and the number of source frames seen so far. The video runtime
+                /// and the number of source frames seen so far. The video participant
                 /// publishes it per stream; clients subscribe, hence `state`.
                 struct StreamState {
                     phase: StreamPhase,
@@ -613,7 +613,7 @@ phoxal_api_tree! {
             topic contact: state Contact;
         }
 
-        // Per-instance component capabilities (D17/D38: framework-runtime / driver
+        // Per-instance component capabilities (D17/D38: framework participant / driver
         // territory). `component(instance)` selects a manifest-declared component;
         // each child `kind(capability)` is a self-contained node whose key is
         // `component/{instance}/<kind>/{capability}/<leaf>`. Nodes duplicate any
@@ -988,14 +988,14 @@ phoxal_api_tree! {
             }
 
             /// A single participant's liveness beacon. Participants publish their
-            /// own heartbeat; the presence runtime subscribes them as its control
+            /// own heartbeat; the presence participant subscribes them as its control
             /// input, hence the `command` role.
             struct Heartbeat {
                 participant: String,
                 readiness: Readiness,
             }
 
-            /// The presence runtime's aggregate readiness across all participants.
+            /// The presence participant's aggregate readiness across all participants.
             /// Presence publishes it; clients subscribe, hence the `state` role.
             struct State {
                 readiness: Readiness,

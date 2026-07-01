@@ -1,4 +1,4 @@
-// #[server_snapshot] requires a #[snapshot] provider on the same runtime.
+// #[server_snapshot] requires a #[snapshot] provider on the same participant.
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
@@ -10,7 +10,7 @@ struct NoSnap {
     revision: Publisher<api::map::Revision>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl NoSnap {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

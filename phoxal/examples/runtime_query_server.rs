@@ -1,4 +1,4 @@
-//! A server-only runtime: `#[setup]` + one exclusive `#[server]`, no `#[step]`.
+//! A server-only participant: `#[setup]` + one exclusive `#[server]`, no `#[step]`.
 //!
 //! `cargo run --example runtime_query_server` serves `asset/get`; the runner
 //! drives the queryable and serializes each call with `&mut self`.
@@ -15,7 +15,7 @@ struct AssetStore {
     assets: BTreeMap<String, Vec<u8>>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl AssetStore {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

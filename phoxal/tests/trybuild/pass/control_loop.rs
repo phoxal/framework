@@ -1,4 +1,4 @@
-// A minimal valid runtime: derive + runtime impl + setup + step + shutdown.
+// A minimal valid participant: derive + participant impl + setup + step + shutdown.
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
@@ -9,7 +9,7 @@ struct Demo {
     target: Publisher<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Demo {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

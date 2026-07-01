@@ -33,7 +33,7 @@ pub struct BusMetadata {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// runtime/artifact id - repeated component drivers must not collide, D53).
+    /// participant/artifact id - repeated component drivers must not collide, D53).
     pub participant: String,
     /// Per-process incarnation (bumped on restart).
     pub incarnation: u64,

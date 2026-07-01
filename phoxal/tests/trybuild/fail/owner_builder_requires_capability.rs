@@ -15,7 +15,7 @@ struct OwnerNeedsCap {
     state: Publisher<api::drive::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl OwnerNeedsCap {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

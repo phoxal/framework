@@ -1,6 +1,6 @@
 //! `battery` - the official simulated battery-state monitor.
 //!
-//! A scheduled runtime that consumes nothing: it has no subscriptions and models
+//! A scheduled participant that consumes nothing: it has no subscriptions and models
 //! a pack discharging under a constant load entirely from internal state.
 //! Each step it advances the charge ratio for the elapsed `dt`, derives a voltage
 //! by interpolating between the empty and full pack voltage, and publishes
@@ -27,7 +27,7 @@ struct Battery {
     state: Publisher<api::battery::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Battery {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_y2026_1_battery_contract() {
-        let json = phoxal::runtime::emit_apis_json::<Battery>();
+        let json = phoxal::participant::emit_apis_json::<Battery>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "battery");
         assert_eq!(value["api_version"], "y2026_1");

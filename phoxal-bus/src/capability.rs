@@ -12,7 +12,7 @@
 /// `api::topic::internal::new(cap)` now *requires* an `OwnerCap`, and the ONLY
 /// documented way to obtain one is
 /// [`phoxal::SetupContext::owner_capability()`]. The runner mints the single
-/// `OwnerCap` it hands to `SetupContext` before `#[setup]` runs, so a runtime opts
+/// `OwnerCap` it hands to `SetupContext` before `#[setup]` runs, so a participant opts
 /// into owning its own topics deliberately and visibly:
 ///
 /// ```ignore
@@ -42,7 +42,7 @@ impl OwnerCap {
     ///
     /// `#[doc(hidden)]` and `__`-prefixed: this is the privileged construction
     /// point the runner uses when it builds `SetupContext`. It is not part of the
-    /// documented authoring surface - runtimes obtain the cap through
+    /// documented authoring surface - participants obtain the cap through
     /// `phoxal::SetupContext::owner_capability()` instead.
     #[doc(hidden)]
     pub const fn __mint() -> Self {

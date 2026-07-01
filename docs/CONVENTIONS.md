@@ -1,6 +1,6 @@
 # Framework Conventions
 
-Engineering conventions for the bus, topics, logical time, runtime authoring, and
+Engineering conventions for the bus, topics, logical time, participant authoring, and
 components inside this workspace.
 Rust style is in the org-level
 [RUST_GUIDELINES](https://github.com/phoxal/organization/blob/master/docs/engineering/RUST_GUIDELINES.md);
@@ -68,11 +68,11 @@ the only source of keys, and the wire body never appears in the key
 
 ## Logical time
 
-- Runtimes and drivers track time, watchdogs, and staleness with **logical time**
+- Participants track time, watchdogs, and staleness with **logical time**
   only - never wall time directly.
   The runner owns one `ClockSource` and stamps every `StepContext` and every
   `produced_at_ns` from it, so all participants share one time domain
-  ([`phoxal/src/runtime/clock.rs`](../phoxal/src/runtime/clock.rs)).
+  ([`phoxal/src/participant/clock.rs`](../phoxal/src/participant/clock.rs)).
 - `LogicalTime` is `{ epoch, time_ns }`.
   Within an epoch `time_ns` strictly increases; an epoch bump signals a reset.
   `RealClock` reads the host-wide UNIX-epoch domain (so cross-process staleness
@@ -84,16 +84,16 @@ the only source of keys, and the wire body never appears in the key
   Next-step (`S` -> `S+1`) simulation visibility is part of that future work, not a
   current behavior.
 
-## Runtime authoring
+## Participant authoring
 
-- A runtime is a struct with `#[derive(phoxal::Service)]` plus a bare
-  `#[phoxal::runtime]` on its inherent impl
+- A participant is a struct with `#[derive(phoxal::Service)]` plus a bare
+  `#[phoxal::behavior]` on its inherent impl
   ([`phoxal/src/lib.rs`](../phoxal/src/lib.rs),
   [`runtime/drive/src/main.rs`](../runtime/drive/src/main.rs)).
   The derive carries config (`#[phoxal(id = "…", api = y2026_1)]`, optional
   `config = path::Config`) and reads the typed handle fields; the attribute owns the
   lifecycle/server methods.
-  There is no visible `Runtime` trait and no `execute(...)` entrypoint.
+  There is no visible umbrella trait and no `execute(...)` entrypoint.
 - Lifecycle methods: `#[setup]` (mandatory, builds all IO from
   `SetupContext<Self>`), `#[step(hz = N)]` (scheduled control step, at most one),
   `#[shutdown]` (graceful park/flush before bus close, at most one).
@@ -102,17 +102,17 @@ the only source of keys, and the wire body never appears in the key
   `Snapshot`), `#[snapshot]` (the committed-snapshot provider).
 - Handles are typed fields: `Publisher<B>`, `Subscriber<B>`, `Latest<B>`,
   `Querier<Req, Resp>`, or a `Vec`/`BTreeMap` of one for per-instance IO.
-  Every body must satisfy `ContractBody<Api = R::Api>` and the runtime must have
+  Every body must satisfy `ContractBody<Api = R::Api>` and the participant must have
   declared the family - both are compile-enforced, so a wrong-version body or an
   undeclared family is a compile error
-  ([`phoxal/src/runtime/context.rs`](../phoxal/src/runtime/context.rs)).
+  ([`phoxal/src/participant/context.rs`](../phoxal/src/participant/context.rs)).
 - The entrypoint is plain Rust: `fn main() -> phoxal::Result<()> {
   phoxal::run::<Participant>() }`.
   The runner owns args/env, bundle + robot-model loading, the bus connection, the
   clock, step scheduling, server dispatch, snapshot commits, and shutdown.
   Every binary also answers a top-level `emit-apis` subcommand that prints its
   static metadata as one JSON document and exits before any of that
-  ([`phoxal/src/runtime/emit.rs`](../phoxal/src/runtime/emit.rs)).
+  ([`phoxal/src/participant/emit.rs`](../phoxal/src/participant/emit.rs)).
 - Official runtimes take no typed config and build their state from the robot model
   via `ctx.robot()` (`Config::from_robot(&Robot)` in the runtime's own code - there
   is no shared resolver abstraction).
@@ -125,7 +125,7 @@ the only source of keys, and the wire body never appears in the key
   node ([`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs)); each `kind(capability)`
   child is a self-contained node whose key is
   `component/<instance>/<kind>/<capability>/<leaf>`.
-- A component driver is an ordinary runtime launched once per `components.instances`
+- A component driver is an ordinary participant launched once per `components.instances`
   entry with `#[derive(phoxal::Driver)]`; the bound instance is provided via
   `ctx.component()`, and the driver derives its per-instance handles from the
   robot model.

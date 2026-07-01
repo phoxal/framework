@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::bus::QueryFailure;
 
-/// A committed, read-only snapshot of a runtime's state (D16). Cheap to clone
+/// A committed, read-only snapshot of a participant's state (D16). Cheap to clone
 /// (an `Arc`); handed to `#[server_snapshot]` handlers so they read without
 /// touching `&mut self`.
 pub struct Snapshot<S> {

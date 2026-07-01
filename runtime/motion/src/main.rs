@@ -1,6 +1,6 @@
 //! `motion` - the official body-twist arbiter.
 //!
-//! This runtime is the single authority that writes `drive/target`. It subscribes
+//! This participant is the single authority that writes `drive/target`. It subscribes
 //! to `motion/manual`, `follow/target`, and `safety/authorization`, chooses
 //! between the manual and follow candidates under the current safety envelope, and
 //! publishes both the final `drive/target` and a `motion/state` arbitration
@@ -63,7 +63,7 @@ struct Motion {
     state: Publisher<api::motion::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Motion {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -571,7 +571,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_motion_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Motion>();
+        let json = phoxal::participant::emit_apis_json::<Motion>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "motion");
         assert_eq!(value["api_version"], "y2026_1");

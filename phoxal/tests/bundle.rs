@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use phoxal::participant::{ParticipantLaunch, RealClock, run_with};
 use phoxal::prelude::*;
-use phoxal::runtime::{ParticipantLaunch, RealClock, run_with};
 use serial_test::serial;
 
 static SEEN: OnceLock<(String, String)> = OnceLock::new();
@@ -15,11 +15,11 @@ static SEEN: OnceLock<(String, String)> = OnceLock::new();
 #[phoxal(id = "reads-robot", api = y2026_1)]
 struct ReadsRobot {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ReadsRobot {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        // An official-style runtime reads its typed state from the robot model.
+        // An official-style participant reads its typed state from the robot model.
         let robot = ctx.robot()?;
         let root = ctx.bundle_root()?;
         let _ = SEEN.set((

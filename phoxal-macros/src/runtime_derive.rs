@@ -1,9 +1,9 @@
 //! `#[derive(phoxal::Service)]` / `#[derive(phoxal::Driver)]` - static metadata
-//! from the runtime struct.
+//! from the participant struct.
 //!
 //! Reads the mandatory `#[phoxal(api = y2026_N)]` selector (plus optional
 //! `id` / `config`) and the struct's typed handle fields, then emits:
-//! - an `impl RuntimeFields` carrying `KIND`, `ID`, `Api`/`API_VERSION`,
+//! - an `impl ParticipantSpec` carrying `KIND`, `ID`, `Api`/`API_VERSION`,
 //!   `Config`, and `FIELD_CONTRACTS` (one `{family, topic, direction}` per
 //!   handle, all sharing the one API version);
 //! - compile assertions that every handle body satisfies
@@ -14,7 +14,7 @@
 //!
 //! Handles are recognized by **canonical syntactic form** only (`Publisher<T>`,
 //! `Subscriber<T>`, `Latest<T>`, `Querier<A, B>`, and `Vec`/`BTreeMap` of them);
-//! every other field is ignored as runtime-private state.
+//! every other field is ignored as participant-private state.
 
 use heck::ToKebabCase;
 use proc_macro2::TokenStream;
@@ -60,7 +60,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
             &input.generics,
-            format!("{derive_path} does not support generic runtime structs"),
+            format!("{derive_path} does not support generic participant structs"),
         ));
     }
 
@@ -117,7 +117,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
             if seen_contracts.insert(key) {
                 let dir = dir.tokens(&phoxal);
                 contract_entries.push(quote! {
-                    #phoxal::runtime::ContractUse {
+                    #phoxal::participant::ContractUse {
                         api_version: <<#body as #phoxal::bus::ContractBody>::Api as #phoxal::bus::ApiVersion>::ID,
                         family: <#body as #phoxal::bus::ContractBody>::FAMILY,
                         topic: <#body as #phoxal::bus::ContractBody>::TOPIC,
@@ -137,8 +137,8 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
             fn #assert_fn() {
                 fn assert<R, B>()
                 where
-                    R: #phoxal::runtime::RuntimeFields,
-                    B: #phoxal::bus::ContractBody<Api = <R as #phoxal::runtime::RuntimeFields>::Api>,
+                    R: #phoxal::participant::ParticipantSpec,
+                    B: #phoxal::bus::ContractBody<Api = <R as #phoxal::participant::ParticipantSpec>::Api>,
                 {}
                 assert::<#struct_name, #body>();
             }
@@ -155,15 +155,15 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
     for decl in &decls {
         let (marker, key) = match decl {
             Decl::Publish(b) => (
-                quote!(impl #phoxal::runtime::DeclaresPublish<#b> for #struct_name {}),
+                quote!(impl #phoxal::participant::DeclaresPublish<#b> for #struct_name {}),
                 format!("pub:{}", normalized_type_key(b, &api)),
             ),
             Decl::Subscribe(b) => (
-                quote!(impl #phoxal::runtime::DeclaresSubscribe<#b> for #struct_name {}),
+                quote!(impl #phoxal::participant::DeclaresSubscribe<#b> for #struct_name {}),
                 format!("sub:{}", normalized_type_key(b, &api)),
             ),
             Decl::Query { req, resp } => (
-                quote!(impl #phoxal::runtime::DeclaresQuery<#req, #resp> for #struct_name {}),
+                quote!(impl #phoxal::participant::DeclaresQuery<#req, #resp> for #struct_name {}),
                 format!(
                     "qry:{}=>{}",
                     normalized_type_key(req, &api),
@@ -177,20 +177,20 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
     }
 
     let driver_marker = if kind.is_driver() {
-        quote!(impl #phoxal::runtime::IsDriver for #struct_name {})
+        quote!(impl #phoxal::participant::IsDriver for #struct_name {})
     } else {
         TokenStream::new()
     };
 
     Ok(quote! {
-        impl #phoxal::runtime::RuntimeFields for #struct_name {
+        impl #phoxal::participant::ParticipantSpec for #struct_name {
             const KIND: &'static str = #artifact_kind;
             const ID: &'static str = #id;
             type Api = #phoxal_api::#api::Api;
             const API_VERSION: &'static str =
                 <#phoxal_api::#api::Api as #phoxal::bus::ApiVersion>::ID;
             type Config = #config_ty;
-            const FIELD_CONTRACTS: &'static [#phoxal::runtime::ContractUse] = &[
+            const FIELD_CONTRACTS: &'static [#phoxal::participant::ContractUse] = &[
                 #(#contract_entries),*
             ];
         }
@@ -251,7 +251,7 @@ impl PhoxalArgs {
                 &input.ident,
                 format!(
                     "{derive_path} requires #[phoxal(api = y2026_N)] (D59/D60): \
-                     it selects the one API version this runtime - and the whole graph - runs against"
+                     it selects the one API version this participant - and the whole graph - runs against"
                 ),
             )
         })?;
@@ -346,7 +346,7 @@ impl Direction {
             Direction::QueryRequest => quote!(QueryRequest),
             Direction::QueryResponse => quote!(QueryResponse),
         };
-        quote!(#phoxal::runtime::Direction::#variant)
+        quote!(#phoxal::participant::Direction::#variant)
     }
 }
 
@@ -374,7 +374,7 @@ impl Decl {
 
 /// Recognize a handle field by canonical syntactic form, returning the
 /// declaration(s). `Vec`/`BTreeMap` of a handle carry the inner handle's
-/// declaration. Returns `None` for non-handle (runtime-private) fields.
+/// declaration. Returns `None` for non-handle (participant-private) fields.
 fn classify_handle(ty: &Type) -> Option<Vec<Decl>> {
     let path = as_type_path(ty)?;
     let seg = path.path.segments.last()?;
@@ -387,9 +387,9 @@ fn classify_handle(ty: &Type) -> Option<Vec<Decl>> {
             req: generic_type(seg, 0)?,
             resp: generic_type(seg, 1)?,
         }]),
-        // Vec<Handle> — the element is the handle.
+        // Vec<Handle> - the element is the handle.
         "Vec" => classify_handle(&generic_type(seg, 0)?),
-        // BTreeMap<K, Handle> / HashMap<K, Handle> — the value is the handle.
+        // BTreeMap<K, Handle> / HashMap<K, Handle> - the value is the handle.
         "BTreeMap" | "HashMap" => classify_handle(&generic_type(seg, 1)?),
         _ => None,
     }

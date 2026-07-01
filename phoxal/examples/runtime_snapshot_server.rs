@@ -1,4 +1,4 @@
-//! A scheduled runtime with committed snapshots and a concurrent read-only query.
+//! A scheduled participant with committed snapshots and a concurrent read-only query.
 //!
 //! Run with `cargo run --example runtime_snapshot_server` or inspect metadata
 //! with `cargo run --example runtime_snapshot_server emit-apis`.
@@ -49,7 +49,7 @@ struct SnapshotMap {
     rev: u64,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SnapshotMap {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -61,7 +61,7 @@ impl SnapshotMap {
                 .subscribe(api::topic::new().localize().state())
                 .latest()
                 .await?,
-            // This runtime owns the map node's telemetry + queries it serves below,
+            // This participant owns the map node's telemetry + queries it serves below,
             // so they go through the owner (`internal`) builder; `localize/state` is
             // consumed via the public builder.
             revision: ctx

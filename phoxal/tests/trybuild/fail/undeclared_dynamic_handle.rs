@@ -6,7 +6,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "undeclared-dynamic", api = y2026_1)]
 struct UndeclaredDynamic {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl UndeclaredDynamic {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

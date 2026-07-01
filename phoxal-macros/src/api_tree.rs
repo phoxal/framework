@@ -636,7 +636,7 @@ fn expand_topic_module(nodes: &[Node]) -> syn::Result<TokenStream> {
             #client_builder_mods
 
             /// Owner-side topic builders (L1 + L2, plan #00). `internal::new(cap)...`
-            /// is the deliberate, greppable owner opt-in: a runtime acquires the
+            /// is the deliberate, greppable owner opt-in: a participant acquires the
             /// topics of its OWN node here, getting the publish/subscribe/serve side
             /// the owner must take (the inverse of the client brands). Consumed
             /// topics still go through the public [`new()`](self::new) chain.
@@ -887,7 +887,7 @@ fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], depth: usize, side: Sid
 
 /// Build a leaf's key in two forms: the `format!` template (literal node-name
 /// segments, `{}` for each dynamic var, then `/leaf`) and the human-readable
-/// `{var}`-placeholder doc key. Both are derived from the node path so the runtime
+/// `{var}`-placeholder doc key. Both are derived from the node path so the concrete
 /// key and the documented key stay in lockstep.
 fn builder_leaf_key_parts(path: &[NodeSeg], leaf: &Ident) -> (String, String) {
     let mut fmt_segs = Vec::new();
@@ -912,7 +912,7 @@ fn builder_leaf_key_parts(path: &[NodeSeg], leaf: &Ident) -> (String, String) {
     )
 }
 
-/// Force every named field of a macro-declared body struct to `pub` so runtime
+/// Force every named field of a macro-declared body struct to `pub` so participant
 /// code in other modules can construct and read the wire body directly.
 fn with_pub_fields_struct(mut item: ItemStruct) -> ItemStruct {
     if let syn::Fields::Named(named) = &mut item.fields {

@@ -1,7 +1,7 @@
 //! `video` - operator preview stream lifecycle service.
 //!
 //! The y2026_1 video contract exposes a compact `video/open` query plus a
-//! per-stream `state` topic. This runtime enumerates the robot's camera
+//! per-stream `state` topic. This participant enumerates the robot's camera
 //! capabilities, answers `open` requests (resolving the requested capability and
 //! validating dimensions against the native sensor size), subscribes to the
 //! matching raw camera frames, and publishes `video/stream/<id>/state` snapshots.
@@ -101,7 +101,7 @@ impl Video {
     }
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Video {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_video_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Video>();
+        let json = phoxal::participant::emit_apis_json::<Video>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "video");
         assert_eq!(value["api_version"], "y2026_1");

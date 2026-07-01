@@ -1,6 +1,6 @@
 //! `perception` - detector shell for camera/depth sensing.
 //!
-//! This runtime subscribes to per-component camera and depth frames plus
+//! This participant subscribes to per-component camera and depth frames plus
 //! `localize/state`, runs them through a detector head, and publishes
 //! `perception/detections` and `perception/state`. Detections from a fresh,
 //! confident localization are reported in the `map` frame; otherwise they stay in
@@ -8,10 +8,10 @@
 //! nearest same-class association within a time/distance window.
 //!
 //! The default detector is intentionally honest: no heavyweight model backend is
-//! linked, and the deterministic placeholder emits no detections, so the runtime
+//! linked, and the deterministic placeholder emits no detections, so the participant
 //! publishes empty detection sets while still reporting camera health. Future
 //! detector heads can plug in behind the small `DetectorHead` trait without
-//! changing the runtime IO surface.
+//! changing the participant IO surface.
 
 use anyhow::Result;
 use phoxal::model::component::v1::CapabilityRef;
@@ -254,7 +254,7 @@ struct Perception {
     state: Publisher<api::perception::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Perception {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_perception_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Perception>();
+        let json = phoxal::participant::emit_apis_json::<Perception>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "perception");
         assert_eq!(value["api_version"], "y2026_1");

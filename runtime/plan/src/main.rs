@@ -1,6 +1,6 @@
 //! `plan` - straight-line path planner boundary.
 //!
-//! This runtime subscribes to `mission/state` (for the active goal),
+//! This participant subscribes to `mission/state` (for the active goal),
 //! `localize/state`, and `map/revision`, then publishes `plan/path` and
 //! `plan/state` for downstream controllers. The default planner is intentionally
 //! honest: it interpolates a straight line from the current pose to the goal at a
@@ -87,7 +87,7 @@ struct Plan {
     state: Publisher<api::plan::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Plan {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_plan_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Plan>();
+        let json = phoxal::participant::emit_apis_json::<Plan>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "plan");
         assert_eq!(value["api_version"], "y2026_1");

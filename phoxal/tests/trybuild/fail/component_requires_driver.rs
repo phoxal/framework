@@ -11,7 +11,7 @@ struct ComponentRequiresDriver {
     target: Publisher<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ComponentRequiresDriver {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

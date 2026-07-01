@@ -5,7 +5,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "step-bad-return", api = y2026_1)]
 struct StepBadReturn {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl StepBadReturn {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

@@ -6,7 +6,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "missing-server-topic", api = y2026_1)]
 struct MissingServerTopic {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl MissingServerTopic {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

@@ -1,6 +1,6 @@
-//! `asset` - the official asset runtime.
+//! `asset` - the official asset participant.
 //!
-//! A server-only official runtime: no `#[step]`, one exclusive `#[server]` serving
+//! A server-only official participant: no `#[step]`, one exclusive `#[server]` serving
 //! `asset/get` from the deploy bundle. It consumes no topics; it reads the bundle
 //! root via `ctx.bundle_root()` (D33: official runtimes build their state from the
 //! model / bundle, not a typed config block).
@@ -20,7 +20,7 @@ struct Asset {
     bundle_root: PathBuf,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Asset {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

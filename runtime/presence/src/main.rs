@@ -1,7 +1,7 @@
-//! `presence` - aggregate explicit runtime heartbeats.
+//! `presence` - aggregate explicit participant heartbeats.
 //!
 //! Per plan #00 the heartbeat seam is split by role. Participants publish their
-//! own beacon on the `command`-role `presence/heartbeat` topic; this runtime
+//! own beacon on the `command`-role `presence/heartbeat` topic; this participant
 //! subscribes them (its control input) and publishes one aggregate readiness on
 //! the `state`-role `presence/state` topic, which clients subscribe.
 //!
@@ -10,7 +10,7 @@
 //! `Failed` participant makes the aggregate `Failed`; a participant whose last
 //! heartbeat is older than the stale threshold (3 s) counts as `Degraded`;
 //! otherwise `Degraded` beats `Initializing`/`NotStarted`, which beats `Ready`.
-//! The runtime's own id is excluded from the fold so it cannot poison its own
+//! The participant's own id is excluded from the fold so it cannot poison its own
 //! aggregate.
 
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ struct Presence {
     state_pub: Publisher<api::presence::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Presence {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -213,17 +213,17 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::runtime::runtime_metadata::<Presence>();
+        let metadata = phoxal::participant::participant_metadata::<Presence>();
         assert_eq!(metadata.artifact.id, "presence");
 
         let contracts = metadata.required_contracts;
         assert!(contracts.iter().any(|c| {
             c.family == <api::presence::Heartbeat as ContractBody>::FAMILY
-                && c.direction == phoxal::runtime::Direction::Subscribe
+                && c.direction == phoxal::participant::Direction::Subscribe
         }));
         assert!(contracts.iter().any(|c| {
             c.family == <api::presence::State as ContractBody>::FAMILY
-                && c.direction == phoxal::runtime::Direction::Publish
+                && c.direction == phoxal::participant::Direction::Publish
         }));
     }
 
