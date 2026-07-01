@@ -4,7 +4,7 @@ identity:
   id: rgbd-diff-drive
   namespace: dev
 structure: structure.urdf
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
 motion:
   kinematic:

@@ -15,14 +15,16 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
   (`Publisher`, `Subscriber`, `Latest`, `Querier`), the query/server primitives,
   and the `bus_abi` envelope: the topic-key scheme, the codec, the encoding string,
   and the `BusMetadata` attachment.
-  Runtime, driver, and tool code connects through the runner-owned bus (it does not
-  open Zenoh itself) and names topics through the api modules.
-- The wire body is the **plain MessagePack payload** of a version-local body type;
-  `api_version`/`family`/`codec` and the produce-time stamp ride bus metadata, never
-  the body or the key (see [CONTRACTS.md](./CONTRACTS.md)).
+  Service, driver, tool, and simulator code connect through the runner-owned bus
+  (they do not open Zenoh themselves) and name topics through the api modules.
+- The wire body is the **plain MessagePack payload** of a version-local body type.
+  Runtime compatibility keys primarily on `schema_id`, the normalized transitive
+  wire-shape hash carried in the Zenoh encoding string and `BusMetadata`.
+  `api_version`/`family`/`codec` and the produce-time stamp also ride bus metadata,
+  never the body or the key (see [CONTRACTS.md](./CONTRACTS.md)).
 - Endpoints use Zenoh endpoint syntax directly (`tcp/127.0.0.1:7447`,
   `tcp/router:7447`); endpoint literals and device paths live in the
-  manifest/bundle/launch layer, never in runtime source.
+  manifest/bundle/launch layer, never in service source.
 - By convention each topic has one producer: products (state, telemetry) are read
   via `Subscriber`/`Latest` and commands are sent via `Publisher`, with the opposite
   side owned by whoever produces the effect.
@@ -45,7 +47,7 @@ the only source of keys, and the wire body never appears in the key
   `api::topic::new().component(instance).motor(capability).command()`.
   These are dynamic keys resolved from the robot model in `#[setup]`.
 - The runner applies the multi-robot root `<namespace>/robots/<robot-id>/` to every
-  key at the transport layer; runtime code only ever names the versionless key.
+  key at the transport layer; service code only ever names the versionless key.
 - `publish_key()` rejects a wildcard key before transport; wildcard subscription
   stays allowed for discovery/driver use.
 
@@ -53,7 +55,7 @@ the only source of keys, and the wire body never appears in the key
 
 - A pub/sub body is a plain serde struct/enum.
   Produce time is **not** a body field; it rides `BusMetadata` and is stamped from
-  the runtime's `LogicalTime` via `publisher.publish_at(at, body)`.
+  the participant's `LogicalTime` via `publisher.publish_at(at, body)`.
 - A publish never blocks the step loop: `publish_at` is a non-blocking enqueue onto
   a bounded outbound queue.
   A saturated queue drops the sample, bumps `outbound_drops`, and returns
@@ -62,9 +64,9 @@ the only source of keys, and the wire body never appears in the key
 - Receivers bound their backlog: `Latest<B>` keeps last-1; `Subscriber<B>` is a
   drop-oldest ring (depth 32 by default, overridable), bumping `inbound_drops` when
   a slow consumer lets the ring fill.
-- When a runtime needs to explain a decision, prefer a typed reason field on the
+- When a service needs to explain a decision, prefer a typed reason field on the
   primary contract (a closed-set enum + optional `detail`); only promote it to its
-  own topic if another runtime branches on it.
+  own topic if another service branches on it.
 
 ## Logical time
 
@@ -86,20 +88,35 @@ the only source of keys, and the wire body never appears in the key
 
 ## Participant authoring
 
-- A participant is a struct with `#[derive(phoxal::Service)]` plus a bare
+- A participant is a struct with one authoring derive plus a bare
   `#[phoxal::behavior]` on its inherent impl
   ([`phoxal/src/lib.rs`](../phoxal/src/lib.rs),
-  [`runtime/drive/src/main.rs`](../runtime/drive/src/main.rs)).
+  [`service/drive/src/main.rs`](../service/drive/src/main.rs)).
   The derive carries config (`#[phoxal(id = "…", api = y2026_1)]`, optional
   `config = path::Config`) and reads the typed handle fields; the attribute owns the
   lifecycle/server methods.
   There is no visible umbrella trait and no `execute(...)` entrypoint.
+- The four authoring kinds are:
+  `#[derive(phoxal::Service)]` for ordinary typed participants;
+  `#[derive(phoxal::Driver)]` for per-component-instance participants that can
+  call `ctx.component()`;
+  `#[derive(phoxal::Tool)]` for host-side utilities that inspect `ctx.robot()` and
+  will get the privileged raw-bus surface in plan #07;
+  `#[derive(phoxal::Simulator)]` for simulation-only participants that will own
+  the simulation clock and scheduling surface in plan #09.
+  Today each kind is emitted through `emit-apis` as `kind = "service"`,
+  `"driver"`, `"tool"`, or `"simulator"` and has its own marker trait where the
+  type system needs to distinguish it.
 - Lifecycle methods: `#[setup]` (mandatory, builds all IO from
   `SetupContext<Self>`), `#[step(hz = N)]` (scheduled control step, at most one),
   `#[shutdown]` (graceful park/flush before bus close, at most one).
   Query servers: `#[server(topic = …)]` (exclusive, holds `&mut self`, serialized
   with `#[step]`), `#[server_snapshot(topic = …)]` (concurrent, reads a committed
   `Snapshot`), `#[snapshot]` (the committed-snapshot provider).
+- Tool binaries should avoid typed handle fields, `#[step]`, and `#[server]`
+  contracts until the raw-bus slice lands. The current taxonomy slice deliberately
+  does not add that enforcement because the privileged bus entrypoint belongs with
+  plan #07.
 - Handles are typed fields: `Publisher<B>`, `Subscriber<B>`, `Latest<B>`,
   `Querier<Req, Resp>`, or a `Vec`/`BTreeMap` of one for per-instance IO.
   Every body must satisfy `ContractBody<Api = R::Api>` and the participant must have
@@ -113,10 +130,10 @@ the only source of keys, and the wire body never appears in the key
   Every binary also answers a top-level `emit-apis` subcommand that prints its
   static metadata as one JSON document and exits before any of that
   ([`phoxal/src/participant/emit.rs`](../phoxal/src/participant/emit.rs)).
-- Official runtimes take no typed config and build their state from the robot model
-  via `ctx.robot()` (`Config::from_robot(&Robot)` in the runtime's own code - there
+- Official services take no typed config and build their state from the robot model
+  via `ctx.robot()` (`Config::from_robot(&Robot)` in the service's own code - there
   is no shared resolver abstraction).
-  User runtimes declare `config = path::Config` and read it as `Self::Config` in
+  User participants declare `config = path::Config` and read it as `Self::Config` in
   `#[setup]`.
 
 ## Components

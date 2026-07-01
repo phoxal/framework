@@ -1,10 +1,11 @@
 //! The `emit-apis` metadata (D50/D57).
 //!
-//! Every participant/tool/driver binary exposes a top-level `emit-apis` subcommand
-//! that serializes its compiled-in static metadata to stdout as exactly one JSON
-//! document and exits - before loading robot config, `.env`, tracing, Zenoh, or
-//! running `#[setup]`. `phoxal-cli check`/`deploy build` run it on the resolved
-//! artifacts; there is no release descriptor or sidecar file (D57).
+//! Every service, driver, tool, and simulator binary exposes a top-level
+//! `emit-apis` subcommand that serializes its compiled-in static metadata to
+//! stdout as exactly one JSON document and exits - before loading robot config,
+//! `.env`, tracing, Zenoh, or running `#[setup]`. `phoxal-cli check`/`deploy
+//! build` run it on the resolved artifacts; there is no release descriptor or
+//! sidecar file (D57).
 //!
 //! The emitted JSON schema is **frozen** (fields below). Adding a field is
 //! backward-compatible; renaming/removing one is a `bus_abi`/schema change.
@@ -41,7 +42,7 @@ pub struct ParticipantMetadata {
 /// Artifact identity.
 #[derive(Debug, Serialize)]
 pub struct Artifact {
-    /// `service` | `tool` | `driver`.
+    /// `service` | `driver` | `tool` | `simulator`.
     pub kind: &'static str,
     /// The artifact id (the participant id).
     pub id: String,
@@ -59,6 +60,8 @@ pub struct Framework {
 pub struct ContractView {
     /// API version this contract body belongs to.
     pub api_version: String,
+    /// Transitive wire-shape id for this contract body.
+    pub schema_id: String,
     /// Contract family id.
     pub family: String,
     /// Versionless topic key.
@@ -71,6 +74,7 @@ impl From<&ContractUse> for ContractView {
     fn from(c: &ContractUse) -> Self {
         ContractView {
             api_version: c.api_version.to_string(),
+            schema_id: c.schema_id.to_string(),
             family: c.family.to_string(),
             topic: c.topic.to_string(),
             direction: c.direction,
@@ -87,6 +91,7 @@ pub fn participant_metadata<R: ParticipantBehavior>() -> ParticipantMetadata {
         .filter(|contract| {
             seen.insert((
                 contract.api_version.to_string(),
+                contract.schema_id.to_string(),
                 contract.family.to_string(),
                 contract.topic.to_string(),
                 contract.direction,

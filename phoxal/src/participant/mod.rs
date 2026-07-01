@@ -1,8 +1,9 @@
 //! The participant engine: static metadata traits, contexts, clock, launch contract,
 //! `emit-apis`, and the runner.
 //!
-//! Authoring uses `#[derive(phoxal::Service)]` or `#[derive(phoxal::Driver)]`
-//! with `#[phoxal::behavior]` (see the crate docs); this module is the
+//! Authoring uses `#[derive(phoxal::Service)]`, `#[derive(phoxal::Driver)]`,
+//! `#[derive(phoxal::Tool)]`, or `#[derive(phoxal::Simulator)]` with
+//! `#[phoxal::behavior]` (see the crate docs); this module is the
 //! runner-facing machinery those macros target.
 
 pub mod clock;
@@ -21,7 +22,7 @@ pub use runner::{run, run_async, run_with, run_with_bus};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
     ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, IsDriver,
-    MissedTick, ParticipantBehavior, ParticipantSpec, StepSchedule,
+    IsSimulator, IsTool, MissedTick, ParticipantBehavior, ParticipantSpec, StepSchedule,
 };
 
 /// Re-exported so authoring code can name logical time without reaching into

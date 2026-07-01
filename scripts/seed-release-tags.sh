@@ -8,7 +8,7 @@
 # as the changelog/diff baseline. Seeding it avoids the first release-plz run
 # treating an already-published crate as having unreleased changes.
 #
-# Only the publishable crates are seeded; the runtime crates are publish = false
+# Only the publishable crates are seeded; the service crates are publish = false
 # and are not part of the crate release (release-plz skips them).
 #
 # Run this ONCE at activation (after merging the release PR, before the next push
@@ -57,7 +57,7 @@ done < <(
 meta = json.load(sys.stdin)
 members = set(meta["workspace_members"])
 for pkg in meta["packages"]:
-    # publish == [] means publish = false (a runtime); skip those. Publishable
+    # publish == [] means publish = false (a service); skip those. Publishable
     # crates have publish == None (any registry) or a non-empty allowlist.
     if pkg["id"] in members and pkg.get("publish") != []:
         print(pkg["name"], pkg["version"])'

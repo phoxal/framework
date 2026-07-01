@@ -1,7 +1,7 @@
 # Validation
 
 How the framework proves its contracts - not just that a robot moves.
-Validation must exercise the runtime contract end to end.
+Validation must exercise the service contract end to end.
 Schema/resolution validation ships in this crate today (`cargo test`); the
 scenario harness and tier/phase gates below are the validation roadmap the
 workspace is converging to, not all wired up yet.
@@ -13,31 +13,32 @@ workspace is converging to, not all wired up yet.
    `phoxal::model::component`, `phoxal::model::simulation`) with parse +
    round-trip + `deny_unknown_fields` tests.
    Errors point at the offending file/field.
-2. **Resolution.** Each runtime process loads the source-shaped staged bundle
+2. **Resolution.** Each service process loads the source-shaped staged bundle
    (`robot.yaml`, `structure.urdf`, `components/<name>/component.yaml` + sibling
    files) and the shared deterministic resolver extracts the typed facts; official
-   runtimes then build their own typed slice from the model
+   services then build their own typed slice from the model
    (`Config::from_robot(&Robot)`).
    Identical inputs produce identical facts.
-   There is no generated per-runtime config file and no deploy descriptor; build
-   reproducibility is provided downstream by the consumer CLI
-   (`phoxal/phoxal-cli`) via `phoxal.sources.lock` (resolved image digests,
-   component commits, tool digests), not by this workspace.
+   There is no generated per-service config file, deploy descriptor, or Phoxal
+   lockfile in this workspace. Runtime compatibility is checked live from the
+   resolved contracts: each body carries a `schema_id`, mirrored in the Zenoh
+   encoding string and `BusMetadata`, so peers reject mismatched wire shapes
+   before decoding.
 3. **Contract.** The api tree carries golden + drift tests
    ([`phoxal-api/src/tests.rs`](../phoxal-api/src/tests.rs), see
    [CONTRACTS.md](./CONTRACTS.md)): the **plain** MessagePack body bytes are pinned
    (no `{"v":…,"data":…}` wrapper - the body is just the struct's fields), each
-   body's `ContractBody` consts (`FAMILY`/`TOPIC`) and its `Api::ID` are asserted,
-   topic keys + family ids are pinned, the encoding string + `BusMetadata` shape is
-   pinned, query responses are typed bodies/enums, reasons are closed-set typed
-   enums, and bodies carry no generic produce-time field.
-4. **Backend.** Replaceable runtime backends (notably localization) prove state
+   body's `ContractBody` consts (`FAMILY`/`TOPIC`/`SCHEMA_ID`) and its `Api::ID`
+   are asserted, topic keys + family ids are pinned, the encoding string +
+   `BusMetadata` shape is pinned, query responses are typed bodies/enums, reasons
+   are closed-set typed enums, and bodies carry no generic produce-time field.
+4. **Backend.** Replaceable service backends (notably localization) prove state
    cadence, reset/epoch handling, timestamp handling, revision behavior, and mode
    transitions against the shipped v1 reference backend (**builtin
    odometry/dead-reckoning**) on synthetic and recorded inputs.
    ORB-SLAM3 and GNSS anchoring are experimental/unimplemented in this workspace
    and must not be advertised as resolved backend facts until corresponding
-   runtimes and validation exist (`ResolvedLocalizeBackend` only resolves
+   services and validation exist (`ResolvedLocalizeBackend` only resolves
    `DeadReckoning` today).
    A backend is profile-complete only after it passes this suite.
 5. **Scenario.** Webots-backed gates organized into tiers and mapped to delivery
@@ -70,7 +71,7 @@ Two surfaces, never sharing scenario definitions:
 | Tier | Scope | Purpose |
 |---|---|---|
 | 0 | schema, resolution, unit tests | fast contract validation (in `cargo test`) |
-| 1 | headless contract scenarios | runtime contracts, basic system behavior |
+| 1 | headless contract scenarios | service contracts, basic system behavior |
 | 2 | autonomy smoke scenarios | localization/map/plan/follow/safety flow |
 | 3 | full autonomy + deploy preflight | release/deployment confidence |
 | 4 | hardware, log replay, sim-to-real | real-world validation and regression |
@@ -100,7 +101,7 @@ bounded commands, simulator pose reached tolerance with no disallowed contact, a
 the products could explain the behavior.
 Moving the robot is not enough.
 
-Scenario failures report the failed runtime/topic/query, relevant revision ids,
+Scenario failures report the failed service/topic/query, relevant revision ids,
 localization mode, mission state, safety decision, planner/follower state, and
 simulator truth - actionable without reading raw logs first.
 

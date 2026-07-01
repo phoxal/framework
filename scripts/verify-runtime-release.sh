@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Verify a coherent GHCR runtime image release.
 #
-# For a given framework version, confirm that EVERY runtime crate in the
+# For a given framework version, confirm that EVERY service crate in the
 # workspace has a published GHCR image whose tag resolves to a real
 # multi-arch (linux/amd64 + linux/arm64) OCI index digest. This is the
 # repeatable form of the "first coherent GHCR runtime image release" proof
-# (phoxal/framework#31): the release matrix, the runtime crates, and the
+# (phoxal/framework#31): the release matrix, the service crates, and the
 # phoxal-cli platform-runtime catalog must all name the same set, and every
 # image in that set must be pullable as a real digest pin.
 #
-# The runtime set is derived from the workspace (`runtime/<name>/Cargo.toml`),
-# not a hard-coded list, so this gate fails if a runtime crate is added
+# The service set is derived from the workspace (`service/<name>/Cargo.toml`),
+# not a hard-coded list, so this gate fails if a service crate is added
 # without a matching published image (or vice versa).
 #
 # Requires `docker buildx`. `imagetools inspect` queries the registry
@@ -34,32 +34,32 @@ version="${1:-}"
 
 command -v docker >/dev/null 2>&1 || { echo "docker (with buildx) is required" >&2; exit 2; }
 
-# Single source of truth: the runtime crates in the workspace. Each
-# runtime/<name>/Cargo.toml builds phoxal-runtime-<name> and ships as
+# Single source of truth: the service crates in the workspace. Each
+# service/<name>/Cargo.toml builds phoxal-service-<name> and ships as
 # ghcr.io/phoxal/runtime-<name>. The depth-1 glob excludes nested helper
-# crates (e.g. runtime/localize/orb-slam3-sys) and the empty router/ dir.
+# crates (e.g. service/localize/orb-slam3-sys) and the empty router/ dir.
 # Images are API-version-scoped (api-version-availability): the tag is
-# `<api>-v<version>` / `<api>-stable`, where <api> is the runtime's compiled-in
+# `<api>-v<version>` / `<api>-stable`, where <api> is the service's compiled-in
 # API version, read here from its `#[phoxal(api = yYYYY_N)]` attribute.
-runtimes=()
+services=()
 apis=()
-for manifest in "${REPO_ROOT}"/runtime/*/Cargo.toml; do
+for manifest in "${REPO_ROOT}"/service/*/Cargo.toml; do
   [[ -f "${manifest}" ]] || continue
   name="$(basename "$(dirname "${manifest}")")"
   main_rs="$(dirname "${manifest}")/src/main.rs"
   api="$(sed -n 's/.*#\[phoxal(.*api = \(y[0-9_]*\).*/\1/p' "${main_rs}" 2>/dev/null | head -n1)"
   [[ -n "${api}" ]] || { echo "could not read api version from ${main_rs}" >&2; exit 2; }
-  runtimes+=("${name}")
+  services+=("${name}")
   apis+=("${api}")
 done
-[[ ${#runtimes[@]} -gt 0 ]] || { echo "no runtime crates found under runtime/" >&2; exit 2; }
+[[ ${#services[@]} -gt 0 ]] || { echo "no service crates found under service/" >&2; exit 2; }
 
-echo "Verifying ${#runtimes[@]} runtime images @ v${version} on ${REGISTRY}"
+echo "Verifying ${#services[@]} runtime images @ v${version} on ${REGISTRY}"
 echo
 
 fail=0
-for i in "${!runtimes[@]}"; do
-  r="${runtimes[$i]}"
+for i in "${!services[@]}"; do
+  r="${services[$i]}"
   api="${apis[$i]}"
   ref="${REGISTRY}/runtime-${r}:${api}-v${version}"
   if ! raw="$(docker buildx imagetools inspect "${ref}" --raw 2>/dev/null)"; then
@@ -82,7 +82,7 @@ done
 
 echo
 if [[ ${fail} -ne 0 ]]; then
-  echo "FAIL: ${fail}/${#runtimes[@]} runtime images missing or not multi-arch @ ${version}" >&2
+  echo "FAIL: ${fail}/${#services[@]} runtime images missing or not multi-arch @ ${version}" >&2
   exit 1
 fi
-echo "OK: all ${#runtimes[@]} runtime images published as multi-arch (amd64+arm64) indexes @ ${version}"
+echo "OK: all ${#services[@]} runtime images published as multi-arch (amd64+arm64) indexes @ ${version}"

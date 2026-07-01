@@ -1,6 +1,6 @@
 //! Pure-bus-mechanic tests: the `bus_abi` slots (encoding string, metadata, codec
 //! id), the `<namespace>/robots/<robot-id>/<typed-key>` root + namespace
-//! validation (D38/D43b), the `api_version`/family/codec fast-reject in
+//! validation (D38/D43b), the `schema_id`/family/codec fast-reject in
 //! `decode_sample`, and a live in-process Publisher → Latest round-trip.
 //!
 //! These exercise the bus client against a hand-written [`ContractBody`] (no
@@ -45,6 +45,7 @@ struct Target {
 impl ContractBody for Target {
     type Api = TestApi;
     const FAMILY: &'static str = "drive::Target";
+    const SCHEMA_ID: &'static str = "1111111111111111";
     const TOPIC: &'static str = "drive/target";
 }
 
@@ -55,6 +56,7 @@ struct OtherBody {
 impl ContractBody for OtherBody {
     type Api = TestApi;
     const FAMILY: &'static str = "safety::Status";
+    const SCHEMA_ID: &'static str = "2222222222222222";
     const TOPIC: &'static str = "safety/state";
 }
 
@@ -65,6 +67,7 @@ struct GetRequest {
 impl ContractBody for GetRequest {
     type Api = TestApi;
     const FAMILY: &'static str = "asset::GetRequest";
+    const SCHEMA_ID: &'static str = "3333333333333333";
     const TOPIC: &'static str = "asset/get";
 }
 
@@ -76,12 +79,14 @@ enum GetResponse {
 impl ContractBody for GetResponse {
     type Api = TestApi;
     const FAMILY: &'static str = "asset::GetResponse";
+    const SCHEMA_ID: &'static str = "4444444444444444";
     const TOPIC: &'static str = "asset/get";
 }
 
-fn metadata(api_version: &str) -> BusMetadata {
+fn metadata(api_version: &str, schema_id: &str) -> BusMetadata {
     BusMetadata {
         api_version: api_version.to_string(),
+        schema_id: schema_id.to_string(),
         family: <Target as ContractBody>::FAMILY.to_string(),
         codec: CodecId::MessagePack.as_u8(),
         produced_at_ns: 42,
@@ -96,26 +101,28 @@ fn metadata(api_version: &str) -> BusMetadata {
 
 fn sample_with(
     api_version: &str,
+    schema_id: &str,
     codec: u8,
     family: &str,
     payload: Vec<u8>,
 ) -> zenoh::sample::Sample {
     let encoding = if codec == CodecId::MessagePack.as_u8() {
-        encoding_string(family, api_version, CodecId::MessagePack)
+        encoding_string(family, api_version, schema_id, CodecId::MessagePack)
     } else {
-        format!("phoxal/v0;family={family};api={api_version};codec={codec}")
+        format!("phoxal/v0;family={family};api={api_version};schema_id={schema_id};codec={codec}")
     };
-    sample_with_encoding(api_version, codec, family, encoding, payload)
+    sample_with_encoding(api_version, schema_id, codec, family, encoding, payload)
 }
 
 fn sample_with_encoding(
     api_version: &str,
+    schema_id: &str,
     codec: u8,
     family: &str,
     encoding: String,
     payload: Vec<u8>,
 ) -> zenoh::sample::Sample {
-    let mut meta = metadata(api_version);
+    let mut meta = metadata(api_version, schema_id);
     meta.codec = codec;
     meta.family = family.to_string();
     let key: KeyExpr<'static> = KeyExpr::try_from("dev/robots/r1/drive/target").unwrap();
@@ -133,6 +140,7 @@ fn sample(api_version: &str, codec: u8) -> zenoh::sample::Sample {
     let payload = rmp_serde::to_vec_named(&body).unwrap();
     sample_with(
         api_version,
+        <Target as ContractBody>::SCHEMA_ID,
         codec,
         <Target as ContractBody>::FAMILY,
         payload,
@@ -146,11 +154,20 @@ fn bus_abi_id_is_frozen() {
 
 #[test]
 fn encoding_string_mirrors_metadata_slots() {
-    let enc = encoding_string("drive::State", "y2026_1", CodecId::MessagePack);
-    assert_eq!(enc, "phoxal/v0;family=drive::State;api=y2026_1;codec=1");
+    let enc = encoding_string(
+        "drive::State",
+        "y2026_1",
+        "aaaaaaaaaaaaaaaa",
+        CodecId::MessagePack,
+    );
+    assert_eq!(
+        enc,
+        "phoxal/v0;family=drive::State;api=y2026_1;schema_id=aaaaaaaaaaaaaaaa;codec=1"
+    );
     let parsed = parse_encoding_string(&enc).unwrap();
     assert_eq!(parsed.family, "drive::State");
     assert_eq!(parsed.api_version, "y2026_1");
+    assert_eq!(parsed.schema_id, "aaaaaaaaaaaaaaaa");
     assert_eq!(parsed.codec_id(), Some(CodecId::MessagePack));
 }
 
@@ -159,38 +176,65 @@ fn encoding_string_includes_body_family_id() {
     let enc = encoding_string(
         <Target as ContractBody>::FAMILY,
         <<Target as ContractBody>::Api as ApiVersion>::ID,
+        <Target as ContractBody>::SCHEMA_ID,
         CodecId::MessagePack,
     );
     assert!(enc.contains("family=drive::Target"));
-    assert_eq!(enc, "phoxal/v0;family=drive::Target;api=yTEST;codec=1");
+    assert_eq!(
+        enc,
+        "phoxal/v0;family=drive::Target;api=yTEST;schema_id=1111111111111111;codec=1"
+    );
 }
 
 #[test]
 fn metadata_round_trips() {
-    let meta = metadata("y2026_1");
+    let meta = metadata("y2026_1", <Target as ContractBody>::SCHEMA_ID);
     let bytes = meta.encode();
     assert_eq!(BusMetadata::decode(&bytes).unwrap(), meta);
 }
 
 #[test]
-fn decode_accepts_matching_api_version() {
-    let s = sample("yTEST", CodecId::MessagePack.as_u8());
-    let (body, meta) = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap();
+fn decode_accepts_matching_schema_id() {
+    let s = sample("future-api", CodecId::MessagePack.as_u8());
+    let (body, meta) = decode_sample::<Target>(&s, "drive/target").unwrap();
     assert_eq!(body.linear_x_mps, 1.0);
-    assert_eq!(meta.api_version, "yTEST");
+    assert_eq!(meta.api_version, "future-api");
+    assert_eq!(meta.schema_id, <Target as ContractBody>::SCHEMA_ID);
 }
 
 #[test]
-fn decode_rejects_api_version_mismatch() {
-    let s = sample("not-yTEST", CodecId::MessagePack.as_u8());
-    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
-    assert!(matches!(err, BusError::ApiVersionMismatch { .. }));
+fn decode_rejects_schema_id_mismatch() {
+    let body = Target {
+        linear_x_mps: 1.0,
+        angular_z_radps: 0.5,
+    };
+    let payload = rmp_serde::to_vec_named(&body).unwrap();
+    let s = sample_with(
+        "yTEST",
+        "9999999999999999",
+        CodecId::MessagePack.as_u8(),
+        <Target as ContractBody>::FAMILY,
+        payload,
+    );
+    let err = decode_sample::<Target>(&s, "drive/target").unwrap_err();
+    assert!(matches!(err, BusError::SchemaIdMismatch { .. }));
 }
 
 #[test]
 fn decode_rejects_family_mismatch() {
-    let s = sample("yTEST", CodecId::MessagePack.as_u8());
-    let err = decode_sample::<OtherBody>(&s, "safety/state", "yTEST").unwrap_err();
+    let body = Target {
+        linear_x_mps: 1.0,
+        angular_z_radps: 0.5,
+    };
+    let payload = rmp_serde::to_vec_named(&body).unwrap();
+    let s = sample_with(
+        "yTEST",
+        <OtherBody as ContractBody>::SCHEMA_ID,
+        CodecId::MessagePack.as_u8(),
+        <Target as ContractBody>::FAMILY,
+        payload,
+    );
+    let err = decode_sample::<OtherBody>(&s, "safety/state").unwrap_err();
     match err {
         BusError::Metadata { detail, .. } => {
             assert!(detail.contains("encoding family mismatch"));
@@ -200,7 +244,7 @@ fn decode_rejects_family_mismatch() {
 }
 
 #[test]
-fn decode_rejects_encoding_api_mismatch_before_body_decode() {
+fn decode_rejects_encoding_schema_id_mismatch_before_body_decode() {
     let body = Target {
         linear_x_mps: 1.0,
         angular_z_radps: 0.5,
@@ -208,18 +252,20 @@ fn decode_rejects_encoding_api_mismatch_before_body_decode() {
     let payload = rmp_serde::to_vec_named(&body).unwrap();
     let s = sample_with_encoding(
         "yTEST",
+        <Target as ContractBody>::SCHEMA_ID,
         CodecId::MessagePack.as_u8(),
         <Target as ContractBody>::FAMILY,
         encoding_string(
             <Target as ContractBody>::FAMILY,
-            "not-yTEST",
+            "yTEST",
+            "9999999999999999",
             CodecId::MessagePack,
         ),
         payload,
     );
 
-    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
-    assert!(matches!(err, BusError::ApiVersionMismatch { .. }));
+    let err = decode_sample::<Target>(&s, "drive/target").unwrap_err();
+    assert!(matches!(err, BusError::SchemaIdMismatch { .. }));
 }
 
 #[test]
@@ -231,17 +277,19 @@ fn decode_rejects_encoding_attachment_mismatch_before_body_decode() {
     let payload = rmp_serde::to_vec_named(&body).unwrap();
     let s = sample_with_encoding(
         "yTEST",
+        <Target as ContractBody>::SCHEMA_ID,
         CodecId::MessagePack.as_u8(),
         "safety::Status",
         encoding_string(
             <Target as ContractBody>::FAMILY,
             "yTEST",
+            <Target as ContractBody>::SCHEMA_ID,
             CodecId::MessagePack,
         ),
         payload,
     );
 
-    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
+    let err = decode_sample::<Target>(&s, "drive/target").unwrap_err();
     match err {
         BusError::Metadata { detail, .. } => {
             assert!(detail.contains("encoding/BusMetadata mismatch"));
@@ -253,7 +301,7 @@ fn decode_rejects_encoding_attachment_mismatch_before_body_decode() {
 #[test]
 fn decode_rejects_unsupported_codec() {
     let s = sample("yTEST", 99);
-    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
+    let err = decode_sample::<Target>(&s, "drive/target").unwrap_err();
     assert!(matches!(err, BusError::UnsupportedCodec(99, _)));
 }
 
@@ -261,11 +309,12 @@ fn decode_rejects_unsupported_codec() {
 fn decode_rejects_corrupt_payload() {
     let s = sample_with(
         "yTEST",
+        <Target as ContractBody>::SCHEMA_ID,
         CodecId::MessagePack.as_u8(),
         <Target as ContractBody>::FAMILY,
         vec![0xc1, 0xc1, 0xc1],
     );
-    let err = decode_sample::<Target>(&s, "drive/target", "yTEST").unwrap_err();
+    let err = decode_sample::<Target>(&s, "drive/target").unwrap_err();
     assert!(matches!(err, BusError::Codec(CodecError::Decode(_))));
 }
 
@@ -424,6 +473,7 @@ async fn incoming_query_rejects_encoding_attachment_mismatch() {
     let payload = rmp_serde::to_vec_named(&request).unwrap();
     let meta = BusMetadata {
         api_version: "yTEST".to_string(),
+        schema_id: <GetRequest as ContractBody>::SCHEMA_ID.to_string(),
         family: <GetRequest as ContractBody>::FAMILY.to_string(),
         codec: CodecId::MessagePack.as_u8(),
         produced_at_ns: 0,
@@ -443,6 +493,7 @@ async fn incoming_query_rejects_encoding_attachment_mismatch() {
         .encoding(Encoding::from(encoding_string(
             "drive::Target",
             "yTEST",
+            <GetRequest as ContractBody>::SCHEMA_ID,
             CodecId::MessagePack,
         )))
         .attachment(meta.encode())
@@ -485,6 +536,7 @@ async fn live_query_round_trip_ok_then_error() {
                     payload,
                     <GetResponse as ContractBody>::FAMILY,
                     "yTEST",
+                    <GetResponse as ContractBody>::SCHEMA_ID,
                 )
                 .await
                 .unwrap();

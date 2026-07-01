@@ -4,8 +4,8 @@
 //!
 //! Phoxal gives a robot a small, strongly-typed core: a contract bus over
 //! [Zenoh](https://zenoh.io), a single dated API version per robot graph, and a
-//! participant authoring model where one struct of typed handles plus a couple
-//! of attribute macros is a complete service or driver. The framework owns the
+//! participant authoring model where one struct plus a couple of attribute
+//! macros is a complete service, driver, tool, or simulator. The framework owns the
 //! awkward parts - argument parsing, bus connection, scheduling, query serving,
 //! shutdown, and health - so the code you write is the robot's behavior, not its
 //! plumbing.
@@ -21,13 +21,15 @@
 //!   (`phoxal_api::y2026_1`, …), not semver crates. A participant authors against
 //!   exactly one of them; mixing bodies from two versions is a compile error.
 //! - **Participants are authored, not wired.** You write a struct and an `impl`;
-//!   [`#[derive(Service)]`](derive@Service) or
-//!   [`#[derive(Driver)]`](derive@Driver) plus [`#[phoxal::behavior]`](macro@behavior)
-//!   derive the static metadata, and [`run`] turns the type into a binary. Use
-//!   `#[derive(phoxal::Service)]` for an ordinary participant; use
-//!   `#[derive(phoxal::Driver)]` for a participant launched once per
-//!   `components.instances` entry, which alone can call
-//!   [`SetupContext::component`](participant::SetupContext::component).
+//!   [`#[derive(Service)]`](derive@Service), [`#[derive(Driver)]`](derive@Driver),
+//!   [`#[derive(Tool)]`](derive@Tool), or
+//!   [`#[derive(Simulator)]`](derive@Simulator) plus
+//!   [`#[phoxal::behavior]`](macro@behavior) derives the static metadata, and
+//!   [`run`] turns the type into a binary. Use `Service` for ordinary robot
+//!   participants, `Driver` for a participant launched once per
+//!   `components.instances` entry, `Tool` for host-side utilities, and
+//!   `Simulator` for simulation-only participants that will own simulation clock
+//!   duties in the later clock slice.
 //!
 //! ## Author a participant
 //!
@@ -91,9 +93,19 @@
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
 //!
-//! Drivers use `#[derive(phoxal::Driver)]` on the same participant surface. Only a
-//! driver can call [`SetupContext::component`](participant::SetupContext::component)
-//! to read the bound component instance.
+//! The four authoring kinds share the same metadata path but describe different
+//! runtime roles:
+//!
+//! - `Service` is the ordinary typed participant surface.
+//! - `Driver` is launched once per `components.instances` entry. Only a driver can
+//!   call [`SetupContext::component`](participant::SetupContext::component) to read
+//!   the bound component instance.
+//! - `Tool` is for host-side utilities that inspect the robot model through
+//!   [`SetupContext::robot`](participant::SetupContext::robot). Its privileged
+//!   raw-bus surface is intentionally deferred to plan #07.
+//! - `Simulator` is a normal participant for simulation-only processes. It carries
+//!   a distinct kind and marker now; simulation clock ownership lands with plan
+//!   #09.
 //!
 //! The runner also exposes an `emit-apis` subcommand
 //! (`cargo run --example runtime_control_loop emit-apis`) that prints a participant's
@@ -118,15 +130,15 @@
 //!   body-typed handles.
 //! - [`model`] - the authored manifest schemas (`robot.yaml`, `structure.urdf`,
 //!   `component.yaml`, …) that participants and the CLI parse.
-//! - The **official runtime set** ships alongside this crate in the workspace
-//!   `runtime/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
+//! - The **official service set** ships alongside this crate in the workspace
+//!   `service/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
 
 // Generated macro output refers to the framework as `::phoxal::…`; make that path
-// resolve to this crate so the engine's `#[derive(Service)]` /
-// `#[derive(Driver)]` / `#[phoxal::behavior]` macros work when invoked inside the
-// engine (e.g. the crate's own tests), the
-// same as in downstream runtime crates. Only the in-crate test build units expand
+// resolve to this crate so the engine's participant derives and
+// `#[phoxal::behavior]` macro work when invoked inside the engine (e.g. the
+// crate's own tests), the
+// same as in downstream service crates. Only the in-crate test build units expand
 // macros to `::phoxal::…`, so the alias is needed only under `cfg(test)`; gating
 // it there keeps the non-test build free of an unused `extern crate` (no need for
 // an `allow(unused_extern_crates)`).
@@ -150,6 +162,12 @@ pub use phoxal_macros::Driver;
 
 /// Derive the static metadata for a service struct. See the crate docs.
 pub use phoxal_macros::Service;
+
+/// Derive the static metadata for a simulator struct. See the crate docs.
+pub use phoxal_macros::Simulator;
+
+/// Derive the static metadata for a tool struct. See the crate docs.
+pub use phoxal_macros::Tool;
 
 /// The bare `#[phoxal::behavior]` attribute for a participant's inherent impl.
 pub use phoxal_macros::behavior;

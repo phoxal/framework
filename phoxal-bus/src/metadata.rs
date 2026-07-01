@@ -1,8 +1,8 @@
 //! `BusMetadata` - the per-sample attachment (D43c/D62).
 //!
-//! The wire body is the plain MessagePack payload (D62); the version identity and
-//! provenance ride here, in the Zenoh attachment. A receiver reads
-//! `api_version`/`family`/`codec` to fast-reject before decoding the body, and
+//! The wire body is the plain MessagePack payload (D62); schema/family/api
+//! identity and provenance ride here, in the Zenoh attachment. A receiver reads
+//! `schema_id`/`family`/`codec` to fast-reject before decoding the body, and
 //! `produced_at_ns`/`epoch`/`source` give logical-time + causality.
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,8 @@ use crate::abi::CodecId;
 pub struct BusMetadata {
     /// The producing body's API version (`<Api as ApiVersion>::ID`).
     pub api_version: String,
+    /// The producing body's schema id (`<Body as ContractBody>::SCHEMA_ID`).
+    pub schema_id: String,
     /// The contract family id (`<Body as ContractBody>::FAMILY`).
     pub family: String,
     /// The codec used for the body payload.

@@ -1,0 +1,23 @@
+[package]
+name = "phoxal-service-joint"
+version = "0.19.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Phoxal official service: joint - encoder samples to joint kinematic state."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-service-joint"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

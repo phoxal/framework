@@ -12,7 +12,7 @@ jobs:
       system-packages: libudev-dev
     secrets: inherit
 
-  # The official-set fixture pins the runtime set + bus topology; this test fails
+  # The official-set fixture pins the service set + bus topology; this test fails
   # if the wired topology drifts from the fixture.
   official-set-fixture:
     runs-on: ubuntu-latest

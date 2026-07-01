@@ -54,6 +54,8 @@ pub struct ServerReply {
     pub family: &'static str,
     /// `<Resp::Api as ApiVersion>::ID`.
     pub api_version: &'static str,
+    /// `<Resp as ContractBody>::SCHEMA_ID`.
+    pub schema_id: &'static str,
 }
 
 /// What a generated server dispatcher returns: a [`ServerReply`] or a structured

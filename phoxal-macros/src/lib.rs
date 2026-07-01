@@ -5,25 +5,27 @@
 //! - [`phoxal_api_tree!`] - declares the dated API-version modules
 //!   (`phoxal_api::y2026_1`, …), their version-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
-//! - [`derive@Service`] / [`derive@Driver`] - read a participant struct's typed
-//!   handle fields plus the `#[phoxal(id = …, api = …, config = …,
-//!   contracts(…))]` attribute and emits the static metadata (`ParticipantSpec`) the
-//!   runner and `emit-apis` consume.
+//! - [`derive@Service`] / [`derive@Driver`] / [`derive@Tool`] /
+//!   [`derive@Simulator`] - read a participant struct's typed handle fields plus
+//!   the `#[phoxal(id = …, api = …, config = …, contracts(…))]` attribute and
+//!   emits the static metadata (`ParticipantSpec`) the runner and `emit-apis`
+//!   consume.
 //! - [`macro@behavior`] - the bare `#[phoxal::behavior]` attribute on the inherent
 //!   impl; it reads `#[setup]`/`#[step(hz = N)]`/`#[shutdown]` plus the query-side
 //!   `#[server]`/`#[server_snapshot]`/`#[snapshot]` and emits the lifecycle and
 //!   server dispatch (`ParticipantBehavior`).
 //!
-//! The struct/impl macros are paired: `#[derive(Service)]` or `#[derive(Driver)]`
-//! selects the API version, records the artifact kind, and contributes the
-//! field-derived contracts, while `#[phoxal::behavior]` adds the lifecycle methods
-//! and the server-side contracts. Both reference the one API version chosen by
-//! the derive, and the generated `ContractBody<Api = Self::Api>` assertions make
-//! a body from a different version a compile error.
+//! The struct/impl macros are paired: the derive selects the API version, records
+//! the artifact kind, and contributes the field-derived contracts, while
+//! `#[phoxal::behavior]` adds the lifecycle methods and the server-side contracts.
+//! Both reference the one API version chosen by the derive, and the generated
+//! `ContractBody<Api = Self::Api>` assertions make a body from a different
+//! version a compile error.
 //!
-//! The participant authoring macros (`derive@Service` / `derive@Driver` / `macro@behavior`)
-//! reference the framework through `::phoxal::…`; the engine crate makes that
-//! path resolve to itself with `extern crate self as phoxal;`. The
+//! The participant authoring macros (`derive@Service` / `derive@Driver` /
+//! `derive@Tool` / `derive@Simulator` / `macro@behavior`) reference the framework
+//! through `::phoxal::…`; the engine crate makes that path resolve to itself with
+//! `extern crate self as phoxal;`. The
 //! `phoxal_api_tree!` output instead targets the bus ABI floor directly as
 //! `::phoxal_bus`, since it is invoked in the `phoxal-api` crate, which does not
 //! depend on the engine.
@@ -147,11 +149,34 @@ pub fn derive_driver(input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Derive the static metadata for a host-side tool struct.
+///
+/// Tools record `KIND = "tool"` and emit a marker for later raw-bus gating. The
+/// raw-bus setup surface itself is intentionally deferred to plan #07.
+#[proc_macro_derive(Tool, attributes(phoxal))]
+pub fn derive_tool(input: TokenStream) -> TokenStream {
+    runtime_derive::expand(input.into(), runtime_derive::AuthoringKind::Tool)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derive the static metadata for a simulation participant struct.
+///
+/// Simulators record `KIND = "simulator"` and emit a marker for later
+/// simulation-clock ownership.
+#[proc_macro_derive(Simulator, attributes(phoxal))]
+pub fn derive_simulator(input: TokenStream) -> TokenStream {
+    runtime_derive::expand(input.into(), runtime_derive::AuthoringKind::Simulator)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 /// The bare `#[phoxal::behavior]` attribute on a participant's inherent impl.
 ///
 /// Takes no arguments (configure the participant on the struct via
-/// `#[derive(Service)] #[phoxal(...)]` or
-/// `#[derive(Driver)] #[phoxal(...)]`). Reads the lifecycle/server helper
+/// `#[derive(Service)] #[phoxal(...)]`, `#[derive(Driver)] #[phoxal(...)]`,
+/// `#[derive(Tool)] #[phoxal(...)]`, or `#[derive(Simulator)] #[phoxal(...)]`).
+/// Reads the lifecycle/server helper
 /// attributes on the impl's methods, emits a `ParticipantBehavior` impl that the
 /// runner drives, and re-emits the original methods verbatim with the helper
 /// attributes stripped. A method may carry at most one helper attribute.

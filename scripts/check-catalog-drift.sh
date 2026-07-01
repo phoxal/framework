@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compare framework official runtime crates with phoxal-cli's compiled-in catalog.
+# Compare framework official service crates with phoxal-cli's compiled-in catalog.
 #
 # Preferred input is the CLI's machine-readable catalog:
 #   phoxal runtime catalog --message-format json
@@ -266,7 +266,7 @@ PY
 }
 
 framework_from_source() {
-  for manifest in "${ROOT}"/runtime/*/Cargo.toml; do
+  for manifest in "${ROOT}"/service/*/Cargo.toml; do
     [[ -f "${manifest}" ]] || continue
     id="$(basename "$(dirname "${manifest}")")"
     printf '%s\t%s\t%s\t%s\t%s\n' \
@@ -295,10 +295,10 @@ framework_from_source
 if ! diff -u "${framework_rows}" "${catalog_rows}"; then
   echo "FAIL: framework runtime catalog rows differ from phoxal-cli catalog" >&2
   echo "compared columns: id, image_repo, participant_kind, uses_supervisor_api, wires_to_router" >&2
-  echo "framework: ${ROOT}/runtime/*" >&2
+  echo "framework: ${ROOT}/service/*" >&2
   echo "catalog:   ${CATALOG_SOURCE}" >&2
   exit 1
 fi
 
 count="$(wc -l < "${framework_rows}" | tr -d ' ')"
-echo "OK: ${count} official runtime catalog rows match"
+echo "OK: ${count} official service catalog rows match"

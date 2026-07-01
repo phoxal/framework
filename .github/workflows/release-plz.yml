@@ -11,7 +11,7 @@ name: release-plz
 #      `<crate>-v<version>` + a GitHub release.
 #
 # Only the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros) are in
-# scope. The runtime crates are publish = false and are intentionally left out of
+# scope. The service crates are publish = false and are intentionally left out of
 # release scope (see release-plz.toml).
 #
 # release_always = false in release-plz.toml means `release-plz-release` only acts

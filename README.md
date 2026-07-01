@@ -5,7 +5,7 @@ ABI crate (the typed bus client + contract/addressing primitives), the published
 `phoxal-api` crate (the dated `api::<version>` contract tree of version-local wire
 bodies + topic builders), the published `phoxal` library crate (engine + model)
 and its `phoxal-macros` companion, plus a growing set of unpublished platform
-runtime binaries (`phoxal-runtime-<name>`) that ship as deployables.
+service binaries (`phoxal-service-<name>`) that ship as deployables.
 Each crate carries its own version and is released only when it changes; the
 library crates are published to crates.io (see [Releasing](#releasing)).
 
@@ -25,7 +25,7 @@ Merging that PR publishes the changed library crates (`phoxal-bus`, `phoxal-api`
 `phoxal`, `phoxal-macros`) to crates.io at their own versions and tags each
 `<crate>-v<version>` with a GitHub release.
 
-The runtime crates (`phoxal-runtime-<name>`) are `publish = false` and are not part
+The service crates (`phoxal-service-<name>`) are `publish = false` and are not part
 of this crate release; their distribution is handled separately.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
@@ -36,8 +36,8 @@ See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 
 ## License
 
-AGPL-3.0-only — see [LICENSE](LICENSE) for the full license text.
-A commercial license is available — see [COMMERCIAL.md](COMMERCIAL.md) and reach out via <https://phoxal.com>.
+AGPL-3.0-only - see [LICENSE](LICENSE) for the full license text.
+A commercial license is available - see [COMMERCIAL.md](COMMERCIAL.md) and reach out via <https://phoxal.com>.
 
 ## Contributing
 

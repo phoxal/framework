@@ -1,5 +1,4 @@
-//! `#[derive(phoxal::Service)]` / `#[derive(phoxal::Driver)]` - static metadata
-//! from the participant struct.
+//! Static metadata derives from the participant struct.
 //!
 //! Reads the mandatory `#[phoxal(api = y2026_N)]` selector (plus optional
 //! `id` / `config`) and the struct's typed handle fields, then emits:
@@ -30,6 +29,8 @@ use crate::util::{phoxal, phoxal_api};
 pub enum AuthoringKind {
     Service,
     Driver,
+    Tool,
+    Simulator,
 }
 
 impl AuthoringKind {
@@ -37,6 +38,8 @@ impl AuthoringKind {
         match self {
             AuthoringKind::Service => "#[derive(phoxal::Service)]",
             AuthoringKind::Driver => "#[derive(phoxal::Driver)]",
+            AuthoringKind::Tool => "#[derive(phoxal::Tool)]",
+            AuthoringKind::Simulator => "#[derive(phoxal::Simulator)]",
         }
     }
 
@@ -44,11 +47,22 @@ impl AuthoringKind {
         match self {
             AuthoringKind::Service => "service",
             AuthoringKind::Driver => "driver",
+            AuthoringKind::Tool => "tool",
+            AuthoringKind::Simulator => "simulator",
         }
     }
 
-    fn is_driver(self) -> bool {
-        matches!(self, AuthoringKind::Driver)
+    fn marker_impl(self, phoxal: &TokenStream, struct_name: &Ident) -> TokenStream {
+        match self {
+            AuthoringKind::Service => TokenStream::new(),
+            AuthoringKind::Driver => {
+                quote!(impl #phoxal::participant::IsDriver for #struct_name {})
+            }
+            AuthoringKind::Tool => quote!(impl #phoxal::participant::IsTool for #struct_name {}),
+            AuthoringKind::Simulator => {
+                quote!(impl #phoxal::participant::IsSimulator for #struct_name {})
+            }
+        }
     }
 }
 
@@ -119,6 +133,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
                 contract_entries.push(quote! {
                     #phoxal::participant::ContractUse {
                         api_version: <<#body as #phoxal::bus::ContractBody>::Api as #phoxal::bus::ApiVersion>::ID,
+                        schema_id: <#body as #phoxal::bus::ContractBody>::SCHEMA_ID,
                         family: <#body as #phoxal::bus::ContractBody>::FAMILY,
                         topic: <#body as #phoxal::bus::ContractBody>::TOPIC,
                         direction: #dir,
@@ -176,11 +191,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
         }
     }
 
-    let driver_marker = if kind.is_driver() {
-        quote!(impl #phoxal::participant::IsDriver for #struct_name {})
-    } else {
-        TokenStream::new()
-    };
+    let kind_marker = kind.marker_impl(&phoxal, struct_name);
 
     Ok(quote! {
         impl #phoxal::participant::ParticipantSpec for #struct_name {
@@ -197,7 +208,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
 
         #declares
 
-        #driver_marker
+        #kind_marker
 
         const _: () = {
             #(#assertions)*

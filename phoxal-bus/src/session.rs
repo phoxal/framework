@@ -56,8 +56,8 @@ pub struct BusHealth {
     pub outbound_drops: AtomicU64,
     /// Inbound samples dropped because the ring was full (slow consumer).
     pub inbound_drops: AtomicU64,
-    /// Inbound samples rejected for an `api_version` mismatch.
-    pub api_mismatches: AtomicU64,
+    /// Inbound samples rejected for a `schema_id` mismatch.
+    pub schema_mismatches: AtomicU64,
     /// Inbound samples that failed to decode.
     pub decode_errors: AtomicU64,
 }

@@ -4,10 +4,12 @@
 //! the combination of three things wrapped around every body:
 //!
 //! 1. the Zenoh **encoding string** ([`encoding_string`]:
-//!    `phoxal/v0;family=<family>;api=<api_version>;codec=<id>`), which lets a
-//!    receiver fast-reject on family/api/codec before touching the payload;
+//!    `phoxal/v0;family=<family>;api=<api_version>;schema_id=<schema_id>;codec=<id>`),
+//!    which lets a receiver fast-reject on family/schema/codec before touching
+//!    the payload;
 //! 2. the Zenoh **attachment** - a MessagePack [`BusMetadata`](super::BusMetadata)
-//!    carrying the same version identity plus provenance (source + logical time);
+//!    carrying the same schema/family/api identity plus provenance (source +
+//!    logical time);
 //! 3. the **codec** id ([`CodecId`]) naming how the body payload is encoded
 //!    (MessagePack, the one codec in v1).
 //!
@@ -86,6 +88,8 @@ pub struct EncodingMetadata {
     pub family: String,
     /// Graph API version (`<Body::Api as ApiVersion>::ID`).
     pub api_version: String,
+    /// Per-contract transitive wire-shape id (`<Body as ContractBody>::SCHEMA_ID`).
+    pub schema_id: String,
     /// Numeric codec id.
     pub codec: u8,
 }
@@ -100,17 +104,17 @@ impl EncodingMetadata {
 /// Build the Zenoh encoding string that mirrors the contract metadata so a
 /// receiver can fast-reject before decoding the body.
 ///
-/// Format: `phoxal/v0;family=<family>;api=<api_version>;codec=<id>`.
-pub fn encoding_string(family: &str, api_version: &str, codec: CodecId) -> String {
+/// Format: `phoxal/v0;family=<family>;api=<api_version>;schema_id=<schema_id>;codec=<id>`.
+pub fn encoding_string(family: &str, api_version: &str, schema_id: &str, codec: CodecId) -> String {
     format!(
-        "phoxal/v0;family={family};api={api_version};codec={}",
+        "phoxal/v0;family={family};api={api_version};schema_id={schema_id};codec={}",
         codec.as_u8()
     )
 }
 
 /// Parse and validate the Zenoh encoding string owned by `bus_abi`.
 ///
-/// Format: `phoxal/v0;family=<family>;api=<api_version>;codec=<id>`.
+/// Format: `phoxal/v0;family=<family>;api=<api_version>;schema_id=<schema_id>;codec=<id>`.
 pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadata, String> {
     let mut parts = value.split(';');
     let prefix = parts
@@ -124,6 +128,7 @@ pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadat
 
     let mut family = None;
     let mut api_version = None;
+    let mut schema_id = None;
     let mut codec = None;
     for field in parts {
         let (key, value) = field
@@ -135,6 +140,7 @@ pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadat
         match key {
             "family" => set_once(&mut family, key, value.to_string())?,
             "api" => set_once(&mut api_version, key, value.to_string())?,
+            "schema_id" => set_once(&mut schema_id, key, value.to_string())?,
             "codec" => {
                 let parsed = value
                     .parse::<u8>()
@@ -148,6 +154,7 @@ pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadat
     Ok(EncodingMetadata {
         family: family.ok_or_else(|| "encoding string is missing family".to_string())?,
         api_version: api_version.ok_or_else(|| "encoding string is missing api".to_string())?,
+        schema_id: schema_id.ok_or_else(|| "encoding string is missing schema_id".to_string())?,
         codec: codec.ok_or_else(|| "encoding string is missing codec".to_string())?,
     })
 }

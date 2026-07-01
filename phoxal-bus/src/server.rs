@@ -13,7 +13,7 @@
 //!   error leg (D31), which the caller decodes back into the failure.
 //!
 //! These public types carry untyped payload bytes; the generated server dispatch
-//! validates `api_version`/`family` and does the typed encode/decode around them.
+//! validates `schema_id`/`family` and does the typed encode/decode around them.
 
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::OwnedKeyExpr;
@@ -72,9 +72,9 @@ impl IncomingQuery {
         Ok(payload.to_bytes().to_vec())
     }
 
-    /// The request's bus metadata (api_version, family, codec, …), decoded from
-    /// the Zenoh attachment. The generated server dispatch validates `api_version`
-    /// and `family` against the handler's request body before decode.
+    /// The request's bus metadata (schema_id, family, codec, and api_version),
+    /// decoded from the Zenoh attachment. The generated server dispatch validates
+    /// `schema_id` and `family` against the handler's request body before decode.
     pub fn request_metadata(&self) -> Result<BusMetadata> {
         let encoding = self.query.encoding().ok_or_else(|| BusError::Metadata {
             topic: self.topic_key.clone(),
@@ -106,19 +106,22 @@ impl IncomingQuery {
             }
         })?;
         if metadata.api_version != encoding.api_version
+            || metadata.schema_id != encoding.schema_id
             || metadata.family != encoding.family
             || metadata.codec != encoding.codec
         {
             return Err(BusError::Metadata {
                 topic: self.topic_key.clone(),
                 detail: format!(
-                    "request encoding/BusMetadata mismatch: encoding family='{}' api='{}' codec={}, \
-                     metadata family='{}' api='{}' codec={}",
+                    "request encoding/BusMetadata mismatch: encoding family='{}' api='{}' schema_id='{}' codec={}, \
+                     metadata family='{}' api='{}' schema_id='{}' codec={}",
                     encoding.family,
                     encoding.api_version,
+                    encoding.schema_id,
                     encoding.codec,
                     metadata.family,
                     metadata.api_version,
+                    metadata.schema_id,
                     metadata.codec
                 ),
             });
@@ -134,9 +137,11 @@ impl IncomingQuery {
         payload: Vec<u8>,
         family: &str,
         api_version: &str,
+        schema_id: &str,
     ) -> Result<()> {
         let metadata = BusMetadata {
             api_version: api_version.to_string(),
+            schema_id: schema_id.to_string(),
             family: family.to_string(),
             codec: CodecId::MessagePack.as_u8(),
             produced_at_ns: 0,
@@ -149,7 +154,12 @@ impl IncomingQuery {
         };
         self.query
             .reply(self.query.key_expr(), payload)
-            .encoding(encoding_string(family, api_version, CodecId::MessagePack))
+            .encoding(encoding_string(
+                family,
+                api_version,
+                schema_id,
+                CodecId::MessagePack,
+            ))
             .attachment(metadata.encode())
             .await
             .map_err(|e| BusError::Transport(e.to_string()))

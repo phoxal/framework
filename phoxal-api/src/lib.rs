@@ -14,8 +14,7 @@
 //! [`phoxal_api_tree!`]. Each version module carries:
 //!
 //! - a zero-variant marker `enum Api {}` implementing [`ApiVersion`], whose
-//!   [`ApiVersion::ID`] is the dated module name (`"y2026_1"`) - the canonical
-//!   version identity;
+//!   [`ApiVersion::ID`] is the dated module name (`"y2026_1"`);
 //! - the version-local wire bodies, one `pub mod` per contract node holding plain
 //!   serde structs/enums and their [`ContractBody`] impls;
 //! - an api-local `topic` builder rooted at `topic::new()`.
@@ -38,19 +37,20 @@
 //! version: all of its participants share one `Api`, so contracts on the bus are
 //! mutually consistent by construction (D59).
 //!
-//! # Plain serde wire bodies, version in metadata
+//! # Plain serde wire bodies, schema in metadata
 //!
 //! A wire body is just its serde encoding - there is no `{"v":…}` envelope or any
-//! other version tag inside the payload (D62). The three pieces of routing
+//! other version tag inside the payload (D62). The four pieces of routing
 //! identity travel as bus metadata alongside the encoded body, not in it:
 //!
-//! - the **version** ([`ApiVersion::ID`], e.g. `"y2026_1"`),
+//! - the **schema id** ([`ContractBody::SCHEMA_ID`]), the compatibility key,
+//! - the **version** ([`ApiVersion::ID`], e.g. `"y2026_1"`), informational,
 //! - the **family** ([`ContractBody::FAMILY`], e.g. `"drive::State"`),
 //! - the **codec** that produced the bytes.
 //!
 //! Keeping these out of the payload means the body bytes for an unchanged contract
 //! are identical across versions and codecs; the envelope/metadata layer owns
-//! version and family.
+//! schema id, version, and family.
 //!
 //! # Family and topic
 //!
@@ -107,14 +107,14 @@ use phoxal_macros::phoxal_api_tree;
 /// - [`ApiVersion`] is the marker trait identifying one dated API version (D60),
 ///   implemented only by the zero-variant `enum Api {}` that [`phoxal_api_tree!`]
 ///   generates inside each version module; its `ID` is the dated module name
-///   (`"y2026_1"`) and the canonical version identity, carried in bus metadata.
+///   (`"y2026_1"`) and is carried in bus metadata as informational provenance.
 /// - [`ContractBody`] is a version-local wire body (D61): a plain serde type
 ///   bound to exactly one [`ApiVersion`] and one contract family/topic. Every
 ///   body declared inside a [`phoxal_api_tree!`] node gets a generated impl;
 ///   handles, `SetupContext` builders, and the `Service`/`Driver` derive
-///   assertions key off its `Api`/`FAMILY`/`TOPIC` to reject a body from the
-///   wrong API version at compile time. Its serde encoding *is* the wire payload;
-///   there is no version envelope (D62).
+///   assertions key off its `Api`/`FAMILY`/`SCHEMA_ID`/`TOPIC`. Runtime decode
+///   compatibility keys off `SCHEMA_ID`; its serde encoding *is* the wire payload,
+///   with no version envelope (D62).
 pub use phoxal_bus::{ApiVersion, ContractBody};
 
 phoxal_api_tree! {

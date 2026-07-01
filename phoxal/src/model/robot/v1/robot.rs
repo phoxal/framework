@@ -16,9 +16,9 @@ pub struct Robot {
     pub identity: Identity,
     #[serde(default = "default_structure_path")]
     pub structure: PathBuf,
-    pub phoxal_runtimes: PhoxalRuntimes,
+    pub phoxal_participants: PhoxalParticipants,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub user_runtimes: BTreeMap<String, UserRuntime>,
+    pub user_participants: BTreeMap<String, UserParticipant>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, Tool>,
     pub motion: Motion,
@@ -64,7 +64,7 @@ impl fmt::Display for Channel {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PhoxalRuntimes {
+pub struct PhoxalParticipants {
     #[serde(default)]
     pub channel: Channel,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -73,7 +73,7 @@ pub struct PhoxalRuntimes {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct UserRuntime {
+pub struct UserParticipant {
     pub path: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
@@ -82,17 +82,17 @@ pub struct UserRuntime {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
     #[serde(
-        default = "default_user_runtime_framework",
+        default = "default_user_participant_framework",
         skip_serializing_if = "is_match_platform"
     )]
     pub framework: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build: Option<UserRuntimeBuild>,
+    pub build: Option<UserParticipantBuild>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct UserRuntimeBuild {
+pub struct UserParticipantBuild {
     #[serde(default = "default_build_context")]
     pub context: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -174,7 +174,7 @@ pub struct SourceGit {
     pub tag: String,
     /// Optional subdirectory within the git repository that holds the
     /// component definition (`component.yaml` and friends). Absent means the
-    /// component lives at the repository root — the historical single-component
+    /// component lives at the repository root - the historical single-component
     /// repository layout. A value such as `bno085` selects
     /// `<repo>/bno085/component.yaml`, enabling a shared catalog repository
     /// (e.g. `phoxal/components`) to host many components as subdirectories.
@@ -193,19 +193,19 @@ pub enum ValidationError {
     EmptyApiVersion,
     EmptyIdentityId,
     EmptyIdentityNamespace,
-    UnknownPlatformRuntimeImage {
+    UnknownPlatformParticipantImage {
         name: String,
     },
-    UserRuntimeShadowsPlatformRuntime {
+    UserParticipantShadowsPlatformParticipant {
         name: String,
     },
-    EmptyUserRuntimeImage {
+    EmptyUserParticipantImage {
         participant: String,
     },
-    EmptyUserRuntimeBusProfile {
+    EmptyUserParticipantBusProfile {
         participant: String,
     },
-    UnknownUserRuntimeBusProfile {
+    UnknownUserParticipantBusProfile {
         participant: String,
         profile: String,
     },
@@ -297,7 +297,7 @@ impl Robot {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
         self.validate_bus_profiles(&mut errors);
-        self.validate_user_runtimes(&mut errors);
+        self.validate_user_participants(&mut errors);
         self.validate_component_sources(&mut errors);
         self.validate_component_structure(&mut errors);
         self.validate_driver_structure(&mut errors);
@@ -309,28 +309,28 @@ impl Robot {
 
     pub fn validate_with(
         &self,
-        platform_runtime_names: &[&str],
+        platform_participant_names: &[&str],
     ) -> std::result::Result<(), Vec<ValidationError>> {
         let mut errors = match self.validate() {
             Ok(()) => Vec::new(),
             Err(errors) => errors,
         };
-        let platform_runtime_names = platform_runtime_names
+        let platform_participant_names = platform_participant_names
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
 
-        for runtime_name in self.phoxal_runtimes.images.keys() {
-            if !platform_runtime_names.contains(runtime_name.as_str()) {
-                errors.push(ValidationError::UnknownPlatformRuntimeImage {
-                    name: runtime_name.clone(),
+        for participant_name in self.phoxal_participants.images.keys() {
+            if !platform_participant_names.contains(participant_name.as_str()) {
+                errors.push(ValidationError::UnknownPlatformParticipantImage {
+                    name: participant_name.clone(),
                 });
             }
         }
-        for runtime_name in self.user_runtimes.keys() {
-            if platform_runtime_names.contains(runtime_name.as_str()) {
-                errors.push(ValidationError::UserRuntimeShadowsPlatformRuntime {
-                    name: runtime_name.clone(),
+        for participant_name in self.user_participants.keys() {
+            if platform_participant_names.contains(participant_name.as_str()) {
+                errors.push(ValidationError::UserParticipantShadowsPlatformParticipant {
+                    name: participant_name.clone(),
                 });
             }
         }
@@ -419,24 +419,24 @@ impl Robot {
         }
     }
 
-    fn validate_user_runtimes(&self, errors: &mut Vec<ValidationError>) {
-        for (participant, config) in &self.user_runtimes {
+    fn validate_user_participants(&self, errors: &mut Vec<ValidationError>) {
+        for (participant, config) in &self.user_participants {
             if config
                 .image
                 .as_deref()
                 .is_some_and(|image| image.trim().is_empty())
             {
-                errors.push(ValidationError::EmptyUserRuntimeImage {
+                errors.push(ValidationError::EmptyUserParticipantImage {
                     participant: participant.clone(),
                 });
             }
             if let Some(profile) = &config.bus_profile {
                 if profile.trim().is_empty() {
-                    errors.push(ValidationError::EmptyUserRuntimeBusProfile {
+                    errors.push(ValidationError::EmptyUserParticipantBusProfile {
                         participant: participant.clone(),
                     });
                 } else if profile != "default" && !self.bus.profiles.contains_key(profile) {
-                    errors.push(ValidationError::UnknownUserRuntimeBusProfile {
+                    errors.push(ValidationError::UnknownUserParticipantBusProfile {
                         participant: participant.clone(),
                         profile: profile.clone(),
                     });
@@ -493,34 +493,34 @@ impl fmt::Display for ValidationError {
             Self::EmptyIdentityNamespace => {
                 formatter.write_str("identity.namespace must not be empty")
             }
-            Self::UnknownPlatformRuntimeImage { name } => write!(
+            Self::UnknownPlatformParticipantImage { name } => write!(
                 formatter,
-                "phoxal_runtimes.images.{name} is not a platform participant"
+                "phoxal_participants.images.{name} is not a platform participant"
             ),
-            Self::UserRuntimeShadowsPlatformRuntime { name } => {
+            Self::UserParticipantShadowsPlatformParticipant { name } => {
                 write!(
                     formatter,
-                    "user_runtimes.{name} shadows a platform participant"
+                    "user_participants.{name} shadows a platform participant"
                 )
             }
-            Self::EmptyUserRuntimeImage { participant } => {
+            Self::EmptyUserParticipantImage { participant } => {
                 write!(
                     formatter,
-                    "user_runtimes.{participant}.image must not be empty"
+                    "user_participants.{participant}.image must not be empty"
                 )
             }
-            Self::EmptyUserRuntimeBusProfile { participant } => {
+            Self::EmptyUserParticipantBusProfile { participant } => {
                 write!(
                     formatter,
-                    "user_runtimes.{participant}.bus_profile must not be empty"
+                    "user_participants.{participant}.bus_profile must not be empty"
                 )
             }
-            Self::UnknownUserRuntimeBusProfile {
+            Self::UnknownUserParticipantBusProfile {
                 participant,
                 profile,
             } => write!(
                 formatter,
-                "user_runtimes.{participant}.bus_profile references unknown bus profile '{profile}'"
+                "user_participants.{participant}.bus_profile references unknown bus profile '{profile}'"
             ),
             Self::InvalidBusProfileName { profile } => write!(
                 formatter,
@@ -603,7 +603,7 @@ fn default_structure_path() -> PathBuf {
     PathBuf::from("structure.urdf")
 }
 
-fn default_user_runtime_framework() -> String {
+fn default_user_participant_framework() -> String {
     "match-platform".to_string()
 }
 
@@ -619,10 +619,10 @@ fn default_build_context() -> PathBuf {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Channel, Robot, UserRuntimeBuild};
+    use super::{Channel, Robot, UserParticipantBuild};
 
     #[test]
-    fn user_runtime_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
+    fn user_participant_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -630,11 +630,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
 motion:
   kinematic:
     kind: omnidirectional
@@ -656,10 +656,10 @@ components:
         )?;
 
         let participant = robot
-            .user_runtimes
+            .user_participants
             .get("autonomy")
             .expect("user participant should parse");
-        assert_eq!(participant.path, PathBuf::from("runtimes/autonomy"));
+        assert_eq!(participant.path, PathBuf::from("participants/autonomy"));
         assert_eq!(participant.framework, "match-platform");
         assert_eq!(participant.image, None);
         assert_eq!(participant.bus_profile, None);
@@ -671,7 +671,7 @@ components:
     }
 
     #[test]
-    fn user_runtime_parses_framework_and_full_build_recipe() -> anyhow::Result<()> {
+    fn user_participant_parses_framework_and_full_build_recipe() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -679,11 +679,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
     framework: "0.9.0"
     build:
       context: container
@@ -702,13 +702,13 @@ components:
         )?;
 
         let participant = robot
-            .user_runtimes
+            .user_participants
             .get("autonomy")
             .expect("user participant should parse");
         assert_eq!(participant.framework, "0.9.0");
         assert_eq!(
             participant.build,
-            Some(UserRuntimeBuild {
+            Some(UserParticipantBuild {
                 context: PathBuf::from("container"),
                 dockerfile: Some(PathBuf::from("Dockerfile.participant")),
                 target: Some("participant".to_string()),
@@ -719,7 +719,7 @@ components:
     }
 
     #[test]
-    fn bus_profiles_and_user_runtime_deploy_fields_parse_and_validate() -> anyhow::Result<()> {
+    fn bus_profiles_and_user_participant_deploy_fields_parse_and_validate() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -727,11 +727,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
     image: ghcr.io/acme/autonomy@sha256:abc
     bus_profile: mcu_serial
     config:
@@ -762,7 +762,7 @@ bus:
         )?;
 
         let participant = robot
-            .user_runtimes
+            .user_participants
             .get("autonomy")
             .expect("user participant should parse");
         assert_eq!(
@@ -794,7 +794,7 @@ bus:
     }
 
     #[test]
-    fn user_runtime_rejects_unknown_bus_profile() -> anyhow::Result<()> {
+    fn user_participant_rejects_unknown_bus_profile() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -802,11 +802,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
     bus_profile: mcu_serial
 motion:
   kinematic:
@@ -823,7 +823,7 @@ components:
             .validate()
             .expect_err("unknown bus profile should fail validation");
         assert!(
-            errors.contains(&super::ValidationError::UnknownUserRuntimeBusProfile {
+            errors.contains(&super::ValidationError::UnknownUserParticipantBusProfile {
                 participant: "autonomy".to_string(),
                 profile: "mcu_serial".to_string(),
             })
@@ -841,11 +841,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
     bus_profile: default
 motion:
   kinematic:
@@ -873,7 +873,7 @@ bus:
         assert!(
             !errors.iter().any(|error| matches!(
                 error,
-                super::ValidationError::UnknownUserRuntimeBusProfile { .. }
+                super::ValidationError::UnknownUserParticipantBusProfile { .. }
             )),
             "bus_profile: default should refer to the implicit default"
         );
@@ -882,7 +882,7 @@ bus:
     }
 
     #[test]
-    fn user_runtime_build_rejects_unknown_fields() {
+    fn user_participant_build_rejects_unknown_fields() {
         let error = Robot::parse_from_string(
             r#"
 schema: v0
@@ -890,11 +890,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
     build:
       bogus: 1
 motion:
@@ -916,8 +916,8 @@ components:
     }
 
     #[test]
-    fn user_runtime_round_trips_and_omits_default_framework_and_empty_build() -> anyhow::Result<()>
-    {
+    fn user_participant_round_trips_and_omits_default_framework_and_empty_build()
+    -> anyhow::Result<()> {
         let default_robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -925,11 +925,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
 motion:
   kinematic:
     kind: omnidirectional
@@ -958,11 +958,11 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
-user_runtimes:
+user_participants:
   autonomy:
-    path: runtimes/autonomy
+    path: participants/autonomy
     framework: "0.9.0"
     build:
       context: container
@@ -981,13 +981,13 @@ components:
         let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
         let reparsed = Robot::parse_from_string(&yaml)?;
 
-        assert_eq!(reparsed.user_runtimes, robot.user_runtimes);
+        assert_eq!(reparsed.user_participants, robot.user_participants);
 
         Ok(())
     }
 
     #[test]
-    fn phoxal_runtimes_channel_defaults_to_stable() -> anyhow::Result<()> {
+    fn phoxal_participants_channel_defaults_to_stable() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -995,7 +995,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes: {}
+phoxal_participants: {}
 motion:
   kinematic:
     kind: omnidirectional
@@ -1007,16 +1007,16 @@ components:
 "#,
         )?;
 
-        assert_eq!(robot.phoxal_runtimes.channel, Channel::Stable);
-        assert_eq!(robot.phoxal_runtimes.channel.as_str(), "stable");
-        assert_eq!(robot.phoxal_runtimes.channel.to_string(), "stable");
-        assert!(robot.phoxal_runtimes.images.is_empty());
+        assert_eq!(robot.phoxal_participants.channel, Channel::Stable);
+        assert_eq!(robot.phoxal_participants.channel.as_str(), "stable");
+        assert_eq!(robot.phoxal_participants.channel.to_string(), "stable");
+        assert!(robot.phoxal_participants.images.is_empty());
 
         Ok(())
     }
 
     #[test]
-    fn phoxal_runtimes_rejects_invalid_channel() {
+    fn phoxal_participants_rejects_invalid_channel() {
         let error = Robot::parse_from_string(
             r#"
 schema: v0
@@ -1024,7 +1024,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: experimental
 motion:
   kinematic:
@@ -1036,7 +1036,7 @@ components:
   instances: {}
 "#,
         )
-        .expect_err("invalid phoxal_runtimes channel should fail to parse");
+        .expect_err("invalid phoxal_participants channel should fail to parse");
 
         assert!(
             format!("{error:#}").contains("unknown variant `experimental`"),
@@ -1045,7 +1045,7 @@ components:
     }
 
     #[test]
-    fn phoxal_runtimes_rejects_old_version_field() {
+    fn phoxal_participants_rejects_old_version_field() {
         let error = Robot::parse_from_string(
             r#"
 schema: v0
@@ -1053,7 +1053,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   version: "latest"
 motion:
   kinematic:
@@ -1065,7 +1065,7 @@ components:
   instances: {}
 "#,
         )
-        .expect_err("old phoxal_runtimes version field should fail to parse");
+        .expect_err("old phoxal_participants version field should fail to parse");
 
         assert!(
             format!("{error:#}").contains("unknown field `version`"),
@@ -1074,7 +1074,8 @@ components:
     }
 
     #[test]
-    fn phoxal_runtimes_images_parse_and_validate_against_platform_runtimes() -> anyhow::Result<()> {
+    fn phoxal_participants_images_parse_and_validate_against_platform_participants()
+    -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -1082,7 +1083,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: latest
   images:
     drive: ghcr.io/phoxal/runtime-drive:y2026_1-v0.8.4
@@ -1098,9 +1099,9 @@ components:
 "#,
         )?;
 
-        assert_eq!(robot.phoxal_runtimes.channel, Channel::Latest);
+        assert_eq!(robot.phoxal_participants.channel, Channel::Latest);
         assert_eq!(
-            robot.phoxal_runtimes.images.get("drive"),
+            robot.phoxal_participants.images.get("drive"),
             Some(&"ghcr.io/phoxal/runtime-drive:y2026_1-v0.8.4".to_string())
         );
         robot
@@ -1112,16 +1113,16 @@ components:
             .expect_err("unknown platform image key should fail validation");
 
         assert!(
-            errors.contains(&super::ValidationError::UnknownPlatformRuntimeImage {
+            errors.contains(&super::ValidationError::UnknownPlatformParticipantImage {
                 name: "drive".to_string(),
             })
         );
         assert_eq!(
-            super::ValidationError::UnknownPlatformRuntimeImage {
+            super::ValidationError::UnknownPlatformParticipantImage {
                 name: "drive".to_string(),
             }
             .to_string(),
-            "phoxal_runtimes.images.drive is not a platform participant"
+            "phoxal_participants.images.drive is not a platform participant"
         );
 
         Ok(())
@@ -1136,7 +1137,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
 motion:
   kinematic:
@@ -1163,7 +1164,7 @@ version: v1
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
 motion:
   kinematic:
@@ -1194,7 +1195,7 @@ api_version: " "
 identity:
   id: test-bot
   namespace: dev
-phoxal_runtimes:
+phoxal_participants:
   channel: stable
 motion:
   kinematic:
