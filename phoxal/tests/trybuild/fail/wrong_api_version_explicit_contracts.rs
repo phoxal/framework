@@ -37,7 +37,7 @@ foreign_body!(ForeignResponse, "foreign::Response", "foreign/query");
 )]
 struct WrongApiExplicit {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl WrongApiExplicit {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

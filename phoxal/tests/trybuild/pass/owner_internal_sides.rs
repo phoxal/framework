@@ -18,7 +18,7 @@ struct Owner {
     state: Publisher<api::drive::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Owner {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -45,7 +45,7 @@ struct Client {
     state: Latest<api::drive::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Client {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

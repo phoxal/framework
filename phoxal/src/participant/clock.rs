@@ -1,6 +1,6 @@
 //! The clock + time source (D34).
 //!
-//! No runtime mints its own clock; the runner owns one [`ClockSource`] and stamps
+//! No participant mints its own clock; the runner owns one [`ClockSource`] and stamps
 //! every `StepContext`/`produced_at_ns` from it, so all participants share one
 //! logical-time domain. Three sources are envisaged: **real** (host-monotonic),
 //! **simulation** (subscribe the authoritative `simulation/clock`), and **test**
@@ -73,7 +73,7 @@ impl ClockSource for RealClock {
     }
 }
 
-/// An injectable fake clock for tests + the runtime test harness (D34/D41).
+/// An injectable fake clock for tests + the participant test harness (D34/D41).
 #[derive(Clone)]
 pub struct TestClock {
     state: Arc<Mutex<(u64, u64)>>, // (epoch, time_ns)

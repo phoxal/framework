@@ -1,18 +1,18 @@
-//! Runtime-to-runtime interop: two runner-driven runtimes, a `Producer` and a
+//! Participant-to-participant interop: two runner-driven participants, a `Producer` and a
 //! `Consumer`, exchange a typed contract over ONE shared in-process [`Bus`] via the
 //! [`run_with_bus`] embedding seam.
 //!
 //! Everything below `run`/`run_with` (the macro-generated declarations, the runner
 //! step loop, the typed publish/subscribe path, the bus codec + metadata) is
-//! exercised end-to-end here — the first test that crosses a runtime boundary on a
-//! live bus, rather than driving the bus or a single runtime in isolation.
+//! exercised end-to-end here - the first test that crosses a participant boundary on a
+//! live bus, rather than driving the bus or a single participant in isolation.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use phoxal::bus::{Bus, BusConfig};
+use phoxal::participant::{ParticipantLaunch, RealClock, run_with_bus};
 use phoxal::prelude::*;
-use phoxal::runtime::{ParticipantLaunch, RealClock, run_with_bus};
 use phoxal_api::y2026_1 as api;
 use serial_test::serial;
 
@@ -28,7 +28,7 @@ struct Producer {
     target: Publisher<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Producer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -63,7 +63,7 @@ struct Consumer {
     target: Subscriber<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Consumer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

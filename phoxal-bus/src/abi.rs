@@ -19,7 +19,7 @@
 //! The cross-artifact `bus_abi` compatibility check is deferred to freeze (D45):
 //! within a coherent platform release every participant is rebuilt from one
 //! framework version, so the constant simply has to be defined and freezable. The
-//! runtime decode path (encoding/metadata fast-reject) is the backstop.
+//! decode path at runtime (encoding/metadata fast-reject) is the backstop.
 
 use std::fmt;
 

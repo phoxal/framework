@@ -1,6 +1,6 @@
-//! `drive` - the official differential-drive runtime.
+//! `drive` - the official differential-drive participant.
 //!
-//! A scheduled runtime that closes the body-twist to wheel-velocity loop.
+//! A scheduled participant that closes the body-twist to wheel-velocity loop.
 //! It subscribes to `drive/target`, clamps it to the configured linear and
 //! angular limits, mixes the limited twist into per-wheel angular speeds via
 //! differential inverse kinematics, and commands each wheel motor on its dynamic
@@ -129,7 +129,7 @@ struct Drive {
     right_motors: Vec<Publisher<api::component::motor::Command>>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Drive {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

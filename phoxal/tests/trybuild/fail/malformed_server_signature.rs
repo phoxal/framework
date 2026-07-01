@@ -6,7 +6,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "bad-server", api = y2026_1)]
 struct BadServer {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl BadServer {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

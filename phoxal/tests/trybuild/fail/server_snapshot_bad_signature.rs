@@ -7,7 +7,7 @@ struct MapState;
 #[phoxal(id = "snapshot-bad-signature", api = y2026_1)]
 struct SnapshotBadSignature {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SnapshotBadSignature {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

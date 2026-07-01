@@ -8,7 +8,7 @@ struct MapState;
 #[phoxal(id = "map-pass", api = y2026_1)]
 struct MapPass {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl MapPass {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

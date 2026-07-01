@@ -1,9 +1,9 @@
-//! `odometry` - the official differential-drive wheel-odometry runtime.
+//! `odometry` - the official differential-drive wheel-odometry participant.
 //!
 //! This is the forward-kinematics counterpart to `drive`: it subscribes to each
 //! wheel encoder on dynamic per-component topics, reconstructs the body twist,
 //! integrates planar pose, and publishes `odometry/state`. It exercises the
-//! SUBSCRIBE side of dynamic per-component topics on the new runtime surface.
+//! SUBSCRIBE side of dynamic per-component topics on the new participant surface.
 //!
 //! Encoder bindings come from the robot model's differential kinematic config
 //! (per-side encoder lists, wheel radius, wheel base); a non-differential model
@@ -120,7 +120,7 @@ struct Odometry {
     state: Publisher<api::odometry::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Odometry {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<super::Odometry>();
+        let json = phoxal::participant::emit_apis_json::<super::Odometry>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "odometry");
         let contracts = value["required_contracts"].as_array().unwrap();

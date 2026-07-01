@@ -39,7 +39,7 @@ impl LocalizeBackendKind {
 
 /// Backend resolved from the robot model.
 ///
-/// The shipped `localize` runtime currently republishes odometry as map-frame
+/// The shipped `localize` participant currently republishes odometry as map-frame
 /// localization with confidence decay. ORB-SLAM3 and GNSS anchoring are not
 /// implemented by this workspace, so they must not appear as resolved backend
 /// facts until corresponding runtimes and validation exist.

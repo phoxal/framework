@@ -1,17 +1,17 @@
 //! `power` - host lifecycle commands through the Balena supervisor.
 //!
-//! This runtime subscribes to `power/command` (Reboot/Shutdown) and publishes the
+//! This participant subscribes to `power/command` (Reboot/Shutdown) and publishes the
 //! latched `power/state`. Each command is forwarded to the Balena supervisor over
 //! plain HTTP (its `/v1/reboot` and `/v1/shutdown` endpoints), addressed from the
 //! `BALENA_SUPERVISOR_ADDRESS` and `BALENA_SUPERVISOR_API_KEY` environment
 //! variables.
 //!
 //! The executor is built only when both env vars are present, so on a host
-//! without a supervisor the runtime stays in `Idle` and reports that it is
+//! without a supervisor the participant stays in `Idle` and reports that it is
 //! unconfigured rather than failing. The HTTP target is plain-HTTP only: an
 //! `https://` address is rejected during parsing. A supervisor non-2xx response
 //! or transport/timeout error latches `Failed`; an accepted request latches
-//! `Rebooting` or `ShuttingDown`. The runtime never executes the lifecycle action
+//! `Rebooting` or `ShuttingDown`. The participant never executes the lifecycle action
 //! itself - it only relays the request to the supervisor.
 
 use std::env;
@@ -40,7 +40,7 @@ struct Power {
     state: Publisher<api::power::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Power {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -362,17 +362,17 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::runtime::runtime_metadata::<Power>();
+        let metadata = phoxal::participant::participant_metadata::<Power>();
         assert_eq!(metadata.artifact.id, "power");
 
         let contracts = metadata.required_contracts;
         assert!(contracts.iter().any(|c| {
             c.family == <api::power::Command as ContractBody>::FAMILY
-                && c.direction == phoxal::runtime::Direction::Subscribe
+                && c.direction == phoxal::participant::Direction::Subscribe
         }));
         assert!(contracts.iter().any(|c| {
             c.family == <api::power::State as ContractBody>::FAMILY
-                && c.direction == phoxal::runtime::Direction::Publish
+                && c.direction == phoxal::participant::Direction::Publish
         }));
     }
 }

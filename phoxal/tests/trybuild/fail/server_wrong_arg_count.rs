@@ -5,7 +5,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "server-extra-arg", api = y2026_1)]
 struct ServerExtraArg {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ServerExtraArg {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

@@ -1,4 +1,4 @@
-//! A minimal scheduled control-loop runtime — the canonical authoring example.
+//! A minimal scheduled control-loop participant - the canonical authoring example.
 //!
 //! It shows the whole first-slice surface: one struct of typed handles, a
 //! `#[setup]` that builds them from api-local topics, a `#[step]` that reads the
@@ -21,7 +21,7 @@ struct AvoidObstacles {
     target: Publisher<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl AvoidObstacles {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -60,7 +60,7 @@ impl AvoidObstacles {
 
     #[shutdown]
     async fn shutdown(&mut self) -> Result<()> {
-        // Best-effort: a real runtime parks/stops actuators here before the bus
+        // Best-effort: a real participant parks/stops actuators here before the bus
         // closes. Nothing to flush in this example.
         Ok(())
     }

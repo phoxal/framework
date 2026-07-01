@@ -1,7 +1,7 @@
-//! `#[phoxal::runtime]` — lifecycle + server dispatch from the inherent impl.
+//! `#[phoxal::behavior]` - lifecycle + server dispatch from the inherent impl.
 //!
 //! Reads the lifecycle/server helper attributes on the methods of an inherent
-//! impl and emits a `RuntimeBehavior` impl that the runner drives, re-emitting
+//! impl and emits a `ParticipantBehavior` impl that the runner drives, re-emitting
 //! the original methods verbatim (helper attributes stripped).
 //!
 //! Attributes: `#[setup]` (mandatory, once), `#[step(hz = N)]` (≤ 1),
@@ -22,7 +22,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     if !attr.is_empty() {
         return Err(syn::Error::new_spanned(
             attr,
-            "#[phoxal::runtime] takes no arguments; configure the runtime on the struct via \
+            "#[phoxal::behavior] takes no arguments; configure the participant on the struct via \
              #[derive(phoxal::Service)] #[phoxal(...)] or \
              #[derive(phoxal::Driver)] #[phoxal(...)]",
         ));
@@ -62,7 +62,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 if step.is_some() {
                     return Err(syn::Error::new(
                         method.sig.span(),
-                        "duplicate #[step]: a runtime has at most one scheduled loop",
+                        "duplicate #[step]: a participant has at most one scheduled loop",
                     ));
                 }
                 step = Some(StepFn::parse(method, hz)?);
@@ -95,14 +95,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let setup = setup.ok_or_else(|| {
         syn::Error::new_spanned(
             &item_impl.self_ty,
-            "a runtime impl must declare exactly one #[setup] method (D22)",
+            "a participant impl must declare exactly one #[setup] method (D22)",
         )
     })?;
 
     if !snapshot_servers.is_empty() && snapshot.is_none() {
         return Err(syn::Error::new_spanned(
             &item_impl.self_ty,
-            "#[server_snapshot] requires a #[snapshot] provider on the same runtime",
+            "#[server_snapshot] requires a #[snapshot] provider on the same participant",
         ));
     }
 
@@ -125,8 +125,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
         #topic_assertions
 
-        impl ::phoxal::runtime::RuntimeBehavior for #self_ty {
-            const SERVER_CONTRACTS: &'static [::phoxal::runtime::ContractUse] = #server_contracts;
+        impl ::phoxal::participant::ParticipantBehavior for #self_ty {
+            const SERVER_CONTRACTS: &'static [::phoxal::participant::ContractUse] = #server_contracts;
 
             type Snapshot = #snapshot_ty;
             const HAS_SNAPSHOT: bool = #has_snapshot;
@@ -143,27 +143,27 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #validate_server_topics
             }
 
-            fn __step_schedule() -> ::core::option::Option<::phoxal::runtime::StepSchedule> {
+            fn __step_schedule() -> ::core::option::Option<::phoxal::participant::StepSchedule> {
                 #step_schedule
             }
 
             async fn __setup(
-                ctx: &mut ::phoxal::runtime::SetupContext<Self>,
-                config: <Self as ::phoxal::runtime::RuntimeFields>::Config,
+                ctx: &mut ::phoxal::participant::SetupContext<Self>,
+                config: <Self as ::phoxal::participant::ParticipantSpec>::Config,
             ) -> ::phoxal::Result<Self> {
                 #setup_call
             }
 
             async fn __step(
                 &mut self,
-                step: ::phoxal::runtime::StepContext,
+                step: ::phoxal::participant::StepContext,
             ) -> ::phoxal::Result<()> {
                 #step_call
             }
 
             async fn __shutdown(
                 &mut self,
-                ctx: ::phoxal::runtime::ShutdownContext,
+                ctx: ::phoxal::participant::ShutdownContext,
             ) -> ::phoxal::Result<()> {
                 #shutdown_call
             }
@@ -178,7 +178,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 api_version: &str,
                 family: &str,
                 request: &[u8],
-            ) -> ::phoxal::runtime::ServerOutcome {
+            ) -> ::phoxal::participant::ServerOutcome {
                 #serve_exclusive
             }
 
@@ -190,7 +190,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 request: ::std::vec::Vec<u8>,
             ) -> ::std::pin::Pin<
                 ::std::boxed::Box<
-                    dyn ::core::future::Future<Output = ::phoxal::runtime::ServerOutcome> + ::core::marker::Send,
+                    dyn ::core::future::Future<Output = ::phoxal::participant::ServerOutcome> + ::core::marker::Send,
                 >,
             > {
                 #serve_snapshot
@@ -230,7 +230,7 @@ fn step_schedule(step: Option<&StepFn>) -> TokenStream {
     match step {
         Some(s) => {
             let hz = s.hz;
-            quote!(::core::option::Option::Some(::phoxal::runtime::StepSchedule::hz(#hz)))
+            quote!(::core::option::Option::Some(::phoxal::participant::StepSchedule::hz(#hz)))
         }
         None => quote!(::core::option::Option::None),
     }
@@ -292,11 +292,11 @@ fn server_contracts(servers: &[ServerFn], snapshot_servers: &[SnapshotServerFn])
 
 fn contract_entry(ty: &Type, direction: TokenStream) -> TokenStream {
     quote! {
-        ::phoxal::runtime::ContractUse {
+        ::phoxal::participant::ContractUse {
             api_version: <<#ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
             family: <#ty as ::phoxal::bus::ContractBody>::FAMILY,
             topic: <#ty as ::phoxal::bus::ContractBody>::TOPIC,
-            direction: ::phoxal::runtime::Direction::#direction,
+            direction: ::phoxal::participant::Direction::#direction,
         }
     }
 }
@@ -389,7 +389,7 @@ fn serve_exclusive(servers: &[ServerFn]) -> TokenStream {
 }
 
 /// Validate the request's metadata (api_version + family) against the handler's
-/// request body before decode — a wrong-API or wrong-family request is rejected
+/// request body before decode - a wrong-API or wrong-family request is rejected
 /// rather than silently decoded (server-side backstop for D59/D62).
 fn validate_request(req_ty: &Type) -> TokenStream {
     quote! {
@@ -443,7 +443,7 @@ fn serve_snapshot(snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
                         );
                     }
                 };
-                let state = ::phoxal::runtime::Snapshot::from_arc(snapshot);
+                let state = ::phoxal::participant::Snapshot::from_arc(snapshot);
                 return match Self::#name(state, request).await {
                     ::core::result::Result::Ok(response) => #encode,
                     ::core::result::Result::Err(failure) => ::core::result::Result::Err(failure),
@@ -465,7 +465,7 @@ fn serve_snapshot(snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
 fn encode_reply(resp_ty: &Type) -> TokenStream {
     quote! {
         match <::phoxal::bus::MessagePack as ::phoxal::bus::Codec>::encode(&response) {
-            ::core::result::Result::Ok(payload) => ::core::result::Result::Ok(::phoxal::runtime::ServerReply {
+            ::core::result::Result::Ok(payload) => ::core::result::Result::Ok(::phoxal::participant::ServerReply {
                 payload,
                 family: <#resp_ty as ::phoxal::bus::ContractBody>::FAMILY,
                 api_version: <<#resp_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
@@ -508,8 +508,8 @@ fn topic_assertions(
             fn #api_id() {
                 fn assert<R, B>()
                 where
-                    R: ::phoxal::runtime::RuntimeFields,
-                    B: ::phoxal::bus::ContractBody<Api = <R as ::phoxal::runtime::RuntimeFields>::Api>,
+                    R: ::phoxal::participant::ParticipantSpec,
+                    B: ::phoxal::bus::ContractBody<Api = <R as ::phoxal::participant::ParticipantSpec>::Api>,
                 {}
                 assert::<#self_ty, #req>();
                 assert::<#self_ty, #resp>();
@@ -581,7 +581,7 @@ impl LifecycleFn {
         if typed > 2 {
             return Err(syn::Error::new(
                 method.sig.span(),
-                "#[setup] takes `ctx: &mut SetupContext<Self>` and optional runtime config",
+                "#[setup] takes `ctx: &mut SetupContext<Self>` and optional participant config",
             ));
         }
         let arg_types = typed_arg_types(method);
@@ -699,7 +699,7 @@ impl ServerFn {
         if !has_exclusive_receiver(method) {
             return Err(syn::Error::new(
                 method.sig.span(),
-                "#[server] takes `&mut self` (exclusive, serialized with #[step] — D16)",
+                "#[server] takes `&mut self` (exclusive, serialized with #[step] - D16)",
             ));
         }
         let typed = typed_arg_types(method);
@@ -739,7 +739,7 @@ impl SnapshotServerFn {
             return Err(syn::Error::new(
                 method.sig.span(),
                 "#[server_snapshot] is an associated function: it takes `state: Snapshot<…>` and \
-                 `request`, not `self` (concurrent, read-only — D16)",
+                 `request`, not `self` (concurrent, read-only - D16)",
             ));
         }
         let typed = typed_arg_types(method);
@@ -843,7 +843,7 @@ fn rewrite_setup_self_config(method: &mut ImplItemFn) {
         return;
     };
     if type_is_self_config(&arg.ty) {
-        *arg.ty = syn::parse_quote!(<Self as ::phoxal::runtime::RuntimeFields>::Config);
+        *arg.ty = syn::parse_quote!(<Self as ::phoxal::participant::ParticipantSpec>::Config);
     }
 }
 
@@ -930,7 +930,7 @@ fn type_ends_with(ty: &Type, name: &str) -> bool {
 }
 
 /// Like [`type_ends_with`], but peels one leading reference (`&T` / `&mut T`)
-/// first — so `&mut SetupContext<Self>` matches `SetupContext`.
+/// first - so `&mut SetupContext<Self>` matches `SetupContext`.
 fn ref_type_ends_with(ty: &Type, name: &str) -> bool {
     let inner = match ty {
         Type::Reference(r) => r.elem.as_ref(),

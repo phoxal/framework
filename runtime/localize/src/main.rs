@@ -1,6 +1,6 @@
-//! `localize` - the official odometry-anchored localization runtime.
+//! `localize` - the official odometry-anchored localization participant.
 //!
-//! A scheduled runtime that subscribes to `odometry/state` and republishes
+//! A scheduled participant that subscribes to `odometry/state` and republishes
 //! `localize/state`, the localization estimate consumed by downstream runtimes
 //! such as `map`, `explore`, and `follow`.
 //! This first version is transparent: the odometry pose is treated directly as
@@ -26,7 +26,7 @@ struct Localize {
     state: Publisher<api::localize::LocalizationState>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Localize {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Localize>();
+        let json = phoxal::participant::emit_apis_json::<Localize>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "localize");
 

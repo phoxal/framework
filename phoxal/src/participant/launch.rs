@@ -1,4 +1,4 @@
-//! `ParticipantLaunch` — the bundle → process launch contract (D53).
+//! `ParticipantLaunch` - the bundle -> process launch contract (D53).
 //!
 //! The generated bundle carries one `ParticipantLaunch` record per participant;
 //! the executable takes `--bundle <dir> --participant <id>` instead of a soup of
@@ -7,7 +7,7 @@
 //! artifact) would otherwise collide on the bus (D47/D53).
 //!
 //! This is an internal launch input, not a public RobotPlan (D49). The first
-//! slice synthesizes a default launch for `runtime run`; loading from a real
+//! slice synthesizes a default launch for local runs; loading from a real
 //! bundle file lands with the CLI slice.
 
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
 /// One participant's launch record.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ParticipantLaunch {
-    /// The bus-unique participant id (never the static artifact/runtime id, D53).
+    /// The bus-unique participant id (never the static participant/artifact id, D53).
     pub participant_id: String,
     /// The bus namespace (`identity.namespace`).
     pub namespace: String,
@@ -32,18 +32,18 @@ pub struct ParticipantLaunch {
     /// The clock mode.
     #[serde(default)]
     pub clock: ClockMode,
-    /// The runtime's typed config block (`user_runtimes.<id>.config`), if any.
+    /// The participant's typed config block (`user_runtimes.<id>.config`), if any.
     #[serde(default)]
     pub config: Option<serde_json::Value>,
     /// The bundle root that holds the robot model (`robot.yaml` + components +
-    /// structure). Official runtimes read it via `SetupContext::robot()`; absent
-    /// for a bare `runtime run` with no model.
+    /// structure). Official participants read it via `SetupContext::robot()`; absent
+    /// for a bare local run with no model.
     #[serde(default)]
     pub bundle_root: Option<PathBuf>,
     /// The `components.instances` entry this participant drives (D47/D53). A
     /// component driver is launched once per instance, each with a distinct
     /// `participant_id` and its own `component_instance`; read via
-    /// `SetupContext::component()`. Absent for non-driver runtimes.
+    /// `SetupContext::component()`. Absent for non-driver participants.
     #[serde(default)]
     pub component_instance: Option<String>,
     /// Bounded shutdown grace, in milliseconds.
@@ -56,7 +56,7 @@ fn default_grace() -> u64 {
 }
 
 impl ParticipantLaunch {
-    /// A default launch for `runtime run`: in-process bus, real clock, the given
+    /// A default launch for local runs: in-process bus, real clock, the given
     /// participant id (defaulting the namespace to `dev`, D38).
     pub fn local(participant_id: impl Into<String>, robot_id: impl Into<String>) -> Self {
         ParticipantLaunch {
@@ -74,9 +74,9 @@ impl ParticipantLaunch {
 
     /// Build a launch from the environment, over [`local`](Self::local) defaults.
     ///
-    /// This is how an external launcher (`phoxal-cli runtime run`, a systemd unit, a
+    /// This is how an external launcher (`phoxal-cli`, a systemd unit, a
     /// container entrypoint) hands a host-native participant its namespace, bus
-    /// endpoints, bundle, typed config, and component instance without recompiling —
+    /// endpoints, bundle, typed config, and component instance without recompiling -
     /// each `PHOXAL_*` variable overrides the matching field; unset/empty leaves the
     /// `local` default:
     ///
@@ -84,7 +84,7 @@ impl ParticipantLaunch {
     /// - `PHOXAL_BUNDLE_ROOT` (path to the resolved robot model)
     /// - `PHOXAL_COMPONENT_INSTANCE` (driver launch, D47/D53)
     /// - `PHOXAL_CONNECT` (comma-separated Zenoh endpoints; empty = in-process)
-    /// - `PHOXAL_CONFIG` (the runtime's typed config block, as JSON)
+    /// - `PHOXAL_CONFIG` (the participant's typed config block, as JSON)
     /// - `PHOXAL_CLOCK` (`real` | `simulation`)
     pub fn from_env(default_participant_id: &str, default_robot_id: &str) -> crate::Result<Self> {
         use anyhow::Context;
@@ -115,7 +115,7 @@ impl ParticipantLaunch {
         if let Some(config) = nonempty("PHOXAL_CONFIG") {
             launch.config = Some(
                 serde_json::from_str(&config)
-                    .context("PHOXAL_CONFIG must be valid JSON for the runtime config")?,
+                    .context("PHOXAL_CONFIG must be valid JSON for the participant config")?,
             );
         }
         if let Some(clock) = nonempty("PHOXAL_CLOCK") {
@@ -192,8 +192,8 @@ mod tests {
     #[serial]
     fn from_env_with_nothing_set_matches_local_defaults() {
         clear_env();
-        let launch = ParticipantLaunch::from_env("my-runtime", "robot").unwrap();
-        assert_eq!(launch.participant_id, "my-runtime");
+        let launch = ParticipantLaunch::from_env("my-participant", "robot").unwrap();
+        assert_eq!(launch.participant_id, "my-participant");
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
         assert_eq!(launch.bundle_root, None);

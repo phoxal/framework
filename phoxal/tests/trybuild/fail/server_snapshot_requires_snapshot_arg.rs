@@ -7,7 +7,7 @@ struct MapState;
 #[phoxal(id = "snapshot-wrong-state-arg", api = y2026_1)]
 struct SnapshotWrongStateArg {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SnapshotWrongStateArg {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

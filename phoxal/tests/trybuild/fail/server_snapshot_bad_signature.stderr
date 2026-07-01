@@ -1,4 +1,4 @@
-error: #[server_snapshot] is an associated function: it takes `state: Snapshot<…>` and `request`, not `self` (concurrent, read-only — D16)
+error: #[server_snapshot] is an associated function: it takes `state: Snapshot<…>` and `request`, not `self` (concurrent, read-only - D16)
   --> tests/trybuild/fail/server_snapshot_bad_signature.rs:18:5
    |
 18 |     async fn submap(

@@ -85,7 +85,7 @@ pub trait ContractBody:
     const FAMILY: &'static str;
     /// Versionless topic key: the `/`-joined node path plus the topic leaf, with
     /// each dynamic node contributing a `{var}` placeholder, e.g. `"drive/state"`
-    /// or `"component/{instance}/motor/{capability}/command"`. The runtime key is
+    /// or `"component/{instance}/motor/{capability}/command"`. The concrete key is
     /// produced by the api-local `topic` builder, which fills the placeholders.
     const TOPIC: &'static str;
 }

@@ -1,4 +1,4 @@
-// A handle body whose ContractBody::Api is not the runtime's selected API is a
+// A handle body whose ContractBody::Api is not the participant's selected API is a
 // compile error (D60).
 use phoxal::prelude::*;
 
@@ -23,7 +23,7 @@ struct WrongApi {
     body: Publisher<ForeignBody>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl WrongApi {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

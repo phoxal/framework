@@ -1,6 +1,6 @@
 //! `safety` - the official battery + drive safety monitor.
 //!
-//! This official runtime targets API version `y2026_1`. It consumes required
+//! This official participant targets API version `y2026_1`. It consumes required
 //! `battery/state` and `drive/state` inputs plus emergency-stop sources (the
 //! software `safety/estop` request and per-component emergency-stop states), and
 //! publishes the robot's aggregate `safety/state` posture plus the current
@@ -12,7 +12,7 @@
 //! and drive stop-reason (`Stop` on fault, `EmergencyStop` on drive e-stop). The
 //! authorization carries the approved-motion constraint for that decision
 //! (`Stop`/`EmergencyStop` authorize zero motion) and a short TTL, so a stalled
-//! `safety` runtime lets the authorization expire downstream rather than leaving
+//! `safety` participant lets the authorization expire downstream rather than leaving
 //! a stale envelope in force. Battery is required only when the robot model
 //! declares a battery capability; `drive/state` is always required.
 
@@ -71,7 +71,7 @@ struct Safety {
     state: Publisher<api::safety::Status>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Safety {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_y2026_1_safety_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Safety>();
+        let json = phoxal::participant::emit_apis_json::<Safety>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "safety");
         assert_eq!(value["api_version"], "y2026_1");

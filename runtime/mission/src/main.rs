@@ -1,6 +1,6 @@
 //! `mission` - lifecycle owner for autonomy goals.
 //!
-//! This runtime is deliberately not a drive controller. It subscribes to
+//! This participant is deliberately not a drive controller. It subscribes to
 //! `mission/command` (Start/Pause/Resume/Cancel), latches the active goal, and
 //! publishes `mission/goal` (only while Active) plus the `mission/state`
 //! lifecycle. Pause/Resume/Cancel keep or clear the latched goal; an invalid
@@ -103,7 +103,7 @@ struct Mission {
     state: Publisher<api::mission::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Mission {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_mission_lifecycle_contracts() {
-        let json = phoxal::runtime::emit_apis_json::<Mission>();
+        let json = phoxal::participant::emit_apis_json::<Mission>();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "mission");
         assert_eq!(value["api_version"], "y2026_1");

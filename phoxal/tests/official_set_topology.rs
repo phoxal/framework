@@ -1,4 +1,4 @@
-//! Framework-side official-set gate: every official runtime emits y2026_1
+//! Framework-side official-set gate: every official participant emits y2026_1
 //! metadata, and a representative fixture exercises pub/sub plus query/server
 //! topology cardinality.
 
@@ -10,7 +10,7 @@ use phoxal::model::component::v1::capability::Capability;
 use phoxal::model::v1::Robot;
 
 #[derive(Debug, serde::Deserialize)]
-struct RuntimeMetadata {
+struct ParticipantMetadata {
     artifact: Artifact,
     api_version: String,
     bus_abi: String,
@@ -266,7 +266,7 @@ fn dynamic_component_contracts_are_checked_at_family_level() {
 }
 
 impl Topology {
-    fn add_runtime_contracts(&mut self, metadata: &RuntimeMetadata, robot: &Robot) {
+    fn add_runtime_contracts(&mut self, metadata: &ParticipantMetadata, robot: &Robot) {
         for contract in &metadata.required_contracts {
             assert_eq!(
                 contract.api_version, metadata.api_version,
@@ -493,7 +493,7 @@ fn external_pubsub_inputs() -> Vec<TopologyContract> {
         ("power::Command", "power/command"),
         ("safety::EmergencyStopRequest", "safety/estop"),
         // Each participant publishes its own `command`-role heartbeat; the
-        // presence runtime subscribes them and republishes one aggregate on the
+        // presence participant subscribes them and republishes one aggregate on the
         // `state`-role `presence/state`. The producers are external participants
         // (see the `runtime_async_entrypoint` example), so they stand in here as a
         // fixture input - otherwise presence's heartbeat subscribe would look like
@@ -541,7 +541,7 @@ fn official_runtime_names(root: &Path) -> Vec<String> {
     names
 }
 
-fn emit_apis(root: &Path, name: &str) -> RuntimeMetadata {
+fn emit_apis(root: &Path, name: &str) -> ParticipantMetadata {
     let package = format!("phoxal-runtime-{name}");
     let output = Command::new("cargo")
         .args(["run", "--quiet", "-p", &package, "--", "emit-apis"])

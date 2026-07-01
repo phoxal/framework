@@ -1,4 +1,4 @@
-// Two #[step] methods — a runtime has at most one scheduled loop.
+// Two #[step] methods - a participant has at most one scheduled loop.
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
@@ -8,7 +8,7 @@ struct DupStep {
     target: Publisher<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl DupStep {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

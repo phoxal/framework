@@ -20,7 +20,7 @@ struct Dedup {
     state: Subscriber<api::drive::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Dedup {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

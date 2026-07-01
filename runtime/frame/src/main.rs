@@ -1,6 +1,6 @@
 //! `frame` - maintain the robot transform tree and serve frame lookups.
 //!
-//! A scheduled runtime with a concurrent snapshot server. It builds the link
+//! A scheduled participant with a concurrent snapshot server. It builds the link
 //! tree from the robot model (D33): fixed joints become static transforms, while
 //! movable joints (revolute, continuous, prismatic) are tracked dynamically.
 //! It subscribes to the per-joint `joint/<id>/state` topic for each movable joint
@@ -141,7 +141,7 @@ struct Frame {
     published_static: bool,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Frame {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -757,26 +757,26 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::runtime::runtime_metadata::<Frame>();
+        let metadata = phoxal::participant::participant_metadata::<Frame>();
         assert_eq!(metadata.artifact.id, "frame");
 
         let contracts = metadata.required_contracts;
         assert_contract::<api::joint::JointState>(
             &contracts,
-            phoxal::runtime::Direction::Subscribe,
+            phoxal::participant::Direction::Subscribe,
         );
-        assert_contract::<api::frame::Tree>(&contracts, phoxal::runtime::Direction::Publish);
+        assert_contract::<api::frame::Tree>(&contracts, phoxal::participant::Direction::Publish);
         assert_contract::<api::frame::StaticTransforms>(
             &contracts,
-            phoxal::runtime::Direction::Publish,
+            phoxal::participant::Direction::Publish,
         );
         assert_contract::<api::frame::LookupRequest>(
             &contracts,
-            phoxal::runtime::Direction::ServerRequest,
+            phoxal::participant::Direction::ServerRequest,
         );
         assert_contract::<api::frame::LookupResponse>(
             &contracts,
-            phoxal::runtime::Direction::ServerResponse,
+            phoxal::participant::Direction::ServerResponse,
         );
     }
 
@@ -822,8 +822,8 @@ mod tests {
     }
 
     fn assert_contract<B>(
-        contracts: &[phoxal::runtime::emit::ContractView],
-        direction: phoxal::runtime::Direction,
+        contracts: &[phoxal::participant::emit::ContractView],
+        direction: phoxal::participant::Direction,
     ) where
         B: ContractBody,
     {

@@ -9,7 +9,7 @@ struct NotBodyRuntime {
     target: Publisher<NotABody>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl NotBodyRuntime {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

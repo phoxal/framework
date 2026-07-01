@@ -42,8 +42,8 @@ workspace is converging to, not all wired up yet.
    A backend is profile-complete only after it passes this suite.
 5. **Scenario.** Webots-backed gates organized into tiers and mapped to delivery
    phases (below).
-   Scenario ownership is reassigned out of the runtime surface: scenario specs and
-   the headless runtime harness are a separate concern (planned `phoxal::scenario`
+   Scenario ownership is reassigned out of the participant surface: scenario specs and
+   the headless test harness are a separate concern (planned `phoxal::scenario`
    + `runtime::test::Harness`), discovery/orchestration belongs to `phoxal-cli`,
    and live-sim scenarios belong to the Webots tooling.
    The autonomy-profile model already names a scenario-coverage set per profile

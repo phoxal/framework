@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use crate::bus::{ApiVersion, Codec, ContractBody, MessagePack, QueryCode};
+use crate::participant::ParticipantBehavior;
 use crate::prelude::*;
-use crate::runtime::RuntimeBehavior;
 use phoxal_api::y2026_1 as api;
 
 #[derive(phoxal::Service)]
@@ -16,7 +16,7 @@ struct AssetTest {
     present: bool,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl AssetTest {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -99,7 +99,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
 #[phoxal(id = "bad-topic-test", api = y2026_1)]
 struct BadTopicTest {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl BadTopicTest {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -127,7 +127,7 @@ fn explicit_server_topic_key_must_match_request_body_topic() {
 #[phoxal(id = "duplicate-server-topic-test", api = y2026_1)]
 struct DuplicateServerTopicTest {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl DuplicateServerTopicTest {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -168,7 +168,7 @@ struct MapTestState {
     grid: Arc<Vec<u8>>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl MapTest {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

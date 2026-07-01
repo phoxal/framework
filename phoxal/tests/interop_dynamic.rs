@@ -7,14 +7,14 @@
 //! component topics. It proves that the macro's dynamic key builder produces the
 //! *same* concrete key on both the publish and subscribe sides (here
 //! `component/wheel-0/encoder/encoder/sample`), so a sample routes across the
-//! runtime boundary.
+//! participant boundary.
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use phoxal::bus::{Bus, BusConfig};
+use phoxal::participant::{ParticipantLaunch, RealClock, run_with_bus};
 use phoxal::prelude::*;
-use phoxal::runtime::{ParticipantLaunch, RealClock, run_with_bus};
 use phoxal_api::y2026_1 as api;
 use serial_test::serial;
 
@@ -32,7 +32,7 @@ struct EncoderProducer {
     encoder: Publisher<api::component::encoder::Sample>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl EncoderProducer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -74,7 +74,7 @@ struct EncoderConsumer {
     encoder: Subscriber<api::component::encoder::Sample>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl EncoderConsumer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

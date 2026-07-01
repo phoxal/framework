@@ -1,6 +1,6 @@
 //! The `emit-apis` metadata (D50/D57).
 //!
-//! Every runtime/tool/driver binary exposes a top-level `emit-apis` subcommand
+//! Every participant/tool/driver binary exposes a top-level `emit-apis` subcommand
 //! that serializes its compiled-in static metadata to stdout as exactly one JSON
 //! document and exits - before loading robot config, `.env`, tracing, Zenoh, or
 //! running `#[setup]`. `phoxal-cli check`/`deploy build` run it on the resolved
@@ -14,14 +14,14 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::bus::BUS_ABI;
-use crate::runtime::spec::{ContractUse, Direction, RuntimeBehavior};
+use crate::participant::spec::{ContractUse, Direction, ParticipantBehavior};
 
 /// The frozen emitted-metadata schema id.
 pub const EMIT_SCHEMA: &str = "phoxal.emit-apis/v0";
 
 /// The single JSON document `emit-apis` prints (frozen field set).
 #[derive(Debug, Serialize)]
-pub struct RuntimeMetadata {
+pub struct ParticipantMetadata {
     /// The emitted-schema id.
     pub schema: &'static str,
     /// What this artifact is.
@@ -34,7 +34,7 @@ pub struct RuntimeMetadata {
     pub bus_abi: String,
     /// The union of field-side + server-side contracts.
     pub required_contracts: Vec<ContractView>,
-    /// The runtime's JSON Schema config contract.
+    /// The participant's JSON Schema config contract.
     pub config_schema: serde_json::Value,
 }
 
@@ -78,8 +78,8 @@ impl From<&ContractUse> for ContractView {
     }
 }
 
-/// Build the metadata document for a runtime `R`.
-pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
+/// Build the metadata document for a participant `R`.
+pub fn participant_metadata<R: ParticipantBehavior>() -> ParticipantMetadata {
     let mut seen = BTreeSet::new();
     let required_contracts = R::FIELD_CONTRACTS
         .iter()
@@ -95,7 +95,7 @@ pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
         .map(ContractView::from)
         .collect();
 
-    RuntimeMetadata {
+    ParticipantMetadata {
         schema: EMIT_SCHEMA,
         artifact: Artifact {
             kind: R::KIND,
@@ -112,13 +112,13 @@ pub fn runtime_metadata<R: RuntimeBehavior>() -> RuntimeMetadata {
     }
 }
 
-/// Serialize a runtime's metadata to a pretty JSON string.
-pub fn emit_apis_json<R: RuntimeBehavior>() -> String {
-    serde_json::to_string_pretty(&runtime_metadata::<R>())
-        .expect("RuntimeMetadata is always serializable")
+/// Serialize a participant's metadata to a pretty JSON string.
+pub fn emit_apis_json<R: ParticipantBehavior>() -> String {
+    serde_json::to_string_pretty(&participant_metadata::<R>())
+        .expect("ParticipantMetadata is always serializable")
 }
 
-/// Print a runtime's metadata as one JSON document to stdout.
-pub fn print_emit_apis<R: RuntimeBehavior>() {
+/// Print a participant's metadata as one JSON document to stdout.
+pub fn print_emit_apis<R: ParticipantBehavior>() {
     println!("{}", emit_apis_json::<R>());
 }

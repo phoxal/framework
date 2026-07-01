@@ -1,11 +1,11 @@
-//! Runner integration: a scheduled runtime runs steps and then shuts down
+//! Runner integration: a scheduled participant runs steps and then shuts down
 //! cleanly, and its `emit-apis` document matches the frozen schema (D50).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use phoxal::participant::{ParticipantLaunch, RealClock, emit_apis_json, run_with};
 use phoxal::prelude::*;
-use phoxal::runtime::{ParticipantLaunch, RealClock, emit_apis_json, run_with};
 use phoxal_api::y2026_1 as api;
 
 static STEPS: AtomicU64 = AtomicU64::new(0);
@@ -46,7 +46,7 @@ struct ExplicitContracts {
     target: Publisher<api::drive::Target>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl Counter {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -86,7 +86,7 @@ struct SlowShutdown {}
 #[phoxal(id = "component-driver", api = y2026_1)]
 struct ComponentDriver {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl SlowShutdown {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -104,7 +104,7 @@ impl SlowShutdown {
     }
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ComponentDriver {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
@@ -113,7 +113,7 @@ impl ComponentDriver {
     }
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ConfiguredCounter {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>, config: Self::Config) -> Result<Self> {
@@ -122,7 +122,7 @@ impl ConfiguredCounter {
     }
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ExplicitContracts {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

@@ -1,4 +1,4 @@
-error: #[server] takes `&mut self` (exclusive, serialized with #[step] — D16)
+error: #[server] takes `&mut self` (exclusive, serialized with #[step] - D16)
   --> tests/trybuild/fail/server_requires_mut_self.rs:16:5
    |
 16 |     async fn get(

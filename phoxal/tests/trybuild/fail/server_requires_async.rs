@@ -5,7 +5,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "server-sync", api = y2026_1)]
 struct ServerSync {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ServerSync {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {

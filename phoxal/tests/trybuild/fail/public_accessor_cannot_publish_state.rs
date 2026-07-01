@@ -1,6 +1,6 @@
 // L1 (plan #00): taking the WRONG side of a topic is a compile error.
 //
-// `drive/state` is a `state` topic. The owner (the `drive` runtime) publishes it;
+// `drive/state` is a `state` topic. The owner (the `drive` participant) publishes it;
 // a client only observes it. The PUBLIC `topic::new()...` chain is the CLIENT side,
 // so `api::topic::new().drive().state()` yields a `Topic<Subscribe<drive::State>>`.
 // Feeding that to `ctx.publisher` - which requires `Topic<Publish<B>>` - is a type
@@ -20,7 +20,7 @@ struct PublicPublishState {
     state: Publisher<api::drive::State>,
 }
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl PublicPublishState {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {

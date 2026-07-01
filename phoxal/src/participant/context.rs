@@ -1,4 +1,4 @@
-//! Runtime contexts: `SetupContext` (IO construction), `StepContext` (logical
+//! Participant contexts: `SetupContext` (IO construction), `StepContext` (logical
 //! time per scheduled step), and `ShutdownContext`.
 
 use std::marker::PhantomData;
@@ -11,8 +11,8 @@ use crate::bus::{
     Publisher, Querier, Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
-use crate::runtime::spec::{
-    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, RuntimeFields,
+use crate::participant::spec::{
+    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, ParticipantSpec,
 };
 
 /// Default drop-oldest ring depth for a `Subscriber` built in `#[setup]`.
@@ -20,11 +20,11 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 
 /// The sole IO-construction point, handed to `#[setup]` (D18).
 ///
-/// Builders are bound `B: ContractBody<Api = R::Api>` (one API version — D60) and
+/// Builders are bound `B: ContractBody<Api = R::Api>` (one API version - D60) and
 /// a **direction-specific** declaration marker
 /// (`DeclaresPublish`/`DeclaresSubscribe`/`DeclaresQuery`, D44): a body from
 /// another API version, an undeclared family, or a declared family used in an
-/// undeclared direction is a compile error. Normal runtime code never opens Zenoh
+/// undeclared direction is a compile error. Normal participant code never opens Zenoh
 /// directly; the runner opened the bus before `#[setup]`.
 ///
 /// On top of those gates, each builder accepts only the matching **side brand**
@@ -36,7 +36,7 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 /// the public chain hands you as `Subscribe`) fails to compile - the owner side is
 /// reachable only through the explicit `internal` builder, whose entry requires the
 /// runner-minted owner capability from [`Self::owner_capability`] (L2, plan #00).
-pub struct SetupContext<R: RuntimeFields> {
+pub struct SetupContext<R: ParticipantSpec> {
     bus: Bus,
     owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
@@ -45,7 +45,7 @@ pub struct SetupContext<R: RuntimeFields> {
     _runtime: PhantomData<fn() -> R>,
 }
 
-impl<R: RuntimeFields> SetupContext<R> {
+impl<R: ParticipantSpec> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
         owner_cap: OwnerCap,
@@ -64,11 +64,13 @@ impl<R: RuntimeFields> SetupContext<R> {
     }
 
     /// The resolved robot model (`robot.yaml` + components + structure). Official
-    /// runtimes build their typed state from this (D33); it is present only when
+    /// participants build their typed state from this (D33); it is present only when
     /// the runner was launched with a bundle. Returns an error otherwise.
     pub fn robot(&self) -> crate::Result<&Robot> {
         self.robot.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("no robot model is bound (this runtime was launched without a bundle)")
+            anyhow::anyhow!(
+                "no robot model is bound (this participant was launched without a bundle)"
+            )
         })
     }
 
@@ -76,14 +78,16 @@ impl<R: RuntimeFields> SetupContext<R> {
     /// when launched with a bundle.
     pub fn bundle_root(&self) -> crate::Result<&Path> {
         self.bundle_root.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("no bundle root is bound (this runtime was launched without a bundle)")
+            anyhow::anyhow!(
+                "no bundle root is bound (this participant was launched without a bundle)"
+            )
         })
     }
 
     /// Build a publisher for a declared pub/sub contract of this API version.
     ///
-    /// The bounds are the static safety gate: `B` must belong to the runtime's
-    /// selected API version, and the runtime must have declared `B` in the
+    /// The bounds are the static safety gate: `B` must belong to the participant's
+    /// selected API version, and the participant must have declared `B` in the
     /// publish direction through a `Publisher<B>` field or
     /// `#[phoxal(contracts(publishes(B)))]`. A body from another API version or
     /// an undeclared publish family fails to compile.
@@ -134,7 +138,7 @@ impl<R: RuntimeFields> SetupContext<R> {
 
     /// Build a querier for a declared query contract of this API version.
     ///
-    /// Both request and response bodies must belong to `R::Api`, and the runtime
+    /// Both request and response bodies must belong to `R::Api`, and the participant
     /// must have declared the exact query pair with `Querier<Req, Resp>` or
     /// `#[phoxal(contracts(queries(Req => Resp)))]`. The handle carries the
     /// Phoxal-pinned finite timeout (D31).
@@ -156,7 +160,7 @@ impl<R: RuntimeFields> SetupContext<R> {
 
     /// The runner-minted owner capability (plan #00 Layer 2).
     ///
-    /// This is the controlled path a runtime uses to opt into being the OWNER of
+    /// This is the controlled path a participant uses to opt into being the OWNER of
     /// its own topics. Bind it once in `#[setup]` and pass it to the owner builder
     /// entry, `api::topic::internal::new(cap)`:
     ///
@@ -173,8 +177,8 @@ impl<R: RuntimeFields> SetupContext<R> {
         self.owner_cap
     }
 
-    /// The underlying bus. Not on the default checked-runtime surface (plan #00
-    /// DoD #11 / plan #07): the raw bus is `pub(crate)` so normal runtimes and
+    /// The underlying bus. Not on the default checked-participant surface (plan #00
+    /// DoD #11 / plan #07): the raw bus is `pub(crate)` so normal participants and
     /// examples cannot reach around the typed handle builders. Privileged
     /// participants that genuinely need raw access go through `phoxal-bus`
     /// directly (`Bus::open` + `run_with_bus`), not through this context.
@@ -189,7 +193,7 @@ impl<R: RuntimeFields> SetupContext<R> {
 
 impl<R> SetupContext<R>
 where
-    R: RuntimeFields + IsDriver,
+    R: ParticipantSpec + IsDriver,
 {
     /// The `components.instances` entry this participant drives (D47/D53), for a
     /// component driver launched once per instance. Combine with [`Self::robot`]
@@ -233,7 +237,7 @@ impl Default for SubscribeOptions {
 
 /// Builder returned by [`SetupContext::subscribe`]; pick `latest()` (keep-last-1)
 /// or `subscriber()` (drop-oldest ring).
-pub struct SubscribeBuilder<R: RuntimeFields, B> {
+pub struct SubscribeBuilder<R: ParticipantSpec, B> {
     bus: Bus,
     topic: Topic<Subscribe<B>>,
     depth: usize,
@@ -242,7 +246,7 @@ pub struct SubscribeBuilder<R: RuntimeFields, B> {
 
 impl<R, B> SubscribeBuilder<R, B>
 where
-    R: RuntimeFields,
+    R: ParticipantSpec,
     B: ContractBody<Api = R::Api>,
 {
     /// Override the ring depth for a `subscriber()` (ignored by `latest()`).

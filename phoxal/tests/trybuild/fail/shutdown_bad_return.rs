@@ -5,7 +5,7 @@ use phoxal::prelude::*;
 #[phoxal(id = "shutdown-bad-return", api = y2026_1)]
 struct ShutdownBadReturn {}
 
-#[phoxal::runtime]
+#[phoxal::behavior]
 impl ShutdownBadReturn {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
