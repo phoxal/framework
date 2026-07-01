@@ -23,8 +23,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         return Err(syn::Error::new_spanned(
             attr,
             "#[phoxal::behavior] takes no arguments; configure the participant on the struct via \
-             #[derive(phoxal::Service)] #[phoxal(...)] or \
-             #[derive(phoxal::Driver)] #[phoxal(...)]",
+             #[derive(phoxal::Service)] #[phoxal(...)], \
+             #[derive(phoxal::Driver)] #[phoxal(...)], \
+             #[derive(phoxal::Tool)] #[phoxal(...)], or \
+             #[derive(phoxal::Simulator)] #[phoxal(...)]",
         ));
     }
 
@@ -176,9 +178,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 &mut self,
                 topic: &str,
                 api_version: &str,
+                schema_id: &str,
                 family: &str,
                 request: &[u8],
             ) -> ::phoxal::participant::ServerOutcome {
+                let _ = api_version;
                 #serve_exclusive
             }
 
@@ -186,6 +190,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 snapshot: ::std::sync::Arc<Self::Snapshot>,
                 topic: ::std::string::String,
                 api_version: ::std::string::String,
+                schema_id: ::std::string::String,
                 family: ::std::string::String,
                 request: ::std::vec::Vec<u8>,
             ) -> ::std::pin::Pin<
@@ -193,6 +198,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                     dyn ::core::future::Future<Output = ::phoxal::participant::ServerOutcome> + ::core::marker::Send,
                 >,
             > {
+                let _ = &api_version;
                 #serve_snapshot
             }
         }
@@ -294,6 +300,7 @@ fn contract_entry(ty: &Type, direction: TokenStream) -> TokenStream {
     quote! {
         ::phoxal::participant::ContractUse {
             api_version: <<#ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
+            schema_id: <#ty as ::phoxal::bus::ContractBody>::SCHEMA_ID,
             family: <#ty as ::phoxal::bus::ContractBody>::FAMILY,
             topic: <#ty as ::phoxal::bus::ContractBody>::TOPIC,
             direction: ::phoxal::participant::Direction::#direction,
@@ -388,17 +395,17 @@ fn serve_exclusive(servers: &[ServerFn]) -> TokenStream {
     }
 }
 
-/// Validate the request's metadata (api_version + family) against the handler's
-/// request body before decode - a wrong-API or wrong-family request is rejected
+/// Validate the request's metadata (schema_id + family) against the handler's
+/// request body before decode - a wrong-shape or wrong-family request is rejected
 /// rather than silently decoded (server-side backstop for D59/D62).
 fn validate_request(req_ty: &Type) -> TokenStream {
     quote! {
-        if api_version != <<#req_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID {
+        if schema_id != <#req_ty as ::phoxal::bus::ContractBody>::SCHEMA_ID {
             return ::core::result::Result::Err(::phoxal::bus::QueryFailure::invalid_argument(
                 ::std::format!(
-                    "request api_version '{}' does not match server api_version '{}'",
-                    api_version,
-                    <<#req_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
+                    "request schema_id '{}' does not match server schema_id '{}'",
+                    schema_id,
+                    <#req_ty as ::phoxal::bus::ContractBody>::SCHEMA_ID,
                 ),
             ));
         }
@@ -417,7 +424,7 @@ fn validate_request(req_ty: &Type) -> TokenStream {
 fn serve_snapshot(snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
     if snapshot_servers.is_empty() {
         return quote! {
-            let _ = (snapshot, request, api_version, family);
+            let _ = (snapshot, request, api_version, schema_id, family);
             ::std::boxed::Box::pin(async move {
                 ::core::result::Result::Err(
                     ::phoxal::bus::QueryFailure::unimplemented(::std::format!("no snapshot server for '{topic}'")),
@@ -469,6 +476,7 @@ fn encode_reply(resp_ty: &Type) -> TokenStream {
                 payload,
                 family: <#resp_ty as ::phoxal::bus::ContractBody>::FAMILY,
                 api_version: <<#resp_ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
+                schema_id: <#resp_ty as ::phoxal::bus::ContractBody>::SCHEMA_ID,
             }),
             ::core::result::Result::Err(e) => ::core::result::Result::Err(
                 ::phoxal::bus::QueryFailure::internal(::std::format!("encode response: {e}")),

@@ -78,10 +78,10 @@ impl Robot {
 
     pub fn validate_with(
         &self,
-        platform_runtime_names: &[&str],
+        platform_participant_names: &[&str],
     ) -> std::result::Result<(), Vec<ValidationError>> {
         match self {
-            Self::V1(robot) => robot.validate_with(platform_runtime_names),
+            Self::V1(robot) => robot.validate_with(platform_participant_names),
         }
     }
 

@@ -3,7 +3,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
 publish = false
-description = "Phoxal framework — engine + complete platform runtime set."
+description = "Phoxal framework - engine + complete platform service set."
 documentation = "https://github.com/phoxal/framework#readme"
 homepage = "https://github.com/phoxal/framework"
 repository = "https://github.com/phoxal/framework"
@@ -11,30 +11,30 @@ repository = "https://github.com/phoxal/framework"
 [workspace]
 resolver = "3"
 # Greenfield rewrite (tmp/framework-rewrite): the engine crate + its proc-macros,
-# plus official runtimes being re-ported onto the new authoring surface (Phase 4).
+# plus official services being re-ported onto the new authoring surface (Phase 4).
 members = [
     "phoxal",
     "phoxal-api",
     "phoxal-bus",
     "phoxal-macros",
-    "runtime/asset",
-    "runtime/battery",
-    "runtime/drive",
-    "runtime/explore",
-    "runtime/follow",
-    "runtime/frame",
-    "runtime/joint",
-    "runtime/localize",
-    "runtime/map",
-    "runtime/mission",
-    "runtime/motion",
-    "runtime/odometry",
-    "runtime/perception",
-    "runtime/plan",
-    "runtime/power",
-    "runtime/presence",
-    "runtime/safety",
-    "runtime/video",
+    "service/asset",
+    "service/battery",
+    "service/drive",
+    "service/explore",
+    "service/follow",
+    "service/frame",
+    "service/joint",
+    "service/localize",
+    "service/map",
+    "service/mission",
+    "service/motion",
+    "service/odometry",
+    "service/perception",
+    "service/plan",
+    "service/power",
+    "service/presence",
+    "service/safety",
+    "service/video",
 ]
 
 [workspace.dependencies]
@@ -56,6 +56,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11.19"
 serde_json = "1.0.149"
 serde_yaml = "0.9"
+sha2 = "0.10"
 serial_test = "3"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 tempfile = "3.27.0"
@@ -69,7 +70,7 @@ zenoh = { version = "1.9.0" }
 # Carry a version (not just a path) on every internal dep: cargo strips the path
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
-# also covers the runtime crates' dependency on `phoxal`.
+# also covers the service crates' dependency on `phoxal`.
 phoxal = { path = "phoxal", version = "0.19" }
 phoxal-api = { path = "phoxal-api", version = "0.19" }
 phoxal-bus = { path = "phoxal-bus", version = "0.19" }

@@ -15,6 +15,7 @@ macro_rules! foreign_body {
         impl phoxal_api::ContractBody for $name {
             type Api = ForeignApi;
             const FAMILY: &'static str = $family;
+            const SCHEMA_ID: &'static str = "ffffffffffffffff";
             const TOPIC: &'static str = $topic;
         }
     };

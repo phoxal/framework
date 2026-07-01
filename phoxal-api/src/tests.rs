@@ -717,3 +717,80 @@ mod reused_var_name {
         assert_eq!(topic.key(), "outer/a/inner/b/event");
     }
 }
+
+mod schema_id_golden {
+    use crate::ContractBody;
+
+    crate::phoxal_api_tree! {
+        version base {
+            flat {
+                struct SameA { x: u32, y: Option<String> }
+                struct SameB { x: u32, y: Option<String> }
+                struct Added { x: u32, y: Option<String>, z: bool }
+                struct Removed { x: u32 }
+                struct Renamed { x: u32, #[serde(rename = "wire_y")] y: Option<String> }
+                struct TypeChanged { x: u64, y: Option<String> }
+                struct Reordered { y: Option<String>, x: u32 }
+
+                topic same_a: state SameA;
+                topic same_b: state SameB;
+                topic added: state Added;
+                topic removed: state Removed;
+                topic renamed: state Renamed;
+                topic type_changed: state TypeChanged;
+                topic reordered: state Reordered;
+            }
+
+            nested {
+                struct Inner { value: u32 }
+                struct Outer { inner: Inner }
+
+                topic outer: state Outer;
+            }
+        }
+
+        version next extends base {
+            nested {
+                struct Inner { value: u64 }
+            }
+        }
+    }
+
+    #[test]
+    fn identical_transitive_wire_shapes_share_schema_id() {
+        assert_eq!(
+            <base::flat::SameA as ContractBody>::SCHEMA_ID,
+            <base::flat::SameB as ContractBody>::SCHEMA_ID
+        );
+        assert_eq!(
+            <base::flat::SameA as ContractBody>::SCHEMA_ID,
+            "93b3340baebc1558"
+        );
+    }
+
+    #[test]
+    fn one_field_changes_change_schema_id() {
+        let base = <base::flat::SameA as ContractBody>::SCHEMA_ID;
+        assert_ne!(base, <base::flat::Added as ContractBody>::SCHEMA_ID);
+        assert_ne!(base, <base::flat::Removed as ContractBody>::SCHEMA_ID);
+        assert_ne!(base, <base::flat::Renamed as ContractBody>::SCHEMA_ID);
+        assert_ne!(base, <base::flat::TypeChanged as ContractBody>::SCHEMA_ID);
+        assert_ne!(base, <base::flat::Reordered as ContractBody>::SCHEMA_ID);
+    }
+
+    #[test]
+    fn nested_inner_shape_change_changes_inherited_outer_schema_id() {
+        assert_eq!(
+            <base::nested::Outer as ContractBody>::SCHEMA_ID,
+            "2c856c8a2d973193"
+        );
+        assert_eq!(
+            <next::nested::Outer as ContractBody>::SCHEMA_ID,
+            "c9c3f4b736cd27a5"
+        );
+        assert_ne!(
+            <base::nested::Outer as ContractBody>::SCHEMA_ID,
+            <next::nested::Outer as ContractBody>::SCHEMA_ID
+        );
+    }
+}

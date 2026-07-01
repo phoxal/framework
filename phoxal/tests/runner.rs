@@ -86,6 +86,14 @@ struct SlowShutdown {}
 #[phoxal(id = "component-driver", api = y2026_1)]
 struct ComponentDriver {}
 
+#[derive(phoxal::Simulator)]
+#[phoxal(id = "world-simulator", api = y2026_1)]
+struct WorldSimulator {}
+
+#[derive(phoxal::Tool)]
+#[phoxal(id = "robot-inspector", api = y2026_1)]
+struct RobotInspector {}
+
 #[phoxal::behavior]
 impl SlowShutdown {
     #[setup]
@@ -109,6 +117,29 @@ impl ComponentDriver {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         let _component = ctx.component()?;
+        Ok(Self {})
+    }
+}
+
+#[phoxal::behavior]
+impl WorldSimulator {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[step(hz = 20)]
+    async fn step(&mut self, step: StepContext) -> Result<()> {
+        let _ = step.time();
+        Ok(())
+    }
+}
+
+#[phoxal::behavior]
+impl RobotInspector {
+    #[setup]
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+        let _ = ctx.robot();
         Ok(Self {})
     }
 }
@@ -198,6 +229,7 @@ fn emit_apis_reports_frozen_schema() {
     assert!(
         contracts.iter().any(|c| {
             c["api_version"] == "y2026_1"
+                && c["schema_id"].as_str().is_some_and(|id| id.len() == 16)
                 && c["topic"] == "drive/target"
                 && c["direction"] == "publish"
         }),
@@ -212,6 +244,34 @@ fn emit_apis_reports_driver_kind() {
 
     assert_eq!(value["artifact"]["kind"], "driver");
     assert_eq!(value["artifact"]["id"], "component-driver");
+}
+
+#[test]
+fn emit_apis_reports_simulator_kind() {
+    let json = emit_apis_json::<WorldSimulator>();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(value["artifact"]["kind"], "simulator");
+    assert_eq!(value["artifact"]["id"], "world-simulator");
+}
+
+#[test]
+fn emit_apis_reports_tool_kind() {
+    let json = emit_apis_json::<RobotInspector>();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(value["artifact"]["kind"], "tool");
+    assert_eq!(value["artifact"]["id"], "robot-inspector");
+    assert_eq!(value["required_contracts"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn new_kind_markers_are_emitted() {
+    fn assert_simulator<T: phoxal::participant::IsSimulator>() {}
+    fn assert_tool<T: phoxal::participant::IsTool>() {}
+
+    assert_simulator::<WorldSimulator>();
+    assert_tool::<RobotInspector>();
 }
 
 #[test]

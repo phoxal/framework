@@ -1,0 +1,27 @@
+[package]
+name = "phoxal-service-odometry"
+version = "0.19.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Phoxal official service: odometry - differential-drive wheel-odometry estimator."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-service-odometry"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

@@ -371,12 +371,24 @@ async fn serve_exclusive_query<R: ParticipantBehavior>(
         }
     };
     match participant
-        .__serve_exclusive(&topic, &metadata.api_version, &metadata.family, &request)
+        .__serve_exclusive(
+            &topic,
+            &metadata.api_version,
+            &metadata.schema_id,
+            &metadata.family,
+            &request,
+        )
         .await
     {
         Ok(reply) => {
             let _ = incoming
-                .reply(bus, reply.payload, reply.family, reply.api_version)
+                .reply(
+                    bus,
+                    reply.payload,
+                    reply.family,
+                    reply.api_version,
+                    reply.schema_id,
+                )
                 .await;
             true
         }
@@ -430,6 +442,7 @@ async fn serve_snapshot_query<R: ParticipantBehavior>(
         snapshot,
         topic,
         metadata.api_version,
+        metadata.schema_id,
         metadata.family,
         request,
     )
@@ -437,7 +450,13 @@ async fn serve_snapshot_query<R: ParticipantBehavior>(
     {
         Ok(reply) => {
             let _ = incoming
-                .reply(bus, reply.payload, reply.family, reply.api_version)
+                .reply(
+                    bus,
+                    reply.payload,
+                    reply.family,
+                    reply.api_version,
+                    reply.schema_id,
+                )
                 .await;
         }
         Err(failure) => {

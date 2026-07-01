@@ -1,8 +1,9 @@
 //! The static metadata traits the macros target (D50/D59/D60).
 //!
-//! - [`ParticipantSpec`] is emitted by `#[derive(phoxal::Service)]` or
-//!   `#[derive(phoxal::Driver)]`: the artifact kind, id, the one API version, the
-//!   config type, and the field-side contracts.
+//! - [`ParticipantSpec`] is emitted by `#[derive(phoxal::Service)]`,
+//!   `#[derive(phoxal::Driver)]`, `#[derive(phoxal::Tool)]`, or
+//!   `#[derive(phoxal::Simulator)]`: the artifact kind, id, the one API version,
+//!   the config type, and the field-side contracts.
 //! - [`ParticipantBehavior`] is emitted by `#[phoxal::behavior]`: the server-side
 //!   contracts plus the lifecycle dispatch (`__setup`/`__step`/`__shutdown`) the
 //!   runner drives.
@@ -45,13 +46,16 @@ pub enum Direction {
     ServerResponse,
 }
 
-/// One `{api_version, family, topic, direction}` contract a participant participates
-/// in. Built by the macros from a body type's [`ContractBody`](crate::bus::ContractBody)
-/// consts so the family/topic/version are single-sourced from the api tree.
+/// One `{api_version, schema_id, family, topic, direction}` contract a participant
+/// participates in. Built by the macros from a body type's
+/// [`ContractBody`](crate::bus::ContractBody) consts so family/topic/schema/version
+/// are single-sourced from the api tree.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ContractUse {
     /// The API version of the body (`<Body::Api as ApiVersion>::ID`).
     pub api_version: &'static str,
+    /// The transitive wire-shape id (`<Body as ContractBody>::SCHEMA_ID`).
+    pub schema_id: &'static str,
     /// The contract family id (`<Body as ContractBody>::FAMILY`).
     pub family: &'static str,
     /// The versionless topic key (`<Body as ContractBody>::TOPIC`).
@@ -62,7 +66,7 @@ pub struct ContractUse {
 
 /// Static metadata derived from a participant struct.
 pub trait ParticipantSpec: Sized + Send + 'static {
-    /// The authoring kind that produced this artifact (`"service"` or `"driver"`).
+    /// The authoring kind that produced this artifact.
     const KIND: &'static str;
     /// The participant id (`#[phoxal(id = "…")]`, default kebab of the type name).
     const ID: &'static str;
@@ -80,6 +84,14 @@ pub trait ParticipantSpec: Sized + Send + 'static {
 /// Marker emitted only by `#[derive(phoxal::Driver)]`.
 #[doc(hidden)]
 pub trait IsDriver {}
+
+/// Marker emitted only by `#[derive(phoxal::Tool)]`.
+#[doc(hidden)]
+pub trait IsTool {}
+
+/// Marker emitted only by `#[derive(phoxal::Simulator)]`.
+#[doc(hidden)]
+pub trait IsSimulator {}
 
 /// Lifecycle dispatch + server-side metadata (`#[phoxal::behavior]`).
 ///
@@ -126,12 +138,13 @@ pub trait ParticipantBehavior: ParticipantSpec {
 
     /// Serve one exclusive `#[server]` query (holds `&mut self`, serialized with
     /// `#[step]`). Awaited on the runner's main task. The request's
-    /// `api_version`/`family` (from bus metadata) are validated against the
+    /// `schema_id`/`family` (from bus metadata) are validated against the
     /// handler's request body before decode.
     async fn __serve_exclusive(
         &mut self,
         topic: &str,
         api_version: &str,
+        schema_id: &str,
         family: &str,
         request: &[u8],
     ) -> ServerOutcome;
@@ -142,6 +155,7 @@ pub trait ParticipantBehavior: ParticipantSpec {
         snapshot: Arc<Self::Snapshot>,
         topic: String,
         api_version: String,
+        schema_id: String,
         family: String,
         request: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;

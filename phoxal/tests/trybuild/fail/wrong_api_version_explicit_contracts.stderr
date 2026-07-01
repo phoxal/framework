@@ -1,7 +1,7 @@
 error[E0271]: type mismatch resolving `<ForeignPublish as ContractBody>::Api == Api`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:33:19
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:34:19
    |
-33 |         publishes(ForeignPublish),
+34 |         publishes(ForeignPublish),
    |                   ^^^^^^^^^^^^^^ type mismatch resolving `<ForeignPublish as ContractBody>::Api == Api`
    |
 note: expected this to be `Api`
@@ -10,19 +10,19 @@ note: expected this to be `Api`
 16 |             type Api = ForeignApi;
    |                        ^^^^^^^^^^
 ...
-23 | foreign_body!(ForeignPublish, "foreign::Publish", "foreign/publish");
+24 | foreign_body!(ForeignPublish, "foreign::Publish", "foreign/publish");
    | -------------------------------------------------------------------- in this macro invocation
 note: required by a bound in `__assert_body_0::assert`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:28:10
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:29:10
    |
-28 | #[derive(phoxal::Service)]
+29 | #[derive(phoxal::Service)]
    |          ^^^^^^^^^^^^^^^ required by this bound in `assert`
    = note: this error originates in the macro `foreign_body` which comes from the expansion of the derive macro `phoxal::Service` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0271]: type mismatch resolving `<ForeignSubscribe as ContractBody>::Api == Api`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:34:20
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:35:20
    |
-34 |         subscribes(ForeignSubscribe),
+35 |         subscribes(ForeignSubscribe),
    |                    ^^^^^^^^^^^^^^^^ type mismatch resolving `<ForeignSubscribe as ContractBody>::Api == Api`
    |
 note: expected this to be `Api`
@@ -31,19 +31,19 @@ note: expected this to be `Api`
 16 |             type Api = ForeignApi;
    |                        ^^^^^^^^^^
 ...
-24 | foreign_body!(ForeignSubscribe, "foreign::Subscribe", "foreign/subscribe");
+25 | foreign_body!(ForeignSubscribe, "foreign::Subscribe", "foreign/subscribe");
    | -------------------------------------------------------------------------- in this macro invocation
 note: required by a bound in `__assert_body_1::assert`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:28:10
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:29:10
    |
-28 | #[derive(phoxal::Service)]
+29 | #[derive(phoxal::Service)]
    |          ^^^^^^^^^^^^^^^ required by this bound in `assert`
    = note: this error originates in the macro `foreign_body` which comes from the expansion of the derive macro `phoxal::Service` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0271]: type mismatch resolving `<ForeignRequest as ContractBody>::Api == Api`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:35:17
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:36:17
    |
-35 |         queries(ForeignRequest => ForeignResponse),
+36 |         queries(ForeignRequest => ForeignResponse),
    |                 ^^^^^^^^^^^^^^ type mismatch resolving `<ForeignRequest as ContractBody>::Api == Api`
    |
 note: expected this to be `Api`
@@ -52,19 +52,19 @@ note: expected this to be `Api`
 16 |             type Api = ForeignApi;
    |                        ^^^^^^^^^^
 ...
-25 | foreign_body!(ForeignRequest, "foreign::Request", "foreign/query");
+26 | foreign_body!(ForeignRequest, "foreign::Request", "foreign/query");
    | ------------------------------------------------------------------ in this macro invocation
 note: required by a bound in `__assert_body_2::assert`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:28:10
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:29:10
    |
-28 | #[derive(phoxal::Service)]
+29 | #[derive(phoxal::Service)]
    |          ^^^^^^^^^^^^^^^ required by this bound in `assert`
    = note: this error originates in the macro `foreign_body` which comes from the expansion of the derive macro `phoxal::Service` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0271]: type mismatch resolving `<ForeignResponse as ContractBody>::Api == Api`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:35:35
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:36:35
    |
-35 |         queries(ForeignRequest => ForeignResponse),
+36 |         queries(ForeignRequest => ForeignResponse),
    |                                   ^^^^^^^^^^^^^^^ type mismatch resolving `<ForeignResponse as ContractBody>::Api == Api`
    |
 note: expected this to be `Api`
@@ -73,11 +73,11 @@ note: expected this to be `Api`
 16 |             type Api = ForeignApi;
    |                        ^^^^^^^^^^
 ...
-26 | foreign_body!(ForeignResponse, "foreign::Response", "foreign/query");
+27 | foreign_body!(ForeignResponse, "foreign::Response", "foreign/query");
    | -------------------------------------------------------------------- in this macro invocation
 note: required by a bound in `__assert_body_3::assert`
-  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:28:10
+  --> tests/trybuild/fail/wrong_api_version_explicit_contracts.rs:29:10
    |
-28 | #[derive(phoxal::Service)]
+29 | #[derive(phoxal::Service)]
    |          ^^^^^^^^^^^^^^^ required by this bound in `assert`
    = note: this error originates in the macro `foreign_body` which comes from the expansion of the derive macro `phoxal::Service` (in Nightly builds, run with -Z macro-backtrace for more info)

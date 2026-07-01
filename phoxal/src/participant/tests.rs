@@ -54,6 +54,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     );
 
     let api = <<api::asset::GetRequest as ContractBody>::Api as ApiVersion>::ID;
+    let schema_id = <api::asset::GetRequest as ContractBody>::SCHEMA_ID;
     let family = <api::asset::GetRequest as ContractBody>::FAMILY;
 
     let request = MessagePack::encode(&api::asset::GetRequest {
@@ -61,7 +62,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let reply = rt
-        .__serve_exclusive("asset/get", api, family, &request)
+        .__serve_exclusive("asset/get", api, schema_id, family, &request)
         .await
         .unwrap();
     let response: api::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
@@ -76,20 +77,20 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let failure = rt
-        .__serve_exclusive("asset/get", api, family, &request)
+        .__serve_exclusive("asset/get", api, schema_id, family, &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::NotFound);
 
-    // Wrong request api_version is rejected before the handler runs.
+    // Wrong request schema_id is rejected before the handler runs.
     let failure = rt
-        .__serve_exclusive("asset/get", "not-y2026_1", family, &request)
+        .__serve_exclusive("asset/get", api, "9999999999999999", family, &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::InvalidArgument);
 
     let failure = rt
-        .__serve_exclusive("other/topic", api, family, &request)
+        .__serve_exclusive("other/topic", api, schema_id, family, &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::Unimplemented);
@@ -216,10 +217,18 @@ async fn snapshot_server_dispatch_reads_committed_state() {
     .unwrap();
 
     let api = <<api::map::SubmapRequest as ContractBody>::Api as ApiVersion>::ID.to_string();
+    let schema_id = <api::map::SubmapRequest as ContractBody>::SCHEMA_ID.to_string();
     let family = <api::map::SubmapRequest as ContractBody>::FAMILY.to_string();
-    let reply = MapTest::__serve_snapshot(snapshot, "map/submap".to_string(), api, family, request)
-        .await
-        .unwrap();
+    let reply = MapTest::__serve_snapshot(
+        snapshot,
+        "map/submap".to_string(),
+        api,
+        schema_id,
+        family,
+        request,
+    )
+    .await
+    .unwrap();
     let response: api::map::SubmapResponse = MessagePack::decode(&reply.payload).unwrap();
     assert_eq!(response.cells, vec![1, 2, 3, 4]);
 }

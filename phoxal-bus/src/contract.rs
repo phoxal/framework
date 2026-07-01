@@ -14,8 +14,8 @@
 ///
 /// Implemented only by the zero-variant `enum Api {}` that
 /// [`phoxal_api_tree!`] generates inside each version module. The [`ID`] is the
-/// dated module name (`"y2026_1"`) and is the canonical version identity: it is
-/// carried in bus metadata, never in the wire body or the topic key (D62).
+/// dated module name (`"y2026_1"`) and is carried in bus metadata as
+/// informational provenance, never in the wire body or the topic key (D62).
 ///
 /// [`ID`]: ApiVersion::ID
 /// [`phoxal_api_tree!`]: https://docs.rs/phoxal
@@ -73,6 +73,44 @@ impl TopicRole {
 /// The serde encoding of an implementor *is* the wire payload; there is no version
 /// envelope (D62). Version and family travel as bus metadata, derived from
 /// [`Api`](ContractBody::Api) and [`FAMILY`](ContractBody::FAMILY).
+///
+/// Runtime decode compatibility keys off [`SCHEMA_ID`](ContractBody::SCHEMA_ID),
+/// not the graph API version. `SCHEMA_ID` is a normalized hash of the body's
+/// transitive wire shape. The canonical hash input is `phoxal.schema/v0\n`
+/// followed by this grammar:
+///
+/// ```text
+/// body    = unit | newtype | tuple | struct | enum
+/// struct  = "struct{" field* "}"
+/// field   = "f" byte_len ":" utf8_name "=" ty ";"
+/// enum    = "enum(" repr "){" variant* "}"
+/// repr    = "external" | "internal(tag=" name ")"
+///         | "adjacent(tag=" name ",content=" name ")" | "untagged"
+/// variant = "v" byte_len ":" utf8_name "=" payload ";"
+/// payload = unit | "newtype(" ty ")" | tuple | struct
+/// newtype = "newtype(" ty ")"
+/// tuple   = "tuple(" (ty ";")* ")"
+/// ty      = nil | bool | string | bytes | integer | float | option | seq | array
+///         | map | tuple | body
+/// integer = "u8" | "u16" | "u32" | "u64" | "u128"
+///         | "i8" | "i16" | "i32" | "i64" | "i128"
+/// float   = "f32" | "f64"
+/// option  = "option(" ty ")"
+/// seq     = "seq(" ty ")"
+/// array   = "array[" decimal_len "](" ty ")"
+/// map     = "map(" ty "," ty ")"
+/// name    = byte_len ":" utf8_name
+/// ```
+///
+/// Fields stay in declared order and use their serde wire names, including
+/// `rename` and `rename_all`. Enums include serde representation mode, variant
+/// wire names, and payload shapes. Nested API-tree structs and enums are expanded
+/// transitively, with generic type parameters substituted by concrete type
+/// arguments before expansion. Only understood serde attributes and known
+/// wire-neutral attributes such as doc comments and simple derives are accepted.
+/// Non-wire details such as Rust type identifiers when the wire shape has already
+/// been expanded are excluded. The displayed id is lower-hex
+/// `sha256(canonical_string)`, truncated to the first 16 hex characters.
 pub trait ContractBody:
     serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static
 {
@@ -83,6 +121,9 @@ pub trait ContractBody:
     /// name, with dynamic variables excluded, e.g. `"drive::State"` or
     /// `"component::motor::Command"`.
     const FAMILY: &'static str;
+    /// Per-contract compatibility id: lower-hex SHA-256 of the canonical
+    /// transitive wire-shape string, truncated to 16 hex characters.
+    const SCHEMA_ID: &'static str;
     /// Versionless topic key: the `/`-joined node path plus the topic leaf, with
     /// each dynamic node contributing a `{var}` placeholder, e.g. `"drive/state"`
     /// or `"component/{instance}/motor/{capability}/command"`. The concrete key is

@@ -26,6 +26,7 @@ struct Artifact {
 #[derive(Clone, Debug, serde::Deserialize)]
 struct Contract {
     api_version: String,
+    schema_id: String,
     family: String,
     topic: String,
     direction: String,
@@ -58,17 +59,17 @@ struct Report {
 }
 
 #[test]
-fn official_runtime_set_matches_y2026_1_fixture_topology() {
+fn official_service_set_matches_y2026_1_fixture_topology() {
     let root = workspace_root();
     let fixture_dir = root.join("fixture/robot/rgbd-imu-diff-drive");
     let fixture = Robot::read_from_dir(&fixture_dir)
         .unwrap_or_else(|e| panic!("failed to load {}: {e:#}", fixture_dir.display()));
     assert_eq!(fixture.manifest.api_version, "y2026_1");
 
-    let names = official_runtime_names(&root);
+    let names = official_service_names(&root);
     assert!(
         !names.is_empty(),
-        "runtime/ must contain the official runtime source of truth"
+        "service/ must contain the official service source of truth"
     );
 
     let mut topology = Topology::default();
@@ -76,21 +77,21 @@ fn official_runtime_set_matches_y2026_1_fixture_topology() {
         let emitted = emit_apis(&root, name);
         assert_eq!(
             emitted.artifact.id, *name,
-            "runtime package {name} emitted a different artifact id"
+            "service package {name} emitted a different artifact id"
         );
         assert_eq!(
             emitted.artifact.kind, "service",
-            "runtime package {name} must emit the service artifact kind"
+            "service package {name} must emit the service artifact kind"
         );
         assert_eq!(
             emitted.api_version, "y2026_1",
-            "runtime {name} must report y2026_1"
+            "service {name} must report y2026_1"
         );
         assert_eq!(
             emitted.bus_abi, "phoxal-bus/v0",
-            "runtime {name} must report the frozen bus_abi"
+            "service {name} must report the frozen bus_abi"
         );
-        topology.add_runtime_contracts(&emitted, &fixture);
+        topology.add_service_contracts(&emitted, &fixture);
     }
     // The participants injected below are FIXTURES, not real official producers:
     // their artifact ids are namespaced `fixture/...` (see `topology_contract`
@@ -266,12 +267,19 @@ fn dynamic_component_contracts_are_checked_at_family_level() {
 }
 
 impl Topology {
-    fn add_runtime_contracts(&mut self, metadata: &ParticipantMetadata, robot: &Robot) {
+    fn add_service_contracts(&mut self, metadata: &ParticipantMetadata, robot: &Robot) {
         for contract in &metadata.required_contracts {
             assert_eq!(
                 contract.api_version, metadata.api_version,
-                "runtime {} emitted a per-contract api_version that differs from the artifact api_version",
+                "service {} emitted a per-contract api_version that differs from the artifact api_version",
                 metadata.artifact.id
+            );
+            assert!(
+                is_schema_id(&contract.schema_id),
+                "service {} emitted invalid schema_id '{}' for {}",
+                metadata.artifact.id,
+                contract.schema_id,
+                contract.family
             );
             if let Some(kind) = component_topic_kind(&contract.topic)
                 && !robot_has_capability_kind(robot, kind)
@@ -420,6 +428,13 @@ fn normalize_component_topic(topic: &str) -> Option<String> {
     }
 }
 
+fn is_schema_id(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
 fn component_topic_kind(topic: &str) -> Option<&str> {
     let mut parts = topic.split('/');
     match (
@@ -528,10 +543,10 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn official_runtime_names(root: &Path) -> Vec<String> {
+fn official_service_names(root: &Path) -> Vec<String> {
     let mut names = Vec::new();
-    for entry in std::fs::read_dir(root.join("runtime")).expect("runtime directory exists") {
-        let entry = entry.expect("runtime directory entry is readable");
+    for entry in std::fs::read_dir(root.join("service")).expect("service directory exists") {
+        let entry = entry.expect("service directory entry is readable");
         if !entry.path().join("Cargo.toml").is_file() {
             continue;
         }
@@ -542,7 +557,7 @@ fn official_runtime_names(root: &Path) -> Vec<String> {
 }
 
 fn emit_apis(root: &Path, name: &str) -> ParticipantMetadata {
-    let package = format!("phoxal-runtime-{name}");
+    let package = format!("phoxal-service-{name}");
     let output = Command::new("cargo")
         .args(["run", "--quiet", "-p", &package, "--", "emit-apis"])
         .current_dir(root)

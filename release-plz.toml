@@ -5,9 +5,9 @@
 # commits changed, then on merge publishes each bumped crate independently:
 #   - the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros) publish
 #     to crates.io (default behaviour, so they need no [[package]] block);
-#   - the 18 runtime crates are publish = false; release-plz skips publish = false
+#   - the 18 service crates are publish = false; release-plz skips publish = false
 #     crates by default, so they are intentionally left out of release scope.
-#     (Runtime distribution is being reworked; it is not a crate release.)
+#     (Service distribution is being reworked; it is not a crate release.)
 [workspace]
 release_always = false          # release ONLY for commits from a release-plz PR (not every main push)
 dependencies_update = false

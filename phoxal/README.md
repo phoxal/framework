@@ -6,7 +6,7 @@ Phoxal gives a robot a small, strongly-typed core: a contract bus over Zenoh, a 
 The framework owns the awkward parts - argument parsing, bus connection, scheduling, query serving, shutdown, and health - so the code you write is the robot's behavior, not its plumbing.
 
 > **Greenfield rewrite in progress** (`tmp/framework-rewrite`).
-> The bus + participant machinery and the macros are new; the official runtime/simulator/tool crates are being re-ported onto this surface and some are temporarily out of the workspace.
+> The bus + participant machinery and the macros are new; the official service/simulator/tool crates are being re-ported onto this surface and some are temporarily out of the workspace.
 
 ```toml
 [dependencies]
@@ -140,9 +140,9 @@ A later `version yNNNN_M extends yNNNN_K { … }` re-emits the parent tree as **
 - Default (blocking): `fn main() -> phoxal::Result<()> { phoxal::run::<R>() }`.
 - Advanced (async): `phoxal::tokio::run::<R>().await` for custom Tokio mains.
 
-## Official runtime set
+## Official service set
 
-The complete platform participant set ships alongside this crate in the workspace `runtime/` tree (`drive`, `localize`, `map`, `safety`, …).
+The complete platform participant set ships alongside this crate in the workspace `service/` tree (`drive`, `localize`, `map`, `safety`, …).
 They are full official participants authored on exactly this surface, and they double as worked reference reading.
 Neutral teaching examples live in `phoxal/examples/` (`runtime_control_loop`, `runtime_query_server`, `runtime_snapshot_server`, `runtime_async_entrypoint`).
 

@@ -13,15 +13,15 @@ pub enum BusError {
     #[error(transparent)]
     Codec(#[from] CodecError),
 
-    /// An inbound sample's `api_version` did not match the receiver's selected
-    /// API version (never a silent drop - D62).
-    #[error("api_version mismatch on '{topic}': expected '{expected}', received '{received}'")]
-    ApiVersionMismatch {
+    /// An inbound sample's schema id did not match the receiver's selected body
+    /// shape (never a silent drop - D62).
+    #[error("schema_id mismatch on '{topic}': expected '{expected}', received '{received}'")]
+    SchemaIdMismatch {
         /// The topic key.
         topic: String,
-        /// The receiver's selected API version.
+        /// The receiver's body schema id.
         expected: String,
-        /// The producer's API version from bus metadata.
+        /// The producer's schema id from bus metadata.
         received: String,
     },
 

@@ -2022,11 +2022,12 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
+ "sha2",
  "syn 2.0.117",
 ]
 
 [[package]]
-name = "phoxal-runtime-asset"
+name = "phoxal-service-asset"
 version = "0.19.1"
 dependencies = [
  "phoxal",
@@ -2034,26 +2035,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-battery"
-version = "0.19.1"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-api",
- "serde_json",
-]
-
-[[package]]
-name = "phoxal-runtime-drive"
-version = "0.19.1"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-api",
-]
-
-[[package]]
-name = "phoxal-runtime-explore"
+name = "phoxal-service-battery"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2063,7 +2045,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-follow"
+name = "phoxal-service-drive"
+version = "0.19.1"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+]
+
+[[package]]
+name = "phoxal-service-explore"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2073,7 +2064,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-frame"
+name = "phoxal-service-follow"
+version = "0.19.1"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-service-frame"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2083,7 +2084,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-joint"
+name = "phoxal-service-joint"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2092,17 +2093,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-localize"
-version = "0.19.1"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-api",
- "serde_json",
-]
-
-[[package]]
-name = "phoxal-runtime-map"
+name = "phoxal-service-localize"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2112,7 +2103,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-mission"
+name = "phoxal-service-map"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2122,7 +2113,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-motion"
+name = "phoxal-service-mission"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2132,7 +2123,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-odometry"
+name = "phoxal-service-motion"
+version = "0.19.1"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-service-odometry"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2143,7 +2144,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-perception"
+name = "phoxal-service-perception"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2153,7 +2154,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-plan"
+name = "phoxal-service-plan"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2163,7 +2164,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-power"
+name = "phoxal-service-power"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2173,7 +2174,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-presence"
+name = "phoxal-service-presence"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2182,7 +2183,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-safety"
+name = "phoxal-service-safety"
 version = "0.19.1"
 dependencies = [
  "anyhow",
@@ -2192,7 +2193,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-runtime-video"
+name = "phoxal-service-video"
 version = "0.19.1"
 dependencies = [
  "anyhow",

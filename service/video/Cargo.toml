@@ -1,0 +1,30 @@
+[package]
+name = "phoxal-service-video"
+version = "0.19.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Phoxal official service: video - operator preview event service."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-service-video"
+path = "src/main.rs"
+
+[features]
+default = []
+h264 = []
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -32,7 +32,7 @@ pub struct ParticipantLaunch {
     /// The clock mode.
     #[serde(default)]
     pub clock: ClockMode,
-    /// The participant's typed config block (`user_runtimes.<id>.config`), if any.
+    /// The participant's typed config block (`user_participants.<id>.config`), if any.
     #[serde(default)]
     pub config: Option<serde_json::Value>,
     /// The bundle root that holds the robot model (`robot.yaml` + components +

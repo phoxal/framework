@@ -26,6 +26,7 @@ struct ForeignBody;
 impl phoxal_api::ContractBody for ForeignBody {
     type Api = ForeignApi;
     const FAMILY: &'static str = "foreign::Body";
+    const SCHEMA_ID: &'static str = "ffffffffffffffff";
     const TOPIC: &'static str = "foreign/body";
 }
 

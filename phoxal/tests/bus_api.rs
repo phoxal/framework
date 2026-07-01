@@ -23,9 +23,16 @@ fn encoding_string_mirrors_a_real_contract_body() {
     let enc = encoding_string(
         <api::drive::Target as ContractBody>::FAMILY,
         <<api::drive::Target as ContractBody>::Api as ApiVersion>::ID,
+        <api::drive::Target as ContractBody>::SCHEMA_ID,
         CodecId::MessagePack,
     );
-    assert_eq!(enc, "phoxal/v0;family=drive::Target;api=y2026_1;codec=1");
+    assert_eq!(
+        enc,
+        format!(
+            "phoxal/v0;family=drive::Target;api=y2026_1;schema_id={};codec=1",
+            <api::drive::Target as ContractBody>::SCHEMA_ID
+        )
+    );
 }
 
 #[test]
@@ -33,11 +40,15 @@ fn encoding_string_mirrors_a_real_query_request_body() {
     let enc = encoding_string(
         <api::asset::GetRequest as ContractBody>::FAMILY,
         <<api::asset::GetRequest as ContractBody>::Api as ApiVersion>::ID,
+        <api::asset::GetRequest as ContractBody>::SCHEMA_ID,
         CodecId::MessagePack,
     );
     assert_eq!(
         enc,
-        "phoxal/v0;family=asset::GetRequest;api=y2026_1;codec=1"
+        format!(
+            "phoxal/v0;family=asset::GetRequest;api=y2026_1;schema_id={};codec=1",
+            <api::asset::GetRequest as ContractBody>::SCHEMA_ID
+        )
     );
 }
 
@@ -45,6 +56,7 @@ fn encoding_string_mirrors_a_real_query_request_body() {
 fn bus_metadata_for_a_real_body_round_trips() {
     let meta = BusMetadata {
         api_version: <<api::drive::Target as ContractBody>::Api as ApiVersion>::ID.to_string(),
+        schema_id: <api::drive::Target as ContractBody>::SCHEMA_ID.to_string(),
         family: <api::drive::Target as ContractBody>::FAMILY.to_string(),
         codec: CodecId::MessagePack.as_u8(),
         produced_at_ns: 42,
@@ -56,6 +68,7 @@ fn bus_metadata_for_a_real_body_round_trips() {
         },
     };
     assert_eq!(meta.api_version, "y2026_1");
+    assert_eq!(meta.schema_id.len(), 16);
     assert_eq!(meta.family, "drive::Target");
     assert_eq!(BusMetadata::decode(&meta.encode()).unwrap(), meta);
 }
