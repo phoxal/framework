@@ -29,17 +29,14 @@ jobs:
       - name: Check preview feature sync
         run: cargo xtask api sync-features --check
 
-      - name: Smoke xtask release packaging
-        run: |
-          set -euo pipefail
-          mkdir -p target/xtask-smoke
-          cargo xtask release discover --json > target/xtask-smoke/discover.json
-          cargo xtask release package phoxal-service-frame --out target/xtask-smoke
-          tarball="$(find target/xtask-smoke -maxdepth 1 -name 'phoxal-service-frame-v*-*.tar.zst' -type f -print -quit)"
-          test -n "$tarball"
-          test -f "$tarball.sha256"
-          metadata="${tarball%.tar.zst}.emit-apis.json"
-          test -f "$metadata"
-          python3 -m json.tool target/xtask-smoke/discover.json > /dev/null
-          python3 -m json.tool "$metadata" > /dev/null
-          (cd target/xtask-smoke && sha256sum -c "$(basename "$tarball").sha256")
+      # Full package-output catalog generation builds all official release
+      # binaries. PRs use metadata-only mode to gate discovery, schema ids,
+      # coverage, provenance, and checksum integrity without that release cost.
+      - name: Generate metadata-only catalog
+        run: cargo xtask catalog generate --metadata-only
+
+      - name: Check metadata-only catalog
+        run: cargo xtask catalog check --metadata-only
+
+      - name: Verify metadata-only catalog
+        run: cargo xtask catalog verify target/xtask/catalog/phoxal-artifact-catalog.json

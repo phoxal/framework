@@ -20,5 +20,8 @@ tar = "0.4.46"
 toml_edit = "0.25.12"
 zstd = "0.13.3"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

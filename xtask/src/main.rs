@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 mod api;
+mod catalog;
 mod release;
 mod workspace;
 
@@ -22,6 +23,10 @@ enum Command {
         #[command(subcommand)]
         command: release::Command,
     },
+    Catalog {
+        #[command(subcommand)]
+        command: catalog::Command,
+    },
 }
 
 fn main() -> Result<()> {
@@ -30,5 +35,6 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Api { command } => api::run(command),
         Command::Release { command } => release::run(command),
+        Command::Catalog { command } => catalog::run(command),
     }
 }
