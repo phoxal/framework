@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/phoxal/framework/compare/phoxal-v0.21.0...phoxal-v0.22.0) - 2026-07-02
+
+### Added
+
+- *(16)* D5 manifest model + generation lifecycle gates (schema-diff, preview-impact, promotion + freeze) ([#144](https://github.com/phoxal/framework/pull/144))
+- *(07)* gate the raw bus behind the explicit phoxal::raw surface ([#142](https://github.com/phoxal/framework/pull/142))
+- *(03)* runner emits sd_notify(READY=1) when NOTIFY_SOCKET is set ([#140](https://github.com/phoxal/framework/pull/140))
+- *(15)* move catalog component drivers into component/* as phoxal-driver-* (#15-c) ([#134](https://github.com/phoxal/framework/pull/134))
+
+### Other
+
+- delete dead docker artifacts; fix stale one-api-version docs ([#138](https://github.com/phoxal/framework/pull/138))
+
 ## [0.21.0](https://github.com/phoxal/framework/compare/phoxal-v0.20.0...phoxal-v0.21.0) - 2026-07-01
 
 ### Added
