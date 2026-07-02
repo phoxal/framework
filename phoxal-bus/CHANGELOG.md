@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1](https://github.com/phoxal/framework/compare/phoxal-bus-v0.20.0...phoxal-bus-v0.20.1) - 2026-07-02
+
+### Added
+
+- *(07)* gate the raw bus behind the explicit phoxal::raw surface ([#142](https://github.com/phoxal/framework/pull/142))
+- *(16)* preview generation lifecycle - preview keyword + api sync-features ([#141](https://github.com/phoxal/framework/pull/141))
+
+### Other
+
+- delete dead docker artifacts; fix stale one-api-version docs ([#138](https://github.com/phoxal/framework/pull/138))
+
 ## [0.20.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.19.1...phoxal-bus-v0.20.0) - 2026-07-01
 
 ### Added

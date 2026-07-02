@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.19.2"
+version = "0.19.3"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bus"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "arc-swap",
  "rmp-serde",
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.19.3"
+version = "0.19.4"
 dependencies = [
  "heck",
  "phoxal-bus",

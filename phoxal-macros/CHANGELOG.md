@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.4](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.3...phoxal-macros-v0.19.4) - 2026-07-02
+
+### Added
+
+- *(16)* D5 manifest model + generation lifecycle gates (schema-diff, preview-impact, promotion + freeze) ([#144](https://github.com/phoxal/framework/pull/144))
+- *(07)* gate the raw bus behind the explicit phoxal::raw surface ([#142](https://github.com/phoxal/framework/pull/142))
+- *(16)* preview generation lifecycle - preview keyword + api sync-features ([#141](https://github.com/phoxal/framework/pull/141))
+
+### Other
+
+- delete dead docker artifacts; fix stale one-api-version docs ([#138](https://github.com/phoxal/framework/pull/138))
+
 ## [0.19.3](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.2...phoxal-macros-v0.19.3) - 2026-07-01
 
 ### Added
