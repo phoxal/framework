@@ -116,7 +116,8 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// # `#[phoxal(...)]` attributes
 ///
 /// - `api = y2026_N` - **mandatory**. Selects the one API version this participant
-///   (and the whole graph) runs against; sets `type Api = phoxal_api::y2026_N::Api`.
+///   runs against; sets `type Api = phoxal_api::y2026_N::Api`. The graph may mix
+///   generations - compatibility is per-contract `schema_id` agreement (#16).
 /// - `id = "…"` - optional. The participant id; defaults to the kebab-cased type name.
 /// - `config = Type` - optional. The participant's config type; defaults to `()`.
 /// - `contracts(…)` - optional. Declares IO the derive cannot see in fields, as a

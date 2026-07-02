@@ -15,11 +15,11 @@ These rules are the target contract discipline the workspace is converging to
 Where a runtime's current implementation lags, the rule is the direction, not a
 claim that every handler already enforces it.
 
-## One API version per graph
+## One API version per participant; per-contract compatibility per graph
 
-There is no per-contract version axis, no version-tagged wire enum, and no
-`{"v":…,"data":…}` body wrapper.
-A robot graph runs **one** API version across every participant.
+There is no version-tagged wire enum and no `{"v":…,"data":…}` body wrapper.
+A participant authors against **one** API version; the graph may mix generations,
+proven compatible **per contract** by `schema_id` agreement (#16).
 
 - API versions are **dated modules** in the `phoxal-api` crate -
   `phoxal_api::y2026_1`, `phoxal_api::y2026_2` - each with a zero-variant marker
@@ -27,12 +27,14 @@ A robot graph runs **one** API version across every participant.
   string, `"y2026_1"`).
 - Contract bodies are **version-local plain serde structs/enums**
   (`api::drive::State`, `api::drive::Target`), each with a generated `ContractBody`
-  impl that fixes its `Api`, `FAMILY`, and `TOPIC`.
+  impl that fixes its `Api`, `FAMILY`, `TOPIC`, and `SCHEMA_ID` (the normalized
+  transitive wire-shape hash - the per-contract compatibility key).
 - One macro - **`phoxal_api_tree!`** (in `phoxal-macros`) - owns the whole tree:
   the dated version modules, the bodies, the topic keys + family ids, the pub/sub
-  vs query kind, and the api-local `topic` builders.
-- A breaking change mints a new dated version that the whole graph moves to; it is
-  not a per-contract body bump on the same bus.
+  vs query kind, the `schema_id`s, and the api-local `topic` builders.
+- A breaking change mints a new dated version; only the participants using a
+  contract whose `schema_id` changed must move to it - it is not a per-contract
+  body bump on the same bus, and not a whole-graph move either.
 
 ## Wire body and metadata placement
 
@@ -131,13 +133,15 @@ A breaking change adds a new dated version (`version y2026_2 extends y2026_1`); 
 macro generates a **fresh** Rust type per inherited contract (same `FAMILY`/`TOPIC`,
 different `Api`), so an unchanged contract is wire-identical by construction yet a
 distinct compile-time type.
-The whole graph moves to the new version together - there are no per-runtime
-independent semver tracks, and mixed-version interop is a future migration-bridge
-concern, not normal authoring.
+Only the participants that use a contract whose transitive shape changed (a new
+`SCHEMA_ID`) must move to the new generation; participants on unchanged contracts
+keep interoperating across generations (#16). There are no per-service independent
+semver tracks for contracts, and there is no mixed-version *decoding*: a shared
+topic's producers and consumers must agree on the exact `schema_id`.
 
-A subscriber fails loud on a body it cannot decode or whose metadata `api_version`
+A subscriber fails loud on a body it cannot decode or whose metadata `schema_id`
 does not match what the handle expects: the sample is counted
-(`api_mismatches`/`decode_errors`) and logged as a health signal, never silently
+(`schema_mismatches`/`decode_errors`) and logged as a health signal, never silently
 accepted ([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
 This decode-time loudness is the framework's compatibility backstop - contracts are
 statically known to consumers, so mismatches surface at decode time rather than via

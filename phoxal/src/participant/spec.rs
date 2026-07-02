@@ -72,7 +72,8 @@ pub trait ParticipantSpec: Sized + Send + 'static {
     const PARTICIPANT_CLASS: &'static str;
     /// The participant id (`#[phoxal(id = "…")]`, default kebab of the type name).
     const ID: &'static str;
-    /// The one API version this participant - and the whole graph - runs against.
+    /// The one API version this participant runs against. The graph may mix
+    /// generations: compatibility is per-contract `schema_id` agreement (#16).
     type Api: ApiVersion;
     /// `<Self::Api as ApiVersion>::ID`, for metadata.
     const API_VERSION: &'static str;
