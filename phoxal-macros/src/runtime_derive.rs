@@ -270,8 +270,8 @@ impl PhoxalArgs {
             syn::Error::new_spanned(
                 &input.ident,
                 format!(
-                    "{derive_path} requires #[phoxal(api = y2026_N)] (D59/D60): \
-                     it selects the one API version this participant - and the whole graph - runs against"
+                    "{derive_path} requires #[phoxal(api = y2026_N)] (D60): \
+                     it selects the one API version this participant runs against"
                 ),
             )
         })?;

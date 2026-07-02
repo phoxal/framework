@@ -27,15 +27,16 @@
 //!
 //! [`Api`]: y2026_1::Api
 //!
-//! # One API version per participant, one per graph
+//! # One API version per participant; per-contract compatibility per graph
 //!
 //! A participant authors against exactly one version module
 //! (`use phoxal_api::y2026_1 as api;`) and declares it on the derive
 //! (`#[phoxal(api = y2026_1)]`). Every handle body is bound
 //! `ContractBody<Api = R::Api>`, so passing a body from another API version is a
-//! compile error (D59/D60). At deploy time a single graph runs a single API
-//! version: all of its participants share one `Api`, so contracts on the bus are
-//! mutually consistent by construction (D59).
+//! compile error (D60). Across the graph, participants may mix generations:
+//! compatibility is proven per contract by `schema_id` agreement (#16) - a
+//! contract whose transitive wire shape is unchanged hashes identically across
+//! generations, so its users keep interoperating.
 //!
 //! # Plain serde wire bodies, schema in metadata
 //!

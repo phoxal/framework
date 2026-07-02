@@ -64,7 +64,10 @@
 //! `drive::Target`, the inherited `drive::State { target: Target, … }` embeds the
 //! **new** `Target` and is therefore *not* identical to the parent's `State`.
 //! That is correct versioning: a contract changes with its dependencies, and the
-//! whole change is coherent because one graph runs one API version (D59).
+//! change is visible on the wire - the changed transitive shape yields a new
+//! `SCHEMA_ID`, so producers and consumers of that contract must agree per topic
+//! (#16), while contracts whose transitive shape is untouched hash identically
+//! and keep interoperating across generations.
 
 use proc_macro2::TokenStream;
 use quote::quote;

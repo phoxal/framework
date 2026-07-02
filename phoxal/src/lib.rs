@@ -17,9 +17,11 @@
 //!   ([`Publisher<T>`](bus::Publisher), [`Subscriber<T>`](bus::Subscriber),
 //!   [`Latest<T>`](bus::Latest), [`Querier<Req, Resp>`](bus::Querier)), so the
 //!   compiler - not a late check - rejects sending the wrong type on a topic.
-//! - **One dated API version per graph.** API versions are dated modules
+//! - **One dated API version per participant.** API versions are dated modules
 //!   (`phoxal_api::y2026_1`, …), not semver crates. A participant authors against
-//!   exactly one of them; mixing bodies from two versions is a compile error.
+//!   exactly one of them; mixing bodies from two versions in one participant is a
+//!   compile error. A graph may mix generations: compatibility is per-contract
+//!   `schema_id` agreement ([`check`](crate::check), #16).
 //! - **Participants are authored, not wired.** You write a struct and an `impl`;
 //!   [`#[derive(Service)]`](derive@Service), [`#[derive(Driver)]`](derive@Driver),
 //!   [`#[derive(Tool)]`](derive@Tool), or
