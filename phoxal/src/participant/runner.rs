@@ -21,12 +21,13 @@ use arc_swap::ArcSwapOption;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::bus::{Bus, BusConfig, IncomingQuery, QueryFailure};
+use crate::bus::QueryFailure;
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::emit::print_emit_apis;
 use crate::participant::launch::{ClockMode, ParticipantLaunch};
 use crate::participant::spec::{MissedTick, ParticipantBehavior, StepSchedule};
+use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
