@@ -175,9 +175,10 @@ pub struct SourceGit {
     /// Optional subdirectory within the git repository that holds the
     /// component definition (`component.yaml` and friends). Absent means the
     /// component lives at the repository root - the historical single-component
-    /// repository layout. A value such as `bno085` selects
-    /// `<repo>/bno085/component.yaml`, enabling a shared catalog repository
-    /// (e.g. `phoxal/components`) to host many components as subdirectories.
+    /// repository layout. Catalog components now live in this repository under
+    /// `component/<name>`; robots select one by setting `git` to
+    /// `https://github.com/phoxal/framework` and `directory` to
+    /// `component/<name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<PathBuf>,
 }

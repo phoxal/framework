@@ -2016,6 +2016,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-driver-bno085"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-driver-ddsm115"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-driver-oak_d_lite"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-driver-vl53l1x"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
+name = "phoxal-driver-zed_f9p"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "serde_json",
+]
+
+[[package]]
 name = "phoxal-macros"
 version = "0.19.3"
 dependencies = [
