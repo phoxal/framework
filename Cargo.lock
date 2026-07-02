@@ -4605,6 +4605,7 @@ dependencies = [
  "sha2",
  "syn 2.0.117",
  "tar",
+ "tempfile",
  "toml_edit",
  "zstd",
 ]

@@ -10,6 +10,18 @@ use toml_edit::{Array, DocumentMut, Item as TomlItem, Table, value};
 
 use crate::workspace::Workspace;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GenerationChannel {
+    Stable,
+    Preview,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ApiGeneration {
+    pub name: String,
+    pub channel: GenerationChannel,
+}
+
 const BEGIN_MARKER: &str = "# @generated begin phoxal-api preview features";
 const END_MARKER: &str = "# @generated end phoxal-api preview features";
 
@@ -75,14 +87,30 @@ pub fn run(args: Args) -> Result<()> {
     }
 }
 
+pub(crate) fn api_generations_from_workspace(workspace: &Workspace) -> Result<Vec<ApiGeneration>> {
+    let api_lib = workspace.root().join("phoxal-api/src/lib.rs");
+    let source = fs::read_to_string(&api_lib)
+        .with_context(|| format!("failed to read {}", api_lib.display()))?;
+    api_generations_from_source(&source)
+        .with_context(|| format!("failed to scan {}", api_lib.display()))
+}
+
 fn preview_features_from_source(source: &str) -> Result<Vec<String>> {
+    Ok(api_generations_from_source(source)?
+        .into_iter()
+        .filter(|generation| generation.channel == GenerationChannel::Preview)
+        .map(|generation| format!("preview-{}", generation.name))
+        .collect())
+}
+
+pub(crate) fn api_generations_from_source(source: &str) -> Result<Vec<ApiGeneration>> {
     let file = syn::parse_file(source).context("phoxal-api/src/lib.rs is not valid Rust")?;
     let mut scanner = TreeScanner::default();
     scanner.scan_items(&file.items, ScanContext::default())?;
 
     match scanner.invocations.len() {
         0 => bail!("expected exactly one production phoxal_api_tree! invocation, found none"),
-        1 => parse_preview_features(scanner.invocations.remove(0)),
+        1 => parse_api_generations(scanner.invocations.remove(0)),
         count => {
             bail!("expected exactly one production phoxal_api_tree! invocation, found {count}")
         }
@@ -209,13 +237,13 @@ mod kw {
     syn::custom_keyword!(extends);
 }
 
-struct PreviewFeatures {
-    features: Vec<String>,
+struct ParsedApiGenerations {
+    generations: Vec<ApiGeneration>,
 }
 
-impl Parse for PreviewFeatures {
+impl Parse for ParsedApiGenerations {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut features = Vec::new();
+        let mut generations = Vec::new();
         while !input.is_empty() {
             let is_preview = if input.peek(kw::preview) {
                 input.parse::<kw::preview>()?;
@@ -234,24 +262,29 @@ impl Parse for PreviewFeatures {
             syn::braced!(body in input);
             let _tokens: TokenStream = body.parse()?;
 
-            if is_preview {
-                features.push(format!("preview-{name}"));
-            }
+            generations.push(ApiGeneration {
+                name: name.to_string(),
+                channel: if is_preview {
+                    GenerationChannel::Preview
+                } else {
+                    GenerationChannel::Stable
+                },
+            });
         }
-        Ok(PreviewFeatures { features })
+        Ok(ParsedApiGenerations { generations })
     }
 }
 
-fn parse_preview_features(tokens: TokenStream) -> Result<Vec<String>> {
-    let parsed: PreviewFeatures =
+fn parse_api_generations(tokens: TokenStream) -> Result<Vec<ApiGeneration>> {
+    let parsed: ParsedApiGenerations =
         syn::parse2(tokens).context("failed to parse phoxal_api_tree! versions")?;
     let mut seen = BTreeSet::new();
-    for feature in &parsed.features {
-        if !seen.insert(feature.clone()) {
-            bail!("duplicate preview generation feature {feature}");
+    for generation in &parsed.generations {
+        if !seen.insert(generation.name.clone()) {
+            bail!("duplicate API generation {}", generation.name);
         }
     }
-    Ok(parsed.features)
+    Ok(parsed.generations)
 }
 
 fn sync_manifest_text(manifest: &str, preview_features: &[String]) -> Result<String> {

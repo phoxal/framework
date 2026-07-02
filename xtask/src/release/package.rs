@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ pub struct Args {
     pub out: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PackagedArtifact {
     pub tarball: PathBuf,
     pub checksum: PathBuf,
@@ -59,7 +60,7 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn workspace_relative_out_dir(workspace: &Workspace, out_dir: &Path) -> PathBuf {
+pub(crate) fn workspace_relative_out_dir(workspace: &Workspace, out_dir: &Path) -> PathBuf {
     if out_dir.is_absolute() {
         out_dir.to_path_buf()
     } else {
@@ -79,7 +80,22 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
     Ok(vec![workspace.official_artifact(package_name)?.clone()])
 }
 
-fn package_artifact(
+pub(crate) fn package_artifacts(
+    workspace: &Workspace,
+    artifacts: &[OfficialArtifact],
+    out_dir: &Path,
+    host_triple: &str,
+) -> Result<BTreeMap<String, PackagedArtifact>> {
+    let mut packaged = BTreeMap::new();
+    for artifact in artifacts {
+        let output = package_artifact(workspace, artifact, out_dir, host_triple)
+            .with_context(|| format!("failed to package {}", artifact.package_name))?;
+        packaged.insert(artifact.package_name.clone(), output);
+    }
+    Ok(packaged)
+}
+
+pub(crate) fn package_artifact(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
     out_dir: &Path,
@@ -88,7 +104,7 @@ fn package_artifact(
     build_artifact(workspace.root(), artifact)?;
     let binary_path = binary_path(workspace, artifact);
     let emit_stdout = run_emit_apis(&binary_path)?;
-    validate_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
+    parse_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
 
     let stem = asset_stem(artifact, host_triple);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
@@ -163,10 +179,47 @@ fn run_emit_apis(binary_path: &Path) -> Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
+pub(crate) fn emit_apis_from_cargo_run(
+    root: &Path,
+    artifact: &OfficialArtifact,
+) -> Result<Vec<u8>> {
+    let output = Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            &artifact.package_name,
+            "--",
+            "emit-apis",
+        ])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("failed to spawn cargo run for {}", artifact.package_name))?;
+    if !output.status.success() {
+        bail!(
+            "cargo run for {} emit-apis failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            artifact.package_name,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    if output.stdout.is_empty() {
+        bail!(
+            "{} emit-apis produced empty stdout\nstatus: {}\nstderr:\n{}",
+            artifact.package_name,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(output.stdout)
+}
+
 /// Returns the local host triple used in asset names. This seed packages only
 /// host builds; cross-target naming and build orchestration belongs to native
 /// release CI plan #01.
-fn host_triple(root: &Path) -> Result<String> {
+pub(crate) fn host_triple(root: &Path) -> Result<String> {
     let output = Command::new("rustc")
         .arg("-vV")
         .current_dir(root)
@@ -188,7 +241,7 @@ fn host_triple(root: &Path) -> Result<String> {
         .context("rustc -vV output did not contain a host triple")
 }
 
-fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
+pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
     format!(
         "{}-v{}-{}",
         artifact.package_name, artifact.version, host_triple
@@ -240,7 +293,7 @@ fn write_sha256(tarball: &Path, checksum_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let mut file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let mut hasher = Sha256::new();
@@ -257,12 +310,21 @@ fn sha256_file(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
-pub fn validate_emit_apis_json(
+#[cfg(test)]
+fn validate_emit_apis_json(
     stdout: &[u8],
     expected_id: &str,
     expected_kind: ArtifactKind,
 ) -> Result<()> {
-    let metadata: ParticipantMetadata =
+    parse_emit_apis_json(stdout, expected_id, expected_kind).map(|_| ())
+}
+
+pub(crate) fn parse_emit_apis_json(
+    stdout: &[u8],
+    expected_id: &str,
+    expected_kind: ArtifactKind,
+) -> Result<EmitApisMetadata> {
+    let metadata: EmitApisMetadata =
         serde_json::from_slice(stdout).context("emit-apis stdout was not valid JSON")?;
     if metadata.schema != EMIT_SCHEMA {
         bail!(
@@ -352,7 +414,7 @@ pub fn validate_emit_apis_json(
         }
     }
 
-    Ok(())
+    Ok(metadata)
 }
 
 /// The `Direction` wire vocabulary the emitter serializes
@@ -374,28 +436,34 @@ fn is_schema_id(value: &str) -> bool {
 }
 
 #[derive(Debug, Deserialize)]
-struct ParticipantMetadata {
-    schema: String,
-    artifact: Artifact,
-    api_version: String,
-    participant_class: Option<String>,
-    bus_abi: String,
-    required_contracts: Vec<Contract>,
+pub(crate) struct EmitApisMetadata {
+    pub schema: String,
+    pub artifact: Artifact,
+    pub framework: Framework,
+    pub api_version: String,
+    pub participant_class: Option<String>,
+    pub bus_abi: String,
+    pub required_contracts: Vec<Contract>,
 }
 
 #[derive(Debug, Deserialize)]
-struct Artifact {
-    kind: String,
-    id: String,
+pub(crate) struct Artifact {
+    pub kind: String,
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct Contract {
-    api_version: Option<String>,
-    schema_id: Option<String>,
-    family: Option<String>,
-    topic: Option<String>,
-    direction: Option<String>,
+pub(crate) struct Framework {
+    pub version: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Contract {
+    pub api_version: Option<String>,
+    pub schema_id: Option<String>,
+    pub family: Option<String>,
+    pub topic: Option<String>,
+    pub direction: Option<String>,
 }
 
 #[cfg(test)]
