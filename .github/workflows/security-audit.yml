@@ -1,0 +1,41 @@
+# Audits Cargo.lock against the RUSTSEC advisory database.
+#
+# The daily schedule is the important trigger: advisories are published
+# independently of pushes, so a lockfile that was clean yesterday can be
+# vulnerable today without any commit landing.
+#
+# Ignored advisories live in .cargo/audit.toml; each entry must carry a
+# justification and a removal condition.
+name: security-audit
+
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - .cargo/audit.toml
+      - .github/workflows/security-audit.yml
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - Cargo.lock
+      - .cargo/audit.toml
+      - .github/workflows/security-audit.yml
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit Cargo.lock against RUSTSEC advisories
+        run: cargo audit
