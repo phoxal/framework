@@ -42,6 +42,40 @@ members = [
     "service/presence",
     "service/safety",
     "service/video",
+    "xtask",
+]
+# Keep the internal automation crate out of plain root cargo builds.
+# Invariant: default-members must contain every workspace member except xtask.
+# When adding a workspace member, add it to both members and default-members;
+# otherwise plain cargo build/test silently skips it.
+default-members = [
+    "phoxal",
+    "phoxal-api",
+    "phoxal-bus",
+    "phoxal-macros",
+    "component/bno085",
+    "component/ddsm115",
+    "component/oak_d_lite",
+    "component/vl53l1x",
+    "component/zed_f9p",
+    "service/asset",
+    "service/battery",
+    "service/drive",
+    "service/explore",
+    "service/follow",
+    "service/frame",
+    "service/joint",
+    "service/localize",
+    "service/map",
+    "service/mission",
+    "service/motion",
+    "service/odometry",
+    "service/perception",
+    "service/plan",
+    "service/power",
+    "service/presence",
+    "service/safety",
+    "service/video",
 ]
 
 [workspace.dependencies]
