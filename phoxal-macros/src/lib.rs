@@ -40,8 +40,11 @@ use proc_macro::TokenStream;
 /// Declare a dated API-version tree of version-local wire bodies + topics.
 ///
 /// One invocation owns one or more `version y2026_N { … }` blocks; each becomes a
-/// `pub mod y2026_N` under wherever the macro is invoked. In this workspace it is
-/// invoked in the `phoxal-api` crate (the canonical import is
+/// `pub mod y2026_N` under wherever the macro is invoked. A generation may be
+/// authored as `preview version y2026_N`; it is still emitted at `y2026_N`, but
+/// behind the per-generation Cargo feature `preview-y2026_N` and with
+/// `ApiVersion::IS_PREVIEW = true`. In this workspace it is invoked in the
+/// `phoxal-api` crate (the canonical import is
 /// `use phoxal_api::y2026_1 as api;`), and the generated tree references the bus
 /// ABI floor as `::phoxal_bus`. A
 /// `version y2026_N extends y2026_M { … }` inherits the

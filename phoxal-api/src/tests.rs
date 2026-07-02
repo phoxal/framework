@@ -9,6 +9,7 @@ use phoxal_bus::TopicRole;
 #[test]
 fn api_version_id_is_the_dated_module_name() {
     assert_eq!(<api::Api as ApiVersion>::ID, "y2026_1");
+    const { assert!(!<api::Api as ApiVersion>::IS_PREVIEW) };
 }
 
 #[test]

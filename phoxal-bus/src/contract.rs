@@ -16,13 +16,20 @@
 /// [`phoxal_api_tree!`] generates inside each version module. The [`ID`] is the
 /// dated module name (`"y2026_1"`) and is carried in bus metadata as
 /// informational provenance, never in the wire body or the topic key (D62).
+/// [`IS_PREVIEW`] records authoring lifecycle only; it has no wire effect.
 ///
 /// [`ID`]: ApiVersion::ID
+/// [`IS_PREVIEW`]: ApiVersion::IS_PREVIEW
 /// [`phoxal_api_tree!`]: https://docs.rs/phoxal
 pub trait ApiVersion: 'static {
     /// The dated API-version identifier, equal to the version module name, e.g.
     /// `"y2026_1"`.
     const ID: &'static str;
+    /// Whether this generated API version is still in the preview lifecycle.
+    ///
+    /// This is control-plane metadata only. It is not encoded in bus payloads,
+    /// topics, schema ids, or encoding strings.
+    const IS_PREVIEW: bool = false;
 }
 
 /// The semantic role a topic plays in its owning service's contract.

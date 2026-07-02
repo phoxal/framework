@@ -35,6 +35,7 @@ use crate::{
 enum TestApi {}
 impl ApiVersion for TestApi {
     const ID: &'static str = "yTEST";
+    const IS_PREVIEW: bool = false;
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
