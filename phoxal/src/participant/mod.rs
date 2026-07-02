@@ -11,6 +11,7 @@ pub mod context;
 pub mod emit;
 pub mod launch;
 mod runner;
+mod sd_notify;
 pub mod server;
 pub mod spec;
 

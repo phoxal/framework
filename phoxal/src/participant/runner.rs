@@ -158,7 +158,6 @@ where
         launch.component_instance.clone(),
     );
     let mut participant = R::__setup(&mut ctx, config).await?;
-    tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
 
     // Committed snapshot, shared with concurrent snapshot-server tasks (D16).
     let committed: Arc<ArcSwapOption<R::Snapshot>> = Arc::new(ArcSwapOption::empty());
@@ -210,6 +209,8 @@ where
 
     let schedule = R::__step_schedule();
     let shutdown = pin!(shutdown);
+    tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
+    super::sd_notify::ready();
     main_loop::<R, C, S>(
         &mut participant,
         bus,
