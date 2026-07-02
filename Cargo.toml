@@ -107,7 +107,24 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 trybuild = "1"
 urdf-rs = "0.9.0"
-zenoh = { version = "1.9.0" }
+# Default features minus transport_compression: zenoh-transport's lz4_flex pin
+# (^0.10.0) has no release with the RUSTSEC-2026-0041 fix, so keep the affected
+# block-decompression path out of shipped binaries. Phoxal never enables zenoh
+# compression at runtime, so no behavior changes. Re-enable defaults only after
+# zenoh ships lz4_flex >= 0.11.6 (eclipse-zenoh/zenoh#2499) and the ignore in
+# .cargo/audit.toml is removed.
+zenoh = { version = "1.9.0", default-features = false, features = [
+    "auth_pubkey",
+    "auth_usrpwd",
+    "transport_multilink",
+    "transport_quic",
+    "transport_quic_datagram",
+    "transport_tcp",
+    "transport_tls",
+    "transport_udp",
+    "transport_unixsock-stream",
+    "transport_ws",
+] }
 # Carry a version (not just a path) on every internal dep: cargo strips the path
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this

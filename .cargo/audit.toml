@@ -1,0 +1,39 @@
+# cargo-audit configuration for the security-audit CI job
+# (.github/workflows/security-audit.yml).
+#
+# Every ignore entry must carry a justification and a removal condition.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0041 (CVE-2026-32829): lz4_flex < 0.11.6 block decompression
+    # can leak uninitialized memory / reused-buffer contents on invalid input.
+    # lz4_flex 0.10.0 is pulled in by zenoh-transport, which pins ^0.10.0; no
+    # patched 0.10.x exists, so the lockfile cannot be bumped. Mitigated by
+    # building zenoh without the transport_compression feature (workspace
+    # Cargo.toml), which removes every lz4_flex call site from our binaries;
+    # phoxal-bus also never enables zenoh compression at runtime.
+    # Remove once zenoh releases with lz4_flex >= 0.11.6
+    # (https://github.com/eclipse-zenoh/zenoh/pull/2499) and the workspace
+    # zenoh dependency is bumped to that release.
+    "RUSTSEC-2026-0041",
+
+    # RUSTSEC-2026-0194 / RUSTSEC-2026-0195: quick-xml < 0.41 has quadratic
+    # runtime on duplicate-attribute checks and unbounded namespace-declaration
+    # allocation (DoS class). quick-xml 0.36 is pulled in by urdf-rs 0.9.0
+    # (latest release, pins ^0.36). Phoxal only parses URDF from local,
+    # operator-installed component definitions (component/*/structure.urdf),
+    # never network input, so the DoS vector is not attacker-reachable.
+    # Remove once urdf-rs releases with quick-xml >= 0.41
+    # (https://github.com/openrr/urdf-rs/issues/134) and the workspace
+    # urdf-rs dependency is bumped.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # RUSTSEC-2023-0071 (Marvin timing side channel): no fixed rsa release
+    # exists. rsa is pulled in by zenoh-transport's auth_pubkey feature, which
+    # transport_multilink requires at compile time. Phoxal never configures
+    # zenoh public-key auth at runtime (phoxal-bus/src/session.rs builds the
+    # config programmatically), so no RSA operations run in our deployments.
+    # Remove once the rsa crate ships a constant-time fix and zenoh adopts it.
+    "RUSTSEC-2023-0071",
+]
