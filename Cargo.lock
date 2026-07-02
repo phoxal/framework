@@ -2125,10 +2125,13 @@ name = "phoxal-macros"
 version = "0.19.3"
 dependencies = [
  "heck",
+ "phoxal-bus",
  "proc-macro2",
  "quote",
+ "serde",
  "sha2",
  "syn 2.0.117",
+ "trybuild",
 ]
 
 [[package]]
@@ -3681,6 +3684,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -4595,10 +4599,13 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "hex",
+ "proc-macro2",
  "serde",
  "serde_json",
  "sha2",
+ "syn 2.0.117",
  "tar",
+ "toml_edit",
  "zstd",
 ]
 

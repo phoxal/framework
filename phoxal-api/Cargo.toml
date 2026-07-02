@@ -24,5 +24,9 @@ serde_bytes = { workspace = true }
 rmp-serde = { workspace = true }
 serde_json = { workspace = true }
 
+# @generated begin phoxal-api preview features
+[features]
+# @generated end phoxal-api preview features
+
 [lints]
 workspace = true

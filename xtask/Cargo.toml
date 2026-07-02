@@ -11,10 +11,13 @@ anyhow = { workspace = true }
 cargo_metadata = "0.23.1"
 clap = { workspace = true }
 hex = "0.4.3"
+proc-macro2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+syn = { workspace = true }
 tar = "0.4.46"
+toml_edit = "0.25.12"
 zstd = "0.13.3"
 
 [lints]

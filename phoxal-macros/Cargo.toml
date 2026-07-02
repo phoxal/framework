@@ -22,5 +22,10 @@ syn = { workspace = true }
 heck = { workspace = true }
 sha2 = { workspace = true }
 
+[dev-dependencies]
+phoxal-bus = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+trybuild = { workspace = true }
+
 [lints]
 workspace = true

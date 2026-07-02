@@ -24,6 +24,12 @@
 //! [`ContractBody::FAMILY`] and [`ContractBody::TOPIC`], a different [`Api`] - so an
 //! unchanged contract stays wire-identical while the compile-time `Api` bound stays
 //! distinct. See [`phoxal_api_tree!`] for the inheritance and shape-identity rules.
+//! A not-yet-promoted generation is authored as
+//! `preview version y2026_N extends ...`; it still lives at the final module path
+//! (`phoxal_api::y2026_N`) but is available only when the matching
+//! `preview-y2026_N` Cargo feature is enabled. The generated module docs call out
+//! the preview status, and [`ApiVersion::IS_PREVIEW`] records the lifecycle without
+//! changing schema ids, topics, or wire bytes.
 //!
 //! [`Api`]: y2026_1::Api
 //!
@@ -109,6 +115,7 @@ use phoxal_macros::phoxal_api_tree;
 ///   implemented only by the zero-variant `enum Api {}` that [`phoxal_api_tree!`]
 ///   generates inside each version module; its `ID` is the dated module name
 ///   (`"y2026_1"`) and is carried in bus metadata as informational provenance.
+///   Its `IS_PREVIEW` const is lifecycle metadata only.
 /// - [`ContractBody`] is a version-local wire body (D61): a plain serde type
 ///   bound to exactly one [`ApiVersion`] and one contract family/topic. Every
 ///   body declared inside a [`phoxal_api_tree!`] node gets a generated impl;

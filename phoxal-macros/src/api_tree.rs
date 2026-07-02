@@ -15,7 +15,10 @@
 //! const on each body (D63). A topic's key and dynamism are
 //! derived from the node path, not from per-topic params; a topic whose node path
 //! contains at least one `(var)` node is dynamic, one with none is static.
-//! `extends` API inheritance is supported (and recurses the node tree).
+//! `extends` API inheritance is supported (and recurses the node tree). A version
+//! may be prefixed with `preview`; that emits the module at its final path behind
+//! the per-generation `preview-y2026_N` Cargo feature and records
+//! `ApiVersion::IS_PREVIEW = true` without changing the wire shape.
 //!
 //! ```text
 //! phoxal_api_tree! {
@@ -36,9 +39,9 @@
 //!             }
 //!         }
 //!     }
-//!     version y2026_2 extends y2026_1 {
+//!     preview version y2026_2 extends y2026_1 {
 //!         // inherits every y2026_1 node/type; overrides drive::Target and adds a
-//!         // new `battery` node — inherited types are re-emitted fresh.
+//!         // new `battery` node - inherited types are re-emitted fresh.
 //!         drive { struct Target { linear_x_mps: f32, angular_z_radps: f32, curvature: Option<f32> }
 //!                 topic target: command Target; }
 //!         battery { struct State { soc: f32 } topic state: state State; }
@@ -83,6 +86,7 @@ use syn::{
 use crate::util::body_derives;
 
 mod kw {
+    syn::custom_keyword!(preview);
     syn::custom_keyword!(version);
     syn::custom_keyword!(extends);
     syn::custom_keyword!(topic);
@@ -101,6 +105,7 @@ struct ApiTree {
 }
 
 struct Version {
+    is_preview: bool,
     name: Ident,
     extends: Option<Ident>,
     nodes: Vec<Node>,
@@ -192,6 +197,12 @@ impl Parse for ApiTree {
 
 impl Parse for Version {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let is_preview = if input.peek(kw::preview) {
+            input.parse::<kw::preview>()?;
+            true
+        } else {
+            false
+        };
         input.parse::<kw::version>()?;
         let name: Ident = input.parse()?;
         let extends = if input.peek(kw::extends) {
@@ -207,6 +218,7 @@ impl Parse for Version {
             nodes.push(body.parse()?);
         }
         Ok(Version {
+            is_preview,
             name,
             extends,
             nodes,
@@ -350,7 +362,7 @@ impl ApiTree {
                 }
             };
             resolved.insert(version.name.to_string(), effective.clone());
-            out.extend(expand_version(&version.name, &effective)?);
+            out.extend(expand_version(version, &effective)?);
         }
         Ok(out)
     }
@@ -402,9 +414,11 @@ fn overlay_nodes(base: &[Node], child: &[Node]) -> syn::Result<Vec<Node>> {
     Ok(result)
 }
 
-fn expand_version(name: &Ident, nodes: &[Node]) -> syn::Result<TokenStream> {
-    let mod_name = name;
-    let id = name.to_string();
+fn expand_version(version: &Version, nodes: &[Node]) -> syn::Result<TokenStream> {
+    let mod_name = &version.name;
+    let id = version.name.to_string();
+    let is_preview = version.is_preview;
+    let feature_name = format!("preview-{id}");
     let shapes = ShapeCatalog::new(nodes)?;
 
     // Node modules (types + ContractBody impls), recursive. Each top-level node is
@@ -418,15 +432,31 @@ fn expand_version(name: &Ident, nodes: &[Node]) -> syn::Result<TokenStream> {
 
     let topic_mod = expand_topic_module(nodes)?;
 
-    Ok(quote! {
-        pub mod #mod_name {
-            //! Dated API version `#id` — version-local wire bodies + topics.
+    let module_attrs = if is_preview {
+        quote! {
+            #[cfg(feature = #feature_name)]
+        }
+    } else {
+        TokenStream::new()
+    };
+    let module_doc = if is_preview {
+        format!(
+            "Preview dated API version `{id}`. This final-path module is available only with the `{feature_name}` Cargo feature."
+        )
+    } else {
+        format!("Dated API version `{id}` - version-local wire bodies + topics.")
+    };
 
+    Ok(quote! {
+        #[doc = #module_doc]
+        #module_attrs
+        pub mod #mod_name {
             /// Zero-variant marker identifying this API version (D60).
             #[derive(Clone, Copy, Debug)]
             pub enum Api {}
             impl ::phoxal_bus::ApiVersion for Api {
                 const ID: &'static str = #id;
+                const IS_PREVIEW: bool = #is_preview;
             }
 
             #node_mods
@@ -2056,7 +2086,7 @@ fn with_pub_fields_struct(mut item: ItemStruct) -> ItemStruct {
 
 #[cfg(test)]
 mod tests {
-    use super::{ApiTree, ShapeCatalog, TypeSubst, expand};
+    use super::{ApiTree, Node, ShapeCatalog, TypeSubst, expand, overlay_nodes};
     use proc_macro2::{Span, TokenStream};
     use quote::quote;
     use syn::Ident;
@@ -2080,6 +2110,64 @@ mod tests {
         catalog
             .schema_id_for(scope, &ident)
             .expect("test schema id canonicalizes")
+    }
+
+    fn compact_tokens(tokens: TokenStream) -> String {
+        tokens
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn effective_nodes(input: TokenStream, version_name: &str) -> (bool, Vec<Node>) {
+        let tree: ApiTree = syn::parse2(input).expect("test api tree parses");
+        let mut resolved: std::collections::HashMap<String, Vec<Node>> =
+            std::collections::HashMap::new();
+
+        for version in &tree.versions {
+            let effective = match &version.extends {
+                None => version.nodes.clone(),
+                Some(parent) => overlay_nodes(
+                    resolved
+                        .get(&parent.to_string())
+                        .expect("test parent was declared earlier"),
+                    &version.nodes,
+                )
+                .expect("test overlay succeeds"),
+            };
+            if version.name == version_name {
+                return (version.is_preview, effective);
+            }
+            resolved.insert(version.name.to_string(), effective);
+        }
+
+        panic!("test version {version_name} was not declared");
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ContractSnapshot {
+        api_version: String,
+        schema_id: String,
+        family: String,
+        topic: String,
+    }
+
+    fn sample_body_snapshot(input: TokenStream, version_name: &str) -> (bool, ContractSnapshot) {
+        let (is_preview, nodes) = effective_nodes(input, version_name);
+        let catalog = ShapeCatalog::new(&nodes).expect("test catalog builds");
+        let body = Ident::new("Body", Span::call_site());
+        (
+            is_preview,
+            ContractSnapshot {
+                api_version: version_name.to_string(),
+                schema_id: catalog
+                    .schema_id_for("sample", &body)
+                    .expect("test schema id canonicalizes"),
+                family: "sample::Body".to_string(),
+                topic: "sample/body".to_string(),
+            },
+        )
     }
 
     /// `extends` must reject a same-named node that flips its `(var)`-ness, since
@@ -2107,6 +2195,76 @@ mod tests {
             }
         };
         assert!(expand(input).is_ok());
+    }
+
+    #[test]
+    fn preview_version_emits_final_path_feature_gate_and_lifecycle_const() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                version y2026_1 {
+                    sample {
+                        struct Body { value: u8 }
+                        topic body: state Body;
+                    }
+                }
+                preview version y2026_2 extends y2026_1 {}
+            })
+            .expect("preview tree expands"),
+        );
+
+        assert!(
+            expanded.contains("pub mod y2026_2"),
+            "preview generation must be emitted at its final path: {expanded}"
+        );
+        assert!(
+            !expanded.contains("pub mod preview"),
+            "preview generation must not be nested under a preview module: {expanded}"
+        );
+        assert!(
+            expanded.contains("# [cfg (feature = \"preview-y2026_2\")]"),
+            "preview generation must be gated by its per-generation feature: {expanded}"
+        );
+        assert!(
+            expanded.contains("Preview dated API version `y2026_2`"),
+            "preview generation should carry a discoverable doc note: {expanded}"
+        );
+        assert!(
+            expanded.contains("const IS_PREVIEW : bool = true ;"),
+            "preview ApiVersion must record IS_PREVIEW = true: {expanded}"
+        );
+        assert!(
+            expanded.contains("const IS_PREVIEW : bool = false ;"),
+            "promoted ApiVersion must record IS_PREVIEW = false: {expanded}"
+        );
+    }
+
+    #[test]
+    fn preview_lifecycle_is_wire_neutral_for_contract_identity() {
+        let preview = quote! {
+            version y2026_1 {
+                sample {
+                    struct Body { value: u8, label: Option<String> }
+                    topic body: state Body;
+                }
+            }
+            preview version y2026_2 extends y2026_1 {}
+        };
+        let promoted = quote! {
+            version y2026_1 {
+                sample {
+                    struct Body { value: u8, label: Option<String> }
+                    topic body: state Body;
+                }
+            }
+            version y2026_2 extends y2026_1 {}
+        };
+
+        let (preview_flag, preview_snapshot) = sample_body_snapshot(preview, "y2026_2");
+        let (promoted_flag, promoted_snapshot) = sample_body_snapshot(promoted, "y2026_2");
+
+        assert!(preview_flag);
+        assert!(!promoted_flag);
+        assert_eq!(preview_snapshot, promoted_snapshot);
     }
 
     #[test]

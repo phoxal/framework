@@ -26,6 +26,9 @@ jobs:
       - name: Check official-set fixture topology
         run: cargo test -p phoxal --test official_set_topology -- --nocapture
 
+      - name: Check preview feature sync
+        run: cargo xtask api sync-features --check
+
       - name: Smoke xtask release packaging
         run: |
           set -euo pipefail
