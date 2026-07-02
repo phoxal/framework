@@ -30,3 +30,18 @@ jobs:
 
       - name: Check official-set fixture topology
         run: cargo test -p phoxal --test official_set_topology -- --nocapture
+
+      - name: Smoke xtask release packaging
+        run: |
+          set -euo pipefail
+          mkdir -p target/xtask-smoke
+          cargo xtask release discover --json > target/xtask-smoke/discover.json
+          cargo xtask release package phoxal-service-frame --out target/xtask-smoke
+          tarball="$(find target/xtask-smoke -maxdepth 1 -name 'phoxal-service-frame-v*-*.tar.zst' -type f -print -quit)"
+          test -n "$tarball"
+          test -f "$tarball.sha256"
+          metadata="${tarball%.tar.zst}.emit-apis.json"
+          test -f "$metadata"
+          python3 -m json.tool target/xtask-smoke/discover.json > /dev/null
+          python3 -m json.tool "$metadata" > /dev/null
+          (cd target/xtask-smoke && sha256sum -c "$(basename "$tarball").sha256")
