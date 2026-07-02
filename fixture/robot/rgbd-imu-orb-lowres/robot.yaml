@@ -1,11 +1,9 @@
 schema: v0
-api_version: y2026_1
 identity:
   id: rgbd-imu-orb-lowres
   namespace: dev
 structure: structure.urdf
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 motion:
   kinematic:
     kind: differential

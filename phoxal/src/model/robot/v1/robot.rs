@@ -12,10 +12,13 @@ const ROBOT_FILE: &str = "robot.yaml";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Robot {
-    pub api_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_version: Option<String>,
     pub identity: Identity,
     #[serde(default = "default_structure_path")]
     pub structure: PathBuf,
+    #[serde(default, skip_serializing_if = "PhoxalArtifacts::is_default")]
+    pub phoxal_artifacts: PhoxalArtifacts,
     pub phoxal_participants: PhoxalParticipants,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub user_participants: BTreeMap<String, UserParticipant>,
@@ -41,8 +44,7 @@ pub struct Identity {
 pub enum Channel {
     #[default]
     Stable,
-    Latest,
-    Edge,
+    Preview,
 }
 
 impl Channel {
@@ -50,8 +52,7 @@ impl Channel {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Stable => "stable",
-            Self::Latest => "latest",
-            Self::Edge => "edge",
+            Self::Preview => "preview",
         }
     }
 }
@@ -62,11 +63,27 @@ impl fmt::Display for Channel {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PhoxalArtifacts {
+    #[serde(default)]
+    pub channel: Channel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+}
+
+impl PhoxalArtifacts {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.channel == Channel::Stable && self.target.is_none() && self.generation.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhoxalParticipants {
-    #[serde(default)]
-    pub channel: Channel,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub images: BTreeMap<String, String>,
 }
@@ -378,7 +395,11 @@ impl Robot {
     }
 
     fn validate_basics(&self, errors: &mut Vec<ValidationError>) {
-        if self.api_version.trim().is_empty() {
+        if self
+            .api_version
+            .as_deref()
+            .is_some_and(|api_version| api_version.trim().is_empty())
+        {
             errors.push(ValidationError::EmptyApiVersion);
         }
         if self.identity.id.trim().is_empty() {
@@ -631,8 +652,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -680,8 +700,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -728,8 +747,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -803,8 +821,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -842,8 +859,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -891,8 +907,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -926,8 +941,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -959,8 +973,7 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 user_participants:
   autonomy:
     path: participants/autonomy
@@ -988,11 +1001,10 @@ components:
     }
 
     #[test]
-    fn phoxal_participants_channel_defaults_to_stable() -> anyhow::Result<()> {
+    fn phoxal_artifacts_defaults_to_stable_without_pin_or_target() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
-api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
@@ -1008,16 +1020,19 @@ components:
 "#,
         )?;
 
-        assert_eq!(robot.phoxal_participants.channel, Channel::Stable);
-        assert_eq!(robot.phoxal_participants.channel.as_str(), "stable");
-        assert_eq!(robot.phoxal_participants.channel.to_string(), "stable");
+        assert_eq!(robot.api_version, None);
+        assert_eq!(robot.phoxal_artifacts.channel, Channel::Stable);
+        assert_eq!(robot.phoxal_artifacts.channel.as_str(), "stable");
+        assert_eq!(robot.phoxal_artifacts.channel.to_string(), "stable");
+        assert_eq!(robot.phoxal_artifacts.target, None);
+        assert_eq!(robot.phoxal_artifacts.generation, None);
         assert!(robot.phoxal_participants.images.is_empty());
 
         Ok(())
     }
 
     #[test]
-    fn phoxal_participants_rejects_invalid_channel() {
+    fn phoxal_artifacts_rejects_invalid_channel() {
         let error = Robot::parse_from_string(
             r#"
 schema: v0
@@ -1025,8 +1040,9 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
+phoxal_artifacts:
   channel: experimental
+phoxal_participants: {}
 motion:
   kinematic:
     kind: omnidirectional
@@ -1037,12 +1053,49 @@ components:
   instances: {}
 "#,
         )
-        .expect_err("invalid phoxal_participants channel should fail to parse");
+        .expect_err("invalid phoxal_artifacts channel should fail to parse");
 
         assert!(
             format!("{error:#}").contains("unknown variant `experimental`"),
             "got: {error:#}"
         );
+    }
+
+    #[test]
+    fn phoxal_artifacts_parses_preview_target_and_generation_pin() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_artifacts:
+  channel: preview
+  target: aarch64-unknown-linux-gnu
+  generation: y2026_2
+phoxal_participants: {}
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {}
+  instances: {}
+"#,
+        )?;
+
+        assert_eq!(robot.phoxal_artifacts.channel, Channel::Preview);
+        assert_eq!(
+            robot.phoxal_artifacts.target.as_deref(),
+            Some("aarch64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            robot.phoxal_artifacts.generation.as_deref(),
+            Some("y2026_2")
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -1084,8 +1137,9 @@ api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
+phoxal_artifacts:
+  channel: preview
 phoxal_participants:
-  channel: latest
   images:
     drive: ghcr.io/phoxal/runtime-drive:y2026_1-v0.8.4
 motion:
@@ -1100,7 +1154,7 @@ components:
 "#,
         )?;
 
-        assert_eq!(robot.phoxal_participants.channel, Channel::Latest);
+        assert_eq!(robot.phoxal_artifacts.channel, Channel::Preview);
         assert_eq!(
             robot.phoxal_participants.images.get("drive"),
             Some(&"ghcr.io/phoxal/runtime-drive:y2026_1-v0.8.4".to_string())
@@ -1130,16 +1184,14 @@ components:
     }
 
     #[test]
-    fn robot_manifest_requires_schema_v0_and_api_version() -> anyhow::Result<()> {
+    fn robot_manifest_requires_schema_v0_and_allows_omitted_api_version() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
-api_version: y2026_1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 motion:
   kinematic:
     kind: omnidirectional
@@ -1151,12 +1203,12 @@ components:
 "#,
         )?;
 
-        assert_eq!(robot.api_version, "y2026_1");
+        assert_eq!(robot.api_version, None);
 
         let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot))?;
         assert!(
-            yaml.starts_with("schema: v0\napi_version: y2026_1\n"),
-            "schema and api_version should be the first root keys: {yaml}"
+            yaml.starts_with("schema: v0\nidentity:\n"),
+            "schema should be the first root key and api_version should be omitted by default: {yaml}"
         );
 
         let old_manifest_error = Robot::parse_from_string(
@@ -1165,8 +1217,7 @@ version: v1
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 motion:
   kinematic:
     kind: omnidirectional
@@ -1188,7 +1239,7 @@ components:
     }
 
     #[test]
-    fn empty_api_version_is_validation_error() -> anyhow::Result<()> {
+    fn present_blank_api_version_is_validation_error() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -1196,8 +1247,7 @@ api_version: " "
 identity:
   id: test-bot
   namespace: dev
-phoxal_participants:
-  channel: stable
+phoxal_participants: {}
 motion:
   kinematic:
     kind: omnidirectional

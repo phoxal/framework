@@ -4,13 +4,15 @@ use std::fs;
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use proc_macro2::TokenStream;
+use serde::{Deserialize, Serialize};
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, Ident, Item, ItemMacro, ItemMod, Macro};
 use toml_edit::{Array, DocumentMut, Item as TomlItem, Table, value};
 
 use crate::workspace::Workspace;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum GenerationChannel {
     Stable,
     Preview,

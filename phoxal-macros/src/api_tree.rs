@@ -182,6 +182,19 @@ enum TopicKind {
     Query { request: Ident, response: Ident },
 }
 
+struct ManifestGeneration {
+    name: String,
+    is_preview: bool,
+    extends: Option<String>,
+    contracts: Vec<ManifestContract>,
+}
+
+struct ManifestContract {
+    family: String,
+    topic: String,
+    schema_id: String,
+}
+
 impl Parse for ApiTree {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut versions = Vec::new();
@@ -337,6 +350,7 @@ impl Parse for TopicDef {
 impl ApiTree {
     fn expand(&self) -> syn::Result<TokenStream> {
         let mut out = TokenStream::new();
+        let mut manifest_generations = Vec::new();
         // Resolve each version's effective node tree (inheriting from `extends`)
         // and generate from the resolved set. Inherited types are re-emitted
         // *fresh* under the child version — same `FAMILY`/`TOPIC`, a different
@@ -361,11 +375,145 @@ impl ApiTree {
                     overlay_nodes(base, &version.nodes)?
                 }
             };
+            let shapes = ShapeCatalog::new(&effective)?;
+            manifest_generations.push(ManifestGeneration {
+                name: version.name.to_string(),
+                is_preview: version.is_preview,
+                extends: version.extends.as_ref().map(Ident::to_string),
+                contracts: contract_manifest_entries(&effective, &shapes)?,
+            });
             resolved.insert(version.name.to_string(), effective.clone());
             out.extend(expand_version(version, &effective)?);
         }
-        Ok(out)
+        let manifest = expand_contract_manifest(&manifest_generations);
+        Ok(quote! {
+            #manifest
+            #out
+        })
     }
+}
+
+fn expand_contract_manifest(generations: &[ManifestGeneration]) -> TokenStream {
+    let generation_entries = generations.iter().map(|generation| {
+        let name = &generation.name;
+        let is_preview = generation.is_preview;
+        let extends = match &generation.extends {
+            Some(parent) => quote! { ::core::option::Option::Some(#parent) },
+            None => quote! { ::core::option::Option::None },
+        };
+        let contracts = generation.contracts.iter().map(|contract| {
+            let family = &contract.family;
+            let topic = &contract.topic;
+            let schema_id = &contract.schema_id;
+            quote! {
+                ApiContractManifestContract {
+                    family: #family,
+                    topic: #topic,
+                    schema_id: #schema_id,
+                }
+            }
+        });
+        quote! {
+            ApiContractManifestGeneration {
+                name: #name,
+                is_preview: #is_preview,
+                extends: #extends,
+                contracts: &[#(#contracts),*],
+            }
+        }
+    });
+
+    quote! {
+        /// One generated API generation in the contract manifest.
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct ApiContractManifestGeneration {
+            pub name: &'static str,
+            pub is_preview: bool,
+            pub extends: ::core::option::Option<&'static str>,
+            pub contracts: &'static [ApiContractManifestContract],
+        }
+
+        /// One generated contract shape in the contract manifest.
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub struct ApiContractManifestContract {
+            pub family: &'static str,
+            pub topic: &'static str,
+            pub schema_id: &'static str,
+        }
+
+        /// Generated contract manifest for xtask lifecycle checks.
+        #[doc(hidden)]
+        pub const API_CONTRACT_MANIFEST: &[ApiContractManifestGeneration] = &[#(#generation_entries),*];
+    }
+}
+
+fn contract_manifest_entries(
+    nodes: &[Node],
+    shapes: &ShapeCatalog,
+) -> syn::Result<Vec<ManifestContract>> {
+    let mut contracts = Vec::new();
+    collect_contract_manifest_entries(nodes, "", "", shapes, &mut contracts)?;
+    contracts.sort_by(|left, right| {
+        left.family
+            .cmp(&right.family)
+            .then_with(|| left.topic.cmp(&right.topic))
+    });
+    Ok(contracts)
+}
+
+fn collect_contract_manifest_entries(
+    nodes: &[Node],
+    family_prefix: &str,
+    key_prefix: &str,
+    shapes: &ShapeCatalog,
+    contracts: &mut Vec<ManifestContract>,
+) -> syn::Result<()> {
+    for node in nodes {
+        let name = node.name.to_string();
+        let family_path = join_seg(family_prefix, "::", &name);
+        let key_seg = match &node.var {
+            Some(var) => format!("{}/{{{}}}", name, var),
+            None => name.clone(),
+        };
+        let node_key_prefix = join_seg(key_prefix, "/", &key_seg);
+
+        for topic in &node.topics {
+            let topic_key = format!("{}/{}", node_key_prefix, topic.leaf);
+            match &topic.kind {
+                TopicKind::PubSub(body) => {
+                    contracts.push(ManifestContract {
+                        family: format!("{}::{}", family_path, body),
+                        topic: topic_key,
+                        schema_id: shapes.schema_id_for(&family_path, body)?,
+                    });
+                }
+                TopicKind::Query { request, response } => {
+                    contracts.push(ManifestContract {
+                        family: format!("{}::{}", family_path, request),
+                        topic: topic_key.clone(),
+                        schema_id: shapes.schema_id_for(&family_path, request)?,
+                    });
+                    contracts.push(ManifestContract {
+                        family: format!("{}::{}", family_path, response),
+                        topic: topic_key,
+                        schema_id: shapes.schema_id_for(&family_path, response)?,
+                    });
+                }
+            }
+        }
+
+        collect_contract_manifest_entries(
+            &node.children,
+            &family_path,
+            &node_key_prefix,
+            shapes,
+            contracts,
+        )?;
+    }
+
+    Ok(())
 }
 
 /// Overlay a child version's declared nodes onto the parent's effective tree,
@@ -2265,6 +2413,43 @@ mod tests {
         assert!(preview_flag);
         assert!(!promoted_flag);
         assert_eq!(preview_snapshot, promoted_snapshot);
+    }
+
+    #[test]
+    fn expansion_emits_root_contract_manifest_for_xtask() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                version y2026_1 {
+                    sample {
+                        struct Body { value: u8 }
+                        topic body: state Body;
+                    }
+                }
+                preview version y2026_2 extends y2026_1 {}
+            })
+            .expect("tree expands"),
+        );
+
+        assert!(
+            expanded.contains("pub const API_CONTRACT_MANIFEST"),
+            "root manifest const should be emitted: {expanded}"
+        );
+        assert!(
+            expanded.contains("name : \"y2026_2\""),
+            "preview generation should be represented in the manifest: {expanded}"
+        );
+        assert!(
+            expanded.contains("is_preview : true"),
+            "manifest should carry preview lifecycle: {expanded}"
+        );
+        assert!(
+            expanded.contains("family : \"sample::Body\""),
+            "manifest should carry contract family: {expanded}"
+        );
+        assert!(
+            expanded.contains("topic : \"sample/body\""),
+            "manifest should carry contract topic: {expanded}"
+        );
     }
 
     #[test]
