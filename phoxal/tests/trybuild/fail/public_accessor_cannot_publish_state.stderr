@@ -6,8 +6,8 @@ error[E0308]: mismatched types
    |                         |
    |                         arguments to this method are incorrect
    |
-   = note: expected struct `Topic<phoxal::phoxal_bus::Publish<phoxal_api::y2026_1::drive::State>>`
-              found struct `Topic<phoxal::phoxal_bus::Subscribe<phoxal_api::y2026_1::drive::State>>`
+   = note: expected struct `Topic<phoxal::bus::Publish<phoxal_api::y2026_1::drive::State>>`
+              found struct `Topic<phoxal::bus::Subscribe<phoxal_api::y2026_1::drive::State>>`
 note: method defined here
   --> src/participant/context.rs
    |

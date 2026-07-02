@@ -10,9 +10,9 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::bus::{Bus, BusConfig};
-use phoxal::participant::{ParticipantLaunch, RealClock, run_with_bus};
+use phoxal::participant::{ParticipantLaunch, RealClock};
 use phoxal::prelude::*;
+use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::y2026_1 as api;
 use serial_test::serial;
 

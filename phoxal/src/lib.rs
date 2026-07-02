@@ -103,8 +103,9 @@
 //!   call [`SetupContext::component`](participant::SetupContext::component) to read
 //!   the bound component instance.
 //! - `Tool` is for host-side utilities that inspect the robot model through
-//!   [`SetupContext::robot`](participant::SetupContext::robot). Its privileged
-//!   raw-bus surface is intentionally deferred to plan #07.
+//!   [`SetupContext::robot`](participant::SetupContext::robot). Privileged raw-bus
+//!   access lives under [`raw`] so it is never part of the default checked
+//!   participant surface.
 //! - `Simulator` is a normal participant for simulation-only processes. It carries
 //!   a distinct kind and marker now; simulation clock ownership lands with plan
 //!   #09.
@@ -127,9 +128,12 @@
 //! - [`mod@participant`] - the authoring surface behind the macros: the static metadata
 //!   traits, the contexts, the clock and scheduler, and the runner
 //!   ([`run`] / [`tokio::run`]).
-//! - [`bus`] - the Zenoh-native `bus_abi` boundary: the key scheme, the
-//!   MessagePack codec, the [`BusMetadata`](bus::BusMetadata) attachment, and the
-//!   body-typed handles.
+//! - [`bus`] - the typed contract vocabulary normal participants need: the
+//!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
+//!   body-typed handles, and side-branded [`Topic`](bus::Topic) values.
+//! - [`raw`] - the explicit privileged/tooling surface for opening a raw bus,
+//!   accessing the underlying session, or embedding runtimes on a caller-owned
+//!   bus.
 //! - [`model`] - the authored manifest schemas (`robot.yaml`, `structure.urdf`,
 //!   `component.yaml`, …) that participants and the CLI parse.
 //! - The **official service set** ships alongside this crate in the workspace
@@ -147,14 +151,40 @@
 #[cfg(test)]
 extern crate self as phoxal;
 
-/// The Zenoh-native `bus_abi` boundary, re-exported from the `phoxal-bus` crate
-/// (the ABI floor). Stays addressable at `phoxal::bus::*` so authoring code,
-/// the runner, and the generated macro output keep their existing paths.
-pub use phoxal_bus as bus;
 pub mod check;
 pub mod model;
 pub mod participant;
 pub mod util;
+
+/// Typed contract and handle vocabulary for normal participant authoring.
+///
+/// This module deliberately excludes the raw session-owning bus types
+/// (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`). Checked
+/// participants build IO through [`participant::SetupContext`] and the api-local
+/// topic builders; privileged tools, bridges, and framework tests that need raw
+/// access use [`raw`] instead.
+pub mod bus {
+    pub use phoxal_bus::{
+        ApiVersion, AskQuery, BUS_ABI, BusAbi, BusError, BusMetadata, Codec, CodecError, CodecId,
+        ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, MessagePack, OwnerCap, Publish,
+        Publisher, Querier, QueryCode, QueryError, QueryFailure, Received, Result, ServeQuery,
+        ServerResult, Source, Subscribe, Subscriber, Topic, TopicKind, TopicRole, WildcardPublish,
+        encoding_string,
+    };
+}
+
+/// Explicit raw/permissive bus surface for privileged participants, tooling,
+/// bridges, and framework tests.
+///
+/// Importing this module is the conscious opt-in. The ordinary
+/// `phoxal::prelude::*` and [`bus`] module do not expose raw session/open APIs.
+/// `Tool` participants are emitted as `participant_class = "privileged"`; the
+/// graph checker still includes their schema metadata, but never lets their raw
+/// access satisfy checked topology.
+pub mod raw {
+    pub use crate::participant::runner::run_with_bus;
+    pub use phoxal_bus::*;
+}
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
 /// `Result<T>` via the [`prelude`].

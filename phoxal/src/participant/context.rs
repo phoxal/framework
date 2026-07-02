@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bus::{
-    AskQuery, Bus, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publish,
+    AskQuery, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publish,
     Publisher, Querier, Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
 use crate::participant::spec::{
     DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, ParticipantSpec,
 };
+use phoxal_bus::Bus;
 
 /// Default drop-oldest ring depth for a `Subscriber` built in `#[setup]`.
 const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
@@ -180,8 +181,8 @@ impl<R: ParticipantSpec> SetupContext<R> {
     /// The underlying bus. Not on the default checked-participant surface (plan #00
     /// DoD #11 / plan #07): the raw bus is `pub(crate)` so normal participants and
     /// examples cannot reach around the typed handle builders. Privileged
-    /// participants that genuinely need raw access go through `phoxal-bus`
-    /// directly (`Bus::open` + `run_with_bus`), not through this context.
+    /// participants that genuinely need raw access go through `phoxal::raw`
+    /// (`Bus::open` + `run_with_bus`), not through this context.
     ///
     /// Retained as an in-crate accessor (no current caller) so privileged phoxal
     /// code/tests have the seam without re-widening the documented surface.

@@ -10,7 +10,7 @@ pub mod clock;
 pub mod context;
 pub mod emit;
 pub mod launch;
-mod runner;
+pub(crate) mod runner;
 mod sd_notify;
 pub mod server;
 pub mod spec;
@@ -19,7 +19,7 @@ pub use clock::{ClockSource, RealClock, TestClock};
 pub use context::{SetupContext, ShutdownContext, StepContext, SubscribeBuilder, SubscribeOptions};
 pub use emit::{ParticipantMetadata, emit_apis_json, participant_metadata};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
-pub use runner::{run, run_async, run_with, run_with_bus};
+pub use runner::{run, run_async, run_with};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
     ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, IsDriver,

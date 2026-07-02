@@ -156,8 +156,10 @@ pub fn derive_driver(input: TokenStream) -> TokenStream {
 
 /// Derive the static metadata for a host-side tool struct.
 ///
-/// Tools record `KIND = "tool"` and emit a marker for later raw-bus gating. The
-/// raw-bus setup surface itself is intentionally deferred to plan #07.
+/// Tools record `KIND = "tool"`, emit the `IsTool` marker, and are reported as
+/// `participant_class = "privileged"`. Privileged raw-bus access is intentionally
+/// a separate framework opt-in at `phoxal::raw`, not part of the default checked
+/// participant surface.
 #[proc_macro_derive(Tool, attributes(phoxal))]
 pub fn derive_tool(input: TokenStream) -> TokenStream {
     runtime_derive::expand(input.into(), runtime_derive::AuthoringKind::Tool)
