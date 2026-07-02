@@ -3,7 +3,7 @@ use clap::Subcommand;
 
 pub mod check;
 pub mod generate;
-mod schema;
+pub(crate) mod schema;
 pub mod verify;
 
 #[derive(Debug, Subcommand)]

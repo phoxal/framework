@@ -57,6 +57,27 @@ fn contract_body_consts_are_family_and_topic() {
 }
 
 #[test]
+fn generated_contract_manifest_lists_contract_shapes() {
+    let generation = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|generation| generation.name == "y2026_1")
+        .expect("y2026_1 should be in the generated manifest");
+    assert!(!generation.is_preview);
+    assert_eq!(generation.extends, None);
+
+    let drive_state = generation
+        .contracts
+        .iter()
+        .find(|contract| contract.family == "drive::State")
+        .expect("drive::State should be in the generated manifest");
+    assert_eq!(drive_state.topic, "drive/state");
+    assert_eq!(
+        drive_state.schema_id,
+        <api::drive::State as ContractBody>::SCHEMA_ID
+    );
+}
+
+#[test]
 fn generated_role_const_matches_each_topic_role() {
     // The `ROLE` const is an inherent const generated per body by
     // `phoxal_api_tree!`. Assert representative topics across all three roles so a

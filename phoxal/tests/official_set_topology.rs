@@ -46,7 +46,14 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
     let fixture_dir = root.join("fixture/robot/rgbd-imu-diff-drive");
     let fixture = Robot::read_from_dir(&fixture_dir)
         .unwrap_or_else(|e| panic!("failed to load {}: {e:#}", fixture_dir.display()));
-    assert_eq!(fixture.manifest.api_version, "y2026_1");
+    assert_eq!(
+        fixture.manifest.api_version, None,
+        "the fixture intentionally exercises D5's omitted root api_version"
+    );
+    assert_eq!(
+        fixture.manifest.phoxal_artifacts.generation, None,
+        "the fixture leaves generation resolution to the catalog solver"
+    );
 
     let names = official_service_names(&root);
     assert!(

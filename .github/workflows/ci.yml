@@ -20,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -28,6 +30,9 @@ jobs:
 
       - name: Check preview feature sync
         run: cargo xtask api sync-features --check
+
+      - name: Check promoted API shape freeze
+        run: cargo xtask api freeze-shapes --check
 
       # Full package-output catalog generation builds all official release
       # binaries. PRs use metadata-only mode to gate discovery, schema ids,
@@ -40,3 +45,15 @@ jobs:
 
       - name: Verify metadata-only catalog
         run: cargo xtask catalog verify target/xtask/catalog/phoxal-artifact-catalog.json
+
+      - name: Check no-orphan promotion gate
+        if: github.event_name == 'pull_request'
+        run: cargo xtask api promotion-gate --base ${{ github.event.pull_request.base.sha }} --catalog target/xtask/catalog/phoxal-artifact-catalog.json
+
+      - name: Publish preview impact report
+        run: cargo xtask api preview-impact --catalog target/xtask/catalog/phoxal-artifact-catalog.json --json-out target/xtask/api-preview-impact.json --github-summary
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-preview-impact
+          path: target/xtask/api-preview-impact.json
