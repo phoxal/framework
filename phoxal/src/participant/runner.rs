@@ -110,7 +110,7 @@ where
 /// `source` identity is a property of the *bus*, not the launch: participants
 /// sharing one [`Bus`] publish under that bus's participant id, so distinct
 /// per-participant source attribution still requires a bus per participant. The
-/// `launch` here drives config, bundle/model, and component-instance resolution.
+/// `launch` here drives config, robot-model, and component-instance resolution.
 pub async fn run_with_bus<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
