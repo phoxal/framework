@@ -95,8 +95,6 @@ pub struct UserParticipant {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bus_profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
     #[serde(
         default = "default_user_participant_framework",
@@ -121,21 +119,70 @@ pub struct UserParticipantBuild {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Bus {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub profiles: BTreeMap<String, BusProfile>,
+    /// Router listen endpoints merged into the default localhost listen set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listen: Vec<String>,
+    /// Optional upstream router connection used for deployed robots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uplink: Option<BusUplink>,
 }
 
 impl Bus {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.profiles.is_empty()
+        self.listen.is_empty() && self.uplink.is_none()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BusProfile {
+pub struct BusUplink {
+    /// Upstream Zenoh endpoint the site router should connect to.
     pub connect: String,
+    /// Optional project-local mTLS material for the upstream connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<BusMtlsAuth>,
+    /// Capped retry backoff; retry is forever and never gates readiness.
+    #[serde(default, skip_serializing_if = "BusRetry::is_default")]
+    pub retry: BusRetry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BusMtlsAuth {
+    /// Project-local root CA certificate path used to verify the upstream router.
+    pub ca: PathBuf,
+    /// Project-local client certificate path identifying this robot/site.
+    pub cert: PathBuf,
+    /// Project-local client private-key path paired with `cert`.
+    pub key: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BusRetry {
+    /// Initial retry delay in milliseconds.
+    #[serde(default = "default_bus_retry_initial_ms")]
+    pub initial_ms: u64,
+    /// Maximum retry delay in milliseconds.
+    #[serde(default = "default_bus_retry_max_ms")]
+    pub max_ms: u64,
+}
+
+impl Default for BusRetry {
+    fn default() -> Self {
+        Self {
+            initial_ms: default_bus_retry_initial_ms(),
+            max_ms: default_bus_retry_max_ms(),
+        }
+    }
+}
+
+impl BusRetry {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,22 +267,24 @@ pub enum ValidationError {
     EmptyUserParticipantImage {
         participant: String,
     },
-    EmptyUserParticipantBusProfile {
-        participant: String,
+    EmptyBusListenEndpoint {
+        index: usize,
     },
-    UnknownUserParticipantBusProfile {
-        participant: String,
-        profile: String,
+    UnsupportedBusListenEndpoint {
+        endpoint: String,
     },
-    InvalidBusProfileName {
-        profile: String,
+    NonLoopbackTcpBusListenEndpoint {
+        endpoint: String,
     },
-    ReservedBusProfileName {
-        profile: String,
+    EmptyBusUplinkConnect,
+    EmptyBusUplinkAuthPath {
+        field: String,
     },
-    EmptyBusProfileConnect {
-        profile: String,
+    AbsoluteBusUplinkAuthPath {
+        field: String,
+        path: PathBuf,
     },
+    InvalidBusRetryBackoff,
     MissingComponentSource {
         instance: String,
         source: String,
@@ -314,7 +363,7 @@ impl Robot {
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
-        self.validate_bus_profiles(&mut errors);
+        self.validate_bus(&mut errors);
         self.validate_user_participants(&mut errors);
         self.validate_component_sources(&mut errors);
         self.validate_component_structure(&mut errors);
@@ -421,22 +470,25 @@ impl Robot {
         }
     }
 
-    fn validate_bus_profiles(&self, errors: &mut Vec<ValidationError>) {
-        for (profile, config) in &self.bus.profiles {
-            if profile == "default" {
-                errors.push(ValidationError::ReservedBusProfileName {
-                    profile: profile.clone(),
-                });
+    fn validate_bus(&self, errors: &mut Vec<ValidationError>) {
+        for (index, endpoint) in self.bus.listen.iter().enumerate() {
+            validate_bus_listen_endpoint(index, endpoint, errors);
+        }
+
+        if let Some(uplink) = &self.bus.uplink {
+            if uplink.connect.trim().is_empty() {
+                errors.push(ValidationError::EmptyBusUplinkConnect);
             }
-            if !crate::model::component::v1::is_valid_token(profile) {
-                errors.push(ValidationError::InvalidBusProfileName {
-                    profile: profile.clone(),
-                });
+            if let Some(auth) = &uplink.auth {
+                validate_project_local_path("ca", &auth.ca, errors);
+                validate_project_local_path("cert", &auth.cert, errors);
+                validate_project_local_path("key", &auth.key, errors);
             }
-            if config.connect.trim().is_empty() {
-                errors.push(ValidationError::EmptyBusProfileConnect {
-                    profile: profile.clone(),
-                });
+            if uplink.retry.initial_ms == 0
+                || uplink.retry.max_ms == 0
+                || uplink.retry.initial_ms > uplink.retry.max_ms
+            {
+                errors.push(ValidationError::InvalidBusRetryBackoff);
             }
         }
     }
@@ -451,18 +503,6 @@ impl Robot {
                 errors.push(ValidationError::EmptyUserParticipantImage {
                     participant: participant.clone(),
                 });
-            }
-            if let Some(profile) = &config.bus_profile {
-                if profile.trim().is_empty() {
-                    errors.push(ValidationError::EmptyUserParticipantBusProfile {
-                        participant: participant.clone(),
-                    });
-                } else if profile != "default" && !self.bus.profiles.contains_key(profile) {
-                    errors.push(ValidationError::UnknownUserParticipantBusProfile {
-                        participant: participant.clone(),
-                        profile: profile.clone(),
-                    });
-                }
             }
         }
     }
@@ -531,35 +571,31 @@ impl fmt::Display for ValidationError {
                     "user_participants.{participant}.image must not be empty"
                 )
             }
-            Self::EmptyUserParticipantBusProfile { participant } => {
-                write!(
-                    formatter,
-                    "user_participants.{participant}.bus_profile must not be empty"
-                )
+            Self::EmptyBusListenEndpoint { index } => {
+                write!(formatter, "bus.listen[{index}] must not be empty")
             }
-            Self::UnknownUserParticipantBusProfile {
-                participant,
-                profile,
-            } => write!(
+            Self::UnsupportedBusListenEndpoint { endpoint } => write!(
                 formatter,
-                "user_participants.{participant}.bus_profile references unknown bus profile '{profile}'"
+                "bus.listen endpoint '{endpoint}' must use serial/ or tcp/ on day one"
             ),
-            Self::InvalidBusProfileName { profile } => write!(
+            Self::NonLoopbackTcpBusListenEndpoint { endpoint } => write!(
                 formatter,
-                "bus.profiles.{profile} must contain only lowercase ASCII letters, digits, '_' or '-'"
+                "bus.listen TCP endpoint '{endpoint}' must bind loopback until listen auth ships"
             ),
-            Self::ReservedBusProfileName { profile } => {
-                write!(
-                    formatter,
-                    "bus.profiles.{profile} is reserved; omit the implicit default profile"
-                )
+            Self::EmptyBusUplinkConnect => {
+                formatter.write_str("bus.uplink.connect must not be empty")
             }
-            Self::EmptyBusProfileConnect { profile } => {
-                write!(
-                    formatter,
-                    "bus.profiles.{profile}.connect must not be empty"
-                )
+            Self::EmptyBusUplinkAuthPath { field } => {
+                write!(formatter, "bus.uplink.auth.{field} must not be empty")
             }
+            Self::AbsoluteBusUplinkAuthPath { field, path } => write!(
+                formatter,
+                "bus.uplink.auth.{field} path '{}' must be project-local",
+                path.display()
+            ),
+            Self::InvalidBusRetryBackoff => formatter.write_str(
+                "bus.uplink.retry initial_ms and max_ms must be > 0 with initial_ms <= max_ms",
+            ),
             Self::MissingComponentSource { instance, source } => write!(
                 formatter,
                 "components.instances.{instance}.component references missing source '{source}'"
@@ -637,9 +673,60 @@ fn default_build_context() -> PathBuf {
     PathBuf::from(".")
 }
 
+fn default_bus_retry_initial_ms() -> u64 {
+    1_000
+}
+
+fn default_bus_retry_max_ms() -> u64 {
+    30_000
+}
+
+fn validate_bus_listen_endpoint(index: usize, endpoint: &str, errors: &mut Vec<ValidationError>) {
+    let endpoint = endpoint.trim();
+    if endpoint.is_empty() {
+        errors.push(ValidationError::EmptyBusListenEndpoint { index });
+    } else if endpoint.starts_with("serial/") {
+        // Zenoh owns serial endpoint parsing; day-one framework validation only
+        // gates the accepted listen schemes.
+    } else if let Some(rest) = endpoint.strip_prefix("tcp/") {
+        if !tcp_endpoint_is_loopback(rest) {
+            errors.push(ValidationError::NonLoopbackTcpBusListenEndpoint {
+                endpoint: endpoint.to_string(),
+            });
+        }
+    } else {
+        errors.push(ValidationError::UnsupportedBusListenEndpoint {
+            endpoint: endpoint.to_string(),
+        });
+    }
+}
+
+fn tcp_endpoint_is_loopback(endpoint_tail: &str) -> bool {
+    let host = endpoint_tail
+        .strip_prefix('[')
+        .and_then(|tail| tail.split_once(']').map(|(host, _rest)| host))
+        .or_else(|| endpoint_tail.split_once(':').map(|(host, _port)| host))
+        .unwrap_or(endpoint_tail);
+
+    host == "localhost" || host == "::1" || host == "127.0.0.1" || host.starts_with("127.")
+}
+
+fn validate_project_local_path(field: &str, path: &Path, errors: &mut Vec<ValidationError>) {
+    if path.as_os_str().is_empty() {
+        errors.push(ValidationError::EmptyBusUplinkAuthPath {
+            field: field.to_string(),
+        });
+    } else if path.is_absolute() {
+        errors.push(ValidationError::AbsoluteBusUplinkAuthPath {
+            field: field.to_string(),
+            path: path.to_path_buf(),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::{Channel, Robot, UserParticipantBuild};
 
@@ -683,10 +770,9 @@ components:
         assert_eq!(participant.path, PathBuf::from("participants/autonomy"));
         assert_eq!(participant.framework, "match-platform");
         assert_eq!(participant.image, None);
-        assert_eq!(participant.bus_profile, None);
         assert_eq!(participant.config, None);
         assert_eq!(participant.build, None);
-        assert!(robot.bus.profiles.is_empty());
+        assert!(robot.bus.is_empty());
 
         Ok(())
     }
@@ -739,7 +825,7 @@ components:
     }
 
     #[test]
-    fn bus_profiles_and_user_participant_deploy_fields_parse_and_validate() -> anyhow::Result<()> {
+    fn bus_listen_and_uplink_parse_and_validate() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -752,7 +838,6 @@ user_participants:
   autonomy:
     path: participants/autonomy
     image: ghcr.io/acme/autonomy@sha256:abc
-    bus_profile: mcu_serial
     config:
       max_linear_speed_mps: 0.6
       enabled: true
@@ -774,9 +859,18 @@ components:
         motor:
           kind: motor
 bus:
-  profiles:
-    mcu_serial:
-      connect: serial//dev/ttyACM0#baudrate=115200
+  listen:
+  - serial//dev/ttyACM0#baudrate=115200
+  - tcp/127.0.0.1:7448
+  uplink:
+    connect: tls/uplink.phoxal.cloud:7447
+    auth:
+      ca: identity/ca.pem
+      cert: identity/robot.pem
+      key: identity/robot.key
+    retry:
+      initial_ms: 2000
+      max_ms: 10000
 "#,
         )?;
 
@@ -788,7 +882,6 @@ bus:
             participant.image.as_deref(),
             Some("ghcr.io/acme/autonomy@sha256:abc")
         );
-        assert_eq!(participant.bus_profile.as_deref(), Some("mcu_serial"));
         assert_eq!(
             participant
                 .config
@@ -798,22 +891,29 @@ bus:
             Some(true)
         );
         assert_eq!(
-            robot
-                .bus
-                .profiles
-                .get("mcu_serial")
-                .map(|profile| profile.connect.as_str()),
-            Some("serial//dev/ttyACM0#baudrate=115200")
+            robot.bus.listen,
+            vec![
+                "serial//dev/ttyACM0#baudrate=115200".to_string(),
+                "tcp/127.0.0.1:7448".to_string(),
+            ]
+        );
+        let uplink = robot.bus.uplink.as_ref().expect("uplink should parse");
+        assert_eq!(uplink.connect, "tls/uplink.phoxal.cloud:7447");
+        assert_eq!(uplink.retry.initial_ms, 2000);
+        assert_eq!(uplink.retry.max_ms, 10000);
+        assert_eq!(
+            uplink.auth.as_ref().map(|auth| auth.cert.as_path()),
+            Some(Path::new("identity/robot.pem"))
         );
         robot
             .validate()
-            .expect("bus profile reference should validate");
+            .expect("bus listen and uplink should validate");
 
         Ok(())
     }
 
     #[test]
-    fn user_participant_rejects_unknown_bus_profile() -> anyhow::Result<()> {
+    fn bus_rejects_non_loopback_tcp_listen() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
 schema: v0
@@ -822,10 +922,6 @@ identity:
   id: test-bot
   namespace: dev
 phoxal_participants: {}
-user_participants:
-  autonomy:
-    path: participants/autonomy
-    bus_profile: mcu_serial
 motion:
   kinematic:
     kind: omnidirectional
@@ -834,16 +930,18 @@ motion:
 components:
   sources: {}
   instances: {}
+bus:
+  listen:
+  - tcp/0.0.0.0:7447
 "#,
         )?;
 
         let errors = robot
             .validate()
-            .expect_err("unknown bus profile should fail validation");
+            .expect_err("non-loopback TCP listen should fail validation");
         assert!(
-            errors.contains(&super::ValidationError::UnknownUserParticipantBusProfile {
-                participant: "autonomy".to_string(),
-                profile: "mcu_serial".to_string(),
+            errors.contains(&super::ValidationError::NonLoopbackTcpBusListenEndpoint {
+                endpoint: "tcp/0.0.0.0:7447".to_string(),
             })
         );
 
@@ -851,8 +949,8 @@ components:
     }
 
     #[test]
-    fn default_bus_profile_is_implicit_and_must_not_be_declared() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(
+    fn user_participant_rejects_retired_bus_profile_field() {
+        let error = Robot::parse_from_string(
             r#"
 schema: v0
 api_version: y2026_1
@@ -872,30 +970,14 @@ motion:
 components:
   sources: {}
   instances: {}
-bus:
-  profiles:
-    default:
-      connect: tcp/127.0.0.1:7447
 "#,
-        )?;
+        )
+        .expect_err("retired bus_profile field should fail to parse");
 
-        let errors = robot
-            .validate()
-            .expect_err("declared default profile should fail validation");
         assert!(
-            errors.contains(&super::ValidationError::ReservedBusProfileName {
-                profile: "default".to_string(),
-            })
+            format!("{error:#}").contains("unknown field `bus_profile`"),
+            "got: {error:#}"
         );
-        assert!(
-            !errors.iter().any(|error| matches!(
-                error,
-                super::ValidationError::UnknownUserParticipantBusProfile { .. }
-            )),
-            "bus_profile: default should refer to the implicit default"
-        );
-
-        Ok(())
     }
 
     #[test]

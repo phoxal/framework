@@ -243,7 +243,7 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
                 entry.version
             );
         }
-        if entry.contract_uses.is_empty() {
+        if entry.contract_uses.is_empty() && entry.kind != ArtifactKind::Tool {
             bail!("{} contract_uses must not be empty", entry.artifact_id);
         }
         for contract in &entry.contract_uses {
@@ -299,4 +299,81 @@ pub(crate) fn is_schema_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(kind: ArtifactKind, contract_uses: Vec<ContractUse>) -> CatalogEntry {
+        let artifact_id = match kind {
+            ArtifactKind::Service => "frame",
+            ArtifactKind::Driver => "bno085",
+            ArtifactKind::Tool => "tool-router",
+            ArtifactKind::Simulator => "sim",
+        }
+        .to_string();
+        let mut channels = BTreeMap::new();
+        channels.insert(Channel::Stable, "0.1.0".to_string());
+        let mut status = BTreeMap::new();
+        status.insert("aarch64-apple-darwin".to_string(), ArtifactStatus::Pending);
+        CatalogEntry {
+            artifact_id,
+            kind,
+            package: "package".to_string(),
+            version: "0.1.0".to_string(),
+            api_generation: "y2026_1".to_string(),
+            contract_uses,
+            target_triples: vec!["aarch64-apple-darwin".to_string()],
+            release_assets: BTreeMap::new(),
+            launch_facts: LaunchFacts {
+                participant_kind: kind.emit_apis_kind().to_string(),
+                participant_class: match kind {
+                    ArtifactKind::Tool => "privileged",
+                    _ => "checked",
+                }
+                .to_string(),
+                router: RouterFacts {
+                    needs_zenoh_router: true,
+                },
+                systemd: SystemdFacts {
+                    groups: Vec::new(),
+                    devices: Vec::new(),
+                    source: "test".to_string(),
+                },
+            },
+            engine_versions: EngineVersions {
+                phoxal: None,
+                phoxal_bus: None,
+                zenoh: None,
+            },
+            channels,
+            status,
+            changed_contracts: Vec::new(),
+        }
+    }
+
+    fn contract() -> ContractUse {
+        ContractUse {
+            family: "frame::LookupRequest".to_string(),
+            topic_template: "frame/lookup".to_string(),
+            direction: "query_request".to_string(),
+            schema_id: "0123456789abcdef".to_string(),
+        }
+    }
+
+    #[test]
+    fn checked_artifact_requires_contract_uses() {
+        let err = validate_entries(&[entry(ArtifactKind::Service, Vec::new())])
+            .expect_err("checked service should require graph contracts");
+        assert!(err.to_string().contains("contract_uses"));
+    }
+
+    #[test]
+    fn tool_artifact_may_have_empty_contract_uses() {
+        validate_entries(&[entry(ArtifactKind::Tool, Vec::new())])
+            .expect("privileged setup-only tools can have no graph contracts");
+        validate_entries(&[entry(ArtifactKind::Tool, vec![contract()])])
+            .expect("tools with graph contracts still validate");
+    }
 }

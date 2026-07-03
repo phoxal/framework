@@ -10,8 +10,6 @@ use serde::{Deserialize, Serialize};
 pub enum ArtifactKind {
     Service,
     Driver,
-    // Planned by the xtask command tree, but no workspace package maps here yet.
-    #[allow(dead_code)]
     Tool,
     // Planned by the xtask command tree, but no workspace package maps here yet.
     #[allow(dead_code)]
@@ -150,6 +148,11 @@ fn classify_package(package_name: &str) -> Option<(ArtifactKind, String)> {
             package_name
                 .strip_prefix("phoxal-driver-")
                 .map(|id| (ArtifactKind::Driver, id.to_string()))
+        })
+        .or_else(|| {
+            package_name
+                .strip_prefix("phoxal-tool-")
+                .map(|id| (ArtifactKind::Tool, id.to_string()))
         })
 }
 

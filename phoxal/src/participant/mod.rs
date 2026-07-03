@@ -6,6 +6,7 @@
 //! `#[phoxal::behavior]` (see the crate docs); this module is the
 //! runner-facing machinery those macros target.
 
+mod bus_log;
 pub mod clock;
 pub mod context;
 pub mod emit;

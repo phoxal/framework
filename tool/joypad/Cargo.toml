@@ -1,22 +1,26 @@
 [package]
-name = "phoxal-service-asset"
-version = "0.19.1"
+name = "phoxal-tool-joypad"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official service: asset - serves robot-root assets over the bus."
+description = "Phoxal official tool: joypad - minimal gamepad teleop bridge."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-service-asset"
+name = "phoxal-tool-joypad"
 path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true }
 phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+gilrs = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

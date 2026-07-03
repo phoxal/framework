@@ -12,7 +12,7 @@ use crate::bus::{
 };
 use crate::model::v1::Robot;
 use crate::participant::spec::{
-    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, ParticipantSpec,
+    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, IsTool, ParticipantSpec,
 };
 use phoxal_bus::Bus;
 
@@ -41,7 +41,7 @@ pub struct SetupContext<R: ParticipantSpec> {
     bus: Bus,
     owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
-    bundle_root: Option<PathBuf>,
+    robot_root: Option<PathBuf>,
     component_instance: Option<String>,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -51,14 +51,14 @@ impl<R: ParticipantSpec> SetupContext<R> {
         bus: Bus,
         owner_cap: OwnerCap,
         robot: Option<Arc<Robot>>,
-        bundle_root: Option<PathBuf>,
+        robot_root: Option<PathBuf>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
             bus,
             owner_cap,
             robot,
-            bundle_root,
+            robot_root,
             component_instance,
             _runtime: PhantomData,
         }
@@ -66,21 +66,21 @@ impl<R: ParticipantSpec> SetupContext<R> {
 
     /// The resolved robot model (`robot.yaml` + components + structure). Official
     /// participants build their typed state from this (D33); it is present only when
-    /// the runner was launched with a bundle. Returns an error otherwise.
+    /// the runner was launched with a robot root. Returns an error otherwise.
     pub fn robot(&self) -> crate::Result<&Robot> {
         self.robot.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "no robot model is bound (this participant was launched without a bundle)"
+                "no robot model is bound (this participant was launched without a robot root)"
             )
         })
     }
 
-    /// The bundle root directory (holds the robot model + assets). Present only
-    /// when launched with a bundle.
-    pub fn bundle_root(&self) -> crate::Result<&Path> {
-        self.bundle_root.as_deref().ok_or_else(|| {
+    /// The robot root directory (holds the robot model + assets). Present only
+    /// when launched with a robot root.
+    pub fn robot_root(&self) -> crate::Result<&Path> {
+        self.robot_root.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "no bundle root is bound (this participant was launched without a bundle)"
+                "no robot root is bound (this participant was launched without a robot root)"
             )
         })
     }
@@ -179,10 +179,10 @@ impl<R: ParticipantSpec> SetupContext<R> {
     }
 
     /// The underlying bus. Not on the default checked-participant surface (plan #00
-    /// DoD #11 / plan #07): the raw bus is `pub(crate)` so normal participants and
-    /// examples cannot reach around the typed handle builders. Privileged
-    /// participants that genuinely need raw access go through `phoxal::raw`
-    /// (`Bus::open` + `run_with_bus`), not through this context.
+    /// DoD #11 / plan #07): normal participants and examples cannot reach around
+    /// the typed handle builders. Privileged participants that genuinely need raw
+    /// access go through `phoxal::raw` (`Bus::open` + `run_with_bus`) or the
+    /// tool-only [`Self::raw_bus`] accessor.
     ///
     /// Retained as an in-crate accessor (no current caller) so privileged phoxal
     /// code/tests have the seam without re-widening the documented surface.
@@ -203,6 +203,19 @@ where
         self.component_instance.as_deref().ok_or_else(|| {
             anyhow::anyhow!("no component instance is bound (this driver was launched without one)")
         })
+    }
+}
+
+impl<R> SetupContext<R>
+where
+    R: ParticipantSpec + IsTool,
+{
+    /// Clone the runner-owned raw bus for privileged tool internals.
+    ///
+    /// The bus has already been opened from the clap/env launch contract, so tools
+    /// that need raw access do not reparse launch env or open an unrelated session.
+    pub fn raw_bus(&self) -> Bus {
+        self.bus.clone()
     }
 }
 

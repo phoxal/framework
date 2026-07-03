@@ -20,6 +20,11 @@
           "schema_id": "73cd0a0afc5d9708"
         },
         {
+          "family": "bus::uplink::State",
+          "topic": "bus/uplink/state",
+          "schema_id": "730bc8aa4847a644"
+        },
+        {
           "family": "component::accelerometer::Sample",
           "topic": "component/{instance}/accelerometer/{capability}/sample",
           "schema_id": "981b31474b4148bb"
@@ -153,6 +158,11 @@
           "family": "localize::LocalizationState",
           "topic": "localize/state",
           "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "logs::Event",
+          "topic": "logs/{participant_id}",
+          "schema_id": "7cb8d62644f449bc"
         },
         {
           "family": "map::Revision",

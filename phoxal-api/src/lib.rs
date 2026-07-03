@@ -434,6 +434,72 @@ phoxal_api_tree! {
             topic state: state State;
         }
 
+        logs(participant_id) {
+            /// Wall-clock timestamp carried by a structured bus log event.
+            struct Timestamp {
+                unix_seconds: i64,
+                nanos: u32,
+            }
+
+            /// The severity level of a structured bus log event.
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum Level {
+                Error,
+                Warn,
+                Info,
+                Debug,
+                Trace,
+            }
+
+            /// A scalar tracing field value captured from a log event.
+            #[serde(untagged)]
+            enum LogValue {
+                Bool(bool),
+                I64(i64),
+                U64(u64),
+                F64(f64),
+                String(String),
+            }
+
+            /// One structured runner log event published out-of-band.
+            struct Event {
+                seq: u64,
+                time: Timestamp,
+                level: Level,
+                target: String,
+                message: String,
+                fields: ::std::collections::BTreeMap<String, LogValue>,
+                dropped: u32,
+            }
+
+            topic self: state Event;
+        }
+
+        bus {
+            uplink {
+                /// Observable state of the router's optional upstream connection.
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum UplinkPhase {
+                    Disabled,
+                    Connecting,
+                    Connected,
+                    Retrying,
+                }
+
+                /// Router-owned out-of-band state for the optional site uplink.
+                struct State {
+                    phase: UplinkPhase,
+                    connect: Option<String>,
+                    retry_attempt: u32,
+                    detail: Option<String>,
+                }
+
+                topic state: state State;
+            }
+        }
+
         plan {
             /// One pose along a planned path.
             struct PathPose {
