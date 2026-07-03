@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use phoxal::check::{
-    self, ComponentCapability, Contract as CheckContract, Direction, ParticipantApis,
-    ParticipantClass, ParticipantScope, RobotGraph,
+    self, CheckInput, ComponentCapability, Contract as CheckContract, Direction, ParticipantApis,
+    ParticipantClass, ParticipantKind, ParticipantScope, PlanMode, RobotGraph,
 };
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
@@ -93,7 +93,13 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
 
     add_fixture_external_participants(&mut participants, &schema_ids, &fixture);
 
-    let report = check::check_graph_with_topology(&participants, &robot_graph(&fixture));
+    let graph = robot_graph(&fixture);
+    let report = check::check_plan(CheckInput {
+        mode: PlanMode::Deploy,
+        participants: &participants,
+        robot_graph: &graph,
+        substitutions: &[],
+    });
     assert!(
         report.problems.is_empty(),
         "fixture topology has shared-check errors: {:#?}",
@@ -125,6 +131,7 @@ fn participant_from_metadata(metadata: &ParticipantMetadata, robot: &Robot) -> P
     ParticipantApis {
         participant_id: metadata.artifact.id.clone(),
         artifact_id: metadata.artifact.id.clone(),
+        participant_kind: ParticipantKind::parse(&metadata.artifact.kind),
         participant_class,
         api_version: metadata.api_version.clone(),
         bus_abi: Some(metadata.bus_abi.clone()),
@@ -240,6 +247,7 @@ fn fixture_participant(id: &str, contracts: Vec<CheckContract>) -> ParticipantAp
     ParticipantApis {
         participant_id: id.to_string(),
         artifact_id: id.to_string(),
+        participant_kind: ParticipantKind::Service,
         participant_class: ParticipantClass::Checked,
         api_version: "y2026_1".to_string(),
         bus_abi: None,
