@@ -26,8 +26,10 @@ use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::emit::print_emit_apis;
+use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, LaunchAction, ParticipantLaunch};
 use crate::participant::spec::{MissedTick, ParticipantBehavior, StepSchedule};
+use phoxal_api::y2026_1 as api;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
@@ -142,6 +144,30 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
+    let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), launch.participant_id.clone());
+    heartbeat.publish(clock.now());
+
+    let result =
+        run_lifecycle_inner::<R, C, S>(bus, launch, &clock, shutdown, &mut heartbeat).await;
+    if result.is_err() {
+        heartbeat.set_readiness(api::presence::Readiness::Failed);
+        heartbeat.publish(clock.now());
+    }
+    result
+}
+
+async fn run_lifecycle_inner<R, C, S>(
+    bus: &Bus,
+    launch: ParticipantLaunch,
+    clock: &C,
+    shutdown: S,
+    heartbeat: &mut HeartbeatPublisher,
+) -> crate::Result<()>
+where
+    R: ParticipantBehavior,
+    C: ClockSource,
+    S: Future<Output = ()>,
+{
     R::__validate_server_topics().map_err(anyhow::Error::msg)?;
 
     let config: R::Config = match &launch.config {
@@ -218,18 +244,26 @@ where
 
     let schedule = R::__step_schedule();
     let shutdown = pin!(shutdown);
+    heartbeat.set_readiness(api::presence::Readiness::Ready);
+    heartbeat.publish(clock.now());
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
     super::sd_notify::ready();
+    let watchdog = super::sd_notify::Watchdog::start();
     main_loop::<R, C, S>(
         &mut participant,
         bus,
-        &clock,
+        clock,
         schedule,
         &committed,
         &mut excl_rx,
         shutdown,
+        heartbeat,
+        &watchdog,
     )
     .await;
+    watchdog.shutdown();
+    heartbeat.set_readiness(api::presence::Readiness::Degraded);
+    heartbeat.publish(clock.now());
     drop(excl_tx);
 
     for task in server_tasks {
@@ -267,6 +301,8 @@ async fn main_loop<R, C, S>(
     committed: &Arc<ArcSwapOption<R::Snapshot>>,
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
+    heartbeat: &mut HeartbeatPublisher,
+    watchdog: &super::sd_notify::Watchdog,
 ) where
     R: ParticipantBehavior,
     C: ClockSource,
@@ -276,16 +312,22 @@ async fn main_loop<R, C, S>(
     let mut step_index: u64 = 0;
     let mut last_time_ns = clock.now().time_ns();
     let mut next = tokio::time::Instant::now() + period.unwrap_or_else(|| Duration::from_secs(1));
+    let mut next_heartbeat = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
-            // Order matters: shutdown first, then a *due* step, then server
-            // queries. A due step takes priority so a steady query backlog cannot
-            // starve the control loop; between steps (timer pending) queries are
-            // served. `Some(..)` disables the query branch if the channel ever
-            // closes, so it never busy-loops.
+            // Order matters: shutdown first, then the framework health tick, then
+            // a *due* step, then server queries. Health is cheap and must not be
+            // starved by an overloaded participant; due steps still take priority
+            // over a steady query backlog. `Some(..)` disables the query branch if
+            // the channel ever closes, so it never busy-loops.
             biased;
             _ = &mut shutdown => return,
+            _ = heartbeat_tick(next_heartbeat) => {
+                heartbeat.publish(clock.now());
+                watchdog.feed();
+                advance_deadline(&mut next_heartbeat, heartbeat::HEARTBEAT_INTERVAL);
+            }
             _ = step_tick(period, next) => {
                 let Some(period) = period else { continue };
                 let now = clock.now();
@@ -315,6 +357,7 @@ async fn main_loop<R, C, S>(
                         tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
                     }
                 }
+                watchdog.feed();
             }
             Some(incoming) = excl_rx.recv() => {
                 // Commit only if the handler succeeded (D14/D32: retain the prior
@@ -322,8 +365,21 @@ async fn main_loop<R, C, S>(
                 if serve_exclusive_query::<R>(participant, bus, incoming).await {
                     commit_snapshot::<R>(participant, committed);
                 }
+                watchdog.feed();
             }
         }
+    }
+}
+
+async fn heartbeat_tick(next: tokio::time::Instant) {
+    tokio::time::sleep_until(next).await;
+}
+
+fn advance_deadline(next: &mut tokio::time::Instant, period: Duration) {
+    *next += period;
+    let now = tokio::time::Instant::now();
+    while *next <= now {
+        *next += period;
     }
 }
 

@@ -4,11 +4,14 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use phoxal::bus::{OwnerCap, Subscriber};
 use phoxal::participant::{ParticipantLaunch, RealClock, emit_apis_json, run_with};
 use phoxal::prelude::*;
+use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::y2026_1 as api;
 
 static STEPS: AtomicU64 = AtomicU64::new(0);
+static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 
@@ -17,6 +20,10 @@ static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 struct Counter {
     target: Publisher<api::drive::Target>,
 }
+
+#[derive(phoxal::Service)]
+#[phoxal(id = "idle-presence", api = y2026_1)]
+struct IdlePresence {}
 
 #[derive(serde::Deserialize, phoxal::schemars::JsonSchema)]
 struct CounterConfig {
@@ -75,6 +82,14 @@ impl Counter {
     async fn shutdown(&mut self) -> Result<()> {
         SHUTDOWN_CALLED.store(true, Ordering::Relaxed);
         Ok(())
+    }
+}
+
+#[phoxal::behavior]
+impl IdlePresence {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+        Ok(Self {})
     }
 }
 
@@ -181,6 +196,74 @@ async fn runner_runs_steps_then_shuts_down_cleanly() {
     assert!(
         SHUTDOWN_CALLED.load(Ordering::Relaxed),
         "the #[shutdown] hook should have run"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runner_publishes_presence_heartbeats_from_idle_loop() {
+    let participant_id = "idle-presence-1";
+    let namespace = unique_namespace("heartbeat");
+    let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
+    bus_config.participant = participant_id.to_string();
+    let bus = Bus::open(bus_config).await.expect("bus should open");
+    let heartbeat_topic = api::topic::internal::new(OwnerCap::__mint())
+        .presence()
+        .heartbeat();
+    let heartbeats = Subscriber::<api::presence::Heartbeat>::new(&bus, &heartbeat_topic, 16)
+        .await
+        .expect("heartbeat subscriber should attach");
+
+    let mut launch = ParticipantLaunch::local(participant_id, "robot");
+    launch.namespace = namespace;
+    let runner = run_with_bus::<IdlePresence, _, _>(&bus, launch, RealClock::new(), async {
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+    });
+    let collector = async {
+        let mut readiness = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(3200);
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining.min(Duration::from_millis(250)), heartbeats.recv())
+                .await
+            {
+                Ok(Ok(received)) if received.body.participant == participant_id => {
+                    readiness.push(received.body.readiness);
+                    if readiness.contains(&api::presence::Readiness::Initializing)
+                        && readiness.contains(&api::presence::Readiness::Degraded)
+                        && readiness
+                            .iter()
+                            .filter(|state| **state == api::presence::Readiness::Ready)
+                            .count()
+                            >= 2
+                    {
+                        break;
+                    }
+                }
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+            }
+        }
+        readiness
+    };
+
+    let (run_result, readiness) = tokio::join!(runner, collector);
+    run_result.expect("runner should complete cleanly");
+    bus.close().await.expect("bus should close");
+
+    assert!(
+        readiness.contains(&api::presence::Readiness::Initializing),
+        "runner should publish Initializing before setup completes; got {readiness:?}"
+    );
+    assert!(
+        readiness
+            .iter()
+            .filter(|state| **state == api::presence::Readiness::Ready)
+            .count()
+            >= 2,
+        "idle runner should publish repeated Ready heartbeats on cadence; got {readiness:?}"
+    );
+    assert!(
+        readiness.contains(&api::presence::Readiness::Degraded),
+        "runner should publish Degraded while stopping; got {readiness:?}"
     );
 }
 
@@ -319,4 +402,9 @@ fn emit_apis_reports_explicit_contracts_once() {
             && c["topic"] == "map/submap"
             && c["direction"] == "query_response"
     }));
+}
+
+fn unique_namespace(label: &str) -> String {
+    let seq = NAMESPACE_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("test/{label}/{}/{}", std::process::id(), seq)
 }
