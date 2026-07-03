@@ -70,7 +70,7 @@ Key rules the example shows:
   The derive emits a `ContractBody<Api = R::Api>` assertion, so a body from another API version is a **compile error**.
 - Topics are api-local: `api::topic::new().drive().state()`.
 - The wire body is the plain payload; `api_version`, family, and codec ride bus metadata.
-  Normal participants never open Zenoh - the runner opens the bundle-selected bus profile before `#[setup]`.
+  Normal participants never open Zenoh - the runner opens the launch-selected bus profile before `#[setup]`.
 - `config` is for **user participants only**.
   Official participants take no `config` param and read the robot model through `ctx.robot()`.
 - `cargo run --example runtime_control_loop emit-apis` prints the participant's static metadata as one JSON document (the `emit-apis` subcommand) and exits.

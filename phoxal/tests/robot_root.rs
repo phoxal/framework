@@ -1,5 +1,5 @@
-//! The runner loads the resolved robot model from a bundle and exposes it to
-//! `#[setup]` via `SetupContext::robot()` / `bundle_root()` (D33).
+//! The runner loads the resolved robot model from a robot root and exposes it to
+//! `#[setup]` via `SetupContext::robot()` / `robot_root()` (D33).
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -21,7 +21,7 @@ impl ReadsRobot {
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         // An official-style participant reads its typed state from the robot model.
         let robot = ctx.robot()?;
-        let root = ctx.bundle_root()?;
+        let root = ctx.robot_root()?;
         let _ = SEEN.set((
             robot.manifest.identity.id.clone(),
             root.display().to_string(),
@@ -36,17 +36,17 @@ fn fixture_dir() -> PathBuf {
 
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn setup_reads_robot_model_from_the_bundle() {
+async fn setup_reads_robot_model_from_the_root() {
     let fixture = fixture_dir();
     let launch = ParticipantLaunch::local("reads-robot-1", "rgbd-imu-diff-drive")
-        .with_bundle_root(fixture.clone());
+        .with_robot_root(fixture.clone());
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
 
     run_with::<ReadsRobot, _, _>(launch, RealClock::new(), shutdown)
         .await
-        .expect("runner should complete with a bundle");
+        .expect("runner should complete with a robot root");
 
     let (id, root) = SEEN.get().expect("setup should have read the robot model");
     assert_eq!(id, "rgbd-imu-diff-drive");
@@ -55,8 +55,8 @@ async fn setup_reads_robot_model_from_the_bundle() {
 
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn robot_is_absent_without_a_bundle() {
-    // No bundle root → `ctx.robot()` errors, so setup fails and the runner
+async fn robot_is_absent_without_a_root() {
+    // No robot root means `ctx.robot()` errors, so setup fails and the runner
     // surfaces the error.
     let launch = ParticipantLaunch::local("reads-robot-2", "robot");
     let shutdown = async {

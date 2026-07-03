@@ -24,7 +24,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
   never the body or the key (see [CONTRACTS.md](./CONTRACTS.md)).
 - Endpoints use Zenoh endpoint syntax directly (`tcp/127.0.0.1:7447`,
   `tcp/router:7447`); endpoint literals and device paths live in the
-  manifest/bundle/launch layer, never in service source.
+  manifest/launch layer, never in service source.
 - By convention each topic has one producer: products (state, telemetry) are read
   via `Subscriber`/`Latest` and commands are sent via `Publisher`, with the opposite
   side owned by whoever produces the effect.
@@ -125,8 +125,9 @@ the only source of keys, and the wire body never appears in the key
   ([`phoxal/src/participant/context.rs`](../phoxal/src/participant/context.rs)).
 - The entrypoint is plain Rust: `fn main() -> phoxal::Result<()> {
   phoxal::run::<Participant>() }`.
-  The runner owns args/env, bundle + robot-model loading, the bus connection, the
-  clock, step scheduling, server dispatch, snapshot commits, and shutdown.
+  The runner owns the clap/env launch contract, robot-model loading, the bus
+  connection, the clock, step scheduling, server dispatch, snapshot commits, and
+  shutdown.
   Every binary also answers a top-level `emit-apis` subcommand that prints its
   static metadata as one JSON document and exits before any of that
   ([`phoxal/src/participant/emit.rs`](../phoxal/src/participant/emit.rs)).

@@ -1,13 +1,13 @@
 //! `asset` - the official asset participant.
 //!
 //! A server-only official participant: no `#[step]`, one exclusive `#[server]` serving
-//! `asset/get` from the deploy bundle. It consumes no topics; it reads the bundle
-//! root via `ctx.bundle_root()` (D33: official services build their state from the
-//! model / bundle, not a typed config block).
-//! On each request it resolves the requested path against the bundle root and
+//! `asset/get` from the robot root. It consumes no topics; it reads the robot
+//! root via `ctx.robot_root()` (D33: official services build their state from the
+//! model, not a typed config block).
+//! On each request it resolves the requested path against the robot root and
 //! returns the file bytes, reporting a missing file or an invalid path instead.
 //! It rejects path traversal (empty paths, backslashes, `..` segments) before
-//! touching the filesystem, so requests cannot escape the bundle root.
+//! touching the filesystem, so requests cannot escape the robot root.
 
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ use phoxal_api::y2026_1 as api;
 #[derive(phoxal::Service)]
 #[phoxal(id = "asset", api = y2026_1)]
 struct Asset {
-    bundle_root: PathBuf,
+    robot_root: PathBuf,
 }
 
 #[phoxal::behavior]
@@ -25,7 +25,7 @@ impl Asset {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         Ok(Self {
-            bundle_root: ctx.bundle_root()?.to_path_buf(),
+            robot_root: ctx.robot_root()?.to_path_buf(),
         })
     }
 
@@ -34,17 +34,17 @@ impl Asset {
         &mut self,
         request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
-        Ok(resolve(&self.bundle_root, &request.path))
+        Ok(resolve(&self.robot_root, &request.path))
     }
 }
 
-/// Resolve a requested asset path against the bundle root, rejecting traversal.
-fn resolve(bundle_root: &std::path::Path, path: &str) -> api::asset::GetResponse {
+/// Resolve a requested asset path against the robot root, rejecting traversal.
+fn resolve(robot_root: &std::path::Path, path: &str) -> api::asset::GetResponse {
     let requested = path.trim().trim_start_matches('/');
     if !is_safe_relative(requested) {
         return api::asset::GetResponse::InvalidPath;
     }
-    let full = bundle_root.join(requested);
+    let full = robot_root.join(requested);
     match std::fs::read(&full) {
         Ok(bytes) => api::asset::GetResponse::Found { bytes },
         Err(_) => api::asset::GetResponse::Missing,
