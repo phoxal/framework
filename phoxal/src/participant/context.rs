@@ -41,7 +41,7 @@ pub struct SetupContext<R: ParticipantSpec> {
     bus: Bus,
     owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
-    bundle_root: Option<PathBuf>,
+    robot_root: Option<PathBuf>,
     component_instance: Option<String>,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -51,14 +51,14 @@ impl<R: ParticipantSpec> SetupContext<R> {
         bus: Bus,
         owner_cap: OwnerCap,
         robot: Option<Arc<Robot>>,
-        bundle_root: Option<PathBuf>,
+        robot_root: Option<PathBuf>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
             bus,
             owner_cap,
             robot,
-            bundle_root,
+            robot_root,
             component_instance,
             _runtime: PhantomData,
         }
@@ -66,21 +66,21 @@ impl<R: ParticipantSpec> SetupContext<R> {
 
     /// The resolved robot model (`robot.yaml` + components + structure). Official
     /// participants build their typed state from this (D33); it is present only when
-    /// the runner was launched with a bundle. Returns an error otherwise.
+    /// the runner was launched with a robot root. Returns an error otherwise.
     pub fn robot(&self) -> crate::Result<&Robot> {
         self.robot.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "no robot model is bound (this participant was launched without a bundle)"
+                "no robot model is bound (this participant was launched without a robot root)"
             )
         })
     }
 
-    /// The bundle root directory (holds the robot model + assets). Present only
-    /// when launched with a bundle.
-    pub fn bundle_root(&self) -> crate::Result<&Path> {
-        self.bundle_root.as_deref().ok_or_else(|| {
+    /// The robot root directory (holds the robot model + assets). Present only
+    /// when launched with a robot root.
+    pub fn robot_root(&self) -> crate::Result<&Path> {
+        self.robot_root.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
-                "no bundle root is bound (this participant was launched without a bundle)"
+                "no robot root is bound (this participant was launched without a robot root)"
             )
         })
     }

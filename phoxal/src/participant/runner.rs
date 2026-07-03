@@ -25,7 +25,7 @@ use crate::bus::QueryFailure;
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::emit::print_emit_apis;
-use crate::participant::launch::{ClockMode, ParticipantLaunch};
+use crate::participant::launch::{ClockMode, LaunchAction, ParticipantLaunch};
 use crate::participant::spec::{MissedTick, ParticipantBehavior, StepSchedule};
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
@@ -43,19 +43,18 @@ pub fn run<R: ParticipantBehavior>() -> crate::Result<()> {
 /// Async host runner for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
 pub async fn run_async<R: ParticipantBehavior>() -> crate::Result<()> {
-    // The `emit-apis` subcommand short-circuits before config / `.env` / tracing /
-    // Zenoh / setup - the compiled-in metadata is authoritative (D50).
-    if std::env::args().nth(1).as_deref() == Some("emit-apis") {
-        print_emit_apis::<R>();
-        return Ok(());
-    }
+    let launch = match ParticipantLaunch::from_cli(R::ID, "robot")? {
+        LaunchAction::Run(launch) => launch,
+        // The `emit-apis` subcommand short-circuits before config / tracing /
+        // Zenoh / setup. The compiled-in metadata is authoritative (D50).
+        LaunchAction::EmitApis => {
+            print_emit_apis::<R>();
+            return Ok(());
+        }
+    };
 
     init_tracing();
 
-    // Read the launch from the environment (PHOXAL_*), falling back to local
-    // defaults - this is how `phoxal-cli` / a deploy hands the process
-    // its namespace, bus endpoints, bundle, and typed config without recompiling.
-    let launch = ParticipantLaunch::from_env(R::ID, "robot")?;
     let clock = launch_clock(&launch)?;
     run_with::<R, _, _>(launch, clock, shutdown_signal()).await
 }
@@ -108,7 +107,7 @@ where
 /// `source` identity is a property of the *bus*, not the launch: participants
 /// sharing one [`Bus`] publish under that bus's participant id, so distinct
 /// per-participant source attribution still requires a bus per participant. The
-/// `launch` here drives config, bundle/model, and component-instance resolution.
+/// `launch` here drives config, robot-model, and component-instance resolution.
 pub async fn run_with_bus<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
@@ -141,9 +140,9 @@ where
         None => serde_json::from_value(serde_json::Value::Null)?,
     };
 
-    // Load the resolved robot model from the bundle, if one was provided, so
+    // Load the resolved robot model from the root, if one was provided, so
     // official participants can read it via `ctx.robot()` (D33).
-    let robot = match &launch.bundle_root {
+    let robot = match &launch.robot_root {
         Some(root) => Some(Arc::new(crate::model::v1::Robot::read_from_dir(root)?)),
         None => None,
     };
@@ -155,7 +154,7 @@ where
         bus.clone(),
         ::phoxal_bus::OwnerCap::__mint(),
         robot,
-        launch.bundle_root.clone(),
+        launch.robot_root.clone(),
         launch.component_instance.clone(),
     );
     let mut participant = R::__setup(&mut ctx, config).await?;

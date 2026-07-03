@@ -13,7 +13,7 @@ workspace is converging to, not all wired up yet.
    `phoxal::model::component`, `phoxal::model::simulation`) with parse +
    round-trip + `deny_unknown_fields` tests.
    Errors point at the offending file/field.
-2. **Resolution.** Each service process loads the source-shaped staged bundle
+2. **Resolution.** Each service process loads the source-shaped robot model root
    (`robot.yaml`, `structure.urdf`, `components/<name>/component.yaml` + sibling
    files) and the shared deterministic resolver extracts the typed facts; official
    services then build their own typed slice from the model
