@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.5](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.4...phoxal-macros-v0.19.5) - 2026-07-03
+
+### Added
+
+- *(04)* bus log layer + tool-router and tool-joypad artifacts ([#147](https://github.com/phoxal/framework/pull/147))
+
 ## [0.19.4](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.3...phoxal-macros-v0.19.4) - 2026-07-02
 
 ### Added
