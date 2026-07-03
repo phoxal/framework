@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/phoxal/framework/compare/phoxal-v0.23.0...phoxal-v0.24.0) - 2026-07-03
+
+### Added
+
+- *(10)* contract substitution in the shared check core ([#148](https://github.com/phoxal/framework/pull/148))
+
 ## [0.23.0](https://github.com/phoxal/framework/compare/phoxal-v0.22.0...phoxal-v0.23.0) - 2026-07-03
 
 ### Added
