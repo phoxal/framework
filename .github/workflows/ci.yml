@@ -5,13 +5,15 @@ on:
   push:
     branches: [main]
 
-# The workspace builds on a bare runner by design: no crate needs system
-# packages, and pre-installing them would silently mask a service/driver
-# growing a native (-sys/C++) dependency. Reintroduce a package only together
-# with the crate that needs it.
+# The workspace builds on a bare runner by design; a system package appears
+# here only together with the crate that needs it, so a service/driver growing
+# a native (-sys/C++) dependency stays visible. Current set:
+#   libudev-dev - tool-joypad's gilrs gamepad backend (libudev-sys) on Linux.
 jobs:
   ci:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
+    with:
+      system-packages: libudev-dev
     secrets: inherit
 
   # The official-set fixture pins the service set + bus topology; this test fails
@@ -24,6 +26,14 @@ jobs:
           fetch-depth: 0
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # tool-joypad (gilrs -> libudev-sys) builds in this job via the catalog
+      # generation step; see the header comment.
+      - name: Install system packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
 
       - name: Check official-set fixture topology
         run: cargo test -p phoxal --test official_set_topology -- --nocapture

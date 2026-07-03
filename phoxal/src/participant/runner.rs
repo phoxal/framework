@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::bus::QueryFailure;
+use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::emit::print_emit_apis;
@@ -80,6 +81,8 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
+    init_tracing();
+
     let bus = Bus::open(BusConfig {
         namespace: launch.namespace.clone(),
         robot_id: launch.robot_id.clone(),
@@ -119,7 +122,13 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
-    run_lifecycle::<R, C, S>(bus, launch, clock, shutdown).await
+    init_tracing();
+
+    let participant_id = launch.participant_id.clone();
+    let bus_logs = bus_log::attach(bus.clone(), &participant_id);
+    let result = run_lifecycle::<R, C, S>(bus, launch, clock, shutdown).await;
+    bus_logs.shutdown().await;
+    result
 }
 
 async fn run_lifecycle<R, C, S>(
@@ -476,12 +485,22 @@ fn init_tracing() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
         use tracing_subscriber::EnvFilter;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_target(true)
+        let bus_layer = bus_log::BusLogLayer::new(bus_log_state());
+        let _ = tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_target(true))
+            .with(bus_layer)
             .try_init();
     });
+}
+
+pub(crate) fn bus_log_state() -> Arc<BusLogState> {
+    static STATE: OnceLock<Arc<BusLogState>> = OnceLock::new();
+    Arc::clone(STATE.get_or_init(bus_log::new_state_from_env))
 }
 
 #[cfg(test)]

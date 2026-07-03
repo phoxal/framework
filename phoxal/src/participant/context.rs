@@ -12,7 +12,7 @@ use crate::bus::{
 };
 use crate::model::v1::Robot;
 use crate::participant::spec::{
-    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, ParticipantSpec,
+    DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, IsTool, ParticipantSpec,
 };
 use phoxal_bus::Bus;
 
@@ -179,10 +179,10 @@ impl<R: ParticipantSpec> SetupContext<R> {
     }
 
     /// The underlying bus. Not on the default checked-participant surface (plan #00
-    /// DoD #11 / plan #07): the raw bus is `pub(crate)` so normal participants and
-    /// examples cannot reach around the typed handle builders. Privileged
-    /// participants that genuinely need raw access go through `phoxal::raw`
-    /// (`Bus::open` + `run_with_bus`), not through this context.
+    /// DoD #11 / plan #07): normal participants and examples cannot reach around
+    /// the typed handle builders. Privileged participants that genuinely need raw
+    /// access go through `phoxal::raw` (`Bus::open` + `run_with_bus`) or the
+    /// tool-only [`Self::raw_bus`] accessor.
     ///
     /// Retained as an in-crate accessor (no current caller) so privileged phoxal
     /// code/tests have the seam without re-widening the documented surface.
@@ -203,6 +203,19 @@ where
         self.component_instance.as_deref().ok_or_else(|| {
             anyhow::anyhow!("no component instance is bound (this driver was launched without one)")
         })
+    }
+}
+
+impl<R> SetupContext<R>
+where
+    R: ParticipantSpec + IsTool,
+{
+    /// Clone the runner-owned raw bus for privileged tool internals.
+    ///
+    /// The bus has already been opened from the clap/env launch contract, so tools
+    /// that need raw access do not reparse launch env or open an unrelated session.
+    pub fn raw_bus(&self) -> Bus {
+        self.bus.clone()
     }
 }
 

@@ -54,6 +54,14 @@ fn contract_body_consts_are_family_and_topic() {
         <api::localize::LocalizationState as ContractBody>::TOPIC,
         "localize/state"
     );
+    assert_eq!(
+        <api::logs::Event as ContractBody>::TOPIC,
+        "logs/{participant_id}"
+    );
+    assert_eq!(
+        <api::bus::uplink::State as ContractBody>::TOPIC,
+        "bus/uplink/state"
+    );
 }
 
 #[test]
@@ -201,6 +209,29 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
         }),
         reason: None,
     });
+    round_trip(&api::logs::Event {
+        seq: 7,
+        time: api::logs::Timestamp {
+            unix_seconds: 1_800_000_000,
+            nanos: 123,
+        },
+        level: api::logs::Level::Info,
+        target: "phoxal.runtime".to_string(),
+        message: "runtime ready".to_string(),
+        fields: [(
+            "participant".to_string(),
+            api::logs::LogValue::String("drive".to_string()),
+        )]
+        .into_iter()
+        .collect(),
+        dropped: 2,
+    });
+    round_trip(&api::bus::uplink::State {
+        phase: api::bus::uplink::UplinkPhase::Retrying,
+        connect: Some("tls/root.example.io:7447".to_string()),
+        retry_attempt: 3,
+        detail: Some("connect failed".to_string()),
+    });
     round_trip(&api::plan::Path {
         poses: vec![api::plan::PathPose {
             x_m: 1.0,
@@ -312,6 +343,11 @@ fn topic_builder_keys_match_contract_topics() {
     );
     assert_eq!(api::topic::new().power().command().key(), "power/command");
     assert_eq!(api::topic::new().motion().manual().key(), "motion/manual");
+    assert_eq!(api::topic::new().logs("drive").topic().key(), "logs/drive");
+    assert_eq!(
+        api::topic::new().bus().uplink().state().key(),
+        "bus/uplink/state"
+    );
     assert_eq!(api::topic::new().plan().path().key(), "plan/path");
     assert_eq!(api::topic::new().follow().state().key(), "follow/state");
     assert_eq!(
@@ -363,6 +399,10 @@ fn internal_owner_builder_produces_identical_keys() {
     assert_eq!(
         api::topic::internal::new(cap).video().open().key(),
         "video/open"
+    );
+    assert_eq!(
+        api::topic::internal::new(cap).logs("drive").topic().key(),
+        "logs/drive"
     );
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(

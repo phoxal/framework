@@ -340,12 +340,12 @@ pub(crate) fn parse_emit_apis_json(
             expected_id
         );
     }
-    let expected_kind = expected_kind.emit_apis_kind();
-    if metadata.artifact.kind != expected_kind {
+    let expected_kind_name = expected_kind.emit_apis_kind();
+    if metadata.artifact.kind != expected_kind_name {
         bail!(
             "emit-apis artifact.kind '{}' did not match expected '{}'",
             metadata.artifact.kind,
-            expected_kind
+            expected_kind_name
         );
     }
     match metadata.participant_class.as_deref() {
@@ -365,7 +365,10 @@ pub(crate) fn parse_emit_apis_json(
             BUS_ABI
         );
     }
-    if metadata.required_contracts.is_empty() {
+    if metadata.required_contracts.is_empty()
+        && !(expected_kind == ArtifactKind::Tool
+            && metadata.participant_class.as_deref() == Some("privileged"))
+    {
         bail!("emit-apis required_contracts must not be empty");
     }
     for (index, contract) in metadata.required_contracts.iter().enumerate() {
@@ -575,6 +578,32 @@ mod tests {
         );
         let err = validate(&json).expect_err("empty required_contracts should fail");
         assert_error_contains(&err, "required_contracts");
+    }
+
+    #[test]
+    fn validation_accepts_empty_required_contracts_for_privileged_tool() {
+        let json = valid_emit()
+            .replace(r#""kind": "service""#, r#""kind": "tool""#)
+            .replace(r#""id": "frame""#, r#""id": "router""#)
+            .replace(
+                r#""participant_class": "checked""#,
+                r#""participant_class": "privileged""#,
+            )
+            .replace(
+                r#"  "required_contracts": [
+    {
+      "api_version": "y2026_1",
+      "schema_id": "0123456789abcdef",
+      "family": "frame::LookupRequest",
+      "topic": "frame/lookup",
+      "direction": "query_request"
+    }
+  ],"#,
+                r#"  "required_contracts": [],"#,
+            );
+
+        validate_emit_apis_json(json.as_bytes(), "router", ArtifactKind::Tool)
+            .expect("privileged tool with no graph contracts should validate");
     }
 
     #[test]

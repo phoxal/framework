@@ -15,6 +15,9 @@
 //! const on each body (D63). A topic's key and dynamism are
 //! derived from the node path, not from per-topic params; a topic whose node path
 //! contains at least one `(var)` node is dynamic, one with none is static.
+//! `topic self: state <Body>;` binds the body to the node path itself instead of
+//! appending a leaf segment, for framework infrastructure topics such as
+//! `logs/{participant_id}`.
 //! `extends` API inheritance is supported (and recurses the node tree). A version
 //! may be prefixed with `preview`; that emits the module at its final path behind
 //! the per-generation `preview-y2026_N` Cargo feature and records
@@ -143,7 +146,7 @@ impl TypeDef {
 
 #[derive(Clone)]
 struct TopicDef {
-    leaf: Ident,
+    leaf: TopicLeaf,
     kind: TopicKind,
     /// The semantic role declared by the topic's role keyword (`command` /
     /// `state` / `query`). `command` and `state` both produce a [`TopicKind::PubSub`]
@@ -154,6 +157,28 @@ struct TopicDef {
     /// The role is also emitted as a `ROLE` const on each body; it is not yet
     /// surfaced by `emit-apis` (a later increment of plan #00).
     role: TopicRole,
+}
+
+#[derive(Clone)]
+enum TopicLeaf {
+    Named(Ident),
+    Node,
+}
+
+impl TopicLeaf {
+    fn key(&self) -> String {
+        match self {
+            TopicLeaf::Named(ident) => ident.to_string(),
+            TopicLeaf::Node => "self".to_string(),
+        }
+    }
+
+    fn method_ident(&self) -> Ident {
+        match self {
+            TopicLeaf::Named(ident) => ident.clone(),
+            TopicLeaf::Node => quote::format_ident!("topic"),
+        }
+    }
 }
 
 /// The semantic role of a topic, mirroring `phoxal_bus::TopicRole`. Parsed from
@@ -315,7 +340,12 @@ impl Parse for Node {
 impl Parse for TopicDef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<kw::topic>()?;
-        let leaf: Ident = input.parse()?;
+        let leaf = if input.peek(Token![self]) {
+            input.parse::<Token![self]>()?;
+            TopicLeaf::Node
+        } else {
+            TopicLeaf::Named(input.parse()?)
+        };
         input.parse::<Token![:]>()?;
         // Every topic declares a role. `command`/`state` carry a single pub/sub
         // body and differ by role; `query` carries request/response. The role
@@ -480,7 +510,7 @@ fn collect_contract_manifest_entries(
         let node_key_prefix = join_seg(key_prefix, "/", &key_seg);
 
         for topic in &node.topics {
-            let topic_key = format!("{}/{}", node_key_prefix, topic.leaf);
+            let topic_key = topic_key(&node_key_prefix, &topic.leaf);
             match &topic.kind {
                 TopicKind::PubSub(body) => {
                     contracts.push(ManifestContract {
@@ -548,7 +578,11 @@ fn overlay_nodes(base: &[Node], child: &[Node]) -> syn::Result<Vec<Node>> {
                 }
             }
             for ctp in &cn.topics {
-                if let Some(slot) = bn.topics.iter_mut().find(|t| t.leaf == ctp.leaf) {
+                if let Some(slot) = bn
+                    .topics
+                    .iter_mut()
+                    .find(|t| t.leaf.key() == ctp.leaf.key())
+                {
                     *slot = ctp.clone();
                 } else {
                     bn.topics.push(ctp.clone());
@@ -660,7 +694,7 @@ fn expand_node_module(
 
     let mut impls = TokenStream::new();
     for topic in &node.topics {
-        let key = format!("{}/{}", node_key_prefix, topic.leaf);
+        let key = topic_key(&node_key_prefix, &topic.leaf);
         let role = topic.role.bus_variant();
         match &topic.kind {
             TopicKind::PubSub(body) => {
@@ -766,6 +800,13 @@ fn join_seg(prefix: &str, sep: &str, seg: &str) -> String {
         seg.to_string()
     } else {
         format!("{prefix}{sep}{seg}")
+    }
+}
+
+fn topic_key(node_key_prefix: &str, leaf: &TopicLeaf) -> String {
+    match leaf {
+        TopicLeaf::Named(leaf) => format!("{}/{}", node_key_prefix, leaf),
+        TopicLeaf::Node => node_key_prefix.to_string(),
     }
 }
 
@@ -2093,7 +2134,7 @@ fn expand_builder_module(
     // otherwise `new_owned` with a `format!` filling the carried vars.
     let mut leaf_methods = TokenStream::new();
     for topic in &node.topics {
-        let leaf = &topic.leaf;
+        let leaf = topic.leaf.method_ident();
         let kind_ty = builder_leaf_kind(topic, &path, depth, side);
         let (fmt_str, doc_key) = builder_leaf_key_parts(&path, &topic.leaf);
         let constructor = if field_idents.is_empty() {
@@ -2195,10 +2236,10 @@ fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], depth: usize, side: Sid
 }
 
 /// Build a leaf's key in two forms: the `format!` template (literal node-name
-/// segments, `{}` for each dynamic var, then `/leaf`) and the human-readable
-/// `{var}`-placeholder doc key. Both are derived from the node path so the concrete
-/// key and the documented key stay in lockstep.
-fn builder_leaf_key_parts(path: &[NodeSeg], leaf: &Ident) -> (String, String) {
+/// segments, `{}` for each dynamic var, optionally then `/leaf`) and the
+/// human-readable `{var}`-placeholder doc key. Both are derived from the node path
+/// so the concrete key and the documented key stay in lockstep.
+fn builder_leaf_key_parts(path: &[NodeSeg], leaf: &TopicLeaf) -> (String, String) {
     let mut fmt_segs = Vec::new();
     let mut doc_segs = Vec::new();
     for seg in path {
@@ -2214,11 +2255,16 @@ fn builder_leaf_key_parts(path: &[NodeSeg], leaf: &Ident) -> (String, String) {
             }
         }
     }
-    let leaf = leaf.to_string();
-    (
-        format!("{}/{}", fmt_segs.join("/"), leaf),
-        format!("{}/{}", doc_segs.join("/"), leaf),
-    )
+    match leaf {
+        TopicLeaf::Named(leaf) => {
+            let leaf = leaf.to_string();
+            (
+                format!("{}/{}", fmt_segs.join("/"), leaf),
+                format!("{}/{}", doc_segs.join("/"), leaf),
+            )
+        }
+        TopicLeaf::Node => (fmt_segs.join("/"), doc_segs.join("/")),
+    }
 }
 
 /// Force every named field of a macro-declared body struct to `pub` so participant
