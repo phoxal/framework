@@ -1,0 +1,24 @@
+[package]
+name = "phoxal-service-power"
+version = "0.19.5"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+description = "Phoxal official service: power - host lifecycle commands via Balena supervisor."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-service-power"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
+
+[lints]
+workspace = true

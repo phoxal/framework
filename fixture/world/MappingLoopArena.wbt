@@ -1,0 +1,80 @@
+#VRML_SIM R2025a utf8
+# Purpose-built world for the ORB-driven map e2e gate (deterministic scripted loop drive).
+#
+# Design goals, given the robot's single FORWARD-facing range_tof (4 m / 27 deg) and ORB-SLAM3's need
+# for distinct visual features:
+#   - A textured arena (Parquetry floor + walls) plus a ring of 8 distinct PottedTree objects at
+#     radius ~2.6 m gives the camera abundant ORB features in every heading (a bare arena starves the
+#     matcher -> Lost) and keeps obstacles within the 4 m range sensor so occupancy populates.
+#   - The CENTER (~1.8 m radius) is deliberately CLEAR so a scripted ~0.9 m square loop is
+#     collision-free and the robot can return to start (loop closure) without weaving through clutter.
+#   - NO ramps: the robot must never climb a wedge and tip over.
+# The robot (RobotV1) is injected at the origin by the xtask staging step; do not add it here.
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/plants/protos/PottedTree.proto"
+
+WorldInfo {
+  basicTimeStep 12
+  contactProperties [
+    ContactProperties {
+      material1 "parquet"
+      material2 "rubber_wheel"
+    }
+  ]
+}
+Viewpoint {
+  orientation -0.1895592044308511 -0.29678609449768945 0.935940875337941 5.024282227589436
+  position -2.195272548937297 5.210882823016731 2.6164902204320346
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+RectangleArena {
+  contactMaterial "parquet"
+  floorSize 10 10
+  floorTileSize 1 1
+  wallHeight 1.5
+  floorAppearance Parquetry {
+  }
+  wallAppearance Parquetry {
+  }
+}
+
+# --- Ring of distinct feature objects at radius ~2.6 m (within the 4 m range sensor; leaves a clear
+# central ~1.8 m disk for the scripted loop). 8 trees so the camera sees ORB features in any heading. ---
+PottedTree {
+  translation 2.6 0 0
+}
+PottedTree {
+  translation -2.6 0 0
+  name "potted tree(1)"
+}
+PottedTree {
+  translation 0 2.6 0
+  name "potted tree(2)"
+}
+PottedTree {
+  translation 0 -2.6 0
+  name "potted tree(3)"
+}
+PottedTree {
+  translation 1.84 1.84 0
+  name "potted tree(4)"
+}
+PottedTree {
+  translation -1.84 1.84 0
+  name "potted tree(5)"
+}
+PottedTree {
+  translation 1.84 -1.84 0
+  name "potted tree(6)"
+}
+PottedTree {
+  translation -1.84 -1.84 0
+  name "potted tree(7)"
+}

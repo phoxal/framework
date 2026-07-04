@@ -1,0 +1,63 @@
+version: v1
+capabilities:
+  left_mono:
+    kind: camera
+    mode: mono
+    publish_rate_hz: 15.0
+    width_px: 640
+    height_px: 400
+    field_of_view_rad: 1.272271
+    target:
+      kind: link
+      id: left_mono_link
+  rgb:
+    kind: camera
+    mode: rgb
+    publish_rate_hz: 15.0
+    width_px: 640
+    height_px: 480
+    field_of_view_rad: 1.204277
+    target:
+      kind: link
+      id: rgb_link
+  right_mono:
+    kind: camera
+    mode: mono
+    publish_rate_hz: 15.0
+    width_px: 640
+    height_px: 400
+    field_of_view_rad: 1.272271
+    target:
+      kind: link
+      id: right_mono_link
+  depth:
+    kind: depth
+    publish_rate_hz: 15.0
+    width_px: 640
+    height_px: 400
+    field_of_view_rad: 1.272271
+    # generic fixture optics document ~40 cm MinZ for 400P passive stereo and ~12 m ideal
+    # long-range depth on the generic RGB-D fixture.
+    min_range_m: 0.4
+    max_range_m: 12.0
+    target:
+      kind: link
+      id: stereo_center_link
+  imu:
+    kind: imu
+    publish_rate_hz: 50.0
+    target:
+      kind: link
+      id: imu_link
+  accelerometer:
+    kind: accelerometer
+    publish_rate_hz: 50.0
+    target:
+      kind: link
+      id: imu_link
+  gyroscope:
+    kind: gyroscope
+    publish_rate_hz: 50.0
+    target:
+      kind: link
+      id: imu_link

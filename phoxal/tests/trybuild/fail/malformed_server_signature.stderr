@@ -1,0 +1,19 @@
+error: server handlers must return `ServerResult<Resp>`
+  --> tests/trybuild/fail/malformed_server_signature.rs:17:66
+   |
+17 |     async fn get(&mut self, _request: api::asset::GetRequest) -> Result<api::asset::GetResponse> {
+   |                                                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `phoxal_api::y2026_1 as api`
+ --> tests/trybuild/fail/malformed_server_signature.rs:2:5
+  |
+2 | use phoxal_api::y2026_1 as api;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `phoxal::prelude::*`
+ --> tests/trybuild/fail/malformed_server_signature.rs:3:5
+  |
+3 | use phoxal::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^^

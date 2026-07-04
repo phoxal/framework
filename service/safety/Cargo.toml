@@ -1,0 +1,26 @@
+[package]
+name = "phoxal-service-safety"
+version = "0.19.5"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+description = "Phoxal official service: safety - battery + drive safety monitor (y2026_1)."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-service-safety"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

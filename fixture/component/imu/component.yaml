@@ -1,0 +1,23 @@
+version: v1
+capabilities:
+  imu:
+    kind: imu
+    publish_rate_hz: 50.0
+    axes: [true, true, true]
+    target:
+      kind: link
+      id: sensor_link
+  accelerometer:
+    kind: accelerometer
+    publish_rate_hz: 50.0
+    axes: [true, true, true]
+    target:
+      kind: link
+      id: sensor_link
+  gyroscope:
+    kind: gyroscope
+    publish_rate_hz: 50.0
+    axes: [true, true, true]
+    target:
+      kind: link
+      id: sensor_link

@@ -1,0 +1,12 @@
+version: v1
+# Sources:
+# - generic time-of-flight range fixture reference: 4 cm minimum range, 4 m long-range mode, 27 degree
+#   typical full FoV, up to 50 Hz ranging, distance reported in mm.
+#
+# Webots noise is intentionally omitted. The datasheet publishes ranging error
+# envelopes, not a Gaussian noise model we can map directly to this field.
+capabilities:
+  range:
+    kind: range
+    sampling_period_hz: 20.0
+    resolution: 0.001

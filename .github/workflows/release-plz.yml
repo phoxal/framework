@@ -1,0 +1,280 @@
+name: release-plz
+
+# Per-artifact release pipeline (plan #01).
+#
+# release-plz owns versions, changelogs, tags, and GitHub releases. The native
+# half starts only from `release-plz release --output json`: xtask filters that
+# JSON to discovered official artifacts, expands their target triples, packages
+# immutable native assets, uploads them to the release-plz-created release, then
+# publishes the generated catalog revision.
+
+on:
+  push:
+    branches: [main]
+  # The release-pr job packages every artifact crate's full path-dependency
+  # closure in a fresh worktree (~3.5 min x 26 crates ~= 90 min) - far too
+  # heavy for every main push. It runs on a schedule + on demand instead; the
+  # release job (cheap tag-vs-version reconciliation + asset builds) still
+  # runs on every push.
+  schedule:
+    - cron: "17 5,17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-plz-release:
+    name: release-plz release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.plan.outputs.released }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    env:
+      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # tool-joypad (gilrs -> libudev-sys) can be packaged by release-plz when
+      # it analyzes git-only artifact crates; see ci.yml's header comment.
+      - name: Install system packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Run release-plz
+        run: |
+          set -euo pipefail
+          mkdir -p target/xtask
+          release-plz release --output json | tee target/xtask/release-plz.json
+        env:
+          GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Build native release plan
+        id: plan
+        run: >
+          cargo xtask release plan
+          --release-plz-json target/xtask/release-plz.json
+          --out target/xtask/release-plan.json
+          --github-output
+
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.released == 'true'
+        with:
+          name: release-plan
+          path: target/xtask/release-plan.json
+
+  native-assets:
+    name: native asset (${{ matrix.package }} ${{ matrix.target }})
+    needs: release-plz-release
+    if: needs.release-plz-release.outputs.released == 'true'
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.release-plz-release.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install cargo-auditable
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-auditable
+
+      - name: Install joypad Linux dependency
+        if: matrix.package == 'phoxal-tool-joypad' && contains(matrix.target, 'linux')
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Package native asset
+        run: >
+          cargo xtask release package ${{ matrix.package }}
+          --target ${{ matrix.target }}
+          --out target/xtask/release
+
+      - name: Upload immutable release assets
+        run: >
+          cargo xtask release upload
+          --package ${{ matrix.package }}
+          --target ${{ matrix.target }}
+          --tag ${{ matrix.tag }}
+          --repo ${{ github.repository }}
+          --package-dir target/xtask/release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.package }}-${{ matrix.target }}
+          path: target/xtask/release/${{ matrix.package }}-v${{ matrix.version }}-${{ matrix.target }}.*
+
+  catalog-publish:
+    name: catalog gate and publish
+    needs:
+      - release-plz-release
+      - native-assets
+    if: needs.release-plz-release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      STABLE_CATALOG_URL: https://raw.githubusercontent.com/phoxal/framework/artifact-catalog-v0-stable/latest.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-plan
+          path: target/xtask
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: target/xtask/release
+          merge-multiple: true
+
+      - name: Fetch previous stable catalog if present
+        run: |
+          set -euo pipefail
+          if curl -fsSL "$STABLE_CATALOG_URL" -o target/xtask/previous-catalog.json; then
+            echo "previous catalog fetched"
+          else
+            rm -f target/xtask/previous-catalog.json
+            echo "no previous stable catalog found"
+          fi
+
+      - name: Generate catalog revision
+        run: |
+          set -euo pipefail
+          previous=()
+          if [ -f target/xtask/previous-catalog.json ]; then
+            previous=(--previous-catalog target/xtask/previous-catalog.json)
+          fi
+          cargo xtask catalog generate \
+            --release-plan target/xtask/release-plan.json \
+            --package-dir target/xtask/release \
+            --out target/xtask/catalog/phoxal-artifact-catalog.json \
+            "${previous[@]}"
+
+      - name: Check catalog revision
+        run: |
+          set -euo pipefail
+          previous=()
+          if [ -f target/xtask/previous-catalog.json ]; then
+            previous=(--previous-catalog target/xtask/previous-catalog.json)
+          fi
+          cargo xtask catalog check \
+            --catalog target/xtask/catalog/phoxal-artifact-catalog.json \
+            --release-plan target/xtask/release-plan.json \
+            --package-dir target/xtask/release \
+            "${previous[@]}"
+
+      - name: Final release gate
+        run: |
+          set -euo pipefail
+          previous=()
+          if [ -f target/xtask/previous-catalog.json ]; then
+            previous=(--previous-catalog target/xtask/previous-catalog.json)
+          fi
+          cargo xtask ci release-gate \
+            --catalog target/xtask/catalog/phoxal-artifact-catalog.json \
+            --release-plan target/xtask/release-plan.json \
+            --package-dir target/xtask/release \
+            --verify-github \
+            --repo ${{ github.repository }} \
+            "${previous[@]}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish artifact draft releases
+        run: >
+          cargo xtask release publish
+          --plan target/xtask/release-plan.json
+          --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish stable catalog pointer
+        run: >
+          cargo xtask catalog publish
+          --catalog target/xtask/catalog/phoxal-artifact-catalog.json
+          --repo ${{ github.repository }}
+
+  release-plz-pr:
+    name: release-plz PR
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # tool-joypad (gilrs -> libudev-sys) builds while release-plz packages the
+      # workspace in temporary git-only baseline worktrees; see ci.yml's header comment.
+      - name: Install system packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Run release-plz (release-pr)
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

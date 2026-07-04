@@ -1,0 +1,23 @@
+version: v1
+# Simulation parameters specific to the generic drive motor that cannot be fully
+# expressed in URDF.
+#
+# Sources:
+# - generic drive motor fixture specs:
+#   - encoder resolution: 4096 counts/rev
+#   - no-load speed: 200 rpm
+#
+# Webots motor acceleration and control PID are intentionally omitted. The
+# published hardware specs do not expose a direct one-to-one mapping for these
+# simulator knobs, so leaving guessed values here would be misleading.
+capabilities:
+  motor:
+    kind: motor
+    actuator_type: velocity
+  encoder:
+    kind: encoder
+    sampling_period_hz: 50.0
+    resolution: 0.001533981
+links:
+  rotor_link:
+    contact_material: rubber_wheel

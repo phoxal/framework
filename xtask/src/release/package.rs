@@ -1,0 +1,851 @@
+use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, require_nonempty_artifacts};
+
+const BUS_ABI: &str = "phoxal-bus/v0";
+const EMIT_SCHEMA: &str = "phoxal.emit-apis/v0";
+
+#[derive(Debug, clap::Args)]
+pub struct Args {
+    #[arg(
+        value_name = "PACKAGE",
+        required_unless_present = "all",
+        conflicts_with = "all"
+    )]
+    pub package: Option<String>,
+    #[arg(long)]
+    pub all: bool,
+    #[arg(long, value_name = "DIR", default_value = "target/xtask/release")]
+    pub out: PathBuf,
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+    /// Validate target selection and print the planned build/package work
+    /// without invoking cargo or writing release files.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackagedArtifact {
+    pub tarball: PathBuf,
+    pub checksum: PathBuf,
+    pub metadata: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PackagedOutput {
+    pub tarball: PathBuf,
+    pub checksum: PathBuf,
+    pub metadata: PathBuf,
+    pub tarball_name: String,
+    pub checksum_name: String,
+    pub metadata_name: String,
+    pub tarball_sha256: String,
+    pub metadata_sha256: String,
+    pub emit_apis: EmitApisMetadata,
+}
+
+pub fn run(args: Args) -> Result<()> {
+    let workspace = Workspace::discover()?;
+    let selected = select_artifacts(&workspace, &args)?;
+    require_nonempty_artifacts(&selected)?;
+    let out_dir = workspace_relative_out_dir(&workspace, &args.out);
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
+    let host_triple = host_triple(workspace.root())?;
+    let target_triple = args.target.clone().unwrap_or_else(|| host_triple.clone());
+
+    for artifact in selected {
+        validate_supported_target(&artifact, &target_triple)?;
+        if args.dry_run {
+            println!(
+                "would package {} v{} for {} using cargo auditable build",
+                artifact.package_name, artifact.version, target_triple
+            );
+            continue;
+        }
+        let packaged = package_artifact(
+            &workspace,
+            &artifact,
+            &out_dir,
+            &host_triple,
+            &target_triple,
+        )
+        .with_context(|| format!("failed to package {}", artifact.package_name))?;
+        println!(
+            "packaged {} v{} for {} -> {}, {}, {}",
+            artifact.package_name,
+            artifact.version,
+            target_triple,
+            packaged.tarball.display(),
+            packaged.checksum.display(),
+            packaged.metadata.display()
+        );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn workspace_relative_out_dir(workspace: &Workspace, out_dir: &Path) -> PathBuf {
+    if out_dir.is_absolute() {
+        out_dir.to_path_buf()
+    } else {
+        workspace.root().join(out_dir)
+    }
+}
+
+fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialArtifact>> {
+    if args.all {
+        return Ok(workspace.official_artifacts().to_vec());
+    }
+
+    let package_name = args
+        .package
+        .as_deref()
+        .context("package is required unless --all is present")?;
+    Ok(vec![workspace.official_artifact(package_name)?.clone()])
+}
+
+pub(crate) fn package_artifacts(
+    workspace: &Workspace,
+    artifacts: &[OfficialArtifact],
+    out_dir: &Path,
+    host_triple: &str,
+    target_triple: &str,
+) -> Result<BTreeMap<String, PackagedArtifact>> {
+    let mut packaged = BTreeMap::new();
+    for artifact in artifacts {
+        let output = package_artifact(workspace, artifact, out_dir, host_triple, target_triple)
+            .with_context(|| format!("failed to package {}", artifact.package_name))?;
+        packaged.insert(artifact.package_name.clone(), output);
+    }
+    Ok(packaged)
+}
+
+pub(crate) fn package_artifact(
+    workspace: &Workspace,
+    artifact: &OfficialArtifact,
+    out_dir: &Path,
+    host_triple: &str,
+    target_triple: &str,
+) -> Result<PackagedArtifact> {
+    validate_supported_target(artifact, target_triple)?;
+    build_target_artifact(workspace.root(), artifact, target_triple)?;
+    let binary_path = target_binary_path(workspace, artifact, target_triple);
+    let emit_binary_path = if target_triple == host_triple {
+        binary_path.clone()
+    } else {
+        build_host_artifact(workspace.root(), artifact)?;
+        host_binary_path(workspace, artifact)
+    };
+    let emit_stdout = run_emit_apis(&emit_binary_path)?;
+    parse_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
+
+    let stem = asset_stem(artifact, target_triple);
+    let tarball = out_dir.join(format!("{stem}.tar.zst"));
+    let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
+    let metadata = out_dir.join(format!("{stem}.emit-apis.json"));
+
+    write_tar_zst(&tarball, &binary_path, &artifact.bin_name)?;
+    write_sha256(&tarball, &checksum)?;
+    fs::write(&metadata, &emit_stdout)
+        .with_context(|| format!("failed to write emit-apis metadata {}", metadata.display()))?;
+
+    Ok(PackagedArtifact {
+        tarball,
+        checksum,
+        metadata,
+    })
+}
+
+pub(crate) fn validate_supported_target(
+    artifact: &OfficialArtifact,
+    target_triple: &str,
+) -> Result<()> {
+    if artifact.supports_target(target_triple) {
+        return Ok(());
+    }
+    bail!(
+        "{} does not support target {}; supported targets: {}",
+        artifact.package_name,
+        target_triple,
+        artifact.supported_target_triples().join(", ")
+    )
+}
+
+fn build_target_artifact(
+    root: &Path,
+    artifact: &OfficialArtifact,
+    target_triple: &str,
+) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "auditable",
+            "build",
+            "-p",
+            &artifact.package_name,
+            "--release",
+            "--target",
+            target_triple,
+        ])
+        .current_dir(root);
+
+    run_cargo_build_command(
+        command,
+        &format!(
+            "cargo auditable build for {} target {}",
+            artifact.package_name, target_triple
+        ),
+    )
+}
+
+fn build_host_artifact(root: &Path, artifact: &OfficialArtifact) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command
+        .args(["build", "-p", &artifact.package_name, "--release"])
+        .current_dir(root);
+
+    run_cargo_build_command(
+        command,
+        &format!("host cargo build for {}", artifact.package_name),
+    )
+}
+
+fn run_cargo_build_command(mut command: Command, label: &str) -> Result<()> {
+    let output = command
+        .output()
+        .with_context(|| format!("failed to spawn {label}"))?;
+    if !output.status.success() {
+        bail!(
+            "{label} failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(())
+}
+
+fn host_binary_path(workspace: &Workspace, artifact: &OfficialArtifact) -> PathBuf {
+    workspace.target_dir().join("release").join(format!(
+        "{}{}",
+        artifact.bin_name,
+        std::env::consts::EXE_SUFFIX
+    ))
+}
+
+fn target_binary_path(
+    workspace: &Workspace,
+    artifact: &OfficialArtifact,
+    target_triple: &str,
+) -> PathBuf {
+    workspace
+        .target_dir()
+        .join(target_triple)
+        .join("release")
+        .join(format!(
+            "{}{}",
+            artifact.bin_name,
+            exe_suffix_for_target(target_triple)
+        ))
+}
+
+fn exe_suffix_for_target(target_triple: &str) -> &'static str {
+    if target_triple.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    }
+}
+
+fn run_emit_apis(binary_path: &Path) -> Result<Vec<u8>> {
+    let output = Command::new(binary_path)
+        .arg("emit-apis")
+        .output()
+        .with_context(|| format!("failed to spawn {} emit-apis", binary_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} emit-apis failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            binary_path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    if output.stdout.is_empty() {
+        bail!(
+            "{} emit-apis produced empty stdout\nstatus: {}\nstderr:\n{}",
+            binary_path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(output.stdout)
+}
+
+pub(crate) fn emit_apis_from_cargo_run(
+    root: &Path,
+    artifact: &OfficialArtifact,
+) -> Result<Vec<u8>> {
+    let output = Command::new("cargo")
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            &artifact.package_name,
+            "--",
+            "emit-apis",
+        ])
+        .current_dir(root)
+        .output()
+        .with_context(|| format!("failed to spawn cargo run for {}", artifact.package_name))?;
+    if !output.status.success() {
+        bail!(
+            "cargo run for {} emit-apis failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            artifact.package_name,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    if output.stdout.is_empty() {
+        bail!(
+            "{} emit-apis produced empty stdout\nstatus: {}\nstderr:\n{}",
+            artifact.package_name,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(output.stdout)
+}
+
+/// Returns the local host triple used in asset names. This seed packages only
+/// host builds; cross-target naming and build orchestration belongs to native
+/// release CI plan #01.
+pub(crate) fn host_triple(root: &Path) -> Result<String> {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .current_dir(root)
+        .output()
+        .context("failed to run rustc -vV")?;
+    if !output.status.success() {
+        bail!(
+            "rustc -vV failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let stdout = String::from_utf8(output.stdout).context("rustc -vV output was not UTF-8")?;
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .map(str::to_string)
+        .context("rustc -vV output did not contain a host triple")
+}
+
+pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
+    format!(
+        "{}-v{}-{}",
+        artifact.package_name, artifact.version, host_triple
+    )
+}
+
+fn write_tar_zst(tarball: &Path, binary_path: &Path, bin_name: &str) -> Result<()> {
+    let tarball_file = File::create(tarball)
+        .with_context(|| format!("failed to create tarball {}", tarball.display()))?;
+    let encoder = zstd::Encoder::new(tarball_file, 0)
+        .with_context(|| format!("failed to start zstd encoder for {}", tarball.display()))?;
+    let mut archive = tar::Builder::new(encoder);
+    archive.follow_symlinks(false);
+
+    let mut binary = File::open(binary_path)
+        .with_context(|| format!("failed to open binary {}", binary_path.display()))?;
+    let binary_size = binary
+        .metadata()
+        .with_context(|| format!("failed to stat binary {}", binary_path.display()))?
+        .len();
+    let mut header = tar::Header::new_gnu();
+    header.set_size(binary_size);
+    header.set_mode(0o755);
+    header.set_mtime(0);
+    header.set_cksum();
+    archive
+        .append_data(&mut header, bin_name, &mut binary)
+        .with_context(|| format!("failed to append {bin_name} to {}", tarball.display()))?;
+    let encoder = archive
+        .into_inner()
+        .with_context(|| format!("failed to finish tar archive {}", tarball.display()))?;
+    encoder
+        .finish()
+        .with_context(|| format!("failed to finish zstd stream {}", tarball.display()))?;
+
+    Ok(())
+}
+
+fn write_sha256(tarball: &Path, checksum_path: &Path) -> Result<()> {
+    let digest = sha256_file(tarball)?;
+    let filename = tarball
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("tarball path {} has no UTF-8 filename", tarball.display()))?;
+    let mut checksum = File::create(checksum_path)
+        .with_context(|| format!("failed to create checksum {}", checksum_path.display()))?;
+    writeln!(checksum, "{digest}  {filename}")
+        .with_context(|| format!("failed to write checksum {}", checksum_path.display()))?;
+    Ok(())
+}
+
+pub(crate) fn read_packaged_output(
+    artifact: &OfficialArtifact,
+    package_dir: &Path,
+    target_triple: &str,
+) -> Result<PackagedOutput> {
+    validate_supported_target(artifact, target_triple)?;
+    let stem = asset_stem(artifact, target_triple);
+    let tarball = package_dir.join(format!("{stem}.tar.zst"));
+    let checksum = package_dir.join(format!("{stem}.tar.zst.sha256"));
+    let metadata = package_dir.join(format!("{stem}.emit-apis.json"));
+    for path in [&tarball, &checksum, &metadata] {
+        if !path.is_file() {
+            bail!(
+                "missing packaged output for {} target {}: {}",
+                artifact.package_name,
+                target_triple,
+                path.display()
+            );
+        }
+    }
+
+    let recorded = read_checksum_file(&checksum, &tarball)?;
+    let computed = sha256_file(&tarball)?;
+    if recorded != computed {
+        bail!(
+            "{} checksum file recorded {}, but computed {}",
+            tarball.display(),
+            recorded,
+            computed
+        );
+    }
+
+    let metadata_bytes =
+        fs::read(&metadata).with_context(|| format!("failed to read {}", metadata.display()))?;
+    let emit_apis = parse_emit_apis_json(&metadata_bytes, &artifact.id, artifact.kind)
+        .with_context(|| format!("invalid emit-apis metadata {}", metadata.display()))?;
+
+    Ok(PackagedOutput {
+        tarball_name: file_name(&tarball)?,
+        checksum_name: file_name(&checksum)?,
+        metadata_name: file_name(&metadata)?,
+        tarball_sha256: computed,
+        metadata_sha256: sha256_bytes(&metadata_bytes),
+        tarball,
+        checksum,
+        metadata,
+        emit_apis,
+    })
+}
+
+pub(crate) fn read_checksum_file(checksum: &Path, asset: &Path) -> Result<String> {
+    let text = fs::read_to_string(checksum)
+        .with_context(|| format!("failed to read {}", checksum.display()))?;
+    let mut parts = text.split_whitespace();
+    let digest = parts
+        .next()
+        .with_context(|| format!("{} is empty", checksum.display()))?;
+    let filename = parts
+        .next()
+        .with_context(|| format!("{} is missing an asset filename", checksum.display()))?;
+    let expected = asset
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} has no UTF-8 filename", asset.display()))?;
+    if filename != expected {
+        bail!(
+            "{} names asset '{}', expected '{}'",
+            checksum.display(),
+            filename,
+            expected
+        );
+    }
+    Ok(digest.to_string())
+}
+
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+pub(crate) fn file_name(path: &Path) -> Result<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .with_context(|| format!("{} has no UTF-8 filename", path.display()))
+}
+
+#[cfg(test)]
+fn validate_emit_apis_json(
+    stdout: &[u8],
+    expected_id: &str,
+    expected_kind: ArtifactKind,
+) -> Result<()> {
+    parse_emit_apis_json(stdout, expected_id, expected_kind).map(|_| ())
+}
+
+pub(crate) fn parse_emit_apis_json(
+    stdout: &[u8],
+    expected_id: &str,
+    expected_kind: ArtifactKind,
+) -> Result<EmitApisMetadata> {
+    let metadata: EmitApisMetadata =
+        serde_json::from_slice(stdout).context("emit-apis stdout was not valid JSON")?;
+    if metadata.schema != EMIT_SCHEMA {
+        bail!(
+            "emit-apis schema '{}' did not match expected '{}'",
+            metadata.schema,
+            EMIT_SCHEMA
+        );
+    }
+    if metadata.artifact.id != expected_id {
+        bail!(
+            "emit-apis artifact.id '{}' did not match expected '{}'",
+            metadata.artifact.id,
+            expected_id
+        );
+    }
+    let expected_kind_name = expected_kind.emit_apis_kind();
+    if metadata.artifact.kind != expected_kind_name {
+        bail!(
+            "emit-apis artifact.kind '{}' did not match expected '{}'",
+            metadata.artifact.kind,
+            expected_kind_name
+        );
+    }
+    match metadata.participant_class.as_deref() {
+        Some("checked" | "privileged") => {}
+        Some(value) => {
+            bail!("emit-apis participant_class '{value}' must be 'checked' or 'privileged'")
+        }
+        None => bail!("emit-apis participant_class is missing"),
+    }
+    if metadata.api_version.trim().is_empty() {
+        bail!("emit-apis api_version must not be empty");
+    }
+    if metadata.bus_abi != BUS_ABI {
+        bail!(
+            "emit-apis bus_abi '{}' did not match expected '{}'",
+            metadata.bus_abi,
+            BUS_ABI
+        );
+    }
+    if metadata.required_contracts.is_empty()
+        && !(expected_kind == ArtifactKind::Tool
+            && metadata.participant_class.as_deref() == Some("privileged"))
+    {
+        bail!("emit-apis required_contracts must not be empty");
+    }
+    for (index, contract) in metadata.required_contracts.iter().enumerate() {
+        let api_version = contract.api_version.as_deref().with_context(|| {
+            format!("emit-apis required_contracts[{index}] is missing api_version")
+        })?;
+        if api_version != metadata.api_version {
+            bail!(
+                "emit-apis required_contracts[{index}].api_version '{}' did not match artifact api_version '{}'",
+                api_version,
+                metadata.api_version
+            );
+        }
+        let schema_id = contract.schema_id.as_deref().with_context(|| {
+            format!("emit-apis required_contracts[{index}] is missing schema_id")
+        })?;
+        if !is_schema_id(schema_id) {
+            bail!(
+                "emit-apis required_contracts[{index}].schema_id '{}' is not 16 lowercase hex characters",
+                schema_id
+            );
+        }
+        let family = contract
+            .family
+            .as_deref()
+            .with_context(|| format!("emit-apis required_contracts[{index}] is missing family"))?;
+        if family.trim().is_empty() {
+            bail!("emit-apis required_contracts[{index}].family must not be empty");
+        }
+        let topic = contract
+            .topic
+            .as_deref()
+            .with_context(|| format!("emit-apis required_contracts[{index}] is missing topic"))?;
+        if topic.trim().is_empty() {
+            bail!("emit-apis required_contracts[{index}].topic must not be empty");
+        }
+        let direction = contract.direction.as_deref().with_context(|| {
+            format!("emit-apis required_contracts[{index}] is missing direction")
+        })?;
+        if !DIRECTIONS.contains(&direction) {
+            bail!(
+                "emit-apis required_contracts[{index}].direction '{}' is not one of {}",
+                direction,
+                DIRECTIONS.join("|")
+            );
+        }
+    }
+
+    Ok(metadata)
+}
+
+/// The `Direction` wire vocabulary the emitter serializes
+/// (`phoxal/src/participant/spec.rs`, `#[serde(rename_all = "snake_case")]`).
+const DIRECTIONS: [&str; 6] = [
+    "publish",
+    "subscribe",
+    "query_request",
+    "query_response",
+    "server_request",
+    "server_response",
+];
+
+fn is_schema_id(value: &str) -> bool {
+    value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct EmitApisMetadata {
+    pub schema: String,
+    pub artifact: Artifact,
+    pub framework: Framework,
+    pub api_version: String,
+    pub participant_class: Option<String>,
+    pub bus_abi: String,
+    pub required_contracts: Vec<Contract>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct Artifact {
+    pub kind: String,
+    pub id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct Framework {
+    pub version: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct Contract {
+    pub api_version: Option<String>,
+    pub schema_id: Option<String>,
+    pub family: Option<String>,
+    pub topic: Option<String>,
+    pub direction: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_emit() -> String {
+        r#"{
+  "schema": "phoxal.emit-apis/v0",
+  "artifact": { "kind": "service", "id": "frame" },
+  "framework": { "version": "0.21.0" },
+  "api_version": "y2026_1",
+  "participant_class": "checked",
+  "bus_abi": "phoxal-bus/v0",
+  "required_contracts": [
+    {
+      "api_version": "y2026_1",
+      "schema_id": "0123456789abcdef",
+      "family": "frame::LookupRequest",
+      "topic": "frame/lookup",
+      "direction": "query_request"
+    }
+  ],
+  "config_schema": { "type": "object" }
+}"#
+        .to_string()
+    }
+
+    fn validate(json: &str) -> Result<()> {
+        validate_emit_apis_json(json.as_bytes(), "frame", ArtifactKind::Service)
+    }
+
+    fn assert_error_contains(error: &anyhow::Error, needle: &str) {
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains(needle)),
+            "expected error chain to contain {needle:?}, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn validation_accepts_real_shaped_emit_json() {
+        validate(&valid_emit()).expect("valid emit JSON should pass");
+    }
+
+    #[test]
+    fn validation_rejects_wrong_kind() {
+        let json = valid_emit().replace(r#""kind": "service""#, r#""kind": "driver""#);
+        let err = validate(&json).expect_err("wrong kind should fail");
+        assert_error_contains(&err, "artifact.kind");
+    }
+
+    #[test]
+    fn validation_rejects_wrong_schema_marker() {
+        let json = valid_emit().replace("phoxal.emit-apis/v0", "phoxal.emit-apis/v1");
+        let err = validate(&json).expect_err("wrong schema marker should fail");
+        assert_error_contains(&err, "schema");
+    }
+
+    #[test]
+    fn validation_rejects_missing_schema_marker() {
+        let json = valid_emit().replace("  \"schema\": \"phoxal.emit-apis/v0\",\n", "");
+        let err = validate(&json).expect_err("missing schema marker should fail");
+        assert_error_contains(&err, "schema");
+    }
+
+    #[test]
+    fn validation_rejects_missing_participant_class() {
+        let json = valid_emit().replace("  \"participant_class\": \"checked\",\n", "");
+        let err = validate(&json).expect_err("missing participant_class should fail");
+        assert_error_contains(&err, "participant_class");
+    }
+
+    #[test]
+    fn validation_rejects_bad_schema_id() {
+        let json = valid_emit().replace("0123456789abcdef", "0123456789ABCDEF");
+        let err = validate(&json).expect_err("bad schema_id should fail");
+        assert_error_contains(&err, "schema_id");
+    }
+
+    #[test]
+    fn validation_rejects_wrong_bus_abi() {
+        let json = valid_emit().replace("phoxal-bus/v0", "phoxal-bus/v1");
+        let err = validate(&json).expect_err("wrong bus_abi should fail");
+        assert_error_contains(&err, "bus_abi");
+    }
+
+    #[test]
+    fn validation_rejects_missing_required_contracts() {
+        let json = valid_emit().replace("required_contracts", "renamed_contracts");
+        let err = validate(&json).expect_err("missing required_contracts should fail");
+        assert_error_contains(&err, "required_contracts");
+    }
+
+    #[test]
+    fn validation_rejects_empty_required_contracts() {
+        let json = valid_emit().replace(
+            r#"  "required_contracts": [
+    {
+      "api_version": "y2026_1",
+      "schema_id": "0123456789abcdef",
+      "family": "frame::LookupRequest",
+      "topic": "frame/lookup",
+      "direction": "query_request"
+    }
+  ],"#,
+            r#"  "required_contracts": [],"#,
+        );
+        let err = validate(&json).expect_err("empty required_contracts should fail");
+        assert_error_contains(&err, "required_contracts");
+    }
+
+    #[test]
+    fn validation_accepts_empty_required_contracts_for_privileged_tool() {
+        let json = valid_emit()
+            .replace(r#""kind": "service""#, r#""kind": "tool""#)
+            .replace(r#""id": "frame""#, r#""id": "router""#)
+            .replace(
+                r#""participant_class": "checked""#,
+                r#""participant_class": "privileged""#,
+            )
+            .replace(
+                r#"  "required_contracts": [
+    {
+      "api_version": "y2026_1",
+      "schema_id": "0123456789abcdef",
+      "family": "frame::LookupRequest",
+      "topic": "frame/lookup",
+      "direction": "query_request"
+    }
+  ],"#,
+                r#"  "required_contracts": [],"#,
+            );
+
+        validate_emit_apis_json(json.as_bytes(), "router", ArtifactKind::Tool)
+            .expect("privileged tool with no graph contracts should validate");
+    }
+
+    #[test]
+    fn validation_rejects_missing_contract_family() {
+        let json = valid_emit().replace("      \"family\": \"frame::LookupRequest\",\n", "");
+        let err = validate(&json).expect_err("missing contract family should fail");
+        assert_error_contains(&err, "family");
+    }
+
+    #[test]
+    fn validation_rejects_missing_contract_topic() {
+        let json = valid_emit().replace("      \"topic\": \"frame/lookup\",\n", "");
+        let err = validate(&json).expect_err("missing contract topic should fail");
+        assert_error_contains(&err, "topic");
+    }
+
+    #[test]
+    fn validation_rejects_unknown_contract_direction() {
+        let json = valid_emit().replace(
+            r#""direction": "query_request""#,
+            r#""direction": "listen""#,
+        );
+        let err = validate(&json).expect_err("unknown contract direction should fail");
+        assert_error_contains(&err, "direction");
+    }
+
+    #[test]
+    fn asset_stem_uses_package_version_and_host_triple() {
+        let artifact = OfficialArtifact {
+            package_name: "phoxal-service-frame".to_string(),
+            kind: ArtifactKind::Service,
+            version: "0.19.1".to_string(),
+            crate_dir: PathBuf::from("service/frame"),
+            bin_name: "phoxal-service-frame".to_string(),
+            id: "frame".to_string(),
+            metadata: Default::default(),
+        };
+
+        assert_eq!(
+            asset_stem(&artifact, "x86_64-unknown-linux-gnu"),
+            "phoxal-service-frame-v0.19.1-x86_64-unknown-linux-gnu"
+        );
+    }
+}

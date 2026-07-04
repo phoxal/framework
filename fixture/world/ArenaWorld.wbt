@@ -1,0 +1,32 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+
+WorldInfo {
+  basicTimeStep 12
+  contactProperties [
+    ContactProperties {
+      material1 "parquet"
+      material2 "rubber_wheel"
+    }
+  ]
+}
+Viewpoint {
+  orientation -0.1895592044308511 -0.29678609449768945 0.935940875337941 5.024282227589436
+  position -2.195272548937297 5.210882823016731 2.6164902204320346
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+RectangleArena {
+  contactMaterial "parquet"
+  floorSize 10 10
+  floorTileSize 1 1
+  wallHeight 1.0
+  floorAppearance Parquetry {
+  }
+}

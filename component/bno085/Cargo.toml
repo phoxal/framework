@@ -1,0 +1,26 @@
+[package]
+name = "phoxal-driver-bno085"
+version = "0.1.4"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+description = "Phoxal official driver: bno085 - IMU."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-driver-bno085"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

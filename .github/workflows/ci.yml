@@ -1,0 +1,119 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The workspace builds on a bare runner by design; a system package appears
+# here only together with the crate that needs it, so a service/driver growing
+# a native (-sys/C++) dependency stays visible. Current set:
+#   libudev-dev - tool-joypad's gilrs gamepad backend (libudev-sys) on Linux.
+jobs:
+  ci:
+    uses: phoxal/.github/.github/workflows/rust-ci.yml@main
+    with:
+      system-packages: libudev-dev
+    secrets: inherit
+
+  # The official-set fixture pins the service set + bus topology; this test fails
+  # if the wired topology drifts from the fixture.
+  official-set-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # tool-joypad (gilrs -> libudev-sys) builds in this job via the catalog
+      # generation step; see the header comment.
+      - name: Install system packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Check official-set fixture topology
+        run: cargo test -p phoxal --test official_set_topology -- --nocapture
+
+      - name: Check preview feature sync
+        run: cargo xtask api sync-features --check
+
+      - name: Check release-plz artifact scope
+        run: cargo xtask release sync-config --check
+
+      - name: Check promoted API shape freeze
+        run: cargo xtask api freeze-shapes --check
+
+      # Full package-output catalog generation builds all official release
+      # binaries. PRs use metadata-only mode to gate discovery, schema ids,
+      # coverage, provenance, and checksum integrity without that release cost.
+      - name: Generate metadata-only catalog
+        run: cargo xtask catalog generate --metadata-only
+
+      - name: Check metadata-only catalog
+        run: cargo xtask catalog check --metadata-only
+
+      - name: Verify metadata-only catalog
+        run: cargo xtask catalog verify target/xtask/catalog/phoxal-artifact-catalog.json
+
+      - name: Check no-orphan promotion gate
+        if: github.event_name == 'pull_request'
+        run: cargo xtask api promotion-gate --base ${{ github.event.pull_request.base.sha }} --catalog target/xtask/catalog/phoxal-artifact-catalog.json
+
+      - name: Publish preview impact report
+        run: cargo xtask api preview-impact --catalog target/xtask/catalog/phoxal-artifact-catalog.json --json-out target/xtask/api-preview-impact.json --github-summary
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-preview-impact
+          path: target/xtask/api-preview-impact.json
+
+  # Tier-2 musl targets are not covered by upstream guarantees. Keep this
+  # focused on the four library crates so the guard stays cheap and does not
+  # become the native-asset build matrix from the next slice.
+  musl-library:
+    name: musl library guard (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build library crates for musl
+        run: >
+          cargo build
+          --target ${{ matrix.target }}
+          -p phoxal-bus
+          -p phoxal-api
+          -p phoxal-macros
+          -p phoxal
+          --lib
+
+      - name: Test library crates for musl
+        run: >
+          cargo test
+          --target ${{ matrix.target }}
+          -p phoxal-bus
+          -p phoxal-api
+          -p phoxal-macros
+          -p phoxal
+          --lib

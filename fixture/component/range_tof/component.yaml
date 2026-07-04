@@ -1,0 +1,11 @@
+version: v1
+capabilities:
+  range:
+    kind: range
+    publish_rate_hz: 20.0
+    min_range_m: 0.04
+    max_range_m: 4.0
+    field_of_view_rad: 0.471239
+    target:
+      kind: link
+      id: sensor_link

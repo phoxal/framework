@@ -1,0 +1,13 @@
+error: #[setup] first argument must be `ctx: &mut SetupContext<Self>`
+  --> tests/trybuild/fail/setup_bad_ctx.rs:11:26
+   |
+11 |     async fn setup(_ctx: &mut StepContext) -> Result<Self> {
+   |                          ^^^^^^^^^^^^^^^^
+
+warning: unused import: `phoxal::prelude::*`
+ --> tests/trybuild/fail/setup_bad_ctx.rs:2:5
+  |
+2 | use phoxal::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -1,0 +1,68 @@
+[package]
+name = "phoxal"
+version = "0.25.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+description = "Phoxal - production-oriented autonomous robot framework: the runtime engine and model (the api contract tree lives in phoxal-api, the typed bus in phoxal-bus)."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["robotics", "robot", "autonomy", "zenoh", "simulation"]
+categories = ["science::robotics", "simulation"]
+
+[lib]
+name = "phoxal"
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+phoxal-api = { workspace = true }
+phoxal-bus = { workspace = true }
+phoxal-macros = { workspace = true }
+anyhow = { workspace = true }
+arc-swap = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+derive-new = { workspace = true }
+dotenvy = { workspace = true }
+nalgebra = { workspace = true }
+rmp-serde = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+urdf-rs = { workspace = true }
+zenoh = { workspace = true }
+
+[dev-dependencies]
+serial_test = { workspace = true }
+tempfile = { workspace = true }
+trybuild = { workspace = true }
+
+[lints]
+workspace = true
+
+[[example]]
+name = "runtime_control_loop"
+path = "examples/runtime_control_loop.rs"
+
+[[example]]
+name = "runtime_query_server"
+path = "examples/runtime_query_server.rs"
+
+[[example]]
+name = "runtime_snapshot_server"
+path = "examples/runtime_snapshot_server.rs"
+
+[[example]]
+name = "runtime_async_entrypoint"
+path = "examples/runtime_async_entrypoint.rs"

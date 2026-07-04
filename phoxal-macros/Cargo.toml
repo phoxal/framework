@@ -1,0 +1,31 @@
+[package]
+name = "phoxal-macros"
+version = "0.19.5"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# Published to crates.io: `phoxal` depends on it by version, so it must be a real
+# published crate (a path-only dependency cannot be published).
+publish = true
+description = "Proc-macros for the phoxal framework: phoxal_api_tree!, #[derive(Service)], #[derive(Driver)], #[phoxal::behavior]."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+heck = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+phoxal-bus = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+trybuild = { workspace = true }
+
+[lints]
+workspace = true

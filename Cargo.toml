@@ -1,0 +1,150 @@
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+publish = false
+description = "Phoxal framework - engine + complete platform service set."
+documentation = "https://github.com/phoxal/framework#readme"
+homepage = "https://github.com/phoxal/framework"
+repository = "https://github.com/phoxal/framework"
+
+[workspace]
+resolver = "3"
+# Greenfield rewrite (tmp/framework-rewrite): the engine crate + its proc-macros,
+# plus the official services and catalog component drivers on the new authoring
+# surface (component/<name> also carries the component definition: component.yaml,
+# structure.urdf, simulation.yaml).
+members = [
+    "phoxal",
+    "phoxal-api",
+    "phoxal-bus",
+    "phoxal-macros",
+    "component/bno085",
+    "component/ddsm115",
+    "component/oak_d_lite",
+    "component/vl53l1x",
+    "component/zed_f9p",
+    "service/asset",
+    "service/battery",
+    "service/drive",
+    "service/explore",
+    "service/follow",
+    "service/frame",
+    "service/joint",
+    "service/localize",
+    "service/map",
+    "service/mission",
+    "service/motion",
+    "service/odometry",
+    "service/perception",
+    "service/plan",
+    "service/power",
+    "service/presence",
+    "service/safety",
+    "service/video",
+    "simulator/webots",
+    "tool/joypad",
+    "tool/router",
+    "xtask",
+]
+# Keep the internal automation crate out of plain root cargo builds.
+# Invariant: default-members must contain every workspace member except xtask.
+# When adding a workspace member, add it to both members and default-members;
+# otherwise plain cargo build/test silently skips it.
+default-members = [
+    "phoxal",
+    "phoxal-api",
+    "phoxal-bus",
+    "phoxal-macros",
+    "component/bno085",
+    "component/ddsm115",
+    "component/oak_d_lite",
+    "component/vl53l1x",
+    "component/zed_f9p",
+    "service/asset",
+    "service/battery",
+    "service/drive",
+    "service/explore",
+    "service/follow",
+    "service/frame",
+    "service/joint",
+    "service/localize",
+    "service/map",
+    "service/mission",
+    "service/motion",
+    "service/odometry",
+    "service/perception",
+    "service/plan",
+    "service/power",
+    "service/presence",
+    "service/safety",
+    "service/video",
+    "simulator/webots",
+    "tool/joypad",
+    "tool/router",
+]
+
+[workspace.dependencies]
+anyhow = "1.0.102"
+arc-swap = "1.9.1"
+async-trait = "0.1.89"
+clap = { version = "4.6.1", features = ["derive", "env"] }
+const_format = "0.2"
+derive-new = "0.7.0"
+derive_setters = "0.1.9"
+dotenvy = "0.15.7"
+gilrs = "0.11.2"
+heck = "0.5.0"
+nalgebra = { version = "0.34.2", features = ["serde-serialize"] }
+proc-macro2 = "1.0"
+quote = "1.0"
+rmp-serde = "1.3.1"
+schemars = "1.2.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_bytes = "0.11.19"
+serde_json = "1.0.149"
+serde_yaml = "0.9"
+sha2 = "0.10"
+serial_test = "3"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+tempfile = "3.27.0"
+thiserror = "2.0.18"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+trybuild = "1"
+urdf-rs = "0.9.0"
+webots-rs = "0.1.3"
+# Default features minus transport_compression: zenoh-transport's lz4_flex pin
+# (^0.10.0) has no release with the RUSTSEC-2026-0041 fix, so keep the affected
+# block-decompression path out of shipped binaries. Phoxal never enables zenoh
+# compression at runtime, so no behavior changes. Re-enable defaults only after
+# zenoh ships lz4_flex >= 0.11.6 (eclipse-zenoh/zenoh#2499) and the ignore in
+# .cargo/audit.toml is removed.
+zenoh = { version = "1.9.0", default-features = false, features = [
+    "auth_pubkey",
+    "auth_usrpwd",
+    "transport_multilink",
+    "transport_quic",
+    "transport_quic_datagram",
+    "transport_tcp",
+    "transport_tls",
+    "transport_udp",
+    "transport_unixsock-stream",
+    "transport_ws",
+] }
+# Carry a version (not just a path) on every internal dep: cargo strips the path
+# on publish/package and resolves the dep by version from the index. Without it,
+# `cargo package` fails ("all dependencies must have a version requirement") - this
+# also covers the service and component driver crates' dependency on `phoxal`.
+phoxal = { path = "phoxal", version = "0.25" }
+phoxal-api = { path = "phoxal-api", version = "0.19" }
+phoxal-bus = { path = "phoxal-bus", version = "0.20" }
+phoxal-macros = { path = "phoxal-macros", version = "0.19" }
+
+[workspace.lints.rust]
+unused = "warn"
+
+[profile.release]
+lto = false
+codegen-units = 16

@@ -1,0 +1,104 @@
+schema: v0
+identity:
+  id: rgbd-imu-gnss-outdoor
+  namespace: dev
+structure: structure.urdf
+phoxal_participants: {}
+motion:
+  kinematic:
+    kind: differential
+    left_actuators:
+    - front_left_drive.motor
+    - rear_left_drive.motor
+    right_actuators:
+    - front_right_drive.motor
+    - rear_right_drive.motor
+    left_encoders:
+    - front_left_drive.encoder
+    - rear_left_drive.encoder
+    right_encoders:
+    - front_right_drive.encoder
+    - rear_right_drive.encoder
+    wheel_radius_m: 0.1
+    wheel_base_m: 0.4
+components:
+  sources:
+    camera_rgbd_640x480:
+      path: "../../component/camera_rgbd_640x480"
+    drive_motor:
+      path: "../../component/drive_motor"
+    gnss:
+      path: "../../component/gnss"
+    imu:
+      path: "../../component/imu"
+    range_tof:
+      path: "../../component/range_tof"
+  instances:
+    front_left_drive:
+      component: drive_motor
+      mount_link: front_left_wheel_mount
+      parameters:
+        motor:
+          kind: motor
+          direction_sign: 1
+        encoder:
+          kind: encoder
+          direction_sign: 1
+    front_right_drive:
+      component: drive_motor
+      mount_link: front_right_wheel_mount
+      parameters:
+        motor:
+          kind: motor
+          direction_sign: -1
+        encoder:
+          kind: encoder
+          direction_sign: -1
+    rear_left_drive:
+      component: drive_motor
+      mount_link: rear_left_wheel_mount
+      parameters:
+        motor:
+          kind: motor
+          direction_sign: 1
+        encoder:
+          kind: encoder
+          direction_sign: 1
+    rear_right_drive:
+      component: drive_motor
+      mount_link: rear_right_wheel_mount
+      parameters:
+        motor:
+          kind: motor
+          direction_sign: -1
+        encoder:
+          kind: encoder
+          direction_sign: -1
+    imu:
+      component: imu
+      mount_link: imu_mount
+      roles:
+        imu:
+        - odometry
+        - localization
+    front_camera:
+      component: camera_rgbd_640x480
+      mount_link: front_camera_mount
+      roles:
+        depth:
+        - mapping
+        - traversability
+    front_center_tof:
+      component: range_tof
+      mount_link: front_center_tof_mount
+      roles:
+        range:
+        - safety
+        - mapping
+        - traversability
+    gnss:
+      component: gnss
+      mount_link: gnss_mount
+      roles:
+        gnss:
+        - localization

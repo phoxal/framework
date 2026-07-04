@@ -1,0 +1,24 @@
+[package]
+name = "phoxal-service-frame"
+version = "0.19.5"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = true
+description = "Phoxal official service: frame - structural and joint-driven transform tree."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-service-frame"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+nalgebra = { workspace = true }
+
+[lints]
+workspace = true

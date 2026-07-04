@@ -1,0 +1,2100 @@
+{
+  "schema": "phoxal.artifact-catalog/v0",
+  "format_version": 1,
+  "revision": "sha256:994951c64f7d422d51efc7abc3384263b8bb2b42a6a682a66fbe5608a52f20ed",
+  "integrity": {
+    "algorithm": "sha256",
+    "canonicalization": "json-v1-empty-revision-and-integrity-sha256",
+    "sha256": "994951c64f7d422d51efc7abc3384263b8bb2b42a6a682a66fbe5608a52f20ed"
+  },
+  "provenance": {
+    "generator": "cargo xtask catalog generate",
+    "official_set": "cargo_metadata workspace official artifact discovery",
+    "emit_apis": "cargo xtask release package *.emit-apis.json outputs",
+    "release_assets": "local host-triple cargo xtask release package outputs",
+    "plan_01": "plan-01 fills CI-built per-triple assets, signatures, immutable publication refs, and embedded phoxal-bus/zenoh versions"
+  },
+  "signature": null,
+  "entries": [
+    {
+      "artifact_id": "driver-bno085",
+      "kind": "driver",
+      "package": "phoxal-driver-bno085",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::accelerometer::Sample",
+          "topic_template": "component/{instance}/accelerometer/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "981b31474b4148bb"
+        },
+        {
+          "family": "component::gyroscope::Sample",
+          "topic_template": "component/{instance}/gyroscope/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "ad30fbdb012b57c3"
+        },
+        {
+          "family": "component::imu::Sample",
+          "topic_template": "component/{instance}/imu/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "7348846ce5a9ec67"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-bno085-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "e89d6a5ca6751b68d4437ef331d5431aa6c1ebf627f3bef0d8a6f8b4cafb7a1a",
+          "metadata": {
+            "emit_apis": "phoxal-driver-bno085-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "2d5be40d189568d668a47cad26ab567f9a686f14430aecde193924b441652458",
+            "sha256_file": "phoxal-driver-bno085-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-bno085-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "78556f3c6fcf7e159ce2c21c408cf2645a3175a6bdbc476465bfcb4be2121e6a",
+          "metadata": {
+            "emit_apis": "phoxal-driver-bno085-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "2d5be40d189568d668a47cad26ab567f9a686f14430aecde193924b441652458",
+            "sha256_file": "phoxal-driver-bno085-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "driver",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "driver-ddsm115",
+      "kind": "driver",
+      "package": "phoxal-driver-ddsm115",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::encoder::Sample",
+          "topic_template": "component/{instance}/encoder/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "04beba8a261bd418"
+        },
+        {
+          "family": "component::motor::Command",
+          "topic_template": "component/{instance}/motor/{capability}/command",
+          "direction": "subscribe",
+          "schema_id": "790522170ea1f8f4"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-ddsm115-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "5ac45eedcd7f169ecca888e6dd684507c070aed43dfad99b49a8b6103fc3bec6",
+          "metadata": {
+            "emit_apis": "phoxal-driver-ddsm115-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "2e6e5ceee7dc84e86ee420ac931ce6ed2ed252de2e0129e55a0739b9c6b582d1",
+            "sha256_file": "phoxal-driver-ddsm115-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-ddsm115-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "3d1bb3e98e024ea3bfb5d261e325377ec133c62b6e235de54ef732ddb4bcd090",
+          "metadata": {
+            "emit_apis": "phoxal-driver-ddsm115-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "2e6e5ceee7dc84e86ee420ac931ce6ed2ed252de2e0129e55a0739b9c6b582d1",
+            "sha256_file": "phoxal-driver-ddsm115-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "driver",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "driver-oak_d_lite",
+      "kind": "driver",
+      "package": "phoxal-driver-oak_d_lite",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::accelerometer::Sample",
+          "topic_template": "component/{instance}/accelerometer/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "981b31474b4148bb"
+        },
+        {
+          "family": "component::camera::Frame",
+          "topic_template": "component/{instance}/camera/{capability}/frame",
+          "direction": "publish",
+          "schema_id": "dfb562871eedbb45"
+        },
+        {
+          "family": "component::depth::Frame",
+          "topic_template": "component/{instance}/depth/{capability}/frame",
+          "direction": "publish",
+          "schema_id": "7fe2cbf61a5f574d"
+        },
+        {
+          "family": "component::gyroscope::Sample",
+          "topic_template": "component/{instance}/gyroscope/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "ad30fbdb012b57c3"
+        },
+        {
+          "family": "component::imu::Sample",
+          "topic_template": "component/{instance}/imu/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "7348846ce5a9ec67"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-oak_d_lite-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "d782484d99ffefeb37c7ccf551c24959358795ed09ff14bd154cbbd900aaf021",
+          "metadata": {
+            "emit_apis": "phoxal-driver-oak_d_lite-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "2c6e8a548eecf16482e3980e1ed208ae713ef03293904f85139d092aeba9361a",
+            "sha256_file": "phoxal-driver-oak_d_lite-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-oak_d_lite-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "0a1d1cd9009da12991dbfc25e20a847288d9b562f6c885db27e29cc5d8fada18",
+          "metadata": {
+            "emit_apis": "phoxal-driver-oak_d_lite-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "2c6e8a548eecf16482e3980e1ed208ae713ef03293904f85139d092aeba9361a",
+            "sha256_file": "phoxal-driver-oak_d_lite-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "driver",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "driver-vl53l1x",
+      "kind": "driver",
+      "package": "phoxal-driver-vl53l1x",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::range::Sample",
+          "topic_template": "component/{instance}/range/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "af411d79bf68d44a"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-vl53l1x-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "efa71fe0921862c81d7272f4ce2a95b8c214dfb4126c1aaa3dda1d8f63268a21",
+          "metadata": {
+            "emit_apis": "phoxal-driver-vl53l1x-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "9770e5a98301cccbe97b713e46caeb9a6e0e59ac3d63a23dbb0c2fb5b3e12b53",
+            "sha256_file": "phoxal-driver-vl53l1x-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-vl53l1x-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "fdae55c79293de14c415096c14ecab5dc0f39bbb2bdcf1dc676e231f7d671c89",
+          "metadata": {
+            "emit_apis": "phoxal-driver-vl53l1x-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "9770e5a98301cccbe97b713e46caeb9a6e0e59ac3d63a23dbb0c2fb5b3e12b53",
+            "sha256_file": "phoxal-driver-vl53l1x-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "driver",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "driver-zed_f9p",
+      "kind": "driver",
+      "package": "phoxal-driver-zed_f9p",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::gnss::Sample",
+          "topic_template": "component/{instance}/gnss/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "66d10a129dee8053"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-zed_f9p-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "236121c72ad7841a1181f23ce8ef210d580347a819c800b63aceea614483f247",
+          "metadata": {
+            "emit_apis": "phoxal-driver-zed_f9p-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "ce9182a4b008619a99fdd87637f4f4b72e286a6ee9fabde961c8c8cbe7b4b5f5",
+            "sha256_file": "phoxal-driver-zed_f9p-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-driver-zed_f9p-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "7aa8f78a9e58afefcb91c0661dae4cf63b0c1d844f11f844556b82c19947d715",
+          "metadata": {
+            "emit_apis": "phoxal-driver-zed_f9p-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "ce9182a4b008619a99fdd87637f4f4b72e286a6ee9fabde961c8c8cbe7b4b5f5",
+            "sha256_file": "phoxal-driver-zed_f9p-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "driver",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-asset",
+      "kind": "service",
+      "package": "phoxal-service-asset",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "asset::GetRequest",
+          "topic_template": "asset/get",
+          "direction": "server_request",
+          "schema_id": "b7057a730c599833"
+        },
+        {
+          "family": "asset::GetResponse",
+          "topic_template": "asset/get",
+          "direction": "server_response",
+          "schema_id": "6f1e618e2b1f6beb"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-asset-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "2fc8477599d9bad4676fc4433703f0d05484b1ec44bb9f13bbdb202ec623bc1a",
+          "metadata": {
+            "emit_apis": "phoxal-service-asset-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "becac9bd34d6d2f284eea4b69741ed68e6f770a27a72afd7cc05a6c81d264a41",
+            "sha256_file": "phoxal-service-asset-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-asset-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "450a62587356b8269b42fb7a0e059663e1e57edf1c3f894159d817033f3eeaf6",
+          "metadata": {
+            "emit_apis": "phoxal-service-asset-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "becac9bd34d6d2f284eea4b69741ed68e6f770a27a72afd7cc05a6c81d264a41",
+            "sha256_file": "phoxal-service-asset-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-battery",
+      "kind": "service",
+      "package": "phoxal-service-battery",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "battery::State",
+          "topic_template": "battery/state",
+          "direction": "publish",
+          "schema_id": "73cd0a0afc5d9708"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-battery-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "beb8d21819692952ef5cd1becd815f8c9f3cc77f7f49bc0c22a045b947efa3f0",
+          "metadata": {
+            "emit_apis": "phoxal-service-battery-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "97461030a9f0d63b49f4d5027f0cc2cde085f6b10b72413898b4fabd01dc073f",
+            "sha256_file": "phoxal-service-battery-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-battery-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "09d4d5b43541ec2edc172035505f2d2fcaecd55434afb0604438e613005b5773",
+          "metadata": {
+            "emit_apis": "phoxal-service-battery-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "97461030a9f0d63b49f4d5027f0cc2cde085f6b10b72413898b4fabd01dc073f",
+            "sha256_file": "phoxal-service-battery-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-drive",
+      "kind": "service",
+      "package": "phoxal-service-drive",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::motor::Command",
+          "topic_template": "component/{instance}/motor/{capability}/command",
+          "direction": "publish",
+          "schema_id": "790522170ea1f8f4"
+        },
+        {
+          "family": "drive::State",
+          "topic_template": "drive/state",
+          "direction": "publish",
+          "schema_id": "a27f3fbed7d0269e"
+        },
+        {
+          "family": "drive::Target",
+          "topic_template": "drive/target",
+          "direction": "subscribe",
+          "schema_id": "bd1db077861832a8"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-drive-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "f8f7ba5103eb3054fbe46f6925c55b5ee940cef70d758c54420e04b40cb920aa",
+          "metadata": {
+            "emit_apis": "phoxal-service-drive-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "a6b79dd9e860f9d52344ee1ba31fb3a58cc202efe623e6f355674caf452cc4f0",
+            "sha256_file": "phoxal-service-drive-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-drive-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "a77a87bc51e3371fc0b9eb827ef42f1d35ebf86b00bb5db1fa019246f98d280b",
+          "metadata": {
+            "emit_apis": "phoxal-service-drive-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "a6b79dd9e860f9d52344ee1ba31fb3a58cc202efe623e6f355674caf452cc4f0",
+            "sha256_file": "phoxal-service-drive-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-explore",
+      "kind": "service",
+      "package": "phoxal-service-explore",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "explore::Frontiers",
+          "topic_template": "explore/frontiers",
+          "direction": "publish",
+          "schema_id": "042440272ebda4cb"
+        },
+        {
+          "family": "explore::State",
+          "topic_template": "explore/state",
+          "direction": "publish",
+          "schema_id": "289ac7e769392bd5"
+        },
+        {
+          "family": "localize::LocalizationState",
+          "topic_template": "localize/state",
+          "direction": "subscribe",
+          "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "map::Revision",
+          "topic_template": "map/revision",
+          "direction": "subscribe",
+          "schema_id": "e3bd7ca871cb1e91"
+        },
+        {
+          "family": "map::SubmapRequest",
+          "topic_template": "map/submap",
+          "direction": "query_request",
+          "schema_id": "131992c2ffc35636"
+        },
+        {
+          "family": "map::SubmapResponse",
+          "topic_template": "map/submap",
+          "direction": "query_response",
+          "schema_id": "cd56e4949a176bcb"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-explore-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "82b4cd44630d73f55ef55f41ba3c200a44d2f048ad2f9272ed1439cbb0ba9167",
+          "metadata": {
+            "emit_apis": "phoxal-service-explore-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "b31e46743e7f88e9207562be0ef99b9bf1b1106f587cc9fea84264fbc12db066",
+            "sha256_file": "phoxal-service-explore-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-explore-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "406140c922c16ff5dc97c45fa36a5545deca3e69c94a35019c46e5bbc4949273",
+          "metadata": {
+            "emit_apis": "phoxal-service-explore-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "b31e46743e7f88e9207562be0ef99b9bf1b1106f587cc9fea84264fbc12db066",
+            "sha256_file": "phoxal-service-explore-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-follow",
+      "kind": "service",
+      "package": "phoxal-service-follow",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "follow::State",
+          "topic_template": "follow/state",
+          "direction": "publish",
+          "schema_id": "196afafc69158b98"
+        },
+        {
+          "family": "follow::Target",
+          "topic_template": "follow/target",
+          "direction": "publish",
+          "schema_id": "b7164568720d477e"
+        },
+        {
+          "family": "localize::LocalizationState",
+          "topic_template": "localize/state",
+          "direction": "subscribe",
+          "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "plan::Path",
+          "topic_template": "plan/path",
+          "direction": "subscribe",
+          "schema_id": "072c80bdd8ebc770"
+        },
+        {
+          "family": "plan::State",
+          "topic_template": "plan/state",
+          "direction": "subscribe",
+          "schema_id": "1bafc0968ce94aea"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-follow-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "c3e1c450d083f5aa0fb9bc6eeac1747643cf8d2af0bb0433e55aa2e8c2026e89",
+          "metadata": {
+            "emit_apis": "phoxal-service-follow-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "36fe343746023687a70c47112599d8e189801b74addf0ed6aedcd1db3efcbc10",
+            "sha256_file": "phoxal-service-follow-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-follow-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "b406d576d6b30fa49863b1d892e83cc8eb33483cfdd26a1dfb2c2aeaab554007",
+          "metadata": {
+            "emit_apis": "phoxal-service-follow-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "36fe343746023687a70c47112599d8e189801b74addf0ed6aedcd1db3efcbc10",
+            "sha256_file": "phoxal-service-follow-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-frame",
+      "kind": "service",
+      "package": "phoxal-service-frame",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "frame::LookupRequest",
+          "topic_template": "frame/lookup",
+          "direction": "server_request",
+          "schema_id": "4bfb78501cced8c1"
+        },
+        {
+          "family": "frame::LookupResponse",
+          "topic_template": "frame/lookup",
+          "direction": "server_response",
+          "schema_id": "fce54b669641f4ce"
+        },
+        {
+          "family": "frame::StaticTransforms",
+          "topic_template": "frame/static_transforms",
+          "direction": "publish",
+          "schema_id": "6938a55322fb2272"
+        },
+        {
+          "family": "frame::Tree",
+          "topic_template": "frame/tree",
+          "direction": "publish",
+          "schema_id": "6938a55322fb2272"
+        },
+        {
+          "family": "joint::JointState",
+          "topic_template": "joint/{joint}/state",
+          "direction": "subscribe",
+          "schema_id": "7458ccb5f1f630c2"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-frame-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "88eb32c78a86eaebbb0f30d46ab77c3efa9c7a86a867eed6d9e1add2a7e2bed4",
+          "metadata": {
+            "emit_apis": "phoxal-service-frame-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "d7d692c92d6957ac5889f8cbe47487f5f06fc7f00544d69365ecd60f3aa3db36",
+            "sha256_file": "phoxal-service-frame-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-frame-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "b5eddf74e41542f003eda4f6138d70fbf77b04829d62521ceeedd59fc7f69970",
+          "metadata": {
+            "emit_apis": "phoxal-service-frame-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "d7d692c92d6957ac5889f8cbe47487f5f06fc7f00544d69365ecd60f3aa3db36",
+            "sha256_file": "phoxal-service-frame-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-joint",
+      "kind": "service",
+      "package": "phoxal-service-joint",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::encoder::Sample",
+          "topic_template": "component/{instance}/encoder/{capability}/sample",
+          "direction": "subscribe",
+          "schema_id": "04beba8a261bd418"
+        },
+        {
+          "family": "joint::JointState",
+          "topic_template": "joint/{joint}/state",
+          "direction": "publish",
+          "schema_id": "7458ccb5f1f630c2"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-joint-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "b54473100151f89a1b27c5457819b59c768ad455a212fe8fdc9924c74fcf9b43",
+          "metadata": {
+            "emit_apis": "phoxal-service-joint-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "886e180bca61db998239c58c46eb1202b92f4499e5d0b34cbe2e474547983e02",
+            "sha256_file": "phoxal-service-joint-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-joint-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "a46e7c25c9794f6983a76ee22c099b9b7bfdd68de95cde9e9a22799e443de618",
+          "metadata": {
+            "emit_apis": "phoxal-service-joint-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "886e180bca61db998239c58c46eb1202b92f4499e5d0b34cbe2e474547983e02",
+            "sha256_file": "phoxal-service-joint-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-localize",
+      "kind": "service",
+      "package": "phoxal-service-localize",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "localize::LocalizationState",
+          "topic_template": "localize/state",
+          "direction": "publish",
+          "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "odometry::State",
+          "topic_template": "odometry/state",
+          "direction": "subscribe",
+          "schema_id": "2cd3469157d82c51"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-localize-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "a9276e4e51571454735f85f6f133faa6f50b26a4897541307c48e5e5af472c0d",
+          "metadata": {
+            "emit_apis": "phoxal-service-localize-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "b86d3a4a5d737ac6537d95e33a6798c5574c8680b30356b7815e53d79f24ffb8",
+            "sha256_file": "phoxal-service-localize-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-localize-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "c5adc920588a4c741f2a03ac5ee392bd8d93adbf049751916e330d585c971b38",
+          "metadata": {
+            "emit_apis": "phoxal-service-localize-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "b86d3a4a5d737ac6537d95e33a6798c5574c8680b30356b7815e53d79f24ffb8",
+            "sha256_file": "phoxal-service-localize-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-map",
+      "kind": "service",
+      "package": "phoxal-service-map",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "localize::LocalizationState",
+          "topic_template": "localize/state",
+          "direction": "subscribe",
+          "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "map::Revision",
+          "topic_template": "map/revision",
+          "direction": "publish",
+          "schema_id": "e3bd7ca871cb1e91"
+        },
+        {
+          "family": "map::SubmapRequest",
+          "topic_template": "map/submap",
+          "direction": "server_request",
+          "schema_id": "131992c2ffc35636"
+        },
+        {
+          "family": "map::SubmapResponse",
+          "topic_template": "map/submap",
+          "direction": "server_response",
+          "schema_id": "cd56e4949a176bcb"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-map-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "b1fc20f256fd030c63cfabfe0190838311d39436be8dff5f171ad687e306b68e",
+          "metadata": {
+            "emit_apis": "phoxal-service-map-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "af17c19ed5010c09d3411f19d567661835de51e56cf65721752a4d1b4453d12c",
+            "sha256_file": "phoxal-service-map-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-map-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "714d979bc0999091ff1e4d37e2c733f23e3f76d6fad3505ec1e0b36822e7a032",
+          "metadata": {
+            "emit_apis": "phoxal-service-map-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "af17c19ed5010c09d3411f19d567661835de51e56cf65721752a4d1b4453d12c",
+            "sha256_file": "phoxal-service-map-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-mission",
+      "kind": "service",
+      "package": "phoxal-service-mission",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "mission::Command",
+          "topic_template": "mission/command",
+          "direction": "subscribe",
+          "schema_id": "68bc120004663097"
+        },
+        {
+          "family": "mission::Goal",
+          "topic_template": "mission/goal",
+          "direction": "publish",
+          "schema_id": "73fdf859b2cacda4"
+        },
+        {
+          "family": "mission::State",
+          "topic_template": "mission/state",
+          "direction": "publish",
+          "schema_id": "a23a7c64080c758e"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-mission-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "8a8b1b979c8498821e9183ce3d18a866d22dc5adc1dc41fa0bdd55bfcc3d4b06",
+          "metadata": {
+            "emit_apis": "phoxal-service-mission-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "de96e1c34d90d9c920154cd338006ff34061e7c003b96ffa0e1dd021e410dd2b",
+            "sha256_file": "phoxal-service-mission-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-mission-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "b133f866e36ccc81a7c1c396ecf5bc000e866bcc4a169d6453e38980d5b5813c",
+          "metadata": {
+            "emit_apis": "phoxal-service-mission-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "de96e1c34d90d9c920154cd338006ff34061e7c003b96ffa0e1dd021e410dd2b",
+            "sha256_file": "phoxal-service-mission-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-motion",
+      "kind": "service",
+      "package": "phoxal-service-motion",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "drive::Target",
+          "topic_template": "drive/target",
+          "direction": "publish",
+          "schema_id": "bd1db077861832a8"
+        },
+        {
+          "family": "follow::Target",
+          "topic_template": "follow/target",
+          "direction": "subscribe",
+          "schema_id": "b7164568720d477e"
+        },
+        {
+          "family": "motion::ManualCommand",
+          "topic_template": "motion/manual",
+          "direction": "subscribe",
+          "schema_id": "8749292b3e1cfcdf"
+        },
+        {
+          "family": "motion::State",
+          "topic_template": "motion/state",
+          "direction": "publish",
+          "schema_id": "2ba3e368b40b3e83"
+        },
+        {
+          "family": "safety::SafetyAuthorization",
+          "topic_template": "safety/authorization",
+          "direction": "subscribe",
+          "schema_id": "691850b4f944b302"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-motion-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "4e1c8971ed6cd28f4fbdc1c5800be3590276dafd06b382c315f9771a0b3a1e07",
+          "metadata": {
+            "emit_apis": "phoxal-service-motion-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "66c7aa5533e66d948f5364616139bd7fd5294405ba1b2ad18a75573335557811",
+            "sha256_file": "phoxal-service-motion-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-motion-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "f9917d954bfb4add8e2a87cf8bfceaceadf7e620180b9b49cf847100c8b9f8fa",
+          "metadata": {
+            "emit_apis": "phoxal-service-motion-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "66c7aa5533e66d948f5364616139bd7fd5294405ba1b2ad18a75573335557811",
+            "sha256_file": "phoxal-service-motion-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-odometry",
+      "kind": "service",
+      "package": "phoxal-service-odometry",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::encoder::Sample",
+          "topic_template": "component/{instance}/encoder/{capability}/sample",
+          "direction": "subscribe",
+          "schema_id": "04beba8a261bd418"
+        },
+        {
+          "family": "odometry::State",
+          "topic_template": "odometry/state",
+          "direction": "publish",
+          "schema_id": "2cd3469157d82c51"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-odometry-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "93420313fdaa699f85cf7e81c9bf9a002a87afe6c4a332d34f8a08c8710584a0",
+          "metadata": {
+            "emit_apis": "phoxal-service-odometry-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "a952ad066aded70c605fde29f23b30aa69bee76d7876a7fc6c299dcef354804e",
+            "sha256_file": "phoxal-service-odometry-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-odometry-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "c3b04d83379f4290517a0d4f574d124e0de7e9d275c7952dd8be98c3e7cccbea",
+          "metadata": {
+            "emit_apis": "phoxal-service-odometry-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "a952ad066aded70c605fde29f23b30aa69bee76d7876a7fc6c299dcef354804e",
+            "sha256_file": "phoxal-service-odometry-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-perception",
+      "kind": "service",
+      "package": "phoxal-service-perception",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::camera::Frame",
+          "topic_template": "component/{instance}/camera/{capability}/frame",
+          "direction": "subscribe",
+          "schema_id": "dfb562871eedbb45"
+        },
+        {
+          "family": "component::depth::Frame",
+          "topic_template": "component/{instance}/depth/{capability}/frame",
+          "direction": "subscribe",
+          "schema_id": "7fe2cbf61a5f574d"
+        },
+        {
+          "family": "localize::LocalizationState",
+          "topic_template": "localize/state",
+          "direction": "subscribe",
+          "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "perception::Detections",
+          "topic_template": "perception/detections",
+          "direction": "publish",
+          "schema_id": "718008c4c81fe4e2"
+        },
+        {
+          "family": "perception::State",
+          "topic_template": "perception/state",
+          "direction": "publish",
+          "schema_id": "53a58f8bf4871c9e"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-perception-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "c8c846027558ab71b633a1c7616525fedd48ee4728a5507fc7ce24cd70fecfbd",
+          "metadata": {
+            "emit_apis": "phoxal-service-perception-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "065e5a655a292911cf1d983b28a68217c7fe9107c32655bf66effb188191e037",
+            "sha256_file": "phoxal-service-perception-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-perception-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "8811620583a0a199aa5407969432f36ec083921d326cfaf83a53495a3531cce5",
+          "metadata": {
+            "emit_apis": "phoxal-service-perception-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "065e5a655a292911cf1d983b28a68217c7fe9107c32655bf66effb188191e037",
+            "sha256_file": "phoxal-service-perception-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-plan",
+      "kind": "service",
+      "package": "phoxal-service-plan",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "localize::LocalizationState",
+          "topic_template": "localize/state",
+          "direction": "subscribe",
+          "schema_id": "eea128627b56225c"
+        },
+        {
+          "family": "map::Revision",
+          "topic_template": "map/revision",
+          "direction": "subscribe",
+          "schema_id": "e3bd7ca871cb1e91"
+        },
+        {
+          "family": "mission::State",
+          "topic_template": "mission/state",
+          "direction": "subscribe",
+          "schema_id": "a23a7c64080c758e"
+        },
+        {
+          "family": "plan::Path",
+          "topic_template": "plan/path",
+          "direction": "publish",
+          "schema_id": "072c80bdd8ebc770"
+        },
+        {
+          "family": "plan::State",
+          "topic_template": "plan/state",
+          "direction": "publish",
+          "schema_id": "1bafc0968ce94aea"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-plan-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "6c03e348082dfbca4a10a05744e3d999cc80be272f316e8e9576487dd423faa3",
+          "metadata": {
+            "emit_apis": "phoxal-service-plan-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "4bd09d4ae8093f8372bd601442e674ce6394abbf965e5b2c3c12f44e108b95f4",
+            "sha256_file": "phoxal-service-plan-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-plan-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "57de9c85f45289a00abe8b204c887de3fa5568d8c176adc61f26156c404f4983",
+          "metadata": {
+            "emit_apis": "phoxal-service-plan-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "4bd09d4ae8093f8372bd601442e674ce6394abbf965e5b2c3c12f44e108b95f4",
+            "sha256_file": "phoxal-service-plan-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-power",
+      "kind": "service",
+      "package": "phoxal-service-power",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "power::Command",
+          "topic_template": "power/command",
+          "direction": "subscribe",
+          "schema_id": "dcdefd20c4c485ed"
+        },
+        {
+          "family": "power::State",
+          "topic_template": "power/state",
+          "direction": "publish",
+          "schema_id": "1eb5bd9e186c6013"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-power-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "10ee7788a9e951b47056dae7104a6731528ebfa97be0c6882f612a3a9a55a4f9",
+          "metadata": {
+            "emit_apis": "phoxal-service-power-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "35488c0894d619a9e0059c732620dd48a594ab2016c2abce3f4f9cef77357ee8",
+            "sha256_file": "phoxal-service-power-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-power-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "469d2fd8dd4d16b44ffa296b5fc7c988a78942e769cbc0d12c6b2679464e3c8d",
+          "metadata": {
+            "emit_apis": "phoxal-service-power-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "35488c0894d619a9e0059c732620dd48a594ab2016c2abce3f4f9cef77357ee8",
+            "sha256_file": "phoxal-service-power-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-presence",
+      "kind": "service",
+      "package": "phoxal-service-presence",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "presence::Heartbeat",
+          "topic_template": "presence/heartbeat",
+          "direction": "subscribe",
+          "schema_id": "71dd078a4bef0e7e"
+        },
+        {
+          "family": "presence::State",
+          "topic_template": "presence/state",
+          "direction": "publish",
+          "schema_id": "5b19728fb8526ada"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-presence-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "f2924bef7f52487c8bbffe2b76b97fe192272579263ea146710c986ffa635557",
+          "metadata": {
+            "emit_apis": "phoxal-service-presence-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "528f6269fa5659207dda875677c20158120c986a52520fa33001b61c5d94bfc1",
+            "sha256_file": "phoxal-service-presence-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-presence-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "ef6387fec3ffc3db9dfe353e549d190e4d98a775a4dc920cace3290491748162",
+          "metadata": {
+            "emit_apis": "phoxal-service-presence-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "528f6269fa5659207dda875677c20158120c986a52520fa33001b61c5d94bfc1",
+            "sha256_file": "phoxal-service-presence-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-safety",
+      "kind": "service",
+      "package": "phoxal-service-safety",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "battery::State",
+          "topic_template": "battery/state",
+          "direction": "subscribe",
+          "schema_id": "73cd0a0afc5d9708"
+        },
+        {
+          "family": "component::emergency_stop::State",
+          "topic_template": "component/{instance}/emergency_stop/{capability}/state",
+          "direction": "subscribe",
+          "schema_id": "5ff421d098148b38"
+        },
+        {
+          "family": "drive::State",
+          "topic_template": "drive/state",
+          "direction": "subscribe",
+          "schema_id": "a27f3fbed7d0269e"
+        },
+        {
+          "family": "safety::EmergencyStopRequest",
+          "topic_template": "safety/estop",
+          "direction": "subscribe",
+          "schema_id": "5ff421d098148b38"
+        },
+        {
+          "family": "safety::SafetyAuthorization",
+          "topic_template": "safety/authorization",
+          "direction": "publish",
+          "schema_id": "691850b4f944b302"
+        },
+        {
+          "family": "safety::Status",
+          "topic_template": "safety/state",
+          "direction": "publish",
+          "schema_id": "871976d559db5984"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-safety-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "e63d08b016efb7990c7858c99f990813cea9e67aa101b743a67590acedec58a8",
+          "metadata": {
+            "emit_apis": "phoxal-service-safety-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "87997c9689204c5a73ee144692a7a226256f4645fa579aef421894e9b37f6fe7",
+            "sha256_file": "phoxal-service-safety-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-safety-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "ee2097e693562978d938a138b1de3e494b34a252524f608d843946db9347bf34",
+          "metadata": {
+            "emit_apis": "phoxal-service-safety-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "87997c9689204c5a73ee144692a7a226256f4645fa579aef421894e9b37f6fe7",
+            "sha256_file": "phoxal-service-safety-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "service-video",
+      "kind": "service",
+      "package": "phoxal-service-video",
+      "version": "0.19.5",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::camera::Frame",
+          "topic_template": "component/{instance}/camera/{capability}/frame",
+          "direction": "subscribe",
+          "schema_id": "dfb562871eedbb45"
+        },
+        {
+          "family": "video::OpenRequest",
+          "topic_template": "video/open",
+          "direction": "server_request",
+          "schema_id": "01d090ba7dbc333c"
+        },
+        {
+          "family": "video::OpenResponse",
+          "topic_template": "video/open",
+          "direction": "server_response",
+          "schema_id": "4874d37430980b83"
+        },
+        {
+          "family": "video::stream::StreamState",
+          "topic_template": "video/stream/{stream}/state",
+          "direction": "publish",
+          "schema_id": "bae672ca9f6d905b"
+        }
+      ],
+      "target_triples": [
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-service-video-v0.19.5-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "c6d20dfd50ddff8cc4feeb4f46e88aa757f3afb030844fd0afb073ace5162526",
+          "metadata": {
+            "emit_apis": "phoxal-service-video-v0.19.5-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "cb7d37578469187d64be5afb843d062f1493933fcb461a54821b6619eade516a",
+            "sha256_file": "phoxal-service-video-v0.19.5-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-service-video-v0.19.5-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "0f88cd1b94884341e2c92f4f117a72eeecaa9b164d849914696c253bdc87156a",
+          "metadata": {
+            "emit_apis": "phoxal-service-video-v0.19.5-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "cb7d37578469187d64be5afb843d062f1493933fcb461a54821b6619eade516a",
+            "sha256_file": "phoxal-service-video-v0.19.5-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "service",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.19.5"
+      },
+      "status": {
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "simulator-webots",
+      "kind": "simulator",
+      "package": "phoxal-simulator-webots",
+      "version": "0.1.3",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "component::accelerometer::Sample",
+          "topic_template": "component/{instance}/accelerometer/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "981b31474b4148bb"
+        },
+        {
+          "family": "component::camera::Frame",
+          "topic_template": "component/{instance}/camera/{capability}/frame",
+          "direction": "publish",
+          "schema_id": "dfb562871eedbb45"
+        },
+        {
+          "family": "component::depth::Frame",
+          "topic_template": "component/{instance}/depth/{capability}/frame",
+          "direction": "publish",
+          "schema_id": "7fe2cbf61a5f574d"
+        },
+        {
+          "family": "component::encoder::Sample",
+          "topic_template": "component/{instance}/encoder/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "04beba8a261bd418"
+        },
+        {
+          "family": "component::gnss::Sample",
+          "topic_template": "component/{instance}/gnss/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "66d10a129dee8053"
+        },
+        {
+          "family": "component::gyroscope::Sample",
+          "topic_template": "component/{instance}/gyroscope/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "ad30fbdb012b57c3"
+        },
+        {
+          "family": "component::imu::Sample",
+          "topic_template": "component/{instance}/imu/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "7348846ce5a9ec67"
+        },
+        {
+          "family": "component::motor::Command",
+          "topic_template": "component/{instance}/motor/{capability}/command",
+          "direction": "subscribe",
+          "schema_id": "790522170ea1f8f4"
+        },
+        {
+          "family": "component::range::Sample",
+          "topic_template": "component/{instance}/range/{capability}/sample",
+          "direction": "publish",
+          "schema_id": "af411d79bf68d44a"
+        },
+        {
+          "family": "simulation::Clock",
+          "topic_template": "simulation/clock",
+          "direction": "publish",
+          "schema_id": "1a4038c598a3dac2"
+        },
+        {
+          "family": "simulation::Contact",
+          "topic_template": "simulation/contact",
+          "direction": "publish",
+          "schema_id": "200769283abb0336"
+        },
+        {
+          "family": "simulation::Control",
+          "topic_template": "simulation/control",
+          "direction": "subscribe",
+          "schema_id": "fcbdfc9e6d42d4e9"
+        },
+        {
+          "family": "simulation::RobotPose",
+          "topic_template": "simulation/robot_pose",
+          "direction": "publish",
+          "schema_id": "4a445cdf4b5362f8"
+        }
+      ],
+      "target_triples": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-apple-darwin": {
+          "asset": "phoxal-simulator-webots-v0.1.3-aarch64-apple-darwin.tar.zst",
+          "sha256": "2c94f346b634462040909235465b13c108e729896469c6f4d248bfc2e1cbeff7",
+          "metadata": {
+            "emit_apis": "phoxal-simulator-webots-v0.1.3-aarch64-apple-darwin.emit-apis.json",
+            "emit_apis_sha256": "858ab8c2438d494283a8dac58ce58b858f14c246015a3c88592b14f586a8eebc",
+            "sha256_file": "phoxal-simulator-webots-v0.1.3-aarch64-apple-darwin.tar.zst.sha256"
+          }
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-simulator-webots-v0.1.3-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "1ef56a881c49319c4b7e902ca553d5c42a03051ec8d144503d57e699506a8334",
+          "metadata": {
+            "emit_apis": "phoxal-simulator-webots-v0.1.3-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "858ab8c2438d494283a8dac58ce58b858f14c246015a3c88592b14f586a8eebc",
+            "sha256_file": "phoxal-simulator-webots-v0.1.3-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-simulator-webots-v0.1.3-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "7c656372eff518c9c9b4cd48fff30639debc3a0ea40d765d1f9c35a60fc0af89",
+          "metadata": {
+            "emit_apis": "phoxal-simulator-webots-v0.1.3-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "858ab8c2438d494283a8dac58ce58b858f14c246015a3c88592b14f586a8eebc",
+            "sha256_file": "phoxal-simulator-webots-v0.1.3-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "simulator",
+        "participant_class": "checked",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.3"
+      },
+      "status": {
+        "aarch64-apple-darwin": "released",
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "tool-joypad",
+      "kind": "tool",
+      "package": "phoxal-tool-joypad",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [
+        {
+          "family": "motion::ManualCommand",
+          "topic_template": "motion/manual",
+          "direction": "publish",
+          "schema_id": "8749292b3e1cfcdf"
+        }
+      ],
+      "target_triples": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-apple-darwin": {
+          "asset": "phoxal-tool-joypad-v0.1.4-aarch64-apple-darwin.tar.zst",
+          "sha256": "2955bb0d985f3421a4e4b71f100a8c99960326a2d6df39a331604330f0ed84b4",
+          "metadata": {
+            "emit_apis": "phoxal-tool-joypad-v0.1.4-aarch64-apple-darwin.emit-apis.json",
+            "emit_apis_sha256": "b29c1ed1a2a7470e6d1cabafdd5ddbabc2fea2db83d31e0f23a9e27d0b037bb5",
+            "sha256_file": "phoxal-tool-joypad-v0.1.4-aarch64-apple-darwin.tar.zst.sha256"
+          }
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-tool-joypad-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "8bda2ffbec4221442fed7faffb61ca32a6be29d377365b6f2fe796d3688a4177",
+          "metadata": {
+            "emit_apis": "phoxal-tool-joypad-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "b29c1ed1a2a7470e6d1cabafdd5ddbabc2fea2db83d31e0f23a9e27d0b037bb5",
+            "sha256_file": "phoxal-tool-joypad-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-tool-joypad-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "671a2671732bc91e702b6c4d65647e2f1b9f6b8c1d55f86dae3a6a39680fb59b",
+          "metadata": {
+            "emit_apis": "phoxal-tool-joypad-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "b29c1ed1a2a7470e6d1cabafdd5ddbabc2fea2db83d31e0f23a9e27d0b037bb5",
+            "sha256_file": "phoxal-tool-joypad-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "tool",
+        "participant_class": "privileged",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-apple-darwin": "released",
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    },
+    {
+      "artifact_id": "tool-router",
+      "kind": "tool",
+      "package": "phoxal-tool-router",
+      "version": "0.1.4",
+      "api_generation": "y2026_1",
+      "contract_uses": [],
+      "target_triples": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu"
+      ],
+      "release_assets": {
+        "aarch64-apple-darwin": {
+          "asset": "phoxal-tool-router-v0.1.4-aarch64-apple-darwin.tar.zst",
+          "sha256": "876cd2122043524453e4ec7ea0199754def2e34fafe5037d9ec2f6dcac458ace",
+          "metadata": {
+            "emit_apis": "phoxal-tool-router-v0.1.4-aarch64-apple-darwin.emit-apis.json",
+            "emit_apis_sha256": "88af6b3e994ea886d47194c0f99bb27a0ad8cff0cde4ee5db2c49a137b7005d8",
+            "sha256_file": "phoxal-tool-router-v0.1.4-aarch64-apple-darwin.tar.zst.sha256"
+          }
+        },
+        "aarch64-unknown-linux-gnu": {
+          "asset": "phoxal-tool-router-v0.1.4-aarch64-unknown-linux-gnu.tar.zst",
+          "sha256": "b6911568e532f510a0a5bab5830dda6e3ec26183aa704d2c7b74a3add63f5d83",
+          "metadata": {
+            "emit_apis": "phoxal-tool-router-v0.1.4-aarch64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "88af6b3e994ea886d47194c0f99bb27a0ad8cff0cde4ee5db2c49a137b7005d8",
+            "sha256_file": "phoxal-tool-router-v0.1.4-aarch64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        },
+        "x86_64-unknown-linux-gnu": {
+          "asset": "phoxal-tool-router-v0.1.4-x86_64-unknown-linux-gnu.tar.zst",
+          "sha256": "991c67cbdcba5c1bd4656b2550eb8a6200defef6834f5b04f0e3c44ee68ea860",
+          "metadata": {
+            "emit_apis": "phoxal-tool-router-v0.1.4-x86_64-unknown-linux-gnu.emit-apis.json",
+            "emit_apis_sha256": "88af6b3e994ea886d47194c0f99bb27a0ad8cff0cde4ee5db2c49a137b7005d8",
+            "sha256_file": "phoxal-tool-router-v0.1.4-x86_64-unknown-linux-gnu.tar.zst.sha256"
+          }
+        }
+      },
+      "launch_facts": {
+        "participant_kind": "tool",
+        "participant_class": "privileged",
+        "router": {
+          "needs_zenoh_router": true
+        },
+        "systemd": {
+          "groups": [],
+          "devices": [],
+          "source": "not-modeled-until-native-release-plan-01"
+        }
+      },
+      "engine_versions": {
+        "phoxal": "0.25.0",
+        "phoxal_bus": null,
+        "zenoh": null
+      },
+      "channels": {
+        "stable": "0.1.4"
+      },
+      "status": {
+        "aarch64-apple-darwin": "released",
+        "aarch64-unknown-linux-gnu": "released",
+        "x86_64-unknown-linux-gnu": "released"
+      },
+      "changed_contracts": []
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+version: v1
+# Simulation parameters specific to the generic IMU that cannot be fully
+# expressed in URDF.
+#
+# Sources:
+# - generic IMU fixture reference:
+#   - accelerometer: 12-bit, +/-8 g
+#   - gyroscope: 16-bit, +/-2000 deg/s
+#   - max raw sensor rates: accelerometer 500 Hz, gyroscope 400 Hz
+#
+# Webots lookupTable is intentionally omitted. The published hardware
+# documentation gives range, resolution, and accuracy, but not a nonlinear
+# transfer curve we can justify encoding here.
+capabilities:
+  imu:
+    kind: imu
+    sampling_period_hz: 50.0
+  accelerometer:
+    kind: accelerometer
+    sampling_period_hz: 50.0
+    resolution: 0.038307227
+  gyroscope:
+    kind: gyroscope
+    sampling_period_hz: 50.0
+    resolution: 0.0010652644

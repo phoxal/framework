@@ -1,0 +1,6 @@
+version: v1
+capabilities:
+  gnss:
+    kind: gnss
+    sampling_period_hz: 10.0
+links: {}

@@ -1,0 +1,13 @@
+<?xml version="1.0" ?>
+<robot name="range_lowrate_device">
+  <link name="mount" />
+  <joint name="sensor_joint" type="fixed">
+    <parent link="mount" /><child link="sensor_link" />
+    <origin xyz="0 0 0.01" rpy="0 0 0" />
+  </joint>
+  <link name="sensor_link">
+    <visual><origin xyz="0 0 0" rpy="0 0 0" /><geometry><box size="0.02 0.012 0.006" /></geometry></visual>
+    <collision><origin xyz="0 0 0" rpy="0 0 0" /><geometry><box size="0.02 0.012 0.006" /></geometry></collision>
+    <inertial><origin xyz="0 0 0" rpy="0 0 0" /><mass value="0.003" /><inertia ixx="0.00000004" ixy="0.0" ixz="0.0" iyy="0.00000010" iyz="0.0" izz="0.00000012" /></inertial>
+  </link>
+</robot>

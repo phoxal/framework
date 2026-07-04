@@ -1,0 +1,45 @@
+version: v1
+# Sources:
+# - generic RGB-D fixture optics and stereo depth
+# - Bosch BMI270 datasheet for IMU quantization
+#
+# The camera simulator config keeps only fields that map cleanly to real
+# hardware. Webots render-tuning knobs such as exposure, bloom, and AO are
+# intentionally omitted.
+#
+# Depth uses a simplified Webots RangeFinder rather than stereo disparity.
+# The RangeFinder realism knobs below approximate generic RGB-D passive-stereo
+# imperfections without pretending to model the full DepthAI stereo pipeline.
+capabilities:
+  left_mono:
+    kind: camera
+    sampling_period_hz: 30.0
+    projection: planar
+  rgb:
+    kind: camera
+    sampling_period_hz: 30.0
+    projection: planar
+  right_mono:
+    kind: camera
+    sampling_period_hz: 30.0
+    projection: planar
+  depth:
+    kind: depth
+    # Simplified Webots-native depth approximation using RangeFinder.
+    # This is not stereo disparity reconstructed from the mono pair.
+    sampling_period_hz: 30.0
+    resolution: 0.03
+    noise: 0.02
+    motion_blur: 0.2
+  imu:
+    kind: imu
+    sampling_period_hz: 100.0
+  accelerometer:
+    kind: accelerometer
+    sampling_period_hz: 100.0
+    resolution: 0.000588399
+  gyroscope:
+    kind: gyroscope
+    sampling_period_hz: 100.0
+    resolution: 0.00006981317
+links: {}

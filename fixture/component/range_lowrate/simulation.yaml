@@ -1,0 +1,6 @@
+version: v1
+capabilities:
+  range:
+    kind: range
+    sampling_period_hz: 1.0
+    resolution: 0.001
