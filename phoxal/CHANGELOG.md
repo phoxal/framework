@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/phoxal/framework/compare/phoxal-v0.24.1...phoxal-v0.25.0) - 2026-07-04
+
+### Added
+
+- *(19)* artifacts pins model - the unified pin map with path overrides ([#152](https://github.com/phoxal/framework/pull/152))
+
 ## [0.24.1](https://github.com/phoxal/framework/compare/phoxal-v0.24.0...phoxal-v0.24.1) - 2026-07-04
 
 ### Added
