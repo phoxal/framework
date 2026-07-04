@@ -9,6 +9,8 @@ use serde_json::Value;
 
 const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"];
 const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["xtask", "fixture"];
+const LINUX_TARGETS: [&str; 2] = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
+const DARWIN_TARGET: &str = "aarch64-apple-darwin";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +62,41 @@ pub struct OfficialArtifact {
     pub bin_name: String,
     pub id: String,
     pub metadata: PhoxalPackageMetadata,
+}
+
+impl OfficialArtifact {
+    pub fn release_tag(&self) -> String {
+        format!("{}-v{}", self.package_name, self.version)
+    }
+
+    pub fn supported_target_triples(&self) -> Vec<String> {
+        let mut targets = LINUX_TARGETS
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect::<Vec<_>>();
+        if matches!(self.kind, ArtifactKind::Tool | ArtifactKind::Simulator) {
+            targets.push(DARWIN_TARGET.to_string());
+        }
+        targets.extend(self.metadata.extra_target_triples.iter().cloned());
+        targets.sort();
+        targets.dedup();
+        targets
+    }
+
+    pub fn supports_target(&self, target: &str) -> bool {
+        self.supported_target_triples()
+            .iter()
+            .any(|candidate| candidate == target)
+    }
+}
+
+pub fn runner_for_target(target: &str) -> Result<&'static str> {
+    match target {
+        "aarch64-unknown-linux-gnu" => Ok("ubuntu-24.04-arm"),
+        "x86_64-unknown-linux-gnu" => Ok("ubuntu-24.04"),
+        "aarch64-apple-darwin" => Ok("macos-14"),
+        _ => bail!("no CI runner is configured for release target {target}"),
+    }
 }
 
 #[derive(Debug)]
@@ -169,6 +206,19 @@ impl Workspace {
                     .join(", ");
                 format!("unknown official artifact package {package_name}; known packages: {known}")
             })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_parts_for_tests(
+        root: PathBuf,
+        target_dir: PathBuf,
+        official_artifacts: Vec<OfficialArtifact>,
+    ) -> Self {
+        Self {
+            root,
+            target_dir,
+            official_artifacts,
+        }
     }
 }
 

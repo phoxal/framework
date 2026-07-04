@@ -4,14 +4,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
-use sha2::{Digest, Sha256};
 
 use crate::api::sync_features::{ApiGeneration, GenerationChannel, api_generations_from_workspace};
 use crate::catalog::schema::{
     ArtifactStatus, CatalogEntry, CatalogProvenance, CatalogRevision, Channel, ContractUse,
     EngineVersions, LaunchFacts, ReleaseAsset, ReleaseAssetMetadata, RouterFacts, SystemdFacts,
 };
-use crate::release::package::{self, EmitApisMetadata};
+use crate::release::package::{self, EmitApisMetadata, PackagedOutput};
+use crate::release::plan::{ReleasePlan, load_release_plan};
 use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, require_nonempty_artifacts};
 
 const DEFAULT_CATALOG_OUT: &str = "target/xtask/catalog/phoxal-artifact-catalog.json";
@@ -23,6 +23,12 @@ pub struct Args {
     pub out: PathBuf,
     #[arg(long, value_name = "DIR", default_value = DEFAULT_PACKAGE_DIR)]
     pub package_dir: PathBuf,
+    #[arg(long = "target", value_name = "TRIPLE")]
+    pub targets: Vec<String>,
+    #[arg(long, value_name = "PATH")]
+    pub release_plan: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub previous_catalog: Option<PathBuf>,
     /// Generate from direct `emit-apis` projections, without release builds or
     /// tarballs. CI uses this as the cheap PR gate; plan #01 release jobs should
     /// use package-output mode so released assets carry real checksums.
@@ -40,13 +46,16 @@ pub(crate) enum InputMode {
 pub(crate) struct GenerateOptions {
     pub package_dir: PathBuf,
     pub mode: InputMode,
+    pub target_triples: Vec<String>,
+    pub release_plan: Option<ReleasePlan>,
+    pub previous_catalog: Option<CatalogRevision>,
 }
 
 #[derive(Debug)]
 struct ArtifactProjection {
     metadata: EmitApisMetadata,
-    release: Option<ReleaseProjection>,
-    status: ArtifactStatus,
+    releases: BTreeMap<String, ReleaseProjection>,
+    status: BTreeMap<String, ArtifactStatus>,
 }
 
 #[derive(Debug)]
@@ -71,16 +80,47 @@ pub fn run(args: Args) -> Result<()> {
     let package_dir = package::workspace_relative_out_dir(&workspace, &args.package_dir);
     let out = workspace_relative_path(&workspace, &args.out);
     let host_triple = package::host_triple(workspace.root())?;
+    let target_triples = if args.targets.is_empty() {
+        vec![host_triple.clone()]
+    } else {
+        args.targets.clone()
+    };
+    let release_plan = args
+        .release_plan
+        .as_deref()
+        .map(|path| load_release_plan(&workspace_relative_path(&workspace, path)))
+        .transpose()?;
+    let previous_catalog = args
+        .previous_catalog
+        .as_deref()
+        .map(|path| {
+            crate::catalog::verify::verify_catalog_path(&workspace_relative_path(&workspace, path))
+        })
+        .transpose()?;
 
-    if mode == InputMode::PackageOutputs {
+    if mode == InputMode::PackageOutputs && release_plan.is_none() && previous_catalog.is_none() {
         fs::create_dir_all(&package_dir)
             .with_context(|| format!("failed to create {}", package_dir.display()))?;
-        package::package_artifacts(&workspace, artifacts, &package_dir, &host_triple)?;
+        for target_triple in &target_triples {
+            package::package_artifacts(
+                &workspace,
+                artifacts,
+                &package_dir,
+                &host_triple,
+                target_triple,
+            )?;
+        }
     }
 
     let revision = build_catalog_revision(
         &workspace,
-        &GenerateOptions { package_dir, mode },
+        &GenerateOptions {
+            package_dir,
+            mode,
+            target_triples,
+            release_plan,
+            previous_catalog,
+        },
         &host_triple,
     )?;
     write_catalog(&out, &revision)?;
@@ -145,7 +185,7 @@ pub(crate) fn build_catalog_revision_from_artifacts(
         artifacts,
         api_generations,
         &projections,
-        options.mode,
+        options,
         host_triple,
     )
 }
@@ -158,9 +198,21 @@ fn projections(
 ) -> Result<BTreeMap<String, ArtifactProjection>> {
     let mut projections = BTreeMap::new();
     for artifact in artifacts {
+        if options.mode == InputMode::PackageOutputs
+            && options.previous_catalog.is_some()
+            && options.release_plan.as_ref().is_some_and(|plan| {
+                !plan
+                    .artifacts
+                    .iter()
+                    .any(|item| item.package == artifact.package_name)
+            })
+        {
+            continue;
+        }
         let projection = match options.mode {
             InputMode::PackageOutputs => {
-                projection_from_package_outputs(artifact, &options.package_dir, host_triple)?
+                let target_triples = target_triples_for_artifact(artifact, options, host_triple)?;
+                projection_from_package_outputs(artifact, &options.package_dir, &target_triples)?
             }
             InputMode::MetadataOnly => projection_from_emit_apis(root, artifact)?,
         };
@@ -172,48 +224,35 @@ fn projections(
 fn projection_from_package_outputs(
     artifact: &OfficialArtifact,
     package_dir: &Path,
-    host_triple: &str,
+    target_triples: &[String],
 ) -> Result<ArtifactProjection> {
-    let stem = package::asset_stem(artifact, host_triple);
-    let asset = package_dir.join(format!("{stem}.tar.zst"));
-    let checksum = package_dir.join(format!("{stem}.tar.zst.sha256"));
-    let metadata = package_dir.join(format!("{stem}.emit-apis.json"));
-    for path in [&asset, &checksum, &metadata] {
-        if !path.is_file() {
+    let first_target = target_triples
+        .first()
+        .with_context(|| format!("{} has no target triples", artifact.package_name))?;
+    let first = package::read_packaged_output(artifact, package_dir, first_target)?;
+    let mut releases = BTreeMap::new();
+    let mut status = BTreeMap::new();
+    releases.insert(first_target.clone(), release_projection(&first));
+    status.insert(first_target.clone(), ArtifactStatus::Released);
+
+    for target in &target_triples[1..] {
+        let output = package::read_packaged_output(artifact, package_dir, target)?;
+        if output.emit_apis != first.emit_apis {
             bail!(
-                "missing packaged output for {}: {}",
+                "{} emit-apis metadata differs between {} and {}; cross-target metadata must be target-independent",
                 artifact.package_name,
-                path.display()
+                first_target,
+                target
             );
         }
+        releases.insert(target.clone(), release_projection(&output));
+        status.insert(target.clone(), ArtifactStatus::Released);
     }
-
-    let recorded = read_checksum_file(&checksum, &asset)?;
-    let computed = package::sha256_file(&asset)?;
-    if recorded != computed {
-        bail!(
-            "{} checksum file recorded {}, but computed {}",
-            asset.display(),
-            recorded,
-            computed
-        );
-    }
-
-    let metadata_bytes =
-        fs::read(&metadata).with_context(|| format!("failed to read {}", metadata.display()))?;
-    let parsed = package::parse_emit_apis_json(&metadata_bytes, &artifact.id, artifact.kind)
-        .with_context(|| format!("invalid emit-apis metadata {}", metadata.display()))?;
 
     Ok(ArtifactProjection {
-        metadata: parsed,
-        release: Some(ReleaseProjection {
-            asset_filename: file_name(&asset)?,
-            asset_sha256: computed,
-            metadata_filename: file_name(&metadata)?,
-            metadata_sha256: sha256_bytes(&metadata_bytes),
-            checksum_filename: file_name(&checksum)?,
-        }),
-        status: ArtifactStatus::Released,
+        metadata: first.emit_apis,
+        releases,
+        status,
     })
 }
 
@@ -226,8 +265,8 @@ fn projection_from_emit_apis(
         .with_context(|| format!("invalid emit-apis metadata from {}", artifact.package_name))?;
     Ok(ArtifactProjection {
         metadata: parsed,
-        release: None,
-        status: ArtifactStatus::Pending,
+        releases: BTreeMap::new(),
+        status: BTreeMap::new(),
     })
 }
 
@@ -235,17 +274,42 @@ fn build_revision_from_projections(
     artifacts: &[OfficialArtifact],
     api_generations: &[ApiGeneration],
     projections: &BTreeMap<String, ArtifactProjection>,
-    mode: InputMode,
+    options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<CatalogRevision> {
     let channels_by_generation = channels_by_generation(api_generations)?;
-    let schemas_by_generation = schemas_by_generation(projections)?;
+    let mut schemas_by_generation = options
+        .previous_catalog
+        .as_ref()
+        .map(|catalog| schemas_by_catalog_entries(&catalog.entries))
+        .transpose()?
+        .unwrap_or_default();
+    merge_schemas_by_generation(
+        &mut schemas_by_generation,
+        &schemas_by_generation_from_projections(projections)?,
+    )?;
+    let previous_entries = options
+        .previous_catalog
+        .as_ref()
+        .map(previous_entries_by_artifact_id)
+        .transpose()?;
     let mut entries = Vec::with_capacity(artifacts.len());
 
     for artifact in artifacts {
-        let projection = projections
-            .get(&artifact.package_name)
-            .with_context(|| format!("missing projection for {}", artifact.package_name))?;
+        let artifact_id = catalog_artifact_id(artifact.kind, &artifact.id);
+        let Some(projection) = projections.get(&artifact.package_name) else {
+            if let Some(previous_entries) = &previous_entries {
+                if let Some(previous) = previous_entries.get(&artifact_id) {
+                    if previous.package == artifact.package_name
+                        && previous.version == artifact.version
+                    {
+                        entries.push((*previous).clone());
+                        continue;
+                    }
+                }
+            }
+            bail!("missing projection for {}", artifact.package_name);
+        };
         let metadata = &projection.metadata;
         let api_generation = metadata.api_version.clone();
         let channel = channels_by_generation
@@ -264,10 +328,11 @@ fn build_revision_from_projections(
             &schemas_by_generation,
         );
 
+        let target_triples = target_triples_for_artifact(artifact, options, host_triple)?;
         let mut release_assets = BTreeMap::new();
-        if let Some(release) = &projection.release {
+        for (target, release) in &projection.releases {
             release_assets.insert(
-                host_triple.to_string(),
+                target.clone(),
                 ReleaseAsset {
                     asset: release.asset_filename.clone(),
                     sha256: release.asset_sha256.clone(),
@@ -280,20 +345,24 @@ fn build_revision_from_projections(
             );
         }
 
-        let mut status = BTreeMap::new();
-        status.insert(host_triple.to_string(), projection.status);
+        let mut status = projection.status.clone();
+        if status.is_empty() {
+            for target in &target_triples {
+                status.insert(target.clone(), ArtifactStatus::Pending);
+            }
+        }
 
         let mut channels = BTreeMap::new();
         channels.insert(*channel, artifact.version.clone());
 
         entries.push(CatalogEntry {
-            artifact_id: catalog_artifact_id(artifact.kind, &artifact.id),
+            artifact_id,
             kind: artifact.kind,
             package: artifact.package_name.clone(),
             version: artifact.version.clone(),
             api_generation,
             contract_uses,
-            target_triples: vec![host_triple.to_string()],
+            target_triples,
             release_assets,
             launch_facts: LaunchFacts {
                 participant_kind: metadata.artifact.kind.clone(),
@@ -323,7 +392,7 @@ fn build_revision_from_projections(
 
     entries.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
 
-    CatalogRevision::new(provenance(mode), entries).finalize()
+    CatalogRevision::new(provenance(options.mode), entries).finalize()
 }
 
 fn provenance(mode: InputMode) -> CatalogProvenance {
@@ -359,7 +428,121 @@ fn channels_by_generation(api_generations: &[ApiGeneration]) -> Result<BTreeMap<
     Ok(channels)
 }
 
-fn schemas_by_generation(
+fn target_triples_for_artifact(
+    artifact: &OfficialArtifact,
+    options: &GenerateOptions,
+    host_triple: &str,
+) -> Result<Vec<String>> {
+    if let Some(plan) = &options.release_plan {
+        if let Some(planned) = plan
+            .artifacts
+            .iter()
+            .find(|planned| planned.package == artifact.package_name)
+        {
+            return Ok(planned.target_triples.clone());
+        }
+    }
+
+    let targets = if options.target_triples.is_empty() {
+        vec![host_triple.to_string()]
+    } else {
+        options.target_triples.clone()
+    };
+    if options.mode == InputMode::MetadataOnly {
+        return Ok(targets);
+    }
+    let mut supported = Vec::new();
+    for target in targets {
+        if artifact.supports_target(&target) {
+            supported.push(target);
+        }
+    }
+    if supported.is_empty() {
+        bail!(
+            "{} has no supported targets in requested target set",
+            artifact.package_name
+        );
+    }
+    supported.sort();
+    supported.dedup();
+    Ok(supported)
+}
+
+fn release_projection(output: &PackagedOutput) -> ReleaseProjection {
+    ReleaseProjection {
+        asset_filename: output.tarball_name.clone(),
+        asset_sha256: output.tarball_sha256.clone(),
+        metadata_filename: output.metadata_name.clone(),
+        metadata_sha256: output.metadata_sha256.clone(),
+        checksum_filename: output.checksum_name.clone(),
+    }
+}
+
+fn previous_entries_by_artifact_id(
+    catalog: &CatalogRevision,
+) -> Result<BTreeMap<String, &CatalogEntry>> {
+    let mut entries = BTreeMap::new();
+    for entry in &catalog.entries {
+        if entries.insert(entry.artifact_id.clone(), entry).is_some() {
+            bail!(
+                "previous catalog contains duplicate artifact_id {}",
+                entry.artifact_id
+            );
+        }
+    }
+    Ok(entries)
+}
+
+fn schemas_by_catalog_entries(
+    entries: &[CatalogEntry],
+) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
+    let mut schemas = BTreeMap::<String, BTreeMap<String, String>>::new();
+    for entry in entries {
+        let generation_schemas = schemas.entry(entry.api_generation.clone()).or_default();
+        for contract in &entry.contract_uses {
+            match generation_schemas.get(&contract.family) {
+                Some(existing) if existing != &contract.schema_id => bail!(
+                    "{} reports schema_id {} for {}, but generation {} already has {}",
+                    entry.artifact_id,
+                    contract.schema_id,
+                    contract.family,
+                    entry.api_generation,
+                    existing
+                ),
+                Some(_) => {}
+                None => {
+                    generation_schemas.insert(contract.family.clone(), contract.schema_id.clone());
+                }
+            }
+        }
+    }
+    Ok(schemas)
+}
+
+fn merge_schemas_by_generation(
+    target: &mut BTreeMap<String, BTreeMap<String, String>>,
+    source: &BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<()> {
+    for (generation, source_schemas) in source {
+        let target_schemas = target.entry(generation.clone()).or_default();
+        for (family, schema_id) in source_schemas {
+            match target_schemas.get(family) {
+                Some(existing) if existing != schema_id => bail!(
+                    "schema_id {} for {family} conflicts with {} in generation {generation}",
+                    schema_id,
+                    existing
+                ),
+                Some(_) => {}
+                None => {
+                    target_schemas.insert(family.clone(), schema_id.clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn schemas_by_generation_from_projections(
     projections: &BTreeMap<String, ArtifactProjection>,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
     let mut schemas = BTreeMap::<String, BTreeMap<String, String>>::new();
@@ -462,42 +645,6 @@ fn changed_contracts(
         .collect()
 }
 
-fn read_checksum_file(checksum: &Path, asset: &Path) -> Result<String> {
-    let text = fs::read_to_string(checksum)
-        .with_context(|| format!("failed to read {}", checksum.display()))?;
-    let mut parts = text.split_whitespace();
-    let digest = parts
-        .next()
-        .with_context(|| format!("{} is empty", checksum.display()))?;
-    let filename = parts
-        .next()
-        .with_context(|| format!("{} is missing an asset filename", checksum.display()))?;
-    let expected = asset
-        .file_name()
-        .and_then(|name| name.to_str())
-        .with_context(|| format!("{} has no UTF-8 filename", asset.display()))?;
-    if filename != expected {
-        bail!(
-            "{} names asset '{}', expected '{}'",
-            checksum.display(),
-            filename,
-            expected
-        );
-    }
-    Ok(digest.to_string())
-}
-
-fn file_name(path: &Path) -> Result<String> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .with_context(|| format!("{} has no UTF-8 filename", path.display()))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 pub(crate) fn catalog_artifact_id(kind: ArtifactKind, id: &str) -> String {
     match kind {
         ArtifactKind::Service => format!("service-{id}"),
@@ -548,8 +695,8 @@ pub(crate) mod tests_support {
             artifact.package_name.clone(),
             ArtifactProjection {
                 metadata,
-                release: None,
-                status: ArtifactStatus::Pending,
+                releases: BTreeMap::new(),
+                status: BTreeMap::new(),
             },
         );
         build_revision_from_projections(
@@ -559,7 +706,13 @@ pub(crate) mod tests_support {
                 channel: GenerationChannel::Stable,
             }],
             &projections,
-            InputMode::MetadataOnly,
+            &GenerateOptions {
+                package_dir: PathBuf::new(),
+                mode: InputMode::MetadataOnly,
+                target_triples: vec!["x86_64-unknown-linux-gnu".to_string()],
+                release_plan: None,
+                previous_catalog: None,
+            },
             "x86_64-unknown-linux-gnu",
         )
     }
@@ -656,6 +809,9 @@ mod tests {
             &GenerateOptions {
                 package_dir: package_dir.to_path_buf(),
                 mode: InputMode::PackageOutputs,
+                target_triples: vec!["x86_64-unknown-linux-gnu".to_string()],
+                release_plan: None,
+                previous_catalog: None,
             },
             "x86_64-unknown-linux-gnu",
         )

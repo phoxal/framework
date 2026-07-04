@@ -25,6 +25,12 @@ pub struct Args {
     pub all: bool,
     #[arg(long, value_name = "DIR", default_value = "target/xtask/release")]
     pub out: PathBuf,
+    #[arg(long, value_name = "TRIPLE")]
+    pub target: Option<String>,
+    /// Validate target selection and print the planned build/package work
+    /// without invoking cargo or writing release files.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +38,19 @@ pub struct PackagedArtifact {
     pub tarball: PathBuf,
     pub checksum: PathBuf,
     pub metadata: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PackagedOutput {
+    pub tarball: PathBuf,
+    pub checksum: PathBuf,
+    pub metadata: PathBuf,
+    pub tarball_name: String,
+    pub checksum_name: String,
+    pub metadata_name: String,
+    pub tarball_sha256: String,
+    pub metadata_sha256: String,
+    pub emit_apis: EmitApisMetadata,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -42,15 +61,30 @@ pub fn run(args: Args) -> Result<()> {
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
     let host_triple = host_triple(workspace.root())?;
+    let target_triple = args.target.clone().unwrap_or_else(|| host_triple.clone());
 
     for artifact in selected {
-        let packaged = package_artifact(&workspace, &artifact, &out_dir, &host_triple)
-            .with_context(|| format!("failed to package {}", artifact.package_name))?;
+        validate_supported_target(&artifact, &target_triple)?;
+        if args.dry_run {
+            println!(
+                "would package {} v{} for {} using cargo auditable build",
+                artifact.package_name, artifact.version, target_triple
+            );
+            continue;
+        }
+        let packaged = package_artifact(
+            &workspace,
+            &artifact,
+            &out_dir,
+            &host_triple,
+            &target_triple,
+        )
+        .with_context(|| format!("failed to package {}", artifact.package_name))?;
         println!(
             "packaged {} v{} for {} -> {}, {}, {}",
             artifact.package_name,
             artifact.version,
-            host_triple,
+            target_triple,
             packaged.tarball.display(),
             packaged.checksum.display(),
             packaged.metadata.display()
@@ -85,10 +119,11 @@ pub(crate) fn package_artifacts(
     artifacts: &[OfficialArtifact],
     out_dir: &Path,
     host_triple: &str,
+    target_triple: &str,
 ) -> Result<BTreeMap<String, PackagedArtifact>> {
     let mut packaged = BTreeMap::new();
     for artifact in artifacts {
-        let output = package_artifact(workspace, artifact, out_dir, host_triple)
+        let output = package_artifact(workspace, artifact, out_dir, host_triple, target_triple)
             .with_context(|| format!("failed to package {}", artifact.package_name))?;
         packaged.insert(artifact.package_name.clone(), output);
     }
@@ -100,13 +135,21 @@ pub(crate) fn package_artifact(
     artifact: &OfficialArtifact,
     out_dir: &Path,
     host_triple: &str,
+    target_triple: &str,
 ) -> Result<PackagedArtifact> {
-    build_artifact(workspace.root(), artifact)?;
-    let binary_path = binary_path(workspace, artifact);
-    let emit_stdout = run_emit_apis(&binary_path)?;
+    validate_supported_target(artifact, target_triple)?;
+    build_target_artifact(workspace.root(), artifact, target_triple)?;
+    let binary_path = target_binary_path(workspace, artifact, target_triple);
+    let emit_binary_path = if target_triple == host_triple {
+        binary_path.clone()
+    } else {
+        build_host_artifact(workspace.root(), artifact)?;
+        host_binary_path(workspace, artifact)
+    };
+    let emit_stdout = run_emit_apis(&emit_binary_path)?;
     parse_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
 
-    let stem = asset_stem(artifact, host_triple);
+    let stem = asset_stem(artifact, target_triple);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
     let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
     let metadata = out_dir.join(format!("{stem}.emit-apis.json"));
@@ -123,19 +166,67 @@ pub(crate) fn package_artifact(
     })
 }
 
-fn build_artifact(root: &Path, artifact: &OfficialArtifact) -> Result<()> {
+pub(crate) fn validate_supported_target(
+    artifact: &OfficialArtifact,
+    target_triple: &str,
+) -> Result<()> {
+    if artifact.supports_target(target_triple) {
+        return Ok(());
+    }
+    bail!(
+        "{} does not support target {}; supported targets: {}",
+        artifact.package_name,
+        target_triple,
+        artifact.supported_target_triples().join(", ")
+    )
+}
+
+fn build_target_artifact(
+    root: &Path,
+    artifact: &OfficialArtifact,
+    target_triple: &str,
+) -> Result<()> {
+    let mut command = Command::new("cargo");
+    command
+        .args([
+            "auditable",
+            "build",
+            "-p",
+            &artifact.package_name,
+            "--release",
+            "--target",
+            target_triple,
+        ])
+        .current_dir(root);
+
+    run_cargo_build_command(
+        command,
+        &format!(
+            "cargo auditable build for {} target {}",
+            artifact.package_name, target_triple
+        ),
+    )
+}
+
+fn build_host_artifact(root: &Path, artifact: &OfficialArtifact) -> Result<()> {
     let mut command = Command::new("cargo");
     command
         .args(["build", "-p", &artifact.package_name, "--release"])
         .current_dir(root);
 
+    run_cargo_build_command(
+        command,
+        &format!("host cargo build for {}", artifact.package_name),
+    )
+}
+
+fn run_cargo_build_command(mut command: Command, label: &str) -> Result<()> {
     let output = command
         .output()
-        .with_context(|| format!("failed to spawn cargo build for {}", artifact.package_name))?;
+        .with_context(|| format!("failed to spawn {label}"))?;
     if !output.status.success() {
         bail!(
-            "cargo build for {} failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            artifact.package_name,
+            "{label} failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -145,12 +236,36 @@ fn build_artifact(root: &Path, artifact: &OfficialArtifact) -> Result<()> {
     Ok(())
 }
 
-fn binary_path(workspace: &Workspace, artifact: &OfficialArtifact) -> PathBuf {
+fn host_binary_path(workspace: &Workspace, artifact: &OfficialArtifact) -> PathBuf {
     workspace.target_dir().join("release").join(format!(
         "{}{}",
         artifact.bin_name,
         std::env::consts::EXE_SUFFIX
     ))
+}
+
+fn target_binary_path(
+    workspace: &Workspace,
+    artifact: &OfficialArtifact,
+    target_triple: &str,
+) -> PathBuf {
+    workspace
+        .target_dir()
+        .join(target_triple)
+        .join("release")
+        .join(format!(
+            "{}{}",
+            artifact.bin_name,
+            exe_suffix_for_target(target_triple)
+        ))
+}
+
+fn exe_suffix_for_target(target_triple: &str) -> &'static str {
+    if target_triple.contains("windows") {
+        ".exe"
+    } else {
+        ""
+    }
 }
 
 fn run_emit_apis(binary_path: &Path) -> Result<Vec<u8>> {
@@ -293,6 +408,81 @@ fn write_sha256(tarball: &Path, checksum_path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn read_packaged_output(
+    artifact: &OfficialArtifact,
+    package_dir: &Path,
+    target_triple: &str,
+) -> Result<PackagedOutput> {
+    validate_supported_target(artifact, target_triple)?;
+    let stem = asset_stem(artifact, target_triple);
+    let tarball = package_dir.join(format!("{stem}.tar.zst"));
+    let checksum = package_dir.join(format!("{stem}.tar.zst.sha256"));
+    let metadata = package_dir.join(format!("{stem}.emit-apis.json"));
+    for path in [&tarball, &checksum, &metadata] {
+        if !path.is_file() {
+            bail!(
+                "missing packaged output for {} target {}: {}",
+                artifact.package_name,
+                target_triple,
+                path.display()
+            );
+        }
+    }
+
+    let recorded = read_checksum_file(&checksum, &tarball)?;
+    let computed = sha256_file(&tarball)?;
+    if recorded != computed {
+        bail!(
+            "{} checksum file recorded {}, but computed {}",
+            tarball.display(),
+            recorded,
+            computed
+        );
+    }
+
+    let metadata_bytes =
+        fs::read(&metadata).with_context(|| format!("failed to read {}", metadata.display()))?;
+    let emit_apis = parse_emit_apis_json(&metadata_bytes, &artifact.id, artifact.kind)
+        .with_context(|| format!("invalid emit-apis metadata {}", metadata.display()))?;
+
+    Ok(PackagedOutput {
+        tarball_name: file_name(&tarball)?,
+        checksum_name: file_name(&checksum)?,
+        metadata_name: file_name(&metadata)?,
+        tarball_sha256: computed,
+        metadata_sha256: sha256_bytes(&metadata_bytes),
+        tarball,
+        checksum,
+        metadata,
+        emit_apis,
+    })
+}
+
+pub(crate) fn read_checksum_file(checksum: &Path, asset: &Path) -> Result<String> {
+    let text = fs::read_to_string(checksum)
+        .with_context(|| format!("failed to read {}", checksum.display()))?;
+    let mut parts = text.split_whitespace();
+    let digest = parts
+        .next()
+        .with_context(|| format!("{} is empty", checksum.display()))?;
+    let filename = parts
+        .next()
+        .with_context(|| format!("{} is missing an asset filename", checksum.display()))?;
+    let expected = asset
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} has no UTF-8 filename", asset.display()))?;
+    if filename != expected {
+        bail!(
+            "{} names asset '{}', expected '{}'",
+            checksum.display(),
+            filename,
+            expected
+        );
+    }
+    Ok(digest.to_string())
+}
+
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let mut file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
@@ -308,6 +498,17 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+pub(crate) fn file_name(path: &Path) -> Result<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
+        .with_context(|| format!("{} has no UTF-8 filename", path.display()))
 }
 
 #[cfg(test)]
@@ -438,7 +639,7 @@ fn is_schema_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct EmitApisMetadata {
     pub schema: String,
     pub artifact: Artifact,
@@ -449,18 +650,18 @@ pub(crate) struct EmitApisMetadata {
     pub required_contracts: Vec<Contract>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct Artifact {
     pub kind: String,
     pub id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct Framework {
     pub version: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub(crate) struct Contract {
     pub api_version: Option<String>,
     pub schema_id: Option<String>,

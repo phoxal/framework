@@ -1,0 +1,60 @@
+name: compat-tracking
+
+on:
+  schedule:
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: compat-tracking
+  cancel-in-progress: false
+
+jobs:
+  compat-tracking:
+    runs-on: ubuntu-latest
+    env:
+      STABLE_CATALOG_URL: https://raw.githubusercontent.com/phoxal/framework/artifact-catalog-v0-stable/latest.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Fetch published catalog
+        run: |
+          set -euo pipefail
+          mkdir -p target/xtask
+          curl -fsSL "$STABLE_CATALOG_URL" -o target/xtask/published-catalog.json
+
+      - name: Audit workspace advisory state
+        run: cargo audit --json > target/xtask/cargo-audit.json
+        continue-on-error: true
+
+      - name: Upsert compatibility tracking issue
+        run: >
+          cargo xtask ci compat-report
+          --catalog target/xtask/published-catalog.json
+          --audit-json target/xtask/cargo-audit.json
+          --json-out target/xtask/compat-tracking.json
+          --markdown-out target/xtask/compat-tracking.md
+          --repo ${{ github.repository }}
+          --upsert-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compat-tracking
+          path: |
+            target/xtask/compat-tracking.json
+            target/xtask/compat-tracking.md
