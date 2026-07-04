@@ -286,6 +286,20 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
                 );
             }
         }
+        for (triple, asset) in &entry.release_assets {
+            if !is_sha256(&asset.sha256) {
+                bail!(
+                    "{} release asset for {triple} has invalid sha256",
+                    entry.artifact_id
+                );
+            }
+            if !is_sha256(&asset.metadata.emit_apis_sha256) {
+                bail!(
+                    "{} emit-apis metadata for {triple} has invalid sha256",
+                    entry.artifact_id
+                );
+            }
+        }
         if entry.channels.is_empty() {
             bail!("{} channels must not be empty", entry.artifact_id);
         }
@@ -296,6 +310,13 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
 
 pub(crate) fn is_schema_id(value: &str) -> bool {
     value.len() == 16
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())

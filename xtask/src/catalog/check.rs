@@ -11,6 +11,7 @@ use crate::catalog::generate::{
 use crate::catalog::schema::{CatalogEntry, CatalogRevision};
 use crate::catalog::verify::verify_catalog_path;
 use crate::release::package;
+use crate::release::plan::load_release_plan;
 use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
 
 #[derive(Debug, ClapArgs)]
@@ -19,6 +20,12 @@ pub struct Args {
     pub catalog: Option<PathBuf>,
     #[arg(long, value_name = "DIR", default_value = "target/xtask/release")]
     pub package_dir: PathBuf,
+    #[arg(long = "target", value_name = "TRIPLE")]
+    pub targets: Vec<String>,
+    #[arg(long, value_name = "PATH")]
+    pub release_plan: Option<PathBuf>,
+    #[arg(long, value_name = "PATH")]
+    pub previous_catalog: Option<PathBuf>,
     /// Check a catalog generated with `catalog generate --metadata-only`.
     /// This covers every official artifact and validates schema ids without
     /// building release tarballs on each PR.
@@ -38,6 +45,21 @@ pub fn run(args: Args) -> Result<()> {
         .unwrap_or_else(|| default_catalog_path(&workspace));
     let package_dir = package::workspace_relative_out_dir(&workspace, &args.package_dir);
     let host_triple = package::host_triple(workspace.root())?;
+    let target_triples = if args.targets.is_empty() {
+        vec![host_triple.clone()]
+    } else {
+        args.targets.clone()
+    };
+    let release_plan = args
+        .release_plan
+        .as_deref()
+        .map(|path| load_release_plan(&workspace_relative_path(&workspace, path)))
+        .transpose()?;
+    let previous_catalog = args
+        .previous_catalog
+        .as_deref()
+        .map(|path| verify_catalog_path(&workspace_relative_path(&workspace, path)))
+        .transpose()?;
     let mode = if args.metadata_only {
         InputMode::MetadataOnly
     } else {
@@ -48,7 +70,13 @@ pub fn run(args: Args) -> Result<()> {
     validate_coverage(&actual, artifacts)?;
     let expected = build_catalog_revision(
         &workspace,
-        &GenerateOptions { package_dir, mode },
+        &GenerateOptions {
+            package_dir,
+            mode,
+            target_triples,
+            release_plan,
+            previous_catalog,
+        },
         &host_triple,
     )?;
     compare_catalogs(&actual, &expected)?;
