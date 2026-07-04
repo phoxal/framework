@@ -797,6 +797,48 @@ components:
     }
 
     #[test]
+    fn instance_parameters_parse_emergency_stop_capability() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(
+            r#"
+schema: v0
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_participants: {}
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources:
+    estop:
+      path: components/estop
+  instances:
+    estop:
+      component: estop
+      mount_link: base_link
+      parameters:
+        e_stop:
+          kind: emergency_stop
+"#,
+        )?;
+
+        let instance = robot
+            .components
+            .instances
+            .get("estop")
+            .expect("estop instance should parse");
+        let parameters = instance
+            .parameters
+            .get("e_stop")
+            .expect("e_stop capability parameters should parse");
+        assert_eq!(parameters.kind_name(), "emergency_stop");
+
+        Ok(())
+    }
+
+    #[test]
     fn user_participant_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"

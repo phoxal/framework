@@ -19,6 +19,7 @@ pub enum Parameters {
     Speaker(Empty),
     Battery(Empty),
     Led(Empty),
+    EmergencyStop(Empty),
 }
 
 impl Parameters {
@@ -41,6 +42,7 @@ impl Parameters {
             Self::Speaker(_) => "speaker",
             Self::Battery(_) => "battery",
             Self::Led(_) => "led",
+            Self::EmergencyStop(_) => "emergency_stop",
         }
     }
 }
