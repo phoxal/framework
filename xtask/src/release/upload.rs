@@ -4,6 +4,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 
+use crate::release::github;
 use crate::release::package::{self, PackagedOutput};
 use crate::workspace::Workspace;
 
@@ -72,35 +73,7 @@ fn ensure_assets_absent(existing: &BTreeSet<String>, output: &PackagedOutput) ->
 }
 
 pub(crate) fn github_release_asset_names(repo: &str, tag: &str) -> Result<BTreeSet<String>> {
-    let output = Command::new("gh")
-        .args([
-            "release",
-            "view",
-            tag,
-            "--repo",
-            repo,
-            "--json",
-            "assets",
-            "--jq",
-            ".assets[].name",
-        ])
-        .output()
-        .with_context(|| format!("failed to spawn gh release view for {repo} {tag}"))?;
-    if !output.status.success() {
-        bail!(
-            "gh release view failed for {repo} {tag}\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(String::from_utf8(output.stdout)
-        .context("gh release view output was not UTF-8")?
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+    github::release_asset_names(repo, tag)
 }
 
 fn upload_assets(repo: &str, tag: &str, output: &PackagedOutput) -> Result<()> {

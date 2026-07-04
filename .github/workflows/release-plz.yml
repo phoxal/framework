@@ -220,6 +220,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Publish artifact draft releases
+        run: >
+          cargo xtask release publish
+          --plan target/xtask/release-plan.json
+          --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish stable catalog pointer
         run: >
           cargo xtask catalog publish

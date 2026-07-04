@@ -26,6 +26,7 @@ semver_check = true             # library crates: cargo-semver-checks decides br
 name = "phoxal-service-asset"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -33,6 +34,7 @@ semver_check = false
 name = "phoxal-service-battery"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -40,6 +42,7 @@ semver_check = false
 name = "phoxal-service-drive"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -47,6 +50,7 @@ semver_check = false
 name = "phoxal-service-explore"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -54,6 +58,7 @@ semver_check = false
 name = "phoxal-service-follow"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -61,6 +66,7 @@ semver_check = false
 name = "phoxal-service-frame"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -68,6 +74,7 @@ semver_check = false
 name = "phoxal-service-joint"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -75,6 +82,7 @@ semver_check = false
 name = "phoxal-service-localize"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -82,6 +90,7 @@ semver_check = false
 name = "phoxal-service-map"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -89,6 +98,7 @@ semver_check = false
 name = "phoxal-service-mission"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -96,6 +106,7 @@ semver_check = false
 name = "phoxal-service-motion"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -103,6 +114,7 @@ semver_check = false
 name = "phoxal-service-odometry"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -110,6 +122,7 @@ semver_check = false
 name = "phoxal-service-perception"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -117,6 +130,7 @@ semver_check = false
 name = "phoxal-service-plan"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -124,6 +138,7 @@ semver_check = false
 name = "phoxal-service-power"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -131,6 +146,7 @@ semver_check = false
 name = "phoxal-service-presence"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -138,6 +154,7 @@ semver_check = false
 name = "phoxal-service-safety"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -145,6 +162,7 @@ semver_check = false
 name = "phoxal-service-video"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -152,6 +170,7 @@ semver_check = false
 name = "phoxal-driver-bno085"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -159,6 +178,7 @@ semver_check = false
 name = "phoxal-driver-ddsm115"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -166,6 +186,7 @@ semver_check = false
 name = "phoxal-driver-oak_d_lite"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -173,6 +194,7 @@ semver_check = false
 name = "phoxal-driver-vl53l1x"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -180,6 +202,7 @@ semver_check = false
 name = "phoxal-driver-zed_f9p"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -187,6 +210,7 @@ semver_check = false
 name = "phoxal-tool-joypad"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -194,6 +218,7 @@ semver_check = false
 name = "phoxal-tool-router"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 
@@ -201,6 +226,7 @@ semver_check = false
 name = "phoxal-simulator-webots"
 release = true
 git_only = true
+git_release_draft = true
 publish = false
 semver_check = false
 # @generated end phoxal artifact release-plz packages
