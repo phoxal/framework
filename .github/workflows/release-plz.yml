@@ -11,6 +11,14 @@ name: release-plz
 on:
   push:
     branches: [main]
+  # The release-pr job packages every artifact crate's full path-dependency
+  # closure in a fresh worktree (~3.5 min x 26 crates ~= 90 min) - far too
+  # heavy for every main push. It runs on a schedule + on demand instead; the
+  # release job (cheap tag-vs-version reconciliation + asset builds) still
+  # runs on every push.
+  schedule:
+    - cron: "17 5,17 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,6 +27,7 @@ permissions:
 jobs:
   release-plz-release:
     name: release-plz release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.plan.outputs.released }}
@@ -219,6 +228,7 @@ jobs:
 
   release-plz-pr:
     name: release-plz PR
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     env:
       HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}

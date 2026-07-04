@@ -7,7 +7,10 @@
 #     release = true + git_only = true, so they are versioned and tagged without
 #     crates.io publication.
 [workspace]
-release_always = false          # release ONLY for commits from a release-plz PR (not every main push)
+release_always = true           # reconcile tags-vs-versions on every main push: git_only artifact
+                                # versions only move via merged PRs, so this is idempotent and
+                                # self-heals pending (bumped-but-untagged) releases - the
+                                # release-PR-merge-only mode stranded exactly that state once
 dependencies_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
 git_release_name = "{{ package }} v{{ version }}"
