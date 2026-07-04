@@ -639,6 +639,7 @@ mod tests {
             crate_dir: PathBuf::from("service/frame"),
             bin_name: "phoxal-service-frame".to_string(),
             id: "frame".to_string(),
+            metadata: Default::default(),
         };
 
         assert_eq!(

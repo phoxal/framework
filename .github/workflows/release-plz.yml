@@ -4,15 +4,16 @@ name: release-plz
 #
 # Two halves:
 #   1. release-plz-pr      - on every main push, opens/updates the "chore(release):
-#      release" PR that bumps only the library crates whose commits changed
-#      (per-crate versions, plan #01-A).
+#      release" PR that bumps only changed packages (library crates plus
+#      generated git_only artifact entries).
 #   2. release-plz-release - when a release PR's bump commit lands on main,
-#      release-plz publishes each bumped library crate to crates.io and tags it
-#      `<crate>-v<version>` + a GitHub release.
+#      release-plz publishes bumped library crates to crates.io and tags every
+#      bumped package `<crate>-v<version>` + a GitHub release.
 #
-# Only the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros) are in
-# scope. The service crates are publish = false and are intentionally left out of
-# release scope (see release-plz.toml).
+# The 4 library crates inherit the workspace defaults and publish to crates.io.
+# The service, driver, and tool crates are managed in release-plz.toml with
+# release = true + git_only = true, so release-plz owns their versions, tags, and
+# GitHub releases without cargo publish.
 #
 # release_always = false in release-plz.toml means `release-plz-release` only acts
 # on commits that came from a release-plz PR, so an ordinary main push runs the
@@ -83,6 +84,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
 
       - name: Generate GitHub App token
         id: app-token
