@@ -41,8 +41,12 @@ jobs:
       - name: Check preview feature sync
         run: cargo xtask api sync-features --check
 
-      - name: Check release-plz artifact scope
-        run: cargo xtask release sync-config --check
+      # `release discover` runs workspace discovery, which enforces (via
+      # validate_artifact_publish) that every official artifact crate sets
+      # publish = false in its own Cargo.toml - the guard that keeps artifacts
+      # out of release-plz's scope and inside xtask's `release cut` scope.
+      - name: Check official artifact release scope
+        run: cargo xtask release discover
 
       - name: Check promoted API shape freeze
         run: cargo xtask api freeze-shapes --check

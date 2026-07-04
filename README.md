@@ -14,21 +14,27 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 ## Releasing
 
-Releases are driven by [release-plz](https://release-plz.dev) with **per-artifact
-versions**: each crate carries its own version and is released only when it
-changes.
+Each crate carries its own version and is released only when it changes, but the
+4 library crates and the official artifact crates are released by different
+mechanisms.
 
-On every push to `main`, release-plz opens or updates a single
-`chore(release): release` PR that bumps just the library crates whose code changed
-since their last release and refreshes their changelogs.
-Merging that PR publishes the changed library crates (`phoxal-bus`, `phoxal-api`,
-`phoxal`, `phoxal-macros`) to crates.io at their own versions and tags each
-`<crate>-v<version>` with a GitHub release.
+[release-plz](https://release-plz.dev) owns the library crates only
+(`phoxal-bus`, `phoxal-api`, `phoxal`, `phoxal-macros`).
+On a schedule (and on demand via workflow dispatch), release-plz opens or
+updates a single `chore(release): release` PR that bumps just the library
+crates whose code changed since their last release and refreshes their
+changelogs.
+Merging that PR publishes the changed library crates to crates.io at their own
+versions and tags each `<crate>-v<version>` with a GitHub release.
 
 The official artifact crates (`phoxal-service-<name>`, `phoxal-driver-<name>`,
-and `phoxal-tool-<name>`) are Cargo-packageable so release-plz can see them, but
-release-plz marks them `git_only` + `publish = false`; they get tags, GitHub
-releases, native assets, and catalog entries without crates.io publication.
+`phoxal-tool-<name>`, and `phoxal-simulator-<name>`) set `publish = false` in
+their own `Cargo.toml`, so release-plz drops them before its own config ever
+applies - they are entirely outside release-plz's scope. Instead, `cargo xtask
+release cut` tags and drafts a GitHub release for each artifact whose current
+Cargo.toml version isn't tagged yet, and `cargo xtask release bump --changed`
+computes their version bumps from git diff. Both run in the same workflow as
+release-plz.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).

@@ -322,12 +322,11 @@ fn validate_artifact_publish(
     root: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
-    if publish.is_some_and(|registries| registries.is_empty()) {
+    if !publish.is_some_and(|registries| registries.is_empty()) {
         bail!(
-            "{package_name} is an official artifact but {} sets publish = false; release-plz \
-             drops cargo-unpublishable packages before its own config applies, so the artifact \
-             silently gets no tag, no release, and no assets. Set publish = true - crates.io \
-             publication stays blocked by the generated release-plz.toml entry",
+            "{package_name} is an official artifact but {} does not set publish = false; \
+             artifacts are git-released by xtask (`cargo xtask release cut`) and must never be \
+             crates.io-publishable. Set publish = false",
             relative_display(root, manifest_path)
         );
     }
@@ -423,22 +422,24 @@ mod tests {
     }
 
     #[test]
-    fn artifact_publish_false_is_an_error() {
+    fn artifact_publish_true_is_an_error() {
         let manifest = root().join("simulator/webots/Cargo.toml");
-        let error =
-            validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest)
-                .unwrap_err();
+
+        validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest)
+            .expect("publish = false is valid: xtask git-releases artifacts");
+
+        let error = validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
+            .unwrap_err();
         assert!(error.to_string().contains("publish = false"), "{error}");
 
-        validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
-            .expect("unrestricted publish is valid");
-        validate_artifact_publish(
+        let error = validate_artifact_publish(
             "phoxal-simulator-webots",
             Some(&["crates-io".to_string()]),
             &root(),
             &manifest,
         )
-        .expect("explicit registry list is valid");
+        .unwrap_err();
+        assert!(error.to_string().contains("publish = false"), "{error}");
     }
 
     #[test]
