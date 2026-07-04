@@ -21,9 +21,9 @@ pub use motion::{KinematicConfig, Motion};
 pub use profile::{AutonomyProfileId, AutonomyProfileSpec, autonomy_profile};
 pub use resolver::{ResolvedCapabilityRole, ResolvedFacts, SourceBundle, resolve_source_bundle};
 pub use robot::{
-    Channel, ComponentSource, Components, Identity, Network, NetworkTls, PhoxalArtifacts,
-    PhoxalParticipants, Robot, SourceGit, SourcePath, Tool, Uplink, UserParticipant,
-    ValidationError,
+    ArtifactPathPin, ArtifactPin, Channel, ComponentSource, Components, Identity, Network,
+    NetworkTls, PhoxalArtifacts, PhoxalParticipants, Robot, SourceGit, SourcePath, Tool, Uplink,
+    UserParticipant, ValidationError,
 };
 pub use role::Role;
 pub use role_resolution::{RoleAssignment, RoleResolution};

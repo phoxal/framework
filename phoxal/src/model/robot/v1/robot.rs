@@ -66,19 +66,47 @@ impl fmt::Display for Channel {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhoxalArtifacts {
+    /// Release channel used when resolving official framework artifacts.
     #[serde(default)]
     pub channel: Channel,
+    /// Optional legacy target triple override; native-shape manifests infer this elsewhere.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// Optional API generation ceiling or pin for official artifact resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
+    /// Unified fail-closed pin map keyed by kind-qualified artifact id.
+    ///
+    /// Keys use the resolved artifact id format, such as `service-drive`,
+    /// `driver-ddsm115`, `tool-router`, or `simulator-webots`. The CLI validates
+    /// prefixes, existence in the resolved graph, dev-overlay-only path pins, and
+    /// whether each key is actually used; the model only rejects empty keys.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pins: BTreeMap<String, ArtifactPin>,
 }
 
 impl PhoxalArtifacts {
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.channel == Channel::Stable && self.target.is_none() && self.generation.is_none()
+        self.channel == Channel::Stable
+            && self.target.is_none()
+            && self.generation.is_none()
+            && self.pins.is_empty()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ArtifactPin {
+    /// Resolve this artifact from a local source checkout.
+    Path(ArtifactPathPin),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactPathPin {
+    /// Project-relative or overlay-relative source path for this artifact.
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +313,7 @@ pub enum ValidationError {
         path: PathBuf,
     },
     InvalidBusRetryBackoff,
+    EmptyArtifactPinKey,
     MissingComponentSource {
         instance: String,
         source: String,
@@ -364,6 +393,7 @@ impl Robot {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
         self.validate_bus(&mut errors);
+        self.validate_artifact_pins(&mut errors);
         self.validate_user_participants(&mut errors);
         self.validate_component_sources(&mut errors);
         self.validate_component_structure(&mut errors);
@@ -456,6 +486,17 @@ impl Robot {
         }
         if self.identity.namespace.trim().is_empty() {
             errors.push(ValidationError::EmptyIdentityNamespace);
+        }
+    }
+
+    fn validate_artifact_pins(&self, errors: &mut Vec<ValidationError>) {
+        if self
+            .phoxal_artifacts
+            .pins
+            .keys()
+            .any(|artifact_id| artifact_id.trim().is_empty())
+        {
+            errors.push(ValidationError::EmptyArtifactPinKey);
         }
     }
 
@@ -596,6 +637,9 @@ impl fmt::Display for ValidationError {
             Self::InvalidBusRetryBackoff => formatter.write_str(
                 "bus.uplink.retry initial_ms and max_ms must be > 0 with initial_ms <= max_ms",
             ),
+            Self::EmptyArtifactPinKey => {
+                formatter.write_str("phoxal_artifacts.pins keys must not be empty")
+            }
             Self::MissingComponentSource { instance, source } => write!(
                 formatter,
                 "components.instances.{instance}.component references missing source '{source}'"
@@ -728,7 +772,29 @@ fn validate_project_local_path(field: &str, path: &Path, errors: &mut Vec<Valida
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Channel, Robot, UserParticipantBuild};
+    use super::{ArtifactPathPin, ArtifactPin, Channel, Robot, UserParticipantBuild};
+
+    fn robot_yaml_with_phoxal_artifacts(phoxal_artifacts: &str) -> String {
+        format!(
+            r#"
+schema: v0
+identity:
+  id: test-bot
+  namespace: dev
+phoxal_artifacts:
+{phoxal_artifacts}
+phoxal_participants: {{}}
+motion:
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+components:
+  sources: {{}}
+  instances: {{}}
+"#
+        )
+    }
 
     #[test]
     fn user_participant_with_only_path_defaults_framework_and_build() -> anyhow::Result<()> {
@@ -1175,6 +1241,116 @@ components:
         assert_eq!(
             robot.phoxal_artifacts.generation.as_deref(),
             Some("y2026_2")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn phoxal_artifacts_pins_path_entry_round_trips() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(&robot_yaml_with_phoxal_artifacts(
+            r#"  pins:
+    service-drive:
+      path: ../framework/service/drive"#,
+        ))?;
+
+        assert_eq!(
+            robot.phoxal_artifacts.pins.get("service-drive"),
+            Some(&ArtifactPin::Path(ArtifactPathPin {
+                path: PathBuf::from("../framework/service/drive"),
+            }))
+        );
+
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        assert!(
+            yaml.contains("pins:\n    service-drive:\n      path: ../framework/service/drive"),
+            "path pin should serialize in the unified pins map: {yaml}"
+        );
+
+        let reparsed = Robot::parse_from_string(&yaml)?;
+        assert_eq!(reparsed.phoxal_artifacts.pins, robot.phoxal_artifacts.pins);
+
+        Ok(())
+    }
+
+    #[test]
+    fn phoxal_artifacts_pins_unknown_value_forms_are_errors() {
+        for pin in [
+            r#"  pins:
+    service-drive: v0.8.4"#,
+            r#"  pins:
+    service-drive: "sha256:222222""#,
+            r#"  pins:
+    driver-ddsm115:
+      git: https://github.com/you/ddsm115
+      rev: 9f2c1e7"#,
+            r#"  pins:
+    tool-router:
+      archive: router.tar.zst"#,
+        ] {
+            let error = Robot::parse_from_string(&robot_yaml_with_phoxal_artifacts(pin))
+                .expect_err("unsupported pin form should fail to parse");
+
+            assert!(
+                format!("{error:#}").contains("data did not match any variant of untagged enum"),
+                "got: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn phoxal_artifacts_pins_rejects_unknown_fields_inside_path_pin() {
+        let error = Robot::parse_from_string(&robot_yaml_with_phoxal_artifacts(
+            r#"  pins:
+    service-drive:
+      path: ../framework/service/drive
+      rev: 9f2c1e7"#,
+        ))
+        .expect_err("unknown path pin field should fail to parse");
+
+        assert!(
+            format!("{error:#}").contains("data did not match any variant of untagged enum"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn phoxal_artifacts_empty_pins_are_absent_from_serialization() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(&robot_yaml_with_phoxal_artifacts(
+            r#"  channel: preview
+  pins: {}"#,
+        ))?;
+
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot))?;
+
+        assert!(
+            yaml.contains("phoxal_artifacts:\n  channel: preview"),
+            "non-default artifacts section should serialize: {yaml}"
+        );
+        assert!(
+            !yaml.contains("pins:"),
+            "empty pins map should be omitted from serialization: {yaml}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn phoxal_artifacts_empty_pin_key_is_validation_error() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(&robot_yaml_with_phoxal_artifacts(
+            r#"  pins:
+    "":
+      path: ../framework/service/drive"#,
+        ))?;
+
+        let errors = robot
+            .validate()
+            .expect_err("empty artifact pin key should fail validation");
+
+        assert!(errors.contains(&super::ValidationError::EmptyArtifactPinKey));
+        assert_eq!(
+            super::ValidationError::EmptyArtifactPinKey.to_string(),
+            "phoxal_artifacts.pins keys must not be empty"
         );
 
         Ok(())
