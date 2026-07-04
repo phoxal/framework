@@ -25,14 +25,16 @@ Merging that PR publishes the changed library crates (`phoxal-bus`, `phoxal-api`
 `phoxal`, `phoxal-macros`) to crates.io at their own versions and tags each
 `<crate>-v<version>` with a GitHub release.
 
-The service crates (`phoxal-service-<name>`) are `publish = false` and are not part
-of this crate release; their distribution is handled separately.
+The official artifact crates (`phoxal-service-<name>`, `phoxal-driver-<name>`,
+and `phoxal-tool-<name>`) are Cargo-packageable so release-plz can see them, but
+release-plz marks them `git_only` + `publish = false`; they get tags, GitHub
+releases, native assets, and catalog entries without crates.io publication.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).
 
-> Per-target standalone binary tarballs, and the (removed) Webots simulator +
-> joypad tool, are not published by this workflow.
+> Per-target standalone binary tarballs are uploaded to the git-only artifact
+> releases created by this workflow.
 
 ## License
 
