@@ -1,21 +1,32 @@
 name: release-plz
 
-# Per-artifact release pipeline (plan #01).
+# Split release pipeline (plan #01, revised for release-pr performance).
 #
-# release-plz owns versions, changelogs, tags, and GitHub releases. The native
-# half starts only from `release-plz release --output json`: xtask filters that
-# JSON to discovered official artifacts, expands their target triples, packages
-# immutable native assets, uploads them to the release-plz-created release, then
-# publishes the generated catalog revision.
+# release-plz owns versions, changelogs, tags, and GitHub releases for the 4
+# library crates only (see release-plz.toml's header for why artifact crates
+# are out of its scope entirely: they set publish = false, so release-plz drops
+# them before its own config even applies).
+#
+# Official artifact crates (services/drivers/tools/simulator) are owned by
+# xtask instead:
+#   - `cargo xtask release cut` creates the tag + a draft GitHub release for any
+#     artifact whose current Cargo.toml version isn't tagged yet (idempotent -
+#     same reconcile-on-every-push semantics `release_always` gave release-plz),
+#     and emits a release-plz-JSON-compatible document;
+#   - `cargo xtask release plan` consumes that document exactly like it used to
+#     consume `release-plz release --output json`, so the native asset
+#     packaging/upload/gate/publish/catalog steps below are unchanged;
+#   - `cargo xtask release bump --changed` (in the release-plz-pr job) computes
+#     artifact version bumps from git diff, cheaply, and lands them via a
+#     separate scheduled PR.
 
 on:
   push:
     branches: [main]
-  # The release-pr job packages every artifact crate's full path-dependency
-  # closure in a fresh worktree (~3.5 min x 26 crates ~= 90 min) - far too
-  # heavy for every main push. It runs on a schedule + on demand instead; the
-  # release job (cheap tag-vs-version reconciliation + asset builds) still
-  # runs on every push.
+  # release-plz-pr now only processes the 4 library crates (artifacts are out of
+  # its scope - see the header above), so it is no longer the ~100-minute job it
+  # used to be. It still runs on a schedule + on demand rather than every push,
+  # since it also opens/updates PRs, which isn't push-appropriate.
   schedule:
     - cron: "17 5,17 * * *"
   workflow_dispatch:
@@ -23,6 +34,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+
+concurrency:
+  group: release-train
+  cancel-in-progress: false
 
 jobs:
   release-plz-release:
@@ -41,14 +56,6 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # tool-joypad (gilrs -> libudev-sys) can be packaged by release-plz when
-      # it analyzes git-only artifact crates; see ci.yml's header comment.
-      - name: Install system packages
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libudev-dev
-
       - name: Install release-plz
         uses: taiki-e/install-action@v2
         with:
@@ -62,14 +69,26 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
+      # Libraries only: artifact crates set publish = false and never reach
+      # release-plz's scope (see this file's header).
       - name: Run release-plz
         run: |
           set -euo pipefail
-          mkdir -p target/xtask
-          release-plz release --output json | tee target/xtask/release-plz.json
+          release-plz release
         env:
           GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Artifacts only: idempotent tag + draft-release reconciliation, cheap
+      # (git tag/log only, no cargo package). Emits a release-plz-JSON-compatible
+      # document so the plan step below needs no changes.
+      - name: Cut official artifact releases
+        run: |
+          set -euo pipefail
+          mkdir -p target/xtask
+          cargo xtask release cut --repo ${{ github.repository }} --out target/xtask/release-plz.json
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Build native release plan
         id: plan
@@ -250,14 +269,6 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # tool-joypad (gilrs -> libudev-sys) builds while release-plz packages the
-      # workspace in temporary git-only baseline worktrees; see ci.yml's header comment.
-      - name: Install system packages
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libudev-dev
-
       - name: Install cargo-semver-checks
         uses: taiki-e/install-action@v2
         with:
@@ -271,6 +282,8 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
+      # Libraries only: artifact crates set publish = false and never reach
+      # release-plz's scope (see this file's header).
       - name: Run release-plz (release-pr)
         uses: release-plz/action@v0.5
         with:
@@ -278,3 +291,41 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Artifact crates are out of release-plz's scope entirely (see this file's
+      # header), so their version bumps are computed here instead: cheap (git
+      # diff only, no cargo package), safe to run on every scheduled/on-demand
+      # invocation of this job.
+      #
+      # Deliberately NOT handled here: dependency-driven artifact staleness (a
+      # library crate bumped but the artifact crate itself unchanged). That
+      # belongs to the rebuild-cadence machinery from the workspace-and-ci plan,
+      # not to this perf fix.
+      - name: Compute changed artifact version bumps
+        run: cargo xtask release bump --changed
+
+      - name: Open or update the artifact version bump PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "no artifact version bumps; skipping PR"
+            exit 0
+          fi
+
+          branch="chore/artifact-version-bumps"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git commit -am "chore(release): bump changed artifacts"
+          git push --force origin "$branch"
+
+          if gh pr view "$branch" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            echo "PR for $branch already open; branch updated"
+          else
+            gh pr create \
+              --head "$branch" \
+              --title "chore(release): bump changed artifacts" \
+              --body "Automated patch-version bumps for official artifact crates whose crate directory changed since their last release tag (computed by \`cargo xtask release bump --changed\`). See release-plz.toml's header comment for why artifact crates are bumped here instead of by release-plz."
+          fi

@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
@@ -14,17 +16,23 @@ use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
 pub struct Args {
     #[arg(
         value_name = "PACKAGE",
-        required_unless_present_any = ["affected", "all"],
-        conflicts_with_all = ["affected", "all"]
+        required_unless_present_any = ["affected", "all", "changed"],
+        conflicts_with_all = ["affected", "all", "changed"]
     )]
     pub package: Option<String>,
     /// Bump every artifact that uses a contract changed by the latest API
     /// generation relative to its prior generation.
-    #[arg(long, conflicts_with = "all")]
+    #[arg(long, conflicts_with_all = ["all", "changed"])]
     pub affected: bool,
     /// Bump every discovered artifact crate.
-    #[arg(long, conflicts_with = "affected")]
+    #[arg(long, conflicts_with_all = ["affected", "changed"])]
     pub all: bool,
+    /// Bump every discovered artifact whose crate directory changed since its
+    /// current version's release tag. Cheap (git diff only, no cargo package):
+    /// artifact crates are no longer release-plz packages (see release-plz.toml's
+    /// header), so their version bumps are computed here instead.
+    #[arg(long, conflicts_with_all = ["affected", "all"])]
+    pub changed: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -36,12 +44,15 @@ pub fn run(args: Args) -> Result<()> {
     }
     require_nonempty_artifacts(&selected)?;
 
-    for artifact in selected {
+    let mut bumped = 0usize;
+    for artifact in &selected {
         let manifest_path = artifact.crate_dir.join("Cargo.toml");
         let (from, to) = bump_manifest_version(&manifest_path)
             .with_context(|| format!("failed to bump {}", manifest_path.display()))?;
         println!("bumped {}: {} -> {}", artifact.package_name, from, to);
+        bumped += 1;
     }
+    println!("release bump: bumped {bumped} artifact(s)");
 
     Ok(())
 }
@@ -53,12 +64,91 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
     if args.affected {
         return affected_artifacts(workspace);
     }
+    if args.changed {
+        return changed_artifacts(workspace, &CliGitQuery);
+    }
 
     let package_name = args
         .package
         .as_deref()
-        .context("package is required unless --affected or --all is present")?;
+        .context("package is required unless --affected, --all, or --changed is present")?;
     Ok(vec![workspace.official_artifact(package_name)?.clone()])
+}
+
+/// Minimal seam over the git queries `--changed` needs, so the tag-missing /
+/// diff-clean / diff-dirty decision table can be unit tested without a real repo.
+trait GitQuery {
+    /// Whether `tag` exists in the repository.
+    fn tag_exists(&self, tag: &str) -> Result<bool>;
+    /// Whether `path` (relative to the repo root) changed between `tag` and `HEAD`.
+    fn changed_since(&self, tag: &str, path: &Path) -> Result<bool>;
+}
+
+struct CliGitQuery;
+
+impl GitQuery for CliGitQuery {
+    fn tag_exists(&self, tag: &str) -> Result<bool> {
+        let status = Command::new("git")
+            .args(["rev-parse", "--verify", "--quiet"])
+            .arg(format!("refs/tags/{tag}"))
+            .status()
+            .with_context(|| format!("failed to spawn git rev-parse for tag {tag}"))?;
+        Ok(status.success())
+    }
+
+    fn changed_since(&self, tag: &str, path: &Path) -> Result<bool> {
+        let status = Command::new("git")
+            .args(["diff", "--quiet", &format!("{tag}..HEAD"), "--"])
+            .arg(path)
+            .status()
+            .with_context(|| format!("failed to spawn git diff for {tag}..HEAD -- {path:?}"))?;
+        // `git diff --quiet` exits 0 when there is no difference, 1 when there is.
+        // Any other exit code (e.g. the tag or path doesn't resolve) is a real error.
+        match status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => bail!("git diff --quiet {tag}..HEAD -- {path:?} exited abnormally: {status}"),
+        }
+    }
+}
+
+/// Decide whether an artifact needs a version bump under `--changed`.
+///
+/// - The tag for the artifact's current manifest version doesn't exist yet:
+///   that version is still pending release (e.g. bumped by a prior run but not
+///   yet tagged) - skip, nothing to do.
+/// - The tag exists and the crate directory is unchanged since that tag: the
+///   released contents still match - skip.
+/// - The tag exists and the crate directory changed since that tag: bump.
+fn should_bump(tag_exists: bool, changed_since_tag: bool) -> bool {
+    tag_exists && changed_since_tag
+}
+
+fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<OfficialArtifact>> {
+    let mut selected = Vec::new();
+    for artifact in workspace.official_artifacts() {
+        let tag = artifact.release_tag();
+        let tag_exists = git
+            .tag_exists(&tag)
+            .with_context(|| format!("failed to check tag {tag}"))?;
+        if !tag_exists {
+            println!(
+                "skip {}: tag {tag} not found (release pending)",
+                artifact.package_name
+            );
+            continue;
+        }
+
+        let changed = git
+            .changed_since(&tag, &artifact.crate_dir)
+            .with_context(|| format!("failed to diff {} since {tag}", artifact.package_name))?;
+        if should_bump(tag_exists, changed) {
+            selected.push(artifact.clone());
+        } else {
+            println!("skip {}: no changes since {tag}", artifact.package_name);
+        }
+    }
+    Ok(selected)
 }
 
 fn affected_artifacts(workspace: &Workspace) -> Result<Vec<OfficialArtifact>> {
@@ -139,6 +229,11 @@ fn bump_patch_version(version: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use crate::workspace::{ArtifactKind, PhoxalPackageMetadata};
+
     use super::*;
 
     #[test]
@@ -165,5 +260,89 @@ mod tests {
         }]);
 
         assert!(keys.contains(&("battery::State".to_string(), "battery/state".to_string())));
+    }
+
+    // --changed decision table: tag-missing -> skip, diff-clean -> skip, diff-dirty -> bump.
+    #[test]
+    fn should_bump_decision_table() {
+        assert!(
+            !should_bump(false, false),
+            "tag missing, no diff: still pending release, skip"
+        );
+        assert!(
+            !should_bump(false, true),
+            "tag missing: version is pending release regardless of diff, skip"
+        );
+        assert!(
+            !should_bump(true, false),
+            "tag exists, no diff since tag: released contents still match, skip"
+        );
+        assert!(
+            should_bump(true, true),
+            "tag exists and crate dir changed since tag: bump"
+        );
+    }
+
+    fn artifact(package_name: &str, crate_dir: &str) -> OfficialArtifact {
+        OfficialArtifact {
+            package_name: package_name.to_string(),
+            kind: ArtifactKind::Service,
+            version: "0.1.0".to_string(),
+            crate_dir: PathBuf::from(crate_dir),
+            bin_name: package_name.to_string(),
+            id: package_name.to_string(),
+            metadata: PhoxalPackageMetadata::default(),
+        }
+    }
+
+    /// Fake `GitQuery` driven entirely by in-memory maps, so `changed_artifacts`
+    /// can be exercised without a real repo.
+    struct FakeGitQuery {
+        tags: HashMap<String, bool>,
+        diffs: HashMap<String, bool>,
+    }
+
+    impl GitQuery for FakeGitQuery {
+        fn tag_exists(&self, tag: &str) -> Result<bool> {
+            Ok(*self.tags.get(tag).unwrap_or(&false))
+        }
+
+        fn changed_since(&self, tag: &str, _path: &Path) -> Result<bool> {
+            Ok(*self.diffs.get(tag).unwrap_or(&false))
+        }
+    }
+
+    #[test]
+    fn changed_artifacts_selects_only_tagged_and_dirty_crates() {
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![
+                artifact("phoxal-service-drive", "/repo/service/drive"),
+                artifact("phoxal-service-map", "/repo/service/map"),
+                artifact("phoxal-tool-router", "/repo/tool/router"),
+            ],
+        );
+
+        let git = FakeGitQuery {
+            tags: HashMap::from([
+                // drive: tagged and changed since -> bump
+                ("phoxal-service-drive-v0.1.0".to_string(), true),
+                // map: tagged but unchanged since -> skip
+                ("phoxal-service-map-v0.1.0".to_string(), true),
+                // router: no tag yet (pending release) -> skip
+            ]),
+            diffs: HashMap::from([
+                ("phoxal-service-drive-v0.1.0".to_string(), true),
+                ("phoxal-service-map-v0.1.0".to_string(), false),
+            ]),
+        };
+
+        let selected = changed_artifacts(&workspace, &git).expect("changed_artifacts");
+        let names: Vec<&str> = selected
+            .iter()
+            .map(|artifact| artifact.package_name.as_str())
+            .collect();
+        assert_eq!(names, vec!["phoxal-service-drive"]);
     }
 }
