@@ -1,10 +1,10 @@
 [package]
 name = "phoxal-simulator-webots"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+publish = true
 description = "Phoxal official simulator: Webots bridge."
 documentation.workspace = true
 homepage.workspace = true
