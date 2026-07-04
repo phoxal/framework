@@ -2174,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-driver-bno085"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2184,7 +2184,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-driver-ddsm115"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-driver-oak_d_lite"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2204,7 +2204,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-driver-vl53l1x"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-driver-zed_f9p"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-asset"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "phoxal",
  "phoxal-api",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-battery"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2265,7 +2265,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-explore"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-follow"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-frame"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2295,7 +2295,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2304,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-localize"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2314,7 +2314,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-map"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-mission"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2344,7 +2344,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-plan"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2375,7 +2375,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-power"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-presence"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2394,7 +2394,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-video"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2414,7 +2414,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "gilrs",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-router"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
