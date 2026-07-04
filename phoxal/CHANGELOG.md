@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/phoxal/framework/compare/phoxal-v0.25.0...phoxal-v0.26.0) - 2026-07-04
+
+### Fixed
+
+- *(model)* add emergency_stop to robot Parameters capability kinds ([#164](https://github.com/phoxal/framework/pull/164))
+
 ## [0.25.0](https://github.com/phoxal/framework/compare/phoxal-v0.24.1...phoxal-v0.25.0) - 2026-07-04
 
 ### Added
