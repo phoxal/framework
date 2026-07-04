@@ -10,6 +10,7 @@ mod bus_log;
 pub mod clock;
 pub mod context;
 pub mod emit;
+mod heartbeat;
 pub mod launch;
 pub(crate) mod runner;
 mod sd_notify;

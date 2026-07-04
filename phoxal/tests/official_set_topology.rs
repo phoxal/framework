@@ -457,7 +457,6 @@ fn external_pubsub_inputs() -> Vec<(&'static str, &'static str)> {
         ("motion::ManualCommand", "motion/manual"),
         ("power::Command", "power/command"),
         ("safety::EmergencyStopRequest", "safety/estop"),
-        ("presence::Heartbeat", "presence/heartbeat"),
     ]
 }
 

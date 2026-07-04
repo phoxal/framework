@@ -25,12 +25,21 @@
 //! in schema agreement, but are exempt from topology cardinality: they neither
 //! require producers nor satisfy checked participants' requirements.
 //!
+//! The runner-owned `presence/heartbeat` producer is deliberately not emitted in
+//! each participant's `emit-apis` document: it is framework infrastructure, like
+//! out-of-band logs. Topology still knows that every checked runner produces the
+//! existing `presence::Heartbeat` contract, so a graph that includes the presence
+//! service does not report a dangling heartbeat subscription.
+//!
 //! Simulation plans can also substitute a component driver's contract uses with
 //! a simulator participant. Substitution is explicit plan input, legal only in
 //! [`PlanMode::Sim`], and reported back on success so callers never treat a
 //! missing driver as silently satisfied.
 //!
 use std::collections::{BTreeMap, BTreeSet};
+
+const RUNNER_HEARTBEAT_FAMILY: &str = "presence::Heartbeat";
+const RUNNER_HEARTBEAT_TOPIC: &str = "presence/heartbeat";
 
 /// One participant's `emit-apis` report, reduced to what graph validation needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -505,7 +514,9 @@ pub fn check_plan(input: CheckInput<'_>) -> Report {
             }
             if let Some(required) = c.direction.required_producer() {
                 let needed = (c.family.clone(), c.topic.clone(), required);
-                if !by_direction.contains_key(&needed) {
+                if !by_direction.contains_key(&needed)
+                    && !has_implicit_runner_producer(&participants, &c.family, &c.topic, required)
+                {
                     unmet
                         .entry((c.family.clone(), c.topic.clone()))
                         .or_default()
@@ -562,6 +573,20 @@ pub fn check_plan(input: CheckInput<'_>) -> Report {
         warnings,
         accepted_substitutions,
     }
+}
+
+fn has_implicit_runner_producer(
+    participants: &[ParticipantApis],
+    family: &str,
+    topic: &str,
+    required: Direction,
+) -> bool {
+    required == Direction::Publish
+        && family == RUNNER_HEARTBEAT_FAMILY
+        && topic == RUNNER_HEARTBEAT_TOPIC
+        && participants
+            .iter()
+            .any(|participant| participant.participant_class.is_checked())
 }
 
 struct SubstitutionValidation {
@@ -1560,6 +1585,24 @@ mod tests {
                 consumers: vec!["drive".to_string()],
             }]
         );
+    }
+
+    #[test]
+    fn presence_heartbeat_subscriber_is_satisfied_by_implicit_checked_runners() {
+        let graph = vec![participant(
+            "presence",
+            "y2026_1",
+            vec![contract(
+                "presence::Heartbeat",
+                "presence/heartbeat",
+                Direction::Subscribe,
+            )],
+        )];
+
+        let report = check_graph(&graph);
+
+        assert!(report.problems.is_empty());
+        assert!(report.warnings.is_empty());
     }
 
     #[test]
