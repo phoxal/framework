@@ -41,6 +41,9 @@ jobs:
       - name: Check preview feature sync
         run: cargo xtask api sync-features --check
 
+      - name: Check release-plz artifact scope
+        run: cargo xtask release sync-config --check
+
       - name: Check promoted API shape freeze
         run: cargo xtask api freeze-shapes --check
 
@@ -67,3 +70,50 @@ jobs:
         with:
           name: api-preview-impact
           path: target/xtask/api-preview-impact.json
+
+  # Tier-2 musl targets are not covered by upstream guarantees. Keep this
+  # focused on the four library crates so the guard stays cheap and does not
+  # become the native-asset build matrix from the next slice.
+  musl-library:
+    name: musl library guard (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build library crates for musl
+        run: >
+          cargo build
+          --target ${{ matrix.target }}
+          -p phoxal-bus
+          -p phoxal-api
+          -p phoxal-macros
+          -p phoxal
+          --lib
+
+      - name: Test library crates for musl
+        run: >
+          cargo test
+          --target ${{ matrix.target }}
+          -p phoxal-bus
+          -p phoxal-api
+          -p phoxal-macros
+          -p phoxal
+          --lib

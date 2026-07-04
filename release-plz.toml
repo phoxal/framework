@@ -1,18 +1,196 @@
 # Per-artifact release configuration (plan #01).
 #
-# release-plz publishes the LIBRARY crates only. Each carries its own version
-# (plan #01-A); release-plz cuts one release PR that bumps only the crates whose
-# commits changed, then on merge publishes each bumped crate independently:
-#   - the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros) publish
-#     to crates.io (default behaviour, so they need no [[package]] block);
-#   - the 18 service crates and 5 driver crates are publish = false; release-plz
-#     skips publish = false crates by default, so they are intentionally left out
-#     of release scope. (Service/driver distribution is being reworked; it is not
-#     a crate release.)
+# release-plz owns per-package versions, changelogs, tags, and GitHub releases:
+#   - the 4 library crates (phoxal, phoxal-api, phoxal-bus, phoxal-macros) inherit
+#     the workspace defaults and publish to crates.io;
+#   - official artifact crates are generated [[package]] entries below with
+#     release = true + git_only = true, so they are versioned and tagged without
+#     crates.io publication.
 [workspace]
 release_always = false          # release ONLY for commits from a release-plz PR (not every main push)
 dependencies_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
 git_release_name = "{{ package }} v{{ version }}"
 pr_name = "chore(release): release"
+semver_check = true             # library crates: cargo-semver-checks decides breaking bump severity
 # no version_group (it reintroduces a shared version axis)
+
+# @generated begin phoxal artifact release-plz packages
+# Managed by `cargo xtask release sync-config --write` from workspace discovery.
+# Artifact crates are git-only: release-plz owns versions, tags, changelogs, and GitHub releases, but never crates.io publish.
+
+[[package]]
+name = "phoxal-service-asset"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-battery"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-drive"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-explore"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-follow"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-frame"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-joint"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-localize"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-map"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-mission"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-motion"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-odometry"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-perception"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-plan"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-power"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-presence"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-safety"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-service-video"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-driver-bno085"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-driver-ddsm115"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-driver-oak_d_lite"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-driver-vl53l1x"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-driver-zed_f9p"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-tool-joypad"
+release = true
+git_only = true
+publish = false
+semver_check = false
+
+[[package]]
+name = "phoxal-tool-router"
+release = true
+git_only = true
+publish = false
+semver_check = false
+# @generated end phoxal artifact release-plz packages

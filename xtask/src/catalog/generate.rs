@@ -519,6 +519,7 @@ pub(crate) mod tests_support {
             crate_dir: PathBuf::new(),
             bin_name: "phoxal-service-drive".to_string(),
             id: "drive".to_string(),
+            metadata: Default::default(),
         };
         let metadata = package::parse_emit_apis_json(
             br#"{
@@ -587,6 +588,7 @@ mod tests {
             crate_dir: PathBuf::new(),
             bin_name: package_name.to_string(),
             id: id.to_string(),
+            metadata: Default::default(),
         }
     }
 
