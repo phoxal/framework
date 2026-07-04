@@ -135,6 +135,12 @@ impl Workspace {
             };
 
             validate_package_name(&package_name, kind, &id, &root, &manifest_path)?;
+            validate_artifact_publish(
+                &package_name,
+                package.publish.as_deref(),
+                &root,
+                &manifest_path,
+            )?;
             let crate_dir = manifest_path
                 .parent()
                 .with_context(|| format!("{package_name} manifest has no parent directory"))?
@@ -310,6 +316,24 @@ fn validate_package_name(
     Ok(())
 }
 
+fn validate_artifact_publish(
+    package_name: &str,
+    publish: Option<&[String]>,
+    root: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    if publish.is_some_and(|registries| registries.is_empty()) {
+        bail!(
+            "{package_name} is an official artifact but {} sets publish = false; release-plz \
+             drops cargo-unpublishable packages before its own config applies, so the artifact \
+             silently gets no tag, no release, and no assets. Set publish = true - crates.io \
+             publication stays blocked by the generated release-plz.toml entry",
+            relative_display(root, manifest_path)
+        );
+    }
+    Ok(())
+}
+
 fn expected_package_name(kind: ArtifactKind, id: &str) -> String {
     match kind {
         ArtifactKind::Service => format!("phoxal-service-{id}"),
@@ -396,6 +420,25 @@ mod tests {
 
     fn classify(relative: &str) -> Result<ManifestClassification> {
         classify_manifest_path(&root(), &root().join(relative))
+    }
+
+    #[test]
+    fn artifact_publish_false_is_an_error() {
+        let manifest = root().join("simulator/webots/Cargo.toml");
+        let error =
+            validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest)
+                .unwrap_err();
+        assert!(error.to_string().contains("publish = false"), "{error}");
+
+        validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
+            .expect("unrestricted publish is valid");
+        validate_artifact_publish(
+            "phoxal-simulator-webots",
+            Some(&["crates-io".to_string()]),
+            &root(),
+            &manifest,
+        )
+        .expect("explicit registry list is valid");
     }
 
     #[test]
