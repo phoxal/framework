@@ -101,6 +101,7 @@ fn managed_block(artifacts: &[OfficialArtifact]) -> String {
         block.push_str(&format!("name = \"{}\"\n", artifact.package_name));
         block.push_str("release = true\n");
         block.push_str("git_only = true\n");
+        block.push_str("git_release_draft = true\n");
         block.push_str("publish = false\n");
         block.push_str("semver_check = false\n");
     }
@@ -139,6 +140,7 @@ mod tests {
         assert!(block.contains("name = \"phoxal-service-drive\""));
         assert!(block.contains("release = true"));
         assert!(block.contains("git_only = true"));
+        assert!(block.contains("git_release_draft = true"));
         assert!(block.contains("publish = false"));
     }
 
