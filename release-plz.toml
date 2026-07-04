@@ -193,4 +193,11 @@ release = true
 git_only = true
 publish = false
 semver_check = false
+
+[[package]]
+name = "phoxal-simulator-webots"
+release = true
+git_only = true
+publish = false
+semver_check = false
 # @generated end phoxal artifact release-plz packages
