@@ -47,6 +47,11 @@ zenoh = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 trybuild = { workspace = true }
+# `test-util` (paused/mocked virtual time) is additive to the `[dependencies]`
+# `tokio` features above and only applies to test/bench/example builds, never
+# the published lib artifact - the step-scheduler tests use it to prove
+# deterministic tick order/collapse without any real sleeping.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

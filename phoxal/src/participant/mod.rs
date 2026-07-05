@@ -14,6 +14,7 @@ mod heartbeat;
 pub mod launch;
 mod managed;
 pub(crate) mod runner;
+pub mod scheduler;
 mod sd_notify;
 pub mod server;
 pub mod spec;
@@ -24,6 +25,10 @@ pub use emit::{ParticipantMetadata, emit_apis_json, participant_metadata};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use managed::ManagedTaskPolicy;
 pub use runner::{run, run_async, run_with};
+pub use scheduler::{
+    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
+    StepScheduler,
+};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
     ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, IsDriver,

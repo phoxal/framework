@@ -281,16 +281,19 @@ pub struct BusProfile {
     pub connect_endpoints: Vec<String>,
 }
 
-/// The clock source the runner uses. The default runner currently supports
-/// only [`ClockMode::Real`]; a launch requesting [`ClockMode::Simulation`]
-/// is rejected until the Webots/simulation clock source lands.
+/// The clock mode the runner uses.
+///
+/// [`ClockMode::Real`] drives scheduled steps from wall time. [`ClockMode::Simulation`]
+/// selects the logical-time step scheduler, but the live `simulation/clock`
+/// bus feed is still future work; until that feed is wired, scheduled steps
+/// wait for logical time to advance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum ClockMode {
     /// Host-monotonic real time.
     #[default]
     Real,
-    /// Subscribe the authoritative `simulation/clock` (Webots port).
+    /// Drive scheduled steps from the authoritative `simulation/clock` feed.
     Simulation,
 }
 
