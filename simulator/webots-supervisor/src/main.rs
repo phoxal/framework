@@ -6,9 +6,10 @@
 //! binds component devices (motor, encoder, IMU, ...) - that is
 //! `phoxal-simulator-webots-controller`'s job (see `simulator/webots-controller`).
 //!
-//! Robot-spawning (instantiating robot nodes into the world) is NOT
-//! implemented here - see the `SPAWN SEAM` comment on [`NativeBackend`] below
-//! for where that authority attaches in P6-2 (sim-launch).
+//! Robot-spawning (instantiating robot nodes into the world at startup, and
+//! re-spawning them on `simulation::Control::Reset`) is this artifact's
+//! spawn authority - see [`SpawnRobot`] for the config shape and
+//! `spawn_robots` (the SPAWN SEAM) for where it attaches on [`NativeBackend`].
 
 use anyhow::{Result, anyhow, bail};
 use phoxal::prelude::*;
@@ -21,18 +22,43 @@ const DEFAULT_DT_NS: u64 = 10_000_000;
 struct WebotsSupervisorConfig {
     #[serde(default = "default_require_native")]
     require_native: bool,
+    /// Robot nodes the supervisor imports into the world at startup (and
+    /// re-imports on `simulation::Control::Reset`). Each entry is a complete
+    /// Webots PROTO instance node string, already carrying its own
+    /// `controller` + `controllerArgs` fields, rendered by the CLI's world
+    /// staging. Defaults to empty: a supervisor with no spawn list behaves
+    /// exactly as a world pre-staged entirely by Webots.
+    #[serde(default)]
+    spawn: Vec<SpawnRobot>,
 }
 
 impl Default for WebotsSupervisorConfig {
     fn default() -> Self {
         Self {
             require_native: default_require_native(),
+            spawn: Vec::new(),
         }
     }
 }
 
 fn default_require_native() -> bool {
     true
+}
+
+/// One robot node for the supervisor to import into the world at startup
+/// (and re-import after a `simulation::Control::Reset`).
+///
+/// The `node_string` is a complete Webots VRML PROTO instance - the CLI's
+/// world-staging step renders it (including that robot's `controller` and
+/// `controllerArgs` fields) before handing it to the supervisor; this crate
+/// treats it as an opaque string to import verbatim.
+#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SpawnRobot {
+    /// Robot id, used only for logging/diagnostics.
+    name: String,
+    /// Complete Webots VRML node text (a PROTO instance) to import.
+    node_string: String,
 }
 
 #[derive(phoxal::Simulator)]
@@ -173,7 +199,7 @@ enum Backend {
 impl Backend {
     fn open(config: &WebotsSupervisorConfig) -> Result<Self> {
         if webots_rs::WEBOTS_RUNTIME_LINKED {
-            return Ok(Self::Native(Box::new(NativeBackend::new()?)));
+            return Ok(Self::Native(Box::new(NativeBackend::new(&config.spawn)?)));
         }
 
         if config.require_native {
@@ -182,7 +208,7 @@ impl Backend {
             );
         }
 
-        Ok(Self::Stub(StubBackend::new()))
+        Ok(Self::Stub(StubBackend::new(&config.spawn)))
     }
 
     fn dt_ns(&self) -> u64 {
@@ -215,9 +241,25 @@ struct StubBackend {
 }
 
 impl StubBackend {
-    fn new() -> Self {
+    /// Builds the headless (no Webots linked) stand-in. There is no real
+    /// Supervisor to import nodes into, so the spawn list is only logged -
+    /// this lets tests assert the configured list was read without ever
+    /// attempting a live import.
+    fn new(spawn: &[SpawnRobot]) -> Self {
+        Self::log_spawn(spawn);
         Self {
             dt_ns: DEFAULT_DT_NS,
+        }
+    }
+
+    fn log_spawn(spawn: &[SpawnRobot]) {
+        for entry in spawn {
+            tracing::info!(
+                target: "simulator_webots_supervisor",
+                robot = %entry.name,
+                node_string_len = entry.node_string.len(),
+                "stub backend: would spawn robot (no Webots runtime linked)"
+            );
         }
     }
 
@@ -239,25 +281,21 @@ impl StubBackend {
 }
 
 /// Owns the Webots supervisor-process handle: base handle open, per-step
-/// `webots.step()`, and the Supervisor API (world reset, self pose/contact).
-///
-/// SPAWN SEAM (P6-2 / sim-launch): robot-spawning - instantiating robot nodes
-/// into the world from a launch plan - is not implemented in this slice. This
-/// backend only reads/controls a world that Webots has already loaded with
-/// its robot nodes staged (matching today's monolith behavior). When P6-2
-/// lands spawn authority, it attaches here: a `spawn_robots(&self, plan: &..)`
-/// step during `NativeBackend::new` (or a dedicated setup phase before the
-/// step loop starts), using `self.supervisor` to import/insert robot nodes
-/// before the first `webots.step()` call below.
+/// `webots.step()`, and the Supervisor API (world reset, self pose/contact,
+/// robot spawn/re-spawn).
 struct NativeBackend {
     webots: webots_rs::Webots,
     supervisor: webots_rs::Supervisor,
     dt_ns: u64,
     step_ms: i32,
+    /// Retained so `reset` can re-import the same robots: a world reset
+    /// restores the *saved* world file, which does not include nodes that
+    /// were imported at runtime, so they must be re-spawned every reset.
+    spawn: Vec<SpawnRobot>,
 }
 
 impl NativeBackend {
-    fn new() -> Result<Self> {
+    fn new(spawn: &[SpawnRobot]) -> Result<Self> {
         let webots = webots_rs::Webots::new().map_err(|error| anyhow!(error))?;
         let step_ms = webots
             .get_basic_time_step()
@@ -270,14 +308,17 @@ impl NativeBackend {
             .unwrap_or(u64::MAX);
         let supervisor = webots.get_supervisor();
 
-        // SPAWN SEAM: robot-spawning attaches here in P6-2, before the first
-        // `webots.step()` call in `advance`.
+        // SPAWN SEAM: import every configured robot node before the first
+        // `webots.step()` call in `advance` - this is what makes Webots
+        // launch that robot's controller process.
+        spawn_robots(&supervisor, spawn)?;
 
         Ok(Self {
             webots,
             supervisor,
             dt_ns,
             step_ms,
+            spawn: spawn.to_vec(),
         })
     }
 
@@ -296,10 +337,21 @@ impl NativeBackend {
         })
     }
 
+    /// Resets the world, then re-imports the spawn list.
+    ///
+    /// ASSUMPTION FLAGGED FOR THE LIVE GATE: `simulation_reset` restores the
+    /// world file Webots loaded at launch, which predates any runtime import,
+    /// so the re-imported nodes should not already be present after reset -
+    /// this straightforward re-import (no remove-then-reimport bookkeeping)
+    /// assumes Webots does not itself retain runtime-imported nodes across a
+    /// reset. If live testing on real Webots shows otherwise (nodes
+    /// duplicating post-reset), this needs to track spawned node handles and
+    /// either skip re-importing or remove-then-reimport instead.
     fn reset(&mut self) -> Result<()> {
         self.supervisor
             .simulation_reset()
-            .map_err(|error| anyhow!(error))
+            .map_err(|error| anyhow!(error))?;
+        spawn_robots(&self.supervisor, &self.spawn)
     }
 
     fn read_robot_pose(&self) -> Result<api::simulation::RobotPose> {
@@ -326,6 +378,35 @@ impl NativeBackend {
             detail: (count > 0).then(|| format!("{count} contact point(s)")),
         })
     }
+}
+
+/// Imports every entry in `spawn` into the world root's `children` field, in
+/// list order, appending each (position `-1`) so import order matches
+/// configuration order. Each `node_string` is a complete Webots PROTO
+/// instance node (already carrying its own `controller`/`controllerArgs`),
+/// so a successful import is what makes Webots launch that robot's
+/// controller process. A malformed node string fails loudly - naming the
+/// robot - rather than silently skipping it.
+fn spawn_robots(supervisor: &webots_rs::Supervisor, spawn: &[SpawnRobot]) -> Result<()> {
+    if spawn.is_empty() {
+        return Ok(());
+    }
+
+    let root = supervisor.get_root().map_err(|error| anyhow!(error))?;
+    let children = root.field("children").map_err(|error| anyhow!(error))?;
+
+    for entry in spawn {
+        children
+            .import_mf_node_from_string(-1, &entry.node_string)
+            .map_err(|error| anyhow!("failed to spawn robot '{}': {error}", entry.name))?;
+        tracing::info!(
+            target: "simulator_webots_supervisor",
+            robot = %entry.name,
+            "spawned robot node into world"
+        );
+    }
+
+    Ok(())
 }
 
 struct BackendOutput {
@@ -430,5 +511,71 @@ mod tests {
             std::f64::consts::FRAC_PI_2
         );
         assert_eq!(yaw_from_axis_angle([0.0, 0.0, 0.0, 1.0]), 0.0);
+    }
+
+    #[test]
+    fn config_deserializes_spawn_list_from_phoxal_config_json() {
+        let json = serde_json::json!({
+            "require_native": false,
+            "spawn": [
+                {"name": "robot-a", "node_string": "Robot { name \"robot-a\" }"},
+                {"name": "robot-b", "node_string": "Robot { name \"robot-b\" }"},
+            ],
+        });
+
+        let config: WebotsSupervisorConfig = serde_json::from_value(json).unwrap();
+
+        assert!(!config.require_native);
+        assert_eq!(config.spawn.len(), 2);
+        assert_eq!(config.spawn[0].name, "robot-a");
+        assert_eq!(config.spawn[0].node_string, "Robot { name \"robot-a\" }");
+        assert_eq!(config.spawn[1].name, "robot-b");
+    }
+
+    #[test]
+    fn config_spawn_defaults_to_empty() {
+        let json = serde_json::json!({});
+        let config: WebotsSupervisorConfig = serde_json::from_value(json).unwrap();
+        assert!(config.spawn.is_empty());
+    }
+
+    #[test]
+    fn emit_apis_config_schema_includes_spawn_field() {
+        let json = phoxal::participant::emit_apis_json::<WebotsSupervisorSimulator>();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let schema = value["config_schema"].to_string();
+
+        assert!(
+            schema.contains("spawn"),
+            "config_schema should describe the spawn field, got {schema}"
+        );
+        assert!(
+            schema.contains("node_string") && schema.contains("name"),
+            "config_schema should describe SpawnRobot's fields, got {schema}"
+        );
+    }
+
+    #[test]
+    fn stub_backend_logs_intended_spawns_without_panicking() {
+        let spawn = vec![
+            SpawnRobot {
+                name: "robot-a".to_string(),
+                node_string: "Robot { name \"robot-a\" }".to_string(),
+            },
+            SpawnRobot {
+                name: "robot-b".to_string(),
+                node_string: "Robot { name \"robot-b\" }".to_string(),
+            },
+        ];
+
+        // Must not attempt a real Supervisor import - only log the intent.
+        let backend = StubBackend::new(&spawn);
+        assert_eq!(backend.dt_ns, DEFAULT_DT_NS);
+    }
+
+    #[test]
+    fn stub_backend_handles_empty_spawn_list() {
+        let backend = StubBackend::new(&[]);
+        assert_eq!(backend.dt_ns, DEFAULT_DT_NS);
     }
 }
