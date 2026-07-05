@@ -10,6 +10,9 @@
 //! - [`DeclaresPublish`]/[`DeclaresSubscribe`]/[`DeclaresQuery`] are per-participant
 //!   markers (also emitted by the derive) that make `SetupContext` builders reject
 //!   undeclared contract families/directions at compile time (D44).
+//! - [`TypedGraphSurface`] is emitted by checked participant derives and gates
+//!   `#[step]` / `#[server]` / `#[server_snapshot]` away from thin `Tool`
+//!   runners.
 //!
 //! The full required-contract set is the union of [`ParticipantSpec::FIELD_CONTRACTS`]
 //! and [`ParticipantBehavior::SERVER_CONTRACTS`]; `emit-apis` builds that union at
@@ -83,6 +86,14 @@ pub trait ParticipantSpec: Sized + Send + 'static {
     /// The contracts derived from the struct's handle fields.
     const FIELD_CONTRACTS: &'static [ContractUse];
 }
+
+/// Marker emitted only by checked participant derives that expose the typed graph
+/// surface (`#[step]` / `#[server]` / `#[server_snapshot]`).
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is a `Tool`, which is a thin raw-bus runner and has no typed-graph surface",
+    label = "`#[step]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead"
+)]
+pub trait TypedGraphSurface {}
 
 /// Marker emitted only by `#[derive(phoxal::Driver)]`.
 #[doc(hidden)]

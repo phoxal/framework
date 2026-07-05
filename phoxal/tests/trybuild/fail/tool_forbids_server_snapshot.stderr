@@ -1,0 +1,16 @@
+error[E0277]: `ToolForbidsServerSnapshot` is a `Tool`, which is a thin raw-bus runner and has no typed-graph surface
+  --> tests/trybuild/fail/tool_forbids_server_snapshot.rs:19:5
+   |
+19 |     #[server_snapshot(topic = api::topic::new().map().submap())]
+   |     ^ `#[step]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead
+   |
+help: the trait `TypedGraphSurface` is not implemented for `ToolForbidsServerSnapshot`
+  --> tests/trybuild/fail/tool_forbids_server_snapshot.rs:10:1
+   |
+10 | struct ToolForbidsServerSnapshot {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `_assert_typed_graph_surface`
+  --> tests/trybuild/fail/tool_forbids_server_snapshot.rs:19:5
+   |
+19 |     #[server_snapshot(topic = api::topic::new().map().submap())]
+   |     ^ required by this bound in `_assert_typed_graph_surface`

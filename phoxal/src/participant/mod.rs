@@ -28,6 +28,7 @@ pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{
     ContractUse, DeclaresPublish, DeclaresQuery, DeclaresSubscribe, Direction, IsDriver,
     IsSimulator, IsTool, MissedTick, ParticipantBehavior, ParticipantSpec, StepSchedule,
+    TypedGraphSurface,
 };
 
 /// Re-exported so authoring code can name logical time without reaching into

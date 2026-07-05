@@ -210,6 +210,16 @@ pub fn derive_simulator(input: TokenStream) -> TokenStream {
 /// builder; its key must match the request body's `TOPIC`, and both request and
 /// response bodies must be `ContractBody<Api = Self::Api>` (checked at compile
 /// time, with a decode-time backstop validating the incoming api_version + family).
+///
+/// # `Tool` is a thin runner
+///
+/// A `#[derive(Tool)]` participant may use `#[setup]` and `#[shutdown]` (plus
+/// `#[snapshot]`, which is inert without a server), but `#[step]`,
+/// `#[server(...)]`, and `#[server_snapshot(...)]` are the typed-graph surface and
+/// are a compile error on a `Tool`: tools are privileged, out-of-band, thin
+/// raw-bus runners (lifecycle + `sd_notify` + `participant_id` + `ctx.robot()` +
+/// `phoxal::raw`), not checked participants. A tool that needs a recurring loop
+/// spawns and owns its own task from `#[setup]`.
 #[proc_macro_attribute]
 pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
     runtime_impl::expand(attr.into(), item.into())

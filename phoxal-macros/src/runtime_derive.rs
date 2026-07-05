@@ -61,14 +61,18 @@ impl AuthoringKind {
 
     fn marker_impl(self, phoxal: &TokenStream, struct_name: &Ident) -> TokenStream {
         match self {
-            AuthoringKind::Service => TokenStream::new(),
-            AuthoringKind::Driver => {
-                quote!(impl #phoxal::participant::IsDriver for #struct_name {})
+            AuthoringKind::Service => {
+                quote!(impl #phoxal::participant::TypedGraphSurface for #struct_name {})
             }
+            AuthoringKind::Driver => quote! {
+                impl #phoxal::participant::IsDriver for #struct_name {}
+                impl #phoxal::participant::TypedGraphSurface for #struct_name {}
+            },
             AuthoringKind::Tool => quote!(impl #phoxal::participant::IsTool for #struct_name {}),
-            AuthoringKind::Simulator => {
-                quote!(impl #phoxal::participant::IsSimulator for #struct_name {})
-            }
+            AuthoringKind::Simulator => quote! {
+                impl #phoxal::participant::IsSimulator for #struct_name {}
+                impl #phoxal::participant::TypedGraphSurface for #struct_name {}
+            },
         }
     }
 }
