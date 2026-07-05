@@ -232,6 +232,6 @@ pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{Latest, Publisher, Querier, QueryError, ServerResult, Subscriber};
     pub use crate::participant::{
-        LogicalTime, SetupContext, ShutdownContext, Snapshot, StepContext,
+        LogicalTime, ManagedTaskPolicy, SetupContext, ShutdownContext, Snapshot, StepContext,
     };
 }

@@ -12,6 +12,7 @@ pub mod context;
 pub mod emit;
 mod heartbeat;
 pub mod launch;
+mod managed;
 pub(crate) mod runner;
 mod sd_notify;
 pub mod server;
@@ -21,6 +22,7 @@ pub use clock::{ClockSource, RealClock, TestClock};
 pub use context::{SetupContext, ShutdownContext, StepContext, SubscribeBuilder, SubscribeOptions};
 pub use emit::{ParticipantMetadata, emit_apis_json, participant_metadata};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
+pub use managed::ManagedTaskPolicy;
 pub use runner::{run, run_async, run_with};
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{

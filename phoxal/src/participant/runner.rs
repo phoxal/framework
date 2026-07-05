@@ -28,6 +28,7 @@ use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::emit::print_emit_apis;
 use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, LaunchAction, ParticipantLaunch};
+use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::spec::{MissedTick, ParticipantBehavior, StepSchedule};
 use phoxal_api::y2026_1 as api;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
@@ -192,7 +193,19 @@ where
         launch.robot_root.clone(),
         launch.component_instance.clone(),
     );
-    let mut participant = R::__setup(&mut ctx, config).await?;
+    let mut participant = match R::__setup(&mut ctx, config).await {
+        Ok(participant) => participant,
+        Err(error) => {
+            let grace = Duration::from_millis(launch.shutdown_grace_ms);
+            let unjoined = ctx.take_managed_tasks().shutdown_within(grace).await;
+            log_unjoined_managed_tasks(unjoined, launch.shutdown_grace_ms);
+            return Err(error);
+        }
+    };
+    // Managed tasks spawned via `ctx.spawn_managed(...)` during `#[setup]` (D-managed-tasks):
+    // from here on the runner - not `SetupContext` - owns watching them for an
+    // unexpected exit and cancelling/joining them at shutdown.
+    let mut managed_tasks = ctx.take_managed_tasks();
 
     // Committed snapshot, shared with concurrent snapshot-server tasks (D16).
     let committed: Arc<ArcSwapOption<R::Snapshot>> = Arc::new(ArcSwapOption::empty());
@@ -249,7 +262,7 @@ where
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
     super::sd_notify::ready();
     let watchdog = super::sd_notify::Watchdog::start();
-    main_loop::<R, C, S>(
+    let fault = main_loop::<R, C, S>(
         &mut participant,
         bus,
         clock,
@@ -259,6 +272,7 @@ where
         shutdown,
         heartbeat,
         &watchdog,
+        &mut managed_tasks,
     )
     .await;
     watchdog.shutdown();
@@ -270,12 +284,22 @@ where
         task.abort();
     }
 
+    let grace = Duration::from_millis(launch.shutdown_grace_ms);
+    let shutdown_deadline = tokio::time::Instant::now() + grace;
+    managed_tasks.cancel();
+
     // Bound the shutdown hook by the grace deadline (D24/D43i): a hook that
     // parks/flushes hardware can hang, but the runner must still proceed to
     // bus close deterministically rather than leak the process. On timeout we
     // log and move on; the hook's task is dropped (cancelled at the next await).
-    let grace = Duration::from_millis(launch.shutdown_grace_ms);
-    match tokio::time::timeout(grace, participant.__shutdown(ShutdownContext::new(grace))).await {
+    let shutdown_remaining =
+        shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
+    match tokio::time::timeout(
+        shutdown_remaining,
+        participant.__shutdown(ShutdownContext::new(grace)),
+    )
+    .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
             tracing::warn!(target: "phoxal.runtime", error = %e, "shutdown hook returned error");
@@ -288,8 +312,40 @@ where
             );
         }
     }
+
+    // Join managed tasks before the bus closes (item 4/5/6 of the managed-task
+    // contract): the same shutdown deadline bounds both `#[shutdown]` and
+    // managed-task joining, so a stuck task cannot extend the grace window.
+    let unjoined = managed_tasks.join_until(shutdown_deadline).await;
+    log_unjoined_managed_tasks(unjoined, launch.shutdown_grace_ms);
+
     tracing::info!(target: "phoxal.runtime", id = R::ID, "runtime stopped");
+
+    if let Some(fault) = fault {
+        return Err(managed_task_fault_error(&fault));
+    }
     Ok(())
+}
+
+/// Build the runtime-fault error for an unexpected `FaultOnExit` managed task
+/// exit. Returned from `run_lifecycle_inner` so it flows through the same
+/// `Result` path `run_lifecycle` already turns into `Readiness::Failed`.
+fn managed_task_fault_error(exit: &ManagedTaskExit) -> anyhow::Error {
+    match &exit.panic_message {
+        Some(message) => anyhow::anyhow!("managed task \"{}\" panicked: {message}", exit.name),
+        None => anyhow::anyhow!("managed task \"{}\" exited unexpectedly", exit.name),
+    }
+}
+
+fn log_unjoined_managed_tasks(unjoined: Vec<String>, grace_ms: u64) {
+    if !unjoined.is_empty() {
+        tracing::warn!(
+            target: "phoxal.runtime",
+            tasks = ?unjoined,
+            grace_ms,
+            "managed tasks were still running at the shutdown grace deadline"
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -303,7 +359,9 @@ async fn main_loop<R, C, S>(
     mut shutdown: std::pin::Pin<&mut S>,
     heartbeat: &mut HeartbeatPublisher,
     watchdog: &super::sd_notify::Watchdog,
-) where
+    managed_tasks: &mut ManagedTasks,
+) -> Option<ManagedTaskExit>
+where
     R: ParticipantBehavior,
     C: ClockSource,
     S: Future<Output = ()>,
@@ -316,13 +374,24 @@ async fn main_loop<R, C, S>(
 
     loop {
         tokio::select! {
-            // Order matters: shutdown first, then the framework health tick, then
-            // a *due* step, then server queries. Health is cheap and must not be
-            // starved by an overloaded participant; due steps still take priority
-            // over a steady query backlog. `Some(..)` disables the query branch if
-            // the channel ever closes, so it never busy-loops.
+            // Order matters: shutdown first, then a managed-task fault (both are
+            // "stop the loop" events and should preempt routine work), then the
+            // framework health tick, then a *due* step, then server queries.
+            // Health is cheap and must not be starved by an overloaded
+            // participant; due steps still take priority over a steady query
+            // backlog. `Some(..)` disables the query branch if the channel ever
+            // closes, so it never busy-loops.
             biased;
-            _ = &mut shutdown => return,
+            _ = &mut shutdown => return None,
+            exit = managed_tasks.next_unexpected_exit() => {
+                tracing::error!(
+                    target: "phoxal.runtime",
+                    task = %exit.name,
+                    panic = exit.panic_message.as_deref(),
+                    "managed task exited unexpectedly; faulting the participant"
+                );
+                return Some(exit);
+            }
             _ = heartbeat_tick(next_heartbeat) => {
                 heartbeat.publish(clock.now());
                 watchdog.feed();
