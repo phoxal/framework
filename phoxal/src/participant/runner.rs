@@ -21,7 +21,7 @@ use arc_swap::ArcSwapOption;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::bus::QueryFailure;
+use crate::bus::{LogicalTime, QueryFailure};
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
@@ -29,7 +29,11 @@ use crate::participant::emit::print_emit_apis;
 use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, LaunchAction, ParticipantLaunch};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
-use crate::participant::spec::{MissedTick, ParticipantBehavior, StepSchedule};
+use crate::participant::scheduler::{
+    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationScheduler, StepScheduler,
+    duration_to_nanos_saturating,
+};
+use crate::participant::spec::{ParticipantBehavior, StepSchedule};
 use phoxal_api::y2026_1 as api;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
@@ -63,12 +67,53 @@ pub async fn run_async<R: ParticipantBehavior>() -> crate::Result<()> {
     run_with::<R, _, _>(launch, clock, shutdown_signal()).await
 }
 
+/// The timestamp source for a launch. Both clock modes stamp
+/// `StepContext`/`produced_at_ns` from the same host-wide real clock (D34) -
+/// what [`ClockMode::Simulation`] changes is *when* `#[step]` ticks are
+/// released (see [`step_scheduler_for`]), not what time is read once a tick
+/// fires. A `ClockSource` that instead subscribes the authoritative
+/// `simulation/clock` for timestamps is future work (the Webots port, see the
+/// `clock` module docs); until it lands, simulation mode still timestamps from
+/// the host-monotonic domain.
 fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
     match launch.clock {
-        ClockMode::Real => Ok(RealClock::new()),
-        ClockMode::Simulation => anyhow::bail!(
-            "PHOXAL_CLOCK=simulation requested, but the simulation clock is not yet supported"
-        ),
+        ClockMode::Real | ClockMode::Simulation => Ok(RealClock::new()),
+    }
+}
+
+/// Select the step scheduler for `clock_mode` (D34/#09): the seam that
+/// answers "when should the next `#[step]` tick fire", separate from the
+/// [`ClockSource`] used for timestamps (see [`launch_clock`]).
+///
+/// [`ClockMode::Real`] preserves the runner's pre-#09 wall-clock cadence
+/// exactly. [`ClockMode::Simulation`] starts a [`SimulationScheduler`] with no
+/// driving handle wired up yet: in a real distributed simulation the
+/// `Simulator` kind's `simulation/clock` subscription would call
+/// `SimulationClockHandle::advance` per received sample (see the `scheduler`
+/// module docs) - that live bus wiring is out of scope for this slice, so a
+/// launch in simulation mode today schedules from logical time that never
+/// advances past `start` until something external does so (the
+/// [`SimulationClockHandle`] returned by [`SimulationScheduler::new`] is the
+/// attachment point; see the scheduler unit tests for how it is driven).
+fn step_scheduler_for(
+    clock_mode: ClockMode,
+    schedule: Option<StepSchedule>,
+    now: LogicalTime,
+) -> AnyStepScheduler {
+    let missed_tick = schedule
+        .map(|s| s.missed_tick)
+        .unwrap_or(crate::participant::spec::MissedTick::Collapse);
+    let period = schedule.map(|s| s.period());
+    match clock_mode {
+        ClockMode::Real => AnyStepScheduler::Real(RealScheduler::new(missed_tick, period, now)),
+        ClockMode::Simulation => {
+            tracing::warn!(
+                target: "phoxal.runtime",
+                "simulation clock selected but no simulation/clock feed is wired yet; scheduled steps will wait for logical time"
+            );
+            let (scheduler, _handle) = SimulationScheduler::new(missed_tick, period, now);
+            AnyStepScheduler::Simulation(scheduler)
+        }
     }
 }
 
@@ -256,6 +301,7 @@ where
     }
 
     let schedule = R::__step_schedule();
+    let scheduler = step_scheduler_for(launch.clock, schedule, clock.now());
     let shutdown = pin!(shutdown);
     heartbeat.set_readiness(api::presence::Readiness::Ready);
     heartbeat.publish(clock.now());
@@ -266,6 +312,7 @@ where
         &mut participant,
         bus,
         clock,
+        &scheduler,
         schedule,
         &committed,
         &mut excl_rx,
@@ -353,6 +400,7 @@ async fn main_loop<R, C, S>(
     participant: &mut R,
     bus: &Bus,
     clock: &C,
+    scheduler: &AnyStepScheduler,
     schedule: Option<StepSchedule>,
     committed: &Arc<ArcSwapOption<R::Snapshot>>,
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
@@ -369,7 +417,12 @@ where
     let period = schedule.map(|s| s.period());
     let mut step_index: u64 = 0;
     let mut last_time_ns = clock.now().time_ns();
-    let mut next = tokio::time::Instant::now() + period.unwrap_or_else(|| Duration::from_secs(1));
+    // The next tick's *logical* due time - what the runner asks the scheduler
+    // to release at (D34/#09), separate from the wall-clock heartbeat below.
+    let mut next_step_target = period.map(|period| {
+        let now = scheduler.now();
+        advance_logical_deadline(now, period, 0)
+    });
     let mut next_heartbeat = tokio::time::Instant::now();
 
     loop {
@@ -397,21 +450,13 @@ where
                 watchdog.feed();
                 advance_deadline(&mut next_heartbeat, heartbeat::HEARTBEAT_INTERVAL);
             }
-            _ = step_tick(period, next) => {
-                let Some(period) = period else { continue };
+            SchedulerTick { missed_ticks, .. } = step_tick(scheduler, next_step_target) => {
+                let (Some(period), Some(target)) = (period, next_step_target) else { continue };
+                next_step_target = Some(advance_logical_deadline(target, period, missed_ticks));
+
                 let now = clock.now();
                 let dt_ns = now.time_ns().saturating_sub(last_time_ns);
                 last_time_ns = now.time_ns();
-
-                next += period;
-                let mut missed_ticks = 0u32;
-                if schedule.map(|s| s.missed_tick) == Some(MissedTick::Collapse) {
-                    let real_now = tokio::time::Instant::now();
-                    while next <= real_now {
-                        next += period;
-                        missed_ticks = missed_ticks.saturating_add(1);
-                    }
-                }
 
                 let step = StepContext::new(now.epoch(), step_index, now.time_ns(), dt_ns, missed_ticks);
                 step_index += 1;
@@ -440,6 +485,21 @@ where
     }
 }
 
+fn advance_logical_deadline(
+    target: LogicalTime,
+    period: Duration,
+    missed_ticks: u32,
+) -> LogicalTime {
+    let period_ns = duration_to_nanos_saturating(period);
+    let periods = u64::from(missed_ticks).saturating_add(1);
+    LogicalTime::new(
+        target.epoch(),
+        target
+            .time_ns()
+            .saturating_add(period_ns.saturating_mul(periods)),
+    )
+}
+
 async fn heartbeat_tick(next: tokio::time::Instant) {
     tokio::time::sleep_until(next).await;
 }
@@ -452,12 +512,16 @@ fn advance_deadline(next: &mut tokio::time::Instant, period: Duration) {
     }
 }
 
-/// Resolve at `next` when there is a step schedule; otherwise never resolve (so
-/// the loop is driven only by server queries / shutdown).
-async fn step_tick(period: Option<Duration>, next: tokio::time::Instant) {
-    match period {
-        Some(_) => tokio::time::sleep_until(next).await,
-        None => std::future::pending::<()>().await,
+/// Resolve when the scheduler releases the tick due at `target`; never
+/// resolve when there is no step schedule (so the loop is driven only by
+/// server queries / shutdown). This is the sole seam through which the main
+/// loop asks "when should the next `#[step]` tick fire" (D34/#09) - real mode
+/// sleeps on wall time, simulation mode waits on logical time, and the main
+/// loop itself does not know which.
+async fn step_tick(scheduler: &AnyStepScheduler, target: Option<LogicalTime>) -> SchedulerTick {
+    match target {
+        Some(target) => scheduler.wait_until(target).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -633,14 +697,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn simulation_clock_launch_is_rejected_until_supported() {
+    fn simulation_clock_launch_is_accepted() {
+        // #09: PHOXAL_CLOCK=simulation is no longer rejected - the runner
+        // selects a `SimulationScheduler` for it (see `step_scheduler_for`)
+        // instead of bailing before the bus even opens.
         let mut launch = ParticipantLaunch::local("participant", "robot");
         launch.clock = ClockMode::Simulation;
 
-        let Err(err) = launch_clock(&launch) else {
-            panic!("simulation clock launch should be rejected");
-        };
-        let err = err.to_string();
-        assert!(err.contains("simulation clock is not yet supported"));
+        launch_clock(&launch).expect("simulation clock launch should be accepted");
+    }
+
+    #[test]
+    fn step_scheduler_for_selects_real_or_simulation_by_clock_mode() {
+        let now = LogicalTime::new(0, 0);
+        let schedule = Some(StepSchedule::hz(100.0));
+
+        assert!(matches!(
+            step_scheduler_for(ClockMode::Real, schedule, now),
+            AnyStepScheduler::Real(_)
+        ));
+        assert!(matches!(
+            step_scheduler_for(ClockMode::Simulation, schedule, now),
+            AnyStepScheduler::Simulation(_)
+        ));
+    }
+
+    #[test]
+    fn logical_step_deadline_skips_collapsed_ticks() {
+        let next = advance_logical_deadline(LogicalTime::new(0, 10), Duration::from_nanos(10), 3);
+
+        assert_eq!(
+            next,
+            LogicalTime::new(0, 50),
+            "target 10 plus the fired period and 3 collapsed periods should resume at 50"
+        );
+    }
+
+    #[test]
+    fn logical_step_deadline_saturates_instead_of_wrapping() {
+        let next = advance_logical_deadline(
+            LogicalTime::new(2, u64::MAX - 2),
+            Duration::from_nanos(10),
+            3,
+        );
+
+        assert_eq!(next, LogicalTime::new(2, u64::MAX));
+    }
+
+    #[tokio::test]
+    async fn simulation_scheduler_selected_by_the_runner_schedules_deterministically() {
+        // Exercises the exact scheduler `step_scheduler_for` selects for
+        // `ClockMode::Simulation`, driven purely by logical time via its own
+        // `SimulationClockHandle` - no real sleeping, no live bus/Webots feed.
+        // This is the deterministic proof that simulation mode schedules
+        // ticks from logical time (acceptance criterion); the full
+        // `run_with`/`ClockMode::Simulation` integration path is covered by
+        // `tests/runner.rs`.
+        let schedule = StepSchedule::hz(10.0); // 100ms period
+        let period_ns = duration_to_nanos_saturating(schedule.period());
+        let start = LogicalTime::new(0, 0);
+
+        // `step_scheduler_for` does not hand back the driving handle (the
+        // runner does not need one yet - see its docs), so this test builds
+        // the same `SimulationScheduler` construction directly to get a
+        // handle to drive.
+        let (scheduler, handle) =
+            SimulationScheduler::new(schedule.missed_tick, Some(schedule.period()), start);
+
+        let mut fired = Vec::new();
+        let mut target = LogicalTime::new(0, period_ns);
+        for _ in 0..3 {
+            handle.advance(target);
+            let tick = scheduler.wait_until(target).await;
+            fired.push(tick.fired_at.time_ns());
+            target = LogicalTime::new(0, target.time_ns() + period_ns);
+        }
+
+        assert_eq!(
+            fired,
+            vec![100_000_000, 200_000_000, 300_000_000],
+            "ticks fire in order at the logical times the handle advanced to, with no real sleeping"
+        );
     }
 }

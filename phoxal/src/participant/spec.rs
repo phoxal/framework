@@ -210,7 +210,10 @@ impl StepSchedule {
 
     /// The nominal step period.
     pub fn period(&self) -> Duration {
-        Duration::from_secs_f64(1.0 / self.hz)
+        std::cmp::max(
+            Duration::from_secs_f64(1.0 / self.hz),
+            Duration::from_nanos(1),
+        )
     }
 }
 
@@ -222,4 +225,14 @@ pub enum MissedTick {
     Collapse,
     /// Replay every missed tick. Reserved for offline replay.
     CatchUp,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_schedule_period_never_rounds_to_zero() {
+        assert_eq!(StepSchedule::hz(f64::MAX).period(), Duration::from_nanos(1));
+    }
 }
