@@ -21,7 +21,7 @@ use arc_swap::ArcSwapOption;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use crate::bus::{LogicalTime, QueryFailure};
+use crate::bus::{LogicalTime, QueryFailure, Subscriber};
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
@@ -30,8 +30,8 @@ use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, LaunchAction, ParticipantLaunch};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::scheduler::{
-    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationScheduler, StepScheduler,
-    duration_to_nanos_saturating,
+    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
+    StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::{ParticipantBehavior, StepSchedule};
 use phoxal_api::y2026_1 as api;
@@ -70,11 +70,12 @@ pub async fn run_async<R: ParticipantBehavior>() -> crate::Result<()> {
 /// The timestamp source for a launch. Both clock modes stamp
 /// `StepContext`/`produced_at_ns` from the same host-wide real clock (D34) -
 /// what [`ClockMode::Simulation`] changes is *when* `#[step]` ticks are
-/// released (see [`step_scheduler_for`]), not what time is read once a tick
-/// fires. A `ClockSource` that instead subscribes the authoritative
-/// `simulation/clock` for timestamps is future work (the Webots port, see the
-/// `clock` module docs); until it lands, simulation mode still timestamps from
-/// the host-monotonic domain.
+/// released (see [`step_scheduler_for`] and [`spawn_simulation_clock_feed`],
+/// which now drives that release from the live `simulation/clock` bus feed),
+/// not what time is read once a tick fires. A `ClockSource` that instead
+/// subscribes the authoritative `simulation/clock` for timestamps is future
+/// work (the Webots port, see the `clock` module docs); until it lands,
+/// simulation mode still timestamps from the host-monotonic domain.
 fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
     match launch.clock {
         ClockMode::Real | ClockMode::Simulation => Ok(RealClock::new()),
@@ -86,35 +87,95 @@ fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
 /// [`ClockSource`] used for timestamps (see [`launch_clock`]).
 ///
 /// [`ClockMode::Real`] preserves the runner's pre-#09 wall-clock cadence
-/// exactly. [`ClockMode::Simulation`] starts a [`SimulationScheduler`] with no
-/// driving handle wired up yet: in a real distributed simulation the
-/// `Simulator` kind's `simulation/clock` subscription would call
-/// `SimulationClockHandle::advance` per received sample (see the `scheduler`
-/// module docs) - that live bus wiring is out of scope for this slice, so a
-/// launch in simulation mode today schedules from logical time that never
-/// advances past `start` until something external does so (the
-/// [`SimulationClockHandle`] returned by [`SimulationScheduler::new`] is the
-/// attachment point; see the scheduler unit tests for how it is driven).
+/// exactly, returning no driving handle (`None`). [`ClockMode::Simulation`]
+/// starts a [`SimulationScheduler`] and returns its [`SimulationClockHandle`]
+/// (`Some`) so the caller can wire the live `simulation/clock` subscription
+/// (see [`spawn_simulation_clock_feed`]): the handle is the attachment point
+/// anything that produces a `LogicalTime` drives the scheduler through (a bus
+/// subscription task, a test, a REPL).
 fn step_scheduler_for(
     clock_mode: ClockMode,
     schedule: Option<StepSchedule>,
     now: LogicalTime,
-) -> AnyStepScheduler {
+) -> (AnyStepScheduler, Option<SimulationClockHandle>) {
     let missed_tick = schedule
         .map(|s| s.missed_tick)
         .unwrap_or(crate::participant::spec::MissedTick::Collapse);
     let period = schedule.map(|s| s.period());
     match clock_mode {
-        ClockMode::Real => AnyStepScheduler::Real(RealScheduler::new(missed_tick, period, now)),
+        ClockMode::Real => (
+            AnyStepScheduler::Real(RealScheduler::new(missed_tick, period, now)),
+            None,
+        ),
         ClockMode::Simulation => {
-            tracing::warn!(
-                target: "phoxal.runtime",
-                "simulation clock selected but no simulation/clock feed is wired yet; scheduled steps will wait for logical time"
-            );
-            let (scheduler, _handle) = SimulationScheduler::new(missed_tick, period, now);
-            AnyStepScheduler::Simulation(scheduler)
+            let (scheduler, handle) = SimulationScheduler::new(missed_tick, period, now);
+            (AnyStepScheduler::Simulation(scheduler), Some(handle))
         }
     }
+}
+
+/// Subscribe the authoritative `simulation/clock` feed (published by the
+/// `Simulator` kind that owns the world, e.g. the Webots supervisor) and drive
+/// `handle` from it for the lifetime of the returned task.
+///
+/// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
+/// the other server tasks, aborted at shutdown): this subscribes the same
+/// global `simulation/clock` wire key every sim participant on the robot
+/// observes (`api::topic::new().simulation().clock()`, the CLIENT side of the
+/// `Simulator`'s owner-side publish - both sides format the identical
+/// `simulation/clock` key, D61/D62), then per received sample:
+///
+/// - calls [`SimulationClockHandle::advance`] with the sample's ENVELOPE
+///   logical time (`metadata.epoch` + `metadata.produced_at_ns`), not just the
+///   body's `now_ns` - the envelope carries the supervisor's epoch, so a reset
+///   (epoch bump, `now_ns` back to 0) is conveyed correctly: `LogicalTime`'s
+///   derived `Ord` is lexicographic on `(epoch, time_ns)`, so a bumped epoch
+///   always advances even though `time_ns` drops back to 0.
+/// - pauses the scheduler on `running == false`, resumes it on
+///   `running == true` (idempotent either way).
+///
+/// The task owns `handle` for its whole lifetime and runs until the
+/// subscriber's underlying bus session closes; the caller aborts it
+/// explicitly at shutdown alongside the other server tasks. Nothing else
+/// drives `handle` once this task is spawned, so keeping it running for the
+/// loop's duration is what keeps the scheduler advancing - the
+/// `SimulationScheduler` separately retains its own sender keepalive (see its
+/// docs), so the watch channel itself would not close even if this task
+/// stopped, but a stopped task means logical time simply never advances
+/// again.
+fn spawn_simulation_clock_feed(
+    bus: &Bus,
+    handle: SimulationClockHandle,
+) -> crate::Result<JoinHandle<()>> {
+    let bus = bus.clone();
+    Ok(tokio::spawn(async move {
+        let topic = api::topic::new().simulation().clock();
+        let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
+            Ok(subscriber) => subscriber,
+            Err(error) => {
+                tracing::error!(
+                    target: "phoxal.runtime",
+                    error = %error,
+                    "failed to subscribe simulation/clock; simulation-mode steps will never advance"
+                );
+                return;
+            }
+        };
+        tracing::info!(
+            target: "phoxal.runtime",
+            topic = topic.key(),
+            "subscribed the live simulation/clock feed; driving the simulation scheduler from it"
+        );
+        while let Ok(received) = subscriber.recv().await {
+            let at = LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns);
+            handle.advance(at);
+            if received.body.running {
+                handle.resume();
+            } else {
+                handle.pause();
+            }
+        }
+    }))
 }
 
 /// Run a participant against an explicit launch, clock, and shutdown trigger. The
@@ -301,7 +362,17 @@ where
     }
 
     let schedule = R::__step_schedule();
-    let scheduler = step_scheduler_for(launch.clock, schedule, clock.now());
+    let (scheduler, clock_handle) = step_scheduler_for(launch.clock, schedule, clock.now());
+    // `ClockMode::Simulation` hands back a driving handle: keep it alive by
+    // moving it into the feed task rather than dropping it (the
+    // `SimulationScheduler` also retains its own sender keepalive, so the
+    // watch channel would not actually close either way - see the scheduler's
+    // keepalive docs - but the handle is only useful for as long as something
+    // holds it and drives it, which is this task's whole job). Pushed
+    // alongside the other bus-driven tasks so it is aborted at shutdown.
+    if let Some(handle) = clock_handle {
+        server_tasks.push(spawn_simulation_clock_feed(bus, handle)?);
+    }
     let shutdown = pin!(shutdown);
     heartbeat.set_readiness(api::presence::Readiness::Ready);
     heartbeat.publish(clock.now());
@@ -712,14 +783,20 @@ mod tests {
         let now = LogicalTime::new(0, 0);
         let schedule = Some(StepSchedule::hz(100.0));
 
-        assert!(matches!(
-            step_scheduler_for(ClockMode::Real, schedule, now),
-            AnyStepScheduler::Real(_)
-        ));
-        assert!(matches!(
-            step_scheduler_for(ClockMode::Simulation, schedule, now),
-            AnyStepScheduler::Simulation(_)
-        ));
+        let (real, real_handle) = step_scheduler_for(ClockMode::Real, schedule, now);
+        assert!(matches!(real, AnyStepScheduler::Real(_)));
+        assert!(
+            real_handle.is_none(),
+            "real mode has no simulation clock handle to drive"
+        );
+
+        let (simulation, simulation_handle) =
+            step_scheduler_for(ClockMode::Simulation, schedule, now);
+        assert!(matches!(simulation, AnyStepScheduler::Simulation(_)));
+        assert!(
+            simulation_handle.is_some(),
+            "simulation mode must hand back the driving handle so the caller can wire the live feed"
+        );
     }
 
     #[test]
@@ -746,23 +823,19 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_scheduler_selected_by_the_runner_schedules_deterministically() {
-        // Exercises the exact scheduler `step_scheduler_for` selects for
-        // `ClockMode::Simulation`, driven purely by logical time via its own
-        // `SimulationClockHandle` - no real sleeping, no live bus/Webots feed.
-        // This is the deterministic proof that simulation mode schedules
-        // ticks from logical time (acceptance criterion); the full
-        // `run_with`/`ClockMode::Simulation` integration path is covered by
-        // `tests/runner.rs`.
+        // Exercises the exact scheduler + handle `step_scheduler_for` selects
+        // for `ClockMode::Simulation`, driven purely by logical time via its
+        // own `SimulationClockHandle` - no real sleeping, no live bus/Webots
+        // feed. This is the deterministic proof that simulation mode
+        // schedules ticks from logical time (acceptance criterion); the full
+        // `run_with`/`ClockMode::Simulation` integration path (live feed
+        // wiring included) is covered by `tests/runner.rs`.
         let schedule = StepSchedule::hz(10.0); // 100ms period
         let period_ns = duration_to_nanos_saturating(schedule.period());
         let start = LogicalTime::new(0, 0);
 
-        // `step_scheduler_for` does not hand back the driving handle (the
-        // runner does not need one yet - see its docs), so this test builds
-        // the same `SimulationScheduler` construction directly to get a
-        // handle to drive.
-        let (scheduler, handle) =
-            SimulationScheduler::new(schedule.missed_tick, Some(schedule.period()), start);
+        let (scheduler, handle) = step_scheduler_for(ClockMode::Simulation, Some(schedule), start);
+        let handle = handle.expect("simulation mode must hand back a driving handle");
 
         let mut fired = Vec::new();
         let mut target = LogicalTime::new(0, period_ns);
@@ -778,5 +851,113 @@ mod tests {
             vec![100_000_000, 200_000_000, 300_000_000],
             "ticks fire in order at the logical times the handle advanced to, with no real sleeping"
         );
+    }
+
+    /// Isolation-level proof of [`spawn_simulation_clock_feed`]'s
+    /// subscriber -> handle driving, without going through the full
+    /// `run_with`/`ClockMode::Simulation` runner path (that full path, plus
+    /// the actual wire-key match with the Webots supervisor's publisher, is
+    /// covered by `tests/runner.rs`'s
+    /// `simulation_mode_step_advances_only_with_the_clock_feed`).
+    ///
+    /// Publishes synthetic `simulation::Clock` samples directly onto an
+    /// in-process bus (standing in for the Webots supervisor) and asserts:
+    /// the scheduler releases a tick per advance, in the published epoch's
+    /// domain (a reset - epoch bump - is observed even though `now_ns` drops
+    /// back to 0), and a `running = false` sample withholds release until a
+    /// later `running = true` sample resumes it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn simulation_clock_feed_drives_the_scheduler_from_published_samples() {
+        let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
+        let bus = Bus::open(bus_config).await.expect("bus should open");
+
+        let clock_publisher = crate::bus::Publisher::<api::simulation::Clock>::new(
+            bus.clone(),
+            &api::topic::internal::new(crate::bus::OwnerCap::__mint())
+                .simulation()
+                .clock(),
+        )
+        .expect("clock publisher should attach");
+
+        let period = Duration::from_millis(10);
+        let (scheduler, handle) = SimulationScheduler::new(
+            crate::participant::spec::MissedTick::Collapse,
+            Some(period),
+            LogicalTime::new(0, 0),
+        );
+        let feed_task = spawn_simulation_clock_feed(&bus, handle).expect("feed task should spawn");
+
+        // No sample published yet: the scheduler must not release the first tick.
+        let period_ns = duration_to_nanos_saturating(period);
+        let first_target = LogicalTime::new(0, period_ns);
+        let pending = tokio::time::timeout(
+            Duration::from_millis(100),
+            scheduler.wait_until(first_target),
+        )
+        .await;
+        assert!(
+            pending.is_err(),
+            "scheduler must not release before any simulation/clock sample arrives"
+        );
+
+        // Publish an advancing sample; the pending wait should now resolve.
+        clock_publisher
+            .publish_at(
+                first_target,
+                api::simulation::Clock {
+                    now_ns: period_ns,
+                    running: true,
+                },
+            )
+            .await
+            .expect("clock sample should publish");
+        let tick = tokio::time::timeout(Duration::from_secs(2), scheduler.wait_until(first_target))
+            .await
+            .expect("scheduler should release once the feed advances past the target");
+        assert_eq!(tick.fired_at, first_target);
+
+        // Publish a paused sample whose envelope logical time is past the next
+        // target: release must still be withheld.
+        let second_target = LogicalTime::new(0, 2 * period_ns);
+        clock_publisher
+            .publish_at(
+                second_target,
+                api::simulation::Clock {
+                    now_ns: 2 * period_ns,
+                    running: false,
+                },
+            )
+            .await
+            .expect("paused clock sample should publish");
+        let still_pending = tokio::time::timeout(
+            Duration::from_millis(200),
+            scheduler.wait_until(second_target),
+        )
+        .await;
+        assert!(
+            still_pending.is_err(),
+            "running=false must withhold release even though logical time already reached the target"
+        );
+
+        // Resume (still at the same logical time, `running` flips back true):
+        // the withheld tick should now release.
+        clock_publisher
+            .publish_at(
+                second_target,
+                api::simulation::Clock {
+                    now_ns: 2 * period_ns,
+                    running: true,
+                },
+            )
+            .await
+            .expect("resume clock sample should publish");
+        let tick =
+            tokio::time::timeout(Duration::from_secs(2), scheduler.wait_until(second_target))
+                .await
+                .expect("scheduler should release once resumed");
+        assert_eq!(tick.fired_at, second_target);
+
+        feed_task.abort();
+        bus.close().await.expect("bus should close");
     }
 }

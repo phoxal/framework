@@ -4,8 +4,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::bus::{OwnerCap, Subscriber};
-use phoxal::participant::{ParticipantLaunch, RealClock, emit_apis_json, run_with};
+use phoxal::bus::{LogicalTime, OwnerCap, Publisher, Subscriber};
+use phoxal::participant::{
+    ClockMode, ParticipantLaunch, RealClock, TestClock, emit_apis_json, run_with,
+};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::y2026_1 as api;
@@ -14,6 +16,7 @@ static STEPS: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
+static SIM_CLOCK_STEPS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(phoxal::Service)]
 #[phoxal(id = "counter", api = y2026_1)]
@@ -97,6 +100,13 @@ impl IdlePresence {
 #[phoxal(id = "slow-shutdown", api = y2026_1)]
 struct SlowShutdown {}
 
+/// Acceptance fixture (P6-3): a `#[step]` participant with no other IO, used
+/// to prove `#[step]` ticks under `ClockMode::Simulation` release only as the
+/// live `simulation/clock` feed advances (see `simulation_mode_step_advances_only_with_the_clock_feed`).
+#[derive(phoxal::Service)]
+#[phoxal(id = "sim-clock-stepper", api = y2026_1)]
+struct SimClockStepper {}
+
 #[derive(phoxal::Driver)]
 #[phoxal(id = "component-driver", api = y2026_1)]
 struct ComponentDriver {}
@@ -123,6 +133,20 @@ impl SlowShutdown {
         let _ = ctx.grace();
         tokio::time::sleep(Duration::from_secs(60)).await;
         SLOW_SHUTDOWN_COMPLETED.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[phoxal::behavior]
+impl SimClockStepper {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+        Ok(Self {})
+    }
+
+    #[step(hz = 1000)]
+    async fn step(&mut self, _step: StepContext) -> Result<()> {
+        SIM_CLOCK_STEPS.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -294,6 +318,131 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
     assert!(
         !SLOW_SHUTDOWN_COMPLETED.load(Ordering::Relaxed),
         "the slow hook should have been abandoned at the grace, not run to completion"
+    );
+}
+
+/// P6-3 acceptance: under `ClockMode::Simulation`, a `#[step]` participant's
+/// ticks are released by the live `simulation/clock` feed, not a free-running
+/// wall clock - the full path (runner subscribes `simulation/clock` on the
+/// shared bus, drives the `SimulationScheduler` handle from it) exercised
+/// exactly as a real `Simulator` kind (e.g. the Webots supervisor) would drive
+/// it, minus Webots itself.
+///
+/// This publishes `simulation::Clock` samples the same way
+/// `simulator/webots-supervisor/src/main.rs` does (owner-side publisher over
+/// `api::topic::internal::new(cap).simulation().clock()`, `publish_at` an
+/// explicit `LogicalTime`), and proves three things the runner's wiring must
+/// get right:
+/// 1. with no clock samples published yet, the participant never steps;
+/// 2. each clock advance releases exactly one more step, in step with the
+///    published `now_ns` (not wall time - this test's clock samples are
+///    spaced far apart in real time to make that unambiguous);
+/// 3. a sample with `running == false` pauses release even though logical
+///    time in that same sample's envelope did advance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simulation_mode_step_advances_only_with_the_clock_feed() {
+    SIM_CLOCK_STEPS.store(0, Ordering::Relaxed);
+
+    let namespace = unique_namespace("sim-clock-feed");
+    let bus_config = BusConfig::in_process(namespace.clone(), "robot");
+    let bus = Bus::open(bus_config).await.expect("bus should open");
+
+    // Stand in for the Webots supervisor: the OWNER-side publisher over the
+    // same `simulation().clock()` builder `simulator/webots-supervisor`
+    // uses, so this test proves the runner subscribes the identical wire key
+    // a real supervisor publishes (not a look-alike topic).
+    let clock_publisher = Publisher::<api::simulation::Clock>::new(
+        bus.clone(),
+        &api::topic::internal::new(OwnerCap::__mint())
+            .simulation()
+            .clock(),
+    )
+    .expect("clock publisher should attach");
+
+    let mut launch = ParticipantLaunch::local("sim-clock-stepper-1", "robot");
+    launch.namespace = namespace;
+    launch.clock = ClockMode::Simulation;
+
+    let period_ns = 1_000_000; // 1ms period at the participant's 1000 Hz schedule.
+    // A `TestClock` starts at logical `(epoch 0, time_ns 0)` (unlike `RealClock`,
+    // which stamps host-wide Unix time) so the scheduler's `start` lines up with
+    // the small `LogicalTime` values this test publishes below - the point being
+    // tested is the scheduler tracking the *feed*, not this clock's role (which
+    // only stamps `StepContext`/`produced_at_ns`, untouched by this slice).
+    let runner = run_with_bus::<SimClockStepper, _, _>(&bus, launch, TestClock::new(), async {
+        // No steps should have released yet: the feed has not published a
+        // single sample, so the scheduler's logical time has never left
+        // `start`.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+            0,
+            "no simulation/clock sample has been published yet; the step must not have released"
+        );
+
+        // Advance one period at a time, waiting for the runner to observe
+        // each step before publishing the next - proves steps track the
+        // feed's cadence, not a free-running timer (each iteration sleeps
+        // far longer, in real time, than the participant's 1ms period).
+        for step in 1..=5u64 {
+            let at = LogicalTime::new(0, step * period_ns);
+            clock_publisher
+                .publish_at(
+                    at,
+                    api::simulation::Clock {
+                        now_ns: step * period_ns,
+                        running: true,
+                    },
+                )
+                .await
+                .expect("clock sample should publish");
+
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            while SIM_CLOCK_STEPS.load(Ordering::Relaxed) < step {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "step {step} did not release within 2s of its simulation/clock sample"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            assert_eq!(
+                SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+                step,
+                "exactly one step should have released per clock advance, no more"
+            );
+        }
+
+        // Pause: even though the next sample's envelope logical time DOES
+        // advance, `running == false` must withhold release.
+        let paused_at = LogicalTime::new(0, 6 * period_ns);
+        clock_publisher
+            .publish_at(
+                paused_at,
+                api::simulation::Clock {
+                    now_ns: 6 * period_ns,
+                    running: false,
+                },
+            )
+            .await
+            .expect("paused clock sample should publish");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+            5,
+            "a paused (running=false) sample must not release a step even though logical time advanced"
+        );
+    });
+
+    tokio::time::timeout(Duration::from_secs(10), runner)
+        .await
+        .expect("runner must not hang")
+        .expect("runner should complete cleanly");
+    bus.close().await.expect("bus should close");
+
+    assert_eq!(
+        SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+        5,
+        "shutdown must not have released any further steps"
     );
 }
 
