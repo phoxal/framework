@@ -10,8 +10,8 @@
 //! `#[server_snapshot(topic = …)]` (concurrent, reads a committed `Snapshot`),
 //! and `#[snapshot]` (the committed-snapshot provider, ≤ 1).
 
-use proc_macro2::TokenStream;
-use quote::quote;
+use proc_macro2::{Span, TokenStream};
+use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{
     Attribute, Expr, FnArg, GenericArgument, ImplItem, ImplItemFn, ItemImpl, Lit, Meta,
@@ -39,12 +39,20 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let mut servers: Vec<ServerFn> = Vec::new();
     let mut snapshot_servers: Vec<SnapshotServerFn> = Vec::new();
     let mut snapshot: Option<SnapshotFn> = None;
+    // One entry per `#[step]` / `#[server]` / `#[server_snapshot]` found, so a
+    // `Tool` (the only kind `#[phoxal::behavior]` must reject these for - plan
+    // #15) gets a compile error span-targeted at the offending attribute. This
+    // macro expands over the bare inherent impl and never sees which
+    // `#[derive(phoxal::...)]` produced the struct, so the check is deferred to a
+    // trait-bound assertion against the concrete participant type (see
+    // `tool_forbidden_guards`).
+    let mut tool_forbidden: Vec<(Span, &'static str)> = Vec::new();
 
     for impl_item in &mut item_impl.items {
         let ImplItem::Fn(method) = impl_item else {
             continue;
         };
-        let Some(kind) = take_lifecycle_attr(method)? else {
+        let Some((kind, attr_span)) = take_lifecycle_attr(method)? else {
             continue;
         };
         match kind {
@@ -67,6 +75,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                         "duplicate #[step]: a participant has at most one scheduled loop",
                     ));
                 }
+                tool_forbidden.push((attr_span, "step"));
                 step = Some(StepFn::parse(method, hz)?);
             }
             Lifecycle::Shutdown => {
@@ -81,8 +90,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 }
                 shutdown = Some(LifecycleFn::parse_self_method(method)?);
             }
-            Lifecycle::Server(topic) => servers.push(ServerFn::parse(method, topic)?),
+            Lifecycle::Server(topic) => {
+                tool_forbidden.push((attr_span, "server"));
+                servers.push(ServerFn::parse(method, topic)?)
+            }
             Lifecycle::ServerSnapshot(topic) => {
+                tool_forbidden.push((attr_span, "server_snapshot"));
                 snapshot_servers.push(SnapshotServerFn::parse(method, topic)?)
             }
             Lifecycle::Snapshot => {
@@ -121,9 +134,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let serve_snapshot = serve_snapshot(&snapshot_servers);
     let topic_assertions = topic_assertions(&self_ty, &servers, &snapshot_servers);
     let validate_server_topics = validate_server_topics(&servers, &snapshot_servers);
+    let tool_forbidden_guards = tool_forbidden_guards(&self_ty, &tool_forbidden);
 
     Ok(quote! {
         #item_impl
+
+        #tool_forbidden_guards
 
         #topic_assertions
 
@@ -483,6 +499,24 @@ fn encode_reply(resp_ty: &Type) -> TokenStream {
             ),
         }
     }
+}
+
+/// One `const _: () = { ... };` per `#[step]` / `#[server]` / `#[server_snapshot]`
+/// found on the impl, asserting the impl type has the typed graph surface marker.
+/// `Service`, `Driver`, and `Simulator` derives emit that marker; `Tool` does not,
+/// so rustc reports the trait's custom `on_unimplemented` diagnostic at the
+/// offending attribute. Empty output when the impl has none of these attributes.
+fn tool_forbidden_guards(self_ty: &Type, forbidden: &[(Span, &'static str)]) -> TokenStream {
+    let guards = forbidden.iter().map(|(span, _attribute)| {
+        quote_spanned! {*span=>
+            const _: () = {
+                type __PhoxalBehaviorSelf = #self_ty;
+                fn _assert_typed_graph_surface<T: ::phoxal::participant::TypedGraphSurface>() {}
+                let _ = _assert_typed_graph_surface::<__PhoxalBehaviorSelf>;
+            };
+        }
+    });
+    quote!(#(#guards)*)
 }
 
 fn topic_assertions(
@@ -947,9 +981,11 @@ fn ref_type_ends_with(ty: &Type, name: &str) -> bool {
     type_ends_with(inner, name)
 }
 
-/// Find and remove the single phoxal helper attribute on a method.
-fn take_lifecycle_attr(method: &mut ImplItemFn) -> syn::Result<Option<Lifecycle>> {
-    let mut found: Option<(usize, Lifecycle)> = None;
+/// Find and remove the single phoxal helper attribute on a method, returning its
+/// span alongside its kind (the span is used to point a `Tool`-forbidden-attribute
+/// compile error, if any, at the exact attribute rather than at generated code).
+fn take_lifecycle_attr(method: &mut ImplItemFn) -> syn::Result<Option<(Lifecycle, Span)>> {
+    let mut found: Option<(usize, Lifecycle, Span)> = None;
 
     for (idx, attr) in method.attrs.iter().enumerate() {
         let Some(name) = attr.path().get_ident().map(|i| i.to_string()) else {
@@ -979,12 +1015,12 @@ fn take_lifecycle_attr(method: &mut ImplItemFn) -> syn::Result<Option<Lifecycle>
                 "a method may carry at most one phoxal lifecycle attribute",
             ));
         }
-        found = Some((idx, kind));
+        found = Some((idx, kind, attr.span()));
     }
 
-    if let Some((idx, kind)) = found {
+    if let Some((idx, kind, span)) = found {
         method.attrs.remove(idx);
-        Ok(Some(kind))
+        Ok(Some((kind, span)))
     } else {
         Ok(None)
     }

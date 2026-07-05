@@ -8,65 +8,72 @@ const LINEAR_SCALE_MPS: f64 = 0.6;
 const ANGULAR_SCALE_RADPS: f64 = 1.5;
 const AXIS_DEADZONE: f32 = 0.08;
 
+// Plan #15: `Tool` is a thin raw-bus runner - no `#[step]`. The 50 Hz poll loop
+// this tool needs runs as a managed task registered from `#[setup]`, so the
+// runner can cancel, join, and fault it if it exits unexpectedly.
+const POLL_HZ: f64 = 50.0;
+
 #[derive(phoxal::Tool)]
 #[phoxal(
     id = "joypad",
     api = y2026_1,
     contracts(publishes(api::motion::ManualCommand))
 )]
-struct ToolJoypad {
-    gilrs: Option<Gilrs>,
-    selected: Option<GamepadId>,
-    publisher: Publisher<api::motion::ManualCommand>,
-    warned_idle: bool,
-}
+struct ToolJoypad {}
 
 #[phoxal::behavior]
 impl ToolJoypad {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
         let publisher = Publisher::new(ctx.raw_bus(), &api::topic::new().motion().manual())?;
+        ctx.spawn_managed_with("joypad-poll", ManagedTaskPolicy::FaultOnExit, async move {
+            poll_gamepad(publisher).await
+        });
+        Ok(Self {})
+    }
+}
 
-        let mut gilrs = match Gilrs::new() {
-            Ok(gilrs) => Some(gilrs),
-            Err(error) => {
-                tracing::warn!(target: "tool_joypad", error = %error, "gamepad backend unavailable; staying idle");
-                None
-            }
-        };
-        let selected = gilrs.as_mut().and_then(select_first_gamepad);
-        if selected.is_none() {
-            tracing::info!(target: "tool_joypad", "no gamepad connected; staying idle");
+/// Owns the gamepad handle and publisher for the lifetime of the tool, polling
+/// at [`POLL_HZ`] and publishing a command each tick. Runs until the runner
+/// cancels it during managed shutdown.
+async fn poll_gamepad(publisher: Publisher<api::motion::ManualCommand>) {
+    let mut gilrs = match Gilrs::new() {
+        Ok(gilrs) => Some(gilrs),
+        Err(error) => {
+            tracing::warn!(target: "tool_joypad", error = %error, "gamepad backend unavailable; staying idle");
+            None
         }
-
-        Ok(Self {
-            gilrs,
-            selected,
-            publisher,
-            warned_idle: selected.is_none(),
-        })
+    };
+    let mut selected = gilrs.as_mut().and_then(select_first_gamepad);
+    let mut warned_idle = selected.is_none();
+    if warned_idle {
+        tracing::info!(target: "tool_joypad", "no gamepad connected; staying idle");
     }
 
-    #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        let Some(gilrs) = self.gilrs.as_mut() else {
-            return Ok(());
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs_f64(1.0 / POLL_HZ));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        ticker.tick().await;
+
+        let Some(gilrs) = gilrs.as_mut() else {
+            continue;
         };
 
         while let Some(event) = gilrs.next_event() {
             gilrs.update(&event);
             match event.event {
                 EventType::Connected => {
-                    if self.selected.is_none() {
-                        self.selected = Some(event.id);
-                        self.warned_idle = false;
+                    if selected.is_none() {
+                        selected = Some(event.id);
+                        warned_idle = false;
                         tracing::info!(target: "tool_joypad", gamepad = ?event.id, "gamepad selected");
                     }
                 }
-                EventType::Disconnected if self.selected == Some(event.id) => {
-                    self.selected = select_first_gamepad(gilrs);
-                    if self.selected.is_none() && !self.warned_idle {
-                        self.warned_idle = true;
+                EventType::Disconnected if selected == Some(event.id) => {
+                    selected = select_first_gamepad(gilrs);
+                    if selected.is_none() && !warned_idle {
+                        warned_idle = true;
                         tracing::info!(target: "tool_joypad", "selected gamepad disconnected; staying idle");
                     }
                 }
@@ -74,22 +81,30 @@ impl ToolJoypad {
             }
         }
 
-        if self.selected.is_none() {
-            self.selected = select_first_gamepad(gilrs);
+        if selected.is_none() {
+            selected = select_first_gamepad(gilrs);
         }
 
-        let Some(selected) = self.selected else {
-            if !self.warned_idle {
-                self.warned_idle = true;
+        let Some(selected_id) = selected else {
+            if !warned_idle {
+                warned_idle = true;
                 tracing::info!(target: "tool_joypad", "no gamepad connected; staying idle");
             }
-            return Ok(());
+            continue;
         };
 
-        let command = command_from_gamepad(&gilrs.gamepad(selected));
-        self.publisher.publish_at(step.time(), command).await?;
-        Ok(())
+        let command = command_from_gamepad(&gilrs.gamepad(selected_id));
+        if let Err(error) = publisher.publish_at(now(), command).await {
+            tracing::warn!(target: "tool_joypad", error = %error, "publish failed");
+        }
     }
+}
+
+fn now() -> LogicalTime {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    LogicalTime::new(0, u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn select_first_gamepad(gilrs: &mut Gilrs) -> Option<GamepadId> {
