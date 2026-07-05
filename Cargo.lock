@@ -2460,8 +2460,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-simulator-webots"
-version = "0.1.4"
+name = "phoxal-simulator-webots-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tracing",
+ "webots-rs",
+]
+
+[[package]]
+name = "phoxal-simulator-webots-supervisor"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "phoxal",

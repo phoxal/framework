@@ -18,8 +18,6 @@ pub enum ArtifactKind {
     Service,
     Driver,
     Tool,
-    // Planned by the xtask command tree, but no workspace package maps here yet.
-    #[allow(dead_code)]
     Simulator,
 }
 
