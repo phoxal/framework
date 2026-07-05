@@ -11,6 +11,7 @@ use crate::bus::{
     Publisher, Querier, Subscribe, Subscriber, Topic,
 };
 use crate::model::v1::Robot;
+use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use crate::participant::spec::{
     DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, IsTool, ParticipantSpec,
 };
@@ -43,6 +44,7 @@ pub struct SetupContext<R: ParticipantSpec> {
     robot: Option<Arc<Robot>>,
     robot_root: Option<PathBuf>,
     component_instance: Option<String>,
+    managed_tasks: ManagedTasks,
     _runtime: PhantomData<fn() -> R>,
 }
 
@@ -60,6 +62,7 @@ impl<R: ParticipantSpec> SetupContext<R> {
             robot,
             robot_root,
             component_instance,
+            managed_tasks: ManagedTasks::default(),
             _runtime: PhantomData,
         }
     }
@@ -176,6 +179,59 @@ impl<R: ParticipantSpec> SetupContext<R> {
     /// residual: this is a not-by-accident gate, not a hard guarantee.
     pub fn owner_capability(&self) -> OwnerCap {
         self.owner_cap
+    }
+
+    /// Spawn a runner-owned, long-lived background task (sensor polling loop,
+    /// serial/USB reader, async IO pump) under the default
+    /// [`ManagedTaskPolicy::FaultOnExit`] policy.
+    ///
+    /// This is the framework-tracked alternative to a raw `tokio::spawn`:
+    /// **checked participants must not `tokio::spawn` long-lived work**, because
+    /// the runner cannot observe, cancel, or join a detached task. A managed
+    /// task, by contrast, is watched for the rest of the participant's
+    /// lifetime - if it panics or returns while `FaultOnExit` applies, the
+    /// runner treats that as a runtime fault (participant marked `Failed`,
+    /// see the presence heartbeat) exactly as it would a `#[step]` bug it
+    /// cannot recover from. At shutdown the runner cancels every managed task
+    /// as the shutdown sequence starts and joins it within the same grace
+    /// budget as `#[shutdown]` (see [`ShutdownContext::grace`]), before the bus
+    /// closes.
+    ///
+    /// `name` is a short diagnostic label (e.g. `"serial-reader"`) surfaced in
+    /// runner logs on fault or on an unjoined-at-shutdown report; it does not
+    /// need to be unique. Use [`Self::spawn_managed_with`] for setup-time work
+    /// that is expected to finish on its own ([`ManagedTaskPolicy::AllowExit`]).
+    pub fn spawn_managed<F>(&mut self, name: impl Into<String>, future: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.spawn_managed_with(name, ManagedTaskPolicy::FaultOnExit, future);
+    }
+
+    /// [`Self::spawn_managed`] with an explicit [`ManagedTaskPolicy`].
+    ///
+    /// Use [`ManagedTaskPolicy::AllowExit`] for setup-time-only work (a
+    /// background warm-up, a best-effort cache prime) whose completion should
+    /// never fault the participant; anything meant to run for the participant's
+    /// whole lifetime should keep the [`ManagedTaskPolicy::FaultOnExit`]
+    /// default from [`Self::spawn_managed`].
+    pub fn spawn_managed_with<F>(
+        &mut self,
+        name: impl Into<String>,
+        policy: ManagedTaskPolicy,
+        future: F,
+    ) where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.managed_tasks.spawn(name, policy, future);
+    }
+
+    /// Hand the managed-task registry accumulated during `#[setup]` to the
+    /// runner, which then owns watching/cancelling/joining them for the rest of
+    /// the participant's lifetime. Called exactly once, after `#[setup]`
+    /// returns.
+    pub(crate) fn take_managed_tasks(&mut self) -> ManagedTasks {
+        std::mem::take(&mut self.managed_tasks)
     }
 
     /// The underlying bus. Not on the default checked-participant surface (plan #00
