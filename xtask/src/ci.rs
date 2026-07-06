@@ -160,19 +160,19 @@ fn verify_release_plan_assets(
     let catalog_entries = catalog
         .entries
         .iter()
-        .map(|entry| (entry.artifact_id.as_str(), entry))
+        .map(|entry| (entry.package.as_str(), entry))
         .collect::<BTreeMap<_, _>>();
 
     for matrix in &plan.matrix.include {
         let artifact = workspace.official_artifact(&matrix.package)?;
         let output = package::read_packaged_output(artifact, package_dir, &matrix.target)?;
         let entry = catalog_entries
-            .get(matrix.artifact_id.as_str())
-            .with_context(|| format!("catalog missing {}", matrix.artifact_id))?;
+            .get(matrix.package.as_str())
+            .with_context(|| format!("catalog missing {}", matrix.package))?;
         if entry.version != matrix.version {
             bail!(
                 "{} catalog version {} did not match release-plan version {}",
-                matrix.artifact_id,
+                matrix.package,
                 entry.version,
                 matrix.version
             );
@@ -180,7 +180,7 @@ fn verify_release_plan_assets(
         let asset = entry.release_assets.get(&matrix.target).with_context(|| {
             format!(
                 "{} catalog entry is missing release asset for {}",
-                matrix.artifact_id, matrix.target
+                matrix.package, matrix.target
             )
         })?;
         if asset.asset != output.tarball_name
@@ -191,7 +191,7 @@ fn verify_release_plan_assets(
         {
             bail!(
                 "{} {} catalog asset facts do not match packaged outputs",
-                matrix.artifact_id,
+                matrix.package,
                 matrix.target
             );
         }
@@ -293,7 +293,6 @@ struct CompatCause {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct AffectedTarget {
-    artifact_id: String,
     package: String,
     version: String,
     target: String,
@@ -323,7 +322,6 @@ fn build_compat_report(catalog: &CatalogRevision, audit: Vec<AuditFinding>) -> C
         for (target, status) in &entry.status {
             if *status != ArtifactStatus::Released {
                 affected.insert(AffectedTarget {
-                    artifact_id: entry.artifact_id.clone(),
                     package: entry.package.clone(),
                     version: entry.version.clone(),
                     target: target.clone(),
@@ -337,7 +335,6 @@ fn build_compat_report(catalog: &CatalogRevision, audit: Vec<AuditFinding>) -> C
         for entry in &catalog.entries {
             for target in &entry.target_triples {
                 affected.insert(AffectedTarget {
-                    artifact_id: entry.artifact_id.clone(),
                     package: entry.package.clone(),
                     version: entry.version.clone(),
                     target: target.clone(),
@@ -452,8 +449,8 @@ fn write_report_markdown(path: &std::path::Path, report: &CompatReport) -> Resul
         for target in &report.affected_targets {
             writeln!(
                 file,
-                "- {} {} {} on {} - {}",
-                target.package, target.artifact_id, target.version, target.target, target.reason
+                "- {} {} on {} - {}",
+                target.package, target.version, target.target, target.reason
             )?;
         }
         writeln!(file)?;

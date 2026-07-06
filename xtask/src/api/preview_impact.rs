@@ -44,9 +44,8 @@ pub(crate) struct GenerationImpact {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct AffectedArtifact {
-    pub artifact_id: String,
-    pub kind: ArtifactKind,
     pub package: String,
+    pub kind: ArtifactKind,
     pub target_version: Option<String>,
     pub target_generation: Option<String>,
     pub target_triples: Vec<String>,
@@ -148,9 +147,9 @@ fn affected_artifacts(
 
     affected
         .into_iter()
-        .map(|(artifact_id, source_entry)| {
-            let target_entry = latest_generation_entry(catalog, &artifact_id, target_generation);
-            affected_artifact(artifact_id, source_entry, target_entry, target_generation)
+        .map(|(package, source_entry)| {
+            let target_entry = latest_generation_entry(catalog, &package, target_generation);
+            affected_artifact(package, source_entry, target_entry, target_generation)
         })
         .collect()
 }
@@ -159,28 +158,28 @@ fn insert_latest_entry<'a>(
     entries: &mut BTreeMap<String, &'a CatalogEntry>,
     entry: &'a CatalogEntry,
 ) {
-    match entries.get(&entry.artifact_id) {
+    match entries.get(&entry.package) {
         Some(existing) if existing.version >= entry.version => {}
         _ => {
-            entries.insert(entry.artifact_id.clone(), entry);
+            entries.insert(entry.package.clone(), entry);
         }
     }
 }
 
 fn latest_generation_entry<'a>(
     catalog: &'a CatalogRevision,
-    artifact_id: &str,
+    package: &str,
     generation: &str,
 ) -> Option<&'a CatalogEntry> {
     catalog
         .entries
         .iter()
-        .filter(|entry| entry.artifact_id == artifact_id && entry.api_generation == generation)
+        .filter(|entry| entry.package == package && entry.api_generation == generation)
         .max_by(|left, right| left.version.cmp(&right.version))
 }
 
 fn affected_artifact(
-    artifact_id: String,
+    package: String,
     source_entry: &CatalogEntry,
     target_entry: Option<&CatalogEntry>,
     expected_generation: &str,
@@ -195,9 +194,8 @@ fn affected_artifact(
     };
 
     AffectedArtifact {
-        artifact_id,
+        package,
         kind: entry.kind,
-        package: entry.package.clone(),
         target_version: target_entry.map(|entry| entry.version.clone()),
         target_generation: target_entry.map(|entry| entry.api_generation.clone()),
         target_triples: target_entry
@@ -327,8 +325,8 @@ pub(crate) fn human_report(report: &PreviewImpactReport) -> String {
                 .map(|reason| format!(" - {reason}"))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "- {} ({}) {}{}\n",
-                artifact.artifact_id, artifact.package, status, reason_suffix
+                "- {} {}{}\n",
+                artifact.package, status, reason_suffix
             ));
             for triple in &artifact.target_triples {
                 let status = artifact
@@ -369,7 +367,7 @@ pub(crate) fn ensure_ready_to_promote(impact: &GenerationImpact) -> Result<()> {
         .filter(|artifact| !artifact.complete)
         .map(|artifact| {
             let reason = artifact.reason.as_deref().unwrap_or("incomplete");
-            format!("{} ({reason})", artifact.artifact_id)
+            format!("{} ({reason})", artifact.package)
         })
         .collect::<Vec<_>>();
 
@@ -411,7 +409,7 @@ mod tests {
     }
 
     fn catalog_entry(
-        artifact_id: &str,
+        package: &str,
         generation: &str,
         schema_id: &str,
         status: ArtifactStatus,
@@ -421,9 +419,8 @@ mod tests {
         let mut statuses = BTreeMap::new();
         statuses.insert("x86_64-unknown-linux-gnu".to_string(), status);
         CatalogEntry {
-            artifact_id: artifact_id.to_string(),
+            package: package.to_string(),
             kind: ArtifactKind::Service,
-            package: format!("phoxal-{artifact_id}"),
             version: "0.2.0".to_string(),
             api_generation: generation.to_string(),
             contract_uses: vec![ContractUse {
@@ -505,13 +502,13 @@ mod tests {
         ];
         let catalog = catalog(vec![
             catalog_entry(
-                "service-battery",
+                "phoxal/service-battery",
                 "y2026_1",
                 "1111111111111111",
                 ArtifactStatus::Released,
             ),
             catalog_entry(
-                "service-battery",
+                "phoxal/service-battery",
                 "y2026_2",
                 "2222222222222222",
                 ArtifactStatus::Pending,

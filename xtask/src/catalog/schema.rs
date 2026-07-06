@@ -4,10 +4,14 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::workspace::ArtifactKind;
+use crate::workspace::{ArtifactKind, TARGET_INDEPENDENT_SCOPE};
 
-pub(crate) const CATALOG_SCHEMA: &str = "phoxal.artifact-catalog/v0";
-pub(crate) const CATALOG_FORMAT_VERSION: u32 = 1;
+/// Phase 7 bumps this in lockstep with the collapse from `artifact_id + package`
+/// to a single canonical `package` (docs #21): pre-Phase-7 catalog revisions are
+/// abandoned outright, not migrated, so old and new catalogs must never be
+/// silently mixed. `CatalogRevision::verify` rejects any other value.
+pub(crate) const CATALOG_SCHEMA: &str = "phoxal.artifact-catalog/v1";
+pub(crate) const CATALOG_FORMAT_VERSION: u32 = 2;
 pub(crate) const CHECKSUM_CANONICALIZATION: &str = "json-v1-empty-revision-and-integrity-sha256";
 
 /// One immutable catalog revision.
@@ -55,12 +59,16 @@ pub(crate) struct CatalogSignature {
     pub signature: String,
 }
 
+/// One catalog entry. `package` (the provider-qualified `phoxal/<name>` identity)
+/// is the sole canonical identity Phase 7 exposes; there is no public
+/// `artifact_id` alongside it. Internal code that wants provider, component id,
+/// or target scope derives them from `package`/`kind` rather than carrying a
+/// second public name.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CatalogEntry {
-    pub artifact_id: String,
-    pub kind: ArtifactKind,
     pub package: String,
+    pub kind: ArtifactKind,
     pub version: String,
     pub api_generation: String,
     pub contract_uses: Vec<ContractUse>,
@@ -236,45 +244,62 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
 
     let mut seen = BTreeSet::new();
     for entry in entries {
-        if !seen.insert((&entry.artifact_id, &entry.version)) {
+        if !seen.insert((&entry.package, &entry.version)) {
             bail!(
                 "catalog contains duplicate entry for {} v{}",
-                entry.artifact_id,
+                entry.package,
                 entry.version
             );
         }
-        if entry.contract_uses.is_empty() && entry.kind != ArtifactKind::Tool {
-            bail!("{} contract_uses must not be empty", entry.artifact_id);
+        // `component_assets` bundles are target-independent files, not per-triple
+        // binaries: they carry no runtime contracts (docs #21), so an empty
+        // `contract_uses` is expected rather than a validation gap, same as a
+        // privileged `Tool`.
+        if entry.contract_uses.is_empty()
+            && entry.kind != ArtifactKind::Tool
+            && entry.kind != ArtifactKind::ComponentAssets
+        {
+            bail!("{} contract_uses must not be empty", entry.package);
         }
         for contract in &entry.contract_uses {
             if contract.family.trim().is_empty() {
-                bail!("{} has an empty contract family", entry.artifact_id);
+                bail!("{} has an empty contract family", entry.package);
             }
             if contract.topic_template.trim().is_empty() {
-                bail!("{} has an empty topic_template", entry.artifact_id);
+                bail!("{} has an empty topic_template", entry.package);
             }
             if !is_schema_id(&contract.schema_id) {
                 bail!(
                     "{} has invalid schema_id '{}'",
-                    entry.artifact_id,
+                    entry.package,
                     contract.schema_id
                 );
             }
         }
         if entry.target_triples.is_empty() {
-            bail!("{} target_triples must not be empty", entry.artifact_id);
+            bail!("{} target_triples must not be empty", entry.package);
+        }
+        if entry.kind == ArtifactKind::ComponentAssets {
+            validate_component_assets_scope(entry)?;
+        } else if entry
+            .target_triples
+            .iter()
+            .any(|triple| triple == TARGET_INDEPENDENT_SCOPE)
+        {
+            bail!(
+                "{} is not a component_assets package but declares the target-independent scope; \
+                 do not pretend a per-architecture binary is target-independent",
+                entry.package
+            );
         }
         for triple in &entry.target_triples {
             let status = entry.status.get(triple).with_context(|| {
-                format!(
-                    "{} is missing status for target {triple}",
-                    entry.artifact_id
-                )
+                format!("{} is missing status for target {triple}", entry.package)
             })?;
             if *status == ArtifactStatus::Released && !entry.release_assets.contains_key(triple) {
                 bail!(
                     "{} target {triple} is released but has no release asset",
-                    entry.artifact_id
+                    entry.package
                 );
             }
         }
@@ -282,7 +307,7 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
             if !entry.target_triples.contains(triple) {
                 bail!(
                     "{} release asset target {triple} is not in target_triples",
-                    entry.artifact_id
+                    entry.package
                 );
             }
         }
@@ -290,21 +315,36 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
             if !is_sha256(&asset.sha256) {
                 bail!(
                     "{} release asset for {triple} has invalid sha256",
-                    entry.artifact_id
+                    entry.package
                 );
             }
             if !is_sha256(&asset.metadata.emit_apis_sha256) {
                 bail!(
                     "{} emit-apis metadata for {triple} has invalid sha256",
-                    entry.artifact_id
+                    entry.package
                 );
             }
         }
         if entry.channels.is_empty() {
-            bail!("{} channels must not be empty", entry.artifact_id);
+            bail!("{} channels must not be empty", entry.package);
         }
     }
 
+    Ok(())
+}
+
+/// The `component_assets` carve-out (docs #21): a single target-independent
+/// scope token instead of a per-triple binary matrix. Asset bundles are not
+/// per-architecture binaries, so this rejects anything that looks like one.
+fn validate_component_assets_scope(entry: &CatalogEntry) -> Result<()> {
+    if entry.target_triples != [TARGET_INDEPENDENT_SCOPE.to_string()] {
+        bail!(
+            "{} is a component_assets package and must declare exactly the \
+             target-independent scope '{TARGET_INDEPENDENT_SCOPE}', not a per-triple matrix; got {:?}",
+            entry.package,
+            entry.target_triples
+        );
+    }
     Ok(())
 }
 
@@ -327,25 +367,30 @@ mod tests {
     use super::*;
 
     fn entry(kind: ArtifactKind, contract_uses: Vec<ContractUse>) -> CatalogEntry {
-        let artifact_id = match kind {
-            ArtifactKind::Service => "frame",
-            ArtifactKind::Driver => "bno085",
-            ArtifactKind::Tool => "tool-router",
-            ArtifactKind::Simulator => "sim",
+        let package = match kind {
+            ArtifactKind::Service => "phoxal/service-frame",
+            ArtifactKind::ComponentAssets => "phoxal/component-bno085-assets",
+            ArtifactKind::ComponentDriver => "phoxal/component-bno085-driver",
+            ArtifactKind::Tool => "phoxal/tool-router",
+            ArtifactKind::Simulator => "phoxal/simulator-sim",
         }
         .to_string();
         let mut channels = BTreeMap::new();
         channels.insert(Channel::Stable, "0.1.0".to_string());
+        let target = if kind == ArtifactKind::ComponentAssets {
+            TARGET_INDEPENDENT_SCOPE.to_string()
+        } else {
+            "aarch64-apple-darwin".to_string()
+        };
         let mut status = BTreeMap::new();
-        status.insert("aarch64-apple-darwin".to_string(), ArtifactStatus::Pending);
+        status.insert(target.clone(), ArtifactStatus::Pending);
         CatalogEntry {
-            artifact_id,
+            package,
             kind,
-            package: "package".to_string(),
             version: "0.1.0".to_string(),
             api_generation: "y2026_1".to_string(),
             contract_uses,
-            target_triples: vec!["aarch64-apple-darwin".to_string()],
+            target_triples: vec![target],
             release_assets: BTreeMap::new(),
             launch_facts: LaunchFacts {
                 participant_kind: kind.emit_apis_kind().to_string(),
@@ -396,5 +441,40 @@ mod tests {
             .expect("privileged setup-only tools can have no graph contracts");
         validate_entries(&[entry(ArtifactKind::Tool, vec![contract()])])
             .expect("tools with graph contracts still validate");
+    }
+
+    #[test]
+    fn component_assets_may_have_empty_contract_uses_and_target_independent_scope() {
+        validate_entries(&[entry(ArtifactKind::ComponentAssets, Vec::new())])
+            .expect("component_assets bundles carry no runtime contracts");
+    }
+
+    #[test]
+    fn component_driver_still_requires_contract_uses_and_real_triples() {
+        let err = validate_entries(&[entry(ArtifactKind::ComponentDriver, Vec::new())])
+            .expect_err("component drivers are checked participants like services");
+        assert!(err.to_string().contains("contract_uses"));
+    }
+
+    #[test]
+    fn non_assets_kind_rejects_target_independent_scope() {
+        let mut driver_entry = entry(ArtifactKind::ComponentDriver, vec![contract()]);
+        driver_entry.target_triples = vec![TARGET_INDEPENDENT_SCOPE.to_string()];
+        driver_entry.status.insert(
+            TARGET_INDEPENDENT_SCOPE.to_string(),
+            ArtifactStatus::Pending,
+        );
+        let err = validate_entries(&[driver_entry]).unwrap_err();
+        assert!(err.to_string().contains("target-independent scope"));
+    }
+
+    #[test]
+    fn component_assets_rejects_a_per_triple_matrix() {
+        let mut assets_entry = entry(ArtifactKind::ComponentAssets, Vec::new());
+        assets_entry.target_triples = vec!["aarch64-apple-darwin".to_string()];
+        assets_entry.status =
+            BTreeMap::from([("aarch64-apple-darwin".to_string(), ArtifactStatus::Pending)]);
+        let err = validate_entries(&[assets_entry]).unwrap_err();
+        assert!(err.to_string().contains("target-independent scope"));
     }
 }

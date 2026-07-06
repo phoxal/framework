@@ -12,7 +12,9 @@ use crate::catalog::schema::{
 };
 use crate::release::package::{self, EmitApisMetadata, PackagedOutput};
 use crate::release::plan::{ReleasePlan, load_release_plan};
-use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, require_nonempty_artifacts};
+use crate::workspace::{
+    ArtifactKind, OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
+};
 
 const DEFAULT_CATALOG_OUT: &str = "target/xtask/catalog/phoxal-artifact-catalog.json";
 const DEFAULT_PACKAGE_DIR: &str = "target/xtask/release";
@@ -53,9 +55,61 @@ pub(crate) struct GenerateOptions {
 
 #[derive(Debug)]
 struct ArtifactProjection {
-    metadata: EmitApisMetadata,
+    metadata: ProjectionMetadata,
     releases: BTreeMap<String, ReleaseProjection>,
     status: BTreeMap<String, ArtifactStatus>,
+}
+
+/// The fields a catalog entry needs from a package's projection, sourced either
+/// from a real binary's `emit-apis` output (services/tools/simulators/component
+/// drivers) or synthesized for a `ComponentAssets` bundle, which has no runtime
+/// binary at all (docs #21: assets carry no contracts and are target-independent).
+#[derive(Debug)]
+enum ProjectionMetadata {
+    EmitApis(EmitApisMetadata),
+    ComponentAssets { api_generation: String },
+}
+
+impl ProjectionMetadata {
+    fn api_generation(&self) -> &str {
+        match self {
+            ProjectionMetadata::EmitApis(metadata) => &metadata.api_version,
+            ProjectionMetadata::ComponentAssets { api_generation } => api_generation,
+        }
+    }
+
+    fn participant_kind(&self, kind: ArtifactKind) -> String {
+        match self {
+            ProjectionMetadata::EmitApis(metadata) => metadata.artifact.kind.clone(),
+            ProjectionMetadata::ComponentAssets { .. } => kind.emit_apis_kind().to_string(),
+        }
+    }
+
+    fn participant_class(&self) -> Result<String> {
+        match self {
+            ProjectionMetadata::EmitApis(metadata) => metadata
+                .participant_class
+                .clone()
+                .context("validated emit-apis metadata lost participant_class"),
+            // Component assets are files, not a launched participant: they are
+            // never "checked" or "privileged" bus participants.
+            ProjectionMetadata::ComponentAssets { .. } => Ok("none".to_string()),
+        }
+    }
+
+    fn framework_version(&self) -> Option<String> {
+        match self {
+            ProjectionMetadata::EmitApis(metadata) => Some(metadata.framework.version.clone()),
+            ProjectionMetadata::ComponentAssets { .. } => None,
+        }
+    }
+
+    fn required_contracts(&self) -> &[crate::release::package::Contract] {
+        match self {
+            ProjectionMetadata::EmitApis(metadata) => &metadata.required_contracts,
+            ProjectionMetadata::ComponentAssets { .. } => &[],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -101,10 +155,18 @@ pub fn run(args: Args) -> Result<()> {
     if mode == InputMode::PackageOutputs && release_plan.is_none() && previous_catalog.is_none() {
         fs::create_dir_all(&package_dir)
             .with_context(|| format!("failed to create {}", package_dir.display()))?;
+        // `ComponentAssets` packages have no Cargo crate/binary to build; only
+        // crate-backed artifacts go through `cargo auditable build` + tarball
+        // packaging here.
+        let crate_backed = artifacts
+            .iter()
+            .filter(|artifact| artifact.kind.has_crate())
+            .cloned()
+            .collect::<Vec<_>>();
         for target_triple in &target_triples {
             package::package_artifacts(
                 &workspace,
-                artifacts,
+                &crate_backed,
                 &package_dir,
                 &host_triple,
                 target_triple,
@@ -180,7 +242,7 @@ pub(crate) fn build_catalog_revision_from_artifacts(
     options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<CatalogRevision> {
-    let projections = projections(root, artifacts, options, host_triple)?;
+    let projections = projections(root, artifacts, api_generations, options, host_triple)?;
     build_revision_from_projections(
         artifacts,
         api_generations,
@@ -193,6 +255,7 @@ pub(crate) fn build_catalog_revision_from_artifacts(
 fn projections(
     root: &Path,
     artifacts: &[OfficialArtifact],
+    api_generations: &[ApiGeneration],
     options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<BTreeMap<String, ArtifactProjection>> {
@@ -204,21 +267,59 @@ fn projections(
                 !plan
                     .artifacts
                     .iter()
-                    .any(|item| item.package == artifact.package_name)
+                    .any(|item| item.package == artifact.package)
             })
         {
             continue;
         }
-        let projection = match options.mode {
-            InputMode::PackageOutputs => {
-                let target_triples = target_triples_for_artifact(artifact, options, host_triple)?;
-                projection_from_package_outputs(artifact, &options.package_dir, &target_triples)?
+        let projection = if artifact.kind == ArtifactKind::ComponentAssets {
+            projection_from_component_assets(api_generations)?
+        } else {
+            match options.mode {
+                InputMode::PackageOutputs => {
+                    let target_triples =
+                        target_triples_for_artifact(artifact, options, host_triple)?;
+                    projection_from_package_outputs(
+                        artifact,
+                        &options.package_dir,
+                        &target_triples,
+                    )?
+                }
+                InputMode::MetadataOnly => projection_from_emit_apis(root, artifact)?,
             }
-            InputMode::MetadataOnly => projection_from_emit_apis(root, artifact)?,
         };
-        projections.insert(artifact.package_name.clone(), projection);
+        projections.insert(artifact.package.clone(), projection);
     }
     Ok(projections)
+}
+
+/// `ComponentAssets` bundles have no runtime binary to run `emit-apis` on, so
+/// there is nothing to package or execute; they are synthesized as
+/// target-independent, contract-free entries pinned to the latest stable API
+/// generation (docs #21: assets carry no contracts and are not per-architecture
+/// binaries).
+fn projection_from_component_assets(
+    api_generations: &[ApiGeneration],
+) -> Result<ArtifactProjection> {
+    let latest_stable = api_generations
+        .iter()
+        .rev()
+        .find(|generation| generation.channel == GenerationChannel::Stable)
+        .with_context(
+            || "no stable API generation is declared to pin component_assets packages to",
+        )?;
+    Ok(ArtifactProjection {
+        metadata: ProjectionMetadata::ComponentAssets {
+            api_generation: latest_stable.name.clone(),
+        },
+        releases: BTreeMap::new(),
+        // Left empty, same as a crate-backed metadata-only projection: neither
+        // mode packages a real release asset for the assets bundle, so
+        // `build_revision_from_projections` fills the target-independent scope
+        // in with `Pending` below, and package-output mode's asset packaging
+        // (once implemented) records `Released` with a real release asset.
+        status: BTreeMap::new(),
+    })
 }
 
 fn projection_from_package_outputs(
@@ -228,7 +329,7 @@ fn projection_from_package_outputs(
 ) -> Result<ArtifactProjection> {
     let first_target = target_triples
         .first()
-        .with_context(|| format!("{} has no target triples", artifact.package_name))?;
+        .with_context(|| format!("{} has no target triples", artifact.package))?;
     let first = package::read_packaged_output(artifact, package_dir, first_target)?;
     let mut releases = BTreeMap::new();
     let mut status = BTreeMap::new();
@@ -240,7 +341,7 @@ fn projection_from_package_outputs(
         if output.emit_apis != first.emit_apis {
             bail!(
                 "{} emit-apis metadata differs between {} and {}; cross-target metadata must be target-independent",
-                artifact.package_name,
+                artifact.package,
                 first_target,
                 target
             );
@@ -250,7 +351,7 @@ fn projection_from_package_outputs(
     }
 
     Ok(ArtifactProjection {
-        metadata: first.emit_apis,
+        metadata: ProjectionMetadata::EmitApis(first.emit_apis),
         releases,
         status,
     })
@@ -262,9 +363,9 @@ fn projection_from_emit_apis(
 ) -> Result<ArtifactProjection> {
     let stdout = package::emit_apis_from_cargo_run(root, artifact)?;
     let parsed = package::parse_emit_apis_json(&stdout, &artifact.id, artifact.kind)
-        .with_context(|| format!("invalid emit-apis metadata from {}", artifact.package_name))?;
+        .with_context(|| format!("invalid emit-apis metadata from {}", artifact.package))?;
     Ok(ArtifactProjection {
-        metadata: parsed,
+        metadata: ProjectionMetadata::EmitApis(parsed),
         releases: BTreeMap::new(),
         status: BTreeMap::new(),
     })
@@ -291,36 +392,33 @@ fn build_revision_from_projections(
     let previous_entries = options
         .previous_catalog
         .as_ref()
-        .map(previous_entries_by_artifact_id)
+        .map(previous_entries_by_package)
         .transpose()?;
     let mut entries = Vec::with_capacity(artifacts.len());
 
     for artifact in artifacts {
-        let artifact_id = catalog_artifact_id(artifact.kind, &artifact.id);
-        let Some(projection) = projections.get(&artifact.package_name) else {
+        let Some(projection) = projections.get(&artifact.package) else {
             if let Some(previous_entries) = &previous_entries {
-                if let Some(previous) = previous_entries.get(&artifact_id) {
-                    if previous.package == artifact.package_name
-                        && previous.version == artifact.version
-                    {
+                if let Some(previous) = previous_entries.get(&artifact.package) {
+                    if previous.version == artifact.version {
                         entries.push((*previous).clone());
                         continue;
                     }
                 }
             }
-            bail!("missing projection for {}", artifact.package_name);
+            bail!("missing projection for {}", artifact.package);
         };
         let metadata = &projection.metadata;
-        let api_generation = metadata.api_version.clone();
+        let api_generation = metadata.api_generation().to_string();
         let channel = channels_by_generation
             .get(&api_generation)
             .with_context(|| {
                 format!(
                     "{} emitted unknown api_generation '{}'",
-                    artifact.package_name, api_generation
+                    artifact.package, api_generation
                 )
             })?;
-        let contract_uses = contract_uses(metadata, &artifact.package_name)?;
+        let contract_uses = contract_uses(metadata, &artifact.package)?;
         let changed_contracts = changed_contracts(
             &api_generation,
             &contract_uses,
@@ -356,22 +454,18 @@ fn build_revision_from_projections(
         channels.insert(*channel, artifact.version.clone());
 
         entries.push(CatalogEntry {
-            artifact_id,
+            package: artifact.package.clone(),
             kind: artifact.kind,
-            package: artifact.package_name.clone(),
             version: artifact.version.clone(),
             api_generation,
             contract_uses,
             target_triples,
             release_assets,
             launch_facts: LaunchFacts {
-                participant_kind: metadata.artifact.kind.clone(),
-                participant_class: metadata
-                    .participant_class
-                    .clone()
-                    .context("validated emit-apis metadata lost participant_class")?,
+                participant_kind: metadata.participant_kind(artifact.kind),
+                participant_class: metadata.participant_class()?,
                 router: RouterFacts {
-                    needs_zenoh_router: true,
+                    needs_zenoh_router: artifact.kind != ArtifactKind::ComponentAssets,
                 },
                 systemd: SystemdFacts {
                     groups: Vec::new(),
@@ -380,7 +474,7 @@ fn build_revision_from_projections(
                 },
             },
             engine_versions: EngineVersions {
-                phoxal: Some(metadata.framework.version.clone()),
+                phoxal: metadata.framework_version(),
                 phoxal_bus: None,
                 zenoh: None,
             },
@@ -390,7 +484,7 @@ fn build_revision_from_projections(
         });
     }
 
-    entries.sort_by(|left, right| left.artifact_id.cmp(&right.artifact_id));
+    entries.sort_by(|left, right| left.package.cmp(&right.package));
 
     CatalogRevision::new(provenance(options.mode), entries).finalize()
 }
@@ -433,11 +527,18 @@ fn target_triples_for_artifact(
     options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<Vec<String>> {
+    // `component_assets` bundles are always the single target-independent scope
+    // (docs #21): never a real triple, never subject to the release-plan/host
+    // target selection that follows.
+    if artifact.kind == ArtifactKind::ComponentAssets {
+        return Ok(vec![TARGET_INDEPENDENT_SCOPE.to_string()]);
+    }
+
     if let Some(plan) = &options.release_plan {
         if let Some(planned) = plan
             .artifacts
             .iter()
-            .find(|planned| planned.package == artifact.package_name)
+            .find(|planned| planned.package == artifact.package)
         {
             return Ok(planned.target_triples.clone());
         }
@@ -460,7 +561,7 @@ fn target_triples_for_artifact(
     if supported.is_empty() {
         bail!(
             "{} has no supported targets in requested target set",
-            artifact.package_name
+            artifact.package
         );
     }
     supported.sort();
@@ -478,15 +579,15 @@ fn release_projection(output: &PackagedOutput) -> ReleaseProjection {
     }
 }
 
-fn previous_entries_by_artifact_id(
+fn previous_entries_by_package(
     catalog: &CatalogRevision,
 ) -> Result<BTreeMap<String, &CatalogEntry>> {
     let mut entries = BTreeMap::new();
     for entry in &catalog.entries {
-        if entries.insert(entry.artifact_id.clone(), entry).is_some() {
+        if entries.insert(entry.package.clone(), entry).is_some() {
             bail!(
-                "previous catalog contains duplicate artifact_id {}",
-                entry.artifact_id
+                "previous catalog contains duplicate package {}",
+                entry.package
             );
         }
     }
@@ -503,7 +604,7 @@ fn schemas_by_catalog_entries(
             match generation_schemas.get(&contract.family) {
                 Some(existing) if existing != &contract.schema_id => bail!(
                     "{} reports schema_id {} for {}, but generation {} already has {}",
-                    entry.artifact_id,
+                    entry.package,
                     contract.schema_id,
                     contract.family,
                     entry.api_generation,
@@ -546,8 +647,8 @@ fn schemas_by_generation_from_projections(
     projections: &BTreeMap<String, ArtifactProjection>,
 ) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
     let mut schemas = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for (package_name, projection) in projections {
-        for contract in &projection.metadata.required_contracts {
+    for (package, projection) in projections {
+        for contract in projection.metadata.required_contracts() {
             let family = contract
                 .family
                 .as_ref()
@@ -563,7 +664,7 @@ fn schemas_by_generation_from_projections(
             let generation_schemas = schemas.entry(generation.clone()).or_default();
             match generation_schemas.get(family) {
                 Some(existing) if existing != schema_id => bail!(
-                    "{package_name} reports schema_id {} for {family}, but generation {generation} already has {}",
+                    "{package} reports schema_id {} for {family}, but generation {generation} already has {}",
                     schema_id,
                     existing
                 ),
@@ -577,26 +678,27 @@ fn schemas_by_generation_from_projections(
     Ok(schemas)
 }
 
-fn contract_uses(metadata: &EmitApisMetadata, package_name: &str) -> Result<Vec<ContractUse>> {
-    let mut uses = Vec::with_capacity(metadata.required_contracts.len());
-    for contract in &metadata.required_contracts {
+fn contract_uses(metadata: &ProjectionMetadata, package: &str) -> Result<Vec<ContractUse>> {
+    let required_contracts = metadata.required_contracts();
+    let mut uses = Vec::with_capacity(required_contracts.len());
+    for contract in required_contracts {
         uses.push(ContractUse {
             family: contract
                 .family
                 .clone()
-                .with_context(|| format!("{package_name} contract missing family"))?,
+                .with_context(|| format!("{package} contract missing family"))?,
             topic_template: contract
                 .topic
                 .clone()
-                .with_context(|| format!("{package_name} contract missing topic"))?,
+                .with_context(|| format!("{package} contract missing topic"))?,
             direction: contract
                 .direction
                 .clone()
-                .with_context(|| format!("{package_name} contract missing direction"))?,
+                .with_context(|| format!("{package} contract missing direction"))?,
             schema_id: contract
                 .schema_id
                 .clone()
-                .with_context(|| format!("{package_name} contract missing schema_id"))?,
+                .with_context(|| format!("{package} contract missing schema_id"))?,
         });
     }
     uses.sort();
@@ -645,26 +747,18 @@ fn changed_contracts(
         .collect()
 }
 
-pub(crate) fn catalog_artifact_id(kind: ArtifactKind, id: &str) -> String {
-    match kind {
-        ArtifactKind::Service => format!("service-{id}"),
-        ArtifactKind::Driver => format!("driver-{id}"),
-        ArtifactKind::Tool => format!("tool-{id}"),
-        ArtifactKind::Simulator => format!("simulator-{id}"),
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
 
     pub(crate) fn fixture_catalog() -> Result<CatalogRevision> {
         let artifact = OfficialArtifact {
-            package_name: "phoxal-service-drive".to_string(),
+            package: "phoxal/service-drive".to_string(),
+            package_name: Some("phoxal-service-drive".to_string()),
             kind: ArtifactKind::Service,
             version: "0.1.0".to_string(),
             crate_dir: PathBuf::new(),
-            bin_name: "phoxal-service-drive".to_string(),
+            bin_name: Some("phoxal-service-drive".to_string()),
             id: "drive".to_string(),
             metadata: Default::default(),
         };
@@ -692,9 +786,9 @@ pub(crate) mod tests_support {
         )?;
         let mut projections = BTreeMap::new();
         projections.insert(
-            artifact.package_name.clone(),
+            artifact.package.clone(),
             ArtifactProjection {
-                metadata,
+                metadata: ProjectionMetadata::EmitApis(metadata),
                 releases: BTreeMap::new(),
                 status: BTreeMap::new(),
             },
@@ -735,11 +829,12 @@ mod tests {
         version: &str,
     ) -> OfficialArtifact {
         OfficialArtifact {
-            package_name: package_name.to_string(),
+            package: crate::workspace::package_identity(kind, id),
+            package_name: Some(package_name.to_string()),
             kind,
             version: version.to_string(),
             crate_dir: PathBuf::new(),
-            bin_name: package_name.to_string(),
+            bin_name: Some(package_name.to_string()),
             id: id.to_string(),
             metadata: Default::default(),
         }
@@ -860,7 +955,7 @@ mod tests {
 
         let catalog = build_from_outputs(&[service], temp.path())?;
         let entry = &catalog.entries[0];
-        assert_eq!(entry.artifact_id, "service-drive");
+        assert_eq!(entry.package, "phoxal/service-drive");
         assert_eq!(
             entry.status["x86_64-unknown-linux-gnu"],
             ArtifactStatus::Released
@@ -884,9 +979,9 @@ mod tests {
             "0.1.0",
         );
         let driver = artifact(
-            "phoxal-driver-ddsm115",
+            "phoxal-component-ddsm115-driver",
             "ddsm115",
-            ArtifactKind::Driver,
+            ArtifactKind::ComponentDriver,
             "0.1.0",
         );
         write_packaged_fixture(

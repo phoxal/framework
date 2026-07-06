@@ -68,7 +68,7 @@ pub fn run(args: Args) -> Result<()> {
         if args.dry_run {
             println!(
                 "would package {} v{} for {} using cargo auditable build",
-                artifact.package_name, artifact.version, target_triple
+                artifact.package, artifact.version, target_triple
             );
             continue;
         }
@@ -79,10 +79,10 @@ pub fn run(args: Args) -> Result<()> {
             &host_triple,
             &target_triple,
         )
-        .with_context(|| format!("failed to package {}", artifact.package_name))?;
+        .with_context(|| format!("failed to package {}", artifact.package))?;
         println!(
             "packaged {} v{} for {} -> {}, {}, {}",
-            artifact.package_name,
+            artifact.package,
             artifact.version,
             target_triple,
             packaged.tarball.display(),
@@ -104,14 +104,23 @@ pub(crate) fn workspace_relative_out_dir(workspace: &Workspace, out_dir: &Path) 
 
 fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialArtifact>> {
     if args.all {
-        return Ok(workspace.official_artifacts().to_vec());
+        // `component_assets` packages have no Cargo crate/binary to build or
+        // package into a release tarball.
+        return Ok(workspace
+            .official_artifacts()
+            .iter()
+            .filter(|artifact| artifact.kind.has_crate())
+            .cloned()
+            .collect());
     }
 
     let package_name = args
         .package
         .as_deref()
         .context("package is required unless --all is present")?;
-    Ok(vec![workspace.official_artifact(package_name)?.clone()])
+    let artifact = workspace.official_artifact(package_name)?;
+    artifact.require_package_name()?;
+    Ok(vec![artifact.clone()])
 }
 
 pub(crate) fn package_artifacts(
@@ -124,8 +133,8 @@ pub(crate) fn package_artifacts(
     let mut packaged = BTreeMap::new();
     for artifact in artifacts {
         let output = package_artifact(workspace, artifact, out_dir, host_triple, target_triple)
-            .with_context(|| format!("failed to package {}", artifact.package_name))?;
-        packaged.insert(artifact.package_name.clone(), output);
+            .with_context(|| format!("failed to package {}", artifact.package))?;
+        packaged.insert(artifact.package.clone(), output);
     }
     Ok(packaged)
 }
@@ -137,14 +146,15 @@ pub(crate) fn package_artifact(
     host_triple: &str,
     target_triple: &str,
 ) -> Result<PackagedArtifact> {
+    artifact.require_package_name()?;
     validate_supported_target(artifact, target_triple)?;
     build_target_artifact(workspace.root(), artifact, target_triple)?;
-    let binary_path = target_binary_path(workspace, artifact, target_triple);
+    let binary_path = target_binary_path(workspace, artifact, target_triple)?;
     let emit_binary_path = if target_triple == host_triple {
         binary_path.clone()
     } else {
         build_host_artifact(workspace.root(), artifact)?;
-        host_binary_path(workspace, artifact)
+        host_binary_path(workspace, artifact)?
     };
     let emit_stdout = run_emit_apis(&emit_binary_path)?;
     parse_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
@@ -154,7 +164,7 @@ pub(crate) fn package_artifact(
     let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
     let metadata = out_dir.join(format!("{stem}.emit-apis.json"));
 
-    write_tar_zst(&tarball, &binary_path, &artifact.bin_name)?;
+    write_tar_zst(&tarball, &binary_path, artifact.require_bin_name()?)?;
     write_sha256(&tarball, &checksum)?;
     fs::write(&metadata, &emit_stdout)
         .with_context(|| format!("failed to write emit-apis metadata {}", metadata.display()))?;
@@ -175,7 +185,7 @@ pub(crate) fn validate_supported_target(
     }
     bail!(
         "{} does not support target {}; supported targets: {}",
-        artifact.package_name,
+        artifact.package,
         target_triple,
         artifact.supported_target_triples().join(", ")
     )
@@ -186,13 +196,14 @@ fn build_target_artifact(
     artifact: &OfficialArtifact,
     target_triple: &str,
 ) -> Result<()> {
+    let package_name = artifact.require_package_name()?;
     let mut command = Command::new("cargo");
     command
         .args([
             "auditable",
             "build",
             "-p",
-            &artifact.package_name,
+            package_name,
             "--release",
             "--target",
             target_triple,
@@ -203,20 +214,21 @@ fn build_target_artifact(
         command,
         &format!(
             "cargo auditable build for {} target {}",
-            artifact.package_name, target_triple
+            artifact.package, target_triple
         ),
     )
 }
 
 fn build_host_artifact(root: &Path, artifact: &OfficialArtifact) -> Result<()> {
+    let package_name = artifact.require_package_name()?;
     let mut command = Command::new("cargo");
     command
-        .args(["build", "-p", &artifact.package_name, "--release"])
+        .args(["build", "-p", package_name, "--release"])
         .current_dir(root);
 
     run_cargo_build_command(
         command,
-        &format!("host cargo build for {}", artifact.package_name),
+        &format!("host cargo build for {}", artifact.package),
     )
 }
 
@@ -236,28 +248,28 @@ fn run_cargo_build_command(mut command: Command, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn host_binary_path(workspace: &Workspace, artifact: &OfficialArtifact) -> PathBuf {
-    workspace.target_dir().join("release").join(format!(
+fn host_binary_path(workspace: &Workspace, artifact: &OfficialArtifact) -> Result<PathBuf> {
+    Ok(workspace.target_dir().join("release").join(format!(
         "{}{}",
-        artifact.bin_name,
+        artifact.require_bin_name()?,
         std::env::consts::EXE_SUFFIX
-    ))
+    )))
 }
 
 fn target_binary_path(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
     target_triple: &str,
-) -> PathBuf {
-    workspace
+) -> Result<PathBuf> {
+    Ok(workspace
         .target_dir()
         .join(target_triple)
         .join("release")
         .join(format!(
             "{}{}",
-            artifact.bin_name,
+            artifact.require_bin_name()?,
             exe_suffix_for_target(target_triple)
-        ))
+        )))
 }
 
 fn exe_suffix_for_target(target_triple: &str) -> &'static str {
@@ -298,22 +310,16 @@ pub(crate) fn emit_apis_from_cargo_run(
     root: &Path,
     artifact: &OfficialArtifact,
 ) -> Result<Vec<u8>> {
+    let package_name = artifact.require_package_name()?;
     let output = Command::new("cargo")
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            &artifact.package_name,
-            "--",
-            "emit-apis",
-        ])
+        .args(["run", "--quiet", "-p", package_name, "--", "emit-apis"])
         .current_dir(root)
         .output()
-        .with_context(|| format!("failed to spawn cargo run for {}", artifact.package_name))?;
+        .with_context(|| format!("failed to spawn cargo run for {}", artifact.package))?;
     if !output.status.success() {
         bail!(
             "cargo run for {} emit-apis failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            artifact.package_name,
+            artifact.package,
             output.status,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
@@ -322,7 +328,7 @@ pub(crate) fn emit_apis_from_cargo_run(
     if output.stdout.is_empty() {
         bail!(
             "{} emit-apis produced empty stdout\nstatus: {}\nstderr:\n{}",
-            artifact.package_name,
+            artifact.package,
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
@@ -356,10 +362,14 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
         .context("rustc -vV output did not contain a host triple")
 }
 
+/// The release asset filename stem: a filesystem-safe projection of the
+/// provider-qualified `package` (docs #21), not the Cargo crate name.
 pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
     format!(
         "{}-v{}-{}",
-        artifact.package_name, artifact.version, host_triple
+        crate::workspace::filesystem_safe_package(&artifact.package),
+        artifact.version,
+        host_triple
     )
 }
 
@@ -422,7 +432,7 @@ pub(crate) fn read_packaged_output(
         if !path.is_file() {
             bail!(
                 "missing packaged output for {} target {}: {}",
-                artifact.package_name,
+                artifact.package,
                 target_triple,
                 path.display()
             );
@@ -834,11 +844,12 @@ mod tests {
     #[test]
     fn asset_stem_uses_package_version_and_host_triple() {
         let artifact = OfficialArtifact {
-            package_name: "phoxal-service-frame".to_string(),
+            package: "phoxal/service-frame".to_string(),
+            package_name: Some("phoxal-service-frame".to_string()),
             kind: ArtifactKind::Service,
             version: "0.19.1".to_string(),
             crate_dir: PathBuf::from("service/frame"),
-            bin_name: "phoxal-service-frame".to_string(),
+            bin_name: Some("phoxal-service-frame".to_string()),
             id: "frame".to_string(),
             metadata: Default::default(),
         };
@@ -846,6 +857,25 @@ mod tests {
         assert_eq!(
             asset_stem(&artifact, "x86_64-unknown-linux-gnu"),
             "phoxal-service-frame-v0.19.1-x86_64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn asset_stem_projects_component_driver_package_to_filesystem_safe_form() {
+        let artifact = OfficialArtifact {
+            package: "phoxal/component-ddsm115-driver".to_string(),
+            package_name: Some("phoxal-component-ddsm115-driver".to_string()),
+            kind: ArtifactKind::ComponentDriver,
+            version: "0.1.5".to_string(),
+            crate_dir: PathBuf::from("component/ddsm115/driver"),
+            bin_name: Some("phoxal-component-ddsm115-driver".to_string()),
+            id: "ddsm115".to_string(),
+            metadata: Default::default(),
+        };
+
+        assert_eq!(
+            asset_stem(&artifact, "aarch64-unknown-linux-gnu"),
+            "phoxal-component-ddsm115-driver-v0.1.5-aarch64-unknown-linux-gnu"
         );
     }
 }
