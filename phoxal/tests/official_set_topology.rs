@@ -105,18 +105,9 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
         "fixture topology has shared-check errors: {:#?}",
         report.problems
     );
-    let expected_observable_output_warning = check::Warning::MissingConsumer {
-        family: "mission::Goal".to_string(),
-        topic: "mission/goal".to_string(),
-        producers: vec!["mission".to_string()],
-    };
-    assert!(
-        report
-            .warnings
-            .contains(&expected_observable_output_warning),
-        "fixture should warn for mission/goal output without a consumer: {:#?}",
-        report.warnings
-    );
+    // mission::Goal on mission/goal is produced but has no consumer in this
+    // fixture; that is legal (the checker no longer tracks producer/consumer
+    // existence), so the healthy-fixture assertion above is the whole check.
 }
 
 fn participant_from_metadata(metadata: &ParticipantMetadata, robot: &Robot) -> ParticipantApis {
