@@ -3,11 +3,19 @@
 //! The crate root is the version dispatcher for `robot.yaml`. Schema wire
 //! types live under [`v1`]; consumers that need the v1 struct directly can
 //! import [`RobotV1`] or [`v1::Robot`].
+//!
+//! Parsing is strict: every struct denies unknown fields, `serde_yaml`
+//! natively rejects duplicate mapping keys and YAML-1.1-only booleans
+//! (`yes`/`no`/`on`/`off`) coerced into typed `bool` fields, and
+//! [`strict_yaml::check`] additionally rejects anchors/aliases, merge keys,
+//! explicit tags, and multi-document streams before the manifest reaches
+//! `serde_yaml::from_str`.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod strict_yaml;
 pub mod v1;
 
 pub use v1::Robot as RobotV1;
@@ -53,6 +61,7 @@ impl Robot {
     }
 
     pub fn parse_from_string(text: &str) -> Result<Self> {
+        strict_yaml::check(text).context("failed to parse robot")?;
         serde_yaml::from_str(text).with_context(|| "failed to parse robot")
     }
 

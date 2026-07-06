@@ -29,7 +29,7 @@
 //!   [`#[phoxal::behavior]`](macro@behavior) derives the static metadata, and
 //!   [`run`] turns the type into a binary. Use `Service` for ordinary robot
 //!   participants, `Driver` for a participant launched once per
-//!   `components.instances` entry, `Tool` for host-side utilities, and
+//!   `robot.components` entry, `Tool` for host-side utilities, and
 //!   `Simulator` for simulation-only participants that will own simulation clock
 //!   duties in the later clock slice.
 //!
@@ -99,7 +99,7 @@
 //! runtime roles:
 //!
 //! - `Service` is the ordinary typed participant surface.
-//! - `Driver` is launched once per `components.instances` entry. Only a driver can
+//! - `Driver` is launched once per `robot.components` entry. Only a driver can
 //!   call [`SetupContext::component`](participant::SetupContext::component) to read
 //!   the bound component instance.
 //! - `Tool` is for host-side utilities that inspect the robot model through

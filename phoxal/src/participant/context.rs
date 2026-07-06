@@ -252,7 +252,7 @@ impl<R> SetupContext<R>
 where
     R: ParticipantSpec + IsDriver,
 {
-    /// The `components.instances` entry this participant drives (D47/D53), for a
+    /// The `robot.components` entry this participant drives (D47/D53), for a
     /// component driver launched once per instance. Combine with [`Self::robot`]
     /// (`driver_binding`/`component_instance`) for the resolved component spec.
     pub fn component(&self) -> crate::Result<&str> {

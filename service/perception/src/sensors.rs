@@ -57,7 +57,7 @@ pub(crate) fn camera_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
 
 pub(crate) fn depth_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
     let mut references = Vec::new();
-    for component_id in robot.manifest.components.instances.keys() {
+    for component_id in robot.manifest.components().keys() {
         let component = robot.component_for_instance(component_id)?;
         for (capability_id, capability) in &component.capabilities {
             if matches!(capability, Capability::Depth(_)) {

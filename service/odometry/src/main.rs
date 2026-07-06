@@ -38,7 +38,7 @@ struct EncoderBinding {
 impl EncoderBinding {
     fn resolve(robot: &Robot, refs: &[CapabilityRef], field: &str) -> Result<Vec<Self>> {
         if refs.is_empty() {
-            bail!("motion.kinematic.{field} must list at least one encoder");
+            bail!("robot.kinematic.{field} must list at least one encoder");
         }
         refs.iter()
             .map(|r| {
@@ -79,11 +79,11 @@ impl OdometryConfig {
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = &robot.manifest.motion.kinematic
+        } = &robot.manifest.robot.kinematic
         else {
             bail!(
                 "odometry supports differential kinematics, found {}",
-                robot.manifest.motion.kinematic.variant_label()
+                robot.manifest.robot.kinematic.variant_label()
             );
         };
         if !(wheel_radius_m.is_finite() && *wheel_radius_m > 0.0) {

@@ -9,7 +9,7 @@ impl Robot {
         &self,
         validation_errors: &mut Vec<ValidationError>,
     ) {
-        for (component_id, component) in &self.components {
+        for (component_id, component) in &self.robot.components {
             if !crate::model::component::v1::is_valid_token(component_id) {
                 validation_errors.push(ValidationError::InvalidToken {
                     field: format!("components.instances.{component_id}"),
@@ -63,7 +63,7 @@ impl Robot {
     }
 
     pub(crate) fn validate_driver_structure(&self, validation_errors: &mut Vec<ValidationError>) {
-        for (component_id, component) in &self.components {
+        for (component_id, component) in &self.robot.components {
             if let Some(driver) = &component.driver
                 && driver.runtime_clock_ms == 0
             {
@@ -75,7 +75,7 @@ impl Robot {
     }
 
     pub(crate) fn validate_role_hints(&self, validation_errors: &mut Vec<ValidationError>) {
-        for (component_id, component) in &self.components {
+        for (component_id, component) in &self.robot.components {
             for (capability_id, roles) in &component.roles {
                 if roles.is_empty() {
                     validation_errors.push(ValidationError::EmptyRoleList {
@@ -98,7 +98,7 @@ impl Robot {
     }
 
     pub(crate) fn validate_kinematics(&self, validation_errors: &mut Vec<ValidationError>) {
-        match &self.motion.kinematic {
+        match &self.robot.kinematic {
             KinematicConfig::Differential {
                 left_actuators,
                 right_actuators,
@@ -223,7 +223,7 @@ impl Robot {
     }
 
     pub(crate) fn validate_numerics(&self, validation_errors: &mut Vec<ValidationError>) {
-        for (component_id, component) in &self.components {
+        for (component_id, component) in &self.robot.components {
             for (capability_id, parameters) in &component.parameters {
                 match parameters {
                     capability::Parameters::Motor(motor)

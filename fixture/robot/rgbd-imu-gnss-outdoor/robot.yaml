@@ -1,10 +1,8 @@
 schema: v0
-identity:
+robot:
   id: rgbd-imu-gnss-outdoor
   namespace: dev
-structure: structure.urdf
-phoxal_participants: {}
-motion:
+  structure: structure.urdf
   kinematic:
     kind: differential
     left_actuators:
@@ -21,19 +19,7 @@ motion:
     - rear_right_drive.encoder
     wheel_radius_m: 0.1
     wheel_base_m: 0.4
-components:
-  sources:
-    camera_rgbd_640x480:
-      path: "../../component/camera_rgbd_640x480"
-    drive_motor:
-      path: "../../component/drive_motor"
-    gnss:
-      path: "../../component/gnss"
-    imu:
-      path: "../../component/imu"
-    range_tof:
-      path: "../../component/range_tof"
-  instances:
+  components:
     front_left_drive:
       component: drive_motor
       mount_link: front_left_wheel_mount
@@ -102,3 +88,15 @@ components:
       roles:
         gnss:
         - localization
+artifacts:
+  pins:
+    phoxal/component-camera_rgbd_640x480-assets:
+      path: "../../component/camera_rgbd_640x480"
+    phoxal/component-drive_motor-assets:
+      path: "../../component/drive_motor"
+    phoxal/component-gnss-assets:
+      path: "../../component/gnss"
+    phoxal/component-imu-assets:
+      path: "../../component/imu"
+    phoxal/component-range_tof-assets:
+      path: "../../component/range_tof"

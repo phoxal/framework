@@ -187,7 +187,7 @@ mod tests {
                 }),
             )])),
         );
-        model.components.insert(
+        model.robot.components.insert(
             "gnss".to_string(),
             Component {
                 component: "zed_f9p".to_string(),

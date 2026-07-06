@@ -47,7 +47,7 @@ impl JointConfig {
     fn from_robot(robot: &Robot) -> Result<Self> {
         let mut encoders = Vec::new();
 
-        for component_id in robot.manifest.components.keys() {
+        for component_id in robot.manifest.components().keys() {
             let component = robot.component_for_instance(component_id)?;
             for (capability_id, capability) in &component.capabilities {
                 let Capability::Encoder(_) = capability else {
