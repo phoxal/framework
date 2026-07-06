@@ -46,10 +46,17 @@ pub fn run(args: Args) -> Result<()> {
 
     let mut bumped = 0usize;
     for artifact in &selected {
+        artifact.require_package_name().with_context(|| {
+            format!(
+                "{} has no Cargo crate to bump; component_assets packages have no version to \
+                 bump here",
+                artifact.package
+            )
+        })?;
         let manifest_path = artifact.crate_dir.join("Cargo.toml");
         let (from, to) = bump_manifest_version(&manifest_path)
             .with_context(|| format!("failed to bump {}", manifest_path.display()))?;
-        println!("bumped {}: {} -> {}", artifact.package_name, from, to);
+        println!("bumped {}: {} -> {}", artifact.package, from, to);
         bumped += 1;
     }
     println!("release bump: bumped {bumped} artifact(s)");
@@ -59,7 +66,14 @@ pub fn run(args: Args) -> Result<()> {
 
 fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialArtifact>> {
     if args.all {
-        return Ok(workspace.official_artifacts().to_vec());
+        // `component_assets` packages have no Cargo crate/version to bump; `--all`
+        // only ever meant "every discovered artifact crate".
+        return Ok(workspace
+            .official_artifacts()
+            .iter()
+            .filter(|artifact| artifact.kind.has_crate())
+            .cloned()
+            .collect());
     }
     if args.affected {
         return affected_artifacts(workspace);
@@ -134,18 +148,18 @@ fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<Of
         if !tag_exists {
             println!(
                 "skip {}: tag {tag} not found (release pending)",
-                artifact.package_name
+                artifact.package
             );
             continue;
         }
 
         let changed = git
             .changed_since(&tag, &artifact.crate_dir)
-            .with_context(|| format!("failed to diff {} since {tag}", artifact.package_name))?;
+            .with_context(|| format!("failed to diff {} since {tag}", artifact.package))?;
         if should_bump(tag_exists, changed) {
             selected.push(artifact.clone());
         } else {
-            println!("skip {}: no changes since {tag}", artifact.package_name);
+            println!("skip {}: no changes since {tag}", artifact.package);
         }
     }
     Ok(selected)
@@ -165,12 +179,16 @@ fn affected_artifacts(workspace: &Workspace) -> Result<Vec<OfficialArtifact>> {
     }
 
     let mut selected = Vec::new();
-    for artifact in workspace.official_artifacts() {
+    // `component_assets` packages have no runtime binary to run `emit-apis` on;
+    // they carry no contracts, so they are never "affected" by a contract change.
+    for artifact in workspace
+        .official_artifacts()
+        .iter()
+        .filter(|artifact| artifact.kind.has_crate())
+    {
         let stdout = package::emit_apis_from_cargo_run(workspace.root(), artifact)?;
         let metadata = package::parse_emit_apis_json(&stdout, &artifact.id, artifact.kind)
-            .with_context(|| {
-                format!("invalid emit-apis metadata from {}", artifact.package_name)
-            })?;
+            .with_context(|| format!("invalid emit-apis metadata from {}", artifact.package))?;
         let uses_changed_contract = metadata.required_contracts.iter().any(|contract| {
             let Some(family) = contract.family.as_deref() else {
                 return false;
@@ -284,12 +302,17 @@ mod tests {
     }
 
     fn artifact(package_name: &str, crate_dir: &str) -> OfficialArtifact {
+        // `package_name` here is a full crate name like `phoxal-service-drive`;
+        // strip the leading `phoxal-` to recover the provider-qualified `package`
+        // (`phoxal/service-drive`) these fixtures need for `release_tag()`.
+        let package = format!("phoxal/{}", package_name.strip_prefix("phoxal-").unwrap());
         OfficialArtifact {
-            package_name: package_name.to_string(),
+            package,
+            package_name: Some(package_name.to_string()),
             kind: ArtifactKind::Service,
             version: "0.1.0".to_string(),
             crate_dir: PathBuf::from(crate_dir),
-            bin_name: package_name.to_string(),
+            bin_name: Some(package_name.to_string()),
             id: package_name.to_string(),
             metadata: PhoxalPackageMetadata::default(),
         }
@@ -341,8 +364,8 @@ mod tests {
         let selected = changed_artifacts(&workspace, &git).expect("changed_artifacts");
         let names: Vec<&str> = selected
             .iter()
-            .map(|artifact| artifact.package_name.as_str())
+            .map(|artifact| artifact.package.as_str())
             .collect();
-        assert_eq!(names, vec!["phoxal-service-drive"]);
+        assert_eq!(names, vec!["phoxal/service-drive"]);
     }
 }

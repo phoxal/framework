@@ -144,7 +144,6 @@ mod tests {
             version: "0.1.0".to_string(),
             tag: tag.to_string(),
             kind: ArtifactKind::Service,
-            artifact_id: package.to_string(),
             target_triples: vec!["x86_64-unknown-linux-gnu".to_string()],
         }
     }

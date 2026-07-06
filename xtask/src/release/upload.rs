@@ -36,7 +36,7 @@ pub fn run(args: Args) -> Result<()> {
     if args.dry_run {
         println!(
             "would upload immutable release assets for {} target {} to {}/{}: {}, {}, {}",
-            artifact.package_name,
+            artifact.package,
             args.target,
             args.repo,
             tag,

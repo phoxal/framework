@@ -6,7 +6,9 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use serde::Serialize;
 
-use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
+use crate::workspace::{
+    OfficialArtifact, Workspace, filesystem_safe_package, require_nonempty_artifacts,
+};
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -27,11 +29,18 @@ pub struct Args {
 
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    let artifacts = workspace.official_artifacts();
-    require_nonempty_artifacts(artifacts)?;
+    // `component_assets` packages have no Cargo crate/version to tag; only
+    // crate-backed artifacts are release-plz-compatible git-cut releases.
+    let artifacts = workspace
+        .official_artifacts()
+        .iter()
+        .filter(|artifact| artifact.kind.has_crate())
+        .cloned()
+        .collect::<Vec<_>>();
+    require_nonempty_artifacts(&artifacts)?;
 
     let git = CliGit;
-    let cut = cut_artifacts(&args.repo, artifacts, args.dry_run, &git)?;
+    let cut = cut_artifacts(&args.repo, &artifacts, args.dry_run, &git)?;
 
     write_release_plz_json(&args.out, &cut)?;
 
@@ -49,7 +58,9 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// One artifact this run created a tag + draft release for.
+/// One artifact this run created a tag + draft release for. `package_name` is
+/// the Cargo crate name (release-plz-JSON-compatible key); `cut` only ever
+/// processes crate-backed artifacts, so this is never absent here.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct CutRelease {
     package_name: String,
@@ -201,28 +212,29 @@ fn cut_artifacts(
 ) -> Result<Vec<CutRelease>> {
     let mut cut = Vec::new();
     for artifact in artifacts {
+        let package_name = artifact.require_package_name()?;
         let tag = artifact.release_tag();
         let tag_exists = git
             .tag_exists(&tag)
             .with_context(|| format!("failed to check tag {tag}"))?;
 
         if !should_cut(tag_exists) {
-            println!("skip {}: tag {tag} already exists", artifact.package_name);
+            println!("skip {}: tag {tag} already exists", artifact.package);
             continue;
         }
 
         if dry_run {
-            println!("would cut {} ({tag})", artifact.package_name);
+            println!("would cut {} ({tag})", artifact.package);
         } else {
             let sha = git.head_sha()?;
-            let tag_glob = format!("{}-v*", artifact.package_name);
+            let tag_glob = format!("{}-v*", filesystem_safe_package(&artifact.package));
             let notes = git.release_notes(&tag_glob, &tag, &artifact.crate_dir)?;
-            let title = format!("{} v{}", artifact.package_name, artifact.version);
+            let title = format!("{} v{}", artifact.package, artifact.version);
             git.create_draft_release(repo, &tag, &title, &sha, &notes)?;
         }
 
         cut.push(CutRelease {
-            package_name: artifact.package_name.clone(),
+            package_name: package_name.to_string(),
             version: artifact.version.clone(),
             tag,
         });
@@ -260,12 +272,16 @@ mod tests {
     use super::*;
 
     fn artifact(package_name: &str, version: &str) -> OfficialArtifact {
+        // `package_name` here is a full crate name like `phoxal-service-drive`;
+        // strip the leading `phoxal-` to recover the provider-qualified `package`.
+        let package = format!("phoxal/{}", package_name.strip_prefix("phoxal-").unwrap());
         OfficialArtifact {
-            package_name: package_name.to_string(),
+            package,
+            package_name: Some(package_name.to_string()),
             kind: ArtifactKind::Service,
             version: version.to_string(),
             crate_dir: PathBuf::from(format!("/repo/service/{package_name}")),
-            bin_name: package_name.to_string(),
+            bin_name: Some(package_name.to_string()),
             id: package_name.to_string(),
             metadata: PhoxalPackageMetadata::default(),
         }
@@ -343,7 +359,7 @@ mod tests {
             vec![(
                 "phoxal/framework".to_string(),
                 "phoxal-service-map-v0.19.5".to_string(),
-                "phoxal-service-map v0.19.5".to_string(),
+                "phoxal/service-map v0.19.5".to_string(),
             )]
         );
         Ok(())
