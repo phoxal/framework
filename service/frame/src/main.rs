@@ -14,112 +14,24 @@
 //! timestamps outside a dynamic frame's buffered window.
 //! Floating, planar, and spherical joints are not supported and fail setup.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+mod config;
+mod ring_buffer;
+mod transform;
+
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
-use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal::model::structure::{Joint as UrdfJoint, JointType, Pose, Structure};
-use phoxal::model::v1::Robot;
+use anyhow::Result;
+use nalgebra::Isometry3;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
+use crate::config::{DynamicJoint, FrameConfig, JointMeta};
+use crate::ring_buffer::RingBuffer;
+use crate::transform::{joint_transform, lookup_transform, sorted_transforms};
+
 const BUFFER_WINDOW_NS: u64 = 5_000_000_000;
 const BUFFER_MAX_ENTRIES: usize = 16_384;
-
-#[derive(Clone)]
-struct FrameConfig {
-    static_transforms: BTreeMap<String, api::frame::FrameTransform>,
-    parent_by_child: BTreeMap<String, (String, JointMeta)>,
-    dynamic_joints: Vec<DynamicJoint>,
-}
-
-impl FrameConfig {
-    fn from_robot(robot: &Robot) -> Result<Self> {
-        Self::from_structure(&robot.structure)
-    }
-
-    fn from_structure(structure: &Structure) -> Result<Self> {
-        let mut static_transforms = BTreeMap::new();
-        let mut parent_by_child = BTreeMap::new();
-        let mut dynamic_joints = Vec::new();
-
-        for joint in &structure.joints {
-            let parent_frame_id = joint.parent.link.clone();
-            let child_frame_id = joint.child.link.clone();
-            let meta = JointMeta::from_joint(joint)?;
-
-            parent_by_child.insert(
-                child_frame_id.clone(),
-                (parent_frame_id.clone(), meta.clone()),
-            );
-            if meta.joint_type == FrameJointType::Fixed {
-                static_transforms.insert(
-                    child_frame_id.clone(),
-                    transform_from_isometry(parent_frame_id, child_frame_id, meta.origin, None),
-                );
-            } else {
-                dynamic_joints.push(DynamicJoint {
-                    joint_id: meta.joint_id.clone(),
-                    child_frame_id,
-                });
-            }
-        }
-
-        Ok(Self {
-            static_transforms,
-            parent_by_child,
-            dynamic_joints,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-struct DynamicJoint {
-    joint_id: String,
-    child_frame_id: String,
-}
-
-#[derive(Clone, Debug)]
-struct JointMeta {
-    joint_id: String,
-    joint_type: FrameJointType,
-    origin: Isometry3<f64>,
-    axis_xyz: [f64; 3],
-}
-
-impl JointMeta {
-    fn from_joint(joint: &UrdfJoint) -> Result<Self> {
-        Ok(Self {
-            joint_id: joint.name.clone(),
-            joint_type: FrameJointType::from_urdf(&joint.joint_type)?,
-            origin: pose_to_isometry(&joint.origin),
-            axis_xyz: [joint.axis.xyz[0], joint.axis.xyz[1], joint.axis.xyz[2]],
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FrameJointType {
-    Fixed,
-    Revolute,
-    Continuous,
-    Prismatic,
-}
-
-impl FrameJointType {
-    fn from_urdf(joint_type: &JointType) -> Result<Self> {
-        match joint_type {
-            JointType::Fixed => Ok(Self::Fixed),
-            JointType::Revolute => Ok(Self::Revolute),
-            JointType::Continuous => Ok(Self::Continuous),
-            JointType::Prismatic => Ok(Self::Prismatic),
-            JointType::Floating | JointType::Planar | JointType::Spherical => {
-                bail!("unsupported frame joint type {joint_type:?}")
-            }
-        }
-    }
-}
 
 #[derive(Clone)]
 struct FrameSnapshot {
@@ -254,7 +166,7 @@ impl Frame {
         let dynamic_transforms = self.buffers.iter().filter_map(|(child_frame_id, buffer)| {
             let (stamp_ns, transform) = buffer.latest()?;
             let (parent_frame_id, _) = self.parent_by_child.get(child_frame_id)?;
-            Some(transform_from_isometry(
+            Some(transform::transform_from_isometry(
                 parent_frame_id.clone(),
                 child_frame_id.clone(),
                 transform,
@@ -263,305 +175,6 @@ impl Frame {
         });
         sorted_transforms(static_transforms.chain(dynamic_transforms))
     }
-}
-
-#[derive(Clone, Debug)]
-struct RingBuffer<T> {
-    window_ns: u64,
-    max_entries: usize,
-    entries: VecDeque<(u64, T)>,
-}
-
-impl<T> RingBuffer<T> {
-    fn new(window_ns: u64, max_entries: usize) -> Self {
-        Self {
-            window_ns,
-            max_entries,
-            entries: VecDeque::with_capacity(max_entries.min(256)),
-        }
-    }
-
-    fn push(&mut self, timestamp_ns: u64, value: T) {
-        if self.max_entries == 0 {
-            return;
-        }
-        while self.entries.front().is_some_and(|(entry_timestamp_ns, _)| {
-            entry_timestamp_ns.saturating_add(self.window_ns) < timestamp_ns
-        }) {
-            self.entries.pop_front();
-        }
-        while self.entries.len() >= self.max_entries {
-            self.entries.pop_front();
-        }
-        self.entries.push_back((timestamp_ns, value));
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-}
-
-impl<T: Clone> RingBuffer<T> {
-    fn latest(&self) -> Option<(u64, T)> {
-        self.entries
-            .back()
-            .map(|(timestamp_ns, value)| (*timestamp_ns, value.clone()))
-    }
-
-    fn nearest(&self, timestamp_ns: u64) -> Option<(u64, T)> {
-        let (oldest_available_ns, _) = self.entries.front()?;
-        if timestamp_ns < *oldest_available_ns {
-            return None;
-        }
-        let (newest_available_ns, _) = self.entries.back()?;
-        if timestamp_ns > *newest_available_ns {
-            return (timestamp_ns.saturating_sub(*newest_available_ns) <= self.window_ns)
-                .then(|| self.latest())
-                .flatten();
-        }
-        self.entries
-            .iter()
-            .min_by_key(|(entry_timestamp_ns, _)| entry_timestamp_ns.abs_diff(timestamp_ns))
-            .map(|(entry_timestamp_ns, value)| (*entry_timestamp_ns, value.clone()))
-    }
-}
-
-fn lookup_transform(
-    snapshot: &FrameSnapshot,
-    request: &api::frame::LookupRequest,
-) -> Option<api::frame::FrameTransform> {
-    let target = &request.target_frame_id;
-    let source = &request.source_frame_id;
-
-    if !known_frame(
-        target,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
-    ) || !known_frame(
-        source,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
-    ) {
-        return None;
-    }
-
-    if target == source {
-        return Some(transform_from_isometry(
-            target.clone(),
-            source.clone(),
-            Isometry3::identity(),
-            None,
-        ));
-    }
-
-    let lca = common_ancestor(target, source, &snapshot.parent_by_child)?;
-    let (target_stamp, lca_to_target) = transform_from_ancestor_to_descendant(
-        &lca,
-        target,
-        request.at_ns,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
-    )?;
-    let (source_stamp, lca_to_source) = transform_from_ancestor_to_descendant(
-        &lca,
-        source,
-        request.at_ns,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
-    )?;
-
-    let stamp_ns = target_stamp.into_iter().chain(source_stamp).max();
-    Some(transform_from_isometry(
-        target.clone(),
-        source.clone(),
-        lca_to_target.inverse() * lca_to_source,
-        stamp_ns,
-    ))
-}
-
-fn known_frame(
-    frame_id: &str,
-    statics: &BTreeMap<String, api::frame::FrameTransform>,
-    dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
-    parent_by_child: &BTreeMap<String, (String, JointMeta)>,
-) -> bool {
-    statics.contains_key(frame_id)
-        || dynamics.contains_key(frame_id)
-        || parent_by_child.contains_key(frame_id)
-        || parent_by_child
-            .values()
-            .any(|(parent_frame_id, _)| parent_frame_id == frame_id)
-}
-
-fn common_ancestor(
-    target: &str,
-    source: &str,
-    parent_by_child: &BTreeMap<String, (String, JointMeta)>,
-) -> Option<String> {
-    let target_ancestors = ancestors(target, parent_by_child);
-    let mut current = source.to_string();
-    loop {
-        if target_ancestors.contains(&current) {
-            return Some(current);
-        }
-        let (next, _) = parent_by_child.get(&current)?;
-        current = next.clone();
-    }
-}
-
-fn ancestors(
-    frame_id: &str,
-    parent_by_child: &BTreeMap<String, (String, JointMeta)>,
-) -> BTreeSet<String> {
-    let mut ancestors = BTreeSet::new();
-    let mut current = frame_id.to_string();
-    loop {
-        ancestors.insert(current.clone());
-        let Some((parent, _)) = parent_by_child.get(&current) else {
-            return ancestors;
-        };
-        current = parent.clone();
-    }
-}
-
-fn transform_from_ancestor_to_descendant(
-    ancestor: &str,
-    descendant: &str,
-    at_ns: Option<u64>,
-    statics: &BTreeMap<String, api::frame::FrameTransform>,
-    dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
-    parent_by_child: &BTreeMap<String, (String, JointMeta)>,
-) -> Option<(Option<u64>, Isometry3<f64>)> {
-    let mut child_to_parent_edges = Vec::new();
-    let mut current = descendant.to_string();
-
-    while current != ancestor {
-        let (parent, _) = parent_by_child.get(&current)?;
-        child_to_parent_edges.push(edge_transform(&current, at_ns, statics, dynamics)?);
-        current = parent.clone();
-    }
-
-    let mut stamp_ns = None;
-    let mut transform = Isometry3::identity();
-    for (edge_stamp_ns, edge) in child_to_parent_edges.into_iter().rev() {
-        stamp_ns = stamp_ns.into_iter().chain(edge_stamp_ns).max();
-        transform *= edge;
-    }
-    Some((stamp_ns, transform))
-}
-
-fn edge_transform(
-    child_frame_id: &str,
-    at_ns: Option<u64>,
-    statics: &BTreeMap<String, api::frame::FrameTransform>,
-    dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
-) -> Option<(Option<u64>, Isometry3<f64>)> {
-    if let Some(transform) = statics.get(child_frame_id) {
-        return Some((None, isometry_from_transform(transform)));
-    }
-    let buffer = dynamics.get(child_frame_id)?;
-    let (stamp_ns, transform) = match at_ns {
-        Some(timestamp_ns) => buffer.nearest(timestamp_ns)?,
-        None => buffer.latest()?,
-    };
-    Some((Some(stamp_ns), transform))
-}
-
-fn joint_transform(meta: &JointMeta, state: &api::joint::JointState) -> Option<Isometry3<f64>> {
-    match meta.joint_type {
-        FrameJointType::Fixed => Some(meta.origin),
-        FrameJointType::Revolute | FrameJointType::Continuous => {
-            let axis = joint_axis(meta)?;
-            Some(
-                meta.origin
-                    * Isometry3::from_parts(
-                        Translation3::identity(),
-                        UnitQuaternion::from_axis_angle(&axis, state.position_rad),
-                    ),
-            )
-        }
-        FrameJointType::Prismatic => {
-            let axis = joint_axis(meta)?.into_inner();
-            Some(
-                meta.origin
-                    * Isometry3::from_parts(
-                        Translation3::new(
-                            axis.x * state.position_rad,
-                            axis.y * state.position_rad,
-                            axis.z * state.position_rad,
-                        ),
-                        UnitQuaternion::identity(),
-                    ),
-            )
-        }
-    }
-}
-
-fn joint_axis(meta: &JointMeta) -> Option<Unit<Vector3<f64>>> {
-    Unit::try_new(
-        Vector3::new(meta.axis_xyz[0], meta.axis_xyz[1], meta.axis_xyz[2]),
-        f64::EPSILON,
-    )
-}
-
-fn pose_to_isometry(pose: &Pose) -> Isometry3<f64> {
-    Isometry3::from_parts(
-        Translation3::new(pose.xyz[0], pose.xyz[1], pose.xyz[2]),
-        UnitQuaternion::from_euler_angles(pose.rpy[0], pose.rpy[1], pose.rpy[2]),
-    )
-}
-
-fn transform_from_isometry(
-    parent_frame_id: String,
-    child_frame_id: String,
-    transform: Isometry3<f64>,
-    stamp_ns: Option<u64>,
-) -> api::frame::FrameTransform {
-    let q = transform.rotation.quaternion();
-    api::frame::FrameTransform {
-        parent_frame_id,
-        child_frame_id,
-        translation_m: [
-            transform.translation.x,
-            transform.translation.y,
-            transform.translation.z,
-        ],
-        rotation_quat_xyzw: [q.i, q.j, q.k, q.w],
-        stamp_ns,
-    }
-}
-
-fn isometry_from_transform(transform: &api::frame::FrameTransform) -> Isometry3<f64> {
-    Isometry3::from_parts(
-        Translation3::new(
-            transform.translation_m[0],
-            transform.translation_m[1],
-            transform.translation_m[2],
-        ),
-        UnitQuaternion::from_quaternion(Quaternion::new(
-            transform.rotation_quat_xyzw[3],
-            transform.rotation_quat_xyzw[0],
-            transform.rotation_quat_xyzw[1],
-            transform.rotation_quat_xyzw[2],
-        )),
-    )
-}
-
-fn sorted_transforms(
-    transforms: impl IntoIterator<Item = api::frame::FrameTransform>,
-) -> Vec<api::frame::FrameTransform> {
-    let mut transforms = transforms.into_iter().collect::<Vec<_>>();
-    transforms.sort_by(|left, right| {
-        left.child_frame_id
-            .cmp(&right.child_frame_id)
-            .then_with(|| left.parent_frame_id.cmp(&right.parent_frame_id))
-    });
-    transforms
 }
 
 fn main() -> phoxal::Result<()> {
@@ -573,6 +186,8 @@ mod tests {
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
     use std::sync::Arc;
 
+    use nalgebra::{Quaternion, UnitQuaternion};
+    use phoxal::model::structure::Structure;
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -751,8 +366,8 @@ mod tests {
         }
 
         assert_eq!(buffer.len(), 3);
-        assert_eq!(buffer.entries.front().unwrap().0, 7);
-        assert_eq!(buffer.entries.back().unwrap().0, 9);
+        assert_eq!(buffer.entries().front().unwrap().0, 7);
+        assert_eq!(buffer.entries().back().unwrap().0, 9);
     }
 
     #[test]
