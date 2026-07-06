@@ -47,11 +47,7 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
     let fixture = Robot::read_from_dir(&fixture_dir)
         .unwrap_or_else(|e| panic!("failed to load {}: {e:#}", fixture_dir.display()));
     assert_eq!(
-        fixture.manifest.api_version, None,
-        "the fixture intentionally exercises D5's omitted root api_version"
-    );
-    assert_eq!(
-        fixture.manifest.phoxal_artifacts.generation, None,
+        fixture.manifest.artifacts.generation, None,
         "the fixture leaves generation resolution to the catalog solver"
     );
 
@@ -209,7 +205,7 @@ fn add_fixture_external_participants(
     participants.push(fixture_participant("fixture/external", external_contracts));
 
     let mut component_contracts = BTreeMap::<String, Vec<CheckContract>>::new();
-    for (instance_id, instance) in &robot.manifest.components.instances {
+    for (instance_id, instance) in &robot.manifest.robot.components {
         let component = robot
             .components
             .get(&instance.component)
@@ -318,7 +314,7 @@ fn component_contract(
 
 fn robot_graph(robot: &Robot) -> RobotGraph {
     let mut component_capabilities = Vec::new();
-    for (instance_id, instance) in &robot.manifest.components.instances {
+    for (instance_id, instance) in &robot.manifest.robot.components {
         let component = robot
             .components
             .get(&instance.component)
@@ -335,7 +331,7 @@ fn robot_graph(robot: &Robot) -> RobotGraph {
 
     RobotGraph {
         component_capabilities,
-        motion_capabilities: motion_capabilities(&robot.manifest.motion.kinematic),
+        motion_capabilities: motion_capabilities(&robot.manifest.robot.kinematic),
     }
 }
 
@@ -424,22 +420,17 @@ fn component_topic_kind(topic: &str) -> Option<&str> {
 }
 
 fn robot_has_capability_kind(robot: &Robot, kind: &str) -> bool {
-    robot
-        .manifest
-        .components
-        .instances
-        .values()
-        .any(|instance| {
-            robot
-                .components
-                .get(&instance.component)
-                .is_some_and(|component| {
-                    component
-                        .capabilities
-                        .values()
-                        .any(|capability| capability.kind_name() == kind)
-                })
-        })
+    robot.manifest.robot.components.values().any(|instance| {
+        robot
+            .components
+            .get(&instance.component)
+            .is_some_and(|component| {
+                component
+                    .capabilities
+                    .values()
+                    .any(|capability| capability.kind_name() == kind)
+            })
+    })
 }
 
 fn external_pubsub_inputs() -> Vec<(&'static str, &'static str)> {

@@ -2,12 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::component::v1::CapabilityRef;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Motion {
-    pub kinematic: KinematicConfig,
-}
-
+/// The robot's kinematic model - a direct field of `robot:` (was
+/// `motion.kinematic`; the `motion:` wrapper is gone).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]

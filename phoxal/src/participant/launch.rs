@@ -51,9 +51,9 @@ pub mod env {
 pub struct ParticipantLaunch {
     /// The bus-unique participant id (never the static participant/artifact id, D53).
     pub participant_id: String,
-    /// The bus namespace (`identity.namespace`).
+    /// The bus namespace (`robot.namespace`).
     pub namespace: String,
-    /// The robot id (`identity.id`).
+    /// The robot id (`robot.id`).
     pub robot_id: String,
     /// The resolved bus profile.
     #[serde(default)]
@@ -61,7 +61,7 @@ pub struct ParticipantLaunch {
     /// The clock mode.
     #[serde(default)]
     pub clock: ClockMode,
-    /// The participant's typed config block (`user_participants.<id>.config`), if any.
+    /// The participant's typed config block (`services.<id>.config`), if any.
     #[serde(default)]
     pub config: Option<serde_json::Value>,
     /// The root that holds the robot model (`robot.yaml` + components + structure).
@@ -69,7 +69,7 @@ pub struct ParticipantLaunch {
     /// local run with no model.
     #[serde(default)]
     pub robot_root: Option<PathBuf>,
-    /// The `components.instances` entry this participant drives (D47/D53). A
+    /// The `robot.components` entry this participant drives (D47/D53). A
     /// component driver is launched once per instance, each with a distinct
     /// `participant_id` and its own `component_instance`; read via
     /// `SetupContext::component()`. Absent for non-driver participants.

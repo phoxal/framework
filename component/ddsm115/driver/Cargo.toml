@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-driver-zed_f9p"
+name = "phoxal-component-ddsm115-driver"
 version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official driver: zed_f9p - GNSS."
+description = "Phoxal official driver: ddsm115 - wheel hub motor."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-driver-zed_f9p"
+name = "phoxal-component-ddsm115-driver"
 path = "src/main.rs"
 
 [dependencies]

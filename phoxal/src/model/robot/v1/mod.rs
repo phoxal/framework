@@ -17,13 +17,12 @@ pub use driver::{ConnectionConfig, DriverConfig, GpioDirection, GpioPinConfig};
 pub use localize_backend::{
     LocalizeBackendKind, ResolvedLocalizeBackend, resolve_localize_backend,
 };
-pub use motion::{KinematicConfig, Motion};
+pub use motion::KinematicConfig;
 pub use profile::{AutonomyProfileId, AutonomyProfileSpec, autonomy_profile};
 pub use resolver::{ResolvedCapabilityRole, ResolvedFacts, SourceBundle, resolve_source_bundle};
 pub use robot::{
-    ArtifactPathPin, ArtifactPin, Channel, ComponentSource, Components, Identity, Network,
-    NetworkTls, PhoxalArtifacts, PhoxalParticipants, Robot, SourceGit, SourcePath, Tool, Uplink,
-    UserParticipant, ValidationError,
+    ArtifactGitPin, ArtifactPathPin, ArtifactPin, Artifacts, Channel, Robot, RobotSection,
+    Sha256Pin, UserService, ValidationError, VersionPin, is_provider_qualified_pin_key,
 };
 pub use role::Role;
 pub use role_resolution::{RoleAssignment, RoleResolution};

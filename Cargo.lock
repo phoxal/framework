@@ -2220,7 +2220,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-driver-bno085"
+name = "phoxal-component-bno085-driver"
 version = "0.1.5"
 dependencies = [
  "anyhow",
@@ -2230,7 +2230,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-driver-ddsm115"
+name = "phoxal-component-ddsm115-driver"
 version = "0.1.5"
 dependencies = [
  "anyhow",
@@ -2240,7 +2240,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-driver-oak_d_lite"
+name = "phoxal-component-oak_d_lite-driver"
 version = "0.1.5"
 dependencies = [
  "anyhow",
@@ -2250,7 +2250,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-driver-vl53l1x"
+name = "phoxal-component-vl53l1x-driver"
 version = "0.1.5"
 dependencies = [
  "anyhow",
@@ -2260,7 +2260,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-driver-zed_f9p"
+name = "phoxal-component-zed_f9p-driver"
 version = "0.1.5"
 dependencies = [
  "anyhow",

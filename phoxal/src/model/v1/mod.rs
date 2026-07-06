@@ -5,7 +5,7 @@ use crate::model::component::v1::capability::{Capability, Encoder, Imu, Motor, S
 use crate::model::component::v1::{CapabilityRef, Component as ComponentSpec};
 use crate::model::robot::v1::capability::Parameters;
 use crate::model::robot::v1::{
-    self as robot_v1, ComponentSource, ResolvedFacts, SourceBundle, resolve_source_bundle,
+    self as robot_v1, ArtifactPin, ResolvedFacts, SourceBundle, resolve_source_bundle,
 };
 use crate::model::structure::Structure;
 use anyhow::{Context, Result, anyhow, bail};
@@ -62,11 +62,11 @@ impl Robot {
         manifest: &crate::model::robot::v1::Robot,
     ) -> Result<Structure> {
         let path = path.as_ref();
-        let structure_path = path.join(&manifest.structure);
+        let structure_path = path.join(&manifest.robot.structure);
         let structure = Structure::read_from_file(&structure_path).with_context(|| {
             format!(
                 "failed to read structure declared by robot.yaml structure: {}",
-                manifest.structure.display()
+                manifest.robot.structure.display()
             )
         })?;
         structure.validate()?;
@@ -149,7 +149,7 @@ impl Robot {
     pub fn camera_capabilities(&self) -> Vec<CapabilityRef> {
         let mut capabilities = self
             .manifest
-            .components
+            .components()
             .iter()
             .filter_map(|(component_id, component_instance)| {
                 self.components
@@ -304,20 +304,26 @@ impl Robot {
     }
 }
 
+/// Resolves the on-disk directory for a used component type.
+///
+/// The default is the staged `<bundle_root>/components/<type>` directory that
+/// `phoxal-cli` populates for official/resolved components. A local/forked
+/// component overrides this via an `artifacts.pins` path pin keyed by its
+/// provider-qualified assets package id (`phoxal/component-<type>-assets`);
+/// the override is only honored when it actually contains a `component.yaml`,
+/// otherwise resolution falls back to the staged path.
 fn component_config_path(
     bundle_root: &Path,
     manifest: &crate::model::robot::v1::Robot,
     component_type: &str,
 ) -> PathBuf {
     let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);
-    let Some(source) = manifest.components.sources.get(component_type) else {
+    let assets_pin_key = format!("phoxal/component-{component_type}-assets");
+    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&assets_pin_key) else {
         return staged_path;
     };
 
-    let source_path = match source {
-        ComponentSource::Path(path_source) => bundle_root.join(&path_source.path),
-        ComponentSource::Git(_) => staged_path.clone(),
-    };
+    let source_path = bundle_root.join(&path_pin.path);
     if source_path.join(COMPONENT_FILE).is_file() {
         source_path
     } else {

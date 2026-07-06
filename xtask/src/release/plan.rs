@@ -8,7 +8,6 @@ use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::catalog::generate::catalog_artifact_id;
 use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, runner_for_target};
 
 pub(crate) const RELEASE_PLAN_SCHEMA: &str = "phoxal.release-plan/v0";
@@ -37,6 +36,9 @@ pub(crate) struct ReleasePlan {
     pub matrix: ReleaseMatrix,
 }
 
+/// One artifact release-plz (or `cargo xtask release cut`) reported cut. `package`
+/// is the provider-qualified public identity (`phoxal/component-ddsm115-driver`);
+/// there is no separate `artifact_id` alongside it (docs #21).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReleasePlanArtifact {
@@ -44,7 +46,6 @@ pub(crate) struct ReleasePlanArtifact {
     pub version: String,
     pub tag: String,
     pub kind: ArtifactKind,
-    pub artifact_id: String,
     pub target_triples: Vec<String>,
 }
 
@@ -61,7 +62,6 @@ pub(crate) struct ReleaseMatrixEntry {
     pub version: String,
     pub tag: String,
     pub kind: ArtifactKind,
-    pub artifact_id: String,
     pub target: String,
     pub runner: String,
 }
@@ -126,10 +126,15 @@ pub(crate) fn build_release_plan(
     workspace: &Workspace,
     release_plz_text: &str,
 ) -> Result<ReleasePlan> {
+    // release-plz (and `cargo xtask release cut`'s release-plz-JSON-compatible
+    // output) reports releases by Cargo crate name, so artifacts are correlated
+    // by `package_name` here; `ComponentAssets` has no crate and so never appears
+    // in this input. The plan's own `package` field, below, is the
+    // provider-qualified public identity, not the crate name.
     let official_by_package = workspace
         .official_artifacts()
         .iter()
-        .map(|artifact| (artifact.package_name.as_str(), artifact))
+        .filter_map(|artifact| Some((artifact.package_name.as_deref()?, artifact)))
         .collect::<BTreeMap<_, _>>();
     let released = released_packages(release_plz_text)?;
     let mut artifacts = Vec::new();
@@ -157,7 +162,6 @@ pub(crate) fn build_release_plan(
                 version: artifact.version.clone(),
                 tag: artifact.tag.clone(),
                 kind: artifact.kind,
-                artifact_id: artifact.artifact_id.clone(),
                 target: target.clone(),
                 runner: runner_for_target(target)?.to_string(),
             });
@@ -180,17 +184,16 @@ fn plan_artifact(
     if tag != expected_tag {
         bail!(
             "release-plz JSON tag for {} was '{}', expected '{}'",
-            artifact.package_name,
+            artifact.package,
             tag,
             expected_tag
         );
     }
     Ok(ReleasePlanArtifact {
-        package: artifact.package_name.clone(),
+        package: artifact.package.clone(),
         version: artifact.version.clone(),
         tag: tag.to_string(),
         kind: artifact.kind,
-        artifact_id: catalog_artifact_id(artifact.kind, &artifact.id),
         target_triples: artifact.supported_target_triples(),
     })
 }
@@ -302,11 +305,12 @@ mod tests {
 
     fn artifact(package_name: &str, kind: ArtifactKind, id: &str) -> OfficialArtifact {
         OfficialArtifact {
-            package_name: package_name.to_string(),
+            package: crate::workspace::package_identity(kind, id),
+            package_name: Some(package_name.to_string()),
             kind,
             version: "0.1.0".to_string(),
             crate_dir: PathBuf::new(),
-            bin_name: package_name.to_string(),
+            bin_name: Some(package_name.to_string()),
             id: id.to_string(),
             metadata: PhoxalPackageMetadata::default(),
         }
@@ -357,19 +361,23 @@ mod tests {
     #[test]
     fn release_plz_shape_can_be_nested_or_array_based() -> Result<()> {
         let workspace = workspace_with(vec![artifact(
-            "phoxal-driver-ddsm115",
-            ArtifactKind::Driver,
+            "phoxal-component-ddsm115-driver",
+            ArtifactKind::ComponentDriver,
             "ddsm115",
         )]);
         let plan = build_release_plan(
             &workspace,
             r#"[
-  { "name": "phoxal-driver-ddsm115", "version": "0.1.0", "git_tag": "phoxal-driver-ddsm115-v0.1.0" }
+  { "name": "phoxal-component-ddsm115-driver", "version": "0.1.0", "git_tag": "phoxal-component-ddsm115-driver-v0.1.0" }
 ]"#,
         )?;
 
         assert_eq!(plan.artifacts.len(), 1);
-        assert_eq!(plan.artifacts[0].tag, "phoxal-driver-ddsm115-v0.1.0");
+        assert_eq!(
+            plan.artifacts[0].tag,
+            "phoxal-component-ddsm115-driver-v0.1.0"
+        );
+        assert_eq!(plan.artifacts[0].package, "phoxal/component-ddsm115-driver");
         Ok(())
     }
 

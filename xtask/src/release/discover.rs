@@ -25,9 +25,10 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn print_table(artifacts: &[crate::workspace::OfficialArtifact]) -> Result<()> {
+    const NO_BIN: &str = "-";
     let package_width = artifacts
         .iter()
-        .map(|artifact| artifact.package_name.len())
+        .map(|artifact| artifact.package.len())
         .chain([7])
         .max()
         .expect("width iterator is nonempty");
@@ -45,7 +46,7 @@ fn print_table(artifacts: &[crate::workspace::OfficialArtifact]) -> Result<()> {
         .expect("width iterator is nonempty");
     let bin_width = artifacts
         .iter()
-        .map(|artifact| artifact.bin_name.len())
+        .map(|artifact| artifact.bin_name.as_deref().unwrap_or(NO_BIN).len())
         .chain([3])
         .max()
         .expect("width iterator is nonempty");
@@ -61,10 +62,10 @@ fn print_table(artifacts: &[crate::workspace::OfficialArtifact]) -> Result<()> {
         writeln!(
             stdout,
             "{:<package_width$}  {:<kind_width$}  {:<version_width$}  {:<bin_width$}  {}",
-            artifact.package_name,
+            artifact.package,
             artifact.kind,
             artifact.version,
-            artifact.bin_name,
+            artifact.bin_name.as_deref().unwrap_or(NO_BIN),
             artifact.crate_dir.display(),
         )?;
     }

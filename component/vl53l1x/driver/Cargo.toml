@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-driver-ddsm115"
+name = "phoxal-component-vl53l1x-driver"
 version = "0.1.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official driver: ddsm115 - wheel hub motor."
+description = "Phoxal official driver: vl53l1x - range/time-of-flight."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-driver-ddsm115"
+name = "phoxal-component-vl53l1x-driver"
 path = "src/main.rs"
 
 [dependencies]

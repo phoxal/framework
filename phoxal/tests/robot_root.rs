@@ -22,10 +22,7 @@ impl ReadsRobot {
         // An official-style participant reads its typed state from the robot model.
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
-        let _ = SEEN.set((
-            robot.manifest.identity.id.clone(),
-            root.display().to_string(),
-        ));
+        let _ = SEEN.set((robot.manifest.robot.id.clone(), root.display().to_string()));
         Ok(Self {})
     }
 }

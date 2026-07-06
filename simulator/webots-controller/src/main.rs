@@ -11,7 +11,7 @@ mod capabilities;
 
 use phoxal::bus::ContractBody;
 use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::robot::v1::ComponentSource;
+use phoxal::model::robot::v1::ArtifactPin;
 use phoxal::model::simulation::Simulation as SimulationFile;
 use phoxal::model::simulation::v1::Simulation as SimulationSpec;
 use phoxal::model::v1::Robot;
@@ -355,7 +355,7 @@ impl CapabilityCatalog {
         let simulations = load_simulation_specs(root, robot)?;
         let mut catalog = Self::default();
 
-        for (component_id, instance) in &robot.manifest.components {
+        for (component_id, instance) in robot.manifest.components() {
             let component = robot.component_for_instance(component_id)?;
             let simulation = simulations.get(&instance.component);
             for (capability_id, capability) in &component.capabilities {
@@ -522,20 +522,25 @@ fn load_simulation_specs(root: &Path, robot: &Robot) -> Result<BTreeMap<String, 
     Ok(simulations)
 }
 
+/// Resolves the on-disk directory for a used component type's simulation
+/// config, mirroring `phoxal::model::v1::Robot`'s component-assets
+/// resolution: the staged `<bundle_root>/components/<type>` directory by
+/// default, overridden by an `artifacts.pins` path pin keyed by the
+/// component's provider-qualified assets package id
+/// (`phoxal/component-<type>-assets`) when that override actually contains a
+/// `simulation.yaml`.
 fn component_simulation_path(
     bundle_root: &Path,
     manifest: &phoxal::model::robot::v1::Robot,
     component_type: &str,
 ) -> PathBuf {
     let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);
-    let Some(source) = manifest.components.sources.get(component_type) else {
+    let assets_pin_key = format!("phoxal/component-{component_type}-assets");
+    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&assets_pin_key) else {
         return staged_path;
     };
 
-    let source_path = match source {
-        ComponentSource::Path(path_source) => bundle_root.join(&path_source.path),
-        ComponentSource::Git(_) => staged_path.clone(),
-    };
+    let source_path = bundle_root.join(&path_pin.path);
     if source_path.join(SIMULATION_FILE).is_file() {
         source_path
     } else {

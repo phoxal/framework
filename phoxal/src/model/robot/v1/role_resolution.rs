@@ -44,7 +44,7 @@ pub fn resolve_roles(
     let mut errors = Vec::new();
     let mut capability_index = BTreeMap::new();
 
-    for (component_id, component_instance) in &model.components {
+    for (component_id, component_instance) in &model.robot.components {
         match components_by_type.get(&component_instance.component) {
             Some(component) => {
                 for (capability_id, capability) in &component.capabilities {
@@ -64,7 +64,7 @@ pub fn resolve_roles(
     let mut role_to_explicit_capabilities: BTreeMap<Role, Vec<CapabilityRef>> = BTreeMap::new();
     let mut assignments: BTreeMap<CapabilityRef, RoleAssignment> = BTreeMap::new();
 
-    for (component_id, component_instance) in &model.components {
+    for (component_id, component_instance) in &model.robot.components {
         for (capability_id, roles) in &component_instance.roles {
             let capability_ref = CapabilityRef::new(component_id, capability_id);
             match capability_index.get(&capability_ref) {

@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 
 use crate::catalog::generate::{
-    GenerateOptions, InputMode, build_catalog_revision, catalog_artifact_id, default_catalog_path,
+    GenerateOptions, InputMode, build_catalog_revision, default_catalog_path,
     workspace_relative_path,
 };
 use crate::catalog::schema::{CatalogEntry, CatalogRevision};
@@ -95,12 +95,12 @@ pub(crate) fn validate_coverage(
 ) -> Result<()> {
     let expected = artifacts
         .iter()
-        .map(|artifact| catalog_artifact_id(artifact.kind, &artifact.id))
+        .map(|artifact| artifact.package.clone())
         .collect::<BTreeSet<_>>();
     let actual = catalog
         .entries
         .iter()
-        .map(|entry| entry.artifact_id.clone())
+        .map(|entry| entry.package.clone())
         .collect::<BTreeSet<_>>();
 
     let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
@@ -123,19 +123,19 @@ pub(crate) fn validate_coverage(
 }
 
 pub(crate) fn compare_catalogs(actual: &CatalogRevision, expected: &CatalogRevision) -> Result<()> {
-    let actual_entries = entries_by_id(actual)?;
-    let expected_entries = entries_by_id(expected)?;
+    let actual_entries = entries_by_package(actual)?;
+    let expected_entries = entries_by_package(expected)?;
 
-    for (artifact_id, expected_entry) in &expected_entries {
+    for (package, expected_entry) in &expected_entries {
         let actual_entry = actual_entries
-            .get(artifact_id)
-            .with_context(|| format!("catalog is missing official artifact entry {artifact_id}"))?;
+            .get(package)
+            .with_context(|| format!("catalog is missing official artifact entry {package}"))?;
         if actual_entry.contract_uses != expected_entry.contract_uses {
-            bail!("catalog schema_id drift for {artifact_id}; regenerate from packaged emit-apis");
+            bail!("catalog schema_id drift for {package}; regenerate from packaged emit-apis");
         }
         if actual_entry != expected_entry {
             bail!(
-                "catalog hand-edit/provenance drift for {artifact_id}; run `cargo xtask catalog generate`"
+                "catalog hand-edit/provenance drift for {package}; run `cargo xtask catalog generate`"
             );
         }
     }
@@ -161,14 +161,11 @@ pub(crate) fn compare_catalogs(actual: &CatalogRevision, expected: &CatalogRevis
     Ok(())
 }
 
-fn entries_by_id(catalog: &CatalogRevision) -> Result<BTreeMap<String, &CatalogEntry>> {
+fn entries_by_package(catalog: &CatalogRevision) -> Result<BTreeMap<String, &CatalogEntry>> {
     let mut entries = BTreeMap::new();
     for entry in &catalog.entries {
-        if entries.insert(entry.artifact_id.clone(), entry).is_some() {
-            bail!(
-                "catalog contains duplicate artifact_id {}",
-                entry.artifact_id
-            );
+        if entries.insert(entry.package.clone(), entry).is_some() {
+            bail!("catalog contains duplicate package {}", entry.package);
         }
     }
     Ok(entries)
