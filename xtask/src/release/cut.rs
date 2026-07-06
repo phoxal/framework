@@ -25,6 +25,13 @@ pub struct Args {
     /// Print what would be cut without creating tags or releases.
     #[arg(long)]
     pub dry_run: bool,
+    /// Include every discovered artifact at its current version, even ones whose
+    /// tag already exists. Reuses an existing release rather than recreating it;
+    /// the emitted plan then covers the full artifact set. Used for a one-time
+    /// full catalog rebuild (e.g. a schema transition where the previous catalog
+    /// cannot be carried forward), not the normal incremental push flow.
+    #[arg(long)]
+    pub all: bool,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -36,7 +43,7 @@ pub fn run(args: Args) -> Result<()> {
     require_nonempty_artifacts(&artifacts)?;
 
     let git = CliGit;
-    let cut = cut_artifacts(&args.repo, &artifacts, args.dry_run, &git)?;
+    let cut = cut_artifacts(&args.repo, &artifacts, args.dry_run, args.all, &git)?;
 
     write_release_plz_json(&args.out, &cut)?;
 
@@ -199,15 +206,18 @@ fn previous_tag(tag_glob: &str, current_tag: &str) -> Result<Option<String>> {
 
 /// Decide whether an artifact needs cutting: skip if its release tag already
 /// exists (idempotent reconciliation - the same semantics `release_always` gave
-/// release-plz), otherwise cut it.
-fn should_cut(tag_exists: bool) -> bool {
-    !tag_exists
+/// release-plz), otherwise cut it. `all` overrides the skip so a full rebuild
+/// includes already-tagged artifacts in the plan (their existing release is
+/// reused, not recreated).
+fn should_cut(tag_exists: bool, all: bool) -> bool {
+    all || !tag_exists
 }
 
 fn cut_artifacts(
     repo: &str,
     artifacts: &[OfficialArtifact],
     dry_run: bool,
+    all: bool,
     git: &dyn Git,
 ) -> Result<Vec<CutRelease>> {
     let mut cut = Vec::new();
@@ -217,13 +227,18 @@ fn cut_artifacts(
             .tag_exists(&tag)
             .with_context(|| format!("failed to check tag {tag}"))?;
 
-        if !should_cut(tag_exists) {
+        if !should_cut(tag_exists, all) {
             println!("skip {}: tag {tag} already exists", artifact.package);
             continue;
         }
 
         if dry_run {
             println!("would cut {} ({tag})", artifact.package);
+        } else if tag_exists {
+            // `--all` reached an already-tagged artifact: keep it in the plan,
+            // but reuse the existing release rather than recreating it (a
+            // `gh release create` on an existing tag would fail).
+            println!("reuse {}: existing release {tag}", artifact.package);
         } else {
             let sha = git.head_sha()?;
             let tag_glob = format!("{}-v*", filesystem_safe_package(&artifact.package));
@@ -300,11 +315,19 @@ mod tests {
         }
     }
 
-    // cut decision table: tag exists -> skip, tag missing -> cut.
+    // cut decision table: tag exists -> skip, tag missing -> cut; --all -> always.
     #[test]
     fn should_cut_decision_table() {
-        assert!(!should_cut(true), "tag already exists: skip, idempotent");
-        assert!(should_cut(false), "tag missing: cut a new release");
+        assert!(
+            !should_cut(true, false),
+            "tag already exists: skip, idempotent"
+        );
+        assert!(should_cut(false, false), "tag missing: cut a new release");
+        assert!(
+            should_cut(true, true),
+            "--all: include an already-tagged artifact in the plan"
+        );
+        assert!(should_cut(false, true), "--all: include a new artifact too");
     }
 
     #[derive(Default)]
@@ -357,7 +380,7 @@ mod tests {
             ..Default::default()
         };
 
-        let cut = cut_artifacts("phoxal/framework", &artifacts, false, &git)?;
+        let cut = cut_artifacts("phoxal/framework", &artifacts, false, false, &git)?;
 
         assert_eq!(
             cut,
@@ -384,7 +407,7 @@ mod tests {
         let artifacts = vec![artifact("phoxal-tool-router", "0.1.5")];
         let git = FakeGit::default();
 
-        let cut = cut_artifacts("phoxal/framework", &artifacts, true, &git)?;
+        let cut = cut_artifacts("phoxal/framework", &artifacts, true, false, &git)?;
 
         assert_eq!(cut.len(), 1);
         assert!(git.created.into_inner().is_empty());
@@ -485,7 +508,7 @@ mod tests {
         let artifacts = vec![component_assets_artifact("ddsm115", "0.1.0")];
         let git = FakeGit::default();
 
-        let cut = cut_artifacts("phoxal/framework", &artifacts, false, &git)?;
+        let cut = cut_artifacts("phoxal/framework", &artifacts, false, false, &git)?;
 
         assert_eq!(
             cut,
