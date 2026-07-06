@@ -29,14 +29,10 @@ pub struct Args {
 
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    // `component_assets` packages have no Cargo crate/version to tag; only
-    // crate-backed artifacts are release-plz-compatible git-cut releases.
-    let artifacts = workspace
-        .official_artifacts()
-        .iter()
-        .filter(|artifact| artifact.kind.has_crate())
-        .cloned()
-        .collect::<Vec<_>>();
+    // Every official artifact is git-cut, including `component_assets` bundles:
+    // they have no Cargo crate/version to tag, but they still need a git tag +
+    // draft GitHub release to hold their packaged tarball (docs #21).
+    let artifacts = workspace.official_artifacts().to_vec();
     require_nonempty_artifacts(&artifacts)?;
 
     let git = CliGit;
@@ -52,18 +48,22 @@ pub fn run(args: Args) -> Result<()> {
         args.out.display()
     );
     for entry in &cut {
-        println!("  {} ({})", entry.tag, entry.package_name);
+        println!("  {} ({})", entry.tag, entry.package);
     }
 
     Ok(())
 }
 
-/// One artifact this run created a tag + draft release for. `package_name` is
-/// the Cargo crate name (release-plz-JSON-compatible key); `cut` only ever
-/// processes crate-backed artifacts, so this is never absent here.
+/// One artifact this run created a tag + draft release for. `package` is the
+/// provider-qualified public identity (`phoxal/component-ddsm115-assets`) and
+/// is always present; `package_name` is the Cargo crate name
+/// (release-plz-JSON-compatible key) and is `None` for a `component_assets`
+/// bundle, which has no crate. `cargo xtask release plan` correlates by either
+/// field (see `plan::build_release_plan`).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct CutRelease {
-    package_name: String,
+    package: String,
+    package_name: Option<String>,
     version: String,
     tag: String,
 }
@@ -212,7 +212,6 @@ fn cut_artifacts(
 ) -> Result<Vec<CutRelease>> {
     let mut cut = Vec::new();
     for artifact in artifacts {
-        let package_name = artifact.require_package_name()?;
         let tag = artifact.release_tag();
         let tag_exists = git
             .tag_exists(&tag)
@@ -234,7 +233,8 @@ fn cut_artifacts(
         }
 
         cut.push(CutRelease {
-            package_name: package_name.to_string(),
+            package: artifact.package.clone(),
+            package_name: artifact.package_name.clone(),
             version: artifact.version.clone(),
             tag,
         });
@@ -283,6 +283,19 @@ mod tests {
             crate_dir: PathBuf::from(format!("/repo/service/{package_name}")),
             bin_name: Some(package_name.to_string()),
             id: package_name.to_string(),
+            metadata: PhoxalPackageMetadata::default(),
+        }
+    }
+
+    fn component_assets_artifact(id: &str, version: &str) -> OfficialArtifact {
+        OfficialArtifact {
+            package: crate::workspace::package_identity(ArtifactKind::ComponentAssets, id),
+            package_name: None,
+            kind: ArtifactKind::ComponentAssets,
+            version: version.to_string(),
+            crate_dir: PathBuf::from(format!("/repo/component/{id}")),
+            bin_name: None,
+            id: id.to_string(),
             metadata: PhoxalPackageMetadata::default(),
         }
     }
@@ -349,7 +362,8 @@ mod tests {
         assert_eq!(
             cut,
             vec![CutRelease {
-                package_name: "phoxal-service-map".to_string(),
+                package: "phoxal/service-map".to_string(),
+                package_name: Some("phoxal-service-map".to_string()),
                 version: "0.19.5".to_string(),
                 tag: "phoxal-service-map-v0.19.5".to_string(),
             }]
@@ -380,7 +394,8 @@ mod tests {
     #[test]
     fn release_plz_json_document_round_trips_through_plan_parser() -> Result<()> {
         let cut = vec![CutRelease {
-            package_name: "phoxal-service-drive".to_string(),
+            package: "phoxal/service-drive".to_string(),
+            package_name: Some("phoxal-service-drive".to_string()),
             version: "0.19.5".to_string(),
             tag: "phoxal-service-drive-v0.19.5".to_string(),
         }];
@@ -402,17 +417,93 @@ mod tests {
     }
 
     #[test]
-    fn cut_release_serializes_with_package_name_field() -> Result<()> {
+    fn component_assets_release_plz_json_round_trips_through_plan_parser_by_package() -> Result<()>
+    {
+        let cut = vec![CutRelease {
+            package: "phoxal/component-ddsm115-assets".to_string(),
+            package_name: None,
+            version: "0.1.0".to_string(),
+            tag: "phoxal-component-ddsm115-assets-v0.1.0".to_string(),
+        }];
+        let dir = tempfile::tempdir().context("create tempdir")?;
+        let path = dir.path().join("release-plz.json");
+        write_release_plz_json(&path, &cut)?;
+
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![component_assets_artifact("ddsm115", "0.1.0")],
+        );
+        let text = fs::read_to_string(&path)?;
+        let plan = crate::release::plan::build_release_plan(&workspace, &text)?;
+
+        assert_eq!(plan.artifacts.len(), 1);
+        assert_eq!(
+            plan.artifacts[0].tag,
+            "phoxal-component-ddsm115-assets-v0.1.0"
+        );
+        assert_eq!(
+            plan.artifacts[0].target_triples,
+            vec![crate::workspace::TARGET_INDEPENDENT_SCOPE.to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cut_release_serializes_with_package_and_package_name_fields() -> Result<()> {
         let cut = CutRelease {
-            package_name: "phoxal-driver-ddsm115".to_string(),
+            package: "phoxal/component-ddsm115-driver".to_string(),
+            package_name: Some("phoxal-component-ddsm115-driver".to_string()),
             version: "0.1.5".to_string(),
-            tag: "phoxal-driver-ddsm115-v0.1.5".to_string(),
+            tag: "phoxal-component-ddsm115-driver-v0.1.5".to_string(),
         };
         let json = serde_json::to_value(&cut)?;
         let object = json.as_object().context("expected object")?;
+        assert!(object.contains_key("package"));
         assert!(object.contains_key("package_name"));
         assert!(object.contains_key("version"));
         assert!(object.contains_key("tag"));
+        Ok(())
+    }
+
+    #[test]
+    fn cut_release_serializes_component_assets_with_null_package_name() -> Result<()> {
+        let cut = CutRelease {
+            package: "phoxal/component-ddsm115-assets".to_string(),
+            package_name: None,
+            version: "0.1.0".to_string(),
+            tag: "phoxal-component-ddsm115-assets-v0.1.0".to_string(),
+        };
+        let json = serde_json::to_value(&cut)?;
+        let object = json.as_object().context("expected object")?;
+        assert!(object["package_name"].is_null());
+        Ok(())
+    }
+
+    #[test]
+    fn cut_artifacts_includes_component_assets_with_no_crate() -> Result<()> {
+        let artifacts = vec![component_assets_artifact("ddsm115", "0.1.0")];
+        let git = FakeGit::default();
+
+        let cut = cut_artifacts("phoxal/framework", &artifacts, false, &git)?;
+
+        assert_eq!(
+            cut,
+            vec![CutRelease {
+                package: "phoxal/component-ddsm115-assets".to_string(),
+                package_name: None,
+                version: "0.1.0".to_string(),
+                tag: "phoxal-component-ddsm115-assets-v0.1.0".to_string(),
+            }]
+        );
+        assert_eq!(
+            git.created.into_inner(),
+            vec![(
+                "phoxal/framework".to_string(),
+                "phoxal-component-ddsm115-assets-v0.1.0".to_string(),
+                "phoxal/component-ddsm115-assets v0.1.0".to_string(),
+            )]
+        );
         Ok(())
     }
 }

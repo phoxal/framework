@@ -183,11 +183,22 @@ fn verify_release_plan_assets(
                 matrix.package, matrix.target
             )
         })?;
+        let metadata_matches = match (
+            &asset.metadata,
+            &output.metadata_name,
+            &output.metadata_sha256,
+        ) {
+            (Some(asset_metadata), Some(metadata_name), Some(metadata_sha256)) => {
+                asset_metadata.emit_apis == *metadata_name
+                    && asset_metadata.emit_apis_sha256 == *metadata_sha256
+                    && asset_metadata.sha256_file == output.checksum_name
+            }
+            (None, None, None) => true,
+            _ => false,
+        };
         if asset.asset != output.tarball_name
             || asset.sha256 != output.tarball_sha256
-            || asset.metadata.emit_apis != output.metadata_name
-            || asset.metadata.emit_apis_sha256 != output.metadata_sha256
-            || asset.metadata.sha256_file != output.checksum_name
+            || !metadata_matches
         {
             bail!(
                 "{} {} catalog asset facts do not match packaged outputs",
@@ -198,11 +209,11 @@ fn verify_release_plan_assets(
         if verify_github {
             let repo = repo.context("--verify-github requires --repo or GITHUB_REPOSITORY")?;
             let existing = github_release_asset_names(repo, &matrix.tag)?;
-            for name in [
-                &output.tarball_name,
-                &output.checksum_name,
-                &output.metadata_name,
-            ] {
+            let mut expected_names = vec![&output.tarball_name, &output.checksum_name];
+            if let Some(metadata_name) = &output.metadata_name {
+                expected_names.push(metadata_name);
+            }
+            for name in expected_names {
                 if !existing.contains(name) {
                     bail!(
                         "GitHub release {} is missing uploaded asset {}",

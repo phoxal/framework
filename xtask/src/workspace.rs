@@ -201,6 +201,10 @@ pub fn runner_for_target(target: &str) -> Result<&'static str> {
         "aarch64-unknown-linux-gnu" => Ok("ubuntu-24.04-arm"),
         "x86_64-unknown-linux-gnu" => Ok("ubuntu-24.04"),
         "aarch64-apple-darwin" => Ok("macos-14"),
+        // `ComponentAssets` packaging just tars files (no cargo build, no
+        // per-architecture binary), so any host runner works; the cheapest
+        // Linux runner is used.
+        TARGET_INDEPENDENT_SCOPE => Ok("ubuntu-24.04"),
         _ => bail!("no CI runner is configured for release target {target}"),
     }
 }

@@ -7,15 +7,20 @@ name: release-plz
 # are out of its scope entirely: they set publish = false, so release-plz drops
 # them before its own config even applies).
 #
-# Official artifact crates (services/drivers/tools/simulator) are owned by
-# xtask instead:
+# Official artifacts (services/component drivers/tools/simulators, plus
+# target-independent component_assets bundles - docs #21) are owned by xtask
+# instead:
 #   - `cargo xtask release cut` creates the tag + a draft GitHub release for any
-#     artifact whose current Cargo.toml version isn't tagged yet (idempotent -
-#     same reconcile-on-every-push semantics `release_always` gave release-plz),
-#     and emits a release-plz-JSON-compatible document;
+#     artifact whose current version isn't tagged yet (idempotent - same
+#     reconcile-on-every-push semantics `release_always` gave release-plz;
+#     crate-backed artifacts version off Cargo.toml, component_assets bundles
+#     off their assets.version file) and emits a release-plz-JSON-compatible
+#     document;
 #   - `cargo xtask release plan` consumes that document exactly like it used to
 #     consume `release-plz release --output json`, so the native asset
-#     packaging/upload/gate/publish/catalog steps below are unchanged;
+#     packaging/upload/gate/publish/catalog steps below are unchanged; a
+#     component_assets bundle's matrix row packages once for the
+#     target-independent scope instead of once per real target triple;
 #   - `cargo xtask release bump --changed` (in the release-plz-pr job) computes
 #     artifact version bumps from git diff, cheaply, and lands them via a
 #     separate scheduled PR.
@@ -119,17 +124,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      # `component_assets` packages (`matrix.target == 'target-independent'`)
+      # have no Cargo crate/binary: packaging them is just tarring files, so the
+      # per-target Rust toolchain and cargo-auditable below are skipped for them.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: matrix.target != 'target-independent'
         with:
           target: ${{ matrix.target }}
 
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: matrix.target == 'target-independent'
+
       - name: Install cargo-auditable
+        if: matrix.target != 'target-independent'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-auditable
 
       - name: Install joypad Linux dependency
-        if: matrix.package == 'phoxal-tool-joypad' && contains(matrix.target, 'linux')
+        if: matrix.package == 'phoxal/tool-joypad' && contains(matrix.target, 'linux')
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -152,10 +165,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # `matrix.package` is the provider-qualified public identity
+      # (`phoxal/component-ddsm115-assets`); packaged asset filenames are its
+      # filesystem-safe projection (`phoxal-component-ddsm115-assets-...`, docs
+      # #21), so the upload-artifact glob must match on that form, not the raw
+      # `/`-qualified package.
+      - name: Compute filesystem-safe package name
+        id: safe-name
+        run: echo "value=$(echo '${{ matrix.package }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
-          name: native-${{ matrix.package }}-${{ matrix.target }}
-          path: target/xtask/release/${{ matrix.package }}-v${{ matrix.version }}-${{ matrix.target }}.*
+          name: native-${{ steps.safe-name.outputs.value }}-${{ matrix.target }}
+          path: target/xtask/release/${{ steps.safe-name.outputs.value }}-v${{ matrix.version }}-${{ matrix.target }}.*
 
   catalog-publish:
     name: catalog gate and publish

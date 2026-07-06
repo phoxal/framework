@@ -8,7 +8,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, require_nonempty_artifacts};
+use crate::workspace::{
+    ArtifactKind, OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
+};
 
 const BUS_ABI: &str = "phoxal-bus/v0";
 const EMIT_SCHEMA: &str = "phoxal.emit-apis/v0";
@@ -33,24 +35,30 @@ pub struct Args {
     pub dry_run: bool,
 }
 
+/// `metadata` is `None` for a [`ArtifactKind::ComponentAssets`] bundle: a plain
+/// tarball with a checksum, no `emit-apis` sidecar (docs #21). Every other kind
+/// always packages `Some(..)`.
 #[derive(Clone, Debug)]
 pub struct PackagedArtifact {
     pub tarball: PathBuf,
     pub checksum: PathBuf,
-    pub metadata: PathBuf,
+    pub metadata: Option<PathBuf>,
 }
 
+/// `metadata`/`metadata_name`/`metadata_sha256`/`emit_apis` are `None` for a
+/// [`ArtifactKind::ComponentAssets`] bundle, which carries no `emit-apis`
+/// sidecar (docs #21). Every other kind always carries `Some(..)`.
 #[derive(Clone, Debug)]
 pub(crate) struct PackagedOutput {
     pub tarball: PathBuf,
     pub checksum: PathBuf,
-    pub metadata: PathBuf,
+    pub metadata: Option<PathBuf>,
     pub tarball_name: String,
     pub checksum_name: String,
-    pub metadata_name: String,
+    pub metadata_name: Option<String>,
     pub tarball_sha256: String,
-    pub metadata_sha256: String,
-    pub emit_apis: EmitApisMetadata,
+    pub metadata_sha256: Option<String>,
+    pub emit_apis: Option<EmitApisMetadata>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -67,8 +75,15 @@ pub fn run(args: Args) -> Result<()> {
         validate_supported_target(&artifact, &target_triple)?;
         if args.dry_run {
             println!(
-                "would package {} v{} for {} using cargo auditable build",
-                artifact.package, artifact.version, target_triple
+                "would package {} v{} for {} using {}",
+                artifact.package,
+                artifact.version,
+                target_triple,
+                if artifact.kind.has_crate() {
+                    "cargo auditable build"
+                } else {
+                    "a plain asset tarball"
+                }
             );
             continue;
         }
@@ -87,7 +102,11 @@ pub fn run(args: Args) -> Result<()> {
             target_triple,
             packaged.tarball.display(),
             packaged.checksum.display(),
-            packaged.metadata.display()
+            packaged
+                .metadata
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(no emit-apis metadata: component assets)".to_string())
         );
     }
 
@@ -104,14 +123,7 @@ pub(crate) fn workspace_relative_out_dir(workspace: &Workspace, out_dir: &Path) 
 
 fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialArtifact>> {
     if args.all {
-        // `component_assets` packages have no Cargo crate/binary to build or
-        // package into a release tarball.
-        return Ok(workspace
-            .official_artifacts()
-            .iter()
-            .filter(|artifact| artifact.kind.has_crate())
-            .cloned()
-            .collect());
+        return Ok(workspace.official_artifacts().to_vec());
     }
 
     let package_name = args
@@ -119,7 +131,6 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
         .as_deref()
         .context("package is required unless --all is present")?;
     let artifact = workspace.official_artifact(package_name)?;
-    artifact.require_package_name()?;
     Ok(vec![artifact.clone()])
 }
 
@@ -146,6 +157,10 @@ pub(crate) fn package_artifact(
     host_triple: &str,
     target_triple: &str,
 ) -> Result<PackagedArtifact> {
+    if !artifact.kind.has_crate() {
+        return package_component_assets(artifact, out_dir, target_triple);
+    }
+
     artifact.require_package_name()?;
     validate_supported_target(artifact, target_triple)?;
     build_target_artifact(workspace.root(), artifact, target_triple)?;
@@ -172,8 +187,154 @@ pub(crate) fn package_artifact(
     Ok(PackagedArtifact {
         tarball,
         checksum,
-        metadata,
+        metadata: Some(metadata),
     })
+}
+
+/// The bundle files an [`ArtifactKind::ComponentAssets`] tarball includes,
+/// relative to `artifact.crate_dir` (the `component/<id>/` directory):
+/// `component.yaml`, `simulation.yaml`, `structure.urdf` when present, and the
+/// full `meshes/` tree. `driver/` (the separate `ComponentDriver` package) and
+/// `assets.version` (xtask-internal release metadata, not a runtime asset) are
+/// always excluded (docs #21).
+const COMPONENT_ASSETS_TOP_LEVEL_FILES: [&str; 3] =
+    ["component.yaml", "simulation.yaml", "structure.urdf"];
+const COMPONENT_ASSETS_TREE_DIRS: [&str; 1] = ["meshes"];
+
+/// Packages a target-independent `ComponentAssets` bundle: no cargo build, no
+/// binary, no `emit-apis` sidecar - just a deterministic tarball of the
+/// component's asset files plus a checksum (docs #21).
+fn package_component_assets(
+    artifact: &OfficialArtifact,
+    out_dir: &Path,
+    target_triple: &str,
+) -> Result<PackagedArtifact> {
+    validate_supported_target(artifact, target_triple)?;
+    if target_triple != TARGET_INDEPENDENT_SCOPE {
+        bail!(
+            "{} is a component_assets package and can only be packaged for the \
+             target-independent scope '{TARGET_INDEPENDENT_SCOPE}', not '{target_triple}'",
+            artifact.package
+        );
+    }
+
+    let stem = asset_stem(artifact, target_triple);
+    let tarball = out_dir.join(format!("{stem}.tar.zst"));
+    let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
+
+    let entries = component_assets_bundle_entries(&artifact.crate_dir)?;
+    write_component_assets_tar_zst(&tarball, &artifact.crate_dir, &entries)?;
+    write_sha256(&tarball, &checksum)?;
+
+    Ok(PackagedArtifact {
+        tarball,
+        checksum,
+        metadata: None,
+    })
+}
+
+/// Walks `component_dir` (the `component/<id>/` directory) and returns every
+/// bundle file's path relative to `component_dir`, sorted for a deterministic
+/// tarball. Excludes `driver/` and [`crate::workspace::ASSETS_VERSION_FILE`].
+fn component_assets_bundle_entries(component_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries = Vec::new();
+
+    for name in COMPONENT_ASSETS_TOP_LEVEL_FILES {
+        if component_dir.join(name).is_file() {
+            entries.push(PathBuf::from(name));
+        }
+    }
+
+    for dir_name in COMPONENT_ASSETS_TREE_DIRS {
+        let dir = component_dir.join(dir_name);
+        if dir.is_dir() {
+            collect_files_sorted(&dir, Path::new(dir_name), &mut entries)?;
+        }
+    }
+
+    entries.sort();
+    Ok(entries)
+}
+
+/// Recursively collects every regular file under `dir` into `entries` as paths
+/// relative to the bundle root (`relative_prefix` joined with the file's name
+/// under `dir`), sorting each directory's children so the walk is
+/// deterministic regardless of filesystem iteration order.
+fn collect_files_sorted(
+    dir: &Path,
+    relative_prefix: &Path,
+    entries: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let mut children = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("failed to read {}", dir.display()))?;
+    children.sort();
+
+    for child in children {
+        let name = child
+            .file_name()
+            .with_context(|| format!("{} has no file name", child.display()))?;
+        let relative = relative_prefix.join(name);
+        if child.is_dir() {
+            collect_files_sorted(&child, &relative, entries)?;
+        } else if child.is_file() {
+            entries.push(relative);
+        }
+    }
+
+    Ok(())
+}
+
+/// Writes a deterministic tarball of `entries` (paths relative to
+/// `component_dir`): sorted walk order (already guaranteed by the caller),
+/// mode `0o644` (asset data, never executable), mtime 0 - mirroring the
+/// reproducibility choices [`write_tar_zst`] makes for a binary artifact.
+fn write_component_assets_tar_zst(
+    tarball: &Path,
+    component_dir: &Path,
+    entries: &[PathBuf],
+) -> Result<()> {
+    let tarball_file = File::create(tarball)
+        .with_context(|| format!("failed to create tarball {}", tarball.display()))?;
+    let encoder = zstd::Encoder::new(tarball_file, 0)
+        .with_context(|| format!("failed to start zstd encoder for {}", tarball.display()))?;
+    let mut archive = tar::Builder::new(encoder);
+    archive.follow_symlinks(false);
+
+    for relative in entries {
+        let source = component_dir.join(relative);
+        let mut file =
+            File::open(&source).with_context(|| format!("failed to open {}", source.display()))?;
+        let size = file
+            .metadata()
+            .with_context(|| format!("failed to stat {}", source.display()))?
+            .len();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(size);
+        header.set_mode(0o644);
+        header.set_mtime(0);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, relative, &mut file)
+            .with_context(|| {
+                format!(
+                    "failed to append {} to {}",
+                    relative.display(),
+                    tarball.display()
+                )
+            })?;
+    }
+
+    let encoder = archive
+        .into_inner()
+        .with_context(|| format!("failed to finish tar archive {}", tarball.display()))?;
+    encoder
+        .finish()
+        .with_context(|| format!("failed to finish zstd stream {}", tarball.display()))?;
+
+    Ok(())
 }
 
 pub(crate) fn validate_supported_target(
@@ -427,8 +588,7 @@ pub(crate) fn read_packaged_output(
     let stem = asset_stem(artifact, target_triple);
     let tarball = package_dir.join(format!("{stem}.tar.zst"));
     let checksum = package_dir.join(format!("{stem}.tar.zst.sha256"));
-    let metadata = package_dir.join(format!("{stem}.emit-apis.json"));
-    for path in [&tarball, &checksum, &metadata] {
+    for path in [&tarball, &checksum] {
         if !path.is_file() {
             bail!(
                 "missing packaged output for {} target {}: {}",
@@ -450,6 +610,32 @@ pub(crate) fn read_packaged_output(
         );
     }
 
+    if !artifact.kind.has_crate() {
+        // `ComponentAssets` bundles carry no `emit-apis` sidecar (docs #21): a
+        // plain tarball with a checksum only.
+        return Ok(PackagedOutput {
+            tarball_name: file_name(&tarball)?,
+            checksum_name: file_name(&checksum)?,
+            metadata_name: None,
+            tarball_sha256: computed,
+            metadata_sha256: None,
+            tarball,
+            checksum,
+            metadata: None,
+            emit_apis: None,
+        });
+    }
+
+    let metadata = package_dir.join(format!("{stem}.emit-apis.json"));
+    if !metadata.is_file() {
+        bail!(
+            "missing packaged output for {} target {}: {}",
+            artifact.package,
+            target_triple,
+            metadata.display()
+        );
+    }
+
     let metadata_bytes =
         fs::read(&metadata).with_context(|| format!("failed to read {}", metadata.display()))?;
     let emit_apis = parse_emit_apis_json(&metadata_bytes, &artifact.id, artifact.kind)
@@ -458,13 +644,13 @@ pub(crate) fn read_packaged_output(
     Ok(PackagedOutput {
         tarball_name: file_name(&tarball)?,
         checksum_name: file_name(&checksum)?,
-        metadata_name: file_name(&metadata)?,
+        metadata_name: Some(file_name(&metadata)?),
         tarball_sha256: computed,
-        metadata_sha256: sha256_bytes(&metadata_bytes),
+        metadata_sha256: Some(sha256_bytes(&metadata_bytes)),
         tarball,
         checksum,
-        metadata,
-        emit_apis,
+        metadata: Some(metadata),
+        emit_apis: Some(emit_apis),
     })
 }
 

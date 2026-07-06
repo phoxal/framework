@@ -112,12 +112,15 @@ impl ProjectionMetadata {
     }
 }
 
+/// `metadata_filename`/`metadata_sha256` are `None` for a
+/// [`ArtifactKind::ComponentAssets`] bundle, which carries no `emit-apis`
+/// sidecar (docs #21).
 #[derive(Debug)]
 struct ReleaseProjection {
     asset_filename: String,
     asset_sha256: String,
-    metadata_filename: String,
-    metadata_sha256: String,
+    metadata_filename: Option<String>,
+    metadata_sha256: Option<String>,
     checksum_filename: String,
 }
 
@@ -273,7 +276,7 @@ fn projections(
             continue;
         }
         let projection = if artifact.kind == ArtifactKind::ComponentAssets {
-            projection_from_component_assets(api_generations)?
+            projection_from_component_assets(artifact, api_generations, options)?
         } else {
             match options.mode {
                 InputMode::PackageOutputs => {
@@ -294,12 +297,20 @@ fn projections(
 }
 
 /// `ComponentAssets` bundles have no runtime binary to run `emit-apis` on, so
-/// there is nothing to package or execute; they are synthesized as
-/// target-independent, contract-free entries pinned to the latest stable API
-/// generation (docs #21: assets carry no contracts and are not per-architecture
-/// binaries).
+/// there is nothing to execute; they are synthesized as target-independent,
+/// contract-free entries pinned to the latest stable API generation (docs #21:
+/// assets carry no contracts and are not per-architecture binaries).
+///
+/// In [`InputMode::PackageOutputs`], if `cargo xtask release package` already
+/// wrote a tarball for this bundle under `options.package_dir`, this reads it
+/// and records a real `Released` release asset (`metadata: None` - assets carry
+/// no `emit-apis` sidecar). If no packaged tarball is present (e.g. a partial
+/// package-outputs run that only packaged some artifacts), the bundle is left
+/// `Pending` with no release asset, same as `InputMode::MetadataOnly`.
 fn projection_from_component_assets(
+    artifact: &OfficialArtifact,
     api_generations: &[ApiGeneration],
+    options: &GenerateOptions,
 ) -> Result<ArtifactProjection> {
     let latest_stable = api_generations
         .iter()
@@ -308,16 +319,43 @@ fn projection_from_component_assets(
         .with_context(
             || "no stable API generation is declared to pin component_assets packages to",
         )?;
+    let metadata = ProjectionMetadata::ComponentAssets {
+        api_generation: latest_stable.name.clone(),
+    };
+
+    if options.mode == InputMode::PackageOutputs {
+        let stem = package::asset_stem(artifact, crate::workspace::TARGET_INDEPENDENT_SCOPE);
+        let tarball = options.package_dir.join(format!("{stem}.tar.zst"));
+        let checksum = options.package_dir.join(format!("{stem}.tar.zst.sha256"));
+        if tarball.is_file() && checksum.is_file() {
+            let output = package::read_packaged_output(
+                artifact,
+                &options.package_dir,
+                crate::workspace::TARGET_INDEPENDENT_SCOPE,
+            )?;
+            let mut releases = BTreeMap::new();
+            let mut status = BTreeMap::new();
+            releases.insert(
+                crate::workspace::TARGET_INDEPENDENT_SCOPE.to_string(),
+                release_projection(&output),
+            );
+            status.insert(
+                crate::workspace::TARGET_INDEPENDENT_SCOPE.to_string(),
+                ArtifactStatus::Released,
+            );
+            return Ok(ArtifactProjection {
+                metadata,
+                releases,
+                status,
+            });
+        }
+    }
+
     Ok(ArtifactProjection {
-        metadata: ProjectionMetadata::ComponentAssets {
-            api_generation: latest_stable.name.clone(),
-        },
+        metadata,
         releases: BTreeMap::new(),
-        // Left empty, same as a crate-backed metadata-only projection: neither
-        // mode packages a real release asset for the assets bundle, so
-        // `build_revision_from_projections` fills the target-independent scope
-        // in with `Pending` below, and package-output mode's asset packaging
-        // (once implemented) records `Released` with a real release asset.
+        // Left empty: `build_revision_from_projections` fills the
+        // target-independent scope in with `Pending` below.
         status: BTreeMap::new(),
     })
 }
@@ -350,8 +388,14 @@ fn projection_from_package_outputs(
         status.insert(target.clone(), ArtifactStatus::Released);
     }
 
+    let emit_apis = first.emit_apis.with_context(|| {
+        format!(
+            "{} is a crate-backed artifact and must have emit-apis metadata",
+            artifact.package
+        )
+    })?;
     Ok(ArtifactProjection {
-        metadata: ProjectionMetadata::EmitApis(first.emit_apis),
+        metadata: ProjectionMetadata::EmitApis(emit_apis),
         releases,
         status,
     })
@@ -429,16 +473,24 @@ fn build_revision_from_projections(
         let target_triples = target_triples_for_artifact(artifact, options, host_triple)?;
         let mut release_assets = BTreeMap::new();
         for (target, release) in &projection.releases {
+            // `ComponentAssets` bundles carry no `emit-apis` sidecar (docs #21):
+            // `metadata_filename`/`metadata_sha256` are `None` for them, so the
+            // catalog's `metadata` is `None` too. Every other kind always
+            // packages `Some(..)`.
+            let metadata = match (&release.metadata_filename, &release.metadata_sha256) {
+                (Some(emit_apis), Some(emit_apis_sha256)) => Some(ReleaseAssetMetadata {
+                    emit_apis: emit_apis.clone(),
+                    emit_apis_sha256: emit_apis_sha256.clone(),
+                    sha256_file: release.checksum_filename.clone(),
+                }),
+                _ => None,
+            };
             release_assets.insert(
                 target.clone(),
                 ReleaseAsset {
                     asset: release.asset_filename.clone(),
                     sha256: release.asset_sha256.clone(),
-                    metadata: ReleaseAssetMetadata {
-                        emit_apis: release.metadata_filename.clone(),
-                        emit_apis_sha256: release.metadata_sha256.clone(),
-                        sha256_file: release.checksum_filename.clone(),
-                    },
+                    metadata,
                 },
             );
         }

@@ -10,7 +10,9 @@ use toml_edit::{DocumentMut, value};
 
 use crate::api::manifest::{self, ContractDiff};
 use crate::release::package;
-use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
+use crate::workspace::{
+    ASSETS_VERSION_FILE, OfficialArtifact, Workspace, require_nonempty_artifacts,
+};
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -46,16 +48,15 @@ pub fn run(args: Args) -> Result<()> {
 
     let mut bumped = 0usize;
     for artifact in &selected {
-        artifact.require_package_name().with_context(|| {
-            format!(
-                "{} has no Cargo crate to bump; component_assets packages have no version to \
-                 bump here",
-                artifact.package
-            )
-        })?;
-        let manifest_path = artifact.crate_dir.join("Cargo.toml");
-        let (from, to) = bump_manifest_version(&manifest_path)
-            .with_context(|| format!("failed to bump {}", manifest_path.display()))?;
+        let (from, to) = if artifact.kind.has_crate() {
+            let manifest_path = artifact.crate_dir.join("Cargo.toml");
+            bump_manifest_version(&manifest_path)
+                .with_context(|| format!("failed to bump {}", manifest_path.display()))?
+        } else {
+            let version_path = artifact.crate_dir.join(ASSETS_VERSION_FILE);
+            bump_assets_version_file(&version_path)
+                .with_context(|| format!("failed to bump {}", version_path.display()))?
+        };
         println!("bumped {}: {} -> {}", artifact.package, from, to);
         bumped += 1;
     }
@@ -66,14 +67,7 @@ pub fn run(args: Args) -> Result<()> {
 
 fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialArtifact>> {
     if args.all {
-        // `component_assets` packages have no Cargo crate/version to bump; `--all`
-        // only ever meant "every discovered artifact crate".
-        return Ok(workspace
-            .official_artifacts()
-            .iter()
-            .filter(|artifact| artifact.kind.has_crate())
-            .cloned()
-            .collect());
+        return Ok(workspace.official_artifacts().to_vec());
     }
     if args.affected {
         return affected_artifacts(workspace);
@@ -94,8 +88,12 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
 trait GitQuery {
     /// Whether `tag` exists in the repository.
     fn tag_exists(&self, tag: &str) -> Result<bool>;
-    /// Whether `path` (relative to the repo root) changed between `tag` and `HEAD`.
-    fn changed_since(&self, tag: &str, path: &Path) -> Result<bool>;
+    /// Whether `path` (relative to the repo root) changed between `tag` and
+    /// `HEAD`, ignoring anything under one of `excludes` (paths relative to
+    /// `path`, e.g. `driver` or `assets.version` for a `component_assets`
+    /// bundle - docs #21: the driver crate and xtask-internal version file are
+    /// not part of the asset bundle's own release contents).
+    fn changed_since(&self, tag: &str, path: &Path, excludes: &[&str]) -> Result<bool>;
 }
 
 struct CliGitQuery;
@@ -110,10 +108,15 @@ impl GitQuery for CliGitQuery {
         Ok(status.success())
     }
 
-    fn changed_since(&self, tag: &str, path: &Path) -> Result<bool> {
-        let status = Command::new("git")
+    fn changed_since(&self, tag: &str, path: &Path, excludes: &[&str]) -> Result<bool> {
+        let mut command = Command::new("git");
+        command
             .args(["diff", "--quiet", &format!("{tag}..HEAD"), "--"])
-            .arg(path)
+            .arg(path);
+        for exclude in excludes {
+            command.arg(format!(":(exclude){}", path.join(exclude).display()));
+        }
+        let status = command
             .status()
             .with_context(|| format!("failed to spawn git diff for {tag}..HEAD -- {path:?}"))?;
         // `git diff --quiet` exits 0 when there is no difference, 1 when there is.
@@ -138,6 +141,13 @@ fn should_bump(tag_exists: bool, changed_since_tag: bool) -> bool {
     tag_exists && changed_since_tag
 }
 
+/// Paths under a `component_assets` bundle's `crate_dir`
+/// (`component/<id>/`) that are excluded from its `--changed` diff: `driver/`
+/// is the separate `ComponentDriver` package's release contents, and
+/// `assets.version` is xtask-internal release metadata, not a runtime asset
+/// (docs #21).
+const COMPONENT_ASSETS_CHANGED_EXCLUDES: [&str; 2] = ["driver", ASSETS_VERSION_FILE];
+
 fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<OfficialArtifact>> {
     let mut selected = Vec::new();
     for artifact in workspace.official_artifacts() {
@@ -153,8 +163,13 @@ fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<Of
             continue;
         }
 
+        let excludes: &[&str] = if artifact.kind.has_crate() {
+            &[]
+        } else {
+            &COMPONENT_ASSETS_CHANGED_EXCLUDES
+        };
         let changed = git
-            .changed_since(&tag, &artifact.crate_dir)
+            .changed_since(&tag, &artifact.crate_dir, excludes)
             .with_context(|| format!("failed to diff {} since {tag}", artifact.package))?;
         if should_bump(tag_exists, changed) {
             selected.push(artifact.clone());
@@ -234,6 +249,22 @@ fn bump_manifest_version(manifest_path: &std::path::Path) -> Result<(String, Str
     Ok((current, bumped))
 }
 
+/// Bumps a [`ArtifactKind::ComponentAssets`] package's version, which lives in
+/// `component/<id>/assets.version` rather than a `Cargo.toml` `[package]
+/// version` (a `component_assets` bundle has no crate - docs #21).
+fn bump_assets_version_file(version_path: &std::path::Path) -> Result<(String, String)> {
+    let text = fs::read_to_string(version_path)
+        .with_context(|| format!("failed to read {}", version_path.display()))?;
+    let current = text.trim().to_string();
+    if current.is_empty() {
+        bail!("{} is empty", version_path.display());
+    }
+    let bumped = bump_patch_version(&current)?;
+    fs::write(version_path, format!("{bumped}\n"))
+        .with_context(|| format!("failed to write {}", version_path.display()))?;
+    Ok((current, bumped))
+}
+
 fn bump_patch_version(version: &str) -> Result<String> {
     let mut version = Version::parse(version).with_context(|| {
         format!("artifact version '{version}' is not valid semver and cannot be bumped")
@@ -247,6 +278,7 @@ fn bump_patch_version(version: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -318,11 +350,28 @@ mod tests {
         }
     }
 
+    fn component_assets_artifact(id: &str, crate_dir: &str) -> OfficialArtifact {
+        OfficialArtifact {
+            package: crate::workspace::package_identity(ArtifactKind::ComponentAssets, id),
+            package_name: None,
+            kind: ArtifactKind::ComponentAssets,
+            version: "0.1.0".to_string(),
+            crate_dir: PathBuf::from(crate_dir),
+            bin_name: None,
+            id: id.to_string(),
+            metadata: PhoxalPackageMetadata::default(),
+        }
+    }
+
     /// Fake `GitQuery` driven entirely by in-memory maps, so `changed_artifacts`
-    /// can be exercised without a real repo.
+    /// can be exercised without a real repo. Also records the `excludes` each
+    /// call received, so tests can assert `component_assets` bundles diff with
+    /// `driver`/`assets.version` excluded while crate-backed artifacts diff with
+    /// none.
     struct FakeGitQuery {
         tags: HashMap<String, bool>,
         diffs: HashMap<String, bool>,
+        excludes_seen: RefCell<Vec<(String, Vec<String>)>>,
     }
 
     impl GitQuery for FakeGitQuery {
@@ -330,7 +379,11 @@ mod tests {
             Ok(*self.tags.get(tag).unwrap_or(&false))
         }
 
-        fn changed_since(&self, tag: &str, _path: &Path) -> Result<bool> {
+        fn changed_since(&self, tag: &str, _path: &Path, excludes: &[&str]) -> Result<bool> {
+            self.excludes_seen.borrow_mut().push((
+                tag.to_string(),
+                excludes.iter().map(|value| value.to_string()).collect(),
+            ));
             Ok(*self.diffs.get(tag).unwrap_or(&false))
         }
     }
@@ -359,6 +412,7 @@ mod tests {
                 ("phoxal-service-drive-v0.1.0".to_string(), true),
                 ("phoxal-service-map-v0.1.0".to_string(), false),
             ]),
+            excludes_seen: RefCell::new(Vec::new()),
         };
 
         let selected = changed_artifacts(&workspace, &git).expect("changed_artifacts");
@@ -367,5 +421,53 @@ mod tests {
             .map(|artifact| artifact.package.as_str())
             .collect();
         assert_eq!(names, vec!["phoxal/service-drive"]);
+    }
+
+    #[test]
+    fn changed_artifacts_includes_component_assets_and_excludes_driver_and_version_file() {
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![component_assets_artifact(
+                "ddsm115",
+                "/repo/component/ddsm115",
+            )],
+        );
+
+        let git = FakeGitQuery {
+            tags: HashMap::from([("phoxal-component-ddsm115-assets-v0.1.0".to_string(), true)]),
+            diffs: HashMap::from([("phoxal-component-ddsm115-assets-v0.1.0".to_string(), true)]),
+            excludes_seen: RefCell::new(Vec::new()),
+        };
+
+        let selected = changed_artifacts(&workspace, &git).expect("changed_artifacts");
+        assert_eq!(
+            selected
+                .iter()
+                .map(|a| a.package.as_str())
+                .collect::<Vec<_>>(),
+            vec!["phoxal/component-ddsm115-assets"]
+        );
+        assert_eq!(
+            git.excludes_seen.into_inner(),
+            vec![(
+                "phoxal-component-ddsm115-assets-v0.1.0".to_string(),
+                vec!["driver".to_string(), ASSETS_VERSION_FILE.to_string()],
+            )]
+        );
+    }
+
+    #[test]
+    fn bump_assets_version_file_bumps_patch() -> Result<()> {
+        let dir = tempfile::tempdir().context("create tempdir")?;
+        let path = dir.path().join("assets.version");
+        fs::write(&path, "0.1.0\n")?;
+
+        let (from, to) = bump_assets_version_file(&path)?;
+
+        assert_eq!(from, "0.1.0");
+        assert_eq!(to, "0.1.1");
+        assert_eq!(fs::read_to_string(&path)?.trim(), "0.1.1");
+        Ok(())
     }
 }
