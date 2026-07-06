@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/phoxal/framework/compare/phoxal-v0.26.1...phoxal-v0.27.0) - 2026-07-06
+
+### Added
+
+- *(model,catalog)* [**breaking**] Phase 7 Band A - five-root-key grammar + package identity ([#180](https://github.com/phoxal/framework/pull/180))
+
 ## [0.26.1](https://github.com/phoxal/framework/compare/phoxal-v0.26.0...phoxal-v0.26.1) - 2026-07-06
 
 ### Added
