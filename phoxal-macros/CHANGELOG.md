@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.6](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.5...phoxal-macros-v0.19.6) - 2026-07-06
+
+### Fixed
+
+- *(15)* enforce Tool as a thin runner - reject #[step]/#[server] at compile time ([#171](https://github.com/phoxal/framework/pull/171))
+
 ## [0.19.5](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.4...phoxal-macros-v0.19.5) - 2026-07-03
 
 ### Added
