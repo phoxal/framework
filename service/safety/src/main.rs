@@ -16,42 +16,14 @@
 //! a stale envelope in force. Battery is required only when the robot model
 //! declares a battery capability; `drive/state` is always required.
 
-use std::f64::consts::PI;
+mod assessment;
+mod robot_config;
 
-use phoxal::model::component::v1::capability::Capability;
-use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-const BATTERY_CRITICAL_RATIO: f32 = 0.10;
-const BATTERY_LOW_RATIO: f32 = 0.25;
-const AUTHORIZATION_TTL_NS: u64 = 100_000_000;
-const SOURCE_FRESH_NS: u64 = 1_000_000_000;
-
-#[derive(Clone)]
-struct Timed<T> {
-    body: T,
-    produced_at_ns: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct RequiredSources {
-    battery: bool,
-    drive: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct EmergencyStopBinding {
-    component_id: String,
-    capability_id: String,
-}
-
-struct SafetyInputs<'a> {
-    required: RequiredSources,
-    battery: Option<&'a Timed<api::battery::State>>,
-    drive: Option<&'a Timed<api::drive::State>>,
-    emergency_stop_engaged: bool,
-}
+use crate::assessment::{SafetyInputs, Timed, assess, authorize, emergency_stop_engaged};
+use crate::robot_config::{RequiredSources, emergency_stop_bindings, required_sources};
 
 #[derive(phoxal::Service)]
 #[phoxal(id = "safety", api = y2026_1)]
@@ -176,197 +148,6 @@ impl Safety {
     }
 }
 
-fn required_sources(robot: &Robot) -> RequiredSources {
-    RequiredSources {
-        battery: robot_declares_battery(robot),
-        drive: true,
-    }
-}
-
-fn robot_declares_battery(robot: &Robot) -> bool {
-    robot.manifest.components().iter().any(|(_, instance)| {
-        robot
-            .components
-            .get(&instance.component)
-            .is_some_and(|component| {
-                component
-                    .capabilities
-                    .values()
-                    .any(|capability| matches!(capability, Capability::Battery(_)))
-            })
-    })
-}
-
-fn emergency_stop_bindings(robot: &Robot) -> Vec<EmergencyStopBinding> {
-    let mut bindings = robot
-        .manifest
-        .components()
-        .iter()
-        .filter_map(|(component_id, instance)| {
-            robot
-                .components
-                .get(&instance.component)
-                .map(|component| (component_id, component))
-        })
-        .flat_map(|(component_id, component)| {
-            component
-                .capabilities
-                .iter()
-                .filter(|(_, capability)| matches!(capability, Capability::EmergencyStop(_)))
-                .map(|(capability_id, _)| EmergencyStopBinding {
-                    component_id: component_id.clone(),
-                    capability_id: capability_id.clone(),
-                })
-        })
-        .collect::<Vec<_>>();
-    bindings.sort_by(|left, right| {
-        left.component_id
-            .cmp(&right.component_id)
-            .then_with(|| left.capability_id.cmp(&right.capability_id))
-    });
-    bindings
-}
-
-fn assess(inputs: &SafetyInputs<'_>, now_ns: u64) -> api::safety::Status {
-    let mut active_reasons = Vec::new();
-    let mut decision = api::safety::SafetyDecision::Allow;
-
-    if inputs.emergency_stop_engaged {
-        return api::safety::Status {
-            decision: api::safety::SafetyDecision::EmergencyStop,
-            active_reasons: vec![reason(api::safety::SafetyReasonCode::EmergencyStopEngaged)],
-        };
-    }
-
-    if source_stale(inputs.required.battery, inputs.battery, now_ns) {
-        active_reasons.push(source_stale_reason("battery/state"));
-        decision = worst_decision(decision, api::safety::SafetyDecision::Stop);
-    }
-    if source_stale(inputs.required.drive, inputs.drive, now_ns) {
-        active_reasons.push(source_stale_reason("drive/state"));
-        decision = worst_decision(decision, api::safety::SafetyDecision::Stop);
-    }
-
-    if let Some(battery) = fresh_body(inputs.battery, now_ns) {
-        if battery.charge_ratio < BATTERY_CRITICAL_RATIO {
-            active_reasons.push(reason(api::safety::SafetyReasonCode::BatteryCritical));
-            decision = worst_decision(decision, api::safety::SafetyDecision::Stop);
-        } else if battery.charge_ratio < BATTERY_LOW_RATIO {
-            active_reasons.push(reason(api::safety::SafetyReasonCode::BatteryLow));
-            decision = worst_decision(decision, api::safety::SafetyDecision::Slow);
-        }
-    }
-
-    if let Some(drive) = fresh_body(inputs.drive, now_ns) {
-        match drive.stop_reason {
-            Some(api::drive::StopReason::Fault) => {
-                active_reasons.push(reason(api::safety::SafetyReasonCode::DriveFault));
-                decision = worst_decision(decision, api::safety::SafetyDecision::Stop);
-            }
-            Some(api::drive::StopReason::EmergencyStop) => {
-                active_reasons.push(reason(api::safety::SafetyReasonCode::EmergencyStopEngaged));
-                decision = worst_decision(decision, api::safety::SafetyDecision::EmergencyStop);
-            }
-            Some(api::drive::StopReason::NoTarget) | None => {}
-        }
-    }
-
-    api::safety::Status {
-        decision,
-        active_reasons,
-    }
-}
-
-fn emergency_stop_engaged(software_estop_engaged: bool, component_estops: &[bool]) -> bool {
-    software_estop_engaged || component_estops.iter().any(|engaged| *engaged)
-}
-
-fn authorize(
-    status: &api::safety::Status,
-    _inputs: &SafetyInputs<'_>,
-    now_ns: u64,
-) -> api::safety::SafetyAuthorization {
-    api::safety::SafetyAuthorization {
-        decision: status.decision,
-        approved_motion: approved_motion(status.decision),
-        reasons: status.active_reasons.clone(),
-        source_revision: api::safety::SafetySourceRevision {
-            localization: None,
-            map: None,
-        },
-        expires_at_ns: Some(now_ns.saturating_add(AUTHORIZATION_TTL_NS)),
-    }
-}
-
-fn source_stale<T>(required: bool, timed: Option<&Timed<T>>, now_ns: u64) -> bool {
-    required && fresh_body(timed, now_ns).is_none()
-}
-
-fn fresh_body<T>(timed: Option<&Timed<T>>, now_ns: u64) -> Option<&T> {
-    let timed = timed?;
-    (now_ns.saturating_sub(timed.produced_at_ns) <= SOURCE_FRESH_NS).then_some(&timed.body)
-}
-
-fn approved_motion(decision: api::safety::SafetyDecision) -> api::safety::MotionConstraint {
-    match decision {
-        api::safety::SafetyDecision::Allow => motion_constraint(-1.0, 1.0, -PI, PI),
-        api::safety::SafetyDecision::Slow => motion_constraint(-0.1, 0.1, -0.5, 0.5),
-        api::safety::SafetyDecision::Stop
-        | api::safety::SafetyDecision::EmergencyStop
-        | api::safety::SafetyDecision::UnknownConservative => motion_constraint(0.0, 0.0, 0.0, 0.0),
-    }
-}
-
-fn motion_constraint(
-    linear_min: f64,
-    linear_max: f64,
-    angular_min: f64,
-    angular_max: f64,
-) -> api::safety::MotionConstraint {
-    api::safety::MotionConstraint {
-        linear_x_mps: api::safety::Constraint {
-            min: linear_min,
-            max: linear_max,
-        },
-        angular_z_radps: api::safety::Constraint {
-            min: angular_min,
-            max: angular_max,
-        },
-    }
-}
-
-fn reason(code: api::safety::SafetyReasonCode) -> api::safety::SafetyReason {
-    api::safety::SafetyReason { code, detail: None }
-}
-
-fn source_stale_reason(source: &str) -> api::safety::SafetyReason {
-    api::safety::SafetyReason {
-        code: api::safety::SafetyReasonCode::SourceStale,
-        detail: Some(format!("{source} missing or stale")),
-    }
-}
-
-fn worst_decision(
-    current: api::safety::SafetyDecision,
-    candidate: api::safety::SafetyDecision,
-) -> api::safety::SafetyDecision {
-    if decision_rank(candidate) > decision_rank(current) {
-        candidate
-    } else {
-        current
-    }
-}
-
-fn decision_rank(decision: api::safety::SafetyDecision) -> u8 {
-    match decision {
-        api::safety::SafetyDecision::Allow => 0,
-        api::safety::SafetyDecision::Slow => 1,
-        api::safety::SafetyDecision::Stop => 2,
-        api::safety::SafetyDecision::EmergencyStop => 3,
-        api::safety::SafetyDecision::UnknownConservative => 4,
-    }
-}
-
 fn main() -> phoxal::Result<()> {
     phoxal::run::<Safety>()
 }
@@ -375,9 +156,8 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use phoxal_api::ContractBody;
 
-    use super::{
-        RequiredSources, SOURCE_FRESH_NS, Safety, SafetyInputs, Timed, api, assess, authorize,
-    };
+    use super::{RequiredSources, Safety, SafetyInputs, Timed, api, assess, authorize};
+    use crate::assessment::SOURCE_FRESH_NS;
 
     const NOW_NS: u64 = 1_000_000_000;
     const REQUIRED: RequiredSources = RequiredSources {

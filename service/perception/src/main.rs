@@ -13,226 +13,27 @@
 //! detector heads can plug in behind the small `DetectorHead` trait without
 //! changing the participant IO surface.
 
+mod detector;
+mod frames;
+mod sensors;
+mod tracker;
+
 use anyhow::Result;
-use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::component::v1::capability::Capability;
-use phoxal::model::v1::Robot;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
+
+use crate::detector::{DetectorHead, DetectorInput, PlaceholderDetector, detect_with};
+use crate::frames::{
+    FrameSample, HealthState, detection_from_raw, fresh_localization, latest_fresh_camera_index,
+    latest_matching_depth,
+};
+use crate::sensors::{SensorBinding, camera_bindings, depth_bindings};
+use crate::tracker::PointTracker;
 
 const CAMERA_STALE_NS: u64 = 1_000_000_000;
 const DEPTH_STALE_NS: u64 = 1_000_000_000;
 const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
-
-#[derive(Clone)]
-struct SensorBinding {
-    component_id: String,
-    capability_id: String,
-    frame_id: String,
-}
-
-impl SensorBinding {
-    fn from_ref(robot: &Robot, reference: CapabilityRef) -> Result<Self> {
-        let frame_id = robot
-            .require_link_target(&reference)
-            .or_else(|_| robot.component_mount_link(&reference.component_id))?;
-        Ok(Self {
-            frame_id,
-            component_id: reference.component_id,
-            capability_id: reference.capability_id,
-        })
-    }
-
-    // Perception CONSUMES sensor frames (the camera/depth drivers own/publish
-    // them), so these are the client `Subscribe` side from the public builder.
-    fn camera_topic(
-        &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
-        api::topic::new()
-            .component(&self.component_id)
-            .camera(&self.capability_id)
-            .frame()
-    }
-
-    fn depth_topic(
-        &self,
-    ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>> {
-        api::topic::new()
-            .component(&self.component_id)
-            .depth(&self.capability_id)
-            .frame()
-    }
-}
-
-#[derive(Clone)]
-struct FrameSample<B> {
-    body: B,
-    produced_at_ns: u64,
-}
-
-#[derive(Default)]
-struct HealthState {
-    healthy: bool,
-}
-
-impl HealthState {
-    fn observe_healthy(&mut self) {
-        self.healthy = true;
-    }
-
-    fn degrade(&mut self) {
-        self.healthy = false;
-    }
-
-    fn healthy(&self) -> bool {
-        self.healthy
-    }
-}
-
-struct DetectorInput<'a> {
-    camera: &'a api::component::camera::Frame,
-    depth: Option<&'a api::component::depth::Frame>,
-    frame_id: &'a str,
-    stamp_ns: u64,
-    localization: Option<&'a api::localize::LocalizationState>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct RawDetection {
-    class_id: String,
-    confidence: f32,
-    position_m: [f64; 3],
-}
-
-trait DetectorHead {
-    fn detector_name(&self) -> &'static str;
-    fn detect(&mut self, input: DetectorInput<'_>) -> Vec<RawDetection>;
-}
-
-struct PlaceholderDetector;
-
-impl DetectorHead for PlaceholderDetector {
-    fn detector_name(&self) -> &'static str {
-        "deterministic-placeholder"
-    }
-
-    fn detect(&mut self, input: DetectorInput<'_>) -> Vec<RawDetection> {
-        let _deterministic_input_identity = (
-            input.camera.width,
-            input.camera.height,
-            input.depth.and_then(|depth| depth.width),
-            input.frame_id,
-            input.stamp_ns,
-            input.localization.map(|localize| localize.confidence),
-        );
-        Vec::new()
-    }
-}
-
-#[derive(Clone, Copy)]
-struct TrackerConfig {
-    association_window_ns: u64,
-    association_max_distance_m: f64,
-}
-
-impl Default for TrackerConfig {
-    fn default() -> Self {
-        Self {
-            association_window_ns: 500_000_000,
-            association_max_distance_m: 0.5,
-        }
-    }
-}
-
-#[derive(Clone)]
-struct Track {
-    track_id: u64,
-    class_id: String,
-    position_m: [f64; 3],
-    last_seen_ns: u64,
-}
-
-struct PointTracker {
-    config: TrackerConfig,
-    next_track_id: u64,
-    tracks: Vec<Track>,
-}
-
-impl PointTracker {
-    fn new(config: TrackerConfig) -> Self {
-        Self {
-            config,
-            next_track_id: 1,
-            tracks: Vec::new(),
-        }
-    }
-
-    fn update(&mut self, detections: &mut [api::perception::Detection], observed_at_ns: u64) {
-        self.prune_expired(observed_at_ns);
-
-        let mut assigned_track_indices = Vec::new();
-        for detection in detections {
-            if let Some(track_index) =
-                self.best_track_for(detection, observed_at_ns, &assigned_track_indices)
-            {
-                let track = &mut self.tracks[track_index];
-                track.position_m = detection.position_m;
-                track.class_id.clone_from(&detection.class_id);
-                track.last_seen_ns = observed_at_ns;
-                detection.track_id = Some(track.track_id);
-                assigned_track_indices.push(track_index);
-            } else {
-                let track_id = self.next_track_id;
-                self.next_track_id = self.next_track_id.saturating_add(1);
-                self.tracks.push(Track {
-                    track_id,
-                    class_id: detection.class_id.clone(),
-                    position_m: detection.position_m,
-                    last_seen_ns: observed_at_ns,
-                });
-                detection.track_id = Some(track_id);
-                assigned_track_indices.push(self.tracks.len() - 1);
-            }
-        }
-    }
-
-    fn prune_expired(&mut self, observed_at_ns: u64) {
-        let window_ns = self.config.association_window_ns;
-        self.tracks
-            .retain(|track| observed_at_ns.saturating_sub(track.last_seen_ns) <= window_ns);
-    }
-
-    fn best_track_for(
-        &self,
-        detection: &api::perception::Detection,
-        observed_at_ns: u64,
-        assigned_track_indices: &[usize],
-    ) -> Option<usize> {
-        self.tracks
-            .iter()
-            .enumerate()
-            .filter(|(index, track)| {
-                !assigned_track_indices.contains(index)
-                    && track.class_id == detection.class_id
-                    && observed_at_ns.saturating_sub(track.last_seen_ns)
-                        <= self.config.association_window_ns
-            })
-            .filter_map(|(index, track)| {
-                let distance_m = distance_m(track.position_m, detection.position_m);
-                (distance_m <= self.config.association_max_distance_m)
-                    .then_some((index, distance_m))
-            })
-            .min_by(|(_, left), (_, right)| left.total_cmp(right))
-            .map(|(index, _)| index)
-    }
-}
-
-impl Default for PointTracker {
-    fn default() -> Self {
-        Self::new(TrackerConfig::default())
-    }
-}
 
 #[derive(phoxal::Service)]
 #[phoxal(id = "perception", api = y2026_1)]
@@ -379,8 +180,15 @@ impl Perception {
             &self.latest_depths,
             &source.component_id,
             now_ns,
+            DEPTH_STALE_NS,
         );
-        let localization = fresh_localization(&self.latest_localization, now_ns).cloned();
+        let localization = fresh_localization(
+            &self.latest_localization,
+            now_ns,
+            LOCALIZATION_STALE_NS,
+            MIN_LOCALIZATION_CONFIDENCE,
+        )
+        .cloned();
         let stamp_ns = camera.body.measured_at_ns.unwrap_or(camera.produced_at_ns);
 
         let raw = detect_with(
@@ -402,117 +210,6 @@ impl Perception {
     }
 }
 
-fn detect_with(detector: &mut impl DetectorHead, input: DetectorInput<'_>) -> Vec<RawDetection> {
-    detector.detect(input)
-}
-
-fn camera_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
-    robot
-        .camera_capabilities()
-        .into_iter()
-        .map(|reference| SensorBinding::from_ref(robot, reference))
-        .collect()
-}
-
-fn depth_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
-    let mut references = Vec::new();
-    for component_id in robot.manifest.components.instances.keys() {
-        let component = robot.component_for_instance(component_id)?;
-        for (capability_id, capability) in &component.capabilities {
-            if matches!(capability, Capability::Depth(_)) {
-                references.push(CapabilityRef::new(component_id, capability_id));
-            }
-        }
-    }
-    references.sort();
-    references
-        .into_iter()
-        .map(|reference| SensorBinding::from_ref(robot, reference))
-        .collect()
-}
-
-fn latest_fresh_camera_index<B>(
-    samples: &[Option<FrameSample<B>>],
-    now_ns: u64,
-    stale_ns: u64,
-) -> Option<usize> {
-    samples
-        .iter()
-        .enumerate()
-        .filter_map(|(index, sample)| sample.as_ref().map(|sample| (index, sample)))
-        .filter(|(_, sample)| now_ns.saturating_sub(sample.produced_at_ns) <= stale_ns)
-        .max_by_key(|(_, sample)| sample.produced_at_ns)
-        .map(|(index, _)| index)
-}
-
-fn latest_matching_depth(
-    depth_sources: &[SensorBinding],
-    samples: &[Option<FrameSample<api::component::depth::Frame>>],
-    component_id: &str,
-    now_ns: u64,
-) -> Option<FrameSample<api::component::depth::Frame>> {
-    depth_sources
-        .iter()
-        .zip(samples)
-        .filter(|(source, _)| source.component_id == component_id)
-        .filter_map(|(_, sample)| sample.as_ref())
-        .filter(|sample| now_ns.saturating_sub(sample.produced_at_ns) <= DEPTH_STALE_NS)
-        .max_by_key(|sample| sample.produced_at_ns)
-        .cloned()
-}
-
-fn fresh_localization(
-    sample: &Option<FrameSample<api::localize::LocalizationState>>,
-    now_ns: u64,
-) -> Option<&api::localize::LocalizationState> {
-    let sample = sample.as_ref()?;
-    if now_ns.saturating_sub(sample.produced_at_ns) > LOCALIZATION_STALE_NS {
-        return None;
-    }
-    (sample.body.confidence >= MIN_LOCALIZATION_CONFIDENCE).then_some(&sample.body)
-}
-
-fn detection_from_raw(
-    raw: RawDetection,
-    source_frame_id: &str,
-    localization: Option<&api::localize::LocalizationState>,
-) -> api::perception::Detection {
-    let (position_m, frame_id) = match localization {
-        Some(localization) => (
-            local_to_map_position(raw.position_m, localization),
-            "map".to_string(),
-        ),
-        None => (raw.position_m, source_frame_id.to_string()),
-    };
-    api::perception::Detection {
-        class_id: raw.class_id,
-        confidence: raw.confidence,
-        position_m,
-        frame_id,
-        track_id: None,
-    }
-}
-
-fn local_to_map_position(
-    position_m: [f64; 3],
-    localization: &api::localize::LocalizationState,
-) -> [f64; 3] {
-    let yaw_cos = localization.yaw_rad.cos();
-    let yaw_sin = localization.yaw_rad.sin();
-    [
-        localization.x_m + yaw_cos * position_m[0] - yaw_sin * position_m[1],
-        localization.y_m + yaw_sin * position_m[0] + yaw_cos * position_m[1],
-        position_m[2],
-    ]
-}
-
-fn distance_m(left: [f64; 3], right: [f64; 3]) -> f64 {
-    let dx = left[0] - right[0];
-    let dy = left[1] - right[1];
-    let dz = left[2] - right[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
-
 fn main() -> phoxal::Result<()> {
     phoxal::run::<Perception>()
 }
@@ -521,9 +218,12 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
+    use phoxal::model::v1::Robot;
     use phoxal_api::ContractBody;
 
     use super::*;
+    use crate::detector::RawDetection;
+    use crate::tracker::TrackerConfig;
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixture/robot/rgbd-imu-diff-drive")
