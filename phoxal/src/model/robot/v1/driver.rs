@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DriverConfig {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image: Option<String>,
     pub connection: ConnectionConfig,
     #[serde(default = "default_runtime_clock_ms")]
     pub runtime_clock_ms: u64,

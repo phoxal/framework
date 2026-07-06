@@ -1131,6 +1131,35 @@ robot:
     }
 
     #[test]
+    fn component_driver_rejects_image_field() {
+        let error = Robot::parse_from_string(
+            r#"
+schema: v0
+robot:
+  id: test-bot
+  namespace: dev
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+  components:
+    drive:
+      component: ddsm115
+      mount_link: drive_mount
+      driver:
+        image: phoxal/component-ddsm115-driver:v0.1.5
+        connection: { type: can, bus: 0, node_id: 1 }
+"#,
+        )
+        .expect_err("driver.image should no longer parse");
+
+        assert!(
+            format!("{error:#}").contains("unknown field `image`"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
     fn artifacts_pins_version_form_parses() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
@@ -1181,6 +1210,38 @@ robot:
                     .to_string()
             )))
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn artifacts_pins_string_forms_disambiguate_and_round_trip() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(&manifest_with_artifacts(
+            r#"  pins:
+    phoxal/service-drive: v0.8.4
+    phoxal/service-frame: 0.8.4
+    phoxal/tool-router: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
+        ))?;
+
+        assert_eq!(
+            robot.artifacts.pins.get("phoxal/service-drive"),
+            Some(&ArtifactPin::Version(VersionPin("v0.8.4".to_string())))
+        );
+        assert_eq!(
+            robot.artifacts.pins.get("phoxal/service-frame"),
+            Some(&ArtifactPin::Version(VersionPin("0.8.4".to_string())))
+        );
+        assert_eq!(
+            robot.artifacts.pins.get("phoxal/tool-router"),
+            Some(&ArtifactPin::Sha256(Sha256Pin(
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string()
+            )))
+        );
+
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        let reparsed = Robot::parse_from_string(&yaml)?;
+        assert_eq!(reparsed.artifacts.pins, robot.artifacts.pins);
 
         Ok(())
     }

@@ -12,7 +12,7 @@ impl Robot {
         for (component_id, component) in &self.robot.components {
             if !crate::model::component::v1::is_valid_token(component_id) {
                 validation_errors.push(ValidationError::InvalidToken {
-                    field: format!("components.instances.{component_id}"),
+                    field: format!("robot.components.{component_id}"),
                     value: component_id.clone(),
                 });
             }
@@ -23,7 +23,7 @@ impl Robot {
             }
             if !crate::model::component::v1::is_valid_token(&component.component) {
                 validation_errors.push(ValidationError::InvalidToken {
-                    field: format!("components.instances.{component_id}.component"),
+                    field: format!("robot.components.{component_id}.component"),
                     value: component.component.clone(),
                 });
             }
@@ -37,14 +37,14 @@ impl Robot {
             for (capability_key, parameters) in &component.parameters {
                 if !crate::model::component::v1::is_valid_token(capability_key) {
                     validation_errors.push(ValidationError::InvalidToken {
-                        field: format!("components.instances.{component_id}.parameters"),
+                        field: format!("robot.components.{component_id}.parameters"),
                         value: capability_key.clone(),
                     });
                 }
                 if parameters.kind_name().trim().is_empty() {
                     validation_errors.push(ValidationError::InvalidToken {
                         field: format!(
-                            "components.instances.{component_id}.parameters.{capability_key}.kind"
+                            "robot.components.{component_id}.parameters.{capability_key}.kind"
                         ),
                         value: String::new(),
                     });
@@ -54,7 +54,7 @@ impl Robot {
             for capability_id in component.roles.keys() {
                 if !crate::model::component::v1::is_valid_token(capability_id) {
                     validation_errors.push(ValidationError::InvalidToken {
-                        field: format!("components.instances.{component_id}.roles"),
+                        field: format!("robot.components.{component_id}.roles"),
                         value: capability_id.clone(),
                     });
                 }
