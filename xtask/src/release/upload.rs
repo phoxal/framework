@@ -35,14 +35,18 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.dry_run {
         println!(
-            "would upload immutable release assets for {} target {} to {}/{}: {}, {}, {}",
+            "would upload immutable release assets for {} target {} to {}/{}: {}, {}{}",
             artifact.package,
             args.target,
             args.repo,
             tag,
             output.tarball_name,
             output.checksum_name,
-            output.metadata_name
+            output
+                .metadata_name
+                .as_deref()
+                .map(|name| format!(", {name}"))
+                .unwrap_or_default()
         );
         return Ok(());
     }
@@ -53,11 +57,10 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn ensure_assets_absent(existing: &BTreeSet<String>, output: &PackagedOutput) -> Result<()> {
-    let requested = [
-        output.tarball_name.as_str(),
-        output.checksum_name.as_str(),
-        output.metadata_name.as_str(),
-    ];
+    let mut requested = vec![output.tarball_name.as_str(), output.checksum_name.as_str()];
+    if let Some(metadata_name) = &output.metadata_name {
+        requested.push(metadata_name.as_str());
+    }
     let duplicates = requested
         .iter()
         .filter(|name| existing.contains(**name))
@@ -77,13 +80,17 @@ pub(crate) fn github_release_asset_names(repo: &str, tag: &str) -> Result<BTreeS
 }
 
 fn upload_assets(repo: &str, tag: &str, output: &PackagedOutput) -> Result<()> {
-    let status = Command::new("gh")
+    let mut command = Command::new("gh");
+    command
         .arg("release")
         .arg("upload")
         .arg(tag)
         .arg(&output.tarball)
-        .arg(&output.checksum)
-        .arg(&output.metadata)
+        .arg(&output.checksum);
+    if let Some(metadata) = &output.metadata {
+        command.arg(metadata);
+    }
+    let status = command
         .arg("--repo")
         .arg(repo)
         .status()
@@ -102,14 +109,15 @@ mod tests {
         PackagedOutput {
             tarball: "asset.tar.zst".into(),
             checksum: "asset.tar.zst.sha256".into(),
-            metadata: "asset.emit-apis.json".into(),
+            metadata: Some("asset.emit-apis.json".into()),
             tarball_name: "asset.tar.zst".to_string(),
             checksum_name: "asset.tar.zst.sha256".to_string(),
-            metadata_name: "asset.emit-apis.json".to_string(),
+            metadata_name: Some("asset.emit-apis.json".to_string()),
             tarball_sha256: "a".repeat(64),
-            metadata_sha256: "b".repeat(64),
-            emit_apis: package::parse_emit_apis_json(
-                br#"{
+            metadata_sha256: Some("b".repeat(64)),
+            emit_apis: Some(
+                package::parse_emit_apis_json(
+                    br#"{
   "schema": "phoxal.emit-apis/v0",
   "artifact": { "kind": "service", "id": "drive" },
   "framework": { "version": "0.21.0" },
@@ -127,10 +135,25 @@ mod tests {
   ],
   "config_schema": { "type": "object" }
 }"#,
-                "drive",
-                crate::workspace::ArtifactKind::Service,
-            )
-            .unwrap(),
+                    "drive",
+                    crate::workspace::ArtifactKind::Service,
+                )
+                .unwrap(),
+            ),
+        }
+    }
+
+    fn assets_output() -> PackagedOutput {
+        PackagedOutput {
+            tarball: "assets.tar.zst".into(),
+            checksum: "assets.tar.zst.sha256".into(),
+            metadata: None,
+            tarball_name: "assets.tar.zst".to_string(),
+            checksum_name: "assets.tar.zst.sha256".to_string(),
+            metadata_name: None,
+            tarball_sha256: "c".repeat(64),
+            metadata_sha256: None,
+            emit_apis: None,
         }
     }
 
@@ -139,5 +162,12 @@ mod tests {
         let existing = ["asset.tar.zst".to_string()].into_iter().collect();
         let err = ensure_assets_absent(&existing, &output()).unwrap_err();
         assert!(err.to_string().contains("immutable asset"));
+    }
+
+    #[test]
+    fn component_assets_output_has_no_metadata_to_check() {
+        let existing = BTreeSet::new();
+        ensure_assets_absent(&existing, &assets_output())
+            .expect("component_assets output with no metadata file should validate");
     }
 }

@@ -126,15 +126,25 @@ pub(crate) fn build_release_plan(
     workspace: &Workspace,
     release_plz_text: &str,
 ) -> Result<ReleasePlan> {
-    // release-plz (and `cargo xtask release cut`'s release-plz-JSON-compatible
-    // output) reports releases by Cargo crate name, so artifacts are correlated
-    // by `package_name` here; `ComponentAssets` has no crate and so never appears
-    // in this input. The plan's own `package` field, below, is the
-    // provider-qualified public identity, not the crate name.
+    // release-plz reports releases by Cargo crate name; `cargo xtask release
+    // cut`'s release-plz-JSON-compatible output additionally reports the
+    // provider-qualified `package` identity, which is the only identity a
+    // `component_assets` bundle has (it has no Cargo crate - docs #21). Index
+    // artifacts by both so a release entry correlates whichever identity its
+    // JSON carries. Crate names (`phoxal-service-drive`) and provider-qualified
+    // identities (`phoxal/service-drive`) never collide because only the latter
+    // contains `/`.
     let official_by_package = workspace
         .official_artifacts()
         .iter()
-        .filter_map(|artifact| Some((artifact.package_name.as_deref()?, artifact)))
+        .flat_map(|artifact| {
+            let by_package_name = artifact
+                .package_name
+                .as_deref()
+                .map(|package_name| (package_name, artifact));
+            let by_package = std::iter::once((artifact.package.as_str(), artifact));
+            by_package_name.into_iter().chain(by_package)
+        })
         .collect::<BTreeMap<_, _>>();
     let released = released_packages(release_plz_text)?;
     let mut artifacts = Vec::new();

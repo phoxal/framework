@@ -106,12 +106,17 @@ pub(crate) struct ContractUse {
     pub schema_id: String,
 }
 
+/// `metadata` is `None` (serialized as JSON `null`) for a [`ArtifactKind::ComponentAssets`]
+/// bundle: a plain tarball with a checksum carries no `emit-apis` contract sidecar.
+/// Service/driver/tool/simulator release assets always carry `Some(..)`. The key is
+/// always present in the wire shape (no `skip_serializing_if`) so consumers such as
+/// the CLI catalog mirror can rely on a uniform `metadata` field.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReleaseAsset {
     pub asset: String,
     pub sha256: String,
-    pub metadata: ReleaseAssetMetadata,
+    pub metadata: Option<ReleaseAssetMetadata>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -318,11 +323,33 @@ fn validate_entries(entries: &[CatalogEntry]) -> Result<()> {
                     entry.package
                 );
             }
-            if !is_sha256(&asset.metadata.emit_apis_sha256) {
-                bail!(
-                    "{} emit-apis metadata for {triple} has invalid sha256",
-                    entry.package
-                );
+            // `ComponentAssets` bundles carry no `emit-apis` sidecar (docs #21): a
+            // plain tarball with a checksum, so `metadata` must be `None`. Every
+            // other kind is a real launched participant and must carry `Some(..)`
+            // with a valid emit-apis checksum.
+            match (&entry.kind, &asset.metadata) {
+                (ArtifactKind::ComponentAssets, Some(_)) => {
+                    bail!(
+                        "{} release asset for {triple} is a component_assets bundle and must not \
+                         carry emit-apis metadata",
+                        entry.package
+                    );
+                }
+                (ArtifactKind::ComponentAssets, None) => {}
+                (_, None) => {
+                    bail!(
+                        "{} release asset for {triple} is missing emit-apis metadata",
+                        entry.package
+                    );
+                }
+                (_, Some(metadata)) => {
+                    if !is_sha256(&metadata.emit_apis_sha256) {
+                        bail!(
+                            "{} emit-apis metadata for {triple} has invalid sha256",
+                            entry.package
+                        );
+                    }
+                }
             }
         }
         if entry.channels.is_empty() {
