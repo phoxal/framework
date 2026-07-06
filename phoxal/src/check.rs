@@ -1,12 +1,10 @@
 //! Graph validation for Phoxal participant graphs (D59/D63).
 //!
 //! This is the pure core: given the `emit-apis` report of every participant in a
-//! robot graph, it enforces per-contract wire-shape agreement and topology
-//! cardinality. It is deliberately independent of how the reports are obtained
-//! (resolved images, local binaries), so it is fully unit-testable without Docker
-//! or a registry.
-//!
-//! Two invariants:
+//! robot graph, it enforces per-contract wire-shape agreement and the one
+//! remaining topology rule. It is deliberately independent of how the reports are
+//! obtained (resolved images, local binaries), so it is fully unit-testable
+//! without Docker or a registry.
 //!
 //! 1. **Per-contract wire-shape agreement (#16-b).** Every participant that shares
 //!    a `(family, topic)` contract must report the same `schema_id` (the framework's
@@ -14,22 +12,23 @@
 //!    long as the shared contracts' `schema_id`s agree, because the bus decode
 //!    fast-rejects on `schema_id`, not on `api_version`. A `(family, topic)` used
 //!    with more than one distinct `schema_id` across its participants is a hard
-//!    mismatch reported against that contract.
-//! 2. **Topology cardinality.** Every contract a participant *consumes* (subscribes,
-//!    or queries as a client) must have at least one *producer* in the graph (a
-//!    publisher, or a server of that query). A consumed contract with no producer is
-//!    a dangling edge. Query topics must also have at most one checked server
-//!    responder, because the bus expects exactly one responder for a query.
+//!    mismatch reported against that contract. This applies uniformly to every
+//!    participant, with no exemptions.
+//! 2. **At most one query-server responder.** A query topic must have at most one
+//!    server responder in the graph, because the bus expects exactly one
+//!    responder for a query; more than one is a real conflict.
 //!
-//! `Privileged` participants, emitted for authoring kind `Tool`, still take part
-//! in schema agreement, but are exempt from topology cardinality: they neither
-//! require producers nor satisfy checked participants' requirements.
-//!
-//! The runner-owned `presence/heartbeat` producer is deliberately not emitted in
-//! each participant's `emit-apis` document: it is framework infrastructure, like
-//! out-of-band logs. Topology still knows that every checked runner produces the
-//! existing `presence::Heartbeat` contract, so a graph that includes the presence
-//! service does not report a dangling heartbeat subscription.
+//! Existence of the *other side* of a contract is deliberately not checked. A
+//! robot legitimately consumes commands whose sender is external to the checked
+//! participant set (an operator UI, a joystick, a sim controller), and legitimately
+//! offers query endpoints that nothing on-robot currently calls (the callers are
+//! external tools). A component-capability template that expands to zero concrete
+//! instances is likewise legal - it simply contributes no concrete contracts to
+//! the graph, because the robot may lack that optional component. The bus already
+//! makes these non-issues at runtime: a publisher checks for subscribers before
+//! sending, and a query server starts regardless of current clients. So a consumed
+//! contract with no producer, a produced contract with no consumer, and an
+//! unexpanded (zero-match) component template are all legal states, not problems.
 //!
 //! Simulation plans can also substitute a component driver's contract uses with
 //! a simulator participant. Substitution is explicit plan input, legal only in
@@ -37,9 +36,6 @@
 //! missing driver as silently satisfied.
 //!
 use std::collections::{BTreeMap, BTreeSet};
-
-const RUNNER_HEARTBEAT_FAMILY: &str = "presence::Heartbeat";
-const RUNNER_HEARTBEAT_TOPIC: &str = "presence/heartbeat";
 
 /// One participant's `emit-apis` report, reduced to what graph validation needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,9 +53,13 @@ pub struct ParticipantApis {
     /// require a checked participant of kind `simulator`; this is intentionally
     /// keyed on the framework kind, not on a concrete simulator implementation.
     pub participant_kind: ParticipantKind,
-    /// Whether this participant is checked by normal graph topology or is a
-    /// privileged raw-bus participant. Privileged participants still participate
-    /// in schema agreement, but they do not prove or require topology edges.
+    /// The `emit-apis` `participant_class` the artifact reports. No longer used
+    /// to gate schema agreement or the responder-conflict check (both apply to
+    /// every participant uniformly); still consulted by sim substitution, which
+    /// requires a checked provider.
+    // TODO(followup): participant_class is now unused by the topology checks;
+    // consider removing it from emit-apis + the macro once substitution no
+    // longer needs it either.
     pub participant_class: ParticipantClass,
     /// The API version the artifact reports (`emit-apis` `api_version`).
     pub api_version: String,
@@ -188,29 +188,6 @@ impl Direction {
             _ => return None,
         })
     }
-
-    /// Whether this direction *provides* a contract to the graph: a publisher of a
-    /// pub/sub topic, or the server side of a query.
-    #[must_use]
-    pub const fn is_producer(self) -> bool {
-        matches!(
-            self,
-            Self::Publish | Self::ServerRequest | Self::ServerResponse
-        )
-    }
-
-    /// The producer direction that must exist for this consumer direction to be
-    /// satisfied - matched by *kind*, so a pub/sub `publish` cannot stand in for a
-    /// query server. `None` for non-consumer directions.
-    #[must_use]
-    pub const fn required_producer(self) -> Option<Self> {
-        Some(match self {
-            Self::Subscribe => Self::Publish,
-            Self::QueryRequest => Self::ServerRequest,
-            Self::QueryResponse => Self::ServerResponse,
-            _ => return None,
-        })
-    }
 }
 
 /// Which launch plan the shared checker is validating.
@@ -320,21 +297,7 @@ pub enum Problem {
         /// that report it. Sorted by `schema_id` so output is deterministic.
         schema_ids: Vec<(String, Vec<String>)>,
     },
-    /// A consumed contract has no producer anywhere in the graph.
-    MissingProducer {
-        family: String,
-        topic: String,
-        /// Artifacts that consume the contract (sorted, de-duplicated).
-        consumers: Vec<String>,
-    },
-    /// A query/server contract has no peer anywhere in the graph.
-    MissingConsumer {
-        family: String,
-        topic: String,
-        /// Artifacts that produce the contract (sorted, de-duplicated).
-        producers: Vec<String>,
-    },
-    /// A query response contract is served by more than one checked participant.
+    /// A query response contract is served by more than one participant.
     MultipleServerResponders {
         family: String,
         topic: String,
@@ -346,41 +309,12 @@ pub enum Problem {
         runtime_id: String,
         errors: Vec<String>,
     },
-    /// A participant declares a `component/{instance}/...` template contract that
-    /// expands to no concrete component capability in scope. The template can
-    /// never bind to a real topic, so it is a hard error rather than a silent
-    /// literal match between two placeholder topics.
-    UnresolvedComponentTemplate {
-        /// The artifact that declared the template (the concrete participant /
-        /// instance id, not the emitted artifact id).
-        artifact_id: String,
-        /// The raw template topic, e.g. `component/{instance}/motor/{capability}/command`.
-        template: String,
-        family: String,
-        /// What concrete candidate was missing for the template to expand:
-        /// either a component instance (component-driver scope) or, in graph
-        /// scope, the kind of capability the manifest has none of.
-        missing: String,
-    },
-}
-
-/// A non-fatal topology issue. Observable-only publishers are valid, so these
-/// are surfaced as warnings rather than blocking `phoxal-cli check`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Warning {
-    MissingConsumer {
-        family: String,
-        topic: String,
-        /// Artifacts that produce the contract (sorted, de-duplicated).
-        producers: Vec<String>,
-    },
 }
 
 /// The outcome of validating a graph: the problems found (empty == healthy).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Report {
     pub problems: Vec<Problem>,
-    pub warnings: Vec<Warning>,
     pub accepted_substitutions: Vec<AcceptedSubstitution>,
 }
 
@@ -404,12 +338,12 @@ pub struct ComponentCapability {
     pub kind: String,
 }
 
-/// Validate a robot graph: per-contract `schema_id` agreement (#16-b) + topology
-/// cardinality.
+/// Validate a robot graph: per-contract `schema_id` agreement (#16-b) + the
+/// at-most-one-query-server-responder rule.
 ///
 /// `participants` is every normal participant's `emit-apis` report. Problems are
 /// returned in a stable order (schema mismatches first, by family+topic; then
-/// missing producers by family+topic) so output and tests are deterministic.
+/// responder conflicts by family+topic) so output and tests are deterministic.
 #[must_use]
 pub fn check_graph(participants: &[ParticipantApis]) -> Report {
     let robot_graph = RobotGraph::default();
@@ -437,18 +371,12 @@ pub fn check_graph_with_topology(
 #[must_use]
 pub fn check_plan(input: CheckInput<'_>) -> Report {
     let mut problems = Vec::new();
-    let mut warnings = Vec::new();
     let mut accepted_substitutions = Vec::new();
-    // Expand component templates to concrete manifest topics. Templates that
-    // cannot expand surface as hard `UnresolvedComponentTemplate` problems here
-    // rather than leaking placeholder topics into the topology graph (where two
-    // sides would otherwise "match" literally with no real binding).
-    let MaterializedGraph {
-        participants,
-        problems: mut template_problems,
-    } = materialize_participants(input.participants, input.robot_graph);
-    template_problems.sort_by_key(problem_sort_key);
-    problems.append(&mut template_problems);
+    // Expand component templates to concrete manifest topics. A template that
+    // cannot expand simply contributes no concrete contracts (see module docs);
+    // it is not reported as a problem.
+    let MaterializedGraph { participants } =
+        materialize_participants(input.participants, input.robot_graph);
 
     let SubstitutionValidation {
         problems: mut substitution_problems,
@@ -468,19 +396,17 @@ pub fn check_plan(input: CheckInput<'_>) -> Report {
     // used with more than one distinct `schema_id` across its participants can
     // never interoperate (the bus decode fast-rejects on `schema_id`), so it is a
     // hard mismatch. Mixed `api_version`s are allowed as long as shared contracts'
-    // `schema_id`s agree.
+    // `schema_id`s agree. Applies to every participant, with no exemptions.
     problems.extend(schema_mismatches(&participants));
 
-    // 2. Topology cardinality. Producers/consumers are keyed by
-    // (family, concrete topic, direction) so matching is by *kind*: a `subscribe`
-    // needs a `publish`, and a query client needs a server. Dynamic component
-    // templates have already been expanded to manifest-derived concrete topics;
-    // any topic still containing a placeholder was reported above and is skipped.
+    // 2. At most one query-server responder. Producers are keyed by
+    // (family, concrete topic, direction) so matching is by *kind*. Dynamic
+    // component templates have already been expanded to manifest-derived concrete
+    // topics; any topic still containing a placeholder contributed no contract
+    // above and is skipped here too. Applies to every participant, with no
+    // exemptions.
     let mut by_direction: BTreeMap<(String, String, Direction), BTreeSet<String>> = BTreeMap::new();
-    for p in participants
-        .iter()
-        .filter(|p| p.participant_class.is_checked())
-    {
+    for p in &participants {
         for c in &p.contracts {
             if is_template_topic(&c.topic) {
                 continue;
@@ -502,91 +428,10 @@ pub fn check_plan(input: CheckInput<'_>) -> Report {
         }
     }
 
-    // Collect consumers per unmet contract, de-duplicated and ordered.
-    let mut unmet: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-    for p in participants
-        .iter()
-        .filter(|p| p.participant_class.is_checked())
-    {
-        for c in &p.contracts {
-            if is_template_topic(&c.topic) {
-                continue;
-            }
-            if let Some(required) = c.direction.required_producer() {
-                let needed = (c.family.clone(), c.topic.clone(), required);
-                if !by_direction.contains_key(&needed)
-                    && !has_implicit_runner_producer(&participants, &c.family, &c.topic, required)
-                {
-                    unmet
-                        .entry((c.family.clone(), c.topic.clone()))
-                        .or_default()
-                        .insert(p.participant_id.clone());
-                }
-            }
-        }
-    }
-
-    for ((family, topic), consumers) in unmet {
-        problems.push(Problem::MissingProducer {
-            family,
-            topic,
-            consumers: consumers.into_iter().collect(),
-        });
-    }
-
-    let mut missing_query_consumers: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-    let mut missing_pubsub_consumers: BTreeMap<(String, String), BTreeSet<String>> =
-        BTreeMap::new();
-    for ((family, topic, direction), producers) in &by_direction {
-        if let Some(required_consumer) = direction.required_consumer() {
-            let needed = (family.clone(), topic.clone(), required_consumer);
-            if !by_direction.contains_key(&needed) {
-                let missing_consumers = if direction.is_query_server() {
-                    &mut missing_query_consumers
-                } else {
-                    &mut missing_pubsub_consumers
-                };
-                missing_consumers
-                    .entry((family.clone(), topic.clone()))
-                    .or_default()
-                    .extend(producers.iter().cloned());
-            }
-        }
-    }
-    for ((family, topic), producers) in missing_query_consumers {
-        problems.push(Problem::MissingConsumer {
-            family,
-            topic,
-            producers: producers.into_iter().collect(),
-        });
-    }
-    for ((family, topic), producers) in missing_pubsub_consumers {
-        warnings.push(Warning::MissingConsumer {
-            family,
-            topic,
-            producers: producers.into_iter().collect(),
-        });
-    }
-
     Report {
         problems,
-        warnings,
         accepted_substitutions,
     }
-}
-
-fn has_implicit_runner_producer(
-    participants: &[ParticipantApis],
-    family: &str,
-    topic: &str,
-    required: Direction,
-) -> bool {
-    required == Direction::Publish
-        && family == RUNNER_HEARTBEAT_FAMILY
-        && topic == RUNNER_HEARTBEAT_TOPIC
-        && participants
-            .iter()
-            .any(|participant| participant.participant_class.is_checked())
 }
 
 struct SubstitutionValidation {
@@ -691,17 +536,11 @@ fn materialize_substitution_contracts(
         scope: ParticipantScope::ComponentInstance(substitution.component_instance.clone()),
         contracts: Vec::new(),
     };
-    let mut ignored_template_problems = Vec::new();
     let mut contracts = substitution
         .contracts
         .iter()
         .flat_map(|contract| {
-            let materialized = materialize_contract(
-                &scoped_participant,
-                contract,
-                robot_graph,
-                &mut ignored_template_problems,
-            );
+            let materialized = materialize_contract(&scoped_participant, contract, robot_graph);
             if materialized.is_empty() {
                 vec![contract.clone()]
             } else {
@@ -755,23 +594,6 @@ fn schema_mismatches(participants: &[ParticipantApis]) -> Vec<Problem> {
             },
         )
         .collect()
-}
-
-impl Direction {
-    #[must_use]
-    pub const fn required_consumer(self) -> Option<Self> {
-        Some(match self {
-            Self::Publish => Self::Subscribe,
-            Self::ServerRequest => Self::QueryRequest,
-            Self::ServerResponse => Self::QueryResponse,
-            _ => return None,
-        })
-    }
-
-    #[must_use]
-    const fn is_query_server(self) -> bool {
-        matches!(self, Self::ServerRequest | Self::ServerResponse)
-    }
 }
 
 /// Whether a topic still carries an unexpanded component-template placeholder.
@@ -828,42 +650,32 @@ fn problem_sort_key(problem: &Problem) -> (u8, String, String) {
             provider_participant_id.clone(),
         ),
         Problem::ContractSchemaMismatch { family, topic, .. } => (5, family.clone(), topic.clone()),
-        Problem::MissingProducer { family, topic, .. } => (6, family.clone(), topic.clone()),
-        Problem::MissingConsumer { family, topic, .. } => (7, family.clone(), topic.clone()),
         Problem::MultipleServerResponders { family, topic, .. } => {
-            (8, family.clone(), topic.clone())
+            (6, family.clone(), topic.clone())
         }
-        Problem::InvalidConfig { runtime_id, .. } => (9, runtime_id.clone(), String::new()),
-        Problem::UnresolvedComponentTemplate {
-            artifact_id,
-            template,
-            family,
-            ..
-        } => (10, artifact_id.clone(), format!("{template}\u{0}{family}")),
+        Problem::InvalidConfig { runtime_id, .. } => (7, runtime_id.clone(), String::new()),
     }
 }
 
-/// The expanded graph plus any hard problems found while expanding component
-/// templates (templates that bind to no concrete capability in scope).
+/// The graph with every component-template contract expanded to concrete,
+/// manifest-derived topics. A template that expands to zero concrete instances
+/// (an optional component the robot doesn't have) simply contributes no
+/// contract; see the module docs.
 struct MaterializedGraph {
     participants: Vec<ParticipantApis>,
-    problems: Vec<Problem>,
 }
 
 fn materialize_participants(
     participants: &[ParticipantApis],
     robot_graph: &RobotGraph,
 ) -> MaterializedGraph {
-    let mut problems = Vec::new();
     let materialized = participants
         .iter()
         .map(|participant| {
             let contracts = participant
                 .contracts
                 .iter()
-                .flat_map(|contract| {
-                    materialize_contract(participant, contract, robot_graph, &mut problems)
-                })
+                .flat_map(|contract| materialize_contract(participant, contract, robot_graph))
                 .collect();
             ParticipantApis {
                 participant_id: participant.participant_id.clone(),
@@ -881,7 +693,6 @@ fn materialize_participants(
 
     MaterializedGraph {
         participants: materialized,
-        problems,
     }
 }
 
@@ -889,7 +700,6 @@ fn materialize_contract(
     participant: &ParticipantApis,
     contract: &Contract,
     robot_graph: &RobotGraph,
-    problems: &mut Vec<Problem>,
 ) -> Vec<Contract> {
     if !is_template_topic(&contract.topic) {
         return vec![contract.clone()];
@@ -913,6 +723,9 @@ fn materialize_contract(
         .collect::<Vec<_>>();
     candidates.sort();
 
+    // A template that expands to zero concrete instances (an optional component
+    // the robot doesn't have) simply contributes no contract to the graph; it is
+    // not reported as a problem.
     let mut materialized = candidates
         .into_iter()
         .map(|capability| Contract {
@@ -927,36 +740,7 @@ fn materialize_contract(
         .collect::<Vec<_>>();
     materialized.sort_by(|a, b| a.topic.cmp(&b.topic).then(a.direction.cmp(&b.direction)));
     materialized.dedup();
-
-    if materialized.is_empty() {
-        // A component template that expands to nothing in scope can never bind to
-        // a real topic. Returning the placeholder topic would let two sides
-        // satisfy each other literally, so emit a hard problem and drop the
-        // contract from the graph instead.
-        problems.push(Problem::UnresolvedComponentTemplate {
-            artifact_id: participant.participant_id.clone(),
-            template: contract.topic.clone(),
-            family: contract.family.clone(),
-            missing: missing_candidate_description(participant, kind),
-        });
-        Vec::new()
-    } else {
-        materialized
-    }
-}
-
-/// Describe what concrete candidate the template lacked, for the diagnostic.
-fn missing_candidate_description(participant: &ParticipantApis, kind: Option<&str>) -> String {
-    match &participant.scope {
-        ParticipantScope::ComponentInstance(instance) => match kind {
-            Some(kind) => format!("component instance '{instance}' has no '{kind}' capability"),
-            None => format!("component instance '{instance}' has no matching capability"),
-        },
-        ParticipantScope::Graph => match kind {
-            Some(kind) => format!("no component instance provides a '{kind}' capability in scope"),
-            None => "no component instance provides a matching capability in scope".to_string(),
-        },
-    }
+    materialized
 }
 
 fn component_topic_kind(topic: &str) -> Option<&str> {
@@ -1280,7 +1064,6 @@ mod tests {
                 responders: vec!["asset-alpha".to_string(), "asset-beta".to_string()],
             }]
         );
-        assert!(report.warnings.is_empty());
     }
 
     #[test]
@@ -1386,92 +1169,7 @@ mod tests {
     }
 
     #[test]
-    fn privileged_participant_does_not_require_or_emit_topology() {
-        let graph = vec![privileged_participant(
-            "inspector",
-            "y2026_1",
-            vec![
-                contract("drive::Target", "drive/target", Direction::Subscribe),
-                contract("odometry::State", "odometry/state", Direction::Publish),
-            ],
-        )];
-
-        let report = check_graph(&graph);
-
-        assert!(report.problems.is_empty());
-        assert!(report.warnings.is_empty());
-    }
-
-    #[test]
-    fn privileged_query_server_requires_no_client() {
-        let graph = vec![privileged_participant(
-            "inspector",
-            "y2026_1",
-            vec![
-                contract("asset::GetRequest", "asset/get", Direction::ServerRequest),
-                contract("asset::GetResponse", "asset/get", Direction::ServerResponse),
-            ],
-        )];
-
-        let report = check_graph(&graph);
-
-        assert!(report.problems.is_empty());
-        assert!(report.warnings.is_empty());
-    }
-
-    #[test]
-    fn privileged_participant_does_not_prove_topology_for_checked_participants() {
-        let graph = vec![
-            privileged_participant(
-                "inspector",
-                "y2026_1",
-                vec![
-                    contract("drive::Target", "drive/target", Direction::Publish),
-                    contract("odometry::State", "odometry/state", Direction::Subscribe),
-                ],
-            ),
-            participant(
-                "drive",
-                "y2026_1",
-                vec![contract(
-                    "drive::Target",
-                    "drive/target",
-                    Direction::Subscribe,
-                )],
-            ),
-            participant(
-                "odometry",
-                "y2026_1",
-                vec![contract(
-                    "odometry::State",
-                    "odometry/state",
-                    Direction::Publish,
-                )],
-            ),
-        ];
-
-        let report = check_graph(&graph);
-
-        assert_eq!(
-            report.problems,
-            vec![Problem::MissingProducer {
-                family: "drive::Target".to_string(),
-                topic: "drive/target".to_string(),
-                consumers: vec!["drive".to_string()],
-            }]
-        );
-        assert_eq!(
-            report.warnings,
-            vec![Warning::MissingConsumer {
-                family: "odometry::State".to_string(),
-                topic: "odometry/state".to_string(),
-                producers: vec!["odometry".to_string()],
-            }]
-        );
-    }
-
-    #[test]
-    fn privileged_contracts_still_participate_in_schema_agreement() {
+    fn tool_kind_participant_contracts_still_participate_in_schema_agreement() {
         let graph = vec![
             participant(
                 "mission",
@@ -1521,162 +1219,6 @@ mod tests {
                 ],
             }]
         );
-        assert!(report.warnings.is_empty());
-    }
-
-    #[test]
-    fn checked_query_server_with_only_privileged_client_is_missing_consumer() {
-        let graph = vec![
-            participant(
-                "asset",
-                "y2026_1",
-                vec![
-                    contract("asset::GetRequest", "asset/get", Direction::ServerRequest),
-                    contract("asset::GetResponse", "asset/get", Direction::ServerResponse),
-                ],
-            ),
-            privileged_participant(
-                "inspector",
-                "y2026_1",
-                vec![
-                    contract("asset::GetRequest", "asset/get", Direction::QueryRequest),
-                    contract("asset::GetResponse", "asset/get", Direction::QueryResponse),
-                ],
-            ),
-        ];
-
-        let report = check_graph(&graph);
-
-        assert_eq!(
-            report.problems,
-            vec![
-                Problem::MissingConsumer {
-                    family: "asset::GetRequest".to_string(),
-                    topic: "asset/get".to_string(),
-                    producers: vec!["asset".to_string()],
-                },
-                Problem::MissingConsumer {
-                    family: "asset::GetResponse".to_string(),
-                    topic: "asset/get".to_string(),
-                    producers: vec!["asset".to_string()],
-                },
-            ]
-        );
-        assert!(report.warnings.is_empty());
-    }
-
-    #[test]
-    fn subscribed_topic_without_publisher_is_a_missing_producer() {
-        let graph = vec![participant(
-            "drive",
-            "y2026_1",
-            vec![contract(
-                "drive::Target",
-                "drive/target",
-                Direction::Subscribe,
-            )],
-        )];
-        let report = check_graph(&graph);
-        assert_eq!(
-            report.problems,
-            vec![Problem::MissingProducer {
-                family: "drive::Target".to_string(),
-                topic: "drive/target".to_string(),
-                consumers: vec!["drive".to_string()],
-            }]
-        );
-    }
-
-    #[test]
-    fn presence_heartbeat_subscriber_is_satisfied_by_implicit_checked_runners() {
-        let graph = vec![participant(
-            "presence",
-            "y2026_1",
-            vec![contract(
-                "presence::Heartbeat",
-                "presence/heartbeat",
-                Direction::Subscribe,
-            )],
-        )];
-
-        let report = check_graph(&graph);
-
-        assert!(report.problems.is_empty());
-        assert!(report.warnings.is_empty());
-    }
-
-    #[test]
-    fn publisher_without_consumer_is_a_warning() {
-        let graph = vec![participant(
-            "odometry",
-            "y2026_1",
-            vec![contract(
-                "odometry::State",
-                "odometry/state",
-                Direction::Publish,
-            )],
-        )];
-        let report = check_graph(&graph);
-
-        assert!(report.problems.is_empty());
-        assert_eq!(
-            report.warnings,
-            vec![Warning::MissingConsumer {
-                family: "odometry::State".to_string(),
-                topic: "odometry/state".to_string(),
-                producers: vec!["odometry".to_string()],
-            }]
-        );
-    }
-
-    #[test]
-    fn query_client_without_server_is_a_missing_producer() {
-        let graph = vec![participant(
-            "client",
-            "y2026_1",
-            vec![contract(
-                "asset::GetRequest",
-                "asset/get",
-                Direction::QueryRequest,
-            )],
-        )];
-        let report = check_graph(&graph);
-        assert_eq!(report.problems.len(), 1);
-        assert!(matches!(
-            &report.problems[0],
-            Problem::MissingProducer { family, topic, .. }
-                if family == "asset::GetRequest" && topic == "asset/get"
-        ));
-    }
-
-    #[test]
-    fn query_server_without_client_is_a_problem() {
-        let graph = vec![participant(
-            "asset",
-            "y2026_1",
-            vec![
-                contract("asset::GetRequest", "asset/get", Direction::ServerRequest),
-                contract("asset::GetResponse", "asset/get", Direction::ServerResponse),
-            ],
-        )];
-        let report = check_graph(&graph);
-
-        assert_eq!(
-            report.problems,
-            vec![
-                Problem::MissingConsumer {
-                    family: "asset::GetRequest".to_string(),
-                    topic: "asset/get".to_string(),
-                    producers: vec!["asset".to_string()],
-                },
-                Problem::MissingConsumer {
-                    family: "asset::GetResponse".to_string(),
-                    topic: "asset/get".to_string(),
-                    producers: vec!["asset".to_string()],
-                }
-            ]
-        );
-        assert!(report.warnings.is_empty());
     }
 
     #[test]
@@ -1705,57 +1247,15 @@ mod tests {
         let report = check_graph_with_topology(&participants, &robot_graph());
 
         assert!(report.problems.is_empty());
-        assert_eq!(
-            report.warnings,
-            vec![Warning::MissingConsumer {
-                family: "component::MotorCommand".to_string(),
-                topic: "component/right_drive/motor/motor/command".to_string(),
-                producers: vec!["motion".to_string()],
-            }]
-        );
     }
 
     #[test]
-    fn component_templates_report_missing_concrete_driver_output() {
-        let participants = vec![
-            scoped_component_participant(
-                "left-driver",
-                "left_drive",
-                vec![contract(
-                    "component::EncoderSample",
-                    "component/{instance}/encoder/{capability}/sample",
-                    Direction::Publish,
-                )],
-            ),
-            participant(
-                "odometry",
-                "y2026_1",
-                vec![contract(
-                    "component::EncoderSample",
-                    "component/{instance}/encoder/{capability}/sample",
-                    Direction::Subscribe,
-                )],
-            ),
-        ];
-
-        let report = check_graph_with_topology(&participants, &robot_graph());
-
-        assert_eq!(
-            report.problems,
-            vec![Problem::MissingProducer {
-                family: "component::EncoderSample".to_string(),
-                topic: "component/right_drive/encoder/encoder/sample".to_string(),
-                consumers: vec!["odometry".to_string()],
-            }]
-        );
-    }
-
-    #[test]
-    fn component_templates_never_match_literally_with_empty_components() {
-        // BLOCKER regression: with no concrete component instances in the graph,
-        // two participants whose only contracts are the SAME component template
-        // must NOT satisfy each other by matching the placeholder topic literally.
-        // Each unexpandable template is a hard problem; neither side is bound.
+    fn component_template_expanding_to_zero_instances_is_legal() {
+        // An optional component the robot doesn't have: the template still
+        // expands against the manifest, matches zero concrete instances, and
+        // simply contributes no contract to the graph. No problem is reported,
+        // regardless of whether the template side would otherwise be a producer
+        // or a consumer.
         let participants = vec![
             participant(
                 "motion",
@@ -1780,38 +1280,15 @@ mod tests {
         // Empty robot graph: no component instances/capabilities exist.
         let report = check_graph_with_topology(&participants, &RobotGraph::default());
 
-        // The literal placeholder topic must never appear as a satisfied edge,
-        // and must never be reported as a missing producer/consumer either.
-        assert_eq!(
-            report,
-            Report {
-                problems: vec![
-                    Problem::UnresolvedComponentTemplate {
-                        artifact_id: "motion".to_string(),
-                        template: "component/{instance}/motor/{capability}/command".to_string(),
-                        family: "component::MotorCommand".to_string(),
-                        missing: "no component instance provides a 'motor' capability in scope"
-                            .to_string(),
-                    },
-                    Problem::UnresolvedComponentTemplate {
-                        artifact_id: "phantom-driver".to_string(),
-                        template: "component/{instance}/motor/{capability}/command".to_string(),
-                        family: "component::MotorCommand".to_string(),
-                        missing: "no component instance provides a 'motor' capability in scope"
-                            .to_string(),
-                    },
-                ],
-                warnings: vec![],
-                accepted_substitutions: vec![],
-            }
-        );
+        assert_eq!(report, Report::default());
     }
 
     #[test]
-    fn component_driver_template_missing_capability_is_a_hard_problem() {
+    fn component_driver_template_missing_capability_is_legal() {
         // A component driver scoped to an instance that lacks the capability the
-        // template needs (here: encoder, while the instance only has a motor)
-        // must produce a hard `UnresolvedComponentTemplate`, not a literal match.
+        // template needs (here: encoder, while the instance only has a motor):
+        // the template contributes no contract, and the robot passes check with
+        // no problems - the optional capability is simply absent.
         let graph = RobotGraph {
             component_capabilities: vec![ComponentCapability {
                 instance: "left_drive".to_string(),
@@ -1832,17 +1309,7 @@ mod tests {
 
         let report = check_graph_with_topology(&participants, &graph);
 
-        assert_eq!(
-            report.problems,
-            vec![Problem::UnresolvedComponentTemplate {
-                // Keyed by the concrete instance id, not the shared driver artifact.
-                artifact_id: "left_drive".to_string(),
-                template: "component/{instance}/encoder/{capability}/sample".to_string(),
-                family: "component::EncoderSample".to_string(),
-                missing: "component instance 'left_drive' has no 'encoder' capability".to_string(),
-            }]
-        );
-        assert!(report.warnings.is_empty());
+        assert_eq!(report, Report::default());
     }
 
     #[test]
@@ -1852,7 +1319,6 @@ mod tests {
         let report = sim_check(&participants, &RobotGraph::default(), &[]);
 
         assert!(report.is_ok());
-        assert!(report.warnings.is_empty());
         assert!(report.accepted_substitutions.is_empty());
     }
 
@@ -1868,7 +1334,6 @@ mod tests {
         let report = sim_check(&participants, &graph, &substitutions);
 
         assert!(report.problems.is_empty());
-        assert!(report.warnings.is_empty());
         assert_eq!(
             report.accepted_substitutions,
             vec![AcceptedSubstitution {
@@ -1950,7 +1415,6 @@ mod tests {
         let report = sim_check(&participants, &graph, &substitutions);
 
         assert!(report.problems.is_empty());
-        assert!(report.warnings.is_empty());
         assert_eq!(
             report
                 .accepted_substitutions
@@ -2033,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn privileged_tool_cannot_provide_a_sim_substitution() {
+    fn tool_kind_participant_cannot_provide_a_sim_substitution() {
         let graph = single_motor_graph();
         let participants = vec![
             participant("motion", "y2026_1", vec![motor_command(Direction::Publish)]),
@@ -2059,33 +1523,7 @@ mod tests {
                 provider_kind: ParticipantKind::Tool,
             }]
         );
-        assert_eq!(
-            report.warnings,
-            vec![Warning::MissingConsumer {
-                family: "component::MotorCommand".to_string(),
-                topic: "component/left_drive/motor/motor/command".to_string(),
-                producers: vec!["motion".to_string()],
-            }]
-        );
         assert!(report.accepted_substitutions.is_empty());
-    }
-
-    #[test]
-    fn missing_producer_lists_all_consumers_sorted_and_deduped() {
-        let consume = || contract("odometry::State", "odometry/state", Direction::Subscribe);
-        let graph = vec![
-            participant("map", "y2026_1", vec![consume()]),
-            participant("localize", "y2026_1", vec![consume(), consume()]),
-        ];
-        let report = check_graph(&graph);
-        assert_eq!(
-            report.problems,
-            vec![Problem::MissingProducer {
-                family: "odometry::State".to_string(),
-                topic: "odometry/state".to_string(),
-                consumers: vec!["localize".to_string(), "map".to_string()],
-            }]
-        );
     }
 
     #[test]
@@ -2123,32 +1561,59 @@ mod tests {
     }
 
     #[test]
-    fn a_publisher_does_not_satisfy_a_query_client() {
-        // Same (family, topic) but mismatched kinds: a pub/sub publish must not be
-        // accepted as the server a query client requires. (In practice the api tree
-        // never declares one topic as both pub/sub and query; this guards the engine
-        // regardless.)
-        let graph = vec![
+    fn dangling_consumers_dangling_servers_and_unmatched_templates_are_all_legal() {
+        // A real robot: a consumed command with no producer in the checked set
+        // (an external operator/joystick/sim-controller sends it), a query server
+        // with no current client (the caller is an external tool), and a
+        // component-capability template that expands to zero instances (an
+        // optional component - here, an e-stop button - the robot doesn't have).
+        // None of these are problems or warnings; the bus tolerates all three at
+        // runtime.
+        let participants = vec![
+            // Consumes a command nobody in the graph produces.
             participant(
-                "publisher",
+                "mission",
                 "y2026_1",
-                vec![contract("x::Body", "x/topic", Direction::Publish)],
+                vec![contract(
+                    "mission::Command",
+                    "mission/command",
+                    Direction::Subscribe,
+                )],
             ),
+            // Offers a query endpoint with no client in the graph.
             participant(
-                "client",
+                "asset",
                 "y2026_1",
-                vec![contract("x::Body", "x/topic", Direction::QueryRequest)],
+                vec![
+                    contract("asset::GetRequest", "asset/get", Direction::ServerRequest),
+                    contract("asset::GetResponse", "asset/get", Direction::ServerResponse),
+                ],
+            ),
+            // Subscribes to an optional component capability the robot lacks.
+            participant(
+                "safety",
+                "y2026_1",
+                vec![contract(
+                    "component::EmergencyStopState",
+                    "component/{instance}/emergency_stop/{capability}/state",
+                    Direction::Subscribe,
+                )],
             ),
         ];
-        let report = check_graph(&graph);
-        assert_eq!(
-            report.problems,
-            vec![Problem::MissingProducer {
-                family: "x::Body".to_string(),
-                topic: "x/topic".to_string(),
-                consumers: vec!["client".to_string()],
-            }]
-        );
+
+        // No emergency_stop capability anywhere in the robot graph.
+        let robot_graph = RobotGraph {
+            component_capabilities: vec![ComponentCapability {
+                instance: "left_drive".to_string(),
+                capability: "motor".to_string(),
+                kind: "motor".to_string(),
+            }],
+            motion_capabilities: BTreeSet::new(),
+        };
+
+        let report = check_graph_with_topology(&participants, &robot_graph);
+
+        assert_eq!(report, Report::default());
     }
 
     #[test]
