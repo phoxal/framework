@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.1](https://github.com/phoxal/framework/compare/phoxal-v0.26.0...phoxal-v0.26.1) - 2026-07-06
+
+### Added
+
+- *(runner)* drive the simulation scheduler from the live simulation/clock feed ([#176](https://github.com/phoxal/framework/pull/176))
+- *(09)* clock-driven step scheduling via StepScheduler ([#173](https://github.com/phoxal/framework/pull/173))
+- *(08)* SetupContext::spawn_managed - runner-owned background tasks ([#170](https://github.com/phoxal/framework/pull/170))
+
+### Fixed
+
+- *(15)* enforce Tool as a thin runner - reject #[step]/#[server] at compile time ([#171](https://github.com/phoxal/framework/pull/171))
+
 ## [0.26.0](https://github.com/phoxal/framework/compare/phoxal-v0.25.0...phoxal-v0.26.0) - 2026-07-04
 
 ### Fixed
