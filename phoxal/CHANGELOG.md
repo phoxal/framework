@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/phoxal/framework/compare/phoxal-v0.27.0...phoxal-v0.28.0) - 2026-07-07
+
+### Other
+
+- *(check)* [**breaking**] remove the sim substitution-completeness check (D16 simplified) ([#185](https://github.com/phoxal/framework/pull/185))
+
 ## [0.27.0](https://github.com/phoxal/framework/compare/phoxal-v0.26.1...phoxal-v0.27.0) - 2026-07-06
 
 ### Added
