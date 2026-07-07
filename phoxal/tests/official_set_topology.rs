@@ -7,7 +7,7 @@ use std::process::Command;
 
 use phoxal::check::{
     self, CheckInput, ComponentCapability, Contract as CheckContract, Direction, ParticipantApis,
-    ParticipantClass, ParticipantKind, ParticipantScope, PlanMode, RobotGraph,
+    ParticipantClass, ParticipantKind, ParticipantScope, RobotGraph,
 };
 use phoxal::model::component::v1::CapabilityRef;
 use phoxal::model::component::v1::capability::Capability;
@@ -91,10 +91,8 @@ fn official_service_set_matches_y2026_1_fixture_topology() {
 
     let graph = robot_graph(&fixture);
     let report = check::check_plan(CheckInput {
-        mode: PlanMode::Deploy,
         participants: &participants,
         robot_graph: &graph,
-        substitutions: &[],
     });
     assert!(
         report.problems.is_empty(),
