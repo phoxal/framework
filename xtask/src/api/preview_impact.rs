@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
+use phoxal::catalog::{ArtifactEntry, Manifest};
 use serde::Serialize;
 
-use crate::api::manifest::{self, ApiContractManifestGeneration, ContractDiff, ContractKey};
+use crate::api::manifest::{self, ApiContractManifestGeneration, ContractDiff};
 use crate::api::sync_features::GenerationChannel;
 use crate::catalog::generate::{default_catalog_path, workspace_relative_path};
-use crate::catalog::schema::{ArtifactStatus, CatalogEntry, CatalogRevision};
 use crate::catalog::verify::verify_catalog_path;
 use crate::workspace::{ArtifactKind, Workspace};
 
@@ -48,8 +48,10 @@ pub(crate) struct AffectedArtifact {
     pub kind: ArtifactKind,
     pub target_version: Option<String>,
     pub target_generation: Option<String>,
-    pub target_triples: Vec<String>,
-    pub status: BTreeMap<String, ArtifactStatus>,
+    /// Triples the target-generation catalog entry has an actual built
+    /// artifact for (its `artifacts` map keys) - there is no separate
+    /// "planned but not yet built" status anymore.
+    pub built_triples: Vec<String>,
     pub complete: bool,
     pub reason: Option<String>,
 }
@@ -79,7 +81,7 @@ pub fn run(args: Args) -> Result<()> {
 
 pub(crate) fn build_report(
     api_manifest: &[ApiContractManifestGeneration],
-    catalog: Option<&CatalogRevision>,
+    catalog: Option<&Manifest>,
 ) -> Result<PreviewImpactReport> {
     let mut previews = Vec::new();
     for generation in api_manifest
@@ -103,16 +105,20 @@ pub(crate) fn build_report(
 
 pub(crate) fn build_generation_impact(
     api_manifest: &[ApiContractManifestGeneration],
-    catalog: &CatalogRevision,
+    catalog: &Manifest,
     generation: &str,
 ) -> Result<GenerationImpact> {
     let base_generation = manifest::base_generation_name(api_manifest, generation)?;
     let changed_contracts = manifest::diff_contracts(api_manifest, &base_generation, generation)?;
-    let changed_keys = changed_contracts
+    // The catalog's `Contract` carries only `family`/`schema_id` (no
+    // `topic_template`); a contract family is already the practical unique key
+    // within one API generation (the cross-artifact schema-agreement rule
+    // keys on family alone), so matching drops the topic component too.
+    let changed_families = changed_contracts
         .iter()
-        .map(ContractDiff::key)
+        .map(|diff| diff.family.clone())
         .collect::<BTreeSet<_>>();
-    let affected_artifacts = affected_artifacts(catalog, generation, &changed_keys);
+    let affected_artifacts = affected_artifacts(catalog, generation, &changed_families);
     let ready_to_promote = affected_artifacts.iter().all(|artifact| artifact.complete);
 
     Ok(GenerationImpact {
@@ -124,67 +130,86 @@ pub(crate) fn build_generation_impact(
     })
 }
 
+/// Every runtime entry across the catalog's four kind arrays, tagged with the
+/// xtask-side [`ArtifactKind`] it belongs to (the manifest itself no longer
+/// carries a per-entry `kind` - the array an entry lives in *is* its kind).
+fn runtime_entries(catalog: &Manifest) -> Vec<(ArtifactKind, &ArtifactEntry)> {
+    catalog
+        .services
+        .iter()
+        .map(|entry| (ArtifactKind::Service, entry))
+        .chain(
+            catalog
+                .drivers
+                .iter()
+                .map(|entry| (ArtifactKind::ComponentDriver, entry)),
+        )
+        .chain(
+            catalog
+                .tools
+                .iter()
+                .map(|entry| (ArtifactKind::Tool, entry)),
+        )
+        .chain(
+            catalog
+                .simulators
+                .iter()
+                .map(|entry| (ArtifactKind::Simulator, entry)),
+        )
+        .collect()
+}
+
 fn affected_artifacts(
-    catalog: &CatalogRevision,
+    catalog: &Manifest,
     target_generation: &str,
-    changed_keys: &BTreeSet<ContractKey>,
+    changed_families: &BTreeSet<String>,
 ) -> Vec<AffectedArtifact> {
-    if changed_keys.is_empty() {
+    if changed_families.is_empty() {
         return Vec::new();
     }
 
-    let mut affected = BTreeMap::<String, &CatalogEntry>::new();
-    for entry in &catalog.entries {
-        if entry.contract_uses.iter().any(|contract| {
-            changed_keys.contains(&ContractKey {
-                family: contract.family.clone(),
-                topic: contract.topic_template.clone(),
-            })
-        }) {
-            insert_latest_entry(&mut affected, entry);
+    let entries = runtime_entries(catalog);
+    // Only the package identity and its (generation-invariant) kind matter
+    // here; `latest_generation_entry` below does the real per-generation
+    // version selection for the target generation.
+    let mut affected = BTreeMap::<String, ArtifactKind>::new();
+    for (kind, entry) in &entries {
+        if entry
+            .contracts
+            .iter()
+            .any(|contract| changed_families.contains(&contract.family))
+        {
+            affected.entry(entry.package.clone()).or_insert(*kind);
         }
     }
 
     affected
         .into_iter()
-        .map(|(package, source_entry)| {
-            let target_entry = latest_generation_entry(catalog, &package, target_generation);
-            affected_artifact(package, source_entry, target_entry, target_generation)
+        .map(|(package, kind)| {
+            let target_entry = latest_generation_entry(&entries, &package, target_generation);
+            affected_artifact(package, kind, target_entry, target_generation)
         })
         .collect()
 }
 
-fn insert_latest_entry<'a>(
-    entries: &mut BTreeMap<String, &'a CatalogEntry>,
-    entry: &'a CatalogEntry,
-) {
-    match entries.get(&entry.package) {
-        Some(existing) if existing.version >= entry.version => {}
-        _ => {
-            entries.insert(entry.package.clone(), entry);
-        }
-    }
-}
-
 fn latest_generation_entry<'a>(
-    catalog: &'a CatalogRevision,
+    entries: &'a [(ArtifactKind, &'a ArtifactEntry)],
     package: &str,
     generation: &str,
-) -> Option<&'a CatalogEntry> {
-    catalog
-        .entries
+) -> Option<&'a ArtifactEntry> {
+    entries
         .iter()
-        .filter(|entry| entry.package == package && entry.api_generation == generation)
+        .filter(|(_, entry)| entry.package == package && entry.api_generation == generation)
+        .map(|(_, entry)| *entry)
         .max_by(|left, right| left.version.cmp(&right.version))
 }
 
 fn affected_artifact(
     package: String,
-    source_entry: &CatalogEntry,
-    target_entry: Option<&CatalogEntry>,
+    kind: ArtifactKind,
+    target_entry: Option<&ArtifactEntry>,
     expected_generation: &str,
 ) -> AffectedArtifact {
-    let entry = target_entry.unwrap_or(source_entry);
     let (complete, reason) = match target_entry {
         Some(entry) => completeness(entry),
         None => (
@@ -195,42 +220,28 @@ fn affected_artifact(
 
     AffectedArtifact {
         package,
-        kind: entry.kind,
+        kind,
         target_version: target_entry.map(|entry| entry.version.clone()),
         target_generation: target_entry.map(|entry| entry.api_generation.clone()),
-        target_triples: target_entry
-            .map(|entry| entry.target_triples.clone())
-            .unwrap_or_default(),
-        status: target_entry
-            .map(|entry| entry.status.clone())
+        built_triples: target_entry
+            .map(|entry| entry.artifacts.keys().cloned().collect())
             .unwrap_or_default(),
         complete,
         reason,
     }
 }
 
-fn completeness(entry: &CatalogEntry) -> (bool, Option<String>) {
-    if entry.target_triples.is_empty() {
-        return (
+/// An entry is "complete" (ready to promote) once it has at least one real
+/// built artifact - there is no separate "planned but not yet built" status
+/// anymore, so an empty `artifacts` map is the only "not released" signal.
+fn completeness(entry: &ArtifactEntry) -> (bool, Option<String>) {
+    if entry.artifacts.is_empty() {
+        (
             false,
-            Some("target entry has no target triples".to_string()),
-        );
-    }
-
-    let incomplete = entry
-        .target_triples
-        .iter()
-        .filter_map(|triple| match entry.status.get(triple) {
-            Some(ArtifactStatus::Released) => None,
-            Some(status) => Some(format!("{triple} is {status:?}")),
-            None => Some(format!("{triple} has no catalog status")),
-        })
-        .collect::<Vec<_>>();
-
-    if incomplete.is_empty() {
-        (true, None)
+            Some("target entry has no released artifacts for any target".to_string()),
+        )
     } else {
-        (false, Some(incomplete.join(", ")))
+        (true, None)
     }
 }
 
@@ -328,15 +339,10 @@ pub(crate) fn human_report(report: &PreviewImpactReport) -> String {
                 "- {} {}{}\n",
                 artifact.package, status, reason_suffix
             ));
-            for triple in &artifact.target_triples {
-                let status = artifact
-                    .status
-                    .get(triple)
-                    .map(|status| format!("{status:?}"))
-                    .unwrap_or_else(|| "missing".to_string());
-                out.push_str(&format!("  - {triple}: {status}\n"));
+            for triple in &artifact.built_triples {
+                out.push_str(&format!("  - {triple}: released\n"));
             }
-            if artifact.target_triples.is_empty()
+            if artifact.built_triples.is_empty()
                 && let Some(reason) = &artifact.reason
             {
                 out.push_str(&format!("  - {reason}\n"));
@@ -381,10 +387,7 @@ pub(crate) fn ensure_ready_to_promote(impact: &GenerationImpact) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::schema::{
-        CatalogIntegrity, CatalogProvenance, Channel, ContractUse, EngineVersions, LaunchFacts,
-        RouterFacts, SystemdFacts,
-    };
+    use phoxal::catalog::{Artifact, Channel, Contract};
 
     fn generation(
         name: &str,
@@ -412,68 +415,40 @@ mod tests {
         package: &str,
         generation: &str,
         schema_id: &str,
-        status: ArtifactStatus,
-    ) -> CatalogEntry {
+        released: bool,
+    ) -> ArtifactEntry {
         let mut channels = BTreeMap::new();
         channels.insert(Channel::Preview, "0.2.0".to_string());
-        let mut statuses = BTreeMap::new();
-        statuses.insert("x86_64-unknown-linux-gnu".to_string(), status);
-        CatalogEntry {
+        let mut artifacts = BTreeMap::new();
+        if released {
+            artifacts.insert(
+                "x86_64-unknown-linux-gnu".to_string(),
+                Artifact {
+                    tarball: "fixture.tar.zst".to_string(),
+                    sha256: "0".repeat(64),
+                },
+            );
+        }
+        ArtifactEntry {
             package: package.to_string(),
-            kind: ArtifactKind::Service,
             version: "0.2.0".to_string(),
             api_generation: generation.to_string(),
-            contract_uses: vec![ContractUse {
+            contracts: vec![Contract {
                 family: "battery::State".to_string(),
-                topic_template: "battery/state".to_string(),
-                direction: "publish".to_string(),
                 schema_id: schema_id.to_string(),
             }],
-            target_triples: vec!["x86_64-unknown-linux-gnu".to_string()],
-            release_assets: BTreeMap::new(),
-            launch_facts: LaunchFacts {
-                participant_kind: "service".to_string(),
-                participant_class: "checked".to_string(),
-                router: RouterFacts {
-                    needs_zenoh_router: true,
-                },
-                systemd: SystemdFacts {
-                    groups: Vec::new(),
-                    devices: Vec::new(),
-                    source: "fixture".to_string(),
-                },
-            },
-            engine_versions: EngineVersions {
-                phoxal: Some("0.21.0".to_string()),
-                phoxal_bus: None,
-                zenoh: None,
-            },
+            config_schema: Some(serde_json::json!({ "type": "object" })),
+            bus_abi: "phoxal-bus/v0".to_string(),
+            artifacts,
             channels,
-            status: statuses,
             changed_contracts: Vec::new(),
         }
     }
 
-    fn catalog(entries: Vec<CatalogEntry>) -> CatalogRevision {
-        CatalogRevision {
-            schema: "phoxal.artifact-catalog/v0".to_string(),
-            format_version: 1,
-            revision: "fixture".to_string(),
-            integrity: CatalogIntegrity {
-                algorithm: "sha256".to_string(),
-                canonicalization: "fixture".to_string(),
-                sha256: "fixture".to_string(),
-            },
-            provenance: CatalogProvenance {
-                generator: "fixture".to_string(),
-                official_set: "fixture".to_string(),
-                emit_apis: "fixture".to_string(),
-                release_assets: "fixture".to_string(),
-                plan_01: "fixture".to_string(),
-            },
-            signature: None,
-            entries,
-        }
+    fn catalog(services: Vec<ArtifactEntry>) -> Manifest {
+        Manifest::new(Vec::new(), services, Vec::new(), Vec::new(), Vec::new())
+            .finalize()
+            .expect("fixture manifest finalizes")
     }
 
     #[test]
@@ -505,13 +480,13 @@ mod tests {
                 "phoxal/service-battery",
                 "y2026_1",
                 "1111111111111111",
-                ArtifactStatus::Released,
+                true,
             ),
             catalog_entry(
                 "phoxal/service-battery",
                 "y2026_2",
                 "2222222222222222",
-                ArtifactStatus::Pending,
+                false,
             ),
         ]);
 
@@ -522,7 +497,7 @@ mod tests {
         assert!(!preview.ready_to_promote);
         assert_eq!(
             preview.affected_artifacts[0].reason.as_deref(),
-            Some("x86_64-unknown-linux-gnu is Pending")
+            Some("target entry has no released artifacts for any target")
         );
         let err = ensure_ready_to_promote(preview).unwrap_err();
         assert!(

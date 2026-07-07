@@ -2182,6 +2182,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "serial_test",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2303,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2332,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-frame"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2342,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2381,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2391,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2402,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2441,7 +2442,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2461,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2476,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-supervisor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2491,7 +2492,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "gilrs",
@@ -4878,6 +4879,7 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "hex",
+ "phoxal",
  "proc-macro2",
  "semver",
  "serde",

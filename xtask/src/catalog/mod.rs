@@ -4,7 +4,6 @@ use clap::Subcommand;
 pub mod check;
 pub mod generate;
 pub mod publish;
-pub(crate) mod schema;
 pub mod verify;
 
 #[derive(Debug, Subcommand)]

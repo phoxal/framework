@@ -44,15 +44,6 @@ pub(crate) struct ContractDiff {
     pub to_schema_id: Option<String>,
 }
 
-impl ContractDiff {
-    pub(crate) fn key(&self) -> ContractKey {
-        ContractKey {
-            family: self.family.clone(),
-            topic: self.topic.clone(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ContractKey {
     pub family: String,
