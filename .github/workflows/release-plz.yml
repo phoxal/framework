@@ -10,9 +10,9 @@ name: release-plz
 # Official artifacts (services/component drivers/tools/simulators, plus
 # target-independent component_assets bundles - docs #21) are owned by xtask
 # instead. Releases are two surfaces (docs #22, decision D25): a per-artifact-
-# version "warehouse" release (`--latest=false`, holds the tarballs/checksums/
-# emit-apis metadata) and one mutable "stable" front-door release (holds the
-# catalog only). GitHub release immutability is off for this repo, so every
+# version "warehouse" release (`--latest=false`, holds the tarballs/checksums)
+# and one mutable "stable" front-door release (holds the catalog only). GitHub
+# release immutability is off for this repo, so every
 # upload clobbers rather than guarding against re-upload.
 #   - `cargo xtask release cut` creates the tag + a published warehouse GitHub
 #     release for any artifact whose current version isn't tagged yet
@@ -234,7 +234,7 @@ jobs:
           cargo xtask catalog generate \
             --release-plan target/xtask/release-plan.json \
             --package-dir target/xtask/release \
-            --out target/xtask/catalog/phoxal-artifact-catalog.json \
+            --out target/xtask/catalog/phoxal-artifacts.json \
             "${previous[@]}"
 
       - name: Check catalog revision
@@ -245,7 +245,7 @@ jobs:
             previous=(--previous-catalog target/xtask/previous-catalog.json)
           fi
           cargo xtask catalog check \
-            --catalog target/xtask/catalog/phoxal-artifact-catalog.json \
+            --catalog target/xtask/catalog/phoxal-artifacts.json \
             --release-plan target/xtask/release-plan.json \
             --package-dir target/xtask/release \
             "${previous[@]}"
@@ -258,7 +258,7 @@ jobs:
             previous=(--previous-catalog target/xtask/previous-catalog.json)
           fi
           cargo xtask ci release-gate \
-            --catalog target/xtask/catalog/phoxal-artifact-catalog.json \
+            --catalog target/xtask/catalog/phoxal-artifacts.json \
             --release-plan target/xtask/release-plan.json \
             --package-dir target/xtask/release \
             --verify-github \
@@ -270,7 +270,7 @@ jobs:
       - name: Publish stable catalog pointer
         run: >
           cargo xtask catalog publish
-          --catalog target/xtask/catalog/phoxal-artifact-catalog.json
+          --catalog target/xtask/catalog/phoxal-artifacts.json
           --repo ${{ github.repository }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

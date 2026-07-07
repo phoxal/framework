@@ -11,6 +11,7 @@ anyhow = { workspace = true }
 cargo_metadata = "0.23.1"
 clap = { workspace = true }
 hex = "0.4.3"
+phoxal = { workspace = true }
 proc-macro2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

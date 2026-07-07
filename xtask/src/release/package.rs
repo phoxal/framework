@@ -35,30 +35,23 @@ pub struct Args {
     pub dry_run: bool,
 }
 
-/// `metadata` is `None` for a [`ArtifactKind::ComponentAssets`] bundle: a plain
-/// tarball with a checksum, no `emit-apis` sidecar (docs #21). Every other kind
-/// always packages `Some(..)`.
+/// A packaged artifact: a tarball plus its checksum. No `emit-apis` sidecar -
+/// the catalog inlines contract/config metadata directly (`cargo xtask
+/// catalog generate` runs `emit-apis` itself; see `xtask/src/catalog/generate.rs`).
 #[derive(Clone, Debug)]
 pub struct PackagedArtifact {
     pub tarball: PathBuf,
     pub checksum: PathBuf,
-    pub metadata: Option<PathBuf>,
 }
 
-/// `metadata`/`metadata_name`/`metadata_sha256`/`emit_apis` are `None` for a
-/// [`ArtifactKind::ComponentAssets`] bundle, which carries no `emit-apis`
-/// sidecar (docs #21). Every other kind always carries `Some(..)`.
+/// A previously packaged artifact's on-disk facts, read back from `package_dir`.
 #[derive(Clone, Debug)]
 pub(crate) struct PackagedOutput {
     pub tarball: PathBuf,
     pub checksum: PathBuf,
-    pub metadata: Option<PathBuf>,
     pub tarball_name: String,
     pub checksum_name: String,
-    pub metadata_name: Option<String>,
     pub tarball_sha256: String,
-    pub metadata_sha256: Option<String>,
-    pub emit_apis: Option<EmitApisMetadata>,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -96,17 +89,12 @@ pub fn run(args: Args) -> Result<()> {
         )
         .with_context(|| format!("failed to package {}", artifact.package))?;
         println!(
-            "packaged {} v{} for {} -> {}, {}, {}",
+            "packaged {} v{} for {} -> {}, {}",
             artifact.package,
             artifact.version,
             target_triple,
             packaged.tarball.display(),
             packaged.checksum.display(),
-            packaged
-                .metadata
-                .as_deref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "(no emit-apis metadata: component assets)".to_string())
         );
     }
 
@@ -171,24 +159,24 @@ pub(crate) fn package_artifact(
         build_host_artifact(workspace.root(), artifact)?;
         host_binary_path(workspace, artifact)?
     };
+    // Packaging still runs and validates `emit-apis` as a fail-fast gate (a
+    // broken participant must not reach the tarball stage), but no longer
+    // writes it anywhere: the catalog inlines contract/config metadata by
+    // running `emit-apis` itself at generation time (`xtask/src/catalog/generate.rs`),
+    // so there is no sidecar file for a consumer to fetch (killing the old
+    // "double emit-apis": a sidecar per packaged target plus a second copy
+    // implied by the catalog).
     let emit_stdout = run_emit_apis(&emit_binary_path)?;
     parse_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
 
     let stem = asset_stem(artifact, target_triple);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
     let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
-    let metadata = out_dir.join(format!("{stem}.emit-apis.json"));
 
     write_tar_zst(&tarball, &binary_path, artifact.require_bin_name()?)?;
     write_sha256(&tarball, &checksum)?;
-    fs::write(&metadata, &emit_stdout)
-        .with_context(|| format!("failed to write emit-apis metadata {}", metadata.display()))?;
 
-    Ok(PackagedArtifact {
-        tarball,
-        checksum,
-        metadata: Some(metadata),
-    })
+    Ok(PackagedArtifact { tarball, checksum })
 }
 
 /// The bundle files an [`ArtifactKind::ComponentAssets`] tarball includes,
@@ -226,11 +214,7 @@ fn package_component_assets(
     write_component_assets_tar_zst(&tarball, &artifact.crate_dir, &entries)?;
     write_sha256(&tarball, &checksum)?;
 
-    Ok(PackagedArtifact {
-        tarball,
-        checksum,
-        metadata: None,
-    })
+    Ok(PackagedArtifact { tarball, checksum })
 }
 
 /// Walks `component_dir` (the `component/<id>/` directory) and returns every
@@ -610,47 +594,12 @@ pub(crate) fn read_packaged_output(
         );
     }
 
-    if !artifact.kind.has_crate() {
-        // `ComponentAssets` bundles carry no `emit-apis` sidecar (docs #21): a
-        // plain tarball with a checksum only.
-        return Ok(PackagedOutput {
-            tarball_name: file_name(&tarball)?,
-            checksum_name: file_name(&checksum)?,
-            metadata_name: None,
-            tarball_sha256: computed,
-            metadata_sha256: None,
-            tarball,
-            checksum,
-            metadata: None,
-            emit_apis: None,
-        });
-    }
-
-    let metadata = package_dir.join(format!("{stem}.emit-apis.json"));
-    if !metadata.is_file() {
-        bail!(
-            "missing packaged output for {} target {}: {}",
-            artifact.package,
-            target_triple,
-            metadata.display()
-        );
-    }
-
-    let metadata_bytes =
-        fs::read(&metadata).with_context(|| format!("failed to read {}", metadata.display()))?;
-    let emit_apis = parse_emit_apis_json(&metadata_bytes, &artifact.id, artifact.kind)
-        .with_context(|| format!("invalid emit-apis metadata {}", metadata.display()))?;
-
     Ok(PackagedOutput {
         tarball_name: file_name(&tarball)?,
         checksum_name: file_name(&checksum)?,
-        metadata_name: Some(file_name(&metadata)?),
         tarball_sha256: computed,
-        metadata_sha256: Some(sha256_bytes(&metadata_bytes)),
         tarball,
         checksum,
-        metadata: Some(metadata),
-        emit_apis: Some(emit_apis),
     })
 }
 
@@ -694,10 +643,6 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(hex::encode(hasher.finalize()))
-}
-
-pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 pub(crate) fn file_name(path: &Path) -> Result<String> {
@@ -844,6 +789,9 @@ pub(crate) struct EmitApisMetadata {
     pub participant_class: Option<String>,
     pub bus_abi: String,
     pub required_contracts: Vec<Contract>,
+    /// The participant's `robot.yaml` config JSON Schema, inlined into the
+    /// catalog's `ArtifactEntry::config_schema` (docs: catalog rewrite).
+    pub config_schema: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

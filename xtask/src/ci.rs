@@ -6,6 +6,7 @@ use std::process::Command as ProcessCommand;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args as ClapArgs, Subcommand};
+use phoxal::catalog::{Artifact as CatalogArtifact, Manifest};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -13,7 +14,6 @@ use crate::catalog::check::{compare_catalogs, validate_coverage};
 use crate::catalog::generate::{
     GenerateOptions, InputMode, build_catalog_revision, workspace_relative_path,
 };
-use crate::catalog::schema::{ArtifactStatus, CatalogRevision};
 use crate::catalog::verify::verify_catalog_path;
 use crate::release::package;
 use crate::release::plan::{ReleasePlan, load_release_plan};
@@ -31,7 +31,7 @@ pub struct ReleaseGateArgs {
     #[arg(
         long,
         value_name = "PATH",
-        default_value = "target/xtask/catalog/phoxal-artifact-catalog.json"
+        default_value = "target/xtask/catalog/phoxal-artifacts.json"
     )]
     pub catalog: PathBuf,
     #[arg(long, value_name = "DIR", default_value = "target/xtask/release")]
@@ -131,7 +131,7 @@ fn release_gate(args: ReleaseGateArgs) -> Result<()> {
     println!(
         "release gate passed: catalog {} covers {} entries",
         catalog.revision,
-        catalog.entries.len()
+        catalog.total_entries()
     );
     Ok(())
 }
@@ -149,57 +149,84 @@ fn release_plan_targets(plan: &Option<ReleasePlan>) -> Option<Vec<String>> {
     Some(targets)
 }
 
+/// `(version, artifacts)` for every package across all five [`Manifest`]
+/// arrays, keyed by package: what [`verify_release_plan_assets`] needs to
+/// cross-check a release-plan matrix row against, regardless of which array
+/// the package's kind puts it in.
+fn artifact_facts_by_package(
+    manifest: &Manifest,
+) -> BTreeMap<&str, (&str, &BTreeMap<String, CatalogArtifact>)> {
+    let mut facts = BTreeMap::new();
+    for entry in &manifest.assets {
+        facts.insert(
+            entry.package.as_str(),
+            (entry.version.as_str(), &entry.artifacts),
+        );
+    }
+    for entry in manifest.artifact_entries() {
+        facts.insert(
+            entry.package.as_str(),
+            (entry.version.as_str(), &entry.artifacts),
+        );
+    }
+    facts
+}
+
+/// The subset of an entry's facts `build_compat_report` needs, uniform across
+/// [`phoxal::catalog::AssetEntry`] and [`phoxal::catalog::ArtifactEntry`].
+struct EntryFacts<'a> {
+    package: &'a str,
+    version: &'a str,
+    artifacts: &'a BTreeMap<String, CatalogArtifact>,
+}
+
+fn assets_facts(entry: &phoxal::catalog::AssetEntry) -> EntryFacts<'_> {
+    EntryFacts {
+        package: &entry.package,
+        version: &entry.version,
+        artifacts: &entry.artifacts,
+    }
+}
+
+fn artifact_facts(entry: &phoxal::catalog::ArtifactEntry) -> EntryFacts<'_> {
+    EntryFacts {
+        package: &entry.package,
+        version: &entry.version,
+        artifacts: &entry.artifacts,
+    }
+}
+
 fn verify_release_plan_assets(
     workspace: &Workspace,
-    catalog: &CatalogRevision,
+    catalog: &Manifest,
     plan: &ReleasePlan,
     package_dir: &std::path::Path,
     verify_github: bool,
     repo: Option<&str>,
 ) -> Result<()> {
-    let catalog_entries = catalog
-        .entries
-        .iter()
-        .map(|entry| (entry.package.as_str(), entry))
-        .collect::<BTreeMap<_, _>>();
+    let catalog_facts = artifact_facts_by_package(catalog);
 
     for matrix in &plan.matrix.include {
         let artifact = workspace.official_artifact(&matrix.package)?;
         let output = package::read_packaged_output(artifact, package_dir, &matrix.target)?;
-        let entry = catalog_entries
+        let (version, artifacts) = catalog_facts
             .get(matrix.package.as_str())
             .with_context(|| format!("catalog missing {}", matrix.package))?;
-        if entry.version != matrix.version {
+        if *version != matrix.version {
             bail!(
                 "{} catalog version {} did not match release-plan version {}",
                 matrix.package,
-                entry.version,
+                version,
                 matrix.version
             );
         }
-        let asset = entry.release_assets.get(&matrix.target).with_context(|| {
+        let asset = artifacts.get(&matrix.target).with_context(|| {
             format!(
-                "{} catalog entry is missing release asset for {}",
+                "{} catalog entry is missing artifact for {}",
                 matrix.package, matrix.target
             )
         })?;
-        let metadata_matches = match (
-            &asset.metadata,
-            &output.metadata_name,
-            &output.metadata_sha256,
-        ) {
-            (Some(asset_metadata), Some(metadata_name), Some(metadata_sha256)) => {
-                asset_metadata.emit_apis == *metadata_name
-                    && asset_metadata.emit_apis_sha256 == *metadata_sha256
-                    && asset_metadata.sha256_file == output.checksum_name
-            }
-            (None, None, None) => true,
-            _ => false,
-        };
-        if asset.asset != output.tarball_name
-            || asset.sha256 != output.tarball_sha256
-            || !metadata_matches
-        {
+        if asset.tarball != output.tarball_name || asset.sha256 != output.tarball_sha256 {
             bail!(
                 "{} {} catalog asset facts do not match packaged outputs",
                 matrix.package,
@@ -209,11 +236,7 @@ fn verify_release_plan_assets(
         if verify_github {
             let repo = repo.context("--verify-github requires --repo or GITHUB_REPOSITORY")?;
             let existing = github_release_asset_names(repo, &matrix.tag)?;
-            let mut expected_names = vec![&output.tarball_name, &output.checksum_name];
-            if let Some(metadata_name) = &output.metadata_name {
-                expected_names.push(metadata_name);
-            }
-            for name in expected_names {
+            for name in [&output.tarball_name, &output.checksum_name] {
                 if !existing.contains(name) {
                     bail!(
                         "GitHub release {} is missing uploaded asset {}",
@@ -316,7 +339,7 @@ struct AuditFinding {
     package: Option<String>,
 }
 
-fn build_compat_report(catalog: &CatalogRevision, audit: Vec<AuditFinding>) -> CompatReport {
+fn build_compat_report(catalog: &Manifest, audit: Vec<AuditFinding>) -> CompatReport {
     let mut report = CompatReport::default();
     for finding in audit {
         report.causes.push(CompatCause {
@@ -328,26 +351,37 @@ fn build_compat_report(catalog: &CatalogRevision, audit: Vec<AuditFinding>) -> C
         });
     }
 
+    // There is no separate "planned but not yet built" status anymore: an
+    // entry's `artifacts` map *is* what has actually been released for it. An
+    // entry with no released artifacts at all is flagged as not yet released.
     let mut affected = BTreeSet::new();
-    for entry in &catalog.entries {
-        for (target, status) in &entry.status {
-            if *status != ArtifactStatus::Released {
-                affected.insert(AffectedTarget {
-                    package: entry.package.clone(),
-                    version: entry.version.clone(),
-                    target: target.clone(),
-                    reason: format!("catalog status is {:?}", status).to_lowercase(),
-                });
-            }
+    for entry in catalog
+        .assets
+        .iter()
+        .map(assets_facts)
+        .chain(catalog.artifact_entries().map(artifact_facts))
+    {
+        if entry.artifacts.is_empty() {
+            affected.insert(AffectedTarget {
+                package: entry.package.to_string(),
+                version: entry.version.to_string(),
+                target: "(none)".to_string(),
+                reason: "catalog entry has no released artifacts".to_string(),
+            });
         }
     }
 
     if !report.causes.is_empty() {
-        for entry in &catalog.entries {
-            for target in &entry.target_triples {
+        for entry in catalog
+            .assets
+            .iter()
+            .map(assets_facts)
+            .chain(catalog.artifact_entries().map(artifact_facts))
+        {
+            for target in entry.artifacts.keys() {
                 affected.insert(AffectedTarget {
-                    package: entry.package.clone(),
-                    version: entry.version.clone(),
+                    package: entry.package.to_string(),
+                    version: entry.version.to_string(),
                     target: target.clone(),
                     reason:
                         "cargo-audit reported an advisory; cataloged auditable binaries need review"
@@ -627,18 +661,21 @@ mod tests {
     use crate::catalog::generate::tests_support::fixture_catalog;
 
     #[test]
-    fn compat_report_flags_non_released_targets() -> Result<()> {
-        let mut catalog = fixture_catalog()?;
-        catalog.entries[0].status.insert(
-            "x86_64-unknown-linux-gnu".to_string(),
-            ArtifactStatus::Pending,
-        );
-        catalog = catalog.finalize()?;
+    fn compat_report_flags_entries_with_no_released_artifacts() -> Result<()> {
+        // The metadata-only fixture never populates `artifacts` (see
+        // `tests_support::fixture_catalog`), so the entry is flagged as not
+        // yet released without any further mutation.
+        let catalog = fixture_catalog()?;
+        assert!(catalog.services[0].artifacts.is_empty());
 
         let report = build_compat_report(&catalog, Vec::new());
 
         assert_eq!(report.affected_targets.len(), 1);
-        assert!(report.affected_targets[0].reason.contains("pending"));
+        assert!(
+            report.affected_targets[0]
+                .reason
+                .contains("no released artifacts")
+        );
         Ok(())
     }
 

@@ -3,16 +3,16 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
+use phoxal::catalog::{ArtifactEntry, AssetEntry, Manifest};
 
 use crate::catalog::generate::{
     GenerateOptions, InputMode, build_catalog_revision, default_catalog_path,
     workspace_relative_path,
 };
-use crate::catalog::schema::{CatalogEntry, CatalogRevision};
 use crate::catalog::verify::verify_catalog_path;
 use crate::release::package;
 use crate::release::plan::load_release_plan;
-use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
+use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, require_nonempty_artifacts};
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -84,37 +84,66 @@ pub fn run(args: Args) -> Result<()> {
     println!(
         "catalog check passed: {} covers {} official artifacts",
         catalog_path.display(),
-        actual.entries.len()
+        actual.total_entries()
     );
     Ok(())
 }
 
-pub(crate) fn validate_coverage(
-    catalog: &CatalogRevision,
+/// The five (kind, array) pairs a [`Manifest`] carries, for coverage checks
+/// that need to walk every array against the workspace's discovered official
+/// artifacts by kind.
+const RUNTIME_KINDS: [ArtifactKind; 4] = [
+    ArtifactKind::Service,
+    ArtifactKind::ComponentDriver,
+    ArtifactKind::Tool,
+    ArtifactKind::Simulator,
+];
+
+pub(crate) fn validate_coverage(manifest: &Manifest, artifacts: &[OfficialArtifact]) -> Result<()> {
+    check_kind_coverage(
+        ArtifactKind::ComponentAssets,
+        artifacts,
+        manifest.assets.iter().map(|entry| entry.package.as_str()),
+    )?;
+    for (kind, entries) in RUNTIME_KINDS.into_iter().zip([
+        &manifest.services,
+        &manifest.drivers,
+        &manifest.tools,
+        &manifest.simulators,
+    ]) {
+        check_kind_coverage(
+            kind,
+            artifacts,
+            entries.iter().map(|entry| entry.package.as_str()),
+        )?;
+    }
+    Ok(())
+}
+
+fn check_kind_coverage<'a>(
+    kind: ArtifactKind,
     artifacts: &[OfficialArtifact],
+    actual_packages: impl Iterator<Item = &'a str>,
 ) -> Result<()> {
     let expected = artifacts
         .iter()
-        .map(|artifact| artifact.package.clone())
+        .filter(|artifact| artifact.kind == kind)
+        .map(|artifact| artifact.package.as_str())
         .collect::<BTreeSet<_>>();
-    let actual = catalog
-        .entries
-        .iter()
-        .map(|entry| entry.package.clone())
-        .collect::<BTreeSet<_>>();
+    let actual = actual_packages.collect::<BTreeSet<_>>();
 
-    let missing = expected.difference(&actual).cloned().collect::<Vec<_>>();
+    let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
     if !missing.is_empty() {
         bail!(
-            "catalog is missing official artifact entries: {}",
+            "catalog {kind} array is missing official artifact entries: {}",
             missing.join(", ")
         );
     }
 
-    let unexpected = actual.difference(&expected).cloned().collect::<Vec<_>>();
+    let unexpected = actual.difference(&expected).copied().collect::<Vec<_>>();
     if !unexpected.is_empty() {
         bail!(
-            "catalog contains non-discovered official artifact entries: {}",
+            "catalog {kind} array contains non-discovered official artifact entries: {}",
             unexpected.join(", ")
         );
     }
@@ -122,51 +151,101 @@ pub(crate) fn validate_coverage(
     Ok(())
 }
 
-pub(crate) fn compare_catalogs(actual: &CatalogRevision, expected: &CatalogRevision) -> Result<()> {
-    let actual_entries = entries_by_package(actual)?;
-    let expected_entries = entries_by_package(expected)?;
+pub(crate) fn compare_catalogs(actual: &Manifest, expected: &Manifest) -> Result<()> {
+    compare_artifact_arrays("services", &actual.services, &expected.services)?;
+    compare_artifact_arrays("drivers", &actual.drivers, &expected.drivers)?;
+    compare_artifact_arrays("tools", &actual.tools, &expected.tools)?;
+    compare_artifact_arrays("simulators", &actual.simulators, &expected.simulators)?;
+    compare_asset_arrays(&actual.assets, &expected.assets)?;
 
-    for (package, expected_entry) in &expected_entries {
-        let actual_entry = actual_entries
-            .get(package)
-            .with_context(|| format!("catalog is missing official artifact entry {package}"))?;
-        if actual_entry.contract_uses != expected_entry.contract_uses {
-            bail!("catalog schema_id drift for {package}; regenerate from packaged emit-apis");
-        }
-        if actual_entry != expected_entry {
-            bail!(
-                "catalog hand-edit/provenance drift for {package}; run `cargo xtask catalog generate`"
-            );
-        }
-    }
-
-    if actual.entries.len() != expected.entries.len() {
-        bail!(
-            "catalog entry count drift: recorded {}, expected {}",
-            actual.entries.len(),
-            expected.entries.len()
-        );
-    }
-
-    let mut actual_without_entries = actual.clone();
-    let mut expected_without_entries = expected.clone();
-    actual_without_entries.entries.clear();
-    expected_without_entries.entries.clear();
-    if actual_without_entries != expected_without_entries {
-        bail!(
-            "catalog top-level provenance or integrity drift; run `cargo xtask catalog generate`"
-        );
+    if actual != expected {
+        bail!("catalog hand-edit drift for the manifest; run `cargo xtask catalog generate`");
     }
 
     Ok(())
 }
 
-fn entries_by_package(catalog: &CatalogRevision) -> Result<BTreeMap<String, &CatalogEntry>> {
-    let mut entries = BTreeMap::new();
-    for entry in &catalog.entries {
-        if entries.insert(entry.package.clone(), entry).is_some() {
-            bail!("catalog contains duplicate package {}", entry.package);
+fn compare_artifact_arrays(
+    label: &str,
+    actual: &[ArtifactEntry],
+    expected: &[ArtifactEntry],
+) -> Result<()> {
+    let actual_by_package = artifact_entries_by_package(label, actual)?;
+    let expected_by_package = artifact_entries_by_package(label, expected)?;
+
+    for (package, expected_entry) in &expected_by_package {
+        let actual_entry = actual_by_package.get(package).with_context(|| {
+            format!("catalog {label} array is missing official artifact entry {package}")
+        })?;
+        if actual_entry.contracts != expected_entry.contracts {
+            bail!("catalog schema_id drift for {package}; regenerate from packaged emit-apis");
         }
     }
-    Ok(entries)
+
+    if actual.len() != expected.len() {
+        bail!(
+            "catalog {label} entry count drift: recorded {}, expected {}",
+            actual.len(),
+            expected.len()
+        );
+    }
+    Ok(())
+}
+
+fn artifact_entries_by_package<'a>(
+    label: &str,
+    entries: &'a [ArtifactEntry],
+) -> Result<BTreeMap<&'a str, &'a ArtifactEntry>> {
+    let mut map = BTreeMap::new();
+    for entry in entries {
+        if map.insert(entry.package.as_str(), entry).is_some() {
+            bail!(
+                "catalog {label} array contains duplicate package {}",
+                entry.package
+            );
+        }
+    }
+    Ok(map)
+}
+
+fn compare_asset_arrays(actual: &[AssetEntry], expected: &[AssetEntry]) -> Result<()> {
+    let mut actual_by_package = BTreeMap::new();
+    for entry in actual {
+        if actual_by_package
+            .insert(entry.package.as_str(), entry)
+            .is_some()
+        {
+            bail!(
+                "catalog assets array contains duplicate package {}",
+                entry.package
+            );
+        }
+    }
+    let mut expected_by_package = BTreeMap::new();
+    for entry in expected {
+        if expected_by_package
+            .insert(entry.package.as_str(), entry)
+            .is_some()
+        {
+            bail!(
+                "catalog assets array contains duplicate package {}",
+                entry.package
+            );
+        }
+    }
+
+    for package in expected_by_package.keys() {
+        if !actual_by_package.contains_key(package) {
+            bail!("catalog assets array is missing official artifact entry {package}");
+        }
+    }
+
+    if actual.len() != expected.len() {
+        bail!(
+            "catalog assets entry count drift: recorded {}, expected {}",
+            actual.len(),
+            expected.len()
+        );
+    }
+    Ok(())
 }

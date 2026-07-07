@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
+use phoxal::catalog::Manifest;
 
 use crate::catalog::generate::default_catalog_path;
-use crate::catalog::schema::CatalogRevision;
 use crate::workspace::Workspace;
 
 #[derive(Debug, ClapArgs)]
@@ -17,23 +17,23 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
     let path = resolve_path_or_revision(&workspace, &args.rev)?;
-    let revision = verify_catalog_path(&path)?;
+    let manifest = verify_catalog_path(&path)?;
     println!(
         "verified catalog {} with {} entries at {}",
-        revision.revision,
-        revision.entries.len(),
+        manifest.revision,
+        manifest.total_entries(),
         path.display()
     );
     Ok(())
 }
 
-pub(crate) fn verify_catalog_path(path: &Path) -> Result<CatalogRevision> {
+pub(crate) fn verify_catalog_path(path: &Path) -> Result<Manifest> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let revision: CatalogRevision = serde_json::from_str(&text)
+    let manifest: Manifest = serde_json::from_str(&text)
         .with_context(|| format!("{} is not a valid catalog JSON document", path.display()))?;
-    revision.verify()?;
-    Ok(revision)
+    manifest.verify()?;
+    Ok(manifest)
 }
 
 fn resolve_path_or_revision(workspace: &Workspace, value: &str) -> Result<PathBuf> {
@@ -47,8 +47,9 @@ fn resolve_path_or_revision(workspace: &Workspace, value: &str) -> Result<PathBu
 
     let default_path = default_catalog_path(workspace);
     if default_path.is_file() {
-        let revision = verify_catalog_path(&default_path)?;
-        if revision.revision == value || revision.integrity.sha256 == value {
+        let manifest = verify_catalog_path(&default_path)?;
+        let bare_hex = manifest.revision.strip_prefix("sha256:");
+        if manifest.revision == value || bare_hex == Some(value) {
             return Ok(default_path);
         }
     }
@@ -67,19 +68,18 @@ mod tests {
     #[test]
     fn verify_rejects_bad_checksum() -> Result<()> {
         let mut catalog = fixture_catalog()?;
-        catalog.entries[0].package = "phoxal-service-edited".to_string();
+        catalog.services[0].package = "phoxal/service-edited".to_string();
         let err = catalog.verify().unwrap_err();
-        assert_error_contains(&err, "checksum mismatch");
+        assert_error_contains(&err, "did not match computed");
         Ok(())
     }
 
     #[test]
-    fn verify_rejects_wrong_format_version() -> Result<()> {
+    fn verify_rejects_wrong_schema() -> Result<()> {
         let mut catalog = fixture_catalog()?;
-        catalog.format_version = 999;
-        catalog = catalog.finalize()?;
+        catalog.schema = "phoxal-artifacts/999".to_string();
         let err = catalog.verify().unwrap_err();
-        assert_error_contains(&err, "format_version");
+        assert_error_contains(&err, "catalog schema");
         Ok(())
     }
 

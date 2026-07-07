@@ -20,8 +20,8 @@ pub const PHOXAL_PROVIDER: &str = "phoxal";
 
 /// The target-independent scope token recorded for a [`ArtifactKind::ComponentAssets`]
 /// package instead of a real target triple: assets are not per-architecture
-/// binaries, so `target_triples`/`release_assets`/`status` carry exactly this one
-/// key rather than pretending to be a per-triple binary matrix.
+/// binaries, so catalog artifact maps carry exactly this one key rather than
+/// pretending to be a per-triple binary matrix.
 pub const TARGET_INDEPENDENT_SCOPE: &str = "target-independent";
 
 /// The file xtask reads for a driverless-package's component assets version,

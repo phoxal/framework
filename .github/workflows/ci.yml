@@ -53,7 +53,7 @@ jobs:
 
       # Full package-output catalog generation builds all official release
       # binaries. PRs use metadata-only mode to gate discovery, schema ids,
-      # coverage, provenance, and checksum integrity without that release cost.
+      # coverage, and revision integrity without that release cost.
       - name: Generate metadata-only catalog
         run: cargo xtask catalog generate --metadata-only
 
@@ -61,14 +61,14 @@ jobs:
         run: cargo xtask catalog check --metadata-only
 
       - name: Verify metadata-only catalog
-        run: cargo xtask catalog verify target/xtask/catalog/phoxal-artifact-catalog.json
+        run: cargo xtask catalog verify target/xtask/catalog/phoxal-artifacts.json
 
       - name: Check no-orphan promotion gate
         if: github.event_name == 'pull_request'
-        run: cargo xtask api promotion-gate --base ${{ github.event.pull_request.base.sha }} --catalog target/xtask/catalog/phoxal-artifact-catalog.json
+        run: cargo xtask api promotion-gate --base ${{ github.event.pull_request.base.sha }} --catalog target/xtask/catalog/phoxal-artifacts.json
 
       - name: Publish preview impact report
-        run: cargo xtask api preview-impact --catalog target/xtask/catalog/phoxal-artifact-catalog.json --json-out target/xtask/api-preview-impact.json --github-summary
+        run: cargo xtask api preview-impact --catalog target/xtask/catalog/phoxal-artifacts.json --json-out target/xtask/api-preview-impact.json --github-summary
 
       - uses: actions/upload-artifact@v4
         with:

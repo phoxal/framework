@@ -35,18 +35,13 @@ pub fn run(args: Args) -> Result<()> {
 
     if args.dry_run {
         println!(
-            "would clobber-upload release assets for {} target {} to {}/{}: {}, {}{}",
+            "would clobber-upload release assets for {} target {} to {}/{}: {}, {}",
             artifact.package,
             args.target,
             args.repo,
             tag,
             output.tarball_name,
-            output.checksum_name,
-            output
-                .metadata_name
-                .as_deref()
-                .map(|name| format!(", {name}"))
-                .unwrap_or_default()
+            output.checksum_name
         );
         return Ok(());
     }
@@ -59,17 +54,12 @@ pub(crate) fn github_release_asset_names(repo: &str, tag: &str) -> Result<BTreeS
 }
 
 fn upload_assets(repo: &str, tag: &str, output: &PackagedOutput) -> Result<()> {
-    let mut command = Command::new("gh");
-    command
+    let status = Command::new("gh")
         .arg("release")
         .arg("upload")
         .arg(tag)
         .arg(&output.tarball)
-        .arg(&output.checksum);
-    if let Some(metadata) = &output.metadata {
-        command.arg(metadata);
-    }
-    let status = command
+        .arg(&output.checksum)
         .arg("--repo")
         .arg(repo)
         .arg("--clobber")

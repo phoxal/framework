@@ -4,10 +4,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
+use phoxal::catalog::Manifest;
 
-use crate::catalog::schema::{CatalogEntry, CatalogRevision};
 use crate::catalog::verify::verify_catalog_path;
-use crate::workspace::{ArtifactKind, Workspace};
+use crate::workspace::Workspace;
 
 /// The one mutable "front door" release (docs #22, decision D25): a single,
 /// fixed-tag, `--latest=true` release that hosts the catalog. It carries no
@@ -20,7 +20,7 @@ pub struct Args {
     #[arg(
         long,
         value_name = "PATH",
-        default_value = "target/xtask/catalog/phoxal-artifact-catalog.json"
+        default_value = "target/xtask/catalog/phoxal-artifacts.json"
     )]
     pub catalog: PathBuf,
     #[arg(
@@ -44,15 +44,15 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         workspace.root().join(&args.catalog)
     };
-    let revision = verify_catalog_path(&catalog_path)?;
+    let manifest = verify_catalog_path(&catalog_path)?;
     let latest_url = stable_release_catalog_url(&args.repo, &args.release_tag);
-    let revision_filename = revision_filename(&revision.integrity.sha256);
-    let body = grouped_release_body(&revision);
+    let revision_filename = revision_filename(&manifest.revision);
+    let body = grouped_release_body(&manifest);
 
     if args.dry_run {
         println!(
             "would publish catalog {} to {} (revision asset {})",
-            revision.revision, latest_url, revision_filename
+            manifest.revision, latest_url, revision_filename
         );
         println!("{body}");
         return Ok(());
@@ -68,11 +68,11 @@ pub fn run(args: Args) -> Result<()> {
         &args.repo,
         &args.release_tag,
         &catalog_bytes,
-        &revision,
+        &manifest,
         &staging_dir,
         &GhReleases,
     )?;
-    println!("published catalog {} to {}", revision.revision, latest_url);
+    println!("published catalog {} to {}", manifest.revision, latest_url);
     Ok(())
 }
 
@@ -84,43 +84,77 @@ pub(crate) fn stable_release_catalog_url(repo: &str, release_tag: &str) -> Strin
 
 /// The immutable-by-convention per-revision asset filename appended to the
 /// `stable` release alongside the overwritten `latest.json`.
-fn revision_filename(sha256: &str) -> String {
-    format!("phoxal-artifact-catalog-{sha256}.json")
+fn revision_filename(revision: &str) -> String {
+    let hex = revision.strip_prefix("sha256:").unwrap_or(revision);
+    format!("phoxal-artifacts-{hex}.json")
 }
 
 /// Group catalog entries the way the `stable` release body presents them
 /// (docs #22): one section per artifact kind, in a fixed display order,
 /// entries sorted by package for a deterministic body. Kinds with no entries
 /// in this revision are omitted rather than printed empty.
-pub(crate) fn grouped_release_body(revision: &CatalogRevision) -> String {
-    const GROUPS: [(ArtifactKind, &str); 5] = [
-        (ArtifactKind::Service, "Services"),
-        (ArtifactKind::ComponentDriver, "Component drivers"),
-        (ArtifactKind::ComponentAssets, "Component assets"),
-        (ArtifactKind::Tool, "Tools"),
-        (ArtifactKind::Simulator, "Simulators"),
-    ];
-
-    let mut body = format!("Phoxal artifact catalog - revision {}\n", revision.revision);
-    for (kind, label) in GROUPS {
-        let mut entries: Vec<&CatalogEntry> = revision
-            .entries
+pub(crate) fn grouped_release_body(manifest: &Manifest) -> String {
+    let mut body = format!("Phoxal artifact catalog - revision {}\n", manifest.revision);
+    append_group(
+        &mut body,
+        "Services",
+        manifest
+            .services
             .iter()
-            .filter(|entry| entry.kind == kind)
-            .collect();
-        if entries.is_empty() {
-            continue;
-        }
-        entries.sort_by(|a, b| a.package.cmp(&b.package));
-
-        body.push('\n');
-        body.push_str(label);
-        body.push('\n');
-        for entry in entries {
-            body.push_str(&format!("- {} v{}\n", entry.package, entry.version));
-        }
-    }
+            .map(|entry| (entry.package.as_str(), entry.version.as_str())),
+    );
+    append_group(
+        &mut body,
+        "Component drivers",
+        manifest
+            .drivers
+            .iter()
+            .map(|entry| (entry.package.as_str(), entry.version.as_str())),
+    );
+    append_group(
+        &mut body,
+        "Component assets",
+        manifest
+            .assets
+            .iter()
+            .map(|entry| (entry.package.as_str(), entry.version.as_str())),
+    );
+    append_group(
+        &mut body,
+        "Tools",
+        manifest
+            .tools
+            .iter()
+            .map(|entry| (entry.package.as_str(), entry.version.as_str())),
+    );
+    append_group(
+        &mut body,
+        "Simulators",
+        manifest
+            .simulators
+            .iter()
+            .map(|entry| (entry.package.as_str(), entry.version.as_str())),
+    );
     body
+}
+
+fn append_group<'a>(
+    body: &mut String,
+    label: &str,
+    entries: impl Iterator<Item = (&'a str, &'a str)>,
+) {
+    let mut sorted = entries.collect::<Vec<_>>();
+    if sorted.is_empty() {
+        return;
+    }
+    sorted.sort();
+
+    body.push('\n');
+    body.push_str(label);
+    body.push('\n');
+    for (package, version) in sorted {
+        body.push_str(&format!("- {package} v{version}\n"));
+    }
 }
 
 /// Seam over the `gh release` operations `catalog publish` needs, so the
@@ -234,11 +268,11 @@ fn publish_catalog<R: Releases>(
     repo: &str,
     tag: &str,
     catalog_bytes: &[u8],
-    revision: &CatalogRevision,
+    manifest: &Manifest,
     staging_dir: &Path,
     releases: &R,
 ) -> Result<()> {
-    let body = grouped_release_body(revision);
+    let body = grouped_release_body(manifest);
 
     if !releases.release_exists(repo, tag)? {
         let sha = releases.head_sha()?;
@@ -247,7 +281,7 @@ fn publish_catalog<R: Releases>(
 
     fs::create_dir_all(staging_dir)
         .with_context(|| format!("failed to create {}", staging_dir.display()))?;
-    let revision_filename = revision_filename(&revision.integrity.sha256);
+    let revision_filename = revision_filename(&manifest.revision);
     let revision_path = staging_dir.join(&revision_filename);
     let latest_path = staging_dir.join("latest.json");
     fs::write(&revision_path, catalog_bytes)
@@ -266,81 +300,50 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use crate::catalog::schema::{
-        CATALOG_FORMAT_VERSION, CATALOG_SCHEMA, CHECKSUM_CANONICALIZATION, CatalogIntegrity,
-        CatalogProvenance, Channel, EngineVersions, LaunchFacts, RouterFacts, SystemdFacts,
-    };
+    use phoxal::catalog::{Artifact, ArtifactEntry, AssetEntry, Channel};
 
     use super::*;
 
-    fn entry(package: &str, kind: ArtifactKind, version: &str) -> CatalogEntry {
+    fn artifact_entry(package: &str, version: &str) -> ArtifactEntry {
         let mut channels = BTreeMap::new();
         channels.insert(Channel::Stable, version.to_string());
-        CatalogEntry {
+        ArtifactEntry {
             package: package.to_string(),
-            kind,
             version: version.to_string(),
             api_generation: "y2026_1".to_string(),
-            contract_uses: Vec::new(),
-            target_triples: vec!["x86_64-unknown-linux-gnu".to_string()],
-            release_assets: BTreeMap::new(),
-            launch_facts: LaunchFacts {
-                participant_kind: kind.emit_apis_kind().to_string(),
-                participant_class: "checked".to_string(),
-                router: RouterFacts {
-                    needs_zenoh_router: false,
-                },
-                systemd: SystemdFacts {
-                    groups: Vec::new(),
-                    devices: Vec::new(),
-                    source: "test".to_string(),
-                },
-            },
-            engine_versions: EngineVersions {
-                phoxal: None,
-                phoxal_bus: None,
-                zenoh: None,
-            },
+            contracts: Vec::new(),
+            config_schema: Some(serde_json::json!({ "type": "object" })),
+            bus_abi: "phoxal-bus/v0".to_string(),
+            artifacts: BTreeMap::<String, Artifact>::new(),
             channels,
-            status: BTreeMap::new(),
             changed_contracts: Vec::new(),
         }
     }
 
-    fn fixture_revision() -> CatalogRevision {
-        CatalogRevision {
-            schema: CATALOG_SCHEMA.to_string(),
-            format_version: CATALOG_FORMAT_VERSION,
-            revision: "sha256:deadbeef".to_string(),
-            integrity: CatalogIntegrity {
-                algorithm: "sha256".to_string(),
-                canonicalization: CHECKSUM_CANONICALIZATION.to_string(),
-                sha256: "deadbeef".to_string(),
-            },
-            provenance: CatalogProvenance {
-                generator: "test".to_string(),
-                official_set: "test".to_string(),
-                emit_apis: "test".to_string(),
-                release_assets: "test".to_string(),
-                plan_01: "test".to_string(),
-            },
-            signature: None,
-            entries: vec![
-                entry("phoxal/service-map", ArtifactKind::Service, "0.19.6"),
-                entry("phoxal/service-drive", ArtifactKind::Service, "0.19.6"),
-                entry(
-                    "phoxal/component-ddsm115-driver",
-                    ArtifactKind::ComponentDriver,
-                    "0.1.5",
-                ),
-                entry(
-                    "phoxal/component-ddsm115-assets",
-                    ArtifactKind::ComponentAssets,
-                    "0.1.0",
-                ),
-                entry("phoxal/tool-router", ArtifactKind::Tool, "0.1.5"),
-            ],
+    fn asset_entry(package: &str, version: &str) -> AssetEntry {
+        let mut channels = BTreeMap::new();
+        channels.insert(Channel::Stable, version.to_string());
+        AssetEntry {
+            package: package.to_string(),
+            version: version.to_string(),
+            artifacts: BTreeMap::new(),
+            channels,
         }
+    }
+
+    fn fixture_manifest() -> Manifest {
+        Manifest::new(
+            vec![asset_entry("phoxal/component-ddsm115-assets", "0.1.0")],
+            vec![
+                artifact_entry("phoxal/service-map", "0.19.6"),
+                artifact_entry("phoxal/service-drive", "0.19.6"),
+            ],
+            vec![artifact_entry("phoxal/component-ddsm115-driver", "0.1.5")],
+            vec![artifact_entry("phoxal/tool-router", "0.1.5")],
+            Vec::new(),
+        )
+        .finalize()
+        .expect("fixture manifest finalizes")
     }
 
     #[test]
@@ -353,24 +356,27 @@ mod tests {
 
     #[test]
     fn grouped_body_lists_entries_by_kind_sorted_and_omits_empty_groups() {
-        let body = grouped_release_body(&fixture_revision());
-        assert_eq!(
-            body,
-            "Phoxal artifact catalog - revision sha256:deadbeef\n\
-\n\
-Services\n\
+        let manifest = fixture_manifest();
+        let body = grouped_release_body(&manifest);
+        assert!(body.starts_with(&format!(
+            "Phoxal artifact catalog - revision {}\n",
+            manifest.revision
+        )));
+        assert!(body.contains(
+            "\nServices\n\
 - phoxal/service-drive v0.19.6\n\
-- phoxal/service-map v0.19.6\n\
-\n\
-Component drivers\n\
-- phoxal/component-ddsm115-driver v0.1.5\n\
-\n\
-Component assets\n\
-- phoxal/component-ddsm115-assets v0.1.0\n\
-\n\
-Tools\n\
-- phoxal/tool-router v0.1.5\n"
-        );
+- phoxal/service-map v0.19.6\n"
+        ));
+        assert!(body.contains(
+            "\nComponent drivers\n\
+- phoxal/component-ddsm115-driver v0.1.5\n"
+        ));
+        assert!(body.contains(
+            "\nComponent assets\n\
+- phoxal/component-ddsm115-assets v0.1.0\n"
+        ));
+        assert!(body.contains("\nTools\n- phoxal/tool-router v0.1.5\n"));
+        assert!(!body.contains("Simulators"));
     }
 
     #[derive(Debug, Eq, PartialEq)]
@@ -434,7 +440,7 @@ Tools\n\
 
     #[test]
     fn publish_creates_the_release_when_missing_then_uploads_and_edits() -> Result<()> {
-        let revision = fixture_revision();
+        let manifest = fixture_manifest();
         let releases = FakeReleases {
             exists: false,
             ..Default::default()
@@ -446,7 +452,7 @@ Tools\n\
             "phoxal/framework",
             "stable",
             b"catalog-bytes",
-            &revision,
+            &manifest,
             &staging_dir,
             &releases,
         )?;
@@ -464,9 +470,10 @@ Tools\n\
 
         let uploaded = releases.uploaded.into_inner();
         assert_eq!(uploaded.len(), 2);
+        let hex = manifest.revision.strip_prefix("sha256:").unwrap();
         assert_eq!(
             uploaded[0].2.file_name().unwrap().to_str().unwrap(),
-            "phoxal-artifact-catalog-deadbeef.json"
+            format!("phoxal-artifacts-{hex}.json")
         );
         assert_eq!(
             uploaded[1].2.file_name().unwrap().to_str().unwrap(),
@@ -478,13 +485,13 @@ Tools\n\
 
         let edited = releases.edited.into_inner();
         assert_eq!(edited.len(), 1);
-        assert_eq!(edited[0].2, grouped_release_body(&revision));
+        assert_eq!(edited[0].2, grouped_release_body(&manifest));
         Ok(())
     }
 
     #[test]
     fn publish_reuses_an_existing_release_without_recreating_it() -> Result<()> {
-        let revision = fixture_revision();
+        let manifest = fixture_manifest();
         let releases = FakeReleases {
             exists: true,
             ..Default::default()
@@ -496,7 +503,7 @@ Tools\n\
             "phoxal/framework",
             "stable",
             b"catalog-bytes",
-            &revision,
+            &manifest,
             &staging_dir,
             &releases,
         )?;
