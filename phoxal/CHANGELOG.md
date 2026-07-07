@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0](https://github.com/phoxal/framework/compare/phoxal-v0.28.0...phoxal-v0.29.0) - 2026-07-07
+
+### Other
+
+- *(catalog)* [**breaking**] lean phoxal-artifacts.json, single phoxal::catalog schema, inline emit-apis (WS1) ([#187](https://github.com/phoxal/framework/pull/187))
+
 ## [0.28.0](https://github.com/phoxal/framework/compare/phoxal-v0.27.0...phoxal-v0.28.0) - 2026-07-07
 
 ### Other
