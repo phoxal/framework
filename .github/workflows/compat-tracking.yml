@@ -17,7 +17,7 @@ jobs:
   compat-tracking:
     runs-on: ubuntu-latest
     env:
-      STABLE_CATALOG_URL: https://raw.githubusercontent.com/phoxal/framework/artifact-catalog-v0-stable/latest.json
+      STABLE_CATALOG_URL: https://github.com/${{ github.repository }}/releases/download/stable/latest.json
     steps:
       - uses: actions/checkout@v4
         with:

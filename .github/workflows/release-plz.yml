@@ -9,16 +9,21 @@ name: release-plz
 #
 # Official artifacts (services/component drivers/tools/simulators, plus
 # target-independent component_assets bundles - docs #21) are owned by xtask
-# instead:
-#   - `cargo xtask release cut` creates the tag + a draft GitHub release for any
-#     artifact whose current version isn't tagged yet (idempotent - same
-#     reconcile-on-every-push semantics `release_always` gave release-plz;
-#     crate-backed artifacts version off Cargo.toml, component_assets bundles
-#     off their assets.version file) and emits a release-plz-JSON-compatible
-#     document;
+# instead. Releases are two surfaces (docs #22, decision D25): a per-artifact-
+# version "warehouse" release (`--latest=false`, holds the tarballs/checksums/
+# emit-apis metadata) and one mutable "stable" front-door release (holds the
+# catalog only). GitHub release immutability is off for this repo, so every
+# upload clobbers rather than guarding against re-upload.
+#   - `cargo xtask release cut` creates the tag + a published warehouse GitHub
+#     release for any artifact whose current version isn't tagged yet
+#     (idempotent - same reconcile-on-every-push semantics `release_always`
+#     gave release-plz; crate-backed artifacts version off Cargo.toml,
+#     component_assets bundles off their assets.version file) and emits a
+#     release-plz-JSON-compatible document. Releases are born published - there
+#     is no draft state to un-draft later;
 #   - `cargo xtask release plan` consumes that document exactly like it used to
 #     consume `release-plz release --output json`, so the native asset
-#     packaging/upload/gate/publish/catalog steps below are unchanged; a
+#     packaging/upload/gate/catalog steps below are unchanged; a
 #     component_assets bundle's matrix row packages once for the
 #     target-independent scope instead of once per real target triple;
 #   - `cargo xtask release bump --changed` (in the release-plz-pr job) computes
@@ -84,9 +89,10 @@ jobs:
           GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      # Artifacts only: idempotent tag + draft-release reconciliation, cheap
-      # (git tag/log only, no cargo package). Emits a release-plz-JSON-compatible
-      # document so the plan step below needs no changes.
+      # Artifacts only: idempotent tag + warehouse-release reconciliation,
+      # cheap (git tag/log only, no cargo package). Emits a
+      # release-plz-JSON-compatible document so the plan step below needs no
+      # changes.
       - name: Cut official artifact releases
         run: |
           set -euo pipefail
@@ -154,7 +160,7 @@ jobs:
           --target ${{ matrix.target }}
           --out target/xtask/release
 
-      - name: Upload immutable release assets
+      - name: Upload release assets
         run: >
           cargo xtask release upload
           --package ${{ matrix.package }}
@@ -189,7 +195,7 @@ jobs:
     permissions:
       contents: write
     env:
-      STABLE_CATALOG_URL: https://raw.githubusercontent.com/phoxal/framework/artifact-catalog-v0-stable/latest.json
+      STABLE_CATALOG_URL: https://github.com/${{ github.repository }}/releases/download/stable/latest.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -261,19 +267,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish artifact draft releases
-        run: >
-          cargo xtask release publish
-          --plan target/xtask/release-plan.json
-          --repo ${{ github.repository }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Publish stable catalog pointer
         run: >
           cargo xtask catalog publish
           --catalog target/xtask/catalog/phoxal-artifact-catalog.json
           --repo ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-plz-pr:
     name: release-plz PR

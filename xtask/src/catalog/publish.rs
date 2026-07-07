@@ -1,14 +1,19 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 
+use crate::catalog::schema::{CatalogEntry, CatalogRevision};
 use crate::catalog::verify::verify_catalog_path;
-use crate::workspace::Workspace;
+use crate::workspace::{ArtifactKind, Workspace};
 
-pub(crate) const DEFAULT_CATALOG_REF: &str = "artifact-catalog-v0-stable";
+/// The one mutable "front door" release (docs #22, decision D25): a single,
+/// fixed-tag, `--latest=true` release that hosts the catalog. It carries no
+/// tarballs - those live in the per-artifact-version warehouse releases
+/// `cargo xtask release cut`/`upload` create.
+pub(crate) const DEFAULT_RELEASE_TAG: &str = "stable";
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -25,9 +30,9 @@ pub struct Args {
         default_value = "phoxal/framework"
     )]
     pub repo: String,
-    #[arg(long = "ref", value_name = "BRANCH", default_value = DEFAULT_CATALOG_REF)]
-    pub git_ref: String,
-    /// Verify the catalog and print the publish URL without touching git.
+    #[arg(long = "release-tag", value_name = "TAG", default_value = DEFAULT_RELEASE_TAG)]
+    pub release_tag: String,
+    /// Verify the catalog and print the publish plan without touching GitHub.
     #[arg(long)]
     pub dry_run: bool,
 }
@@ -40,209 +45,465 @@ pub fn run(args: Args) -> Result<()> {
         workspace.root().join(&args.catalog)
     };
     let revision = verify_catalog_path(&catalog_path)?;
-    let latest_url = stable_catalog_url(&args.repo, &args.git_ref);
+    let latest_url = stable_release_catalog_url(&args.repo, &args.release_tag);
     let revision_filename = revision_filename(&revision.integrity.sha256);
+    let body = grouped_release_body(&revision);
 
     if args.dry_run {
         println!(
-            "would publish catalog {} to {} and revisions/{}",
+            "would publish catalog {} to {} (revision asset {})",
             revision.revision, latest_url, revision_filename
         );
+        println!("{body}");
         return Ok(());
     }
 
-    let publish_dir = workspace
+    let catalog_bytes = fs::read(&catalog_path)
+        .with_context(|| format!("failed to read {}", catalog_path.display()))?;
+    let staging_dir = workspace
         .root()
         .join("target/xtask/catalog-publish")
-        .join(args.git_ref.replace('/', "_"));
-    prepare_worktree(workspace.root(), &publish_dir, &args.git_ref)?;
-    write_catalog_files(&publish_dir, &catalog_path, &revision_filename)?;
-    commit_and_push(&publish_dir, &args.git_ref, &revision.revision)?;
+        .join(&args.release_tag);
+    publish_catalog(
+        &args.repo,
+        &args.release_tag,
+        &catalog_bytes,
+        &revision,
+        &staging_dir,
+        &GhReleases,
+    )?;
     println!("published catalog {} to {}", revision.revision, latest_url);
     Ok(())
 }
 
-pub(crate) fn stable_catalog_url(repo: &str, git_ref: &str) -> String {
-    format!("https://raw.githubusercontent.com/{repo}/{git_ref}/latest.json")
+/// The download URL the CLI reads the front-door catalog from
+/// (`DEFAULT_CATALOG_URL` in the CLI, updated separately per docs #22).
+pub(crate) fn stable_release_catalog_url(repo: &str, release_tag: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{release_tag}/latest.json")
 }
 
+/// The immutable-by-convention per-revision asset filename appended to the
+/// `stable` release alongside the overwritten `latest.json`.
 fn revision_filename(sha256: &str) -> String {
-    format!("sha256-{sha256}.json")
+    format!("phoxal-artifact-catalog-{sha256}.json")
 }
 
-fn prepare_worktree(root: &Path, publish_dir: &Path, git_ref: &str) -> Result<()> {
-    let _ = Command::new("git")
-        .args(["worktree", "remove", "--force"])
-        .arg(publish_dir)
-        .current_dir(root)
-        .output();
-    if publish_dir.exists() {
-        fs::remove_dir_all(publish_dir)
-            .with_context(|| format!("failed to remove {}", publish_dir.display()))?;
-    }
+/// Group catalog entries the way the `stable` release body presents them
+/// (docs #22): one section per artifact kind, in a fixed display order,
+/// entries sorted by package for a deterministic body. Kinds with no entries
+/// in this revision are omitted rather than printed empty.
+pub(crate) fn grouped_release_body(revision: &CatalogRevision) -> String {
+    const GROUPS: [(ArtifactKind, &str); 5] = [
+        (ArtifactKind::Service, "Services"),
+        (ArtifactKind::ComponentDriver, "Component drivers"),
+        (ArtifactKind::ComponentAssets, "Component assets"),
+        (ArtifactKind::Tool, "Tools"),
+        (ArtifactKind::Simulator, "Simulators"),
+    ];
 
-    let remote_ref = format!("refs/remotes/origin/{git_ref}");
-    let fetch_refspec = format!("+refs/heads/{git_ref}:{remote_ref}");
-    let fetch = Command::new("git")
-        .args(["fetch", "origin", &fetch_refspec])
-        .current_dir(root)
-        .output()
-        .context("failed to spawn git fetch for catalog ref")?;
-
-    if fetch.status.success() {
-        run_git(
-            root,
-            &[
-                "worktree",
-                "add",
-                "--force",
-                "-B",
-                git_ref,
-                path_str(publish_dir)?,
-                &remote_ref,
-            ],
-            "git worktree add catalog ref",
-        )?;
-    } else {
-        run_git(
-            root,
-            &[
-                "worktree",
-                "add",
-                "--force",
-                "--detach",
-                path_str(publish_dir)?,
-                "HEAD",
-            ],
-            "git worktree add detached catalog ref",
-        )?;
-        run_git(
-            publish_dir,
-            &["checkout", "--orphan", git_ref],
-            "git checkout orphan catalog ref",
-        )?;
-        clear_worktree_files(publish_dir)?;
-    }
-    Ok(())
-}
-
-fn write_catalog_files(
-    publish_dir: &Path,
-    catalog_path: &Path,
-    revision_filename: &str,
-) -> Result<()> {
-    let latest = publish_dir.join("latest.json");
-    let revision_dir = publish_dir.join("revisions");
-    let revision_path = revision_dir.join(revision_filename);
-    fs::create_dir_all(&revision_dir)
-        .with_context(|| format!("failed to create {}", revision_dir.display()))?;
-    let catalog_bytes = fs::read(catalog_path)
-        .with_context(|| format!("failed to read {}", catalog_path.display()))?;
-
-    if revision_path.exists() {
-        let existing = fs::read(&revision_path)
-            .with_context(|| format!("failed to read {}", revision_path.display()))?;
-        if existing != catalog_bytes {
-            bail!(
-                "immutable catalog revision {} already exists with different contents",
-                revision_path.display()
-            );
-        }
-    } else {
-        fs::write(&revision_path, &catalog_bytes)
-            .with_context(|| format!("failed to write {}", revision_path.display()))?;
-    }
-    fs::write(&latest, catalog_bytes)
-        .with_context(|| format!("failed to write {}", latest.display()))?;
-    Ok(())
-}
-
-fn commit_and_push(publish_dir: &Path, git_ref: &str, revision: &str) -> Result<()> {
-    run_git(
-        publish_dir,
-        &["config", "user.name", "phoxal-release-bot"],
-        "git config user.name",
-    )?;
-    run_git(
-        publish_dir,
-        &["config", "user.email", "release-bot@phoxal.com"],
-        "git config user.email",
-    )?;
-    run_git(
-        publish_dir,
-        &["add", "latest.json", "revisions"],
-        "git add catalog",
-    )?;
-    let status = run_git(publish_dir, &["status", "--porcelain"], "git status")?;
-    if status.stdout.is_empty() {
-        println!("catalog ref is already up to date");
-        return Ok(());
-    }
-    let message = format!("Publish artifact catalog {revision}");
-    run_git(
-        publish_dir,
-        &["commit", "-m", &message],
-        "git commit catalog",
-    )?;
-    run_git(
-        publish_dir,
-        &["push", "origin", &format!("HEAD:refs/heads/{git_ref}")],
-        "git push catalog ref",
-    )?;
-    Ok(())
-}
-
-fn clear_worktree_files(publish_dir: &Path) -> Result<()> {
-    for entry in fs::read_dir(publish_dir)
-        .with_context(|| format!("failed to read {}", publish_dir.display()))?
-    {
-        let entry = entry?;
-        if entry.file_name() == ".git" {
+    let mut body = format!("Phoxal artifact catalog - revision {}\n", revision.revision);
+    for (kind, label) in GROUPS {
+        let mut entries: Vec<&CatalogEntry> = revision
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == kind)
+            .collect();
+        if entries.is_empty() {
             continue;
         }
-        let path = entry.path();
-        if path.is_dir() {
-            fs::remove_dir_all(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        } else {
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
+        entries.sort_by(|a, b| a.package.cmp(&b.package));
+
+        body.push('\n');
+        body.push_str(label);
+        body.push('\n');
+        for entry in entries {
+            body.push_str(&format!("- {} v{}\n", entry.package, entry.version));
         }
     }
-    Ok(())
+    body
 }
 
-fn run_git(cwd: &Path, args: &[&str], label: &str) -> Result<Output> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .with_context(|| format!("failed to spawn {label}"))?;
-    if !output.status.success() {
-        bail!(
-            "{label} failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+/// Seam over the `gh release` operations `catalog publish` needs, so the
+/// ensure-then-clobber logic can be unit tested without a real repo or
+/// network access.
+trait Releases {
+    /// Whether the front-door release already exists.
+    fn release_exists(&self, repo: &str, tag: &str) -> Result<bool>;
+    /// The commit SHA to create the release at, the first time it's cut.
+    fn head_sha(&self) -> Result<String>;
+    /// Create the published, `--latest=true` front-door release.
+    fn create_release(
+        &self,
+        repo: &str,
+        tag: &str,
+        title: &str,
+        sha: &str,
+        notes: &str,
+    ) -> Result<()>;
+    /// Clobber-upload one asset (idempotent: re-publishing the same revision
+    /// or refreshing `latest.json` overwrites in place).
+    fn upload_asset(&self, repo: &str, tag: &str, path: &Path) -> Result<()>;
+    /// Refresh the release body and (re-)assert it is the `--latest` release.
+    fn edit_release(&self, repo: &str, tag: &str, notes: &str) -> Result<()>;
+}
+
+struct GhReleases;
+
+impl Releases for GhReleases {
+    fn release_exists(&self, repo: &str, tag: &str) -> Result<bool> {
+        let status = Command::new("gh")
+            .args(["release", "view", tag, "--repo", repo])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .with_context(|| format!("failed to spawn gh release view for {repo} {tag}"))?;
+        Ok(status.success())
     }
-    Ok(output)
+
+    fn head_sha(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .context("failed to spawn git rev-parse HEAD")?;
+        if !output.status.success() {
+            bail!(
+                "git rev-parse HEAD failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+
+    fn create_release(
+        &self,
+        repo: &str,
+        tag: &str,
+        title: &str,
+        sha: &str,
+        notes: &str,
+    ) -> Result<()> {
+        let status = Command::new("gh")
+            .args([
+                "release", "create", tag, "--repo", repo, "--title", title, "--target", sha,
+                "--latest", "--notes", notes,
+            ])
+            .status()
+            .with_context(|| format!("failed to spawn gh release create for {repo} {tag}"))?;
+        if !status.success() {
+            bail!("gh release create failed for {repo} {tag} with status {status}");
+        }
+        Ok(())
+    }
+
+    fn upload_asset(&self, repo: &str, tag: &str, path: &Path) -> Result<()> {
+        let status = Command::new("gh")
+            .arg("release")
+            .arg("upload")
+            .arg(tag)
+            .arg(path)
+            .arg("--repo")
+            .arg(repo)
+            .arg("--clobber")
+            .status()
+            .with_context(|| format!("failed to spawn gh release upload for {repo} {tag}"))?;
+        if !status.success() {
+            bail!("gh release upload failed for {repo} {tag} with status {status}");
+        }
+        Ok(())
+    }
+
+    fn edit_release(&self, repo: &str, tag: &str, notes: &str) -> Result<()> {
+        let status = Command::new("gh")
+            .args([
+                "release", "edit", tag, "--repo", repo, "--notes", notes, "--latest",
+            ])
+            .status()
+            .with_context(|| format!("failed to spawn gh release edit for {repo} {tag}"))?;
+        if !status.success() {
+            bail!("gh release edit failed for {repo} {tag} with status {status}");
+        }
+        Ok(())
+    }
 }
 
-fn path_str(path: &Path) -> Result<&str> {
-    path.to_str()
-        .with_context(|| format!("{} is not valid UTF-8", path.display()))
+/// Ensure the front-door release exists, then clobber-upload the revision
+/// asset + `latest.json` and refresh the grouped body. `staging_dir` is where
+/// the two upload files are written before handing them to `gh release
+/// upload` (both are the same verified catalog bytes).
+fn publish_catalog<R: Releases>(
+    repo: &str,
+    tag: &str,
+    catalog_bytes: &[u8],
+    revision: &CatalogRevision,
+    staging_dir: &Path,
+    releases: &R,
+) -> Result<()> {
+    let body = grouped_release_body(revision);
+
+    if !releases.release_exists(repo, tag)? {
+        let sha = releases.head_sha()?;
+        releases.create_release(repo, tag, "Phoxal artifact catalog", &sha, &body)?;
+    }
+
+    fs::create_dir_all(staging_dir)
+        .with_context(|| format!("failed to create {}", staging_dir.display()))?;
+    let revision_filename = revision_filename(&revision.integrity.sha256);
+    let revision_path = staging_dir.join(&revision_filename);
+    let latest_path = staging_dir.join("latest.json");
+    fs::write(&revision_path, catalog_bytes)
+        .with_context(|| format!("failed to write {}", revision_path.display()))?;
+    fs::write(&latest_path, catalog_bytes)
+        .with_context(|| format!("failed to write {}", latest_path.display()))?;
+
+    releases.upload_asset(repo, tag, &revision_path)?;
+    releases.upload_asset(repo, tag, &latest_path)?;
+    releases.edit_release(repo, tag, &body)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    use crate::catalog::schema::{
+        CATALOG_FORMAT_VERSION, CATALOG_SCHEMA, CHECKSUM_CANONICALIZATION, CatalogIntegrity,
+        CatalogProvenance, Channel, EngineVersions, LaunchFacts, RouterFacts, SystemdFacts,
+    };
+
     use super::*;
 
+    fn entry(package: &str, kind: ArtifactKind, version: &str) -> CatalogEntry {
+        let mut channels = BTreeMap::new();
+        channels.insert(Channel::Stable, version.to_string());
+        CatalogEntry {
+            package: package.to_string(),
+            kind,
+            version: version.to_string(),
+            api_generation: "y2026_1".to_string(),
+            contract_uses: Vec::new(),
+            target_triples: vec!["x86_64-unknown-linux-gnu".to_string()],
+            release_assets: BTreeMap::new(),
+            launch_facts: LaunchFacts {
+                participant_kind: kind.emit_apis_kind().to_string(),
+                participant_class: "checked".to_string(),
+                router: RouterFacts {
+                    needs_zenoh_router: false,
+                },
+                systemd: SystemdFacts {
+                    groups: Vec::new(),
+                    devices: Vec::new(),
+                    source: "test".to_string(),
+                },
+            },
+            engine_versions: EngineVersions {
+                phoxal: None,
+                phoxal_bus: None,
+                zenoh: None,
+            },
+            channels,
+            status: BTreeMap::new(),
+            changed_contracts: Vec::new(),
+        }
+    }
+
+    fn fixture_revision() -> CatalogRevision {
+        CatalogRevision {
+            schema: CATALOG_SCHEMA.to_string(),
+            format_version: CATALOG_FORMAT_VERSION,
+            revision: "sha256:deadbeef".to_string(),
+            integrity: CatalogIntegrity {
+                algorithm: "sha256".to_string(),
+                canonicalization: CHECKSUM_CANONICALIZATION.to_string(),
+                sha256: "deadbeef".to_string(),
+            },
+            provenance: CatalogProvenance {
+                generator: "test".to_string(),
+                official_set: "test".to_string(),
+                emit_apis: "test".to_string(),
+                release_assets: "test".to_string(),
+                plan_01: "test".to_string(),
+            },
+            signature: None,
+            entries: vec![
+                entry("phoxal/service-map", ArtifactKind::Service, "0.19.6"),
+                entry("phoxal/service-drive", ArtifactKind::Service, "0.19.6"),
+                entry(
+                    "phoxal/component-ddsm115-driver",
+                    ArtifactKind::ComponentDriver,
+                    "0.1.5",
+                ),
+                entry(
+                    "phoxal/component-ddsm115-assets",
+                    ArtifactKind::ComponentAssets,
+                    "0.1.0",
+                ),
+                entry("phoxal/tool-router", ArtifactKind::Tool, "0.1.5"),
+            ],
+        }
+    }
+
     #[test]
-    fn stable_url_is_github_raw_branch_location() {
+    fn stable_release_catalog_url_points_at_the_stable_release_latest_json() {
         assert_eq!(
-            stable_catalog_url("phoxal/framework", DEFAULT_CATALOG_REF),
-            "https://raw.githubusercontent.com/phoxal/framework/artifact-catalog-v0-stable/latest.json"
+            stable_release_catalog_url("phoxal/framework", "stable"),
+            "https://github.com/phoxal/framework/releases/download/stable/latest.json"
         );
+    }
+
+    #[test]
+    fn grouped_body_lists_entries_by_kind_sorted_and_omits_empty_groups() {
+        let body = grouped_release_body(&fixture_revision());
+        assert_eq!(
+            body,
+            "Phoxal artifact catalog - revision sha256:deadbeef\n\
+\n\
+Services\n\
+- phoxal/service-drive v0.19.6\n\
+- phoxal/service-map v0.19.6\n\
+\n\
+Component drivers\n\
+- phoxal/component-ddsm115-driver v0.1.5\n\
+\n\
+Component assets\n\
+- phoxal/component-ddsm115-assets v0.1.0\n\
+\n\
+Tools\n\
+- phoxal/tool-router v0.1.5\n"
+        );
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct CreatedRelease {
+        repo: String,
+        tag: String,
+        title: String,
+        sha: String,
+    }
+
+    #[derive(Default)]
+    struct FakeReleases {
+        exists: bool,
+        created: RefCell<Vec<CreatedRelease>>,
+        uploaded: RefCell<Vec<(String, String, PathBuf)>>,
+        edited: RefCell<Vec<(String, String, String)>>,
+    }
+
+    impl Releases for FakeReleases {
+        fn release_exists(&self, _repo: &str, _tag: &str) -> Result<bool> {
+            Ok(self.exists)
+        }
+
+        fn head_sha(&self) -> Result<String> {
+            Ok("deadbeef".to_string())
+        }
+
+        fn create_release(
+            &self,
+            repo: &str,
+            tag: &str,
+            title: &str,
+            sha: &str,
+            _notes: &str,
+        ) -> Result<()> {
+            self.created.borrow_mut().push(CreatedRelease {
+                repo: repo.to_string(),
+                tag: tag.to_string(),
+                title: title.to_string(),
+                sha: sha.to_string(),
+            });
+            Ok(())
+        }
+
+        fn upload_asset(&self, repo: &str, tag: &str, path: &Path) -> Result<()> {
+            self.uploaded.borrow_mut().push((
+                repo.to_string(),
+                tag.to_string(),
+                path.to_path_buf(),
+            ));
+            Ok(())
+        }
+
+        fn edit_release(&self, repo: &str, tag: &str, notes: &str) -> Result<()> {
+            self.edited
+                .borrow_mut()
+                .push((repo.to_string(), tag.to_string(), notes.to_string()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn publish_creates_the_release_when_missing_then_uploads_and_edits() -> Result<()> {
+        let revision = fixture_revision();
+        let releases = FakeReleases {
+            exists: false,
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().context("create tempdir")?;
+        let staging_dir = dir.path().join("stable");
+
+        publish_catalog(
+            "phoxal/framework",
+            "stable",
+            b"catalog-bytes",
+            &revision,
+            &staging_dir,
+            &releases,
+        )?;
+
+        let created = releases.created.into_inner();
+        assert_eq!(
+            created,
+            vec![CreatedRelease {
+                repo: "phoxal/framework".to_string(),
+                tag: "stable".to_string(),
+                title: "Phoxal artifact catalog".to_string(),
+                sha: "deadbeef".to_string(),
+            }]
+        );
+
+        let uploaded = releases.uploaded.into_inner();
+        assert_eq!(uploaded.len(), 2);
+        assert_eq!(
+            uploaded[0].2.file_name().unwrap().to_str().unwrap(),
+            "phoxal-artifact-catalog-deadbeef.json"
+        );
+        assert_eq!(
+            uploaded[1].2.file_name().unwrap().to_str().unwrap(),
+            "latest.json"
+        );
+        for (_, _, path) in &uploaded {
+            assert_eq!(fs::read(path)?, b"catalog-bytes");
+        }
+
+        let edited = releases.edited.into_inner();
+        assert_eq!(edited.len(), 1);
+        assert_eq!(edited[0].2, grouped_release_body(&revision));
+        Ok(())
+    }
+
+    #[test]
+    fn publish_reuses_an_existing_release_without_recreating_it() -> Result<()> {
+        let revision = fixture_revision();
+        let releases = FakeReleases {
+            exists: true,
+            ..Default::default()
+        };
+        let dir = tempfile::tempdir().context("create tempdir")?;
+        let staging_dir = dir.path().join("stable");
+
+        publish_catalog(
+            "phoxal/framework",
+            "stable",
+            b"catalog-bytes",
+            &revision,
+            &staging_dir,
+            &releases,
+        )?;
+
+        assert!(releases.created.into_inner().is_empty());
+        assert_eq!(releases.uploaded.into_inner().len(), 2);
+        assert_eq!(releases.edited.into_inner().len(), 1);
+        Ok(())
     }
 }
