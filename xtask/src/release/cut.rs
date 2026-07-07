@@ -38,7 +38,8 @@ pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
     // Every official artifact is git-cut, including `component_assets` bundles:
     // they have no Cargo crate/version to tag, but they still need a git tag +
-    // draft GitHub release to hold their packaged tarball (docs #21).
+    // published (warehouse, `--latest=false`) GitHub release to hold their
+    // packaged tarball (docs #21, #22).
     let artifacts = workspace.official_artifacts().to_vec();
     require_nonempty_artifacts(&artifacts)?;
 
@@ -61,7 +62,7 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// One artifact this run created a tag + draft release for. `package` is the
+/// One artifact this run created a tag + warehouse release for. `package` is the
 /// provider-qualified public identity (`phoxal/component-ddsm115-assets`) and
 /// is always present; `package_name` is the Cargo crate name
 /// (release-plz-JSON-compatible key) and is `None` for a `component_assets`
@@ -88,8 +89,10 @@ trait Git {
     /// `crate_dir` since the last tag matching `tag_glob`, or `None` if this is
     /// the artifact's first release.
     fn release_notes(&self, tag_glob: &str, current_tag: &str, crate_dir: &Path) -> Result<String>;
-    /// Create the git tag (at `sha`) and a draft, not-latest GitHub release for it.
-    fn create_draft_release(
+    /// Create the git tag (at `sha`) and a published, not-latest (warehouse)
+    /// GitHub release for it. Releases are born published (docs #22): there is
+    /// no draft state to un-draft later.
+    fn ensure_release(
         &self,
         repo: &str,
         tag: &str,
@@ -149,7 +152,7 @@ impl Git for CliGit {
         ))
     }
 
-    fn create_draft_release(
+    fn ensure_release(
         &self,
         repo: &str,
         tag: &str,
@@ -168,7 +171,6 @@ impl Git for CliGit {
                 title,
                 "--target",
                 sha,
-                "--draft",
                 "--latest=false",
                 "--notes",
                 notes,
@@ -244,7 +246,7 @@ fn cut_artifacts(
             let tag_glob = format!("{}-v*", filesystem_safe_package(&artifact.package));
             let notes = git.release_notes(&tag_glob, &tag, &artifact.crate_dir)?;
             let title = format!("{} v{}", artifact.package, artifact.version);
-            git.create_draft_release(repo, &tag, &title, &sha, &notes)?;
+            git.ensure_release(repo, &tag, &title, &sha, &notes)?;
         }
 
         cut.push(CutRelease {
@@ -354,7 +356,7 @@ mod tests {
             Ok("notes".to_string())
         }
 
-        fn create_draft_release(
+        fn ensure_release(
             &self,
             repo: &str,
             tag: &str,
