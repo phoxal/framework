@@ -30,11 +30,17 @@
 //! contract with no producer, a produced contract with no consumer, and an
 //! unexpanded (zero-match) component template are all legal states, not problems.
 //!
-//! Simulation plans can also substitute a component driver's contract uses with
-//! a simulator participant. Substitution is explicit plan input, legal only in
-//! [`PlanMode::Sim`], and reported back on success so callers never treat a
-//! missing driver as silently satisfied.
-//!
+//! Simulation plans differ from deploy/run plans only in *which participants the
+//! caller passes*: in sim, a component driver is simply not launched and the
+//! Webots simulator participant is passed in its place (D16). Because the
+//! simulator is built from the same framework, it speaks the same contracts by
+//! construction, so the only thing that matters is `schema_id` agreement, which
+//! rule 1 above already enforces uniformly. There is no separate substitution
+//! concept, no completeness gate, and no missing-producer diagnostic here -
+//! whether a contract has a producer is a caller/deployment choice, not something
+//! this checker judges. If a caller wants to show "driver X simulated by Webots"
+//! on a board, that is a caller-side display concern computed from the plan it
+//! assembled, not something this module tracks.
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One participant's `emit-apis` report, reduced to what graph validation needs.
@@ -49,17 +55,15 @@ pub struct ParticipantApis {
     /// The artifact id (`emit-apis` `artifact.id`), e.g. `"drive"`. Kept for
     /// artifact-identity validation; not used to key the topology graph.
     pub artifact_id: String,
-    /// The artifact kind (`emit-apis` `artifact.kind`). Simulation substitutions
-    /// require a checked participant of kind `simulator`; this is intentionally
-    /// keyed on the framework kind, not on a concrete simulator implementation.
+    /// The artifact kind (`emit-apis` `artifact.kind`), e.g. `"service"`,
+    /// `"driver"`, or `"simulator"`. Not consulted by the checker itself;
+    /// preserved for callers (e.g. board display of which driver a sim plan's
+    /// simulator participant stands in for).
     pub participant_kind: ParticipantKind,
-    /// The `emit-apis` `participant_class` the artifact reports. No longer used
-    /// to gate schema agreement or the responder-conflict check (both apply to
-    /// every participant uniformly); still consulted by sim substitution, which
-    /// requires a checked provider.
-    // TODO(followup): participant_class is now unused by the topology checks;
-    // consider removing it from emit-apis + the macro once substitution no
-    // longer needs it either.
+    /// The `emit-apis` `participant_class` the artifact reports. Not consulted
+    /// by the checker itself - schema agreement and the responder-conflict
+    /// check both apply to every participant uniformly; preserved for
+    /// diagnostics.
     pub participant_class: ParticipantClass,
     /// The API version the artifact reports (`emit-apis` `api_version`).
     pub api_version: String,
@@ -87,7 +91,7 @@ pub enum ParticipantKind {
 
 impl ParticipantKind {
     /// Parse the `emit-apis` `artifact.kind` string. Unknown kinds are preserved
-    /// for diagnostics, but only `simulator` can provide substitutions.
+    /// for diagnostics.
     #[must_use]
     pub fn parse(s: &str) -> Self {
         match s {
@@ -190,102 +194,16 @@ impl Direction {
     }
 }
 
-/// Which launch plan the shared checker is validating.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum PlanMode {
-    #[default]
-    Deploy,
-    Run,
-    Sim,
-}
-
-impl PlanMode {
-    /// Parse the CLI-facing mode vocabulary.
-    #[must_use]
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "deploy" => Self::Deploy,
-            "run" => Self::Run,
-            "sim" => Self::Sim,
-            _ => return None,
-        })
-    }
-
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Deploy => "deploy",
-            Self::Run => "run",
-            Self::Sim => "sim",
-        }
-    }
-}
-
-/// A sim-only substitution record built by the resolver from a component
-/// driver's metadata. The contracts are the driver-side uses for one concrete
-/// component instance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContractSubstitution {
-    pub component_instance: String,
-    pub provider_participant_id: String,
-    pub contracts: Vec<Contract>,
-}
-
 /// Borrowed input to the pure graph checker.
 #[derive(Debug, Clone, Copy)]
 pub struct CheckInput<'a> {
-    pub mode: PlanMode,
     pub participants: &'a [ParticipantApis],
     pub robot_graph: &'a RobotGraph,
-    pub substitutions: &'a [ContractSubstitution],
-}
-
-/// A substitution accepted by a sim check. Callers should render these; an
-/// accepted driver substitution must never be silent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AcceptedSubstitution {
-    pub component_instance: String,
-    pub provider_participant_id: String,
-    pub provider_artifact_id: String,
-    pub provider_kind: ParticipantKind,
-    pub contracts: Vec<Contract>,
 }
 
 /// A problem found while validating a robot graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Problem {
-    /// Substitutions are sim-only. Any substitution record in deploy/run mode is
-    /// a hard error.
-    SubstitutionNotAllowed {
-        mode: PlanMode,
-        component_instance: String,
-        provider_participant_id: String,
-    },
-    /// The named substitution provider is not present in the checked graph
-    /// input, so there is no participant metadata to validate against.
-    SubstitutionProviderMissing {
-        component_instance: String,
-        provider_participant_id: String,
-    },
-    /// The provider exists, but is not a simulator-kind participant.
-    SubstitutionProviderWrongKind {
-        component_instance: String,
-        provider_participant_id: String,
-        provider_kind: ParticipantKind,
-    },
-    /// The provider is not a checked participant, so it cannot satisfy topology
-    /// even if it declares matching contracts.
-    SubstitutionProviderNotChecked {
-        component_instance: String,
-        provider_participant_id: String,
-    },
-    /// A simulator substitution record only covered part of a component
-    /// instance's driver-side contracts.
-    IncompleteSubstitution {
-        component_instance: String,
-        provider_participant_id: String,
-        missing_contracts: Vec<Contract>,
-    },
     /// Participants sharing a `(family, topic)` contract disagree on its
     /// `schema_id` (the normalized transitive wire-shape hash). Because the bus
     /// decode fast-rejects on `schema_id`, a shared contract with more than one
@@ -315,7 +233,6 @@ pub enum Problem {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Report {
     pub problems: Vec<Problem>,
-    pub accepted_substitutions: Vec<AcceptedSubstitution>,
 }
 
 impl Report {
@@ -348,10 +265,8 @@ pub struct ComponentCapability {
 pub fn check_graph(participants: &[ParticipantApis]) -> Report {
     let robot_graph = RobotGraph::default();
     check_plan(CheckInput {
-        mode: PlanMode::Deploy,
         participants,
         robot_graph: &robot_graph,
-        substitutions: &[],
     })
 }
 
@@ -361,35 +276,19 @@ pub fn check_graph_with_topology(
     robot_graph: &RobotGraph,
 ) -> Report {
     check_plan(CheckInput {
-        mode: PlanMode::Deploy,
         participants,
         robot_graph,
-        substitutions: &[],
     })
 }
 
 #[must_use]
 pub fn check_plan(input: CheckInput<'_>) -> Report {
     let mut problems = Vec::new();
-    let mut accepted_substitutions = Vec::new();
     // Expand component templates to concrete manifest topics. A template that
     // cannot expand simply contributes no concrete contracts (see module docs);
     // it is not reported as a problem.
     let MaterializedGraph { participants } =
         materialize_participants(input.participants, input.robot_graph);
-
-    let SubstitutionValidation {
-        problems: mut substitution_problems,
-        mut accepted,
-    } = validate_substitutions(
-        input.mode,
-        &participants,
-        input.robot_graph,
-        input.substitutions,
-    );
-    substitution_problems.sort_by_key(problem_sort_key);
-    problems.append(&mut substitution_problems);
-    accepted_substitutions.append(&mut accepted);
 
     // 1. Per-contract wire-shape agreement (#16-b). Group non-template contracts
     // by `(family, materialized topic)`, then by `schema_id`; a shared contract
@@ -428,129 +327,7 @@ pub fn check_plan(input: CheckInput<'_>) -> Report {
         }
     }
 
-    Report {
-        problems,
-        accepted_substitutions,
-    }
-}
-
-struct SubstitutionValidation {
-    problems: Vec<Problem>,
-    accepted: Vec<AcceptedSubstitution>,
-}
-
-fn validate_substitutions(
-    mode: PlanMode,
-    participants: &[ParticipantApis],
-    robot_graph: &RobotGraph,
-    substitutions: &[ContractSubstitution],
-) -> SubstitutionValidation {
-    let mut problems = Vec::new();
-    let mut accepted = Vec::new();
-
-    if mode != PlanMode::Sim {
-        problems.extend(
-            substitutions
-                .iter()
-                .map(|substitution| Problem::SubstitutionNotAllowed {
-                    mode,
-                    component_instance: substitution.component_instance.clone(),
-                    provider_participant_id: substitution.provider_participant_id.clone(),
-                }),
-        );
-        return SubstitutionValidation { problems, accepted };
-    }
-
-    let participants_by_id = participants
-        .iter()
-        .map(|participant| (participant.participant_id.as_str(), participant))
-        .collect::<BTreeMap<_, _>>();
-
-    for substitution in substitutions {
-        let Some(provider) = participants_by_id.get(substitution.provider_participant_id.as_str())
-        else {
-            problems.push(Problem::SubstitutionProviderMissing {
-                component_instance: substitution.component_instance.clone(),
-                provider_participant_id: substitution.provider_participant_id.clone(),
-            });
-            continue;
-        };
-
-        if !provider.participant_kind.is_simulator() {
-            problems.push(Problem::SubstitutionProviderWrongKind {
-                component_instance: substitution.component_instance.clone(),
-                provider_participant_id: substitution.provider_participant_id.clone(),
-                provider_kind: provider.participant_kind.clone(),
-            });
-            continue;
-        }
-
-        if !provider.participant_class.is_checked() {
-            problems.push(Problem::SubstitutionProviderNotChecked {
-                component_instance: substitution.component_instance.clone(),
-                provider_participant_id: substitution.provider_participant_id.clone(),
-            });
-            continue;
-        }
-
-        let expected = materialize_substitution_contracts(substitution, robot_graph);
-        let provider_contracts = provider.contracts.iter().cloned().collect::<BTreeSet<_>>();
-        let missing_contracts = expected
-            .iter()
-            .filter(|contract| !provider_contracts.contains(*contract))
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if missing_contracts.is_empty() {
-            accepted.push(AcceptedSubstitution {
-                component_instance: substitution.component_instance.clone(),
-                provider_participant_id: substitution.provider_participant_id.clone(),
-                provider_artifact_id: provider.artifact_id.clone(),
-                provider_kind: provider.participant_kind.clone(),
-                contracts: expected,
-            });
-        } else {
-            problems.push(Problem::IncompleteSubstitution {
-                component_instance: substitution.component_instance.clone(),
-                provider_participant_id: substitution.provider_participant_id.clone(),
-                missing_contracts,
-            });
-        }
-    }
-
-    SubstitutionValidation { problems, accepted }
-}
-
-fn materialize_substitution_contracts(
-    substitution: &ContractSubstitution,
-    robot_graph: &RobotGraph,
-) -> Vec<Contract> {
-    let scoped_participant = ParticipantApis {
-        participant_id: substitution.component_instance.clone(),
-        artifact_id: substitution.component_instance.clone(),
-        participant_kind: ParticipantKind::Driver,
-        participant_class: ParticipantClass::Checked,
-        api_version: String::new(),
-        bus_abi: None,
-        config_schema: None,
-        scope: ParticipantScope::ComponentInstance(substitution.component_instance.clone()),
-        contracts: Vec::new(),
-    };
-    let mut contracts = substitution
-        .contracts
-        .iter()
-        .flat_map(|contract| {
-            let materialized = materialize_contract(&scoped_participant, contract, robot_graph);
-            if materialized.is_empty() {
-                vec![contract.clone()]
-            } else {
-                materialized
-            }
-        })
-        .collect::<Vec<_>>();
-    contracts.sort();
-    contracts.dedup();
-    contracts
+    Report { problems }
 }
 
 /// Per-contract `schema_id` agreement (#16-b).
@@ -600,61 +377,6 @@ fn schema_mismatches(participants: &[ParticipantApis]) -> Vec<Problem> {
 /// Such a topic must never be matched literally against another participant.
 fn is_template_topic(topic: &str) -> bool {
     topic.contains("{instance}") || topic.contains("{capability}")
-}
-
-/// A stable ordering key for problems so report output and tests are
-/// deterministic regardless of the order problems were appended.
-fn problem_sort_key(problem: &Problem) -> (u8, String, String) {
-    match problem {
-        Problem::SubstitutionNotAllowed {
-            mode,
-            component_instance,
-            provider_participant_id,
-        } => (
-            0,
-            component_instance.clone(),
-            format!("{}\u{0}{provider_participant_id}", mode.as_str()),
-        ),
-        Problem::SubstitutionProviderMissing {
-            component_instance,
-            provider_participant_id,
-        } => (
-            1,
-            component_instance.clone(),
-            provider_participant_id.clone(),
-        ),
-        Problem::SubstitutionProviderWrongKind {
-            component_instance,
-            provider_participant_id,
-            ..
-        } => (
-            2,
-            component_instance.clone(),
-            provider_participant_id.clone(),
-        ),
-        Problem::SubstitutionProviderNotChecked {
-            component_instance,
-            provider_participant_id,
-        } => (
-            3,
-            component_instance.clone(),
-            provider_participant_id.clone(),
-        ),
-        Problem::IncompleteSubstitution {
-            component_instance,
-            provider_participant_id,
-            ..
-        } => (
-            4,
-            component_instance.clone(),
-            provider_participant_id.clone(),
-        ),
-        Problem::ContractSchemaMismatch { family, topic, .. } => (5, family.clone(), topic.clone()),
-        Problem::MultipleServerResponders { family, topic, .. } => {
-            (6, family.clone(), topic.clone())
-        }
-        Problem::InvalidConfig { runtime_id, .. } => (7, runtime_id.clone(), String::new()),
-    }
 }
 
 /// The graph with every component-template contract expanded to concrete,
@@ -827,33 +549,6 @@ mod tests {
         }
     }
 
-    fn simulator_participant(id: &str, contracts: Vec<Contract>) -> ParticipantApis {
-        ParticipantApis {
-            participant_id: id.to_string(),
-            artifact_id: "webots".to_string(),
-            participant_kind: ParticipantKind::Simulator,
-            participant_class: ParticipantClass::Checked,
-            api_version: "y2026_1".to_string(),
-            bus_abi: None,
-            config_schema: None,
-            scope: ParticipantScope::Graph,
-            contracts,
-        }
-    }
-
-    fn sim_check(
-        participants: &[ParticipantApis],
-        robot_graph: &RobotGraph,
-        substitutions: &[ContractSubstitution],
-    ) -> Report {
-        check_plan(CheckInput {
-            mode: PlanMode::Sim,
-            participants,
-            robot_graph,
-            substitutions,
-        })
-    }
-
     fn robot_graph() -> RobotGraph {
         RobotGraph {
             component_capabilities: vec![
@@ -887,43 +582,6 @@ mod tests {
         }
     }
 
-    fn single_motor_graph() -> RobotGraph {
-        RobotGraph {
-            component_capabilities: vec![ComponentCapability {
-                instance: "left_drive".to_string(),
-                capability: "motor".to_string(),
-                kind: "motor".to_string(),
-            }],
-            motion_capabilities: BTreeSet::from([("left_drive".to_string(), "motor".to_string())]),
-        }
-    }
-
-    fn motor_command(direction: Direction) -> Contract {
-        contract_with_schema(
-            "component::MotorCommand",
-            "component/{instance}/motor/{capability}/command",
-            direction,
-            "motor-schema",
-        )
-    }
-
-    fn materialized_motor_command(instance: &str, direction: Direction) -> Contract {
-        contract_with_schema(
-            "component::MotorCommand",
-            &format!("component/{instance}/motor/motor/command"),
-            direction,
-            "motor-schema",
-        )
-    }
-
-    fn motor_substitution(instance: &str) -> ContractSubstitution {
-        ContractSubstitution {
-            component_instance: instance.to_string(),
-            provider_participant_id: "simulator".to_string(),
-            contracts: vec![motor_command(Direction::Subscribe)],
-        }
-    }
-
     #[test]
     fn direction_parse_round_trips_and_rejects_unknown() {
         assert_eq!(Direction::parse("publish"), Some(Direction::Publish));
@@ -937,14 +595,6 @@ mod tests {
             Some(Direction::QueryRequest)
         );
         assert_eq!(Direction::parse("nonsense"), None);
-    }
-
-    #[test]
-    fn plan_mode_parse_round_trips_and_rejects_unknown() {
-        assert_eq!(PlanMode::parse("deploy"), Some(PlanMode::Deploy));
-        assert_eq!(PlanMode::parse("run"), Some(PlanMode::Run));
-        assert_eq!(PlanMode::parse("sim"), Some(PlanMode::Sim));
-        assert_eq!(PlanMode::parse("simulate"), None);
     }
 
     #[test]
@@ -1310,220 +960,6 @@ mod tests {
         let report = check_graph_with_topology(&participants, &graph);
 
         assert_eq!(report, Report::default());
-    }
-
-    #[test]
-    fn sim_without_component_substitutions_reports_none() {
-        let participants = vec![simulator_participant("simulator", Vec::new())];
-
-        let report = sim_check(&participants, &RobotGraph::default(), &[]);
-
-        assert!(report.is_ok());
-        assert!(report.accepted_substitutions.is_empty());
-    }
-
-    #[test]
-    fn sim_substitution_is_accepted_and_reported_for_one_instance() {
-        let graph = single_motor_graph();
-        let participants = vec![
-            participant("motion", "y2026_1", vec![motor_command(Direction::Publish)]),
-            simulator_participant("simulator", vec![motor_command(Direction::Subscribe)]),
-        ];
-        let substitutions = vec![motor_substitution("left_drive")];
-
-        let report = sim_check(&participants, &graph, &substitutions);
-
-        assert!(report.problems.is_empty());
-        assert_eq!(
-            report.accepted_substitutions,
-            vec![AcceptedSubstitution {
-                component_instance: "left_drive".to_string(),
-                provider_participant_id: "simulator".to_string(),
-                provider_artifact_id: "webots".to_string(),
-                provider_kind: ParticipantKind::Simulator,
-                contracts: vec![materialized_motor_command(
-                    "left_drive",
-                    Direction::Subscribe
-                )],
-            }]
-        );
-    }
-
-    #[test]
-    fn sim_substitution_still_checks_schema_agreement_with_services() {
-        let graph = single_motor_graph();
-        let participants = vec![
-            participant(
-                "motion",
-                "y2026_1",
-                vec![contract_with_schema(
-                    "component::MotorCommand",
-                    "component/{instance}/motor/{capability}/command",
-                    Direction::Publish,
-                    "service-schema",
-                )],
-            ),
-            simulator_participant(
-                "simulator",
-                vec![contract_with_schema(
-                    "component::MotorCommand",
-                    "component/{instance}/motor/{capability}/command",
-                    Direction::Subscribe,
-                    "sim-schema",
-                )],
-            ),
-        ];
-        let substitutions = vec![ContractSubstitution {
-            component_instance: "left_drive".to_string(),
-            provider_participant_id: "simulator".to_string(),
-            contracts: vec![contract_with_schema(
-                "component::MotorCommand",
-                "component/{instance}/motor/{capability}/command",
-                Direction::Subscribe,
-                "sim-schema",
-            )],
-        }];
-
-        let report = sim_check(&participants, &graph, &substitutions);
-
-        assert_eq!(
-            report.problems,
-            vec![Problem::ContractSchemaMismatch {
-                family: "component::MotorCommand".to_string(),
-                topic: "component/left_drive/motor/motor/command".to_string(),
-                schema_ids: vec![
-                    ("service-schema".to_string(), vec!["motion".to_string()]),
-                    ("sim-schema".to_string(), vec!["simulator".to_string()]),
-                ],
-            }]
-        );
-        assert_eq!(report.accepted_substitutions.len(), 1);
-    }
-
-    #[test]
-    fn sim_substitutions_are_scoped_per_component_instance() {
-        let graph = robot_graph();
-        let participants = vec![
-            participant("motion", "y2026_1", vec![motor_command(Direction::Publish)]),
-            simulator_participant("simulator", vec![motor_command(Direction::Subscribe)]),
-        ];
-        let substitutions = vec![
-            motor_substitution("left_drive"),
-            motor_substitution("right_drive"),
-        ];
-
-        let report = sim_check(&participants, &graph, &substitutions);
-
-        assert!(report.problems.is_empty());
-        assert_eq!(
-            report
-                .accepted_substitutions
-                .iter()
-                .map(|accepted| (
-                    accepted.component_instance.as_str(),
-                    accepted.contracts[0].topic.as_str()
-                ))
-                .collect::<Vec<_>>(),
-            vec![
-                ("left_drive", "component/left_drive/motor/motor/command"),
-                ("right_drive", "component/right_drive/motor/motor/command"),
-            ]
-        );
-    }
-
-    #[test]
-    fn simulator_not_covering_an_instance_reports_missing_contracts() {
-        let graph = robot_graph();
-        let participants = vec![
-            participant("motion", "y2026_1", vec![motor_command(Direction::Publish)]),
-            simulator_participant(
-                "simulator",
-                vec![materialized_motor_command(
-                    "left_drive",
-                    Direction::Subscribe,
-                )],
-            ),
-        ];
-        let substitutions = vec![
-            motor_substitution("left_drive"),
-            motor_substitution("right_drive"),
-        ];
-
-        let report = sim_check(&participants, &graph, &substitutions);
-
-        assert_eq!(
-            report.problems,
-            vec![Problem::IncompleteSubstitution {
-                component_instance: "right_drive".to_string(),
-                provider_participant_id: "simulator".to_string(),
-                missing_contracts: vec![materialized_motor_command(
-                    "right_drive",
-                    Direction::Subscribe
-                )],
-            }]
-        );
-        assert_eq!(
-            report
-                .accepted_substitutions
-                .iter()
-                .map(|accepted| accepted.component_instance.as_str())
-                .collect::<Vec<_>>(),
-            vec!["left_drive"]
-        );
-    }
-
-    #[test]
-    fn deploy_and_run_reject_any_substitution_record() {
-        let substitution = motor_substitution("left_drive");
-
-        for mode in [PlanMode::Deploy, PlanMode::Run] {
-            let report = check_plan(CheckInput {
-                mode,
-                participants: &[],
-                robot_graph: &RobotGraph::default(),
-                substitutions: std::slice::from_ref(&substitution),
-            });
-
-            assert_eq!(
-                report.problems,
-                vec![Problem::SubstitutionNotAllowed {
-                    mode,
-                    component_instance: "left_drive".to_string(),
-                    provider_participant_id: "simulator".to_string(),
-                }]
-            );
-            assert!(report.accepted_substitutions.is_empty());
-        }
-    }
-
-    #[test]
-    fn tool_kind_participant_cannot_provide_a_sim_substitution() {
-        let graph = single_motor_graph();
-        let participants = vec![
-            participant("motion", "y2026_1", vec![motor_command(Direction::Publish)]),
-            privileged_participant(
-                "inspector",
-                "y2026_1",
-                vec![motor_command(Direction::Subscribe)],
-            ),
-        ];
-        let substitutions = vec![ContractSubstitution {
-            component_instance: "left_drive".to_string(),
-            provider_participant_id: "inspector".to_string(),
-            contracts: vec![motor_command(Direction::Subscribe)],
-        }];
-
-        let report = sim_check(&participants, &graph, &substitutions);
-
-        assert_eq!(
-            report.problems,
-            vec![Problem::SubstitutionProviderWrongKind {
-                component_instance: "left_drive".to_string(),
-                provider_participant_id: "inspector".to_string(),
-                provider_kind: ParticipantKind::Tool,
-            }]
-        );
-        assert!(report.accepted_substitutions.is_empty());
     }
 
     #[test]
