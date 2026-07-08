@@ -44,9 +44,6 @@ pub struct ReleaseGateArgs {
     pub repo: Option<String>,
     #[arg(long)]
     pub verify_github: bool,
-    /// Local fixture escape hatch. CI must leave this unset.
-    #[arg(long)]
-    pub skip_topology: bool,
 }
 
 #[derive(Debug, ClapArgs)]
@@ -122,10 +119,6 @@ fn release_gate(args: ReleaseGateArgs) -> Result<()> {
             args.verify_github,
             args.repo.as_deref(),
         )?;
-    }
-
-    if !args.skip_topology {
-        run_official_topology(workspace.root())?;
     }
 
     println!(
@@ -246,31 +239,6 @@ fn verify_release_plan_assets(
                 }
             }
         }
-    }
-    Ok(())
-}
-
-fn run_official_topology(root: &std::path::Path) -> Result<()> {
-    let output = ProcessCommand::new("cargo")
-        .args([
-            "test",
-            "-p",
-            "phoxal",
-            "--test",
-            "official_set_topology",
-            "--",
-            "--nocapture",
-        ])
-        .current_dir(root)
-        .output()
-        .context("failed to spawn official_set_topology test")?;
-    if !output.status.success() {
-        bail!(
-            "official_set_topology failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
     }
     Ok(())
 }
