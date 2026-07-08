@@ -1,4 +1,4 @@
-version: v1
+schema: simulation/v0
 # Simulation parameters specific to the BNO085 IMU that cannot be fully
 # expressed in URDF.
 #

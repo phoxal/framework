@@ -2,8 +2,8 @@
 //! (battery is optional unless the robot declares one) and the sorted list of
 //! per-component emergency-stop capability bindings to subscribe to.
 
-use phoxal::model::component::v1::capability::Capability;
-use phoxal::model::v1::Robot;
+use phoxal::model::component::v0::capability::Capability;
+use phoxal::model::v0::Robot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RequiredSources {

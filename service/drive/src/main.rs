@@ -14,9 +14,9 @@
 //! best-effort pass to park every wheel before the bus closes.
 
 use anyhow::{Result, bail};
-use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::robot::v1::KinematicConfig;
-use phoxal::model::v1::Robot;
+use phoxal::model::component::v0::CapabilityRef;
+use phoxal::model::robot::v0::KinematicConfig;
+use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn config_from_robot_resolves_per_side_motors() {
-        let robot = phoxal::model::v1::Robot::read_from_dir(fixture()).unwrap();
+        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
         let config = DriveConfig::from_robot(&robot).unwrap();
         // The fixture is a 4-wheel differential: 2 motors per side.
         assert_eq!(config.left.len(), 2);

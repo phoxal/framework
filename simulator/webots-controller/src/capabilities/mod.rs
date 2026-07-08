@@ -15,7 +15,7 @@ pub mod motor;
 pub mod range;
 
 use anyhow::{Result, bail};
-use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v0::CapabilityRef;
 
 /// A capability sampled at a configured rate and published only when its
 /// downsample window is due (shared by IMU, accelerometer, gyroscope, range,

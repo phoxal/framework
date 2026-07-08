@@ -13,9 +13,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
-use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::component::v1::capability::{Capability, StructuralTarget};
-use phoxal::model::v1::Robot;
+use phoxal::model::component::v0::CapabilityRef;
+use phoxal::model::component::v0::capability::{Capability, StructuralTarget};
+use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn config_from_robot_enumerates_joint_targeted_encoders() {
-        let robot = phoxal::model::v1::Robot::read_from_dir(fixture()).unwrap();
+        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
         let config = JointConfig::from_robot(&robot).unwrap();
 
         assert_eq!(config.encoders.len(), 4);

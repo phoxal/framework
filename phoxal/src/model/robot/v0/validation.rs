@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::model::component::v1::CapabilityRef;
+use crate::model::component::v0::CapabilityRef;
 
 use super::{KinematicConfig, Robot, ValidationError, capability};
 
@@ -10,7 +10,7 @@ impl Robot {
         validation_errors: &mut Vec<ValidationError>,
     ) {
         for (component_id, component) in &self.robot.components {
-            if !crate::model::component::v1::is_valid_token(component_id) {
+            if !crate::model::component::v0::is_valid_token(component_id) {
                 validation_errors.push(ValidationError::InvalidToken {
                     field: format!("robot.components.{component_id}"),
                     value: component_id.clone(),
@@ -21,7 +21,7 @@ impl Robot {
                     instance: component_id.clone(),
                 });
             }
-            if !crate::model::component::v1::is_valid_token(&component.component) {
+            if !crate::model::component::v0::is_valid_token(&component.component) {
                 validation_errors.push(ValidationError::InvalidToken {
                     field: format!("robot.components.{component_id}.component"),
                     value: component.component.clone(),
@@ -35,7 +35,7 @@ impl Robot {
             }
 
             for (capability_key, parameters) in &component.parameters {
-                if !crate::model::component::v1::is_valid_token(capability_key) {
+                if !crate::model::component::v0::is_valid_token(capability_key) {
                     validation_errors.push(ValidationError::InvalidToken {
                         field: format!("robot.components.{component_id}.parameters"),
                         value: capability_key.clone(),
@@ -52,7 +52,7 @@ impl Robot {
             }
 
             for capability_id in component.roles.keys() {
-                if !crate::model::component::v1::is_valid_token(capability_id) {
+                if !crate::model::component::v0::is_valid_token(capability_id) {
                     validation_errors.push(ValidationError::InvalidToken {
                         field: format!("robot.components.{component_id}.roles"),
                         value: capability_id.clone(),
@@ -254,8 +254,8 @@ fn validate_capability_ref(
     field: &str,
     validation_errors: &mut Vec<ValidationError>,
 ) {
-    if !crate::model::component::v1::is_valid_token(&capability_ref.component_id)
-        || !crate::model::component::v1::is_valid_token(&capability_ref.capability_id)
+    if !crate::model::component::v0::is_valid_token(&capability_ref.component_id)
+        || !crate::model::component::v0::is_valid_token(&capability_ref.capability_id)
     {
         validation_errors.push(invalid_kinematic(
             field,

@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::model::component::v1::capability::{Capability, Encoder, Imu, Motor, StructuralTarget};
-use crate::model::component::v1::{CapabilityRef, Component as ComponentSpec};
-use crate::model::robot::v1::capability::Parameters;
-use crate::model::robot::v1::{
-    self as robot_v1, ArtifactPin, ResolvedFacts, SourceBundle, resolve_source_bundle,
+use crate::model::component::v0::capability::{Capability, Encoder, Imu, Motor, StructuralTarget};
+use crate::model::component::v0::{CapabilityRef, Component as ComponentSpec};
+use crate::model::robot::v0::capability::Parameters;
+use crate::model::robot::v0::{
+    self as robot_v0, ArtifactPin, ResolvedFacts, SourceBundle, resolve_source_bundle,
 };
 use crate::model::structure::Structure;
 use anyhow::{Context, Result, anyhow, bail};
@@ -16,7 +16,7 @@ const COMPONENT_FILE: &str = "component.yaml";
 /// Complete authored robot bundle: manifest, used component specs, and structure.
 #[derive(Debug, Clone)]
 pub struct Robot {
-    pub manifest: crate::model::robot::v1::Robot,
+    pub manifest: crate::model::robot::v0::Robot,
     pub components: BTreeMap<String, ComponentSpec>,
     pub structure: Structure,
 }
@@ -29,8 +29,8 @@ struct ResolvedCapability<'a> {
 pub struct DriverBinding<'a> {
     pub component_id: String,
     pub component: &'a ComponentSpec,
-    pub component_instance: &'a robot_v1::Component,
-    pub driver: &'a robot_v1::DriverConfig,
+    pub component_instance: &'a robot_v0::Component,
+    pub driver: &'a robot_v0::DriverConfig,
 }
 
 impl Robot {
@@ -53,13 +53,13 @@ impl Robot {
         ))
     }
 
-    fn read_manifest(path: impl AsRef<Path>) -> Result<crate::model::robot::v1::Robot> {
-        crate::model::robot::v1::Robot::read_from_dir(path)
+    fn read_manifest(path: impl AsRef<Path>) -> Result<crate::model::robot::v0::Robot> {
+        crate::model::robot::v0::Robot::read_from_dir(path)
     }
 
     fn read_structure(
         path: impl AsRef<Path>,
-        manifest: &crate::model::robot::v1::Robot,
+        manifest: &crate::model::robot::v0::Robot,
     ) -> Result<Structure> {
         let path = path.as_ref();
         let structure_path = path.join(&manifest.robot.structure);
@@ -75,7 +75,7 @@ impl Robot {
 
     fn read_component_config(
         path: impl AsRef<Path>,
-        manifest: &crate::model::robot::v1::Robot,
+        manifest: &crate::model::robot::v0::Robot,
         component_type: &str,
     ) -> Result<ComponentSpec> {
         let component_path = component_config_path(path.as_ref(), manifest, component_type);
@@ -88,15 +88,15 @@ impl Robot {
                         component_path.display()
                     )
                 })?
-                .as_v1()
-                .context("robot bundle only supports component.yaml version v1")?
+                .as_v0()
+                .context("robot bundle only supports component.yaml version v0")?
                 .clone(),
         )
     }
 
     fn read_used_component_configs(
         path: impl AsRef<Path>,
-        manifest: &crate::model::robot::v1::Robot,
+        manifest: &crate::model::robot::v0::Robot,
     ) -> Result<BTreeMap<String, ComponentSpec>> {
         manifest
             .used_component_types()
@@ -110,7 +110,7 @@ impl Robot {
             .collect()
     }
 
-    pub fn component_instance(&self, component_id: &str) -> Result<&robot_v1::Component> {
+    pub fn component_instance(&self, component_id: &str) -> Result<&robot_v0::Component> {
         self.manifest
             .component_instance(component_id)
             .ok_or_else(|| {
@@ -314,7 +314,7 @@ impl Robot {
 /// otherwise resolution falls back to the staged path.
 fn component_config_path(
     bundle_root: &Path,
-    manifest: &crate::model::robot::v1::Robot,
+    manifest: &crate::model::robot::v0::Robot,
     component_type: &str,
 ) -> PathBuf {
     let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);
@@ -335,8 +335,8 @@ fn component_config_path(
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::model::component::v1::Component as ComponentSpec;
-    use crate::model::component::v1::capability::{
+    use crate::model::component::v0::Component as ComponentSpec;
+    use crate::model::component::v0::capability::{
         Camera, CameraMode, Capability, Depth, StructuralTarget,
     };
     use crate::model::structure::Structure;

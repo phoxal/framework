@@ -1,7 +1,7 @@
 //! `oak_d_lite` - OAK-D Lite camera/depth/IMU component driver stub.
 
 use anyhow::{Result, bail};
-use phoxal::model::component::v1::capability::{CameraMode, Capability};
+use phoxal::model::component::v0::capability::{CameraMode, Capability};
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
@@ -394,7 +394,7 @@ mod tests {
     use super::{
         OakDLite, channels_for_encoding, divisor_for_rate, encoding_for_mode, frame_byte_len,
     };
-    use phoxal::model::component::v1::capability::CameraMode;
+    use phoxal::model::component::v0::capability::CameraMode;
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 

@@ -10,7 +10,7 @@ use crate::bus::{
     AskQuery, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publish,
     Publisher, Querier, Subscribe, Subscriber, Topic,
 };
-use crate::model::v1::Robot;
+use crate::model::v0::Robot;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use crate::participant::spec::{
     DeclaresPublish, DeclaresQuery, DeclaresSubscribe, IsDriver, IsTool, ParticipantSpec,

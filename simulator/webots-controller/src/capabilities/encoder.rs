@@ -4,7 +4,7 @@
 //! joint/actuator position + velocity helpers (main.rs:1502-1518).
 
 use anyhow::{Result, anyhow};
-use phoxal::model::component::v1::CapabilityRef;
+use phoxal::model::component::v0::CapabilityRef;
 use phoxal_api::y2026_1 as api;
 
 use super::is_due;

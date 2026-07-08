@@ -1,8 +1,8 @@
 //! Data types for authored source robot manifests.
 //!
 //! The crate root is the version dispatcher for `robot.yaml`. Schema wire
-//! types live under [`v1`]; consumers that need the v1 struct directly can
-//! import [`RobotV1`] or [`v1::Robot`].
+//! types live under [`v0`]; consumers that need the v0 struct directly can
+//! import [`RobotV0`] or [`v0::Robot`].
 //!
 //! Parsing is strict: every struct denies unknown fields, `serde_yaml`
 //! natively rejects duplicate mapping keys and YAML-1.1-only booleans
@@ -16,23 +16,23 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 mod strict_yaml;
-pub mod v1;
+pub mod v0;
 
-pub use v1::Robot as RobotV1;
-pub use v1::ValidationError;
+pub use v0::Robot as RobotV0;
+pub use v0::ValidationError;
 
 const ROBOT_FILE: &str = "robot.yaml";
 
 /// Version dispatcher for `robot.yaml`.
 ///
-/// On the wire, manifests use `schema: v0` for the manifest grammar. The
-/// greenfield reset restarted the schema at v0, while the Rust types keep their
-/// historical `v1` names.
+/// On the wire, manifests use `schema: robot/v0` for the manifest grammar.
+/// The single-variant enum is the future-versioning seam: a second schema
+/// generation adds a sibling variant here without disturbing `v0::Robot`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "schema")]
 pub enum Robot {
-    #[serde(rename = "v0")]
-    V1(v1::Robot),
+    #[serde(rename = "robot/v0")]
+    V0(v0::Robot),
 }
 
 impl Robot {
@@ -81,7 +81,7 @@ impl Robot {
 
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
         match self {
-            Self::V1(robot) => robot.validate(),
+            Self::V0(robot) => robot.validate(),
         }
     }
 
@@ -90,21 +90,21 @@ impl Robot {
         platform_participant_names: &[&str],
     ) -> std::result::Result<(), Vec<ValidationError>> {
         match self {
-            Self::V1(robot) => robot.validate_with(platform_participant_names),
+            Self::V0(robot) => robot.validate_with(platform_participant_names),
         }
     }
 
     #[must_use]
-    pub fn as_v1(&self) -> &v1::Robot {
+    pub fn as_v0(&self) -> &v0::Robot {
         match self {
-            Self::V1(robot) => robot,
+            Self::V0(robot) => robot,
         }
     }
 
     #[must_use]
-    pub fn into_v1(self) -> v1::Robot {
+    pub fn into_v0(self) -> v0::Robot {
         match self {
-            Self::V1(robot) => robot,
+            Self::V0(robot) => robot,
         }
     }
 }

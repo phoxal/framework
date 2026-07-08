@@ -385,7 +385,7 @@ impl Robot {
 
     pub fn read_from_string(string: &str) -> Result<Self> {
         crate::model::robot::Robot::read_from_string(string)
-            .map(crate::model::robot::Robot::into_v1)
+            .map(crate::model::robot::Robot::into_v0)
     }
 
     pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Self> {
@@ -402,11 +402,11 @@ impl Robot {
 
     pub fn parse_from_string(string: &str) -> Result<Self> {
         crate::model::robot::Robot::parse_from_string(string)
-            .map(crate::model::robot::Robot::into_v1)
+            .map(crate::model::robot::Robot::into_v0)
     }
 
     pub fn write_to_dir(&self, path: impl AsRef<Path>) -> Result<()> {
-        crate::model::robot::Robot::V1(self.clone()).write_to_dir(path)
+        crate::model::robot::Robot::V0(self.clone()).write_to_dir(path)
     }
 
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
@@ -457,7 +457,7 @@ impl Robot {
     #[must_use]
     pub fn parameter(
         &self,
-        capability_ref: &crate::model::component::v1::CapabilityRef,
+        capability_ref: &crate::model::component::v0::CapabilityRef,
     ) -> Option<&capability::Parameters> {
         self.component_instance(&capability_ref.component_id)
             .and_then(|component| component.parameters.get(&capability_ref.capability_id))
@@ -698,7 +698,7 @@ mod tests {
     fn minimal_manifest(extra_top_level: &str) -> String {
         format!(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -714,7 +714,7 @@ robot:
     fn manifest_with_artifacts(artifacts_block: &str) -> String {
         format!(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -732,7 +732,7 @@ artifacts:
     #[test]
     fn canonical_five_root_key_manifest_parses_and_round_trips() -> anyhow::Result<()> {
         let yaml = r#"
-schema: v0
+schema: robot/v0
 robot:
   id: rover
   namespace: dev
@@ -803,7 +803,7 @@ bus:
             .validate()
             .expect("canonical manifest should validate");
 
-        let serialized = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        let serialized = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
         let reparsed = Robot::parse_from_string(&serialized)?;
         assert_eq!(reparsed, robot);
 
@@ -814,7 +814,7 @@ bus:
     fn instance_parameters_parse_emergency_stop_capability() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -884,7 +884,7 @@ robot:
     path: services/autonomy
 "#,
         ))?;
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
 
         assert!(
             !yaml.contains("config:"),
@@ -963,7 +963,7 @@ robot:
     fn robot_section_rejects_identity_wrapper() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   identity:
     id: test-bot
@@ -988,7 +988,7 @@ robot:
     fn robot_section_rejects_motion_wrapper() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -1013,7 +1013,7 @@ robot:
     fn manifest_rejects_phoxal_artifacts_key() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -1038,7 +1038,7 @@ phoxal_artifacts:
     fn manifest_rejects_phoxal_participants_key() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -1059,10 +1059,10 @@ phoxal_participants: {}
     }
 
     #[test]
-    fn manifest_rejects_old_version_discriminator() {
+    fn manifest_rejects_version_discriminator() {
         let error = Robot::parse_from_string(
             r#"
-version: v1
+version: legacy
 robot:
   id: test-bot
   namespace: dev
@@ -1073,7 +1073,7 @@ robot:
   components: {}
 "#,
         )
-        .expect_err("old version discriminator should no longer parse");
+        .expect_err("version discriminator should no longer parse");
 
         assert!(format!("{error:#}").contains("schema"), "got: {error:#}");
     }
@@ -1082,7 +1082,7 @@ robot:
     fn manifest_rejects_root_tools_key() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -1108,7 +1108,7 @@ tools:
     fn components_sources_nesting_no_longer_parses() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -1134,7 +1134,7 @@ robot:
     fn component_driver_rejects_image_field() {
         let error = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -1239,7 +1239,7 @@ robot:
             )))
         );
 
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
         let reparsed = Robot::parse_from_string(&yaml)?;
         assert_eq!(reparsed.artifacts.pins, robot.artifacts.pins);
 
@@ -1261,7 +1261,7 @@ robot:
             }))
         );
 
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot.clone()))?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
         assert!(
             yaml.contains(
                 "pins:\n    phoxal/service-drive:\n      path: ../framework/service/drive"
@@ -1355,7 +1355,7 @@ robot:
   pins: {}"#,
         ))?;
 
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot))?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot))?;
 
         assert!(
             yaml.contains("artifacts:\n  channel: preview"),
@@ -1377,7 +1377,7 @@ robot:
         assert_eq!(robot.artifacts.generation, None);
         assert!(robot.artifacts.pins.is_empty());
 
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot))?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot))?;
         assert!(
             !yaml.contains("artifacts:"),
             "default artifacts section should be omitted entirely: {yaml}"
@@ -1427,9 +1427,9 @@ robot:
     fn robot_manifest_requires_schema_v0() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&minimal_manifest(""))?;
 
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V1(robot))?;
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot))?;
         assert!(
-            yaml.starts_with("schema: v0\nrobot:\n"),
+            yaml.starts_with("schema: robot/v0\nrobot:\n"),
             "schema should be the first root key: {yaml}"
         );
 
@@ -1440,7 +1440,7 @@ robot:
     fn empty_robot_id_is_validation_error() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(
             r#"
-schema: v0
+schema: robot/v0
 robot:
   id: ""
   namespace: dev

@@ -1,7 +1,7 @@
 //! `zed_f9p` - u-blox ZED-F9P GNSS component driver stub.
 
 use anyhow::{Result, bail};
-use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 

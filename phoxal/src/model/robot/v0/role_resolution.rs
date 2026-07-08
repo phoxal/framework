@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::component::v1::CapabilityRef;
-use crate::model::component::v1::capability::Capability;
+use crate::model::component::v0::CapabilityRef;
+use crate::model::component::v0::capability::Capability;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,7 @@ impl RoleResolution {
 
 pub fn resolve_roles(
     model: &Robot,
-    components_by_type: &BTreeMap<String, crate::model::component::v1::Component>,
+    components_by_type: &BTreeMap<String, crate::model::component::v0::Component>,
 ) -> Result<RoleResolution> {
     let mut errors = Vec::new();
     let mut capability_index = BTreeMap::new();
@@ -189,7 +189,7 @@ fn format_capabilities(capabilities: &[CapabilityRef]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::component::v1::capability::{
+    use crate::model::component::v0::capability::{
         Accelerometer, Camera, CameraMode, Capability, Depth, Gnss, Imu, Lidar, LidarOutput, Range,
         StructuralTarget,
     };
@@ -269,7 +269,7 @@ mod tests {
             Role::Perception,
             &Capability::Camera(Camera {
                 target: link_target(),
-                mode: crate::model::component::v1::capability::CameraMode::Rgb,
+                mode: crate::model::component::v0::capability::CameraMode::Rgb,
                 publish_rate_hz: 30.0,
                 width_px: 640,
                 height_px: 480,

@@ -4,8 +4,8 @@
 //! (main.rs:1498-1501).
 
 use anyhow::{Result, anyhow, bail};
-use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::component::v1::capability::MotorCommand;
+use phoxal::model::component::v0::CapabilityRef;
+use phoxal::model::component::v0::capability::MotorCommand;
 use phoxal_api::y2026_1 as api;
 
 #[derive(Clone, Debug)]
