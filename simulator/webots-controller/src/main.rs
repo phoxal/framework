@@ -10,11 +10,11 @@
 mod capabilities;
 
 use phoxal::bus::ContractBody;
-use phoxal::model::component::v1::CapabilityRef;
-use phoxal::model::robot::v1::ArtifactPin;
+use phoxal::model::component::v0::CapabilityRef;
+use phoxal::model::robot::v0::ArtifactPin;
 use phoxal::model::simulation::Simulation as SimulationFile;
-use phoxal::model::simulation::v1::Simulation as SimulationSpec;
-use phoxal::model::v1::Robot;
+use phoxal::model::simulation::v0::Simulation as SimulationSpec;
+use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 use std::collections::BTreeMap;
@@ -350,7 +350,7 @@ struct CapabilityCatalog {
 
 impl CapabilityCatalog {
     fn from_robot(root: &Path, robot: &Robot) -> Result<Self> {
-        use phoxal::model::component::v1::capability::Capability;
+        use phoxal::model::component::v0::capability::Capability;
 
         let simulations = load_simulation_specs(root, robot)?;
         let mut catalog = Self::default();
@@ -514,8 +514,8 @@ fn load_simulation_specs(root: &Path, robot: &Robot) -> Result<BTreeMap<String, 
             .with_context(|| {
                 format!("failed to read Webots simulation config for {component_type}")
             })?
-            .as_v1()
-            .context("webots simulator only supports simulation.yaml version v1")?
+            .as_v0()
+            .context("webots simulator only supports simulation.yaml version v0")?
             .clone();
         simulations.insert(component_type.to_string(), simulation);
     }
@@ -523,7 +523,7 @@ fn load_simulation_specs(root: &Path, robot: &Robot) -> Result<BTreeMap<String, 
 }
 
 /// Resolves the on-disk directory for a used component type's simulation
-/// config, mirroring `phoxal::model::v1::Robot`'s component-assets
+/// config, mirroring `phoxal::model::v0::Robot`'s component-assets
 /// resolution: the staged `<bundle_root>/components/<type>` directory by
 /// default, overridden by an `artifacts.pins` path pin keyed by the
 /// component's provider-qualified assets package id
@@ -531,7 +531,7 @@ fn load_simulation_specs(root: &Path, robot: &Robot) -> Result<BTreeMap<String, 
 /// `simulation.yaml`.
 fn component_simulation_path(
     bundle_root: &Path,
-    manifest: &phoxal::model::robot::v1::Robot,
+    manifest: &phoxal::model::robot::v0::Robot,
     component_type: &str,
 ) -> PathBuf {
     let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);

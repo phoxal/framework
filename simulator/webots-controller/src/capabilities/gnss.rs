@@ -3,7 +3,7 @@
 //! `NativeGnss` (main.rs:1465-1496).
 
 use anyhow::{Result, anyhow};
-use phoxal::model::component::v1::capability::GnssCoordinateSystem;
+use phoxal::model::component::v0::capability::GnssCoordinateSystem;
 use phoxal_api::y2026_1 as api;
 
 use super::{SampledSpec, is_due};

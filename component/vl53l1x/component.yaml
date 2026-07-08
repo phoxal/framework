@@ -1,4 +1,4 @@
-version: v1
+schema: component/v0
 capabilities:
   range:
     kind: range

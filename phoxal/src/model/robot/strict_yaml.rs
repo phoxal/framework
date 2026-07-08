@@ -226,7 +226,8 @@ mod tests {
 
     #[test]
     fn accepts_plain_manifest_text() {
-        check("schema: v0\nrobot:\n  id: rover\n  namespace: dev\n").expect("plain text is fine");
+        check("schema: robot/v0\nrobot:\n  id: rover\n  namespace: dev\n")
+            .expect("plain text is fine");
     }
 
     #[test]

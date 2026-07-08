@@ -36,7 +36,7 @@ impl AutonomyProfileId {
         }
     }
 
-    /// Whether this profile accepts the given kinematic configuration. The v1
+    /// Whether this profile accepts the given kinematic configuration. The v0
     /// ground-navigation family commits to differential drive; a child profile
     /// inherits the parent's rule unless it explicitly tightens it.
     #[must_use]
@@ -147,7 +147,7 @@ pub fn autonomy_profile(id: AutonomyProfileId) -> AutonomyProfileSpec {
 #[cfg(test)]
 mod tests {
     use super::{AutonomyProfileId, autonomy_profile};
-    use crate::model::robot::v1::KinematicConfig;
+    use crate::model::robot::v0::KinematicConfig;
 
     #[test]
     fn profile_supports_only_differential_kinematics() {

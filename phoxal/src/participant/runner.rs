@@ -285,7 +285,7 @@ where
     // Load the resolved robot model from the root, if one was provided, so
     // official participants can read it via `ctx.robot()` (D33).
     let robot = match &launch.robot_root {
-        Some(root) => Some(Arc::new(crate::model::v1::Robot::read_from_dir(root)?)),
+        Some(root) => Some(Arc::new(crate::model::v0::Robot::read_from_dir(root)?)),
         None => None,
     };
 

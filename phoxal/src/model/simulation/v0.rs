@@ -26,7 +26,7 @@ impl Simulation {
         let mut errors = Vec::new();
 
         for (capability_id, capability) in &self.capabilities {
-            if !crate::model::component::v1::is_valid_token(capability_id) {
+            if !crate::model::component::v0::is_valid_token(capability_id) {
                 errors.push(format!(
                     "simulation.capabilities.{capability_id} must use a valid capability token"
                 ));

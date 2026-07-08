@@ -1,7 +1,7 @@
 //! `bno085` - BNO085 IMU component driver stub.
 
 use anyhow::{Result, bail};
-use phoxal::model::component::v1::capability::Capability;
+use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 

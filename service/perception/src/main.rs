@@ -218,7 +218,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
-    use phoxal::model::v1::Robot;
+    use phoxal::model::v0::Robot;
     use phoxal_api::ContractBody;
 
     use super::*;

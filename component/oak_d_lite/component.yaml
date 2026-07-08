@@ -1,4 +1,4 @@
-version: v1
+schema: component/v0
 capabilities:
   left_mono:
     kind: camera

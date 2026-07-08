@@ -1,4 +1,4 @@
-version: v1
+schema: simulation/v0
 # Sources:
 # - Luxonis OAK-D Lite hardware docs for OV7251/IMX214 optics and stereo depth
 # - Bosch BMI270 datasheet for IMU quantization

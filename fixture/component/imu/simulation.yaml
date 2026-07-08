@@ -1,4 +1,4 @@
-version: v1
+schema: simulation/v0
 # Simulation parameters specific to the generic IMU that cannot be fully
 # expressed in URDF.
 #

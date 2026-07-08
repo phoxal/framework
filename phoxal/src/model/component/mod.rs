@@ -2,15 +2,15 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub mod v1;
+pub mod v0;
 
 const COMPONENT_FILE: &str = "component.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "version")]
+#[serde(tag = "schema")]
 pub enum Component {
-    #[serde(rename = "v1")]
-    V1(v1::Component),
+    #[serde(rename = "component/v0")]
+    V0(v0::Component),
 }
 
 impl Component {
@@ -60,13 +60,13 @@ impl Component {
 
     pub fn validate_for_component(&self, component_id: &str) -> Result<()> {
         match self {
-            Self::V1(component) => component.validate_for_component(component_id),
+            Self::V0(component) => component.validate_for_component(component_id),
         }
     }
 
-    pub fn as_v1(&self) -> Option<&v1::Component> {
+    pub fn as_v0(&self) -> Option<&v0::Component> {
         match self {
-            Self::V1(component) => Some(component),
+            Self::V0(component) => Some(component),
         }
     }
 }
@@ -74,7 +74,7 @@ impl Component {
 #[cfg(test)]
 mod tests {
     use super::Component;
-    use crate::model::component::v1::capability::Capability as V1Capability;
+    use crate::model::component::v0::capability::Capability as V0Capability;
     use tempfile::tempdir;
 
     #[test]
@@ -83,7 +83,7 @@ mod tests {
         let component_dir = temp_dir.path().join("component");
         let component = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   motor:
     kind: motor
@@ -99,7 +99,7 @@ capabilities:
 
         assert!(
             loaded
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .capabilities
                 .contains_key("motor")
@@ -111,7 +111,7 @@ capabilities:
     fn component_validates_token_ids() -> anyhow::Result<()> {
         let result = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   InvalidCapability:
     kind: motor
@@ -133,26 +133,26 @@ capabilities:
     #[test]
     fn component_parses_and_round_trips_gtin() -> anyhow::Result<()> {
         let component = Component::read_from_string(
-            "version: v1\ngtin: \"1234567890123\"\ncapabilities: {}\n",
+            "schema: component/v0\ngtin: \"1234567890123\"\ncapabilities: {}\n",
         )?;
         assert_eq!(
             component
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .gtin
                 .as_ref()
-                .map(crate::model::component::v1::Gtin::as_str),
+                .map(crate::model::component::v0::Gtin::as_str),
             Some("1234567890123")
         );
         let yaml = serde_yaml::to_string(&component)?;
         let reparsed = Component::read_from_string(&yaml)?;
         assert_eq!(
             reparsed
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .gtin
                 .as_ref()
-                .map(crate::model::component::v1::Gtin::as_str),
+                .map(crate::model::component::v0::Gtin::as_str),
             Some("1234567890123")
         );
         Ok(())
@@ -162,7 +162,7 @@ capabilities:
     fn component_rejects_non_positive_motor_gear_ratio() {
         let result = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   motor:
     kind: motor
@@ -182,7 +182,7 @@ capabilities:
     fn component_rejects_non_positive_encoder_values() {
         let result = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   encoder:
     kind: encoder
@@ -206,15 +206,16 @@ capabilities:
 
     #[test]
     fn component_rejects_malformed_gtin() {
-        let result = Component::read_from_string("version: v1\ngtin: \"123\"\ncapabilities: {}\n");
+        let result =
+            Component::read_from_string("schema: component/v0\ngtin: \"123\"\ncapabilities: {}\n");
         let error = result.expect_err("13-digit GTIN must be enforced");
         assert!(format!("{error:#}").contains("13 digits"), "got: {error:#}");
     }
 
     #[test]
     fn component_without_gtin_is_none_and_omits_on_serialize() -> anyhow::Result<()> {
-        let component = Component::read_from_string("version: v1\ncapabilities: {}\n")?;
-        assert!(component.as_v1().expect("supported version").gtin.is_none());
+        let component = Component::read_from_string("schema: component/v0\ncapabilities: {}\n")?;
+        assert!(component.as_v0().expect("supported version").gtin.is_none());
         let yaml = serde_yaml::to_string(&component)?;
         assert!(
             !yaml.contains("gtin"),
@@ -227,7 +228,7 @@ capabilities:
     fn component_parses_range_capability() -> anyhow::Result<()> {
         let component = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   range:
     kind: range
@@ -243,11 +244,11 @@ capabilities:
 
         assert!(matches!(
             component
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .capabilities
                 .get("range"),
-            Some(crate::model::component::v1::capability::Capability::Range(
+            Some(crate::model::component::v0::capability::Capability::Range(
                 _
             ))
         ));
@@ -258,7 +259,7 @@ capabilities:
     fn component_parses_emergency_stop_capability() -> anyhow::Result<()> {
         let component = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   e_stop:
     kind: emergency_stop
@@ -270,11 +271,11 @@ capabilities:
 
         assert!(matches!(
             component
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .capabilities
                 .get("e_stop"),
-            Some(crate::model::component::v1::capability::Capability::EmergencyStop(_))
+            Some(crate::model::component::v0::capability::Capability::EmergencyStop(_))
         ));
         Ok(())
     }
@@ -283,7 +284,7 @@ capabilities:
     fn camera_native_envelope_roundtrips_without_component_profiles() -> anyhow::Result<()> {
         let component = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   rgb:
     kind: camera
@@ -305,10 +306,10 @@ capabilities:
 
         let serialized = serde_yaml::to_string(&component)?;
         let reparsed = Component::read_from_string(&serialized)?;
-        let capabilities = &reparsed.as_v1().expect("supported version").capabilities;
+        let capabilities = &reparsed.as_v0().expect("supported version").capabilities;
 
         match capabilities.get("rgb") {
-            Some(V1Capability::Camera(camera)) => {
+            Some(V0Capability::Camera(camera)) => {
                 assert_eq!(camera.width_px, 640);
                 assert_eq!(camera.height_px, 480);
                 assert_eq!(camera.publish_rate_hz, 30.0);
@@ -317,7 +318,7 @@ capabilities:
         }
 
         match capabilities.get("native_only") {
-            Some(V1Capability::Camera(camera)) => {
+            Some(V0Capability::Camera(camera)) => {
                 assert_eq!(camera.width_px, 320);
                 assert_eq!(camera.height_px, 240);
                 assert_eq!(camera.publish_rate_hz, 15.0);
@@ -332,7 +333,7 @@ capabilities:
     fn component_profiles_list_is_rejected() {
         let result = Component::read_from_string(
             r#"
-version: v1
+schema: component/v0
 capabilities:
   rgb:
     kind: camera

@@ -1,6 +1,6 @@
 pub mod capability;
 
-use crate::model::component::v1::capability::Capability;
+use crate::model::component::v0::capability::Capability;
 use anyhow::{Result, bail};
 use derive_new::new;
 use serde::{Deserialize, Serialize};

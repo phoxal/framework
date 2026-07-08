@@ -1,5 +1,5 @@
 pub mod capability;
-pub mod v1;
+pub mod v0;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -8,11 +8,11 @@ use std::path::Path;
 const SIMULATION_FILE: &str = "simulation.yaml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "version")]
+#[serde(tag = "schema")]
 #[serde(deny_unknown_fields)]
 pub enum Simulation {
-    #[serde(rename = "v1")]
-    V1(v1::Simulation),
+    #[serde(rename = "simulation/v0")]
+    V0(v0::Simulation),
 }
 
 impl Simulation {
@@ -52,13 +52,13 @@ impl Simulation {
 
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::V1(simulation) => simulation.validate(),
+            Self::V0(simulation) => simulation.validate(),
         }
     }
 
-    pub fn as_v1(&self) -> Option<&v1::Simulation> {
+    pub fn as_v0(&self) -> Option<&v0::Simulation> {
         match self {
-            Self::V1(simulation) => Some(simulation),
+            Self::V0(simulation) => Some(simulation),
         }
     }
 }
@@ -74,7 +74,7 @@ mod tests {
         let simulation_dir = temp_dir.path().join("component");
         let simulation = Simulation::read_from_string(
             r#"
-version: v1
+schema: simulation/v0
 capabilities:
   motor:
     kind: motor
@@ -91,14 +91,14 @@ links:
 
         assert!(
             loaded
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .capabilities
                 .contains_key("motor")
         );
         assert_eq!(
             loaded
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .links
                 .get("wheel_link")
@@ -112,7 +112,7 @@ links:
     fn simulation_parses_range_capability() -> anyhow::Result<()> {
         let simulation = Simulation::read_from_string(
             r#"
-version: v1
+schema: simulation/v0
 capabilities:
   range:
     kind: range
@@ -124,7 +124,7 @@ capabilities:
 
         assert!(matches!(
             simulation
-                .as_v1()
+                .as_v0()
                 .expect("supported version")
                 .capabilities
                 .get("range"),
@@ -137,7 +137,7 @@ capabilities:
     fn simulation_rejects_invalid_capability_id() {
         let error = Simulation::read_from_string(
             r#"
-version: v1
+schema: simulation/v0
 capabilities:
   Bad Id:
     kind: range
@@ -153,7 +153,7 @@ capabilities:
     fn simulation_rejects_invalid_numeric_capability_config() {
         let error = Simulation::read_from_string(
             r#"
-version: v1
+schema: simulation/v0
 capabilities:
   encoder:
     kind: encoder

@@ -1,4 +1,4 @@
-version: v1
+schema: simulation/v0
 # Sources:
 # - generic RGB-D fixture optics and stereo depth
 # - Bosch BMI270 datasheet for IMU quantization

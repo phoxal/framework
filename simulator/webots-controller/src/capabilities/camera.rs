@@ -4,7 +4,7 @@
 //! (main.rs:1536-1551).
 
 use anyhow::{Result, anyhow};
-use phoxal::model::component::v1::capability::CameraMode;
+use phoxal::model::component::v0::capability::CameraMode;
 use phoxal_api::y2026_1 as api;
 
 use super::{SampledSpec, is_due};

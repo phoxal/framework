@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::component::v1::CapabilityRef;
+use crate::model::component::v0::CapabilityRef;
 
 /// The robot's kinematic model - a direct field of `robot:` (was
 /// `motion.kinematic`; the `motion:` wrapper is gone).

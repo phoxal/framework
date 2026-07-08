@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::model::component::v1::CapabilityRef;
+use crate::model::component::v0::CapabilityRef;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ use super::{AutonomyProfileId, Robot, Role, RoleResolution, autonomy_profile};
 #[derive(Debug, Clone)]
 pub struct SourceBundle {
     pub model: Robot,
-    pub components: BTreeMap<String, crate::model::component::v1::Component>,
+    pub components: BTreeMap<String, crate::model::component::v0::Component>,
     pub autonomy_profile: AutonomyProfileId,
 }
 
@@ -20,7 +20,7 @@ impl SourceBundle {
     #[must_use]
     pub fn new(
         model: Robot,
-        components: BTreeMap<String, crate::model::component::v1::Component>,
+        components: BTreeMap<String, crate::model::component::v0::Component>,
     ) -> Self {
         Self {
             model,

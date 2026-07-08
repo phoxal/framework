@@ -61,7 +61,7 @@ impl ResolvedLocalizeBackend {
 #[must_use]
 pub fn resolve_localize_backend(
     _model: &Robot,
-    _components: &BTreeMap<String, crate::model::component::v1::Component>,
+    _components: &BTreeMap<String, crate::model::component::v0::Component>,
 ) -> ResolvedLocalizeBackend {
     ResolvedLocalizeBackend::DeadReckoning
 }
@@ -71,10 +71,10 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
-    use crate::model::component::v1::capability::{Capability, Gnss, StructuralTarget};
+    use crate::model::component::v0::capability::{Capability, Gnss, StructuralTarget};
 
     use super::{LocalizeBackendKind, ResolvedLocalizeBackend, resolve_localize_backend};
-    use crate::model::robot::v1::{Component, Robot, Role};
+    use crate::model::robot::v0::{Component, Robot, Role};
 
     #[test]
     fn resolves_dead_reckoning_for_rgbd_imu_roles() {
@@ -108,7 +108,7 @@ mod tests {
 
     fn fixture_model_and_components() -> (
         Robot,
-        BTreeMap<String, crate::model::component::v1::Component>,
+        BTreeMap<String, crate::model::component::v0::Component>,
     ) {
         let bundle_root = fixture_bundle_root();
         let model = match Robot::read_from_dir(&bundle_root) {
@@ -149,7 +149,7 @@ mod tests {
     fn read_fixture_component(
         bundle_root: &Path,
         component_type: &str,
-    ) -> crate::model::component::v1::Component {
+    ) -> crate::model::component::v0::Component {
         let fixture_root = match bundle_root.parent().and_then(Path::parent) {
             Some(path) => path,
             None => panic!(
@@ -159,9 +159,9 @@ mod tests {
         };
         let component_root = fixture_root.join("component").join(component_type);
         match crate::model::component::Component::read_from_dir(&component_root) {
-            Ok(component) => match component.as_v1() {
+            Ok(component) => match component.as_v0() {
                 Some(component) => component.clone(),
-                None => panic!("fixture component {component_type} is not v1"),
+                None => panic!("fixture component {component_type} is not v0"),
             },
             Err(error) => panic!(
                 "failed to read fixture component from {}: {error:#}",
@@ -172,11 +172,11 @@ mod tests {
 
     fn add_gnss_localization_component(
         model: &mut Robot,
-        components: &mut BTreeMap<String, crate::model::component::v1::Component>,
+        components: &mut BTreeMap<String, crate::model::component::v0::Component>,
     ) {
         components.insert(
             "zed_f9p".to_string(),
-            crate::model::component::v1::Component::new(BTreeMap::from([(
+            crate::model::component::v0::Component::new(BTreeMap::from([(
                 "gnss".to_string(),
                 Capability::Gnss(Gnss {
                     target: StructuralTarget::Link {

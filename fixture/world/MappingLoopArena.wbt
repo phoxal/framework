@@ -9,7 +9,7 @@
 #   - The CENTER (~1.8 m radius) is deliberately CLEAR so a scripted ~0.9 m square loop is
 #     collision-free and the robot can return to start (loop closure) without weaving through clutter.
 #   - NO ramps: the robot must never climb a wedge and tip over.
-# The robot (RobotV1) is injected at the origin by the xtask staging step; do not add it here.
+# The robot is injected at the origin by the xtask staging step; do not add it here.
 
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/RectangleArena.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/appearances/protos/Parquetry.proto"
