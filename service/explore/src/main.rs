@@ -247,20 +247,18 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::map::Revision>(contracts, "subscribe");
-        assert_contract::<api::localize::LocalizationState>(contracts, "subscribe");
-        assert_contract::<api::map::SubmapRequest>(contracts, "query_request");
-        assert_contract::<api::map::SubmapResponse>(contracts, "query_response");
-        assert_contract::<api::explore::Frontiers>(contracts, "publish");
-        assert_contract::<api::explore::State>(contracts, "publish");
+        assert_contract::<api::map::Revision>(contracts);
+        assert_contract::<api::localize::LocalizationState>(contracts);
+        assert_contract::<api::map::SubmapRequest>(contracts);
+        assert_contract::<api::map::SubmapResponse>(contracts);
+        assert_contract::<api::explore::Frontiers>(contracts);
+        assert_contract::<api::explore::State>(contracts);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    fn assert_contract<B>(contracts: &[serde_json::Value])
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| {
-            c["family"] == B::FAMILY && c["topic"] == B::TOPIC && c["direction"] == direction
-        }));
+        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
     }
 }

@@ -302,24 +302,22 @@ fn topic_list<'a>(req_tys: impl Iterator<Item = &'a Type>) -> TokenStream {
 fn server_contracts(servers: &[ServerFn], snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
     let mut entries = Vec::new();
     for s in servers {
-        entries.push(contract_entry(&s.req_ty, quote!(ServerRequest)));
-        entries.push(contract_entry(&s.resp_ty, quote!(ServerResponse)));
+        entries.push(contract_entry(&s.req_ty));
+        entries.push(contract_entry(&s.resp_ty));
     }
     for s in snapshot_servers {
-        entries.push(contract_entry(&s.req_ty, quote!(ServerRequest)));
-        entries.push(contract_entry(&s.resp_ty, quote!(ServerResponse)));
+        entries.push(contract_entry(&s.req_ty));
+        entries.push(contract_entry(&s.resp_ty));
     }
     quote!(&[ #(#entries),* ])
 }
 
-fn contract_entry(ty: &Type, direction: TokenStream) -> TokenStream {
+fn contract_entry(ty: &Type) -> TokenStream {
     quote! {
         ::phoxal::participant::ContractUse {
             api_version: <<#ty as ::phoxal::bus::ContractBody>::Api as ::phoxal::bus::ApiVersion>::ID,
             schema_id: <#ty as ::phoxal::bus::ContractBody>::SCHEMA_ID,
             family: <#ty as ::phoxal::bus::ContractBody>::FAMILY,
-            topic: <#ty as ::phoxal::bus::ContractBody>::TOPIC,
-            direction: ::phoxal::participant::Direction::#direction,
         }
     }
 }

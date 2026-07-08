@@ -374,13 +374,15 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["artifact"]["id"], "odometry");
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::component::encoder::Sample as ContractBody>::FAMILY
-                && c["direction"] == "subscribe"
-        }));
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::odometry::State as ContractBody>::FAMILY
-                && c["direction"] == "publish"
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::component::encoder::Sample as ContractBody>::FAMILY)
+        );
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::odometry::State as ContractBody>::FAMILY)
+        );
     }
 }

@@ -134,11 +134,11 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::battery::State as ContractBody>::FAMILY
-                && c["topic"] == <api::battery::State as ContractBody>::TOPIC
-                && c["direction"] == "publish"
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::battery::State as ContractBody>::FAMILY)
+        );
     }
 
     fn assert_close(actual: f64, expected: f64) {

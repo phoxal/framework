@@ -31,28 +31,12 @@ use crate::bus::ApiVersion;
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
 
-/// The direction a participant uses a contract on a topic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Direction {
-    /// Publishes the body.
-    Publish,
-    /// Subscribes to the body (`Subscriber`/`Latest`).
-    Subscribe,
-    /// Sends a query request.
-    QueryRequest,
-    /// Receives a query response.
-    QueryResponse,
-    /// Serves a query request (server-side).
-    ServerRequest,
-    /// Emits a query response (server-side).
-    ServerResponse,
-}
-
-/// One `{api_version, schema_id, family, topic, direction}` contract a participant
-/// participates in. Built by the macros from a body type's
-/// [`ContractBody`](crate::bus::ContractBody) consts so family/topic/schema/version
-/// are single-sourced from the api tree.
+/// One `{api_version, schema_id, family}` contract a participant participates
+/// in. Built by the macros from a body type's
+/// [`ContractBody`](crate::bus::ContractBody) consts so family/schema/version
+/// are single-sourced from the api tree. Compatibility is judged by `schema_id`
+/// agreement per `family` alone (#16-b); which topic or direction a participant
+/// happens to use is not part of that judgment, so it is not carried here.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ContractUse {
     /// The API version of the body (`<Body::Api as ApiVersion>::ID`).
@@ -61,10 +45,6 @@ pub struct ContractUse {
     pub schema_id: &'static str,
     /// The contract family id (`<Body as ContractBody>::FAMILY`).
     pub family: &'static str,
-    /// The versionless topic key (`<Body as ContractBody>::TOPIC`).
-    pub topic: &'static str,
-    /// How the participant uses the contract.
-    pub direction: Direction,
 }
 
 /// Static metadata derived from a participant struct.

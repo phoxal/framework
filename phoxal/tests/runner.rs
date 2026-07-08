@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::bus::{LogicalTime, OwnerCap, Publisher, Subscriber};
+use phoxal::bus::{ContractBody, LogicalTime, OwnerCap, Publisher, Subscriber};
 use phoxal::participant::{
     ClockMode, ParticipantLaunch, RealClock, TestClock, emit_apis_json, run_with,
 };
@@ -463,10 +463,9 @@ fn emit_apis_reports_frozen_schema() {
         contracts.iter().any(|c| {
             c["api_version"] == "y2026_1"
                 && c["schema_id"].as_str().is_some_and(|id| id.len() == 16)
-                && c["topic"] == "drive/target"
-                && c["direction"] == "publish"
+                && c["family"] == <api::drive::Target as ContractBody>::FAMILY
         }),
-        "emit-apis should report the drive/target publish contract"
+        "emit-apis should report the drive::Target contract"
     );
 }
 
@@ -531,25 +530,20 @@ fn emit_apis_reports_explicit_contracts_once() {
         .iter()
         .filter(|c| {
             c["api_version"] == "y2026_1"
-                && c["topic"] == "drive/target"
-                && c["direction"] == "publish"
+                && c["family"] == <api::drive::Target as ContractBody>::FAMILY
         })
         .count();
     assert_eq!(publish_drive_target, 1);
     assert!(contracts.iter().any(|c| {
-        c["api_version"] == "y2026_1"
-            && c["topic"] == "map/revision"
-            && c["direction"] == "subscribe"
+        c["api_version"] == "y2026_1" && c["family"] == <api::map::Revision as ContractBody>::FAMILY
     }));
     assert!(contracts.iter().any(|c| {
         c["api_version"] == "y2026_1"
-            && c["topic"] == "map/submap"
-            && c["direction"] == "query_request"
+            && c["family"] == <api::map::SubmapRequest as ContractBody>::FAMILY
     }));
     assert!(contracts.iter().any(|c| {
         c["api_version"] == "y2026_1"
-            && c["topic"] == "map/submap"
-            && c["direction"] == "query_response"
+            && c["family"] == <api::map::SubmapResponse as ContractBody>::FAMILY
     }));
 }
 

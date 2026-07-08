@@ -243,10 +243,8 @@ mod tests {
             <api::component::gyroscope::Sample as ContractBody>::FAMILY,
         ] {
             assert!(
-                contracts
-                    .iter()
-                    .any(|c| c["family"] == family && c["direction"] == "publish"),
-                "missing publish contract for {family}"
+                contracts.iter().any(|c| c["family"] == family),
+                "missing contract for {family}"
             );
         }
     }

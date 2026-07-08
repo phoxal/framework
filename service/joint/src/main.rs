@@ -255,13 +255,15 @@ mod tests {
         assert_eq!(metadata.artifact.id, "joint");
 
         let contracts = metadata.required_contracts;
-        assert!(contracts.iter().any(|c| {
-            c.family == <api::component::encoder::Sample as ContractBody>::FAMILY
-                && c.direction == phoxal::participant::Direction::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.family == <api::joint::JointState as ContractBody>::FAMILY
-                && c.direction == phoxal::participant::Direction::Publish
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.family == <api::component::encoder::Sample as ContractBody>::FAMILY)
+        );
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.family == <api::joint::JointState as ContractBody>::FAMILY)
+        );
     }
 }

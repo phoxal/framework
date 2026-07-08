@@ -376,23 +376,11 @@ mod tests {
         assert_eq!(metadata.artifact.id, "frame");
 
         let contracts = metadata.required_contracts;
-        assert_contract::<api::joint::JointState>(
-            &contracts,
-            phoxal::participant::Direction::Subscribe,
-        );
-        assert_contract::<api::frame::Tree>(&contracts, phoxal::participant::Direction::Publish);
-        assert_contract::<api::frame::StaticTransforms>(
-            &contracts,
-            phoxal::participant::Direction::Publish,
-        );
-        assert_contract::<api::frame::LookupRequest>(
-            &contracts,
-            phoxal::participant::Direction::ServerRequest,
-        );
-        assert_contract::<api::frame::LookupResponse>(
-            &contracts,
-            phoxal::participant::Direction::ServerResponse,
-        );
+        assert_contract::<api::joint::JointState>(&contracts);
+        assert_contract::<api::frame::Tree>(&contracts);
+        assert_contract::<api::frame::StaticTransforms>(&contracts);
+        assert_contract::<api::frame::LookupRequest>(&contracts);
+        assert_contract::<api::frame::LookupResponse>(&contracts);
     }
 
     fn snapshot_from_config(
@@ -436,17 +424,11 @@ mod tests {
         }
     }
 
-    fn assert_contract<B>(
-        contracts: &[phoxal::participant::emit::ContractView],
-        direction: phoxal::participant::Direction,
-    ) where
+    fn assert_contract<B>(contracts: &[phoxal::participant::emit::ContractView])
+    where
         B: ContractBody,
     {
-        assert!(
-            contracts.iter().any(|c| {
-                c.family == B::FAMILY && c.topic == B::TOPIC && c.direction == direction
-            })
-        );
+        assert!(contracts.iter().any(|c| c.family == B::FAMILY));
     }
 
     fn assert_yaw(rotation_xyzw: [f64; 4], expected_yaw: f64) {

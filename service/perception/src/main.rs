@@ -328,21 +328,21 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::component::camera::Frame>(contracts, "subscribe");
-        assert_contract::<api::component::depth::Frame>(contracts, "subscribe");
-        assert_contract::<api::localize::LocalizationState>(contracts, "subscribe");
-        assert_contract::<api::perception::Detections>(contracts, "publish");
-        assert_contract::<api::perception::State>(contracts, "publish");
+        assert_contract::<api::component::camera::Frame>(contracts);
+        assert_contract::<api::component::depth::Frame>(contracts);
+        assert_contract::<api::localize::LocalizationState>(contracts);
+        assert_contract::<api::perception::Detections>(contracts);
+        assert_contract::<api::perception::State>(contracts);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    fn assert_contract<B>(contracts: &[serde_json::Value])
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|contract| {
-            contract["family"] == B::FAMILY
-                && contract["topic"] == B::TOPIC
-                && contract["direction"] == direction
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|contract| contract["family"] == B::FAMILY)
+        );
     }
 }

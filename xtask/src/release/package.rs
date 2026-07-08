@@ -740,38 +740,10 @@ pub(crate) fn parse_emit_apis_json(
         if family.trim().is_empty() {
             bail!("emit-apis required_contracts[{index}].family must not be empty");
         }
-        let topic = contract
-            .topic
-            .as_deref()
-            .with_context(|| format!("emit-apis required_contracts[{index}] is missing topic"))?;
-        if topic.trim().is_empty() {
-            bail!("emit-apis required_contracts[{index}].topic must not be empty");
-        }
-        let direction = contract.direction.as_deref().with_context(|| {
-            format!("emit-apis required_contracts[{index}] is missing direction")
-        })?;
-        if !DIRECTIONS.contains(&direction) {
-            bail!(
-                "emit-apis required_contracts[{index}].direction '{}' is not one of {}",
-                direction,
-                DIRECTIONS.join("|")
-            );
-        }
     }
 
     Ok(metadata)
 }
-
-/// The `Direction` wire vocabulary the emitter serializes
-/// (`phoxal/src/participant/spec.rs`, `#[serde(rename_all = "snake_case")]`).
-const DIRECTIONS: [&str; 6] = [
-    "publish",
-    "subscribe",
-    "query_request",
-    "query_response",
-    "server_request",
-    "server_response",
-];
 
 fn is_schema_id(value: &str) -> bool {
     value.len() == 16
@@ -810,8 +782,6 @@ pub(crate) struct Contract {
     pub api_version: Option<String>,
     pub schema_id: Option<String>,
     pub family: Option<String>,
-    pub topic: Option<String>,
-    pub direction: Option<String>,
 }
 
 #[cfg(test)]
@@ -830,9 +800,7 @@ mod tests {
     {
       "api_version": "y2026_1",
       "schema_id": "0123456789abcdef",
-      "family": "frame::LookupRequest",
-      "topic": "frame/lookup",
-      "direction": "query_request"
+      "family": "frame::LookupRequest"
     }
   ],
   "config_schema": { "type": "object" }
@@ -914,9 +882,7 @@ mod tests {
     {
       "api_version": "y2026_1",
       "schema_id": "0123456789abcdef",
-      "family": "frame::LookupRequest",
-      "topic": "frame/lookup",
-      "direction": "query_request"
+      "family": "frame::LookupRequest"
     }
   ],"#,
             r#"  "required_contracts": [],"#,
@@ -939,9 +905,7 @@ mod tests {
     {
       "api_version": "y2026_1",
       "schema_id": "0123456789abcdef",
-      "family": "frame::LookupRequest",
-      "topic": "frame/lookup",
-      "direction": "query_request"
+      "family": "frame::LookupRequest"
     }
   ],"#,
                 r#"  "required_contracts": [],"#,
@@ -953,26 +917,12 @@ mod tests {
 
     #[test]
     fn validation_rejects_missing_contract_family() {
-        let json = valid_emit().replace("      \"family\": \"frame::LookupRequest\",\n", "");
+        let json = valid_emit().replace(
+            "      \"schema_id\": \"0123456789abcdef\",\n      \"family\": \"frame::LookupRequest\"\n",
+            "      \"schema_id\": \"0123456789abcdef\"\n",
+        );
         let err = validate(&json).expect_err("missing contract family should fail");
         assert_error_contains(&err, "family");
-    }
-
-    #[test]
-    fn validation_rejects_missing_contract_topic() {
-        let json = valid_emit().replace("      \"topic\": \"frame/lookup\",\n", "");
-        let err = validate(&json).expect_err("missing contract topic should fail");
-        assert_error_contains(&err, "topic");
-    }
-
-    #[test]
-    fn validation_rejects_unknown_contract_direction() {
-        let json = valid_emit().replace(
-            r#""direction": "query_request""#,
-            r#""direction": "listen""#,
-        );
-        let err = validate(&json).expect_err("unknown contract direction should fail");
-        assert_error_contains(&err, "direction");
     }
 
     #[test]
