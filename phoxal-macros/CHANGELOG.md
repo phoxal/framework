@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.6...phoxal-macros-v0.20.0) - 2026-07-08
+
+### Other
+
+- *(check)* [**breaking**] strip pub/sub/responder/topic/materialization; keep schema_id-by-family + config (WS5a) ([#189](https://github.com/phoxal/framework/pull/189))
+
 ## [0.19.6](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.5...phoxal-macros-v0.19.6) - 2026-07-06
 
 ### Fixed

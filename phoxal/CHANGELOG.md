@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/phoxal/framework/compare/phoxal-v0.29.0...phoxal-v0.30.0) - 2026-07-08
+
+### Other
+
+- *(model)* [**breaking**] rename manifest wrappers v1->v0, unify yaml tag to schema:<domain>/v0 (WS5b) ([#191](https://github.com/phoxal/framework/pull/191))
+- *(check)* [**breaking**] strip pub/sub/responder/topic/materialization; keep schema_id-by-family + config (WS5a) ([#189](https://github.com/phoxal/framework/pull/189))
+
 ## [0.29.0](https://github.com/phoxal/framework/compare/phoxal-v0.28.0...phoxal-v0.29.0) - 2026-07-07
 
 ### Other
