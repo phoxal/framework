@@ -378,20 +378,18 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::motion::ManualCommand>(contracts, "subscribe");
-        assert_contract::<api::follow::Target>(contracts, "subscribe");
-        assert_contract::<api::safety::SafetyAuthorization>(contracts, "subscribe");
-        assert_contract::<api::drive::Target>(contracts, "publish");
-        assert_contract::<api::motion::State>(contracts, "publish");
+        assert_contract::<api::motion::ManualCommand>(contracts);
+        assert_contract::<api::follow::Target>(contracts);
+        assert_contract::<api::safety::SafetyAuthorization>(contracts);
+        assert_contract::<api::drive::Target>(contracts);
+        assert_contract::<api::motion::State>(contracts);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    fn assert_contract<B>(contracts: &[serde_json::Value])
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| {
-            c["family"] == B::FAMILY && c["topic"] == B::TOPIC && c["direction"] == direction
-        }));
+        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
     }
 
     fn manual_command(linear_x_mps: f64, angular_z_radps: f64) -> api::motion::ManualCommand {

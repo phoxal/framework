@@ -208,10 +208,7 @@ fn affected_artifacts(workspace: &Workspace) -> Result<Vec<OfficialArtifact>> {
             let Some(family) = contract.family.as_deref() else {
                 return false;
             };
-            let Some(topic) = contract.topic.as_deref() else {
-                return false;
-            };
-            changed_keys.contains(&(family.to_string(), topic.to_string()))
+            changed_keys.contains(family)
         });
         if uses_changed_contract {
             selected.push(artifact.clone());
@@ -221,10 +218,10 @@ fn affected_artifacts(workspace: &Workspace) -> Result<Vec<OfficialArtifact>> {
     Ok(selected)
 }
 
-fn changed_contract_keys(changed_contracts: &[ContractDiff]) -> BTreeSet<(String, String)> {
+fn changed_contract_keys(changed_contracts: &[ContractDiff]) -> BTreeSet<String> {
     changed_contracts
         .iter()
-        .map(|contract| (contract.family.clone(), contract.topic.clone()))
+        .map(|contract| contract.family.clone())
         .collect()
 }
 
@@ -300,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_keys_include_family_and_topic() {
+    fn changed_keys_include_family() {
         let keys = changed_contract_keys(&[ContractDiff {
             kind: crate::api::manifest::ContractDiffKind::Changed,
             family: "battery::State".to_string(),
@@ -309,7 +306,7 @@ mod tests {
             to_schema_id: Some("bbbbbbbbbbbbbbbb".to_string()),
         }]);
 
-        assert!(keys.contains(&("battery::State".to_string(), "battery/state".to_string())));
+        assert!(keys.contains("battery::State"));
     }
 
     // --changed decision table: tag-missing -> skip, diff-clean -> skip, diff-dirty -> bump.

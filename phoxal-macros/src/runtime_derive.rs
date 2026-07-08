@@ -3,8 +3,8 @@
 //! Reads the mandatory `#[phoxal(api = y2026_N)]` selector (plus optional
 //! `id` / `config`) and the struct's typed handle fields, then emits:
 //! - an `impl ParticipantSpec` carrying `KIND`, `PARTICIPANT_CLASS`, `ID`,
-//!   `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS` (one
-//!   `{family, topic, direction}` per handle, all sharing the one API version);
+//!   `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS` (one `{family, schema_id}`
+//!   per distinct contract body, all sharing the one API version);
 //! - compile assertions that every handle body satisfies
 //!   `ContractBody<Api = Self::Api>` (a body from another API version is a
 //!   compile error - D60);
@@ -141,14 +141,11 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
         for (body, dir) in decl.contract_bodies() {
             let key = format!("{}:{}", dir.key(), normalized_type_key(&body, &api));
             if seen_contracts.insert(key) {
-                let dir = dir.tokens(&phoxal);
                 contract_entries.push(quote! {
                     #phoxal::participant::ContractUse {
                         api_version: <<#body as #phoxal::bus::ContractBody>::Api as #phoxal::bus::ApiVersion>::ID,
                         schema_id: <#body as #phoxal::bus::ContractBody>::SCHEMA_ID,
                         family: <#body as #phoxal::bus::ContractBody>::FAMILY,
-                        topic: <#body as #phoxal::bus::ContractBody>::TOPIC,
-                        direction: #dir,
                     }
                 });
             }
@@ -361,16 +358,6 @@ impl Direction {
             Direction::QueryRequest => "qreq",
             Direction::QueryResponse => "qresp",
         }
-    }
-
-    fn tokens(self, phoxal: &TokenStream) -> TokenStream {
-        let variant = match self {
-            Direction::Publish => quote!(Publish),
-            Direction::Subscribe => quote!(Subscribe),
-            Direction::QueryRequest => quote!(QueryRequest),
-            Direction::QueryResponse => quote!(QueryResponse),
-        };
-        quote!(#phoxal::participant::Direction::#variant)
     }
 }
 

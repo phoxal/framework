@@ -855,32 +855,28 @@ fn main() -> phoxal::Result<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContractMapping {
     family: &'static str,
-    topic: &'static str,
-    direction: phoxal::participant::Direction,
     schema_id: &'static str,
 }
 
 #[cfg(test)]
 fn contract_mappings() -> Vec<ContractMapping> {
     vec![
-        mapping::<api::component::motor::Command>(phoxal::participant::Direction::Subscribe),
-        mapping::<api::component::encoder::Sample>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::imu::Sample>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::accelerometer::Sample>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::gyroscope::Sample>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::range::Sample>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::camera::Frame>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::depth::Frame>(phoxal::participant::Direction::Publish),
-        mapping::<api::component::gnss::Sample>(phoxal::participant::Direction::Publish),
+        mapping::<api::component::motor::Command>(),
+        mapping::<api::component::encoder::Sample>(),
+        mapping::<api::component::imu::Sample>(),
+        mapping::<api::component::accelerometer::Sample>(),
+        mapping::<api::component::gyroscope::Sample>(),
+        mapping::<api::component::range::Sample>(),
+        mapping::<api::component::camera::Frame>(),
+        mapping::<api::component::depth::Frame>(),
+        mapping::<api::component::gnss::Sample>(),
     ]
 }
 
 #[cfg(test)]
-fn mapping<B: ContractBody>(direction: phoxal::participant::Direction) -> ContractMapping {
+fn mapping<B: ContractBody>() -> ContractMapping {
     ContractMapping {
         family: B::FAMILY,
-        topic: B::TOPIC,
-        direction,
         schema_id: B::SCHEMA_ID,
     }
 }
@@ -908,11 +904,6 @@ mod tests {
             assert!(
                 contracts.iter().any(|contract| {
                     contract["family"] == mapping.family
-                        && contract["topic"] == mapping.topic
-                        && contract["direction"]
-                            == serde_json::Value::String(
-                                format!("{:?}", mapping.direction).to_lowercase(),
-                            )
                         && contract["schema_id"] == mapping.schema_id
                 }),
                 "missing mapping for {}",

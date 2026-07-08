@@ -217,14 +217,16 @@ mod tests {
         assert_eq!(metadata.artifact.id, "presence");
 
         let contracts = metadata.required_contracts;
-        assert!(contracts.iter().any(|c| {
-            c.family == <api::presence::Heartbeat as ContractBody>::FAMILY
-                && c.direction == phoxal::participant::Direction::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.family == <api::presence::State as ContractBody>::FAMILY
-                && c.direction == phoxal::participant::Direction::Publish
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.family == <api::presence::Heartbeat as ContractBody>::FAMILY)
+        );
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.family == <api::presence::State as ContractBody>::FAMILY)
+        );
     }
 
     fn heartbeat(

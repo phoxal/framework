@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::bus::BUS_ABI;
-use crate::participant::spec::{ContractUse, Direction, ParticipantBehavior};
+use crate::participant::spec::{ContractUse, ParticipantBehavior};
 
 /// The frozen emitted-metadata schema id.
 pub const EMIT_SCHEMA: &str = "phoxal.emit-apis/v0";
@@ -66,10 +66,6 @@ pub struct ContractView {
     pub schema_id: String,
     /// Contract family id.
     pub family: String,
-    /// Versionless topic key.
-    pub topic: String,
-    /// Direction of use.
-    pub direction: Direction,
 }
 
 impl From<&ContractUse> for ContractView {
@@ -78,8 +74,6 @@ impl From<&ContractUse> for ContractView {
             api_version: c.api_version.to_string(),
             schema_id: c.schema_id.to_string(),
             family: c.family.to_string(),
-            topic: c.topic.to_string(),
-            direction: c.direction,
         }
     }
 }
@@ -95,8 +89,6 @@ pub fn participant_metadata<R: ParticipantBehavior>() -> ParticipantMetadata {
                 contract.api_version.to_string(),
                 contract.schema_id.to_string(),
                 contract.family.to_string(),
-                contract.topic.to_string(),
-                contract.direction,
             ))
         })
         .map(ContractView::from)

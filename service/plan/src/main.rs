@@ -374,20 +374,18 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::mission::State>(contracts, "subscribe");
-        assert_contract::<api::localize::LocalizationState>(contracts, "subscribe");
-        assert_contract::<api::map::Revision>(contracts, "subscribe");
-        assert_contract::<api::plan::Path>(contracts, "publish");
-        assert_contract::<api::plan::State>(contracts, "publish");
+        assert_contract::<api::mission::State>(contracts);
+        assert_contract::<api::localize::LocalizationState>(contracts);
+        assert_contract::<api::map::Revision>(contracts);
+        assert_contract::<api::plan::Path>(contracts);
+        assert_contract::<api::plan::State>(contracts);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    fn assert_contract<B>(contracts: &[serde_json::Value])
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| {
-            c["family"] == B::FAMILY && c["topic"] == B::TOPIC && c["direction"] == direction
-        }));
+        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
     }
 
     fn goal(x_m: f64, y_m: f64, yaw_rad: Option<f64>) -> api::mission::Goal {

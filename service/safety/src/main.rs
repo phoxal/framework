@@ -362,21 +362,19 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::battery::State>(contracts, "subscribe");
-        assert_contract::<api::drive::State>(contracts, "subscribe");
-        assert_contract::<api::safety::EmergencyStopRequest>(contracts, "subscribe");
-        assert_contract::<api::component::emergency_stop::State>(contracts, "subscribe");
-        assert_contract::<api::safety::SafetyAuthorization>(contracts, "publish");
-        assert_contract::<api::safety::Status>(contracts, "publish");
+        assert_contract::<api::battery::State>(contracts);
+        assert_contract::<api::drive::State>(contracts);
+        assert_contract::<api::safety::EmergencyStopRequest>(contracts);
+        assert_contract::<api::component::emergency_stop::State>(contracts);
+        assert_contract::<api::safety::SafetyAuthorization>(contracts);
+        assert_contract::<api::safety::Status>(contracts);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    fn assert_contract<B>(contracts: &[serde_json::Value])
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| {
-            c["family"] == B::FAMILY && c["topic"] == B::TOPIC && c["direction"] == direction
-        }));
+        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
     }
 
     fn inputs<'a>(

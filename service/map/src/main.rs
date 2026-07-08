@@ -202,20 +202,18 @@ mod tests {
         assert_eq!(value["artifact"]["id"], "map");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::map::Revision as ContractBody>::FAMILY
-                && c["topic"] == <api::map::Revision as ContractBody>::TOPIC
-                && c["direction"] == "publish"
-        }));
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::map::SubmapResponse as ContractBody>::FAMILY
-                && c["topic"] == <api::map::SubmapResponse as ContractBody>::TOPIC
-                && c["direction"] == "server_response"
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::map::Revision as ContractBody>::FAMILY)
+        );
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::map::SubmapResponse as ContractBody>::FAMILY)
+        );
         assert!(contracts.iter().any(|c| {
             c["family"] == <api::localize::LocalizationState as ContractBody>::FAMILY
-                && c["topic"] == <api::localize::LocalizationState as ContractBody>::TOPIC
-                && c["direction"] == "subscribe"
         }));
     }
 }

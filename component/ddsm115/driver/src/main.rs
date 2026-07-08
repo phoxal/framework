@@ -169,13 +169,15 @@ mod tests {
                 .is_some_and(|schema_id| !schema_id.is_empty())),
             "each contract should include schema_id"
         );
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::component::motor::Command as ContractBody>::FAMILY
-                && c["direction"] == "subscribe"
-        }));
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::component::encoder::Sample as ContractBody>::FAMILY
-                && c["direction"] == "publish"
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::component::motor::Command as ContractBody>::FAMILY)
+        );
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::component::encoder::Sample as ContractBody>::FAMILY)
+        );
     }
 }

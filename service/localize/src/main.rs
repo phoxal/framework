@@ -129,13 +129,13 @@ mod tests {
         assert_eq!(value["artifact"]["id"], "localize");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::odometry::State as ContractBody>::FAMILY
-                && c["direction"] == "subscribe"
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c["family"] == <api::odometry::State as ContractBody>::FAMILY)
+        );
         assert!(contracts.iter().any(|c| {
             c["family"] == <api::localize::LocalizationState as ContractBody>::FAMILY
-                && c["direction"] == "publish"
         }));
     }
 }

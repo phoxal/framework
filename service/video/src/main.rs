@@ -391,20 +391,20 @@ mod tests {
         assert_eq!(value["api_version"], "y2026_1");
 
         let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::component::camera::Frame>(contracts, "subscribe");
-        assert_contract::<api::video::stream::StreamState>(contracts, "publish");
-        assert_contract::<api::video::OpenRequest>(contracts, "server_request");
-        assert_contract::<api::video::OpenResponse>(contracts, "server_response");
+        assert_contract::<api::component::camera::Frame>(contracts);
+        assert_contract::<api::video::stream::StreamState>(contracts);
+        assert_contract::<api::video::OpenRequest>(contracts);
+        assert_contract::<api::video::OpenResponse>(contracts);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value], direction: &str)
+    fn assert_contract<B>(contracts: &[serde_json::Value])
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|contract| {
-            contract["family"] == B::FAMILY
-                && contract["topic"] == B::TOPIC
-                && contract["direction"] == direction
-        }));
+        assert!(
+            contracts
+                .iter()
+                .any(|contract| contract["family"] == B::FAMILY)
+        );
     }
 }

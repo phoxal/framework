@@ -432,29 +432,23 @@ fn main() -> phoxal::Result<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContractMapping {
     family: &'static str,
-    topic: &'static str,
-    direction: phoxal::participant::Direction,
     schema_id: &'static str,
 }
 
 #[cfg(test)]
 fn contract_mappings() -> Vec<ContractMapping> {
     vec![
-        mapping::<api::simulation::Clock>(phoxal::participant::Direction::Publish),
-        mapping::<api::simulation::Control>(phoxal::participant::Direction::Subscribe),
-        mapping::<api::simulation::RobotPose>(phoxal::participant::Direction::Publish),
-        mapping::<api::simulation::Contact>(phoxal::participant::Direction::Publish),
+        mapping::<api::simulation::Clock>(),
+        mapping::<api::simulation::Control>(),
+        mapping::<api::simulation::RobotPose>(),
+        mapping::<api::simulation::Contact>(),
     ]
 }
 
 #[cfg(test)]
-fn mapping<B: phoxal::bus::ContractBody>(
-    direction: phoxal::participant::Direction,
-) -> ContractMapping {
+fn mapping<B: phoxal::bus::ContractBody>() -> ContractMapping {
     ContractMapping {
         family: B::FAMILY,
-        topic: B::TOPIC,
-        direction,
         schema_id: B::SCHEMA_ID,
     }
 }
@@ -482,11 +476,6 @@ mod tests {
             assert!(
                 contracts.iter().any(|contract| {
                     contract["family"] == mapping.family
-                        && contract["topic"] == mapping.topic
-                        && contract["direction"]
-                            == serde_json::Value::String(
-                                format!("{:?}", mapping.direction).to_lowercase(),
-                            )
                         && contract["schema_id"] == mapping.schema_id
                 }),
                 "missing mapping for {}",
