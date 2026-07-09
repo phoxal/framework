@@ -44,28 +44,49 @@
 //!   per-participant "you must declare this family before building a handle
 //!   for it" gate (D44). Moving that gate to key off `Self::Api` instead of
 //!   the participant struct is real trait redesign (RECONCILIATION
-//!   correction #7); this slice's builders are open (any `ContractBody`
+//!   correction #7); this slice's builders are **open** (any `ContractBody`
 //!   compiles), matching "this slice only needs the contract-identity
 //!   metadata embedded and the const available."
+//!
+//!   Consequence for tooling: because the builders are open AND a handle can
+//!   be built and then stashed somewhere other than a scanned `Api` field
+//!   (e.g. moved into a `ctx.spawn_managed(...)` task), [`ParticipantApi::CONTRACTS`]
+//!   is the set of contracts named by the `Api` struct's fields, **not** a
+//!   guaranteed-complete picture of everything the participant actually
+//!   touches on the bus. It is a sound *lower bound* on the compatibility
+//!   surface, and for a participant authored to the target model (all handles
+//!   live as `Api` fields, nothing bypasses them) it is exact - but until the
+//!   `Declares*<B>` gating lands to make "every handle is a declared `Api`
+//!   field" a compile-time guarantee, downstream tooling
+//!   (xtask/catalog/graph-check) must treat `CONTRACTS` as authoritative for
+//!   *what is declared*, not as a proof that nothing else is used.
 //! - **`#[server(api = field)]` field validation** (F-runtime slice). The
 //!   `field` identifier is parsed and recorded but not cross-checked against
 //!   the `Api` struct's actual `Server<Req, Resp>` field of that name - a
 //!   proc-macro on the `impl` block cannot see the separate `Api` struct
 //!   definition it did not derive, so binding the handler to its declared
 //!   slot is deferred to the runtime slice that owns both together.
-//! - **Concurrent snapshot-server `Api` sharing in a live runner.** The
-//!   generated [`ParticipantLifecycle::__serve_snapshot`] takes
-//!   `Arc<Self::Api>` (read-only, D3), which this module's traits and the
-//!   `#[phoxal::behavior]` codegen fully support end to end; wiring an actual
-//!   `phoxal::run`/`run_with` main loop to construct and hand out that `Arc`
-//!   for a *live* participant (bus connected, concurrent tasks) is deferred -
-//!   proven here by direct trait-method invocation in a test fixture instead
-//!   of a live bus loop. `Arc<Self::Api>` (not `&Self::Api`) is this slice's
-//!   chosen "api snapshot" shape (D3 offers either): every bus handle type's
-//!   real operations already take `&self` (see `phoxal-bus/src/handle.rs`),
-//!   so an `Arc` costs nothing extra and - unlike a borrowed reference - is
-//!   `'static` and can be moved into the spawned/boxed future
-//!   `__serve_snapshot` returns.
+//! - **Concurrent snapshot-server `Api` sharing in a live runner** - CLOSED
+//!   by the F-runtime slice (`phoxal::participant::runner_v2`). The generated
+//!   [`ParticipantLifecycle::__serve_snapshot`] takes `Arc<Self::Api>`
+//!   (read-only, D3), and the new-model runner now constructs that `Arc` (one
+//!   clone of the `#[setup]`-returned `api`) and hands `Arc::clone`s to each
+//!   spawned `#[server_snapshot]` task on a live bus, alongside the owned
+//!   `api` the main task keeps for `&mut Self::Api`. `Arc<Self::Api>` (not
+//!   `&Self::Api`) is the chosen "api snapshot" shape (D3 offers either):
+//!   every bus handle type's real operations already take `&self` (see
+//!   `phoxal-bus/src/handle.rs`), so an `Arc` costs nothing extra and - unlike
+//!   a borrowed reference - is `'static` and can be moved into the
+//!   spawned/boxed future `__serve_snapshot` returns. This is sound for
+//!   `Publisher`/`Latest`/`Querier`/`Server` (non-destructive reads / fresh
+//!   publishes); a `Subscriber` field, however, is a *destructive* shared
+//!   queue, so a `#[server_snapshot]` handler must read committed `Snapshot`
+//!   state and never `recv` a `Subscriber` (see `runner_v2`'s module docs and
+//!   `Subscriber`'s rustdoc). **Deferred hardening:** this slice does not yet
+//!   *enforce* that structurally - rejecting a snapshot handler that drains a
+//!   `Subscriber` at compile time would need an invasive `Api`-projection
+//!   redesign (a separate read-only snapshot view type excluding `Subscriber`
+//!   fields); until it lands, P-convert must uphold the rule per participant.
 //!
 //! The owner-capability / component / raw-bus setup accessors are **not**
 //! deferred: the new-model surface exposes `owner_capability()` for all
@@ -113,7 +134,25 @@ pub struct ApiContractUse {
 /// Emitted by `#[derive(phoxal::Api)]`: the bus-facing contract surface of a
 /// participant's `Api` handle struct (the new model's per-field replacement
 /// for [`spec::ParticipantSpec::FIELD_CONTRACTS`](super::spec::ParticipantSpec)).
-pub trait ParticipantApi: Send + Sync + 'static {
+///
+/// `Clone` (F-runtime slice, closing the "concurrent snapshot-server `Api`
+/// sharing" deferral above): every bus handle type (`Publisher`/`Latest`/
+/// `Subscriber`/`Querier`/[`Server`]) is cheaply `Clone` - a second handle to
+/// the same underlying subscription/publish key/session, never a deep copy -
+/// because every real operation on them takes `&self`
+/// (`phoxal-bus/src/handle.rs`'s module docs). `#[derive(phoxal::Api)]` emits
+/// a field-wise `Clone` impl alongside the `ParticipantApi` impl, so this
+/// bound is satisfied automatically for every derived `Api` struct. The
+/// runner (`participant::runner_v2`) uses it to give concurrent
+/// `#[server_snapshot]` tasks their own `Arc<Self::Api>` - a full clone made
+/// once after `#[setup]`, independent of the `&mut Self::Api` the main task
+/// keeps for `#[step]`/`#[server]`/`#[shutdown]` - rather than one value
+/// shared behind `&mut`/`Arc` at once, which Rust's aliasing rules forbid
+/// without unsafe code. Because every clone is a handle to the same live
+/// state (shared `Bus`/`ArcSwapOption`/subscription task), the two never
+/// diverge, so this is exactly D3's "read-only `&Self::Api`, or an api
+/// snapshot" - here realized as a cloned api snapshot.
+pub trait ParticipantApi: Send + Sync + Clone + 'static {
     /// Every contract this `Api` struct's fields use, deduplicated.
     const CONTRACTS: &'static [ApiContractUse];
 }
@@ -298,10 +337,19 @@ impl<Req, Resp> Default for Server<Req, Resp> {
     }
 }
 
-// `PhantomData<fn(Req) -> Resp>` is `Send`/`Sync` regardless of `Req`/`Resp`
-// (a fn-pointer phantom, same trick the other handle types' `PhantomData<fn()
-// -> B>` markers use), so `Server<Req, Resp>` needs no manual impls to
-// satisfy `ParticipantApi: Send + Sync`.
+impl<Req, Resp> Clone for Server<Req, Resp> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Req, Resp> Copy for Server<Req, Resp> {}
+
+// `PhantomData<fn(Req) -> Resp>` is `Send`/`Sync`/`Copy` regardless of
+// `Req`/`Resp` (a fn-pointer phantom, same trick the other handle types'
+// `PhantomData<fn() -> B>` markers use), so `Server<Req, Resp>` needs no
+// bounds on `Req`/`Resp` to satisfy `ParticipantApi: Send + Sync + Clone`
+// (see that trait's docs).
 
 /// `SetupContext<R>` builders for the NEW model (`R: Participant`), added as
 /// an extension trait rather than a second inherent `impl<R: Participant>

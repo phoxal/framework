@@ -16,19 +16,18 @@ error[E0425]: cannot find value `run_with_bus` in module `phoxal::participant`
 16 |           let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
    |                                                    ^^^^^^^^^^^^
    |
-  ::: src/participant/runner.rs
+  ::: src/participant/runner_v2.rs
    |
-   | / pub async fn run_with<R, C, S>(
+   | / pub async fn run_with_bus_v2<R, C, S>(
+   | |     bus: &Bus,
    | |     launch: ParticipantLaunch,
    | |     clock: C,
-   | |     shutdown: S,
 ...  |
    | |     C: ClockSource,
    | |     S: Future<Output = ()>,
-   | |___________________________- similarly named function `run_with` defined here
+   | |___________________________- similarly named function `run_with_bus_v2` defined here
    |
 help: a function with a similar name exists
    |
-16 -         let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
-16 +         let _run_with_bus = phoxal::participant::run_with::<DefaultRawBusOpen, _, _>;
-   |
+16 |         let _run_with_bus = phoxal::participant::run_with_bus_v2::<DefaultRawBusOpen, _, _>;
+   |                                                              +++

@@ -56,24 +56,6 @@ pub struct SetupContext<R> {
 }
 
 impl<R: ParticipantSpec> SetupContext<R> {
-    pub(crate) fn new(
-        bus: Bus,
-        owner_cap: OwnerCap,
-        robot: Option<Arc<Robot>>,
-        robot_root: Option<PathBuf>,
-        component_instance: Option<String>,
-    ) -> Self {
-        SetupContext {
-            bus,
-            owner_cap,
-            robot,
-            robot_root,
-            component_instance,
-            managed_tasks: ManagedTasks::default(),
-            _runtime: PhantomData,
-        }
-    }
-
     /// The resolved robot model (`robot.yaml` + components + structure). Official
     /// participants build their typed state from this (D33); it is present only when
     /// the runner was launched with a robot root. Returns an error otherwise.
@@ -187,6 +169,36 @@ impl<R: ParticipantSpec> SetupContext<R> {
     pub fn owner_capability(&self) -> OwnerCap {
         self.owner_cap
     }
+}
+
+/// Unbounded on `R` (no `ParticipantSpec`/`Participant` bound needed - these
+/// just store/read raw fields or spawn/track tasks generically), so both the
+/// OLD builders above and the NEW model's `SetupContextApiExt`
+/// (`participant::api`, a sibling module) can call them. [`Self::new`],
+/// [`Self::spawn_managed`], [`Self::spawn_managed_with`], and
+/// [`Self::take_managed_tasks`] in particular moved here (F-runtime slice) so
+/// the NEW-model runner (`participant::runner_v2`) can construct and drive a
+/// `SetupContext<R>` for an `R: Participant` too - none of them ever needed
+/// the `ParticipantSpec` bound, they were only grouped with the OLD-model
+/// builders above for organizational reasons.
+impl<R> SetupContext<R> {
+    pub(crate) fn new(
+        bus: Bus,
+        owner_cap: OwnerCap,
+        robot: Option<Arc<Robot>>,
+        robot_root: Option<PathBuf>,
+        component_instance: Option<String>,
+    ) -> Self {
+        SetupContext {
+            bus,
+            owner_cap,
+            robot,
+            robot_root,
+            component_instance,
+            managed_tasks: ManagedTasks::default(),
+            _runtime: PhantomData,
+        }
+    }
 
     /// Spawn a runner-owned, long-lived background task (sensor polling loop,
     /// serial/USB reader, async IO pump) under the default
@@ -240,13 +252,7 @@ impl<R: ParticipantSpec> SetupContext<R> {
     pub(crate) fn take_managed_tasks(&mut self) -> ManagedTasks {
         std::mem::take(&mut self.managed_tasks)
     }
-}
 
-/// Unbounded on `R` (no `ParticipantSpec`/`Participant` bound needed - this
-/// just reads a raw field), so both the OLD builders above and the NEW
-/// model's `SetupContextApiExt` (`participant::api`, a sibling module) can
-/// call it.
-impl<R> SetupContext<R> {
     /// The underlying bus. Not on the default checked-participant surface (plan #00
     /// DoD #11 / plan #07): normal participants and examples cannot reach around
     /// the typed handle builders. Privileged participants that genuinely need raw

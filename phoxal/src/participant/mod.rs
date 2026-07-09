@@ -15,6 +15,7 @@ mod heartbeat;
 pub mod launch;
 mod managed;
 pub(crate) mod runner;
+pub(crate) mod runner_v2;
 pub mod scheduler;
 mod sd_notify;
 pub mod server;
@@ -31,6 +32,7 @@ pub use emit::{ParticipantMetadata, emit_apis_json, participant_metadata};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use managed::ManagedTaskPolicy;
 pub use runner::{run, run_async, run_with};
+pub use runner_v2::{run_async_v2, run_v2, run_with_bus_v2, run_with_v2};
 pub use scheduler::{
     AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
     StepScheduler,

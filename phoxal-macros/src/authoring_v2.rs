@@ -210,11 +210,35 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     );
     let link_section = link_section_attrs();
 
+    // `ParticipantApi: Clone` (F-runtime slice - see that trait's docs): every
+    // real handle field type (`Publisher`/`Latest`/`Subscriber`/`Querier`/
+    // `Server`) is itself `Clone`, so a plain field-wise clone always
+    // typechecks for a struct authored per the target model ("the Api struct
+    // should not be scanned for anything but handle fields"). Emitted here
+    // (not left to the user to `#[derive(Clone)]` themselves) because a
+    // derive macro cannot retroactively add `#[derive(Clone)]` to the item it
+    // is attached to - only append new tokens - so a hand-written `impl
+    // Clone` covering every named field is the only way to satisfy the bound
+    // unconditionally.
+    let clone_field_names: Vec<&Ident> = fields
+        .named
+        .iter()
+        .filter_map(|field| field.ident.as_ref())
+        .collect();
+
     Ok(quote! {
         impl #phoxal::participant::ParticipantApi for #struct_name {
             const CONTRACTS: &'static [#phoxal::participant::ApiContractUse] = &[
                 #(#contract_entries),*
             ];
+        }
+
+        impl ::core::clone::Clone for #struct_name {
+            fn clone(&self) -> Self {
+                Self {
+                    #(#clone_field_names: ::core::clone::Clone::clone(&self.#clone_field_names),)*
+                }
+            }
         }
 
         #link_section

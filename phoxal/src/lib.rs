@@ -187,6 +187,7 @@ pub mod bus {
 /// access satisfy checked topology.
 pub mod raw {
     pub use crate::participant::runner::run_with_bus;
+    pub use crate::participant::runner_v2::run_with_bus_v2;
     pub use phoxal_bus::*;
 }
 
@@ -248,11 +249,25 @@ pub use schemars;
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use participant::run;
 
+/// Run a NEW-model participant (`#[phoxal::service|driver|simulator|tool]` +
+/// `#[phoxal::behavior]`) to completion on a framework-owned blocking Tokio
+/// runtime - the new authoring model's counterpart to [`run`], coexisting
+/// with it (see `phoxal::participant::api`'s module docs).
+///
+/// The default binary entrypoint for a new-model participant:
+/// `fn main() -> phoxal::Result<()> { phoxal::run_v2::<Participant>() }`.
+pub use participant::run_v2;
+
 /// Async host runner entrypoints for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
 pub mod tokio {
     #[doc(inline)]
     pub use crate::participant::run_async as run;
+
+    /// New-model async host runner
+    /// (`phoxal::tokio::run_v2::<Participant>().await`).
+    #[doc(inline)]
+    pub use crate::participant::run_async_v2 as run_v2;
 }
 
 /// Everything a participant author imports with `use phoxal::prelude::*;`.

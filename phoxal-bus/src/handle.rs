@@ -68,6 +68,23 @@ pub struct Publisher<B> {
     _body: PhantomData<fn() -> B>,
 }
 
+// Manual (not `#[derive(Clone)]`) so cloning a `Publisher<B>` never spuriously
+// requires `B: Clone` - every field it actually holds (`Bus`, `String`,
+// `PhantomData<fn() -> B>`) is `Clone` regardless of `B`. All real operations
+// take `&self` (`try_publish`/`publish_at`), so a clone is just a second
+// handle to the same publish key on the same session - safe to hand to a
+// concurrent task (the new-model runner's `Arc<Self::Api>` snapshot-sharing,
+// D3, relies on every `Api` field type being cheaply `Clone` this way).
+impl<B> Clone for Publisher<B> {
+    fn clone(&self) -> Self {
+        Publisher {
+            bus: self.bus.clone(),
+            key: self.key.clone(),
+            _body: PhantomData,
+        }
+    }
+}
+
 impl<B: ContractBody> Publisher<B> {
     /// Framework-internal (macro/runner-only): build a publisher over a topic.
     /// The author-facing path is `ctx.publisher(...)` in `#[setup]`. `#[doc(hidden)]`.
@@ -137,6 +154,20 @@ pub struct Querier<Req, Resp> {
     key: String,
     timeout: Duration,
     _p: PhantomData<fn() -> (Req, Resp)>,
+}
+
+// Manual, unbounded on `Req`/`Resp` - see `Publisher`'s `Clone` impl docs for
+// why (identical reasoning: `query` takes `&self`, so a clone is just a
+// second handle to the same query key).
+impl<Req, Resp> Clone for Querier<Req, Resp> {
+    fn clone(&self) -> Self {
+        Querier {
+            bus: self.bus.clone(),
+            key: self.key.clone(),
+            timeout: self.timeout,
+            _p: PhantomData,
+        }
+    }
 }
 
 impl<Req, Resp> Querier<Req, Resp>
@@ -263,7 +294,23 @@ pub struct Received<B> {
 /// + logged, not stored. The subscription lives until the `Latest` is dropped.
 pub struct Latest<B> {
     slot: Arc<ArcSwapOption<B>>,
-    _guard: SubscriptionGuard,
+    _guard: Arc<SubscriptionGuard>,
+}
+
+// Manual, unbounded on `B` (mirrors `Publisher`'s reasoning). `slot` is
+// already `Arc`-shared; `_guard` is `Arc<SubscriptionGuard>` (below) so
+// cloning shares the one background decode task rather than starting a
+// second one - the task aborts only when the *last* clone drops. `latest()`
+// only ever reads the shared slot (`&self`), so every clone always observes
+// the same freshest sample: safe to hand to a concurrent reader (D3's
+// snapshot-server `Api` sharing).
+impl<B> Clone for Latest<B> {
+    fn clone(&self) -> Self {
+        Latest {
+            slot: Arc::clone(&self.slot),
+            _guard: Arc::clone(&self._guard),
+        }
+    }
 }
 
 impl<B: ContractBody> Latest<B> {
@@ -279,7 +326,7 @@ impl<B: ContractBody> Latest<B> {
         .await?;
         Ok(Latest {
             slot,
-            _guard: guard,
+            _guard: Arc::new(guard),
         })
     }
 
@@ -297,10 +344,46 @@ impl<B: ContractBody> Latest<B> {
 /// always wins, the backlog never grows without bound. Use this when a short
 /// history is useful; reach for [`Latest`] when only current state matters.
 /// Decode failures are counted + logged, not buffered. The subscription lives
-/// until the `Subscriber` is dropped.
+/// until the last clone of the `Subscriber` is dropped.
+///
+/// # Cloning shares one queue - `recv`/`try_recv` compete
+///
+/// [`Clone`] is cheap (both fields are `Arc`, so a clone shares the one
+/// background decode task and the one backing ring), but unlike [`Latest`] a
+/// `Subscriber` is a **destructive** view: [`recv`](Self::recv)/
+/// [`try_recv`](Self::try_recv) *pop* from the shared ring, delivering each
+/// buffered sample to exactly one caller. So two clones of one `Subscriber`
+/// are two **competing consumers** of the same queue, not two independent
+/// views - whichever clone polls first gets the item; the other never sees
+/// it. That is a correctness question for whoever holds the clones, not a
+/// memory-safety one.
+///
+/// This matters for the new-model `Api` struct (a `Subscriber` field is
+/// cloned when the runner makes the `Arc<Self::Api>` snapshot it hands to
+/// concurrent `#[server_snapshot]` handlers - see
+/// `phoxal::participant::runner_v2`): a `#[server_snapshot]` handler must
+/// **read committed `Snapshot` state, never `recv` a `Subscriber`**, or it
+/// would steal samples from the `#[step]`/exclusive-server side that owns the
+/// subscription. Prefer [`Latest`] whenever a value needs to be read from more
+/// than one place (its `.latest()` is a non-destructive `ArcSwapOption` load,
+/// so every clone always sees the current value); reserve sharing a
+/// `Subscriber` clone for a deliberate "first clone to poll wins" work-queue
+/// fan-out.
 pub struct Subscriber<B> {
     ring: Arc<Ring<B>>,
-    _guard: SubscriptionGuard,
+    _guard: Arc<SubscriptionGuard>,
+}
+
+// Manual, unbounded on `B` (mirrors `Latest`'s `Clone` impl: both fields are
+// `Arc`, so cloning never starts a second decode task). The competing-consumer
+// semantics of a shared clone are documented on the struct's rustdoc above.
+impl<B> Clone for Subscriber<B> {
+    fn clone(&self) -> Self {
+        Subscriber {
+            ring: Arc::clone(&self.ring),
+            _guard: Arc::clone(&self._guard),
+        }
+    }
 }
 
 impl<B: ContractBody> Subscriber<B> {
@@ -319,16 +402,26 @@ impl<B: ContractBody> Subscriber<B> {
         .await?;
         Ok(Subscriber {
             ring,
-            _guard: guard,
+            _guard: Arc::new(guard),
         })
     }
 
     /// Await the next decoded body (drop-oldest under congestion).
+    ///
+    /// **Destructive**: this pops from the ring, so the sample is delivered to
+    /// exactly this caller. If this `Subscriber` was cloned (e.g. into the
+    /// `Arc<Self::Api>` snapshot the runner hands concurrent
+    /// `#[server_snapshot]` handlers), every clone competes for the same queue
+    /// (see the [type docs](Self)). Do not `recv` a `Subscriber` from a
+    /// snapshot server; read committed `Snapshot` state instead.
     pub async fn recv(&self) -> Result<Received<B>> {
         self.ring.recv().await
     }
 
     /// Take the next decoded body if one is buffered, without awaiting.
+    ///
+    /// **Destructive**, exactly like [`recv`](Self::recv): it pops from the
+    /// shared ring, so clones compete for samples - see the [type docs](Self).
     pub fn try_recv(&self) -> Option<Received<B>> {
         self.ring.try_pop()
     }

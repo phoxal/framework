@@ -76,7 +76,7 @@ pub async fn run_async<R: ParticipantBehavior>() -> crate::Result<()> {
 /// subscribes the authoritative `simulation/clock` for timestamps is future
 /// work (the Webots port, see the `clock` module docs); until it lands,
 /// simulation mode still timestamps from the host-monotonic domain.
-fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
+pub(crate) fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
     match launch.clock {
         ClockMode::Real | ClockMode::Simulation => Ok(RealClock::new()),
     }
@@ -93,7 +93,7 @@ fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
 /// (see [`spawn_simulation_clock_feed`]): the handle is the attachment point
 /// anything that produces a `LogicalTime` drives the scheduler through (a bus
 /// subscription task, a test, a REPL).
-fn step_scheduler_for(
+pub(crate) fn step_scheduler_for(
     clock_mode: ClockMode,
     schedule: Option<StepSchedule>,
     now: LogicalTime,
@@ -143,7 +143,7 @@ fn step_scheduler_for(
 /// docs), so the watch channel itself would not close even if this task
 /// stopped, but a stopped task means logical time simply never advances
 /// again.
-fn spawn_simulation_clock_feed(
+pub(crate) fn spawn_simulation_clock_feed(
     bus: &Bus,
     handle: SimulationClockHandle,
 ) -> crate::Result<JoinHandle<()>> {
@@ -448,14 +448,14 @@ where
 /// Build the runtime-fault error for an unexpected `FaultOnExit` managed task
 /// exit. Returned from `run_lifecycle_inner` so it flows through the same
 /// `Result` path `run_lifecycle` already turns into `Readiness::Failed`.
-fn managed_task_fault_error(exit: &ManagedTaskExit) -> anyhow::Error {
+pub(crate) fn managed_task_fault_error(exit: &ManagedTaskExit) -> anyhow::Error {
     match &exit.panic_message {
         Some(message) => anyhow::anyhow!("managed task \"{}\" panicked: {message}", exit.name),
         None => anyhow::anyhow!("managed task \"{}\" exited unexpectedly", exit.name),
     }
 }
 
-fn log_unjoined_managed_tasks(unjoined: Vec<String>, grace_ms: u64) {
+pub(crate) fn log_unjoined_managed_tasks(unjoined: Vec<String>, grace_ms: u64) {
     if !unjoined.is_empty() {
         tracing::warn!(
             target: "phoxal.runtime",
@@ -556,7 +556,7 @@ where
     }
 }
 
-fn advance_logical_deadline(
+pub(crate) fn advance_logical_deadline(
     target: LogicalTime,
     period: Duration,
     missed_ticks: u32,
@@ -571,11 +571,11 @@ fn advance_logical_deadline(
     )
 }
 
-async fn heartbeat_tick(next: tokio::time::Instant) {
+pub(crate) async fn heartbeat_tick(next: tokio::time::Instant) {
     tokio::time::sleep_until(next).await;
 }
 
-fn advance_deadline(next: &mut tokio::time::Instant, period: Duration) {
+pub(crate) fn advance_deadline(next: &mut tokio::time::Instant, period: Duration) {
     *next += period;
     let now = tokio::time::Instant::now();
     while *next <= now {
@@ -589,7 +589,10 @@ fn advance_deadline(next: &mut tokio::time::Instant, period: Duration) {
 /// loop asks "when should the next `#[step]` tick fire" (D34/#09) - real mode
 /// sleeps on wall time, simulation mode waits on logical time, and the main
 /// loop itself does not know which.
-async fn step_tick(scheduler: &AnyStepScheduler, target: Option<LogicalTime>) -> SchedulerTick {
+pub(crate) async fn step_tick(
+    scheduler: &AnyStepScheduler,
+    target: Option<LogicalTime>,
+) -> SchedulerTick {
     match target {
         Some(target) => scheduler.wait_until(target).await,
         None => std::future::pending().await,
@@ -701,13 +704,13 @@ async fn serve_snapshot_query<R: ParticipantBehavior>(
     }
 }
 
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     if let Err(e) = tokio::signal::ctrl_c().await {
         tracing::warn!(target: "phoxal.runtime", error = %e, "failed to listen for ctrl-c");
     }
 }
 
-fn init_tracing() {
+pub(crate) fn init_tracing() {
     static INIT: OnceLock<()> = OnceLock::new();
     INIT.get_or_init(|| {
         use tracing_subscriber::EnvFilter;
