@@ -39,6 +39,19 @@ git_release_name = "{{ package }} v{{ version }}"
 pr_name = "chore(release): release"
 semver_check = true              # cargo-semver-checks decides breaking bump severity
 # no version_group (it reintroduces a shared version axis)
+#
+# GitHub's mutable "latest" release pointer belongs EXCLUSIVELY to the build-*
+# snapshot release (marked latest by the release workflow only after the catalog
+# gate passes) - because the CLI resolves the catalog by fetching "latest", and
+# the workflow accumulates the full-index catalog by reading the previous
+# "latest". release-plz creates a GitHub release for each published library
+# crate (`git_release_enable` defaults to true) and would, by default
+# (`git_release_latest` defaults to true), mark that library release "latest" -
+# stealing the pointer whenever a library bump rides the same shared release PR
+# as a binary bump, so the workflow's "fetch previous catalog from latest" would
+# miss the real catalog and silently truncate the index. Pin it off so only the
+# workflow's explicit `gh release edit "$build_tag" --latest` ever moves latest.
+git_release_latest = false
 
 # --- Binaries: versioned via git tags only, never published, no GitHub release ---
 
