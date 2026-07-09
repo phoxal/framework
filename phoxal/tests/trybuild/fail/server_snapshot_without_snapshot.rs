@@ -4,25 +4,35 @@ use phoxal::prelude::*;
 
 struct State;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "no-snap", api = y2026_1)]
-struct NoSnap {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
     revision: Publisher<api::map::Revision>,
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
+
+#[phoxal::service(id = "no-snap")]
+struct NoSnap;
 
 #[phoxal::behavior]
 impl NoSnap {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
-        Ok(Self {
-            revision: ctx
-                .publisher(api::topic::internal::new(cap).map().revision())
-                .await?,
-        })
+        Ok((
+            Self,
+            Self::Api {
+                revision: ctx
+                    .publisher(api::topic::internal::new(cap).map().revision())
+                    .await?,
+                submap: ctx.server(api::topic::new().map().submap()).await?,
+            },
+        ))
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(api = submap)]
     async fn submap(
         _state: Snapshot<State>,
         _request: api::map::SubmapRequest,

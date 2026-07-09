@@ -17,56 +17,57 @@
 //!   ([`Publisher<T>`](bus::Publisher), [`Subscriber<T>`](bus::Subscriber),
 //!   [`Latest<T>`](bus::Latest), [`Querier<Req, Resp>`](bus::Querier)), so the
 //!   compiler - not a late check - rejects sending the wrong type on a topic.
-//! - **One dated API version per participant.** API versions are dated modules
-//!   (`phoxal_api::y2026_1`, …), not semver crates. A participant authors against
-//!   exactly one of them; mixing bodies from two versions in one participant is a
-//!   compile error. A graph may mix generations: compatibility is per-contract
-//!   name identity, realized on the wire by the generation-qualified key (D1) -
-//!   there is no `schema_id`.
-//! - **Participants are authored, not wired.** You write a struct and an `impl`;
-//!   [`#[derive(Service)]`](derive@Service), [`#[derive(Driver)]`](derive@Driver),
-//!   [`#[derive(Tool)]`](derive@Tool), or
-//!   [`#[derive(Simulator)]`](derive@Simulator) plus
-//!   [`#[phoxal::behavior]`](macro@behavior) derives the static metadata, and
-//!   [`run`] turns the type into a binary. Use `Service` for ordinary robot
-//!   participants, `Driver` for a participant launched once per
-//!   `robot.components` entry, `Tool` for host-side utilities, and
-//!   `Simulator` for simulation-only participants that will own simulation clock
-//!   duties in the later clock slice.
+//! - **No per-participant API version ceiling.** API versions are dated modules
+//!   (`phoxal_api::y2026_1`, …), not semver crates. A participant's `Api` handle
+//!   struct may mix bodies from different generations freely across its fields -
+//!   compatibility is per-contract name identity, realized on the wire by the
+//!   generation-qualified key (D1); there is no `schema_id`.
+//! - **Participants are authored, not wired.** You write a `Config` struct, an
+//!   `Api` handle struct, a state struct, and an `impl`;
+//!   [`#[derive(Config)]`](derive@Config) / [`#[derive(Api)]`](derive@Api) plus
+//!   [`#[phoxal::service|driver|simulator|tool]`](macro@service) and
+//!   [`#[phoxal::behavior]`](macro@behavior) derive the static metadata, and
+//!   [`run`] turns the type into a binary. Use `service` for ordinary robot
+//!   participants, `driver` for a participant launched once per
+//!   `robot.components` entry, `tool` for host-side utilities, and `simulator`
+//!   for simulation-only participants.
 //!
 //! ## Author a participant
 //!
-//! A service is one struct of typed handles and one annotated inherent `impl`.
-//! The struct declares the contracts it uses (as handle fields) and its one API
-//! version; the `impl` declares the lifecycle. This is the whole getting-started
-//! surface:
+//! A participant is a `Config` struct, an `Api` struct of typed bus handles, a
+//! state struct, and one annotated inherent `impl`. This is the whole
+//! getting-started surface:
 //!
 //! ```ignore
-//! use phoxal_api::y2026_1 as api;   // select ONE dated API version
+//! use phoxal_api::y2026_1;
 //! use phoxal::prelude::*;
 //!
-//! #[derive(phoxal::Service)]
-//! #[phoxal(id = "avoid-obstacles", api = y2026_1)]
-//! struct AvoidObstacles {
-//!     state:  Latest<api::drive::State>,    // keep-last view of the drive state
-//!     target: Publisher<api::drive::Target>, // commanded drive target
+//! #[derive(serde::Deserialize, phoxal::Config)]
+//! struct Config {}
+//!
+//! #[derive(phoxal::Api)]
+//! struct Api {
+//!     state:  Latest<y2026_1::drive::State>,    // keep-last view of the drive state
+//!     target: Publisher<y2026_1::drive::Target>, // commanded drive target
 //! }
+//!
+//! #[phoxal::service(id = "avoid-obstacles")]
+//! struct AvoidObstacles;
 //!
 //! #[phoxal::behavior]
 //! impl AvoidObstacles {
 //!     #[setup]
-//!     async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-//!         Ok(Self {
-//!             // api-local topic builders bind each handle to this API version
-//!             state:  ctx.subscribe(api::topic::new().drive().state()).latest().await?,
-//!             target: ctx.publisher(api::topic::new().drive().target()).await?,
-//!         })
+//!     async fn setup(ctx: &mut SetupContext<Self>, _config: Self::Config) -> Result<(Self, Self::Api)> {
+//!         Ok((Self, Self::Api {
+//!             state:  ctx.latest(y2026_1::topic::new().drive().state()).await?,
+//!             target: ctx.publisher(y2026_1::topic::new().drive().target()).await?,
+//!         }))
 //!     }
 //!
 //!     #[step(hz = 50)]
-//!     async fn step(&mut self, step: StepContext) -> Result<()> {
+//!     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
 //!         let now = step.time();
-//!         self.target.publish_at(now, api::drive::Target {
+//!         api.target.publish_at(now, y2026_1::drive::Target {
 //!             linear_x_mps: 0.2,
 //!             angular_z_radps: 0.0,
 //!             curvature_limit_radpm: None,
@@ -80,18 +81,24 @@
 //!
 //! What each piece does:
 //!
-//! - `use phoxal_api::y2026_1 as api;` and `#[phoxal(api = y2026_1)]` pick the
-//!   participant's single API version. Every handle body type comes through `api::…`;
-//!   switching versions is a one-line edit at the top plus the attribute.
-//! - Handle fields name version-local bodies ([`Publisher<api::drive::Target>`](bus::Publisher),
-//!   [`Latest<api::drive::State>`](bus::Latest)). A body from another API version
-//!   does not compile.
+//! - `use phoxal_api::y2026_1;` brings the dated api-version module into scope;
+//!   `Api` struct fields name version-qualified bodies (`y2026_1::drive::Target`)
+//!   directly, so a participant may mix generations across fields with no
+//!   version-ceiling attribute to keep in sync.
+//! - `#[derive(phoxal::Api)]` derives the bus-facing contract surface from the
+//!   `Api` struct's handle fields ([`Publisher<T>`](bus::Publisher),
+//!   [`Latest<T>`](bus::Latest), [`Subscriber<T>`](bus::Subscriber),
+//!   [`Querier<Req, Resp>`](bus::Querier), `Server<Req, Resp>`).
+//! - `#[phoxal::service(id = "…")]` links the participant state struct to its
+//!   `Config`/`Api` types and records its identity.
 //! - All handles are built in `#[setup]` from api-local topic builders
-//!   (`api::topic::new().drive().state()`); long-lived ones become struct fields.
+//!   (`y2026_1::topic::new().drive().state()`) and returned as the `Api` value
+//!   alongside the participant state.
 //! - `#[step(hz = ...)]` is the scheduled control loop; the runner owns timing and
-//!   delivers logical time via [`StepContext`](participant::StepContext). Query servers
-//!   use `#[server]` / `#[server_snapshot]`, and `#[shutdown]` runs graceful
-//!   cleanup before the bus closes.
+//!   delivers logical time via [`StepContext`](participant::StepContext), and
+//!   `&mut Self::Api` alongside `&mut self`. Query servers use `#[server]` /
+//!   `#[server_snapshot]`, and `#[shutdown]` runs graceful cleanup before the bus
+//!   closes.
 //! - `fn main() -> phoxal::Result<()> { phoxal::run::<R>() }` is the default
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
@@ -99,21 +106,19 @@
 //! The four authoring kinds share the same metadata path but describe different
 //! runtime roles:
 //!
-//! - `Service` is the ordinary typed participant surface.
-//! - `Driver` is launched once per `robot.components` entry. Only a driver can
-//!   call [`SetupContext::component`](participant::SetupContext::component) to read
-//!   the bound component instance.
-//! - `Tool` is for host-side utilities that inspect the robot model through
-//!   [`SetupContext::robot`](participant::SetupContext::robot). Privileged raw-bus
-//!   access lives under [`raw`] so it is never part of the default checked
-//!   participant surface.
-//! - `Simulator` is a normal participant for simulation-only processes. It carries
-//!   a distinct kind and marker now; simulation clock ownership lands with plan
-//!   #09.
+//! - [`macro@service`] is the ordinary typed participant surface.
+//! - [`macro@driver`] is launched once per `robot.components` entry. Only a
+//!   driver can call
+//!   [`SetupContextDriverExt::component`](participant::SetupContextDriverExt::component)
+//!   to read the bound component instance.
+//! - [`macro@tool`] is for host-side utilities that inspect the robot model
+//!   through
+//!   [`SetupContextApiExt::robot`](participant::SetupContextApiExt::robot).
+//!   Privileged raw-bus access lives under [`raw`] so it is never part of the
+//!   default checked participant surface.
+//! - [`macro@simulator`] is a normal participant for simulation-only processes.
+//!   It carries a distinct kind and marker for simulation clock ownership.
 //!
-//! The runner also exposes an `emit-apis` subcommand
-//! (`cargo run --example runtime_control_loop emit-apis`) that prints a participant's
-//! static metadata as one JSON document and exits, without opening the bus.
 //! Worked examples live in `phoxal/examples/`.
 //!
 //! ## Where to look next
@@ -187,7 +192,6 @@ pub mod bus {
 /// access satisfy checked topology.
 pub mod raw {
     pub use crate::participant::runner::run_with_bus;
-    pub use crate::participant::runner_v2::run_with_bus_v2;
     pub use phoxal_bus::*;
 }
 
@@ -195,79 +199,54 @@ pub mod raw {
 /// `Result<T>` via the [`prelude`].
 pub use anyhow::Result;
 
-/// Derive the static metadata for a driver struct. See the crate docs.
-pub use phoxal_macros::Driver;
-
-/// Derive the static metadata for a service struct. See the crate docs.
-pub use phoxal_macros::Service;
-
-/// Derive the static metadata for a simulator struct. See the crate docs.
-pub use phoxal_macros::Simulator;
-
-/// Derive the static metadata for a tool struct. See the crate docs.
-pub use phoxal_macros::Tool;
-
 /// The bare `#[phoxal::behavior]` attribute for a participant's inherent impl.
 pub use phoxal_macros::behavior;
 
-/// NEW authoring model (coexists with the derives above during the
-/// migration window - see `phoxal::participant::api`): derive the bus-facing
-/// contract surface from an `Api` handle struct's fields.
+/// Derive the bus-facing contract surface from an `Api` handle struct's
+/// fields. See `phoxal::participant::api`.
 pub use phoxal_macros::Api;
 
-/// NEW authoring model: derive participant config identity from a `Config`
-/// struct (schema materialization is a later slice - see
+/// Derive participant config identity from a `Config` struct (schema
+/// materialization is a later slice - see
 /// `phoxal::participant::api::ParticipantConfig`).
 pub use phoxal_macros::Config;
 
-/// NEW authoring model: link a participant state struct to its `Config`/`Api`
-/// types as a checked service.
+/// Link a participant state struct to its `Config`/`Api` types as a checked
+/// service.
 pub use phoxal_macros::service;
 
-/// NEW authoring model: link a participant state struct to its `Config`/`Api`
-/// types as a component driver.
+/// Link a participant state struct to its `Config`/`Api` types as a
+/// component driver.
 pub use phoxal_macros::driver;
 
-/// NEW authoring model: link a participant state struct to its `Config`/`Api`
-/// types as a simulation participant.
+/// Link a participant state struct to its `Config`/`Api` types as a
+/// simulation participant.
 pub use phoxal_macros::simulator;
 
-/// NEW authoring model: link a participant state struct to its `Config` as a
-/// raw-bus tool (`Api` defaults to `()` - tools stay raw-bus only).
+/// Link a participant state struct to its `Config` as a raw-bus tool (`Api`
+/// defaults to `()` - tools stay raw-bus only).
 pub use phoxal_macros::tool;
 
 #[doc(inline)]
 pub use phoxal_macros::phoxal_api_tree;
 
 /// Re-exported so participant config types can derive/implement
-/// `phoxal::schemars::JsonSchema`, which feeds `emit-apis` config schemas.
+/// `phoxal::schemars::JsonSchema`, which feeds config schemas.
 pub use schemars;
 
-/// Run a participant to completion on a framework-owned blocking Tokio runtime.
+/// Run a participant (`#[phoxal::service|driver|simulator|tool]` +
+/// `#[phoxal::behavior]`) to completion on a framework-owned blocking Tokio
+/// runtime.
 ///
 /// This is the default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use participant::run;
 
-/// Run a NEW-model participant (`#[phoxal::service|driver|simulator|tool]` +
-/// `#[phoxal::behavior]`) to completion on a framework-owned blocking Tokio
-/// runtime - the new authoring model's counterpart to [`run`], coexisting
-/// with it (see `phoxal::participant::api`'s module docs).
-///
-/// The default binary entrypoint for a new-model participant:
-/// `fn main() -> phoxal::Result<()> { phoxal::run_v2::<Participant>() }`.
-pub use participant::run_v2;
-
-/// Async host runner entrypoints for custom Tokio mains
+/// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
 pub mod tokio {
     #[doc(inline)]
     pub use crate::participant::run_async as run;
-
-    /// New-model async host runner
-    /// (`phoxal::tokio::run_v2::<Participant>().await`).
-    #[doc(inline)]
-    pub use crate::participant::run_async_v2 as run_v2;
 }
 
 /// Everything a participant author imports with `use phoxal::prelude::*;`.

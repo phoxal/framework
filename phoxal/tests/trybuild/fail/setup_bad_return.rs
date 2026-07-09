@@ -1,15 +1,17 @@
-// #[setup] must return `Result<Self>` (D22).
+// #[setup] must return `Result<(Self, Self::Api)>` (D22).
 use phoxal::prelude::*;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "setup-bad-return", api = y2026_1)]
-struct SetupBadReturn {}
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[phoxal::service(id = "setup-bad-return", api = ())]
+struct SetupBadReturn;
 
 #[phoxal::behavior]
 impl SetupBadReturn {
     #[setup]
     async fn setup(_ctx: &mut SetupContext<Self>) -> Self {
-        Self {}
+        Self
     }
 }
 

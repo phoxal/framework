@@ -56,7 +56,7 @@ pub struct SchedulerTick {
 /// [`ClockSource`](crate::participant::clock::ClockSource).
 ///
 /// Async methods (no `async_trait`) to match the runner's existing async
-/// style (`ParticipantBehavior`, D34): the runner awaits `wait_until` directly
+/// style (`ParticipantLifecycle`, D34): the runner awaits `wait_until` directly
 /// inside its own `tokio::select!`, so boxing the future would be pure
 /// overhead.
 #[allow(async_fn_in_trait)]

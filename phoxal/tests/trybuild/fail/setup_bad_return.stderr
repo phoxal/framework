@@ -1,7 +1,7 @@
-error: #[setup] must return `Result<Self>` (D22)
-  --> tests/trybuild/fail/setup_bad_return.rs:11:54
+error: #[setup] must return `Result<(Self, Self::Api)>`
+  --> tests/trybuild/fail/setup_bad_return.rs:13:54
    |
-11 |     async fn setup(_ctx: &mut SetupContext<Self>) -> Self {
+13 |     async fn setup(_ctx: &mut SetupContext<Self>) -> Self {
    |                                                      ^^^^
 
 warning: unused import: `phoxal::prelude::*`

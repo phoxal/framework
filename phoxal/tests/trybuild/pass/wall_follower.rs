@@ -1,21 +1,17 @@
-// NEW authoring model fixture (phoxal-api-refactor "remove emit-apis"
-// proposal): `#[derive(phoxal::Api)]` + `#[derive(phoxal::Config)]` +
-// `#[phoxal::service]` + `#[phoxal::behavior]` with a `Result<(Self,
-// Self::Api)>` `#[setup]`. Exercises a client Publisher + a Latest + an
-// OWNER-side Publisher built from `ctx.owner_capability()` /
+// The authoring model's canonical fixture: `#[derive(phoxal::Api)]` +
+// `#[derive(phoxal::Config)]` + `#[phoxal::service]` + `#[phoxal::behavior]`
+// with a `Result<(Self, Self::Api)>` `#[setup]`. Exercises a client Publisher
+// + a Latest + an OWNER-side Publisher built from `ctx.owner_capability()` /
 // `topic::internal::new(cap)` (the path every real participant opens with),
 // `#[step]`/`#[shutdown]` taking `&mut Self::Api`, an exclusive
 // `#[server(api = …)]` taking `&mut Self::Api`, and a `#[server_snapshot(api
-// = …)]` taking a read-only `&Self::Api` (D3) - the green proof that the new
-// codegen (`phoxal-macros::behavior_v2`/`authoring_v2`) and the new-model
-// `SetupContext` surface (`SetupContextApiExt`, incl. `owner_capability`)
-// work end to end, coexisting with the OLD-model fixtures in this same
-// directory (e.g. `control_loop.rs`, `server_snapshot.rs`), which stay on
-// `#[derive(phoxal::Service)]` / bare `Result<Self>` untouched.
+// = …)]` taking a read-only `&Self::Api` (D3) - the green proof that the
+// codegen (`phoxal-macros::behavior`/`authoring`) and the `SetupContext`
+// surface (`SetupContextApiExt`, incl. `owner_capability`) work end to end.
 //
-// Imported as `y2026_1` (not `as api`), matching the companion doc: the new
-// model's lifecycle parameters are conventionally named `api`, so aliasing
-// the module to `api` too would shadow it inside method bodies.
+// Imported as `y2026_1` (not `as api`), matching the companion doc: the
+// lifecycle parameters are conventionally named `api`, so aliasing the module
+// to `api` too would shadow it inside method bodies.
 use phoxal_api::y2026_1;
 use phoxal::prelude::*;
 

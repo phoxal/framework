@@ -130,7 +130,7 @@ fn is_stale(now_ns: u64, last_seen_ns: u64) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Presence>()
+    phoxal::run::<Presence>()
 }
 
 #[cfg(test)]
@@ -219,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_contracts() {
+    fn api_reports_contracts() {
         assert_eq!(<Presence as Participant>::ID, "presence");
 
         let contracts = <<Presence as Participant>::Api as ParticipantApi>::CONTRACTS;

@@ -88,7 +88,7 @@ fn localization_from(
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Localize>()
+    phoxal::run::<Localize>()
 }
 
 #[cfg(test)]
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_contracts() {
+    fn api_reports_contracts() {
         assert_eq!(<Localize as Participant>::ID, "localize");
 
         let contracts = <<Localize as Participant>::Api as ParticipantApi>::CONTRACTS;

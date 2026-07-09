@@ -19,7 +19,7 @@ proc-macro = true
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
 # `visit-mut` on top of the workspace's `full`/`extra-traits`: only this crate
-# needs the mutable AST visitor (`behavior_v2`'s `Self::Api`/`Self::Config`
+# needs the mutable AST visitor (`behavior`'s `Self::Api`/`Self::Config`
 # fully-qualification rewrite).
 syn = { workspace = true, features = ["visit-mut"] }
 heck = { workspace = true }

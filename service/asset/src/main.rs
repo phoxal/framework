@@ -72,7 +72,7 @@ fn is_safe_relative(path: &str) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Asset>()
+    phoxal::run::<Asset>()
 }
 
 #[cfg(test)]

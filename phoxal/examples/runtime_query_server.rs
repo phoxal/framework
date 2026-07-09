@@ -8,30 +8,43 @@ use std::collections::BTreeMap;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "asset-store", api = y2026_1)]
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
+    get: Server<api::asset::GetRequest, api::asset::GetResponse>,
+}
+
+#[phoxal::service(id = "asset-store")]
 struct AssetStore {
-    // Runtime-private state — not a handle, so the derive ignores it.
+    // Runtime-private state - not a handle, so it lives on the participant
+    // struct, not the `Api` struct.
     assets: BTreeMap<String, Vec<u8>>,
 }
 
 #[phoxal::behavior]
 impl AssetStore {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let mut assets = BTreeMap::new();
         assets.insert("map.pgm".to_string(), vec![0x50, 0x35, 0x0a]);
-        Ok(Self { assets })
+        Ok((
+            Self { assets },
+            Self::Api {
+                get: ctx.server(api::topic::new().asset().get()).await?,
+            },
+        ))
     }
 
-    // The default exclusive server: serialized with any `#[step]`, holds `&mut self`.
-    // The `topic = …` expr is only key/contract validation; the live serve authority
-    // is the runner-controlled `<Req>::TOPIC` (plan #00 L2, Option C). It needs only
-    // the topic KEY, identical on both sides, so it uses the PUBLIC builder and needs
-    // no `OwnerCap`.
-    #[server(topic = api::topic::new().asset().get())]
+    // The default exclusive server: serialized with any `#[step]`, holds `&mut
+    // self` and `&mut Self::Api`. `api = get` names the `Api` struct's `Server`
+    // slot this handler implements ("`Api` declares the bus contract,
+    // `behavior` implements runtime logic").
+    #[server(api = get)]
     async fn get(
         &mut self,
+        _api: &mut Self::Api,
         request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
         match self.assets.get(&request.path) {

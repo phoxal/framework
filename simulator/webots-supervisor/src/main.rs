@@ -32,31 +32,6 @@ struct WebotsSupervisorConfig {
     spawn: Vec<SpawnRobot>,
 }
 
-/// `Self::Config` for [`WebotsSupervisorSimulator`] below.
-///
-/// The OLD model used `config = Option<WebotsSupervisorConfig>` directly
-/// (the runner deserializes `Self::Config` from JSON `null` when
-/// `PHOXAL_CONFIG` is unset - `ParticipantLaunch::config: Option<Value>` ->
-/// `None` -> `serde_json::from_value(Value::Null)` - and a plain struct,
-/// even with every field `#[serde(default)]`, rejects a bare `null`;
-/// verified: `serde_json::from_value::<WebotsSupervisorConfig>(Value::Null)`
-/// errors "invalid type: null, expected struct WebotsSupervisorConfig"). The
-/// new model's `ParticipantConfig` needs an explicit trait impl (no blanket
-/// bound on shape), and `impl ParticipantConfig for
-/// Option<WebotsSupervisorConfig>` is orphan-rule-illegal from this crate
-/// (`ParticipantConfig` and `Option` are both foreign here - verified against
-/// a real cross-crate compile, not just same-crate). This concrete, crate-local
-/// newtype sidesteps that without touching `phoxal::participant::api` (no
-/// `Option<T>: ParticipantConfig` blanket impl exists there yet):
-/// `#[serde(transparent)]` forwards (de)serialization straight to
-/// `Option<WebotsSupervisorConfig>`, so `null` -> `None` (default) and an
-/// object -> `Some(parsed fields)`, exactly the OLD model's semantics.
-#[derive(
-    Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config,
-)]
-#[serde(transparent)]
-struct WebotsSupervisorConfigSlot(Option<WebotsSupervisorConfig>);
-
 impl Default for WebotsSupervisorConfig {
     fn default() -> Self {
         Self {
@@ -94,7 +69,7 @@ struct Api {
     contact: Publisher<api::simulation::Contact>,
 }
 
-#[phoxal::simulator(id = "webots-supervisor", config = WebotsSupervisorConfigSlot)]
+#[phoxal::simulator(id = "webots-supervisor", config = Option<WebotsSupervisorConfig>)]
 struct WebotsSupervisorSimulator {
     running: bool,
     epoch: u64,
@@ -109,19 +84,14 @@ impl WebotsSupervisorSimulator {
     #[setup]
     async fn setup(
         ctx: &mut SetupContext<Self>,
-        config: WebotsSupervisorConfigSlot,
+        config: Option<WebotsSupervisorConfig>,
     ) -> Result<(Self, Self::Api)> {
-        let config = config.0.unwrap_or_default();
+        let config = config.unwrap_or_default();
         let cap = ctx.owner_capability();
 
         let clock = ctx
             .publisher(api::topic::internal::new(cap).simulation().clock())
             .await?;
-        // New-model `SetupContextApiExt::subscriber` takes the ring depth
-        // directly (no `.subscribe(topic).subscriber()` builder chain like
-        // the OLD `ParticipantSpec`-bound inherent method); `32` matches the
-        // OLD model's implicit `SubscribeOptions::default()` depth, so this
-        // is an unchanged-behavior port, not a new choice.
         let control = ctx
             .subscriber(api::topic::internal::new(cap).simulation().control(), 32)
             .await?;
@@ -467,7 +437,7 @@ fn yaw_from_axis_angle(rotation: [f64; 4]) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<WebotsSupervisorSimulator>()
+    phoxal::run::<WebotsSupervisorSimulator>()
 }
 
 #[cfg(test)]
@@ -580,33 +550,31 @@ mod tests {
         assert!(config.spawn.is_empty());
     }
 
-    // Covers the exact gotcha `WebotsSupervisorConfigSlot` exists for: the
-    // runner deserializes `Self::Config` from JSON `null` when
-    // `PHOXAL_CONFIG` is unset (see the type's doc comment).
+    // The runner deserializes `Self::Config` from JSON `null` when
+    // `PHOXAL_CONFIG` is unset (`ParticipantLaunch::config: Option<Value>` ->
+    // `None` -> `serde_json::from_value(Value::Null)`); `Option<T>: ParticipantConfig`
+    // (the blanket impl in `phoxal::participant::api`) is what makes that a
+    // clean `None` -> `unwrap_or_default()` instead of a deserialize error.
     #[test]
-    fn config_slot_treats_null_as_absent_and_defaults() {
-        let slot: WebotsSupervisorConfigSlot =
+    fn config_treats_null_as_absent_and_defaults() {
+        let config: Option<WebotsSupervisorConfig> =
             serde_json::from_value(serde_json::Value::Null).unwrap();
-        assert!(slot.0.is_none());
-        assert!(slot.0.unwrap_or_default().spawn.is_empty());
+        assert!(config.is_none());
+        assert!(config.unwrap_or_default().spawn.is_empty());
     }
 
     #[test]
-    fn config_slot_deserializes_an_object_as_present() {
-        let slot: WebotsSupervisorConfigSlot =
+    fn config_deserializes_an_object_as_present() {
+        let config: Option<WebotsSupervisorConfig> =
             serde_json::from_value(serde_json::json!({"require_native": false})).unwrap();
-        assert!(!slot.0.unwrap().require_native);
+        assert!(!config.unwrap().require_native);
     }
 
-    // The new authoring model's `ParticipantConfig::SCHEMA_JSON` is a fixed
-    // `"{}"` placeholder (real materialization is a deferred host-side
-    // `build.rs` slice - see `phoxal::participant::api`'s module docs), so
-    // the OLD model's `phoxal::participant::emit_apis_json`-routed schema
-    // assertion has no new-model equivalent to route through. This keeps the
-    // same coverage intent (the config type's schema actually describes the
-    // `spawn` field) by asserting directly against `schemars`'s own output
-    // for `WebotsSupervisorConfig`, which still derives
-    // `phoxal::schemars::JsonSchema` unchanged.
+    // `ParticipantConfig::SCHEMA_JSON` is a fixed `"{}"` placeholder (real
+    // materialization is a deferred host-side `build.rs` slice - see
+    // `phoxal::participant::api`'s module docs), so this asserts directly
+    // against `schemars`'s own output for `WebotsSupervisorConfig`, which
+    // still derives `phoxal::schemars::JsonSchema` unchanged.
     #[test]
     fn config_schema_includes_spawn_field() {
         let schema = phoxal::schemars::schema_for!(WebotsSupervisorConfig);

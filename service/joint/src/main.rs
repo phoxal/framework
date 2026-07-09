@@ -166,7 +166,7 @@ fn joint_state(
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Joint>()
+    phoxal::run::<Joint>()
 }
 
 #[cfg(test)]
@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_contracts() {
+    fn api_reports_contracts() {
         assert_eq!(<Joint as Participant>::ID, "joint");
 
         let contracts = <<Joint as Participant>::Api as ParticipantApi>::CONTRACTS;

@@ -26,19 +26,18 @@ fn local_launch(label: &str, participant_id: &str) -> ParticipantLaunch {
 
 static PANIC_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-panic", api = y2026_1)]
-struct ManagedPanic {}
+#[phoxal::service(id = "managed-panic", config = (), api = ())]
+struct ManagedPanic;
 
 #[phoxal::behavior]
 impl ManagedPanic {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed("panicking-task", async move {
             PANIC_TASK_STARTED.store(true, Ordering::Relaxed);
             panic!("managed task deliberately panics");
         });
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 
@@ -70,20 +69,19 @@ async fn managed_task_panic_faults_the_runtime() {
 
 static EARLY_RETURN_FAULT_TASK_RAN: AtomicBool = AtomicBool::new(false);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-early-return-fault", api = y2026_1)]
-struct ManagedEarlyReturnFault {}
+#[phoxal::service(id = "managed-early-return-fault", config = (), api = ())]
+struct ManagedEarlyReturnFault;
 
 #[phoxal::behavior]
 impl ManagedEarlyReturnFault {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed("early-return-task", async move {
             EARLY_RETURN_FAULT_TASK_RAN.store(true, Ordering::Relaxed);
             // Returns immediately: under the default FaultOnExit policy this is
             // just as unexpected as a panic.
         });
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 
@@ -112,18 +110,17 @@ async fn managed_task_early_return_faults_by_default() {
 static EARLY_RETURN_ALLOWED_TASK_RAN: AtomicBool = AtomicBool::new(false);
 static ALLOWED_RUNNER_STEPPED: AtomicU64 = AtomicU64::new(0);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-early-return-allowed", api = y2026_1)]
-struct ManagedEarlyReturnAllowed {}
+#[phoxal::service(id = "managed-early-return-allowed", config = (), api = ())]
+struct ManagedEarlyReturnAllowed;
 
 #[phoxal::behavior]
 impl ManagedEarlyReturnAllowed {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed_with("one-shot-init", ManagedTaskPolicy::AllowExit, async move {
             EARLY_RETURN_ALLOWED_TASK_RAN.store(true, Ordering::Relaxed);
         });
-        Ok(Self {})
+        Ok((Self, ()))
     }
 
     #[step(hz = 50)]
@@ -157,19 +154,18 @@ async fn managed_task_early_return_under_allow_exit_does_not_fault() {
 static ALLOWED_PANIC_TASK_RAN: AtomicBool = AtomicBool::new(false);
 static ALLOWED_PANIC_RUNNER_STEPPED: AtomicU64 = AtomicU64::new(0);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-panic-allowed", api = y2026_1)]
-struct ManagedPanicAllowed {}
+#[phoxal::service(id = "managed-panic-allowed", config = (), api = ())]
+struct ManagedPanicAllowed;
 
 #[phoxal::behavior]
 impl ManagedPanicAllowed {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed_with("allowed-panic", ManagedTaskPolicy::AllowExit, async move {
             ALLOWED_PANIC_TASK_RAN.store(true, Ordering::Relaxed);
             panic!("allowed managed task deliberately panics");
         });
-        Ok(Self {})
+        Ok((Self, ()))
     }
 
     #[step(hz = 50)]
@@ -202,14 +198,13 @@ async fn managed_task_panic_under_allow_exit_does_not_fault() {
 static COOPERATIVE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static COOPERATIVE_TASK_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-clean-shutdown", api = y2026_1)]
-struct ManagedCleanShutdown {}
+#[phoxal::service(id = "managed-clean-shutdown", config = (), api = ())]
+struct ManagedCleanShutdown;
 
 #[phoxal::behavior]
 impl ManagedCleanShutdown {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed("cooperative-loop", async move {
             COOPERATIVE_TASK_STARTED.store(true, Ordering::Relaxed);
             // Parks forever until the runner cancels it at shutdown; a
@@ -217,7 +212,7 @@ impl ManagedCleanShutdown {
             let _guard = SetFlagOnDrop(&COOPERATIVE_TASK_CANCELLED);
             std::future::pending::<()>().await;
         });
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 
@@ -256,14 +251,13 @@ async fn clean_shutdown_cancels_and_joins_managed_tasks() {
 static SETUP_FAILURE_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static SETUP_FAILURE_TASK_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-setup-failure", api = y2026_1)]
-struct ManagedSetupFailure {}
+#[phoxal::service(id = "managed-setup-failure", config = (), api = ())]
+struct ManagedSetupFailure;
 
 #[phoxal::behavior]
 impl ManagedSetupFailure {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed("setup-failure-loop", async move {
             SETUP_FAILURE_TASK_STARTED.store(true, Ordering::Relaxed);
             let _guard = SetFlagOnDrop(&SETUP_FAILURE_TASK_CANCELLED);
@@ -308,14 +302,13 @@ async fn setup_failure_cancels_spawned_managed_tasks() {
 static STUCK_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 static STUCK_TASK_FINISHED: AtomicBool = AtomicBool::new(false);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "managed-stuck-shutdown", api = y2026_1)]
-struct ManagedStuckShutdown {}
+#[phoxal::service(id = "managed-stuck-shutdown", config = (), api = ())]
+struct ManagedStuckShutdown;
 
 #[phoxal::behavior]
 impl ManagedStuckShutdown {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         ctx.spawn_managed("uncancellable-task", async move {
             STUCK_TASK_STARTED.store(true, Ordering::Relaxed);
             // Synchronous blocking work cannot observe Tokio task cancellation
@@ -330,7 +323,7 @@ impl ManagedStuckShutdown {
             tokio::task::yield_now().await;
         }
 
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 

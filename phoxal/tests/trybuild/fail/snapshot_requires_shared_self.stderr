@@ -1,7 +1,7 @@
 error: #[snapshot] takes `&self` and returns the committed state
-  --> tests/trybuild/fail/snapshot_requires_shared_self.rs:17:5
+  --> tests/trybuild/fail/snapshot_requires_shared_self.rs:19:5
    |
-17 |     fn snapshot(&mut self) -> State {
+19 |     fn snapshot(&mut self) -> State {
    |     ^^
 
 warning: unused import: `phoxal::prelude::*`

@@ -271,7 +271,7 @@ fn command_label(command: api::power::Command) -> &'static str {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Power>()
+    phoxal::run::<Power>()
 }
 
 #[cfg(test)]
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_contracts() {
+    fn api_reports_contracts() {
         assert_eq!(<Power as Participant>::ID, "power");
 
         let contracts = <<Power as Participant>::Api as ParticipantApi>::CONTRACTS;

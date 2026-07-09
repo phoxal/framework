@@ -1,28 +1,20 @@
-//! NEW-model `#[phoxal::behavior]` codegen: an impl whose `#[setup]` returns
-//! `Result<(Self, Self::Api)>` (see `crate::setup_shape`). Emits
+//! `#[phoxal::behavior]` codegen: reads the lifecycle/server helper attributes
+//! on a participant's inherent impl and emits
 //! `impl phoxal::participant::api::ParticipantLifecycle for Self`, threading
 //! `Self::Api` through `#[step]`/`#[shutdown]`/`#[server]` and giving
-//! `#[server_snapshot]` a read-only `Arc<Self::Api>` (D3). Structurally
-//! mirrors `runtime_impl.rs` (the OLD model's codegen), which this module
-//! never calls into or mutates - old participants are unaffected by this file
-//! existing.
+//! `#[server_snapshot]` a read-only `Arc<Self::Api>` (D3).
 //!
-//! Two OLD-model concepts are intentionally absent here:
+//! `#[setup]` returns `Result<(Self, Self::Api)>` - participant state and its
+//! bus-facing `Api` handles are two independent values threaded separately
+//! through every lifecycle callback rather than living on one struct, so the
+//! `Api` struct's fields alone are the full compatibility surface
+//! (`#[derive(phoxal::Api)]`, `phoxal::participant::api`'s module docs).
 //!
-//! - **No participant-level API version assertion.** The old model binds one
-//!   `#[phoxal(api = y2026_N)]` per participant and asserts every body is
-//!   `ContractBody<Api = R::Api>` (D60). The new model has no such ceiling -
-//!   "each `Api` field names its full version-qualified contract type, and
-//!   fields may reference different generations side by side" - so there is
-//!   nothing to assert here.
-//! - **No `#[server(topic = …)]` expression.** "`Api` declares the bus
-//!   contract, `behavior` implements runtime logic": a server handler's
-//!   `Req`/`Resp` types (from its own signature, exactly like the old model)
-//!   are the whole topic identity; `#[server(api = field)]`'s `field` names
-//!   the `Api` struct field being implemented, recorded for documentation but
-//!   not cross-checked against the `Api` struct's actual field type in this
-//!   slice (a proc-macro on the `impl` block cannot see the separate `Api`
-//!   struct definition it did not derive).
+//! `#[server(api = field)]`'s `field` names the `Api` struct field being
+//! implemented, recorded for documentation but not cross-checked against the
+//! `Api` struct's actual field type in this slice (a proc-macro on the `impl`
+//! block cannot see the separate `Api` struct definition it did not derive) -
+//! "`Api` declares the bus contract, `behavior` implements runtime logic".
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -35,7 +27,16 @@ use syn::{
 
 use crate::util::phoxal;
 
-pub fn expand(mut item_impl: ItemImpl) -> syn::Result<TokenStream> {
+pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    if !attr.is_empty() {
+        return Err(syn::Error::new_spanned(
+            attr,
+            "#[phoxal::behavior] takes no arguments; configure the participant on the struct via \
+             #[phoxal::service(...)], #[phoxal::driver(...)], #[phoxal::simulator(...)], or \
+             #[phoxal::tool(...)]",
+        ));
+    }
+    let mut item_impl: ItemImpl = syn::parse2(item)?;
     let self_ty = (*item_impl.self_ty).clone();
     let phoxal = phoxal();
 
@@ -179,16 +180,6 @@ pub fn expand(mut item_impl: ItemImpl) -> syn::Result<TokenStream> {
     .visit_item_impl_mut(&mut item_impl);
 
     Ok(quote! {
-        // Coexistence-dispatch guard: this impl was routed to the NEW-model
-        // codegen because `#[setup]` returns `Result<(Self, Self::Api)>`. If the
-        // struct was actually authored the OLD way, it does not implement
-        // `Participant`, and this fires with `AssertNewModel`'s targeted message
-        // rather than only a wall of downstream bound errors (see that trait).
-        const _: () = {
-            fn __phoxal_assert_new_model<T: #phoxal::participant::AssertNewModel>() {}
-            let _ = __phoxal_assert_new_model::<#self_ty>;
-        };
-
         #[doc(hidden)]
         #[allow(non_camel_case_types)]
         type #api_alias = <#self_ty as #phoxal::participant::Participant>::Api;
@@ -531,12 +522,10 @@ fn encode_reply() -> TokenStream {
     }
 }
 
-/// Mirrors `runtime_impl::tool_forbidden_guards`: one `const _: () = { ... };`
-/// per `#[step]`/`#[server]`/`#[server_snapshot]` found, asserting the impl
-/// type has the `TypedGraphSurface` marker (emitted by
-/// `#[phoxal::service|driver|simulator]`, not `#[phoxal::tool]`), so a
-/// `Tool` gets a compile error span-targeted at the offending attribute -
-/// same marker trait as the old model, reused as-is.
+/// One `const _: () = { ... };` per `#[step]`/`#[server]`/`#[server_snapshot]`
+/// found, asserting the impl type has the `TypedGraphSurface` marker (emitted
+/// by `#[phoxal::service|driver|simulator]`, not `#[phoxal::tool]`), so a
+/// tool gets a compile error span-targeted at the offending attribute.
 fn tool_forbidden_guards(self_ty: &Type, forbidden: &[(Span, &'static str)]) -> TokenStream {
     let guards = forbidden.iter().map(|(span, _attribute)| {
         quote_spanned! {*span=>
@@ -958,10 +947,9 @@ fn require_result_return(output: &ReturnType, what: &str) -> syn::Result<Type> {
 }
 
 /// Like [`require_result_return`], but requires the inner type to be a
-/// 2-tuple (the new `Result<(Self, Self::Api)>` shape) - `setup_shape`
-/// already peeked this to dispatch here, so this just re-validates with a
-/// precise error message and extracts nothing further (the tuple elements
-/// are not separately named; `Self`/`Self::Api` are fixed by the trait).
+/// 2-tuple (`Result<(Self, Self::Api)>`, `#[setup]`'s required return shape);
+/// the tuple elements are not separately named - `Self`/`Self::Api` are fixed
+/// by the trait.
 fn require_tuple_result_return(output: &ReturnType) -> syn::Result<()> {
     let ty = match output {
         ReturnType::Type(_, ty) => ty.as_ref(),

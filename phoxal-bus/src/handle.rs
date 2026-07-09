@@ -358,10 +358,10 @@ impl<B: ContractBody> Latest<B> {
 /// it. That is a correctness question for whoever holds the clones, not a
 /// memory-safety one.
 ///
-/// This matters for the new-model `Api` struct (a `Subscriber` field is
+/// This matters for the `Api` struct (a `Subscriber` field is
 /// cloned when the runner makes the `Arc<Self::Api>` snapshot it hands to
 /// concurrent `#[server_snapshot]` handlers - see
-/// `phoxal::participant::runner_v2`): a `#[server_snapshot]` handler must
+/// `phoxal::participant::runner`): a `#[server_snapshot]` handler must
 /// **read committed `Snapshot` state, never `recv` a `Subscriber`**, or it
 /// would steal samples from the `#[step]`/exclusive-server side that owns the
 /// subscription. Prefer [`Latest`] whenever a value needs to be read from more

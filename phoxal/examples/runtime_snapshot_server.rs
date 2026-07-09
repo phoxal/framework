@@ -1,7 +1,6 @@
 //! A scheduled participant with committed snapshots and a concurrent read-only query.
 //!
-//! Run with `cargo run --example runtime_snapshot_server` or inspect metadata
-//! with `cargo run --example runtime_snapshot_server emit-apis`.
+//! Run with `cargo run --example runtime_snapshot_server`.
 
 use std::sync::Arc;
 
@@ -40,11 +39,19 @@ struct MapSnapshot {
     grid: Arc<Grid>,
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "snapshot-map", api = y2026_1)]
-struct SnapshotMap {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
     localize: Latest<api::localize::LocalizationState>,
     revision: Publisher<api::map::Revision>,
+    get_asset: Server<api::asset::GetRequest, api::asset::GetResponse>,
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
+}
+
+#[phoxal::service(id = "snapshot-map")]
+struct SnapshotMap {
     grid: Arc<Grid>,
     rev: u64,
 }
@@ -52,32 +59,35 @@ struct SnapshotMap {
 #[phoxal::behavior]
 impl SnapshotMap {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability the owner
         // (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            localize: ctx
-                .subscribe(api::topic::new().localize().state())
-                .latest()
-                .await?,
-            // This participant owns the map node's telemetry + queries it serves below,
-            // so they go through the owner (`internal`) builder; `localize/state` is
-            // consumed via the public builder.
-            revision: ctx
-                .publisher(api::topic::internal::new(cap).map().revision())
-                .await?,
-            grid: Arc::new(Grid::empty()),
-            rev: 0,
-        })
+        Ok((
+            Self {
+                grid: Arc::new(Grid::empty()),
+                rev: 0,
+            },
+            Self::Api {
+                localize: ctx.latest(api::topic::new().localize().state()).await?,
+                // This participant owns the map node's telemetry + queries it
+                // serves below, so they go through the owner (`internal`)
+                // builder; `localize/state` is consumed via the public builder.
+                revision: ctx
+                    .publisher(api::topic::internal::new(cap).map().revision())
+                    .await?,
+                get_asset: ctx.server(api::topic::new().asset().get()).await?,
+                submap: ctx.server(api::topic::new().map().submap()).await?,
+            },
+        ))
     }
 
     #[step(hz = 2)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        if self.localize.latest().is_some() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        if api.localize.latest().is_some() {
             self.rev = self.rev.saturating_add(1);
         }
-        self.revision
+        api.revision
             .publish_at(
                 step.time(),
                 api::map::Revision {
@@ -89,9 +99,10 @@ impl SnapshotMap {
         Ok(())
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(api = get_asset)]
     async fn get_asset(
         &mut self,
+        _api: &mut Self::Api,
         request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
         self.rev = self.rev.saturating_add(1);
@@ -104,9 +115,10 @@ impl SnapshotMap {
         }
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(api = submap)]
     async fn submap(
         state: Snapshot<MapSnapshot>,
+        _api: &Self::Api,
         _request: api::map::SubmapRequest,
     ) -> ServerResult<api::map::SubmapResponse> {
         Ok(state.grid.response())

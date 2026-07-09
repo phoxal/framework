@@ -1,49 +1,21 @@
 error[E0277]: the trait bound `NotABody: ContractBody` is not satisfied
- --> tests/trybuild/fail/non_contract_body_handle.rs:9:23
-  |
-9 |     target: Publisher<NotABody>,
-  |                       ^^^^^^^^ unsatisfied trait bound
-  |
+  --> tests/trybuild/fail/non_contract_body_handle.rs:11:23
+   |
+11 |     target: Publisher<NotABody>,
+   |                       ^^^^^^^^ unsatisfied trait bound
+   |
 help: the trait `ContractBody` is not implemented for `NotABody`
- --> tests/trybuild/fail/non_contract_body_handle.rs:4:1
-  |
-4 | struct NotABody;
-  | ^^^^^^^^^^^^^^^
-  = help: the following other types implement trait `ContractBody`:
-            Clock
-            Contact
-            Control
-            Detections
-            EmergencyStopRequest
-            Event
-            Frontiers
-            GetRequest
-          and $N others
-
-error[E0277]: the trait bound `NotABody: ContractBody` is not satisfied
- --> tests/trybuild/fail/non_contract_body_handle.rs:9:23
-  |
-9 |     target: Publisher<NotABody>,
-  |                       ^^^^^^^^ unsatisfied trait bound
-  |
-help: the trait `ContractBody` is not implemented for `NotABody`
- --> tests/trybuild/fail/non_contract_body_handle.rs:4:1
-  |
-4 | struct NotABody;
-  | ^^^^^^^^^^^^^^^
-  = help: the following other types implement trait `ContractBody`:
-            Clock
-            Contact
-            Control
-            Detections
-            EmergencyStopRequest
-            Event
-            Frontiers
-            GetRequest
-          and $N others
-note: required by a bound in `assert`
- --> tests/trybuild/fail/non_contract_body_handle.rs:6:10
-  |
-6 | #[derive(phoxal::Service)]
-  |          ^^^^^^^^^^^^^^^ required by this bound in `assert`
-  = note: this error originates in the derive macro `phoxal::Service` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> tests/trybuild/fail/non_contract_body_handle.rs:4:1
+   |
+ 4 | struct NotABody;
+   | ^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `ContractBody`:
+             phoxal_api::y2026_1::asset::GetRequest
+             phoxal_api::y2026_1::asset::GetResponse
+             phoxal_api::y2026_1::battery::State
+             phoxal_api::y2026_1::bus::uplink::State
+             phoxal_api::y2026_1::component::accelerometer::Sample
+             phoxal_api::y2026_1::component::camera::Frame
+             phoxal_api::y2026_1::component::depth::Frame
+             phoxal_api::y2026_1::component::emergency_stop::State
+           and $N others

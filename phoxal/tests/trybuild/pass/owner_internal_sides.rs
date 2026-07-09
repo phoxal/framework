@@ -11,52 +11,61 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "drive-owner", api = y2026_1)]
-struct Owner {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct OwnerApi {
     target: Subscriber<api::drive::Target>,
     state: Publisher<api::drive::State>,
 }
 
+#[phoxal::service(id = "drive-owner", api = OwnerApi)]
+struct Owner;
+
 #[phoxal::behavior]
 impl Owner {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability the owner
         // (`internal`) builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            // Owner side: `command` -> Subscribe, `state` -> Publish.
-            target: ctx
-                .subscribe(api::topic::internal::new(cap).drive().target())
-                .subscriber()
-                .await?,
-            state: ctx
-                .publisher(api::topic::internal::new(cap).drive().state())
-                .await?,
-        })
+        Ok((
+            Self,
+            Self::Api {
+                // Owner side: `command` -> Subscribe, `state` -> Publish.
+                target: ctx
+                    .subscriber(api::topic::internal::new(cap).drive().target(), 32)
+                    .await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).drive().state())
+                    .await?,
+            },
+        ))
     }
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "drive-client", api = y2026_1)]
-struct Client {
+#[derive(phoxal::Api)]
+struct ClientApi {
     target: Publisher<api::drive::Target>,
     state: Latest<api::drive::State>,
 }
 
+#[phoxal::service(id = "drive-client", api = ClientApi)]
+struct Client;
+
 #[phoxal::behavior]
 impl Client {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            // Client side: `command` -> Publish, `state` -> Subscribe.
-            target: ctx.publisher(api::topic::new().drive().target()).await?,
-            state: ctx
-                .subscribe(api::topic::new().drive().state())
-                .latest()
-                .await?,
-        })
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                // Client side: `command` -> Publish, `state` -> Subscribe.
+                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                state: ctx.latest(api::topic::new().drive().state()).await?,
+            },
+        ))
     }
 }
 

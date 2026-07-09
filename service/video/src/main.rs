@@ -300,7 +300,7 @@ fn validate_requested_dimensions(
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Video>()
+    phoxal::run::<Video>()
 }
 
 #[cfg(test)]
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_video_contracts() {
+    fn api_reports_video_contracts() {
         assert_eq!(<Video as Participant>::ID, "video");
 
         let contracts = <<Video as Participant>::Api as ParticipantApi>::CONTRACTS;

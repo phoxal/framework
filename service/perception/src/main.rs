@@ -220,7 +220,7 @@ impl Perception {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Perception>()
+    phoxal::run::<Perception>()
 }
 
 #[cfg(test)]
@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_perception_contracts() {
+    fn api_reports_perception_contracts() {
         assert_eq!(<Perception as Participant>::ID, "perception");
 
         let contracts = <<Perception as Participant>::Api as ParticipantApi>::CONTRACTS;

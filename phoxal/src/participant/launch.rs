@@ -104,11 +104,11 @@ impl ParticipantLaunch {
     pub(crate) fn from_cli(
         default_participant_id: &'static str,
         default_robot_id: &'static str,
-    ) -> crate::Result<LaunchAction> {
+    ) -> crate::Result<ParticipantLaunch> {
         let matches =
             LaunchCli::command_for(default_participant_id, default_robot_id).get_matches();
         let cli = LaunchCli::from_arg_matches(&matches)?;
-        cli.into_action(default_participant_id, default_robot_id)
+        cli.into_launch(default_participant_id, default_robot_id)
     }
 
     /// Set the robot model root for this launch.
@@ -124,19 +124,12 @@ impl ParticipantLaunch {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum LaunchAction {
-    Run(ParticipantLaunch),
-    EmitApis,
-}
-
 /// The clap-derived launch contract for participant binaries.
 #[derive(Debug, clap::Parser)]
 #[command(
     name = "phoxal-participant",
     about = "Run a Phoxal participant.",
-    long_about = None,
-    disable_help_subcommand = true
+    long_about = None
 )]
 struct LaunchCli {
     /// Bus-unique participant id. Defaults to the compiled participant artifact id.
@@ -207,9 +200,6 @@ struct LaunchCli {
         default_value_t = ClockMode::Real
     )]
     clock: ClockMode,
-
-    #[command(subcommand)]
-    command: Option<LaunchCommand>,
 }
 
 impl LaunchCli {
@@ -224,15 +214,11 @@ impl LaunchCli {
             .mut_arg("robot_id", |arg| arg.default_value(default_robot_id))
     }
 
-    fn into_action(
+    fn into_launch(
         self,
         default_participant_id: &'static str,
         default_robot_id: &'static str,
-    ) -> crate::Result<LaunchAction> {
-        if self.command == Some(LaunchCommand::EmitApis) {
-            return Ok(LaunchAction::EmitApis);
-        }
-
+    ) -> crate::Result<ParticipantLaunch> {
         let participant_id =
             nonempty_or(self.participant_id, || default_participant_id.to_string());
         let robot_id = nonempty_or(self.robot_id, || default_robot_id.to_string());
@@ -256,7 +242,7 @@ impl LaunchCli {
             );
         }
         launch.clock = self.clock;
-        Ok(LaunchAction::Run(launch))
+        Ok(launch)
     }
 }
 
@@ -264,13 +250,6 @@ fn nonempty_or(value: Option<String>, default: impl FnOnce() -> String) -> Strin
     value
         .filter(|value| !value.is_empty())
         .unwrap_or_else(default)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::Subcommand)]
-enum LaunchCommand {
-    /// Print the participant metadata JSON and exit.
-    #[command(name = "emit-apis")]
-    EmitApis,
 }
 
 /// A resolved bus profile: where to connect. Empty endpoints = in-process.
@@ -320,21 +299,19 @@ mod tests {
         }
     }
 
-    fn parse_from(args: &[&str]) -> crate::Result<LaunchAction> {
+    fn parse_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
         let matches = LaunchCli::command_for("default-id", "robot")
             .try_get_matches_from(args)
             .map_err(anyhow::Error::from)?;
         let cli = LaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        cli.into_action("default-id", "robot")
+        cli.into_launch("default-id", "robot")
     }
 
     #[test]
     #[serial]
     fn cli_with_nothing_set_matches_local_defaults() {
         clear_env();
-        let LaunchAction::Run(launch) = parse_from(&["participant-bin"]).unwrap() else {
-            panic!("default launch should run");
-        };
+        let launch = parse_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "default-id");
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
@@ -359,9 +336,7 @@ mod tests {
             std::env::set_var(env::CONFIG, r#"{"rate_hz":10}"#);
             std::env::set_var(env::CLOCK, "simulation");
         }
-        let LaunchAction::Run(launch) = parse_from(&["participant-bin"]).unwrap() else {
-            panic!("env launch should run");
-        };
+        let launch = parse_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "tof-3");
         assert_eq!(launch.robot_id, "robot-a");
         assert_eq!(launch.namespace, "lab");
@@ -398,7 +373,7 @@ mod tests {
             std::env::set_var(env::CLOCK, "simulation");
         }
 
-        let LaunchAction::Run(launch) = parse_from(&[
+        let launch = parse_from(&[
             "participant-bin",
             "--participant-id",
             "flag-participant",
@@ -417,9 +392,7 @@ mod tests {
             "--clock",
             "real",
         ])
-        .unwrap() else {
-            panic!("flag launch should run");
-        };
+        .unwrap();
 
         assert_eq!(launch.participant_id, "flag-participant");
         assert_eq!(launch.robot_id, "flag-robot");
@@ -455,16 +428,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn emit_apis_is_a_documented_subcommand() {
-        clear_env();
-        assert_eq!(
-            parse_from(&["participant-bin", "emit-apis"]).unwrap(),
-            LaunchAction::EmitApis
-        );
-    }
-
-    #[test]
-    #[serial]
     fn help_lists_contract_env_names_without_values() {
         clear_env();
         // SAFETY: serialized test; see clear_env.
@@ -489,8 +452,6 @@ mod tests {
             assert!(help.contains(flag), "help should list {flag}");
             assert!(help.contains(env_name), "help should list {env_name}");
         }
-        assert!(help.contains("emit-apis"));
-        assert!(!help.contains("help       Print"));
         assert!(!help.contains("do-not-print"));
         clear_env();
     }

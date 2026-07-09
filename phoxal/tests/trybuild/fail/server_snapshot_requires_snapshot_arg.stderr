@@ -1,19 +1,5 @@
 error: #[server_snapshot] first argument must be `state: Snapshot<State>`
-  --> tests/trybuild/fail/server_snapshot_requires_snapshot_arg.rs:19:17
+  --> tests/trybuild/fail/server_snapshot_requires_snapshot_arg.rs:31:17
    |
-19 |         _state: MapState,
+31 |         _state: MapState,
    |                 ^^^^^^^^
-
-warning: unused import: `phoxal_api::y2026_1 as api`
- --> tests/trybuild/fail/server_snapshot_requires_snapshot_arg.rs:1:5
-  |
-1 | use phoxal_api::y2026_1 as api;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused import: `phoxal::prelude::*`
- --> tests/trybuild/fail/server_snapshot_requires_snapshot_arg.rs:2:5
-  |
-2 | use phoxal::prelude::*;
-  |     ^^^^^^^^^^^^^^^^^^

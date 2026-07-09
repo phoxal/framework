@@ -1,19 +1,5 @@
 error: #[server] must be `async`
-  --> tests/trybuild/fail/server_requires_async.rs:16:5
+  --> tests/trybuild/fail/server_requires_async.rs:28:5
    |
-16 |     fn get(&mut self, _request: api::asset::GetRequest) -> ServerResult<api::asset::GetResponse> {
+28 |     fn get(
    |     ^^
-
-warning: unused import: `phoxal_api::y2026_1 as api`
- --> tests/trybuild/fail/server_requires_async.rs:1:5
-  |
-1 | use phoxal_api::y2026_1 as api;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused import: `phoxal::prelude::*`
- --> tests/trybuild/fail/server_requires_async.rs:2:5
-  |
-2 | use phoxal::prelude::*;
-  |     ^^^^^^^^^^^^^^^^^^

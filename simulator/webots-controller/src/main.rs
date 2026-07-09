@@ -44,25 +44,6 @@ struct WebotsControllerConfig {
     require_native: bool,
 }
 
-/// `Self::Config` for [`WebotsControllerSimulator`] below.
-///
-/// See `WebotsSupervisorConfigSlot` in `simulator/webots-supervisor/src/main.rs`
-/// (the sibling artifact this crate was split from) for the full rationale:
-/// the runner deserializes `Self::Config` from JSON `null` when
-/// `PHOXAL_CONFIG` is unset, a plain struct rejects a bare `null` even with
-/// every field `#[serde(default)]`, and `impl ParticipantConfig for
-/// Option<WebotsControllerConfig>` is orphan-rule-illegal from this crate
-/// (`ParticipantConfig` and `Option` are both foreign here). This
-/// crate-local, non-generic newtype - `#[serde(transparent)]` forwarding
-/// straight to `Option<WebotsControllerConfig>` - sidesteps that without
-/// touching `phoxal::participant::api`, matching the OLD model's
-/// `config = Option<WebotsControllerConfig>` semantics exactly.
-#[derive(
-    Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config,
-)]
-#[serde(transparent)]
-struct WebotsControllerConfigSlot(Option<WebotsControllerConfig>);
-
 impl Default for WebotsControllerConfig {
     fn default() -> Self {
         Self {
@@ -88,7 +69,7 @@ struct Api {
     gnss: Vec<Publisher<api::component::gnss::Sample>>,
 }
 
-#[phoxal::simulator(id = "webots-controller", config = WebotsControllerConfigSlot)]
+#[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
 struct WebotsControllerSimulator {
     step_index: u64,
     time_ns: u64,
@@ -102,19 +83,14 @@ impl WebotsControllerSimulator {
     #[setup]
     async fn setup(
         ctx: &mut SetupContext<Self>,
-        config: WebotsControllerConfigSlot,
+        config: Option<WebotsControllerConfig>,
     ) -> Result<(Self, Self::Api)> {
-        let config = config.0.unwrap_or_default();
+        let config = config.unwrap_or_default();
         let cap = ctx.owner_capability();
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
 
-        // New-model `SetupContextApiExt::subscriber` takes the ring depth
-        // directly (no `.subscribe(topic).subscriber()` builder chain like
-        // the OLD `ParticipantSpec`-bound inherent method); `32` matches the
-        // OLD model's implicit `SubscribeOptions::default()` depth, so this
-        // is an unchanged-behavior port, not a new choice.
         let mut motor_commands = Vec::new();
         for spec in &catalog.motors {
             motor_commands.push(
@@ -885,7 +861,7 @@ fn none_vec<T>(len: usize) -> Vec<Option<T>> {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<WebotsControllerSimulator>()
+    phoxal::run::<WebotsControllerSimulator>()
 }
 
 #[cfg(test)]
@@ -966,21 +942,23 @@ mod tests {
         );
     }
 
-    // Covers the exact gotcha `WebotsControllerConfigSlot` exists for: the
-    // runner deserializes `Self::Config` from JSON `null` when
-    // `PHOXAL_CONFIG` is unset (see the type's doc comment).
+    // The runner deserializes `Self::Config` from JSON `null` when
+    // `PHOXAL_CONFIG` is unset (`ParticipantLaunch::config: Option<Value>` ->
+    // `None` -> `serde_json::from_value(Value::Null)`); `Option<T>: ParticipantConfig`
+    // (the blanket impl in `phoxal::participant::api`) is what makes that a
+    // clean `None` -> `unwrap_or_default()` instead of a deserialize error.
     #[test]
-    fn config_slot_treats_null_as_absent_and_defaults() {
-        let slot: WebotsControllerConfigSlot =
+    fn config_treats_null_as_absent_and_defaults() {
+        let config: Option<WebotsControllerConfig> =
             serde_json::from_value(serde_json::Value::Null).unwrap();
-        assert!(slot.0.is_none());
-        assert!(slot.0.unwrap_or_default().require_native);
+        assert!(config.is_none());
+        assert!(config.unwrap_or_default().require_native);
     }
 
     #[test]
-    fn config_slot_deserializes_an_object_as_present() {
-        let slot: WebotsControllerConfigSlot =
+    fn config_deserializes_an_object_as_present() {
+        let config: Option<WebotsControllerConfig> =
             serde_json::from_value(serde_json::json!({"require_native": false})).unwrap();
-        assert!(!slot.0.unwrap().require_native);
+        assert!(!config.unwrap().require_native);
     }
 }

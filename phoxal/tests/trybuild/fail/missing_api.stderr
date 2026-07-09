@@ -1,5 +1,0 @@
-error: #[derive(phoxal::Service)] requires #[phoxal(api = y2026_N)] (D60): it selects the one API version this participant runs against
- --> tests/trybuild/fail/missing_api.rs:7:8
-  |
-7 | struct NoApi {
-  |        ^^^^^

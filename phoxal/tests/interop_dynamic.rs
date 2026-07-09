@@ -25,36 +25,41 @@ const INSTANCE: &str = "wheel-0";
 const CAPABILITY: &str = "encoder";
 const SAMPLE_VELOCITY_RADPS: f32 = 2.5;
 
-/// Publishes an `EncoderSample` on a dynamic per-component key every step.
-#[derive(phoxal::Service)]
-#[phoxal(id = "encoder-producer", api = y2026_1)]
-struct EncoderProducer {
+#[derive(phoxal::Api)]
+struct EncoderProducerApi {
     encoder: Publisher<api::component::encoder::Sample>,
 }
+
+/// Publishes an `EncoderSample` on a dynamic per-component key every step.
+#[phoxal::service(id = "encoder-producer", config = (), api = EncoderProducerApi)]
+struct EncoderProducer;
 
 #[phoxal::behavior]
 impl EncoderProducer {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
-        Ok(Self {
-            // The producer is the OWNER of the encoder sample (the encoder driver),
-            // so it publishes the `state` topic through the owner (`internal`)
-            // builder.
-            encoder: ctx
-                .publisher(
-                    api::topic::internal::new(cap)
-                        .component(INSTANCE)
-                        .encoder(CAPABILITY)
-                        .sample(),
-                )
-                .await?,
-        })
+        Ok((
+            Self,
+            Self::Api {
+                // The producer is the OWNER of the encoder sample (the encoder
+                // driver), so it publishes the `state` topic through the owner
+                // (`internal`) builder.
+                encoder: ctx
+                    .publisher(
+                        api::topic::internal::new(cap)
+                            .component(INSTANCE)
+                            .encoder(CAPABILITY)
+                            .sample(),
+                    )
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        self.encoder
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        api.encoder
             .publish_at(
                 step.time(),
                 api::component::encoder::Sample {
@@ -67,33 +72,38 @@ impl EncoderProducer {
     }
 }
 
-/// Subscribes the *same* dynamic per-component key and records what it receives.
-#[derive(phoxal::Service)]
-#[phoxal(id = "encoder-consumer", api = y2026_1)]
-struct EncoderConsumer {
+#[derive(phoxal::Api)]
+struct EncoderConsumerApi {
     encoder: Subscriber<api::component::encoder::Sample>,
 }
+
+/// Subscribes the *same* dynamic per-component key and records what it receives.
+#[phoxal::service(id = "encoder-consumer", config = (), api = EncoderConsumerApi)]
+struct EncoderConsumer;
 
 #[phoxal::behavior]
 impl EncoderConsumer {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            encoder: ctx
-                .subscribe(
-                    api::topic::new()
-                        .component(INSTANCE)
-                        .encoder(CAPABILITY)
-                        .sample(),
-                )
-                .subscriber()
-                .await?,
-        })
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                encoder: ctx
+                    .subscriber(
+                        api::topic::new()
+                            .component(INSTANCE)
+                            .encoder(CAPABILITY)
+                            .sample(),
+                        32,
+                    )
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, _step: StepContext) -> Result<()> {
-        while let Some(received) = self.encoder.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
+        while let Some(received) = api.encoder.try_recv() {
             RECEIVED.fetch_add(1, Ordering::Relaxed);
             LAST_VELOCITY_BITS.store(received.body.velocity_radps.to_bits(), Ordering::Relaxed);
         }

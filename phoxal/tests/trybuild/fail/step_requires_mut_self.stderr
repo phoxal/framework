@@ -1,7 +1,7 @@
 error: #[step] takes `&mut self` (the scheduled control loop - D34)
-  --> tests/trybuild/fail/step_requires_mut_self.rs:16:5
+  --> tests/trybuild/fail/step_requires_mut_self.rs:18:5
    |
-16 |     async fn step(_step: StepContext) -> Result<()> {
+18 |     async fn step(_step: StepContext) -> Result<()> {
    |     ^^^^^
 
 warning: unused import: `phoxal::prelude::*`

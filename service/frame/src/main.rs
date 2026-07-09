@@ -195,7 +195,7 @@ impl Frame {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Frame>()
+    phoxal::run::<Frame>()
 }
 
 #[cfg(test)]
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_contracts() {
+    fn api_reports_contracts() {
         assert_eq!(<Frame as Participant>::ID, "frame");
 
         let contracts = <<Frame as Participant>::Api as ParticipantApi>::CONTRACTS;

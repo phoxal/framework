@@ -159,7 +159,7 @@ fn mark_free(grid: &mut Grid, x_m: f64, y_m: f64) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Map>()
+    phoxal::run::<Map>()
 }
 
 #[cfg(test)]

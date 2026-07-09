@@ -132,7 +132,7 @@ fn drive_target_from(target: api::motion::Target) -> api::drive::Target {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Motion>()
+    phoxal::run::<Motion>()
 }
 
 #[cfg(test)]
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_motion_contracts() {
+    fn api_reports_motion_contracts() {
         assert_eq!(<Motion as Participant>::ID, "motion");
 
         let contracts = <<Motion as Participant>::Api as ParticipantApi>::CONTRACTS;

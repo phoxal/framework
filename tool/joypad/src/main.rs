@@ -1,4 +1,3 @@
-use anyhow::Result;
 use gilrs::{Axis, EventType, GamepadId, Gilrs};
 use phoxal::prelude::*;
 use phoxal::raw::Publisher;
@@ -8,28 +7,28 @@ const LINEAR_SCALE_MPS: f64 = 0.6;
 const ANGULAR_SCALE_RADPS: f64 = 1.5;
 const AXIS_DEADZONE: f32 = 0.08;
 
-// Plan #15: `Tool` is a thin raw-bus runner - no `#[step]`. The 50 Hz poll loop
+// Plan #15: a tool is a thin raw-bus runner - no `#[step]`. The 50 Hz poll loop
 // this tool needs runs as a managed task registered from `#[setup]`, so the
 // runner can cancel, join, and fault it if it exits unexpectedly.
 const POLL_HZ: f64 = 50.0;
 
-#[derive(phoxal::Tool)]
-#[phoxal(
-    id = "joypad",
-    api = y2026_1,
-    contracts(publishes(api::motion::ManualCommand))
-)]
-struct ToolJoypad {}
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+// Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
+// just `ctx.raw_bus()` and the raw handle constructors.
+#[phoxal::tool(id = "joypad")]
+struct ToolJoypad;
 
 #[phoxal::behavior]
 impl ToolJoypad {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let publisher = Publisher::new(ctx.raw_bus(), &api::topic::new().motion().manual())?;
         ctx.spawn_managed_with("joypad-poll", ManagedTaskPolicy::FaultOnExit, async move {
             poll_gamepad(publisher).await
         });
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 

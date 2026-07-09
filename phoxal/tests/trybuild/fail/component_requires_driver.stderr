@@ -1,10 +1,10 @@
 error[E0599]: the method `component` exists for mutable reference `&mut phoxal::participant::SetupContext<ComponentRequiresDriver>`, but its trait bounds were not satisfied
-  --> tests/trybuild/fail/component_requires_driver.rs:18:30
+  --> tests/trybuild/fail/component_requires_driver.rs:23:30
    |
- 9 | struct ComponentRequiresDriver {
-   | ------------------------------ doesn't satisfy `ComponentRequiresDriver: Participant`, `_: IsDriver` or `_: IsSimulator`
+17 | struct ComponentRequiresDriver;
+   | ------------------------------ doesn't satisfy `_: IsDriver` or `_: IsSimulator`
 ...
-18 |         let _component = ctx.component()?;
+23 |         let _component = ctx.component()?;
    |                              ^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
    |
   ::: src/participant/context.rs
@@ -14,15 +14,10 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
    |
    = note: the following trait bounds were not satisfied:
            `ComponentRequiresDriver: phoxal::participant::IsDriver`
-           `ComponentRequiresDriver: Participant`
            which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextDriverExt`
-           `ComponentRequiresDriver: phoxal::participant::IsDriver`
-           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextDriverExt`
-           `ComponentRequiresDriver: Participant`
-           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextSimulatorExt`
            `ComponentRequiresDriver: phoxal::participant::IsSimulator`
            which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextSimulatorExt`
-note: the traits `Participant`, `phoxal::participant::IsDriver`,  and `phoxal::participant::IsSimulator` must be implemented
+note: the traits `phoxal::participant::IsDriver` and `phoxal::participant::IsSimulator` must be implemented
   --> src/participant/spec.rs
    |
    | pub trait IsDriver {}
@@ -30,8 +25,3 @@ note: the traits `Participant`, `phoxal::participant::IsDriver`,  and `phoxal::p
 ...
    | pub trait IsSimulator {}
    | ^^^^^^^^^^^^^^^^^^^^^
-   |
-  ::: src/participant/api.rs
-   |
-   | pub trait Participant: Sized + Send + 'static {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -1,18 +1,12 @@
-//! The NEW participant authoring model: `#[derive(phoxal::Api)]`,
+//! The participant authoring model: `#[derive(phoxal::Api)]`,
 //! `#[derive(phoxal::Config)]`, and the `#[phoxal::service]` /
 //! `#[phoxal::driver]` / `#[phoxal::simulator]` / `#[phoxal::tool]` attribute
 //! macros. These target `phoxal::participant::api`'s trait hierarchy
-//! (`ParticipantApi` / `ParticipantConfig` / `Participant`), a DISTINCT set
-//! of traits from the OLD `runtime_derive`/`runtime_impl` modules' targets
-//! (`ParticipantSpec` / `ParticipantBehavior`) - see that module's docs for
-//! why (`type Api` name collision). Old and new coexist unmodified during the
-//! migration window; nothing in this file touches `runtime_derive.rs` /
-//! `runtime_impl.rs`.
+//! (`ParticipantApi` / `ParticipantConfig` / `Participant`).
 //!
-//! `#[phoxal::behavior]` itself stays a single entry point
-//! (`crate::runtime_impl::expand`) that dispatches to this model's codegen
-//! (`crate::behavior_v2`) based on the `#[setup]` method's return shape - see
-//! `crate::setup_shape`.
+//! `#[phoxal::behavior]` (`crate::behavior::expand`) is the paired impl-level
+//! macro that reads the lifecycle/server helper attributes and emits the
+//! `ParticipantLifecycle` impl the runner drives.
 
 use heck::{ToKebabCase, ToShoutySnakeCase};
 use proc_macro2::TokenStream;
@@ -29,12 +23,9 @@ use crate::util::phoxal;
 // shared: canonical-syntactic-form field classification (Publish/Subscribe/Serve)
 // ---------------------------------------------------------------------------
 
-/// A handle field's declared role(s), mirroring `runtime_derive::Decl` but
-/// extended with `Serve` (the new `Server<Req, Resp>` field kind, which has
-/// no old-model equivalent). Kept as an independent copy rather than a shared
-/// type so old-model codegen (`runtime_derive.rs`) never needs to change
-/// shape to accommodate the new `Serve` variant.
-#[allow(clippy::large_enum_variant)] // transient macro-internal AST holder (mirrors runtime_derive::Decl)
+/// A handle field's declared role(s): `Publisher<T>`/`Subscriber<T>`/
+/// `Latest<T>`/`Server<Req, Resp>`/`Querier<Req, Resp>`.
+#[allow(clippy::large_enum_variant)] // transient macro-internal AST holder
 enum ApiDecl {
     Publish(Type),
     Subscribe(Type),
@@ -42,8 +33,7 @@ enum ApiDecl {
     Ask { req: Type, resp: Type },
 }
 
-/// Recognize an `Api` struct field by canonical syntactic form (mirrors
-/// `runtime_derive::classify_handle`, plus `Server<Req, Resp>` => `Serve`).
+/// Recognize an `Api` struct field by canonical syntactic form.
 /// `Vec`/`BTreeMap`/`HashMap` of a handle carry the inner handle's
 /// declaration. Returns `None` for an unrecognized (ignored) field.
 fn classify_api_field(ty: &Type) -> Option<Vec<ApiDecl>> {
@@ -136,7 +126,7 @@ fn link_section_attrs() -> TokenStream {
 /// `Api` handle struct: one `ApiContractUse` per recognized field (role +
 /// `<Body as ContractBody>::TOPIC`, resolved by `rustc` from the emitted
 /// `quote!`d expression - the proc-macro itself never evaluates it as a
-/// string, matching how the old model's `FIELD_CONTRACTS` works today), plus
+/// string), plus
 /// a `#[used]` linker-section static recording each field's role and its
 /// version-qualified body type **as written** (`y2026_1::drive::Target`) -
 /// the doc's own definition of the compatibility surface, and the only piece
@@ -164,9 +154,7 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     // entry) rather than a per-field multiset. The linker-section JSON is
     // deduplicated on the same key (its `field` is the first field that used
     // that contract in that role; the field name is incidental provenance, not
-    // part of the identity). This matches the old model's
-    // `runtime_derive.rs` FIELD_CONTRACTS/`Declares*` dedup on a normalized
-    // type key.
+    // part of the identity).
     let mut seen = std::collections::BTreeSet::<String>::new();
     let mut contract_entries = Vec::new();
     let mut manifest_entries: Vec<String> = Vec::new();
@@ -423,10 +411,9 @@ impl ParticipantArgs {
 }
 
 /// Link a participant state struct to its `Config`/`Api` types and record its
-/// identity (the NEW model's counterpart to `#[derive(phoxal::Service)]` /
-/// `Driver` / `Tool` / `Simulator`, which scanned the participant struct
-/// itself for handle fields - this attribute never does that: the struct is
-/// private runtime state only, per the target model).
+/// identity. The participant struct itself is never scanned for handle
+/// fields - it is private runtime state only; the bus-facing contract surface
+/// lives entirely on the companion `Api` struct (`#[derive(phoxal::Api)]`).
 pub fn expand_participant(
     attr: TokenStream,
     item: TokenStream,

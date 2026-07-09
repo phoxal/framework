@@ -1,31 +1,38 @@
 //! A participant using the advanced async entrypoint.
 //!
-//! Run with `cargo run --example runtime_async_entrypoint` or inspect metadata
-//! with `cargo run --example runtime_async_entrypoint emit-apis`.
+//! Run with `cargo run --example runtime_async_entrypoint`.
 
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "async-heartbeat", api = y2026_1)]
-struct AsyncHeartbeat {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
     heartbeat: Publisher<api::presence::Heartbeat>,
 }
+
+#[phoxal::service(id = "async-heartbeat")]
+struct AsyncHeartbeat;
 
 #[phoxal::behavior]
 impl AsyncHeartbeat {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            heartbeat: ctx
-                .publisher(api::topic::new().presence().heartbeat())
-                .await?,
-        })
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                heartbeat: ctx
+                    .publisher(api::topic::new().presence().heartbeat())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 1)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        self.heartbeat
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        api.heartbeat
             .publish_at(
                 step.time(),
                 api::presence::Heartbeat {

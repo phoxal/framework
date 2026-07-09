@@ -1,15 +1,17 @@
 // #[step] must return `Result<()>` (a malformed return shape is rejected).
 use phoxal::prelude::*;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "step-bad-return", api = y2026_1)]
-struct StepBadReturn {}
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[phoxal::service(id = "step-bad-return", api = ())]
+struct StepBadReturn;
 
 #[phoxal::behavior]
 impl StepBadReturn {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {})
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((Self, ()))
     }
 
     #[step(hz = 10)]

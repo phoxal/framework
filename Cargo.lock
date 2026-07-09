@@ -2507,10 +2507,10 @@ dependencies = [
 name = "phoxal-tool-joypad"
 version = "0.1.6"
 dependencies = [
- "anyhow",
  "gilrs",
  "phoxal",
  "phoxal-api",
+ "serde",
  "tokio",
  "tracing",
 ]

@@ -318,7 +318,7 @@ fn normalize_angle(angle_rad: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Follow>()
+    phoxal::run::<Follow>()
 }
 
 #[cfg(test)]

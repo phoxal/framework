@@ -2,7 +2,7 @@
 //!
 //! `#[derive(phoxal::Api)]` embeds one JSON manifest per participant binary in
 //! a dedicated linker section - `__DATA,__phoxal_meta` on Mach-O, `.phoxal_api_meta`
-//! everywhere else (`phoxal-macros/src/authoring_v2.rs`'s `link_section_attrs`).
+//! everywhere else (`phoxal-macros/src/authoring.rs`'s `link_section_attrs`).
 //! `xtask` no longer runs `emit-apis` (that runtime subcommand is being retired
 //! separately, see the Cleanup slice) to learn a participant's contract
 //! surface: it reads the section's bytes straight out of the object file,
@@ -24,7 +24,7 @@ use object::{Object, ObjectSection};
 use serde::Deserialize;
 
 /// The linker section names `#[derive(phoxal::Api)]` places its metadata
-/// static under, tried in order (`phoxal-macros/src/authoring_v2.rs::link_section_attrs`).
+/// static under, tried in order (`phoxal-macros/src/authoring.rs::link_section_attrs`).
 /// `object`'s generic [`Object::section_by_name`] matches on the section name
 /// alone (Mach-O segment qualification is not part of the match), so no
 /// per-format branching is needed here - the two candidate names are simply
@@ -67,7 +67,7 @@ pub(crate) struct ParticipantMeta {
 /// name in [`SECTION_NAMES`] in turn. `Ok(None)` means the object file parsed
 /// fine but carries no such section at all - the expected, valid shape for a
 /// participant whose `Api` is `()` (privileged tools default to this; see
-/// `phoxal-macros/src/authoring_v2.rs::ParticipantKind::default_api`), which
+/// `phoxal-macros/src/authoring.rs::ParticipantKind::default_api`), which
 /// never derives `#[derive(phoxal::Api)]` and so never emits the linker
 /// section in the first place. A malformed/unrecognized *object file* is still
 /// a hard error. `describe` names the source (a file path, or a
@@ -162,7 +162,7 @@ mod tests {
     }
 
     /// A privileged tool defaults to `Api = ()` (`ParticipantKind::default_api`
-    /// in `phoxal-macros/src/authoring_v2.rs`), so it never derives
+    /// in `phoxal-macros/src/authoring.rs`), so it never derives
     /// `#[derive(phoxal::Api)]` and its binary carries no metadata section at
     /// all - a valid, expected shape (zero contracts), not an extraction
     /// error. Proven end-to-end against the real `phoxal-tool-joypad` binary.

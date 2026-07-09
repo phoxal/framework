@@ -160,7 +160,7 @@ fn valid_localization(localize: &api::localize::LocalizationState) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Explore>()
+    phoxal::run::<Explore>()
 }
 
 #[cfg(test)]
@@ -239,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_explore_contracts() {
+    fn api_reports_explore_contracts() {
         assert_eq!(<Explore as Participant>::ID, "explore");
 
         let contracts = <<Explore as Participant>::Api as ParticipantApi>::CONTRACTS;

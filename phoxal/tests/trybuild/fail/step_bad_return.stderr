@@ -1,10 +1,10 @@
 error: #[step] must return `Result<()>`
- --> tests/trybuild/fail/step_bad_return.rs:8:1
-  |
-8 | #[phoxal::behavior]
-  | ^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `phoxal::behavior` (in Nightly builds, run with -Z macro-backtrace for more info)
+  --> tests/trybuild/fail/step_bad_return.rs:10:1
+   |
+10 | #[phoxal::behavior]
+   | ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `phoxal::behavior` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 warning: unused import: `phoxal::prelude::*`
  --> tests/trybuild/fail/step_bad_return.rs:2:5

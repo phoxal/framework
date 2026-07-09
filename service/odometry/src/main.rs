@@ -283,7 +283,7 @@ fn normalize_yaw(yaw_rad: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Odometry>()
+    phoxal::run::<Odometry>()
 }
 
 #[cfg(test)]
@@ -377,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_contracts() {
+    fn api_reports_contracts() {
         assert_eq!(<Odometry as Participant>::ID, "odometry");
 
         let contracts = <<Odometry as Participant>::Api as ParticipantApi>::CONTRACTS;

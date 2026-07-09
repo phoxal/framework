@@ -6,12 +6,19 @@
 use std::sync::Arc;
 
 use crate::bus::{Codec, ContractBody, MessagePack, QueryCode};
-use crate::participant::ParticipantBehavior;
+use crate::participant::ParticipantLifecycle;
 use crate::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "asset-test", api = y2026_1)]
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct AssetTestApi {
+    get: Server<api::asset::GetRequest, api::asset::GetResponse>,
+}
+
+#[phoxal::service(id = "asset-test", api = AssetTestApi)]
 struct AssetTest {
     present: bool,
 }
@@ -19,13 +26,22 @@ struct AssetTest {
 #[phoxal::behavior]
 impl AssetTest {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self { present: true })
+    async fn setup(
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self { present: true },
+            Self::Api {
+                get: ctx.server(api::topic::new().asset().get()).await?,
+            },
+        ))
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(api = get)]
     async fn get(
         &mut self,
+        _api: &mut Self::Api,
         request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
         if self.present && request.path == "ok" {
@@ -41,6 +57,7 @@ impl AssetTest {
 #[tokio::test]
 async fn exclusive_server_dispatch_ok_error_and_unknown() {
     let mut rt = AssetTest { present: true };
+    let mut api = AssetTestApi { get: Server::new() };
 
     // The declared topic shows up in the metadata, generation-qualified (D1).
     assert_eq!(
@@ -61,7 +78,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let reply = rt
-        .__serve_exclusive("y2026_1/asset/get", &request)
+        .__serve_exclusive(&mut api, "y2026_1/asset/get", &request)
         .await
         .unwrap();
     let response: api::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
@@ -72,7 +89,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let failure = rt
-        .__serve_exclusive("y2026_1/asset/get", &request)
+        .__serve_exclusive(&mut api, "y2026_1/asset/get", &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::NotFound);
@@ -81,62 +98,50 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     // correctness now comes from the key (D1), so there is no separate
     // schema/family mismatch to test.
     let failure = rt
-        .__serve_exclusive("y2026_1/other/topic", &request)
+        .__serve_exclusive(&mut api, "y2026_1/other/topic", &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::Unimplemented);
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "bad-topic-test", api = y2026_1)]
-struct BadTopicTest {}
-
-#[phoxal::behavior]
-impl BadTopicTest {
-    #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {})
-    }
-
-    #[server(topic = phoxal::bus::Topic::<phoxal::bus::AskQuery<api::asset::GetRequest, api::asset::GetResponse>>::new_static("y2026_1/asset/other"))]
-    async fn get(
-        &mut self,
-        _request: api::asset::GetRequest,
-    ) -> ServerResult<api::asset::GetResponse> {
-        Ok(api::asset::GetResponse::Missing)
-    }
+#[derive(phoxal::Api)]
+struct DuplicateServerTopicTestApi {
+    get_one: Server<api::asset::GetRequest, api::asset::GetResponse>,
+    get_two: Server<api::asset::GetRequest, api::asset::GetResponse>,
 }
 
-#[test]
-fn explicit_server_topic_key_must_match_request_body_topic() {
-    let err = BadTopicTest::__validate_server_topics().unwrap_err();
-    assert!(err.contains("does not match request body topic"));
-    assert!(err.contains("y2026_1/asset/other"));
-    assert!(err.contains("y2026_1/asset/get"));
-}
-
-#[derive(phoxal::Service)]
-#[phoxal(id = "duplicate-server-topic-test", api = y2026_1)]
+#[phoxal::service(id = "duplicate-server-topic-test", api = DuplicateServerTopicTestApi)]
 struct DuplicateServerTopicTest {}
 
 #[phoxal::behavior]
 impl DuplicateServerTopicTest {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {})
+    async fn setup(
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self {},
+            Self::Api {
+                get_one: ctx.server(api::topic::new().asset().get()).await?,
+                get_two: ctx.server(api::topic::new().asset().get()).await?,
+            },
+        ))
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(api = get_one)]
     async fn get_one(
         &mut self,
+        _api: &mut Self::Api,
         _request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
         Ok(api::asset::GetResponse::Missing)
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(api = get_two)]
     async fn get_two(
         &mut self,
+        _api: &mut Self::Api,
         _request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
         Ok(api::asset::GetResponse::Missing)
@@ -150,8 +155,12 @@ fn duplicate_server_topics_are_rejected_before_startup() {
     assert!(err.contains("y2026_1/asset/get"));
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "map-test", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct MapTestApi {
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
+}
+
+#[phoxal::service(id = "map-test", api = MapTestApi)]
 struct MapTest {
     grid: Arc<Vec<u8>>,
 }
@@ -163,15 +172,24 @@ struct MapTestState {
 #[phoxal::behavior]
 impl MapTest {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            grid: Arc::new(vec![0; 4]),
-        })
+    async fn setup(
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self {
+                grid: Arc::new(vec![0; 4]),
+            },
+            Self::Api {
+                submap: ctx.server(api::topic::new().map().submap()).await?,
+            },
+        ))
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(api = submap)]
     async fn submap(
         state: Snapshot<MapTestState>,
+        _api: &Self::Api,
         _request: api::map::SubmapRequest,
     ) -> ServerResult<api::map::SubmapResponse> {
         Ok(api::map::SubmapResponse {
@@ -195,6 +213,9 @@ async fn snapshot_server_dispatch_reads_committed_state() {
     let rt = MapTest {
         grid: Arc::new(vec![1, 2, 3, 4]),
     };
+    let api = Arc::new(MapTestApi {
+        submap: Server::new(),
+    });
     assert!(MapTest::HAS_SNAPSHOT);
     assert_eq!(MapTest::__snapshot_server_topics(), &["y2026_1/map/submap"]);
 
@@ -207,7 +228,7 @@ async fn snapshot_server_dispatch_reads_committed_state() {
     })
     .unwrap();
 
-    let reply = MapTest::__serve_snapshot(snapshot, "y2026_1/map/submap".to_string(), request)
+    let reply = MapTest::__serve_snapshot(snapshot, api, "y2026_1/map/submap".to_string(), request)
         .await
         .unwrap();
     let response: api::map::SubmapResponse = MessagePack::decode(&reply.payload).unwrap();

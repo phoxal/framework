@@ -8,27 +8,31 @@
 // state. The owner side is reachable only through the deliberate, greppable
 // `api::topic::internal::new()...` builder, whose `state` leaf is `Publish`.
 //
-// This struct declares the publish handle, so `R: DeclaresPublish<drive::State>`
-// is satisfied and the SOLE remaining error is the side-brand mismatch on the
-// public accessor - exactly the L1 guarantee.
+// The SOLE error is the side-brand mismatch on the public accessor - exactly the
+// L1 guarantee.
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "public-publish-state", api = y2026_1)]
-struct PublicPublishState {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
     state: Publisher<api::drive::State>,
 }
+
+#[phoxal::service(id = "public-publish-state")]
+struct PublicPublishState;
 
 #[phoxal::behavior]
 impl PublicPublishState {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // ERROR: the public (client) `state` leaf is `Topic<Subscribe<drive::State>>`,
         // but `publisher` takes `Topic<Publish<B>>`. Publishing a `state` requires
         // the owner builder: `api::topic::internal::new().drive().state()`.
         let state = ctx.publisher(api::topic::new().drive().state()).await?;
-        Ok(Self { state })
+        Ok((Self, Self::Api { state }))
     }
 }
 

@@ -117,7 +117,7 @@ fn gnss_sample() -> api::component::gnss::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<ZedF9p>()
+    phoxal::run::<ZedF9p>()
 }
 
 #[cfg(test)]
@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_per_component_contracts() {
+    fn api_reports_per_component_contracts() {
         assert_eq!(<ZedF9p as Participant>::ID, "zed_f9p");
 
         let contracts = <<ZedF9p as Participant>::Api as ParticipantApi>::CONTRACTS;

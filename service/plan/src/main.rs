@@ -199,7 +199,7 @@ fn valid_map_revision(map_revision: &api::map::Revision) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Plan>()
+    phoxal::run::<Plan>()
 }
 
 #[cfg(test)]
@@ -368,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_plan_contracts() {
+    fn api_reports_plan_contracts() {
         assert_eq!(<Plan as Participant>::ID, "plan");
 
         let contracts = <<Plan as Participant>::Api as ParticipantApi>::CONTRACTS;

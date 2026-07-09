@@ -152,7 +152,7 @@ impl Safety {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Safety>()
+    phoxal::run::<Safety>()
 }
 
 #[cfg(test)]
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_y2026_1_safety_contracts() {
+    fn api_reports_y2026_1_safety_contracts() {
         assert_eq!(<Safety as Participant>::ID, "safety");
 
         let contracts = <<Safety as Participant>::Api as ParticipantApi>::CONTRACTS;

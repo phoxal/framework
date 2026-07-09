@@ -2,19 +2,27 @@
 use phoxal_api::y2026_1 as api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "dup-step", api = y2026_1)]
-struct DupStep {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
     target: Publisher<api::drive::Target>,
 }
+
+#[phoxal::service(id = "dup-step")]
+struct DupStep;
 
 #[phoxal::behavior]
 impl DupStep {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            target: ctx.publisher(api::topic::new().drive().target()).await?,
-        })
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                target: ctx.publisher(api::topic::new().drive().target()).await?,
+            },
+        ))
     }
 
     #[step(hz = 10)]

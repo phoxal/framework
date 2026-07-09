@@ -3,18 +3,30 @@ use phoxal::prelude::*;
 
 struct MapState;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "snapshot-bad-signature", api = y2026_1)]
-struct SnapshotBadSignature {}
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
+}
+
+#[phoxal::service(id = "snapshot-bad-signature")]
+struct SnapshotBadSignature;
 
 #[phoxal::behavior]
 impl SnapshotBadSignature {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {})
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                submap: ctx.server(api::topic::new().map().submap()).await?,
+            },
+        ))
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(api = submap)]
     async fn submap(
         &self,
         _request: api::map::SubmapRequest,

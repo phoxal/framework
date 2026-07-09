@@ -1,33 +1,34 @@
 error[E0433]: cannot find `BusConfig` in `bus`
-  --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:14:36
+  --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:16:36
    |
-14 |         let _config = phoxal::bus::BusConfig::in_process("dev", "robot");
+16 |         let _config = phoxal::bus::BusConfig::in_process("dev", "robot");
    |                                    ^^^^^^^^^ could not find `BusConfig` in `bus`
 
 error[E0433]: cannot find `Bus` in `bus`
-  --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:15:34
+  --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:17:34
    |
-15 |         let _open = phoxal::bus::Bus::open;
+17 |         let _open = phoxal::bus::Bus::open;
    |                                  ^^^ could not find `Bus` in `bus`
 
 error[E0425]: cannot find value `run_with_bus` in module `phoxal::participant`
-  --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:16:50
+  --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:18:50
    |
-16 |           let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
+18 |           let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
    |                                                    ^^^^^^^^^^^^
    |
-  ::: src/participant/runner_v2.rs
+  ::: src/participant/runner.rs
    |
-   | / pub async fn run_with_bus_v2<R, C, S>(
-   | |     bus: &Bus,
+   | / pub async fn run_with<R, C, S>(
    | |     launch: ParticipantLaunch,
    | |     clock: C,
+   | |     shutdown: S,
 ...  |
    | |     C: ClockSource,
    | |     S: Future<Output = ()>,
-   | |___________________________- similarly named function `run_with_bus_v2` defined here
+   | |___________________________- similarly named function `run_with` defined here
    |
 help: a function with a similar name exists
    |
-16 |         let _run_with_bus = phoxal::participant::run_with_bus_v2::<DefaultRawBusOpen, _, _>;
-   |                                                              +++
+18 -         let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
+18 +         let _run_with_bus = phoxal::participant::run_with::<DefaultRawBusOpen, _, _>;
+   |

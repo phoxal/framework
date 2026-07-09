@@ -92,7 +92,7 @@ fn current_for(ratio: f64, draw_current_a: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Battery>()
+    phoxal::run::<Battery>()
 }
 
 #[cfg(test)]

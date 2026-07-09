@@ -211,7 +211,7 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Bno085>()
+    phoxal::run::<Bno085>()
 }
 
 #[cfg(test)]
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_per_component_contracts() {
+    fn api_reports_per_component_contracts() {
         assert_eq!(<Bno085 as Participant>::ID, "bno085");
 
         let contracts = <<Bno085 as Participant>::Api as ParticipantApi>::CONTRACTS;

@@ -1,4 +1,3 @@
-use anyhow::Result;
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, LogicalTime, OwnerCap, Publisher};
 use phoxal_api::y2026_1 as api;
@@ -9,7 +8,9 @@ const DEFAULT_RETRY_MAX_MS: u64 = 30_000;
 const SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC: &str = "serial_listen_transport_unavailable";
 
 /// Launch-time router configuration carried in `PHOXAL_CONFIG`.
-#[derive(Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config,
+)]
 #[serde(deny_unknown_fields)]
 struct RouterConfig {
     /// Additional listen endpoints merged by the launch plan from `bus.listen`.
@@ -75,8 +76,9 @@ fn default_retry_max_ms() -> u64 {
     DEFAULT_RETRY_MAX_MS
 }
 
-#[derive(phoxal::Tool)]
-#[phoxal(id = "router", api = y2026_1, config = RouterConfig)]
+// Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
+// just `ctx.raw_bus()` and the raw handle constructors.
+#[phoxal::tool(id = "router", config = RouterConfig)]
 struct ToolRouter {
     router: zenoh::Session,
 }
@@ -84,7 +86,10 @@ struct ToolRouter {
 #[phoxal::behavior]
 impl ToolRouter {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>, config: RouterConfig) -> Result<Self> {
+    async fn setup(
+        ctx: &mut SetupContext<Self>,
+        config: RouterConfig,
+    ) -> Result<(Self, Self::Api)> {
         let zenoh_config = zenoh_router_config(&config)?;
         let router = zenoh::open(zenoh_config)
             .await
@@ -109,11 +114,11 @@ impl ToolRouter {
             "router ready"
         );
 
-        Ok(Self { router })
+        Ok((Self { router }, ()))
     }
 
     #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(&mut self, _api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
         if let Err(error) = self.router.close().await {
             tracing::warn!(target: "tool_router", error = %error, "router close failed");
         }

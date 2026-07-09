@@ -128,7 +128,7 @@ fn integrate(position_rad: f64, velocity_radps: f32, dt_s: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Ddsm115>()
+    phoxal::run::<Ddsm115>()
 }
 
 #[cfg(test)]
@@ -161,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_per_component_contracts() {
+    fn api_reports_per_component_contracts() {
         assert_eq!(<Ddsm115 as Participant>::ID, "ddsm115");
 
         let contracts = <<Ddsm115 as Participant>::Api as ParticipantApi>::CONTRACTS;

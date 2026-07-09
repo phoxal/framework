@@ -21,25 +21,30 @@ static LAST_LINEAR_BITS: AtomicU32 = AtomicU32::new(0);
 
 const TARGET_LINEAR_MPS: f32 = 0.5;
 
-/// Publishes a fixed `drive/target` every step.
-#[derive(phoxal::Service)]
-#[phoxal(id = "producer", api = y2026_1)]
-struct Producer {
+#[derive(phoxal::Api)]
+struct ProducerApi {
     target: Publisher<api::drive::Target>,
 }
+
+/// Publishes a fixed `drive/target` every step.
+#[phoxal::service(id = "producer", config = (), api = ProducerApi)]
+struct Producer;
 
 #[phoxal::behavior]
 impl Producer {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            target: ctx.publisher(api::topic::new().drive().target()).await?,
-        })
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                target: ctx.publisher(api::topic::new().drive().target()).await?,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        self.target
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        api.target
             .publish_at(
                 step.time(),
                 api::drive::Target {
@@ -53,32 +58,36 @@ impl Producer {
     }
 }
 
+#[derive(phoxal::Api)]
+struct ConsumerApi {
+    target: Subscriber<api::drive::Target>,
+}
+
 /// Subscribes `drive/target` and records what it receives into shared statics so
 /// the test can assert delivery after both runtimes have shut down. It plays the
 /// OWNER/reader of the `drive/target` command (the side that subscribes a command),
 /// so it acquires the topic through the owner (`internal`) builder.
-#[derive(phoxal::Service)]
-#[phoxal(id = "consumer", api = y2026_1)]
-struct Consumer {
-    target: Subscriber<api::drive::Target>,
-}
+#[phoxal::service(id = "consumer", config = (), api = ConsumerApi)]
+struct Consumer;
 
 #[phoxal::behavior]
 impl Consumer {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
-        Ok(Self {
-            target: ctx
-                .subscribe(api::topic::internal::new(cap).drive().target())
-                .subscriber()
-                .await?,
-        })
+        Ok((
+            Self,
+            Self::Api {
+                target: ctx
+                    .subscriber(api::topic::internal::new(cap).drive().target(), 32)
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, _step: StepContext) -> Result<()> {
-        while let Some(received) = self.target.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
+        while let Some(received) = api.target.try_recv() {
             RECEIVED.fetch_add(1, Ordering::Relaxed);
             LAST_LINEAR_BITS.store(received.body.linear_x_mps.to_bits(), Ordering::Relaxed);
         }

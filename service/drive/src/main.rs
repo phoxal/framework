@@ -296,7 +296,7 @@ fn clamp_f32(value: f32, limit: f64) -> f32 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Drive>()
+    phoxal::run::<Drive>()
 }
 
 #[cfg(test)]

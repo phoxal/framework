@@ -3,16 +3,21 @@ use phoxal::prelude::*;
 
 struct NotABody;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "not-a-body", api = y2026_1)]
-struct NotBodyRuntime {
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
     target: Publisher<NotABody>,
 }
+
+#[phoxal::service(id = "not-a-body")]
+struct NotBodyRuntime;
 
 #[phoxal::behavior]
 impl NotBodyRuntime {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         unimplemented!()
     }
 }

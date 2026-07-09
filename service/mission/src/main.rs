@@ -148,7 +148,7 @@ impl Mission {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Mission>()
+    phoxal::run::<Mission>()
 }
 
 #[cfg(test)]
@@ -240,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_mission_lifecycle_contracts() {
+    fn api_reports_mission_lifecycle_contracts() {
         assert_eq!(<Mission as Participant>::ID, "mission");
 
         let contracts = <<Mission as Participant>::Api as ParticipantApi>::CONTRACTS;

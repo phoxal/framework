@@ -11,19 +11,18 @@ use serial_test::serial;
 
 static SEEN: OnceLock<(String, String)> = OnceLock::new();
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "reads-robot", api = y2026_1)]
-struct ReadsRobot {}
+#[phoxal::service(id = "reads-robot", config = (), api = ())]
+struct ReadsRobot;
 
 #[phoxal::behavior]
 impl ReadsRobot {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // An official-style participant reads its typed state from the robot model.
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let _ = SEEN.set((robot.manifest.robot.id.clone(), root.display().to_string()));
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 

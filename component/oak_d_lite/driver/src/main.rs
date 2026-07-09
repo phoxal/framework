@@ -393,7 +393,7 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<OakDLite>()
+    phoxal::run::<OakDLite>()
 }
 
 #[cfg(test)]
@@ -429,7 +429,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_per_component_contracts() {
+    fn api_reports_per_component_contracts() {
         assert_eq!(<OakDLite as Participant>::ID, "oak_d_lite");
 
         let contracts = <<OakDLite as Participant>::Api as ParticipantApi>::CONTRACTS;

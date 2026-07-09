@@ -4,20 +4,33 @@ use phoxal::prelude::*;
 
 struct MapState;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "map-pass", api = y2026_1)]
-struct MapPass {}
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[derive(phoxal::Api)]
+struct Api {
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
+}
+
+#[phoxal::service(id = "map-pass")]
+struct MapPass;
 
 #[phoxal::behavior]
 impl MapPass {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {})
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                submap: ctx.server(api::topic::new().map().submap()).await?,
+            },
+        ))
     }
 
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    #[server_snapshot(api = submap)]
     async fn submap(
         _state: Snapshot<MapState>,
+        _api: &Self::Api,
         _request: api::map::SubmapRequest,
     ) -> ServerResult<api::map::SubmapResponse> {
         Ok(api::map::SubmapResponse {

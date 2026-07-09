@@ -1,16 +1,16 @@
-error[E0277]: `ToolForbidsServer` is a `Tool`, which is a thin raw-bus runner and has no typed-graph surface
-  --> tests/trybuild/fail/tool_forbids_server.rs:17:5
+error[E0277]: `ToolForbidsServer` is a tool, which is a thin raw-bus runner and has no typed-graph surface
+  --> tests/trybuild/fail/tool_forbids_server.rs:29:5
    |
-17 |     #[server(topic = api::topic::new().asset().get())]
+29 |     #[server(api = get)]
    |     ^ `#[step]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead
    |
 help: the trait `TypedGraphSurface` is not implemented for `ToolForbidsServer`
-  --> tests/trybuild/fail/tool_forbids_server.rs:8:1
+  --> tests/trybuild/fail/tool_forbids_server.rs:15:1
    |
- 8 | struct ToolForbidsServer {}
+15 | struct ToolForbidsServer;
    | ^^^^^^^^^^^^^^^^^^^^^^^^
 note: required by a bound in `_assert_typed_graph_surface`
-  --> tests/trybuild/fail/tool_forbids_server.rs:17:5
+  --> tests/trybuild/fail/tool_forbids_server.rs:29:5
    |
-17 |     #[server(topic = api::topic::new().asset().get())]
+29 |     #[server(api = get)]
    |     ^ required by this bound in `_assert_typed_graph_surface`

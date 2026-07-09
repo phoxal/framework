@@ -131,7 +131,7 @@ fn range_sample(spec: &RangeSpec) -> api::component::range::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run_v2::<Vl53l1x>()
+    phoxal::run::<Vl53l1x>()
 }
 
 #[cfg(test)]
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_per_component_contracts() {
+    fn api_reports_per_component_contracts() {
         assert_eq!(<Vl53l1x as Participant>::ID, "vl53l1x");
 
         let contracts = <<Vl53l1x as Participant>::Api as ParticipantApi>::CONTRACTS;

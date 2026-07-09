@@ -3,18 +3,20 @@
 // `phoxal::raw`.
 use phoxal::prelude::*;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "default-raw-bus-open", api = y2026_1)]
-struct DefaultRawBusOpen {}
+#[derive(serde::Deserialize, phoxal::Config)]
+struct Config {}
+
+#[phoxal::service(id = "default-raw-bus-open", api = ())]
+struct DefaultRawBusOpen;
 
 #[phoxal::behavior]
 impl DefaultRawBusOpen {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let _config = phoxal::bus::BusConfig::in_process("dev", "robot");
         let _open = phoxal::bus::Bus::open;
         let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
-        Ok(Self {})
+        Ok((Self, ()))
     }
 }
 

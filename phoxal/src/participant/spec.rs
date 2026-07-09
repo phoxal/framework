@@ -1,163 +1,37 @@
-//! The static metadata traits the macros target (D50/D59/D60).
+//! Static metadata markers the macros target (D50/D59/D60).
 //!
-//! - [`ParticipantSpec`] is emitted by `#[derive(phoxal::Service)]`,
-//!   `#[derive(phoxal::Driver)]`, `#[derive(phoxal::Tool)]`, or
-//!   `#[derive(phoxal::Simulator)]`: the artifact kind/class, id, the one API
-//!   version, the config type, and the field-side contracts.
-//! - [`ParticipantBehavior`] is emitted by `#[phoxal::behavior]`: the server-side
-//!   contracts plus the lifecycle dispatch (`__setup`/`__step`/`__shutdown`) the
-//!   runner drives.
-//! - [`DeclaresPublish`]/[`DeclaresSubscribe`]/[`DeclaresQuery`] are per-participant
-//!   markers (also emitted by the derive) that make `SetupContext` builders reject
-//!   undeclared contract families/directions at compile time (D44).
-//! - [`TypedGraphSurface`] is emitted by checked participant derives and gates
-//!   `#[step]` / `#[server]` / `#[server_snapshot]` away from thin `Tool`
-//!   runners.
-//!
-//! The full required-contract set is the union of [`ParticipantSpec::FIELD_CONTRACTS`]
-//! and [`ParticipantBehavior::SERVER_CONTRACTS`]; `emit-apis` builds that union at
-//! when `emit-apis` runs (see [`participant_metadata`](crate::participant::emit::participant_metadata)),
-//! so there is no concatenated const slice.
+//! - [`TypedGraphSurface`] is emitted by `#[phoxal::service|driver|simulator]`
+//!   and gates `#[step]` / `#[server]` / `#[server_snapshot]` away from thin
+//!   `#[phoxal::tool]` runners.
+//! - [`IsDriver`]/[`IsSimulator`]/[`IsTool`] are emitted by the matching
+//!   attribute macro and gate the kind-specific `SetupContext` accessors
+//!   (`component()`, `raw_bus()`) in `participant::api`.
+//! - [`StepSchedule`]/[`MissedTick`] describe a `#[step(hz = …)]` loop's cadence
+//!   and overrun policy; the runner ([`participant::runner`](super::runner))
+//!   reads them from
+//!   [`ParticipantLifecycle::__step_schedule`](super::api::ParticipantLifecycle::__step_schedule).
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
-use schemars::JsonSchema;
-use serde::Serialize;
-
-use crate::bus::ApiVersion;
-use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
-use crate::participant::server::ServerOutcome;
-
-/// One contract a participant participates in: the generation-qualified wire
-/// key (`<Body as ContractBody>::TOPIC`, D1). Built by the macros from a body
-/// type's [`ContractBody`](crate::bus::ContractBody) const so it is
-/// single-sourced from the api tree. Compatibility is judged by name identity
-/// alone - two participants naming the same generation-qualified contract
-/// interoperate by construction; which direction a participant happens to use
-/// is not part of that judgment, so it is not carried here.
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct ContractUse {
-    /// The generation-qualified wire key (`<Body as ContractBody>::TOPIC`).
-    pub topic: &'static str,
-}
-
-/// Static metadata derived from a participant struct.
-pub trait ParticipantSpec: Sized + Send + 'static {
-    /// The authoring kind that produced this artifact.
-    const KIND: &'static str;
-    /// Whether normal graph topology applies to this participant.
-    const PARTICIPANT_CLASS: &'static str;
-    /// The participant id (`#[phoxal(id = "…")]`, default kebab of the type name).
-    const ID: &'static str;
-    /// The one API version this participant runs against. The graph may mix
-    /// generations: compatibility is per-contract name identity, realized on the
-    /// wire by the generation-qualified key (D1) - there is no `schema_id`.
-    type Api: ApiVersion;
-    /// `<Self::Api as ApiVersion>::ID`, for metadata.
-    const API_VERSION: &'static str;
-    /// The participant's typed config (`()` for official participants that read the
-    /// robot model directly).
-    type Config: serde::de::DeserializeOwned + JsonSchema + Send + 'static;
-    /// The contracts derived from the struct's handle fields.
-    const FIELD_CONTRACTS: &'static [ContractUse];
-}
-
-/// Marker emitted only by checked participant derives that expose the typed graph
+/// Marker emitted only by checked participant macros that expose the typed graph
 /// surface (`#[step]` / `#[server]` / `#[server_snapshot]`).
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` is a `Tool`, which is a thin raw-bus runner and has no typed-graph surface",
+    message = "`{Self}` is a tool, which is a thin raw-bus runner and has no typed-graph surface",
     label = "`#[step]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead"
 )]
 pub trait TypedGraphSurface {}
 
-/// Marker emitted only by `#[derive(phoxal::Driver)]`.
+/// Marker emitted only by `#[phoxal::driver]`.
 #[doc(hidden)]
 pub trait IsDriver {}
 
-/// Marker emitted only by `#[derive(phoxal::Tool)]`.
+/// Marker emitted only by `#[phoxal::tool]`.
 #[doc(hidden)]
 pub trait IsTool {}
 
-/// Marker emitted only by `#[derive(phoxal::Simulator)]`.
+/// Marker emitted only by `#[phoxal::simulator]`.
 #[doc(hidden)]
 pub trait IsSimulator {}
-
-/// Lifecycle dispatch + server-side metadata (`#[phoxal::behavior]`).
-///
-/// The async methods are awaited by the runner in its own task (no `Send` bound
-/// is required because the participant future is not spawned).
-#[allow(async_fn_in_trait)]
-pub trait ParticipantBehavior: ParticipantSpec {
-    /// Contracts derived from `#[server]`/`#[server_snapshot]` signatures (empty
-    /// until the query slice).
-    const SERVER_CONTRACTS: &'static [ContractUse];
-
-    /// The committed-snapshot state type (`()` when there is no `#[snapshot]`).
-    type Snapshot: Send + Sync + 'static;
-
-    /// Whether the participant provides a committed snapshot (`#[snapshot]`).
-    const HAS_SNAPSHOT: bool;
-
-    /// The versionless topic keys of exclusive `#[server]` handlers.
-    fn __exclusive_server_topics() -> &'static [&'static str];
-
-    /// The versionless topic keys of concurrent `#[server_snapshot]` handlers.
-    fn __snapshot_server_topics() -> &'static [&'static str];
-
-    /// Validate explicit server topic expressions before startup declares
-    /// queryables. The macro rejects an explicit key that differs from the
-    /// request body's canonical topic and rejects duplicate server topics.
-    fn __validate_server_topics() -> std::result::Result<(), String>;
-
-    /// The scheduled-step cadence, or `None` if the participant has no `#[step]`.
-    fn __step_schedule() -> Option<StepSchedule>;
-
-    /// Construct the participant (`#[setup]`).
-    async fn __setup(ctx: &mut SetupContext<Self>, config: Self::Config) -> crate::Result<Self>;
-
-    /// Run one scheduled step (`#[step]`; a no-op when none is declared).
-    async fn __step(&mut self, step: StepContext) -> crate::Result<()>;
-
-    /// Graceful shutdown (`#[shutdown]`; a no-op when none is declared).
-    async fn __shutdown(&mut self, ctx: ShutdownContext) -> crate::Result<()>;
-
-    /// Commit the current state as a snapshot (calls the `#[snapshot]` provider;
-    /// returns `()` when there is none).
-    fn __take_snapshot(&self) -> Self::Snapshot;
-
-    /// Serve one exclusive `#[server]` query (holds `&mut self`, serialized with
-    /// `#[step]`). Awaited on the runner's main task. `topic` is the
-    /// generation-qualified key the runner declared the queryable on, which is
-    /// how a request reaches the right handler (D1) - there is no separate
-    /// identity to validate before decode.
-    async fn __serve_exclusive(&mut self, topic: &str, request: &[u8]) -> ServerOutcome;
-
-    /// Serve one concurrent `#[server_snapshot]` query against a committed
-    /// snapshot. Returns a boxed `Send` future so the runner can spawn it.
-    fn __serve_snapshot(
-        snapshot: Arc<Self::Snapshot>,
-        topic: String,
-        request: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;
-}
-
-/// Per-participant marker that this participant declared a *publish* handle for body `B`
-/// (D44). Emitted by the derive for each `Publisher<B>` field; the
-/// `SetupContext::publisher` builder carries `where Self: DeclaresPublish<B>`, so
-/// publishing a family/direction the struct never declared is a compile error
-/// (and would otherwise be IO `emit-apis` never reports).
-pub trait DeclaresPublish<B: ?Sized> {}
-
-/// Per-participant marker that this participant declared a *subscribe* handle for body
-/// `B` (`Subscriber<B>`/`Latest<B>` fields). See [`DeclaresPublish`].
-pub trait DeclaresSubscribe<B: ?Sized> {}
-
-/// Per-participant marker that this participant declared a *query* handle for
-/// `Req`/`Resp` (`Querier<Req, Resp>` fields). See [`DeclaresPublish`].
-pub trait DeclaresQuery<Req: ?Sized, Resp: ?Sized> {}
 
 /// The cadence + missed-tick policy of a `#[step(hz = …)]` loop (D34).
 #[derive(Clone, Copy, Debug)]

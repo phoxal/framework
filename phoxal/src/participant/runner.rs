@@ -6,10 +6,61 @@
 //! custom Tokio mains.
 //!
 //! Serving model (D16): exclusive `#[server]` queries are awaited on the main
-//! task (holding `&mut self`, serialized with `#[step]`); concurrent
-//! `#[server_snapshot]` queries are spawned and read a committed `Snapshot`. A
-//! snapshot is committed after `#[setup]`, after each `#[step]`, and after each
-//! exclusive `#[server]`.
+//! task (holding `&mut self` and `&mut Self::Api`, serialized with `#[step]`);
+//! concurrent `#[server_snapshot]` queries are spawned and read a committed
+//! `Snapshot`. A snapshot is committed after `#[setup]`, after each `#[step]`,
+//! and after each exclusive `#[server]`.
+//!
+//! # `Api` ownership (D3: "read-only `&Self::Api`, or an api snapshot")
+//!
+//! `#[setup]` returns `(participant, api)` as two independent values
+//! (`ParticipantLifecycle::__setup`). This runner keeps:
+//!
+//! - **`api: R::Api`**, owned directly (not behind `Arc`) - passed as
+//!   `&mut Self::Api` to `#[step]`/exclusive `#[server]`/`#[shutdown]`, all
+//!   awaited serially on the main task (same exclusivity rule as `#[step]`/
+//!   `#[server]`, D16), so a plain owned value always gives a sound `&mut`
+//!   with no synchronization needed;
+//! - **`api_shared: Arc<R::Api>`**, one clone of `api` made right after
+//!   `#[setup]` returns, handed to every spawned `#[server_snapshot]` task
+//!   (`Arc::clone`, cheap) for the participant's whole lifetime.
+//!
+//! These are **two independent `Clone` instances of the same handle set**,
+//! not one value shared behind both `&mut` and `Arc` at once (which Rust's
+//! aliasing rules forbid without unsafe code - not used anywhere in this
+//! module). Every `ParticipantApi` field type is `Clone` precisely because
+//! every real operation on it takes `&self`
+//! (`phoxal-bus/src/handle.rs`'s `Publisher`/`Querier`/`Latest`/`Subscriber`
+//! `Clone` impls, [`Server`](super::api::Server)'s `Clone`/`Copy` impl, and
+//! [`ParticipantApi`](super::api::ParticipantApi)'s own docs): a clone is a
+//! second handle to the same underlying `Bus`/subscription/session.
+//!
+//! For **`Publisher`, `Latest`, `Querier`, and `Server` this is fully sound
+//! AND behaviorally exact**: their operations are non-destructive reads or
+//! fresh-envelope publishes (`Latest::latest()` is an `ArcSwapOption` load,
+//! `Publisher`/`Querier` build a new envelope per call, `Server` carries no
+//! live connection), so `api` and every `api_shared` clone always observe
+//! and produce the identical live state - they can never diverge. That is
+//! D3's "an api snapshot", realized without a lock, a `RwLock`, or `unsafe`.
+//!
+//! **`Subscriber` is the one exception, and it constrains snapshot-server
+//! code.** A `Subscriber<B>`'s backing `Ring` is a single shared
+//! `Mutex<VecDeque>` behind one `Arc`, and `recv`/`try_recv` *pop* from it
+//! (`phoxal-bus/src/handle.rs`). So the owned `api` and the `Arc<R::Api>`
+//! snapshot clone hold two handles to **one** queue: if BOTH sides drained
+//! it, buffered samples would be split between them (each sample delivered to
+//! exactly one caller), not duplicated - silent message loss, no panic. This
+//! runner never does that: `#[step]`/exclusive `#[server]`/`#[shutdown]` own
+//! the `&mut api` and are the only place a `Subscriber` should be `recv`'d,
+//! while `#[server_snapshot]` handlers get the read-only `Arc` snapshot and
+//! **must read committed `Snapshot` state, never `recv` a `Subscriber`**
+//! (draining a subscription from a concurrent snapshot server is an
+//! anti-pattern - see `Subscriber`'s and `Subscriber::recv`'s rustdoc).
+//! **Deferred guard:** this rule is documentation-only for now - a
+//! compile-time reject of a `#[server_snapshot]` handler that `recv`s a
+//! `Subscriber` field would need the snapshot codegen to see the `Api` field
+//! kinds (which it does not today), so it is left as a hardening follow-up
+//! rather than an enforced invariant in this slice.
 
 use std::future::Future;
 use std::pin::pin;
@@ -22,18 +73,18 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::bus::{LogicalTime, QueryFailure, Subscriber};
+use crate::participant::api::ParticipantLifecycle;
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
-use crate::participant::emit::print_emit_apis;
 use crate::participant::heartbeat::{self, HeartbeatPublisher};
-use crate::participant::launch::{ClockMode, LaunchAction, ParticipantLaunch};
+use crate::participant::launch::{ClockMode, ParticipantLaunch};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::scheduler::{
     AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
     StepScheduler, duration_to_nanos_saturating,
 };
-use crate::participant::spec::{ParticipantBehavior, StepSchedule};
+use crate::participant::spec::StepSchedule;
 use phoxal_api::y2026_1 as api;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
@@ -41,7 +92,7 @@ use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 ///
 /// The default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
-pub fn run<R: ParticipantBehavior>() -> crate::Result<()> {
+pub fn run<R: ParticipantLifecycle>() -> crate::Result<()> {
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -50,16 +101,8 @@ pub fn run<R: ParticipantBehavior>() -> crate::Result<()> {
 
 /// Async host runner for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
-pub async fn run_async<R: ParticipantBehavior>() -> crate::Result<()> {
-    let launch = match ParticipantLaunch::from_cli(R::ID, "robot")? {
-        LaunchAction::Run(launch) => launch,
-        // The `emit-apis` subcommand short-circuits before config / tracing /
-        // Zenoh / setup. The compiled-in metadata is authoritative (D50).
-        LaunchAction::EmitApis => {
-            print_emit_apis::<R>();
-            return Ok(());
-        }
-    };
+pub async fn run_async<R: ParticipantLifecycle>() -> crate::Result<()> {
+    let launch = ParticipantLaunch::from_cli(R::ID, "robot")?;
 
     init_tracing();
 
@@ -186,7 +229,7 @@ pub async fn run_with<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantBehavior,
+    R: ParticipantLifecycle,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -227,7 +270,7 @@ pub async fn run_with_bus<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantBehavior,
+    R: ParticipantLifecycle,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -247,7 +290,7 @@ async fn run_lifecycle<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantBehavior,
+    R: ParticipantLifecycle,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -271,7 +314,7 @@ async fn run_lifecycle_inner<R, C, S>(
     heartbeat: &mut HeartbeatPublisher,
 ) -> crate::Result<()>
 where
-    R: ParticipantBehavior,
+    R: ParticipantLifecycle,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -299,8 +342,8 @@ where
         launch.robot_root.clone(),
         launch.component_instance.clone(),
     );
-    let mut participant = match R::__setup(&mut ctx, config).await {
-        Ok(participant) => participant,
+    let (mut participant, api) = match R::__setup(&mut ctx, config).await {
+        Ok(pair) => pair,
         Err(error) => {
             let grace = Duration::from_millis(launch.shutdown_grace_ms);
             let unjoined = ctx.take_managed_tasks().shutdown_within(grace).await;
@@ -312,6 +355,12 @@ where
     // from here on the runner - not `SetupContext` - owns watching them for an
     // unexpected exit and cancelling/joining them at shutdown.
     let mut managed_tasks = ctx.take_managed_tasks();
+
+    // The Api ownership split (see module docs): `api` stays owned for the
+    // exclusive `&mut Self::Api` path; `api_shared` is the one clone every
+    // concurrent `#[server_snapshot]` task gets its own `Arc::clone` of.
+    let api_shared: Arc<R::Api> = Arc::new(api.clone());
+    let mut api = api;
 
     // Committed snapshot, shared with concurrent snapshot-server tasks (D16).
     let committed: Arc<ArcSwapOption<R::Snapshot>> = Arc::new(ArcSwapOption::empty());
@@ -341,6 +390,7 @@ where
     for topic in R::__snapshot_server_topics() {
         let queryable = bus.declare_server(topic).await?;
         let committed = Arc::clone(&committed);
+        let api_shared = Arc::clone(&api_shared);
         let bus = bus.clone();
         server_tasks.push(tokio::spawn(async move {
             let mut inflight = tokio::task::JoinSet::new();
@@ -349,9 +399,10 @@ where
                     incoming = queryable.recv() => {
                         let Ok(incoming) = incoming else { break };
                         let snapshot = committed.load_full();
+                        let api = Arc::clone(&api_shared);
                         let bus = bus.clone();
                         inflight.spawn(async move {
-                            serve_snapshot_query::<R>(&bus, incoming, snapshot).await
+                            serve_snapshot_query::<R>(&bus, incoming, snapshot, api).await
                         });
                     }
                     // Reap finished handlers so the JoinSet does not grow unbounded.
@@ -381,6 +432,7 @@ where
     let watchdog = super::sd_notify::Watchdog::start();
     let fault = main_loop::<R, C, S>(
         &mut participant,
+        &mut api,
         bus,
         clock,
         &scheduler,
@@ -414,7 +466,7 @@ where
         shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
     match tokio::time::timeout(
         shutdown_remaining,
-        participant.__shutdown(ShutdownContext::new(grace)),
+        participant.__shutdown(&mut api, ShutdownContext::new(grace)),
     )
     .await
     {
@@ -469,6 +521,7 @@ pub(crate) fn log_unjoined_managed_tasks(unjoined: Vec<String>, grace_ms: u64) {
 #[allow(clippy::too_many_arguments)]
 async fn main_loop<R, C, S>(
     participant: &mut R,
+    api: &mut R::Api,
     bus: &Bus,
     clock: &C,
     scheduler: &AnyStepScheduler,
@@ -481,7 +534,7 @@ async fn main_loop<R, C, S>(
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
 where
-    R: ParticipantBehavior,
+    R: ParticipantLifecycle,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -536,7 +589,7 @@ where
                 // (D32); the snapshot is committed only after a *successful* step so
                 // a failed mutation is never published as committed state. A panic
                 // would unwind and abort the process.
-                match participant.__step(step).await {
+                match participant.__step(api, step).await {
                     Ok(()) => commit_snapshot::<R>(participant, committed),
                     Err(e) => {
                         tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
@@ -547,7 +600,7 @@ where
             Some(incoming) = excl_rx.recv() => {
                 // Commit only if the handler succeeded (D14/D32: retain the prior
                 // snapshot on a handler error).
-                if serve_exclusive_query::<R>(participant, bus, incoming).await {
+                if serve_exclusive_query::<R>(participant, api, bus, incoming).await {
                     commit_snapshot::<R>(participant, committed);
                 }
                 watchdog.feed();
@@ -599,7 +652,7 @@ pub(crate) async fn step_tick(
     }
 }
 
-fn commit_snapshot<R: ParticipantBehavior>(
+fn commit_snapshot<R: ParticipantLifecycle>(
     participant: &R,
     committed: &Arc<ArcSwapOption<R::Snapshot>>,
 ) {
@@ -610,8 +663,9 @@ fn commit_snapshot<R: ParticipantBehavior>(
 
 /// Serve one exclusive query. Returns `true` iff the handler succeeded (so the
 /// runner should commit a fresh snapshot).
-async fn serve_exclusive_query<R: ParticipantBehavior>(
+async fn serve_exclusive_query<R: ParticipantLifecycle>(
     participant: &mut R,
+    api: &mut R::Api,
     bus: &Bus,
     incoming: IncomingQuery,
 ) -> bool {
@@ -643,7 +697,7 @@ async fn serve_exclusive_query<R: ParticipantBehavior>(
             return false;
         }
     };
-    match participant.__serve_exclusive(&topic, &request).await {
+    match participant.__serve_exclusive(api, &topic, &request).await {
         Ok(reply) => {
             let _ = incoming.reply(bus, reply.payload).await;
             true
@@ -655,10 +709,13 @@ async fn serve_exclusive_query<R: ParticipantBehavior>(
     }
 }
 
-async fn serve_snapshot_query<R: ParticipantBehavior>(
+/// Serve one concurrent `#[server_snapshot]` query, handing the generated
+/// dispatcher its `Arc<R::Api>` clone (D3).
+async fn serve_snapshot_query<R: ParticipantLifecycle>(
     bus: &Bus,
     incoming: IncomingQuery,
     snapshot: Option<Arc<R::Snapshot>>,
+    api: Arc<R::Api>,
 ) {
     let topic = incoming.topic_key().to_string();
     let metadata = match incoming.request_metadata() {
@@ -694,7 +751,7 @@ async fn serve_snapshot_query<R: ParticipantBehavior>(
             .await;
         return;
     };
-    match R::__serve_snapshot(snapshot, topic, request).await {
+    match R::__serve_snapshot(snapshot, api, topic, request).await {
         Ok(reply) => {
             let _ = incoming.reply(bus, reply.payload).await;
         }
