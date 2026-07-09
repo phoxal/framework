@@ -4,15 +4,17 @@ use serde::Serialize;
 struct Generation<'a> {
     name: &'a str,
     channel: &'a str,
-    extends: Option<&'a str>,
     contracts: Vec<Contract<'a>>,
 }
 
+/// `family` is the version-qualified contract identity (e.g.
+/// `"y2026_1::drive::Target"`); `topic` is its generation-qualified wire key
+/// (e.g. `"y2026_1/drive/target"`). There is no `schema_id` (D1): the name
+/// itself is the whole identity.
 #[derive(Serialize)]
 struct Contract<'a> {
     family: &'a str,
     topic: &'a str,
-    schema_id: &'a str,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,14 +27,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 "stable"
             },
-            extends: generation.extends,
             contracts: generation
                 .contracts
                 .iter()
                 .map(|contract| Contract {
                     family: contract.family,
                     topic: contract.topic,
-                    schema_id: contract.schema_id,
                 })
                 .collect(),
         })

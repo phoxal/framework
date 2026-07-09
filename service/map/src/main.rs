@@ -205,15 +205,17 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c["family"] == <api::map::Revision as ContractBody>::FAMILY)
+                .any(|c| c["topic"] == <api::map::Revision as ContractBody>::TOPIC)
         );
         assert!(
             contracts
                 .iter()
-                .any(|c| c["family"] == <api::map::SubmapResponse as ContractBody>::FAMILY)
+                .any(|c| c["topic"] == <api::map::SubmapResponse as ContractBody>::TOPIC)
         );
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::localize::LocalizationState as ContractBody>::FAMILY
-        }));
+        assert!(
+            contracts.iter().any(|c| {
+                c["topic"] == <api::localize::LocalizationState as ContractBody>::TOPIC
+            })
+        );
     }
 }

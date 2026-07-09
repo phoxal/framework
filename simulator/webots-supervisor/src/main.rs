@@ -431,8 +431,7 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContractMapping {
-    family: &'static str,
-    schema_id: &'static str,
+    topic: &'static str,
 }
 
 #[cfg(test)]
@@ -447,10 +446,7 @@ fn contract_mappings() -> Vec<ContractMapping> {
 
 #[cfg(test)]
 fn mapping<B: phoxal::bus::ContractBody>() -> ContractMapping {
-    ContractMapping {
-        family: B::FAMILY,
-        schema_id: B::SCHEMA_ID,
-    }
+    ContractMapping { topic: B::TOPIC }
 }
 
 #[cfg(test)]
@@ -474,21 +470,20 @@ mod tests {
         );
         for mapping in &expected {
             assert!(
-                contracts.iter().any(|contract| {
-                    contract["family"] == mapping.family
-                        && contract["schema_id"] == mapping.schema_id
-                }),
+                contracts
+                    .iter()
+                    .any(|contract| contract["topic"] == mapping.topic),
                 "missing mapping for {}",
-                mapping.family
+                mapping.topic
             );
         }
 
         // Never leaks the controller's component::* contracts.
         assert!(
-            !contracts.iter().any(|contract| contract["family"]
+            !contracts.iter().any(|contract| contract["topic"]
                 .as_str()
                 .unwrap_or_default()
-                .starts_with("component::")),
+                .contains("/component/")),
             "supervisor must not report component::* contracts: {contracts:?}"
         );
     }

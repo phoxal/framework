@@ -8,13 +8,14 @@
 //! sidecar file (D57).
 //!
 //! The emitted JSON schema is **frozen** (fields below). Adding a field is
-//! backward-compatible; renaming/removing one is a `bus_abi`/schema change.
+//! backward-compatible; renaming/removing one is a schema change. There is no
+//! `bus_abi` axis to track (D1): the wire ABI dissolved into the
+//! generation-qualified key.
 
 use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use crate::bus::BUS_ABI;
 use crate::participant::spec::{ContractUse, ParticipantBehavior};
 
 /// The frozen emitted-metadata schema id.
@@ -33,8 +34,6 @@ pub struct ParticipantMetadata {
     pub api_version: String,
     /// Whether normal graph topology applies to this participant.
     pub participant_class: &'static str,
-    /// The framework-owned wire-envelope id.
-    pub bus_abi: String,
     /// The union of field-side + server-side contracts.
     pub required_contracts: Vec<ContractView>,
     /// The participant's JSON Schema config contract.
@@ -57,23 +56,19 @@ pub struct Framework {
     pub version: String,
 }
 
-/// One contract in the emitted document.
+/// One contract in the emitted document: its generation-qualified wire key
+/// (D1). Request/response bodies of one query topic share a key, so they
+/// collapse into one entry here.
 #[derive(Debug, Serialize)]
 pub struct ContractView {
-    /// API version this contract body belongs to.
-    pub api_version: String,
-    /// Transitive wire-shape id for this contract body.
-    pub schema_id: String,
-    /// Contract family id.
-    pub family: String,
+    /// The generation-qualified wire key (`<Body as ContractBody>::TOPIC`).
+    pub topic: String,
 }
 
 impl From<&ContractUse> for ContractView {
     fn from(c: &ContractUse) -> Self {
         ContractView {
-            api_version: c.api_version.to_string(),
-            schema_id: c.schema_id.to_string(),
-            family: c.family.to_string(),
+            topic: c.topic.to_string(),
         }
     }
 }
@@ -84,13 +79,7 @@ pub fn participant_metadata<R: ParticipantBehavior>() -> ParticipantMetadata {
     let required_contracts = R::FIELD_CONTRACTS
         .iter()
         .chain(R::SERVER_CONTRACTS.iter())
-        .filter(|contract| {
-            seen.insert((
-                contract.api_version.to_string(),
-                contract.schema_id.to_string(),
-                contract.family.to_string(),
-            ))
-        })
+        .filter(|contract| seen.insert(contract.topic.to_string()))
         .map(ContractView::from)
         .collect();
 
@@ -105,7 +94,6 @@ pub fn participant_metadata<R: ParticipantBehavior>() -> ParticipantMetadata {
         },
         api_version: R::API_VERSION.to_string(),
         participant_class: R::PARTICIPANT_CLASS,
-        bus_abi: BUS_ABI.id().to_string(),
         required_contracts,
         config_schema: serde_json::to_value(schemars::schema_for!(R::Config))
             .expect("config JSON schema is always serializable"),

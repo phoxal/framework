@@ -308,15 +308,11 @@ mod tests {
 
         assert_eq!(cameras.len(), 3);
         assert_eq!(depths.len(), 1);
-        assert!(
-            cameras
-                .iter()
-                .any(|camera| camera.camera_topic().key()
-                    == "component/front_camera/camera/rgb/frame")
-        );
+        assert!(cameras.iter().any(|camera| camera.camera_topic().key()
+            == "y2026_1/component/front_camera/camera/rgb/frame"));
         assert_eq!(
             depths[0].depth_topic().key(),
-            "component/front_camera/depth/depth/frame"
+            "y2026_1/component/front_camera/depth/depth/frame"
         );
     }
 
@@ -342,7 +338,7 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|contract| contract["family"] == B::FAMILY)
+                .any(|contract| contract["topic"] == B::TOPIC)
         );
     }
 }

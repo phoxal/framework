@@ -232,18 +232,18 @@ mod tests {
         assert_eq!(value["participant_class"], "checked");
         let contracts = value["required_contracts"].as_array().unwrap();
         assert!(
-            contracts.iter().all(|c| c["schema_id"]
-                .as_str()
-                .is_some_and(|schema_id| !schema_id.is_empty())),
-            "each contract should include schema_id"
+            contracts
+                .iter()
+                .all(|c| c["topic"].as_str().is_some_and(|topic| !topic.is_empty())),
+            "each contract should include topic"
         );
         for family in [
-            <api::component::imu::Sample as ContractBody>::FAMILY,
-            <api::component::accelerometer::Sample as ContractBody>::FAMILY,
-            <api::component::gyroscope::Sample as ContractBody>::FAMILY,
+            <api::component::imu::Sample as ContractBody>::TOPIC,
+            <api::component::accelerometer::Sample as ContractBody>::TOPIC,
+            <api::component::gyroscope::Sample as ContractBody>::TOPIC,
         ] {
             assert!(
-                contracts.iter().any(|c| c["family"] == family),
+                contracts.iter().any(|c| c["topic"] == family),
                 "missing contract for {family}"
             );
         }

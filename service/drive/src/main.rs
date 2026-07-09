@@ -327,7 +327,7 @@ mod tests {
         assert!(config.kinematics.wheel_radius_m > 0.0);
         // Each binding resolves to a concrete dynamic motor topic.
         let topic = config.left[0].topic();
-        assert!(topic.key().starts_with("component/"));
+        assert!(topic.key().starts_with("y2026_1/component/"));
         assert!(topic.key().ends_with("/command"));
     }
 

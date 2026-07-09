@@ -8,23 +8,21 @@ impl phoxal_api::ApiVersion for ForeignApi {
 }
 
 macro_rules! foreign_body {
-    ($name:ident, $family:literal, $topic:literal) => {
+    ($name:ident, $topic:literal) => {
         #[derive(Clone, serde::Serialize, serde::Deserialize)]
         struct $name;
 
         impl phoxal_api::ContractBody for $name {
             type Api = ForeignApi;
-            const FAMILY: &'static str = $family;
-            const SCHEMA_ID: &'static str = "ffffffffffffffff";
             const TOPIC: &'static str = $topic;
         }
     };
 }
 
-foreign_body!(ForeignPublish, "foreign::Publish", "foreign/publish");
-foreign_body!(ForeignSubscribe, "foreign::Subscribe", "foreign/subscribe");
-foreign_body!(ForeignRequest, "foreign::Request", "foreign/query");
-foreign_body!(ForeignResponse, "foreign::Response", "foreign/query");
+foreign_body!(ForeignPublish, "foreign/publish");
+foreign_body!(ForeignSubscribe, "foreign/subscribe");
+foreign_body!(ForeignRequest, "foreign/query");
+foreign_body!(ForeignResponse, "foreign/query");
 
 #[derive(phoxal::Service)]
 #[phoxal(

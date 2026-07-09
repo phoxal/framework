@@ -2,10 +2,10 @@
 //!
 //! A query success reply is the plain `Resp` body (D62). A handler `Err` rides
 //! Zenoh's native `ReplyError`, carrying a [`QueryFailure`] (MessagePack-encoded).
-//! Both are part of `bus_abi` and golden-tested. The caller sees a
-//! [`QueryError`]; there is no `Version` variant - decode fast-rejects on a
-//! `schema_id` mismatch before the body, so a version disagreement never
-//! reaches the reply path (#16).
+//! Both are golden-tested. The caller sees a [`QueryError`]; there is no
+//! `Version` variant - a query only ever reaches a handler on its own
+//! generation-qualified topic key (D1), so a version disagreement never reaches
+//! the reply path (#16).
 
 use serde::{Deserialize, Serialize};
 
@@ -89,9 +89,9 @@ impl QueryFailure {
     }
 }
 
-/// What a `Querier` returns to the caller (D31). No `Version` variant - decode
-/// fast-rejects on a `schema_id` mismatch before the body (#16), so a version
-/// disagreement never reaches the reply path.
+/// What a `Querier` returns to the caller (D31). No `Version` variant - a query
+/// only ever reaches a handler on its own generation-qualified topic key (D1),
+/// so a version disagreement never reaches the reply path.
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
     /// No responder answered the query.

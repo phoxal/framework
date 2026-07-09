@@ -501,7 +501,7 @@ mod tests {
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
+        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
     }
 
     fn path_pose(x_m: f64, y_m: f64) -> api::plan::PathPose {

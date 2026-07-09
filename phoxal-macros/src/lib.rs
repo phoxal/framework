@@ -46,10 +46,8 @@ use proc_macro::TokenStream;
 /// `ApiVersion::IS_PREVIEW = true`. In this workspace it is invoked in the
 /// `phoxal-api` crate (the canonical import is
 /// `use phoxal_api::y2026_1 as api;`), and the generated tree references the bus
-/// ABI floor as `::phoxal_bus`. A
-/// `version y2026_N extends y2026_M { … }` inherits the
-/// earlier version's effective tree (the parent must be declared earlier in the
-/// same invocation); see the `api_tree` module docs for the inheritance rules.
+/// ABI floor as `::phoxal_bus`. There is no `extends`: each generation is a
+/// standalone, sparse batch (D1) - see the `api_tree` module docs.
 ///
 /// # Node grammar
 ///
@@ -76,11 +74,13 @@ use proc_macro::TokenStream;
 /// A topic carries no per-topic params; its identity is derived from the path of
 /// nodes enclosing it:
 ///
-/// - **key** - the `/`-joined node segments plus the leaf, where a static node
-///   contributes `name` and a dynamic node contributes `name/{var}` (e.g.
-///   `component/{instance}/motor/{capability}/command`).
-/// - **`FAMILY`** - the `::`-joined node names plus the body type, with the
-///   `(var)` parts excluded (e.g. `component::motor::Command`).
+/// - **`TOPIC`** (the wire key) - the generation, then the `/`-joined node
+///   segments plus the leaf, where a static node contributes `name` and a
+///   dynamic node contributes `name/{var}` (e.g.
+///   `y2026_N/component/{instance}/motor/{capability}/command`). Folding the
+///   generation into the key (D1) is what makes two differently-versioned
+///   contracts physically distinct Zenoh keys - there is no separate
+///   `FAMILY`/`SCHEMA_ID` axis.
 /// - **body type path** - `phoxal_api::y2026_N::<node>::…::<Body>`; variables never
 ///   appear in the module path.
 ///
@@ -119,8 +119,10 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// # `#[phoxal(...)]` attributes
 ///
 /// - `api = y2026_N` - **mandatory**. Selects the one API version this participant
-///   runs against; sets `type Api = phoxal_api::y2026_N::Api`. The graph may mix
-///   generations - compatibility is per-contract `schema_id` agreement (#16).
+///   runs against; sets `type Api = phoxal_api::y2026_N::Api`. Compatibility is by
+///   contract name: two participants interoperate on a contract iff they name the
+///   exact same version-qualified body, which the generation-qualified wire key
+///   makes physically impossible to get wrong (D1).
 /// - `id = "…"` - optional. The participant id; defaults to the kebab-cased type name.
 /// - `config = Type` - optional. The participant's config type; defaults to `()`.
 /// - `contracts(…)` - optional. Declares IO the derive cannot see in fields, as a
@@ -209,7 +211,8 @@ pub fn derive_simulator(input: TokenStream) -> TokenStream {
 /// For `#[server]`/`#[server_snapshot]` the `topic = …` is an api-local topic
 /// builder; its key must match the request body's `TOPIC`, and both request and
 /// response bodies must be `ContractBody<Api = Self::Api>` (checked at compile
-/// time, with a decode-time backstop validating the incoming api_version + family).
+/// time; a query only ever reaches the handler on its own generation-qualified
+/// topic key, D1, so there is no separate decode-time identity check left).
 ///
 /// # `Tool` is a thin runner
 ///

@@ -1,10 +1,12 @@
 //! Typed topics - the api-local builder output (D61), side-branded for L1 (plan #00).
 //!
-//! A [`Topic`] is a versionless topic key plus a phantom [`TopicKind`] that ties
-//! the key to its body type(s) **and to the side** the holder may take. The api
-//! tree's `topic` builders return these; the `SetupContext` handle builders
-//! consume them. The wire body never appears in the key - the key is
-//! `drive/state`, not `drive/state/v1` (D62).
+//! A [`Topic`] is a generation-qualified topic key plus a phantom [`TopicKind`]
+//! that ties the key to its body type(s) **and to the side** the holder may
+//! take. The api tree's `topic` builders return these; the `SetupContext` handle
+//! builders consume them. The wire body never appears in the key, but the
+//! generation does - the key is `y2026_1/drive/state`, not `drive/state` (D62/D1):
+//! folding the generation into the key is what makes different versioned names
+//! physically distinct Zenoh keys.
 //!
 //! # Side branding (L1)
 //!
@@ -63,7 +65,7 @@ impl<Req, Resp> TopicKind for AskQuery<Req, Resp> {}
 impl<Req, Resp> sealed::Sealed for ServeQuery<Req, Resp> {}
 impl<Req, Resp> TopicKind for ServeQuery<Req, Resp> {}
 
-/// A typed topic: a versionless key bound to its body type(s) via `Kind`.
+/// A typed topic: a generation-qualified key bound to its body type(s) via `Kind`.
 pub struct Topic<Kind> {
     key: Cow<'static, str>,
     _kind: PhantomData<Kind>,
@@ -116,7 +118,7 @@ impl<Kind> Topic<Kind> {
         }
     }
 
-    /// The versionless topic key (e.g. `drive/state`).
+    /// The generation-qualified topic key (e.g. `y2026_1/drive/state`).
     pub fn key(&self) -> &str {
         &self.key
     }

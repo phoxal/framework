@@ -137,7 +137,7 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c["family"] == <api::battery::State as ContractBody>::FAMILY)
+                .any(|c| c["topic"] == <api::battery::State as ContractBody>::TOPIC)
         );
     }
 

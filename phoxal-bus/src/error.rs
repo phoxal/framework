@@ -13,18 +13,6 @@ pub enum BusError {
     #[error(transparent)]
     Codec(#[from] CodecError),
 
-    /// An inbound sample's schema id did not match the receiver's selected body
-    /// shape (never a silent drop - D62).
-    #[error("schema_id mismatch on '{topic}': expected '{expected}', received '{received}'")]
-    SchemaIdMismatch {
-        /// The topic key.
-        topic: String,
-        /// The receiver's body schema id.
-        expected: String,
-        /// The producer's schema id from bus metadata.
-        received: String,
-    },
-
     /// An inbound sample carried an unsupported codec id.
     #[error("unsupported codec id {0} on '{1}'")]
     UnsupportedCodec(u8, String),

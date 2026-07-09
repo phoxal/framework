@@ -70,70 +70,35 @@ impl TopicRole {
 }
 
 /// A version-local wire body: a plain serde type bound to exactly one
-/// [`ApiVersion`] and one contract family/topic (D61).
+/// [`ApiVersion`] and one contract topic (D61/D1).
 ///
 /// Every body declared inside a `phoxal_api_tree!` node gets a generated impl.
 /// Handles, `SetupContext` builders, and the `Service`/`Driver` derive assertions
-/// all key off [`Api`](ContractBody::Api)/[`FAMILY`](ContractBody::FAMILY)/[`TOPIC`](ContractBody::TOPIC),
-/// which is how a body from the wrong API version is rejected at compile time.
+/// all key off [`Api`](ContractBody::Api)/[`TOPIC`](ContractBody::TOPIC), which is
+/// how a body from the wrong API version is rejected at compile time.
 ///
 /// The serde encoding of an implementor *is* the wire payload; there is no version
-/// envelope (D62). Version and family travel as bus metadata, derived from
-/// [`Api`](ContractBody::Api) and [`FAMILY`](ContractBody::FAMILY).
+/// envelope (D62).
 ///
-/// Runtime decode compatibility keys off [`SCHEMA_ID`](ContractBody::SCHEMA_ID),
-/// not the graph API version. `SCHEMA_ID` is a normalized hash of the body's
-/// transitive wire shape. The canonical hash input is `phoxal.schema/v0\n`
-/// followed by this grammar:
-///
-/// ```text
-/// body    = unit | newtype | tuple | struct | enum
-/// struct  = "struct{" field* "}"
-/// field   = "f" byte_len ":" utf8_name "=" ty ";"
-/// enum    = "enum(" repr "){" variant* "}"
-/// repr    = "external" | "internal(tag=" name ")"
-///         | "adjacent(tag=" name ",content=" name ")" | "untagged"
-/// variant = "v" byte_len ":" utf8_name "=" payload ";"
-/// payload = unit | "newtype(" ty ")" | tuple | struct
-/// newtype = "newtype(" ty ")"
-/// tuple   = "tuple(" (ty ";")* ")"
-/// ty      = nil | bool | string | bytes | integer | float | option | seq | array
-///         | map | tuple | body
-/// integer = "u8" | "u16" | "u32" | "u64" | "u128"
-///         | "i8" | "i16" | "i32" | "i64" | "i128"
-/// float   = "f32" | "f64"
-/// option  = "option(" ty ")"
-/// seq     = "seq(" ty ")"
-/// array   = "array[" decimal_len "](" ty ")"
-/// map     = "map(" ty "," ty ")"
-/// name    = byte_len ":" utf8_name
-/// ```
-///
-/// Fields stay in declared order and use their serde wire names, including
-/// `rename` and `rename_all`. Enums include serde representation mode, variant
-/// wire names, and payload shapes. Nested API-tree structs and enums are expanded
-/// transitively, with generic type parameters substituted by concrete type
-/// arguments before expansion. Only understood serde attributes and known
-/// wire-neutral attributes such as doc comments and simple derives are accepted.
-/// Non-wire details such as Rust type identifiers when the wire shape has already
-/// been expanded are excluded. The displayed id is lower-hex
-/// `sha256(canonical_string)`, truncated to the first 16 hex characters.
+/// **Wire identity is the key, not a hash (D1).** The generation is folded into
+/// [`TOPIC`](ContractBody::TOPIC), so `y2026_1::drive::Target` and a
+/// hypothetically re-minted `y2026_2::drive::Target` publish on different Zenoh
+/// keys and physically cannot collide. There is therefore no `SCHEMA_ID`/`FAMILY`
+/// axis: two participants interoperate on a contract iff they use the exact same
+/// version-qualified name, which is enforced by the type system (`Api` bound) and
+/// realized on the wire by the key. A receiver's per-key Zenoh subscription is the
+/// whole fast-reject; the bus decode path validates only the codec.
 pub trait ContractBody:
     serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static
 {
     /// The single API version this body belongs to. Two bodies from different
     /// versions have different `Api`, so the type system keeps them apart.
     type Api: ApiVersion;
-    /// Canonical contract family id: the `::`-joined node path plus the body type
-    /// name, with dynamic variables excluded, e.g. `"drive::State"` or
-    /// `"component::motor::Command"`.
-    const FAMILY: &'static str;
-    /// Per-contract compatibility id: lower-hex SHA-256 of the canonical
-    /// transitive wire-shape string, truncated to 16 hex characters.
-    const SCHEMA_ID: &'static str;
-    /// Versionless topic key: the `/`-joined node path plus the topic leaf, with
-    /// each dynamic node contributing a `{var}` placeholder, e.g. `"drive/state"`
-    /// or `"component/{instance}/motor/{capability}/command"`. The concrete key is
-    /// produced by the api-local `topic` builder, which fills the placeholders.
+    /// The generation-qualified wire key: the version module name, then the
+    /// `/`-joined node path plus the topic leaf, with each dynamic node
+    /// contributing a `{var}` placeholder, e.g. `"y2026_1/drive/state"` or
+    /// `"y2026_1/component/{instance}/motor/{capability}/command"`. The concrete
+    /// key is produced by the api-local `topic` builder, which fills the
+    /// placeholders.
     const TOPIC: &'static str;
 }

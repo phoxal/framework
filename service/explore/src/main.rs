@@ -259,6 +259,6 @@ mod tests {
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
+        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
     }
 }

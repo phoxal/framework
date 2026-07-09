@@ -31,20 +31,17 @@ use crate::bus::ApiVersion;
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
 
-/// One `{api_version, schema_id, family}` contract a participant participates
-/// in. Built by the macros from a body type's
-/// [`ContractBody`](crate::bus::ContractBody) consts so family/schema/version
-/// are single-sourced from the api tree. Compatibility is judged by `schema_id`
-/// agreement per `family` alone (#16-b); which topic or direction a participant
-/// happens to use is not part of that judgment, so it is not carried here.
+/// One contract a participant participates in: the generation-qualified wire
+/// key (`<Body as ContractBody>::TOPIC`, D1). Built by the macros from a body
+/// type's [`ContractBody`](crate::bus::ContractBody) const so it is
+/// single-sourced from the api tree. Compatibility is judged by name identity
+/// alone - two participants naming the same generation-qualified contract
+/// interoperate by construction; which direction a participant happens to use
+/// is not part of that judgment, so it is not carried here.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct ContractUse {
-    /// The API version of the body (`<Body::Api as ApiVersion>::ID`).
-    pub api_version: &'static str,
-    /// The transitive wire-shape id (`<Body as ContractBody>::SCHEMA_ID`).
-    pub schema_id: &'static str,
-    /// The contract family id (`<Body as ContractBody>::FAMILY`).
-    pub family: &'static str,
+    /// The generation-qualified wire key (`<Body as ContractBody>::TOPIC`).
+    pub topic: &'static str,
 }
 
 /// Static metadata derived from a participant struct.
@@ -56,7 +53,8 @@ pub trait ParticipantSpec: Sized + Send + 'static {
     /// The participant id (`#[phoxal(id = "…")]`, default kebab of the type name).
     const ID: &'static str;
     /// The one API version this participant runs against. The graph may mix
-    /// generations: compatibility is per-contract `schema_id` agreement (#16).
+    /// generations: compatibility is per-contract name identity, realized on the
+    /// wire by the generation-qualified key (D1) - there is no `schema_id`.
     type Api: ApiVersion;
     /// `<Self::Api as ApiVersion>::ID`, for metadata.
     const API_VERSION: &'static str;
@@ -131,26 +129,17 @@ pub trait ParticipantBehavior: ParticipantSpec {
     fn __take_snapshot(&self) -> Self::Snapshot;
 
     /// Serve one exclusive `#[server]` query (holds `&mut self`, serialized with
-    /// `#[step]`). Awaited on the runner's main task. The request's
-    /// `schema_id`/`family` (from bus metadata) are validated against the
-    /// handler's request body before decode.
-    async fn __serve_exclusive(
-        &mut self,
-        topic: &str,
-        api_version: &str,
-        schema_id: &str,
-        family: &str,
-        request: &[u8],
-    ) -> ServerOutcome;
+    /// `#[step]`). Awaited on the runner's main task. `topic` is the
+    /// generation-qualified key the runner declared the queryable on, which is
+    /// how a request reaches the right handler (D1) - there is no separate
+    /// identity to validate before decode.
+    async fn __serve_exclusive(&mut self, topic: &str, request: &[u8]) -> ServerOutcome;
 
     /// Serve one concurrent `#[server_snapshot]` query against a committed
     /// snapshot. Returns a boxed `Send` future so the runner can spawn it.
     fn __serve_snapshot(
         snapshot: Arc<Self::Snapshot>,
         topic: String,
-        api_version: String,
-        schema_id: String,
-        family: String,
         request: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;
 }

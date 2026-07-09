@@ -3,8 +3,8 @@
 //! Reads the mandatory `#[phoxal(api = y2026_N)]` selector (plus optional
 //! `id` / `config`) and the struct's typed handle fields, then emits:
 //! - an `impl ParticipantSpec` carrying `KIND`, `PARTICIPANT_CLASS`, `ID`,
-//!   `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS` (one `{family, schema_id}`
-//!   per distinct contract body, all sharing the one API version);
+//!   `Api`/`API_VERSION`, `Config`, and `FIELD_CONTRACTS` (one generation-qualified
+//!   `topic` per distinct contract body, all sharing the one API version);
 //! - compile assertions that every handle body satisfies
 //!   `ContractBody<Api = Self::Api>` (a body from another API version is a
 //!   compile error - D60);
@@ -132,9 +132,9 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
     let artifact_kind = kind.artifact_kind();
     let participant_class = kind.participant_class();
 
-    // FIELD_CONTRACTS entries reference the body type's ContractBody consts so the
-    // family/topic/api_version are single-sourced from the api tree (D61). A query
-    // field contributes both legs.
+    // FIELD_CONTRACTS entries reference the body type's ContractBody::TOPIC, the
+    // generation-qualified wire key, single-sourced from the api tree (D1/D61). A
+    // query field contributes both legs.
     let mut seen_contracts = std::collections::BTreeSet::new();
     let mut contract_entries = Vec::new();
     for decl in &decls {
@@ -143,9 +143,7 @@ pub fn expand(input: TokenStream, kind: AuthoringKind) -> syn::Result<TokenStrea
             if seen_contracts.insert(key) {
                 contract_entries.push(quote! {
                     #phoxal::participant::ContractUse {
-                        api_version: <<#body as #phoxal::bus::ContractBody>::Api as #phoxal::bus::ApiVersion>::ID,
-                        schema_id: <#body as #phoxal::bus::ContractBody>::SCHEMA_ID,
-                        family: <#body as #phoxal::bus::ContractBody>::FAMILY,
+                        topic: <#body as #phoxal::bus::ContractBody>::TOPIC,
                     }
                 });
             }

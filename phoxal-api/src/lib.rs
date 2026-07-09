@@ -1,4 +1,4 @@
-//! The single API layer (D60/D61).
+//! The single API layer (D60/D61/D1).
 //!
 //! This crate is the dated API contract tree. It depends only on the
 //! [`phoxal-bus`](phoxal_bus) ABI floor (the contract primitive traits and the
@@ -19,58 +19,53 @@
 //!   serde structs/enums and their [`ContractBody`] impls;
 //! - an api-local `topic` builder rooted at `topic::new()`.
 //!
-//! Versions can build on earlier ones with `version y2026_2 extends y2026_1`:
-//! every inherited node and type is re-emitted *fresh* under the new module - same
-//! [`ContractBody::FAMILY`] and [`ContractBody::TOPIC`], a different [`Api`] - so an
-//! unchanged contract stays wire-identical while the compile-time `Api` bound stays
-//! distinct. See [`phoxal_api_tree!`] for the inheritance and shape-identity rules.
-//! A not-yet-promoted generation is authored as
-//! `preview version y2026_N extends ...`; it still lives at the final module path
-//! (`phoxal_api::y2026_N`) but is available only when the matching
-//! `preview-y2026_N` Cargo feature is enabled. The generated module docs call out
-//! the preview status, and [`ApiVersion::IS_PREVIEW`] records the lifecycle without
-//! changing schema ids, topics, or wire bytes.
+//! Each generation is a **standalone, sparse batch** (D1): only the contracts
+//! minted in that batch, never a copy of an earlier generation. There is no
+//! `extends` - an unchanged contract simply keeps its existing name as the one
+//! live identity; a changed contract is minted fresh in the current generation.
+//! A not-yet-promoted generation is authored as `preview version y2026_N { … }`;
+//! it still lives at the final module path (`phoxal_api::y2026_N`) but is
+//! available only when the matching `preview-y2026_N` Cargo feature is enabled.
+//! The generated module docs call out the preview status, and
+//! [`ApiVersion::IS_PREVIEW`] records the lifecycle without changing topics or
+//! wire bytes.
 //!
 //! [`Api`]: y2026_1::Api
 //!
-//! # One API version per participant; per-contract compatibility per graph
+//! # One API version per participant; per-contract identity across the graph
 //!
 //! A participant authors against exactly one version module
 //! (`use phoxal_api::y2026_1 as api;`) and declares it on the derive
 //! (`#[phoxal(api = y2026_1)]`). Every handle body is bound
 //! `ContractBody<Api = R::Api>`, so passing a body from another API version is a
 //! compile error (D60). Across the graph, participants may mix generations:
-//! compatibility is proven per contract by `schema_id` agreement (#16) - a
-//! contract whose transitive wire shape is unchanged hashes identically across
-//! generations, so its users keep interoperating.
+//! compatibility is **name identity** (D1) - two participants interoperate on a
+//! contract iff they use the exact same version-qualified name
+//! (`y2026_1::drive::Target`), which is real on the wire because the generation
+//! is folded into the key ([`ContractBody::TOPIC`]). There is no `schema_id`: a
+//! released contract type is immutable, so the name alone is the whole identity.
 //!
-//! # Plain serde wire bodies, schema in metadata
+//! # Plain serde wire bodies, provenance in metadata
 //!
 //! A wire body is just its serde encoding - there is no `{"v":…}` envelope or any
-//! other version tag inside the payload (D62). The four pieces of routing
-//! identity travel as bus metadata alongside the encoded body, not in it:
+//! other version tag inside the payload (D62). Identity lives entirely in the
+//! Zenoh key (the generation-qualified [`ContractBody::TOPIC`]); the bus metadata
+//! alongside the encoded body carries only provenance (source + logical time) and
+//! the codec that produced the bytes - never schema/family/version. Keeping
+//! identity out of both the payload and the metadata means the body bytes for an
+//! unchanged contract are identical across codecs, and a receiver's per-key
+//! subscription is the whole fast-reject.
 //!
-//! - the **schema id** ([`ContractBody::SCHEMA_ID`]), the compatibility key,
-//! - the **version** ([`ApiVersion::ID`], e.g. `"y2026_1"`), informational,
-//! - the **family** ([`ContractBody::FAMILY`], e.g. `"drive::State"`),
-//! - the **codec** that produced the bytes.
+//! # Topic
 //!
-//! Keeping these out of the payload means the body bytes for an unchanged contract
-//! are identical across versions and codecs; the envelope/metadata layer owns
-//! schema id, version, and family.
-//!
-//! # Family and topic
-//!
-//! Both identifiers are derived from the contract node's path in the tree, never
-//! written by hand:
-//!
-//! - [`ContractBody::FAMILY`] is the `::`-joined node path plus the body type name,
-//!   e.g. `component::motor::Command`. It excludes dynamic variables, so every
-//!   instance of a per-instance node shares one family.
-//! - [`ContractBody::TOPIC`] is the versionless `/`-joined key with each dynamic
-//!   node contributing a `{var}` placeholder, e.g.
-//!   `component/{instance}/motor/{capability}/command`. A fully static path has a
-//!   literal key (`drive/state`).
+//! [`ContractBody::TOPIC`] is derived from the contract node's path in the tree,
+//! never written by hand: the generation, then the `/`-joined node path plus the
+//! topic leaf, with each dynamic node contributing a `{var}` placeholder, e.g.
+//! `y2026_1/component/{instance}/motor/{capability}/command`. A fully static path
+//! has a literal key (`y2026_1/drive/state`). Folding the generation into the key
+//! (D1) is what makes two differently-versioned contracts physically distinct
+//! Zenoh keys - they cannot collide, so there is no `SCHEMA_ID`/`FAMILY` needed to
+//! disambiguate them.
 //!
 //! # The api-local topic builder
 //!
@@ -80,10 +75,10 @@
 //! method binds the topic's side-branded kind to its version-local body. For
 //! example `api::topic::new().drive().state()` yields a
 //! `Topic<Subscribe<drive::State>>` (the CLIENT observes the owner's `state`) over
-//! the static key `drive/state`, and
+//! the generation-qualified key `y2026_1/drive/state`, and
 //! `api::topic::new().component("base").motor("left").command()` fills the dynamic
-//! segments to produce `component/base/motor/left/command`. Because the builder is
-//! generated from the same tree as `FAMILY`/`TOPIC`, the built key and the
+//! segments to produce `y2026_1/component/base/motor/left/command`. Because the
+//! builder is generated from the same tree as `TOPIC`, the built key and the
 //! documented key stay in lockstep.
 //!
 //! ## Owner side: `topic::internal`
@@ -114,15 +109,14 @@ use phoxal_macros::phoxal_api_tree;
 /// - [`ApiVersion`] is the marker trait identifying one dated API version (D60),
 ///   implemented only by the zero-variant `enum Api {}` that [`phoxal_api_tree!`]
 ///   generates inside each version module; its `ID` is the dated module name
-///   (`"y2026_1"`) and is carried in bus metadata as informational provenance.
-///   Its `IS_PREVIEW` const is lifecycle metadata only.
+///   (`"y2026_1"`). Its `IS_PREVIEW` const is lifecycle metadata only.
 /// - [`ContractBody`] is a version-local wire body (D61): a plain serde type
-///   bound to exactly one [`ApiVersion`] and one contract family/topic. Every
-///   body declared inside a [`phoxal_api_tree!`] node gets a generated impl;
-///   handles, `SetupContext` builders, and the `Service`/`Driver` derive
-///   assertions key off its `Api`/`FAMILY`/`SCHEMA_ID`/`TOPIC`. Runtime decode
-///   compatibility keys off `SCHEMA_ID`; its serde encoding *is* the wire payload,
-///   with no version envelope (D62).
+///   bound to exactly one [`ApiVersion`] and one contract topic. Every body
+///   declared inside a [`phoxal_api_tree!`] node gets a generated impl; handles,
+///   `SetupContext` builders, and the `Service`/`Driver` derive assertions key
+///   off its `Api`/`TOPIC`. `TOPIC` is generation-qualified (D1) and *is* the
+///   compatibility key - there is no `SCHEMA_ID`/`FAMILY`; its serde encoding
+///   *is* the wire payload, with no version envelope (D62).
 pub use phoxal_bus::{ApiVersion, ContractBody};
 
 phoxal_api_tree! {

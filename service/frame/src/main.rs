@@ -428,7 +428,7 @@ mod tests {
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c.family == B::FAMILY));
+        assert!(contracts.iter().any(|c| c.topic == B::TOPIC));
     }
 
     fn assert_yaw(rotation_xyzw: [f64; 4], expected_yaw: f64) {

@@ -13,22 +13,24 @@
 //!    [`Manifest::drivers`], [`Manifest::tools`], [`Manifest::simulators`])
 //!    instead of one tagged `entries` list with a `kind` discriminant: the array
 //!    an entry lives in *is* its kind.
-//! 2. **Inlined `emit-apis` metadata.** [`ArtifactEntry::contracts`],
-//!    [`ArtifactEntry::config_schema`], and [`ArtifactEntry::bus_abi`] are
-//!    copied straight from the artifact's own `emit-apis` report at catalog
-//!    generation time. There is no separate `.emit-apis.json` sidecar to fetch
-//!    afterward - the catalog is the whole answer.
+//! 2. **Inlined `emit-apis` metadata.** [`ArtifactEntry::contracts`] and
+//!    [`ArtifactEntry::config_schema`] are copied straight from the artifact's
+//!    own `emit-apis` report at catalog generation time. There is no separate
+//!    `.emit-apis.json` sidecar to fetch afterward - the catalog is the whole
+//!    answer. There is no `bus_abi` field (D1): the wire ABI dissolved into the
+//!    generation-qualified key, so there is nothing left to track as a
+//!    cross-artifact axis.
 //!
 //! `xtask` (`cargo xtask catalog generate`) is the only writer of this schema
 //! today; this module carries the types and the revision/checksum machinery,
 //! not the workspace-discovery or packaging policy that produces a manifest -
 //! that stays in the tool that owns the release process.
 //!
-//! `api_generation` is deliberately per-[`ArtifactEntry`] and [`Contract::family`]
-//! is deliberately versionless: a participant authors against exactly one dated
-//! API generation (compile-enforced), and contract compatibility across
-//! generations is judged by `schema_id` agreement, not by the generation name.
-//! Do not fold the generation into the family string.
+//! `api_generation` is deliberately per-[`ArtifactEntry`]: a participant authors
+//! against exactly one dated API generation (compile-enforced). Unlike the old
+//! model, [`Contract::family`] IS generation-qualified now (D1): the generation
+//! is folded into the contract's own name/key, not tracked as a separate axis,
+//! so contract identity alone (not a `schema_id` hash) decides compatibility.
 
 use std::collections::BTreeMap;
 
@@ -113,9 +115,9 @@ impl Manifest {
 
     /// Verifies the schema identity and that `revision` matches the manifest's
     /// own content. This is a structural tamper/consistency check only; it does
-    /// not enforce business rules (non-empty package/version, `schema_id`
-    /// format, cross-artifact schema agreement, ...) - callers that need those
-    /// apply their own policy on top of a verified manifest.
+    /// not enforce business rules (non-empty package/version, contract name
+    /// format, ...) - callers that need those apply their own policy on top of
+    /// a verified manifest.
     pub fn verify(&self) -> Result<()> {
         if self.schema != SCHEMA {
             bail!(
@@ -166,15 +168,15 @@ pub struct Artifact {
     pub sha256: String,
 }
 
-/// One graph contract a runtime binary uses: nothing beyond the identity
-/// (`family`) and the wire-shape hash (`schema_id`) - no `topic_template`, no
-/// `direction`. Those are a property of the API generation's own contract
-/// manifest, not of a specific artifact's catalog entry.
+/// One graph contract a runtime binary uses: nothing beyond its
+/// generation-qualified identity (`family`, e.g. `"y2026_1::drive::Target"`,
+/// D1) - no `schema_id`, no `topic_template`, no `direction`. Those are a
+/// property of the API generation's own contract manifest, not of a specific
+/// artifact's catalog entry.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Contract {
     pub family: String,
-    pub schema_id: String,
 }
 
 /// A target-independent component asset bundle: meshes, URDF, `component.yaml`,
@@ -208,8 +210,6 @@ pub struct ArtifactEntry {
     /// Inlined JSON Schema for this participant's `robot.yaml` config, from
     /// `emit-apis`.
     pub config_schema: Option<serde_json::Value>,
-    /// Inlined bus wire-protocol identity from `emit-apis` (e.g. `"phoxal-bus/v0"`).
-    pub bus_abi: String,
     /// Triple -> built tarball. The consumer reads supported triples from
     /// these keys; empty is valid (e.g. a metadata-only catalog).
     pub artifacts: BTreeMap<String, Artifact>,
@@ -256,11 +256,9 @@ mod tests {
             version: "0.1.0".to_string(),
             api_generation: "y2026_1".to_string(),
             contracts: vec![Contract {
-                family: "drive::Target".to_string(),
-                schema_id: "0123456789abcdef".to_string(),
+                family: "y2026_1::drive::Target".to_string(),
             }],
             config_schema: Some(serde_json::json!({ "type": "object" })),
-            bus_abi: "phoxal-bus/v0".to_string(),
             artifacts: BTreeMap::new(),
             channels,
             changed_contracts: Vec::new(),

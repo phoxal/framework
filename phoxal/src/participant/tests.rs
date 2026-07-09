@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::bus::{ApiVersion, Codec, ContractBody, MessagePack, QueryCode};
+use crate::bus::{Codec, ContractBody, MessagePack, QueryCode};
 use crate::participant::ParticipantBehavior;
 use crate::prelude::*;
 use phoxal_api::y2026_1 as api;
@@ -42,55 +42,46 @@ impl AssetTest {
 async fn exclusive_server_dispatch_ok_error_and_unknown() {
     let mut rt = AssetTest { present: true };
 
-    // The declared topic shows up in the metadata.
-    assert_eq!(AssetTest::__exclusive_server_topics(), &["asset/get"]);
+    // The declared topic shows up in the metadata, generation-qualified (D1).
+    assert_eq!(
+        AssetTest::__exclusive_server_topics(),
+        &["y2026_1/asset/get"]
+    );
     assert!(AssetTest::__snapshot_server_topics().is_empty());
     AssetTest::__validate_server_topics().unwrap();
     assert!(!AssetTest::HAS_SNAPSHOT);
     assert!(
         AssetTest::SERVER_CONTRACTS
             .iter()
-            .any(|c| c.family == <api::asset::GetRequest as ContractBody>::FAMILY)
+            .any(|c| c.topic == <api::asset::GetRequest as ContractBody>::TOPIC)
     );
-
-    let api = <<api::asset::GetRequest as ContractBody>::Api as ApiVersion>::ID;
-    let schema_id = <api::asset::GetRequest as ContractBody>::SCHEMA_ID;
-    let family = <api::asset::GetRequest as ContractBody>::FAMILY;
 
     let request = MessagePack::encode(&api::asset::GetRequest {
         path: "ok".to_string(),
     })
     .unwrap();
     let reply = rt
-        .__serve_exclusive("asset/get", api, schema_id, family, &request)
+        .__serve_exclusive("y2026_1/asset/get", &request)
         .await
         .unwrap();
     let response: api::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
     assert!(matches!(response, api::asset::GetResponse::Found { .. }));
-    assert_eq!(
-        reply.family,
-        <api::asset::GetResponse as ContractBody>::FAMILY
-    );
 
     let request = MessagePack::encode(&api::asset::GetRequest {
         path: "missing".to_string(),
     })
     .unwrap();
     let failure = rt
-        .__serve_exclusive("asset/get", api, schema_id, family, &request)
+        .__serve_exclusive("y2026_1/asset/get", &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::NotFound);
 
-    // Wrong request schema_id is rejected before the handler runs.
+    // A request on a topic this participant does not serve is unimplemented -
+    // correctness now comes from the key (D1), so there is no separate
+    // schema/family mismatch to test.
     let failure = rt
-        .__serve_exclusive("asset/get", api, "9999999999999999", family, &request)
-        .await
-        .unwrap_err();
-    assert_eq!(failure.code, QueryCode::InvalidArgument);
-
-    let failure = rt
-        .__serve_exclusive("other/topic", api, schema_id, family, &request)
+        .__serve_exclusive("y2026_1/other/topic", &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::Unimplemented);
@@ -107,7 +98,7 @@ impl BadTopicTest {
         Ok(Self {})
     }
 
-    #[server(topic = phoxal::bus::Topic::<phoxal::bus::AskQuery<api::asset::GetRequest, api::asset::GetResponse>>::new_static("asset/other"))]
+    #[server(topic = phoxal::bus::Topic::<phoxal::bus::AskQuery<api::asset::GetRequest, api::asset::GetResponse>>::new_static("y2026_1/asset/other"))]
     async fn get(
         &mut self,
         _request: api::asset::GetRequest,
@@ -120,8 +111,8 @@ impl BadTopicTest {
 fn explicit_server_topic_key_must_match_request_body_topic() {
     let err = BadTopicTest::__validate_server_topics().unwrap_err();
     assert!(err.contains("does not match request body topic"));
-    assert!(err.contains("asset/other"));
-    assert!(err.contains("asset/get"));
+    assert!(err.contains("y2026_1/asset/other"));
+    assert!(err.contains("y2026_1/asset/get"));
 }
 
 #[derive(phoxal::Service)]
@@ -156,7 +147,7 @@ impl DuplicateServerTopicTest {
 fn duplicate_server_topics_are_rejected_before_startup() {
     let err = DuplicateServerTopicTest::__validate_server_topics().unwrap_err();
     assert!(err.contains("duplicate server topic"));
-    assert!(err.contains("asset/get"));
+    assert!(err.contains("y2026_1/asset/get"));
 }
 
 #[derive(phoxal::Service)]
@@ -205,7 +196,7 @@ async fn snapshot_server_dispatch_reads_committed_state() {
         grid: Arc::new(vec![1, 2, 3, 4]),
     };
     assert!(MapTest::HAS_SNAPSHOT);
-    assert_eq!(MapTest::__snapshot_server_topics(), &["map/submap"]);
+    assert_eq!(MapTest::__snapshot_server_topics(), &["y2026_1/map/submap"]);
 
     let snapshot = Arc::new(rt.__take_snapshot());
     let request = MessagePack::encode(&api::map::SubmapRequest {
@@ -216,19 +207,9 @@ async fn snapshot_server_dispatch_reads_committed_state() {
     })
     .unwrap();
 
-    let api = <<api::map::SubmapRequest as ContractBody>::Api as ApiVersion>::ID.to_string();
-    let schema_id = <api::map::SubmapRequest as ContractBody>::SCHEMA_ID.to_string();
-    let family = <api::map::SubmapRequest as ContractBody>::FAMILY.to_string();
-    let reply = MapTest::__serve_snapshot(
-        snapshot,
-        "map/submap".to_string(),
-        api,
-        schema_id,
-        family,
-        request,
-    )
-    .await
-    .unwrap();
+    let reply = MapTest::__serve_snapshot(snapshot, "y2026_1/map/submap".to_string(), request)
+        .await
+        .unwrap();
     let response: api::map::SubmapResponse = MessagePack::decode(&reply.payload).unwrap();
     assert_eq!(response.cells, vec![1, 2, 3, 4]);
 }

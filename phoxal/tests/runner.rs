@@ -456,15 +456,12 @@ fn emit_apis_reports_frozen_schema() {
     assert_eq!(value["artifact"]["id"], "counter");
     assert_eq!(value["api_version"], "y2026_1");
     assert_eq!(value["participant_class"], "checked");
-    assert_eq!(value["bus_abi"], "phoxal-bus/v0");
 
     let contracts = value["required_contracts"].as_array().unwrap();
     assert!(
-        contracts.iter().any(|c| {
-            c["api_version"] == "y2026_1"
-                && c["schema_id"].as_str().is_some_and(|id| id.len() == 16)
-                && c["family"] == <api::drive::Target as ContractBody>::FAMILY
-        }),
+        contracts
+            .iter()
+            .any(|c| c["topic"] == <api::drive::Target as ContractBody>::TOPIC),
         "emit-apis should report the drive::Target contract"
     );
 }
@@ -528,23 +525,25 @@ fn emit_apis_reports_explicit_contracts_once() {
 
     let publish_drive_target = contracts
         .iter()
-        .filter(|c| {
-            c["api_version"] == "y2026_1"
-                && c["family"] == <api::drive::Target as ContractBody>::FAMILY
-        })
+        .filter(|c| c["topic"] == <api::drive::Target as ContractBody>::TOPIC)
         .count();
     assert_eq!(publish_drive_target, 1);
-    assert!(contracts.iter().any(|c| {
-        c["api_version"] == "y2026_1" && c["family"] == <api::map::Revision as ContractBody>::FAMILY
-    }));
-    assert!(contracts.iter().any(|c| {
-        c["api_version"] == "y2026_1"
-            && c["family"] == <api::map::SubmapRequest as ContractBody>::FAMILY
-    }));
-    assert!(contracts.iter().any(|c| {
-        c["api_version"] == "y2026_1"
-            && c["family"] == <api::map::SubmapResponse as ContractBody>::FAMILY
-    }));
+    assert!(
+        contracts
+            .iter()
+            .any(|c| c["topic"] == <api::map::Revision as ContractBody>::TOPIC)
+    );
+    // The query's request and response legs share one generation-qualified
+    // topic (D1), so they collapse into a single reported contract.
+    assert_eq!(
+        <api::map::SubmapRequest as ContractBody>::TOPIC,
+        <api::map::SubmapResponse as ContractBody>::TOPIC
+    );
+    let submap = contracts
+        .iter()
+        .filter(|c| c["topic"] == <api::map::SubmapRequest as ContractBody>::TOPIC)
+        .count();
+    assert_eq!(submap, 1);
 }
 
 fn unique_namespace(label: &str) -> String {

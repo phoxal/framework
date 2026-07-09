@@ -389,7 +389,7 @@ mod tests {
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
+        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
     }
 
     fn manual_command(linear_x_mps: f64, angular_z_radps: f64) -> api::motion::ManualCommand {

@@ -1,62 +1,14 @@
-//! `bus_abi` - the framework-owned wire envelope (D26/D45/D62).
+//! The Zenoh encoding-string half of the wire envelope (D62, D1 wire-key fold).
 //!
-//! `bus_abi` is the **one globally-coordinated layer**, the identity of which is
-//! the combination of three things wrapped around every body:
-//!
-//! 1. the Zenoh **encoding string** ([`encoding_string`]:
-//!    `phoxal/v0;family=<family>;api=<api_version>;schema_id=<schema_id>;codec=<id>`),
-//!    which lets a receiver fast-reject on family/schema/codec before touching
-//!    the payload;
-//! 2. the Zenoh **attachment** - a MessagePack [`BusMetadata`](super::BusMetadata)
-//!    carrying the same schema/family/api identity plus provenance (source +
-//!    logical time);
-//! 3. the **codec** id ([`CodecId`]) naming how the body payload is encoded
-//!    (MessagePack, the one codec in v1).
-//!
-//! Together with the key scheme (`<namespace>/robots/<robot-id>/<topic>`) these
-//! make up the wire contract. `bus_abi` is a **constant** ([`BUS_ABI`]), not a
-//! manifest field, and is **orthogonal** to `api_version` (D62) - the contract
-//! bodies are api-version-local types; only the envelope around them is `bus_abi`.
-//!
-//! The cross-artifact `bus_abi` compatibility check is deferred to freeze (D45):
-//! within a coherent platform release every participant is rebuilt from one
-//! framework version, so the constant simply has to be defined and freezable. The
-//! decode path at runtime (encoding/metadata fast-reject) is the backstop.
-
-use std::fmt;
-
-/// The framework-owned wire-envelope identifier (a versioned string such as
-/// `"phoxal-bus/v0"`). One value, [`BUS_ABI`], is the live ABI; it freezes
-/// per-axis to `v1` (D27), independently of any API version.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct BusAbi {
-    id: &'static str,
-}
-
-impl BusAbi {
-    /// The `bus_abi` identifier string (e.g. `"phoxal-bus/v0"`).
-    pub const fn id(&self) -> &'static str {
-        self.id
-    }
-}
-
-impl fmt::Debug for BusAbi {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "BusAbi({})", self.id)
-    }
-}
-
-impl fmt::Display for BusAbi {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.id)
-    }
-}
-
-/// The current, pre-stable (`v0`) bus ABI. Freezes to `v1` per-axis (D27),
-/// independently of any API version.
-pub const BUS_ABI: BusAbi = BusAbi {
-    id: "phoxal-bus/v0",
-};
+//! Identity used to live in a separately-maintained `bus_abi` (a `family` /
+//! `api_version` / `schema_id` triple carried in the encoding string and mirrored
+//! in [`BusMetadata`](crate::metadata::BusMetadata)). That axis is gone: the
+//! generation is now folded into the Zenoh key itself
+//! (`<Body as ContractBody>::TOPIC` is generation-qualified, e.g.
+//! `y2026_1/drive/target`), so different versioned contracts physically cannot
+//! collide on one key, and a receiver only ever sees samples on keys it
+//! subscribed to. There is nothing left to fast-reject on except the codec, so
+//! the encoding string and [`BusMetadata`] both shrink to that.
 
 /// The wire codec identifier carried in bus metadata. One codec in v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,40 +33,27 @@ impl CodecId {
     }
 }
 
-/// The parsed Zenoh encoding-string half of `bus_abi`.
+/// The parsed Zenoh encoding string: just the codec now that identity lives in
+/// the key (D1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EncodingMetadata {
-    /// Contract family id (`<Body as ContractBody>::FAMILY`).
-    pub family: String,
-    /// Graph API version (`<Body::Api as ApiVersion>::ID`).
-    pub api_version: String,
-    /// Per-contract transitive wire-shape id (`<Body as ContractBody>::SCHEMA_ID`).
-    pub schema_id: String,
     /// Numeric codec id.
     pub codec: u8,
 }
 
 impl EncodingMetadata {
-    /// The codec id, if recognized by this `bus_abi`.
+    /// The codec id, if recognized by this wire ABI.
     pub fn codec_id(&self) -> Option<CodecId> {
         CodecId::from_u8(self.codec)
     }
 }
 
-/// Build the Zenoh encoding string that mirrors the contract metadata so a
-/// receiver can fast-reject before decoding the body.
-///
-/// Format: `phoxal/v0;family=<family>;api=<api_version>;schema_id=<schema_id>;codec=<id>`.
-pub fn encoding_string(family: &str, api_version: &str, schema_id: &str, codec: CodecId) -> String {
-    format!(
-        "phoxal/v0;family={family};api={api_version};schema_id={schema_id};codec={}",
-        codec.as_u8()
-    )
+/// Build the Zenoh encoding string. Format: `phoxal/v0;codec=<id>`.
+pub fn encoding_string(codec: CodecId) -> String {
+    format!("phoxal/v0;codec={}", codec.as_u8())
 }
 
-/// Parse and validate the Zenoh encoding string owned by `bus_abi`.
-///
-/// Format: `phoxal/v0;family=<family>;api=<api_version>;schema_id=<schema_id>;codec=<id>`.
+/// Parse and validate the Zenoh encoding string. Format: `phoxal/v0;codec=<id>`.
 pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadata, String> {
     let mut parts = value.split(';');
     let prefix = parts
@@ -126,9 +65,6 @@ pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadat
         ));
     }
 
-    let mut family = None;
-    let mut api_version = None;
-    let mut schema_id = None;
     let mut codec = None;
     for field in parts {
         let (key, value) = field
@@ -138,9 +74,6 @@ pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadat
             return Err(format!("encoding field '{key}' is empty"));
         }
         match key {
-            "family" => set_once(&mut family, key, value.to_string())?,
-            "api" => set_once(&mut api_version, key, value.to_string())?,
-            "schema_id" => set_once(&mut schema_id, key, value.to_string())?,
             "codec" => {
                 let parsed = value
                     .parse::<u8>()
@@ -152,9 +85,6 @@ pub fn parse_encoding_string(value: &str) -> std::result::Result<EncodingMetadat
     }
 
     Ok(EncodingMetadata {
-        family: family.ok_or_else(|| "encoding string is missing family".to_string())?,
-        api_version: api_version.ok_or_else(|| "encoding string is missing api".to_string())?,
-        schema_id: schema_id.ok_or_else(|| "encoding string is missing schema_id".to_string())?,
         codec: codec.ok_or_else(|| "encoding string is missing codec".to_string())?,
     })
 }

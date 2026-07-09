@@ -640,26 +640,9 @@ async fn serve_exclusive_query<R: ParticipantBehavior>(
             return false;
         }
     };
-    match participant
-        .__serve_exclusive(
-            &topic,
-            &metadata.api_version,
-            &metadata.schema_id,
-            &metadata.family,
-            &request,
-        )
-        .await
-    {
+    match participant.__serve_exclusive(&topic, &request).await {
         Ok(reply) => {
-            let _ = incoming
-                .reply(
-                    bus,
-                    reply.payload,
-                    reply.family,
-                    reply.api_version,
-                    reply.schema_id,
-                )
-                .await;
+            let _ = incoming.reply(bus, reply.payload).await;
             true
         }
         Err(failure) => {
@@ -708,26 +691,9 @@ async fn serve_snapshot_query<R: ParticipantBehavior>(
             .await;
         return;
     };
-    match R::__serve_snapshot(
-        snapshot,
-        topic,
-        metadata.api_version,
-        metadata.schema_id,
-        metadata.family,
-        request,
-    )
-    .await
-    {
+    match R::__serve_snapshot(snapshot, topic, request).await {
         Ok(reply) => {
-            let _ = incoming
-                .reply(
-                    bus,
-                    reply.payload,
-                    reply.family,
-                    reply.api_version,
-                    reply.schema_id,
-                )
-                .await;
+            let _ = incoming.reply(bus, reply.payload).await;
         }
         Err(failure) => {
             let _ = incoming.reply_err(&failure).await;

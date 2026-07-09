@@ -363,7 +363,7 @@ mod tests {
 
         for binding in config.left.iter().chain(&config.right) {
             let topic = binding.topic();
-            assert!(topic.key().starts_with("component/"));
+            assert!(topic.key().starts_with("y2026_1/component/"));
             assert!(topic.key().ends_with("/sample"));
         }
     }
@@ -377,12 +377,12 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c["family"] == <api::component::encoder::Sample as ContractBody>::FAMILY)
+                .any(|c| c["topic"] == <api::component::encoder::Sample as ContractBody>::TOPIC)
         );
         assert!(
             contracts
                 .iter()
-                .any(|c| c["family"] == <api::odometry::State as ContractBody>::FAMILY)
+                .any(|c| c["topic"] == <api::odometry::State as ContractBody>::TOPIC)
         );
     }
 }

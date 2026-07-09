@@ -13,7 +13,7 @@
 //! Three ideas hold it together:
 //!
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
-//!   contract family and one API version. Handles are body-typed
+//!   generation-qualified contract name. Handles are body-typed
 //!   ([`Publisher<T>`](bus::Publisher), [`Subscriber<T>`](bus::Subscriber),
 //!   [`Latest<T>`](bus::Latest), [`Querier<Req, Resp>`](bus::Querier)), so the
 //!   compiler - not a late check - rejects sending the wrong type on a topic.
@@ -21,7 +21,8 @@
 //!   (`phoxal_api::y2026_1`, …), not semver crates. A participant authors against
 //!   exactly one of them; mixing bodies from two versions in one participant is a
 //!   compile error. A graph may mix generations: compatibility is per-contract
-//!   `schema_id` agreement ([`check`](crate::check), #16).
+//!   name identity, realized on the wire by the generation-qualified key (D1) -
+//!   there is no `schema_id`.
 //! - **Participants are authored, not wired.** You write a struct and an `impl`;
 //!   [`#[derive(Service)]`](derive@Service), [`#[derive(Driver)]`](derive@Driver),
 //!   [`#[derive(Tool)]`](derive@Tool), or
@@ -168,10 +169,10 @@ pub mod util;
 /// access use [`raw`] instead.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiVersion, AskQuery, BUS_ABI, BusAbi, BusError, BusMetadata, Codec, CodecError, CodecId,
-        ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, MessagePack, OwnerCap, Publish,
-        Publisher, Querier, QueryCode, QueryError, QueryFailure, Received, Result, ServeQuery,
-        ServerResult, Source, Subscribe, Subscriber, Topic, TopicKind, TopicRole, WildcardPublish,
+        ApiVersion, AskQuery, BusError, BusMetadata, Codec, CodecError, CodecId, ContractBody,
+        DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, MessagePack, OwnerCap, Publish, Publisher,
+        Querier, QueryCode, QueryError, QueryFailure, Received, Result, ServeQuery, ServerResult,
+        Source, Subscribe, Subscriber, Topic, TopicKind, TopicRole, WildcardPublish,
         encoding_string,
     };
 }
@@ -182,7 +183,7 @@ pub mod bus {
 /// Importing this module is the conscious opt-in. The ordinary
 /// `phoxal::prelude::*` and [`bus`] module do not expose raw session/open APIs.
 /// `Tool` participants are emitted as `participant_class = "privileged"`; the
-/// graph checker still includes their schema metadata, but never lets their raw
+/// graph checker still includes their contracts, but never lets their raw
 /// access satisfy checked topology.
 pub mod raw {
     pub use crate::participant::runner::run_with_bus;

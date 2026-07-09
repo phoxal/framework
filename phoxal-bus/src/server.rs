@@ -7,13 +7,15 @@
 //! [`IncomingQuery`], which exposes the raw request bytes + its [`BusMetadata`]
 //! and the two reply legs:
 //!
-//! - [`IncomingQuery::reply`] sends the plain `Resp` body (D62), with mirroring
-//!   metadata, on the success leg;
+//! - [`IncomingQuery::reply`] sends the plain `Resp` body (D62), with a fresh
+//!   provenance-only metadata attachment, on the success leg;
 //! - [`IncomingQuery::reply_err`] sends a [`QueryFailure`] on Zenoh's native
 //!   error leg (D31), which the caller decodes back into the failure.
 //!
 //! These public types carry untyped payload bytes; the generated server dispatch
-//! validates `schema_id`/`family` and does the typed encode/decode around them.
+//! does the typed encode/decode around them. Identity is no longer validated
+//! here (D1): a query only ever reaches the handler for its own generation-
+//! qualified topic key, so there is nothing left to check beyond the codec.
 
 use zenoh::handlers::FifoChannelHandler;
 use zenoh::key_expr::OwnedKeyExpr;
@@ -72,9 +74,9 @@ impl IncomingQuery {
         Ok(payload.to_bytes().to_vec())
     }
 
-    /// The request's bus metadata (schema_id, family, codec, and api_version),
-    /// decoded from the Zenoh attachment. The generated server dispatch validates
-    /// `schema_id` and `family` against the handler's request body before decode.
+    /// The request's bus metadata (codec + provenance), decoded from the Zenoh
+    /// attachment. Identity is no longer carried here (D1): this queryable only
+    /// ever receives requests on its own generation-qualified topic key.
     pub fn request_metadata(&self) -> Result<BusMetadata> {
         let encoding = self.query.encoding().ok_or_else(|| BusError::Metadata {
             topic: self.topic_key.clone(),
@@ -105,44 +107,22 @@ impl IncomingQuery {
                 detail: format!("malformed request BusMetadata: {e}"),
             }
         })?;
-        if metadata.api_version != encoding.api_version
-            || metadata.schema_id != encoding.schema_id
-            || metadata.family != encoding.family
-            || metadata.codec != encoding.codec
-        {
+        if metadata.codec != encoding.codec {
             return Err(BusError::Metadata {
                 topic: self.topic_key.clone(),
                 detail: format!(
-                    "request encoding/BusMetadata mismatch: encoding family='{}' api='{}' schema_id='{}' codec={}, \
-                     metadata family='{}' api='{}' schema_id='{}' codec={}",
-                    encoding.family,
-                    encoding.api_version,
-                    encoding.schema_id,
-                    encoding.codec,
-                    metadata.family,
-                    metadata.api_version,
-                    metadata.schema_id,
-                    metadata.codec
+                    "request encoding/BusMetadata codec mismatch: encoding codec={}, metadata codec={}",
+                    encoding.codec, metadata.codec
                 ),
             });
         }
         Ok(metadata)
     }
 
-    /// Send a success reply: the plain `Resp` body, with bus metadata mirroring
-    /// the response contract (D62).
-    pub async fn reply(
-        &self,
-        bus: &Bus,
-        payload: Vec<u8>,
-        family: &str,
-        api_version: &str,
-        schema_id: &str,
-    ) -> Result<()> {
+    /// Send a success reply: the plain `Resp` body, with a fresh
+    /// provenance-only metadata attachment (D62/D1).
+    pub async fn reply(&self, bus: &Bus, payload: Vec<u8>) -> Result<()> {
         let metadata = BusMetadata {
-            api_version: api_version.to_string(),
-            schema_id: schema_id.to_string(),
-            family: family.to_string(),
             codec: CodecId::MessagePack.as_u8(),
             produced_at_ns: 0,
             epoch: 0,
@@ -154,12 +134,7 @@ impl IncomingQuery {
         };
         self.query
             .reply(self.query.key_expr(), payload)
-            .encoding(encoding_string(
-                family,
-                api_version,
-                schema_id,
-                CodecId::MessagePack,
-            ))
+            .encoding(encoding_string(CodecId::MessagePack))
             .attachment(metadata.encode())
             .await
             .map_err(|e| BusError::Transport(e.to_string()))

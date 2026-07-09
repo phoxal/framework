@@ -385,7 +385,7 @@ mod tests {
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["family"] == B::FAMILY));
+        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
     }
 
     fn goal(x_m: f64, y_m: f64, yaw_rad: Option<f64>) -> api::mission::Goal {

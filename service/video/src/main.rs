@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(rgb.stream_id, "front_camera_rgb");
         assert_eq!(
             rgb.camera_topic().key(),
-            "component/front_camera/camera/rgb/frame"
+            "y2026_1/component/front_camera/camera/rgb/frame"
         );
         // The owner topic builder requires the runner-minted `OwnerCap` (L2); the
         // test mints one directly via the doc-hidden `__mint`, standing in for the
@@ -333,7 +333,7 @@ mod tests {
         let cap = phoxal::bus::OwnerCap::__mint();
         assert_eq!(
             rgb.state_topic(cap).key(),
-            "video/stream/front_camera_rgb/state"
+            "y2026_1/video/stream/front_camera_rgb/state"
         );
     }
 
@@ -404,7 +404,7 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|contract| contract["family"] == B::FAMILY)
+                .any(|contract| contract["topic"] == B::TOPIC)
         );
     }
 }

@@ -220,12 +220,12 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c.family == <api::presence::Heartbeat as ContractBody>::FAMILY)
+                .any(|c| c.topic == <api::presence::Heartbeat as ContractBody>::TOPIC)
         );
         assert!(
             contracts
                 .iter()
-                .any(|c| c.family == <api::presence::State as ContractBody>::FAMILY)
+                .any(|c| c.topic == <api::presence::State as ContractBody>::TOPIC)
         );
     }
 

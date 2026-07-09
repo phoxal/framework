@@ -56,9 +56,9 @@ pub struct BusHealth {
     pub outbound_drops: AtomicU64,
     /// Inbound samples dropped because the ring was full (slow consumer).
     pub inbound_drops: AtomicU64,
-    /// Inbound samples rejected for a `schema_id` mismatch.
-    pub schema_mismatches: AtomicU64,
-    /// Inbound samples that failed to decode.
+    /// Inbound samples that failed to decode (D1: identity now lives in the key,
+    /// so decode failures are the only remaining rejection - there is no
+    /// separate schema/family mismatch counter).
     pub decode_errors: AtomicU64,
 }
 
@@ -168,7 +168,7 @@ impl Bus {
         &self.inner.session
     }
 
-    /// Compose a full bus key from a versionless topic key.
+    /// Compose a full bus key from a generation-qualified topic key.
     pub fn full_key(&self, topic_key: &str) -> String {
         format!("{}/{}", self.inner.root, topic_key)
     }

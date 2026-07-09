@@ -258,12 +258,12 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c.family == <api::component::encoder::Sample as ContractBody>::FAMILY)
+                .any(|c| c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC)
         );
         assert!(
             contracts
                 .iter()
-                .any(|c| c.family == <api::joint::JointState as ContractBody>::FAMILY)
+                .any(|c| c.topic == <api::joint::JointState as ContractBody>::TOPIC)
         );
     }
 }

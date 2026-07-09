@@ -132,10 +132,12 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c["family"] == <api::odometry::State as ContractBody>::FAMILY)
+                .any(|c| c["topic"] == <api::odometry::State as ContractBody>::TOPIC)
         );
-        assert!(contracts.iter().any(|c| {
-            c["family"] == <api::localize::LocalizationState as ContractBody>::FAMILY
-        }));
+        assert!(
+            contracts.iter().any(|c| {
+                c["topic"] == <api::localize::LocalizationState as ContractBody>::TOPIC
+            })
+        );
     }
 }

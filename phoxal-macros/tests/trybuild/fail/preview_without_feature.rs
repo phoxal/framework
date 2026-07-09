@@ -10,7 +10,12 @@ phoxal_api_tree! {
         }
     }
 
-    preview version y2026_2 extends y2026_1 {}
+    preview version y2026_2 {
+        sample {
+            struct Body { value: u8 }
+            topic body: state Body;
+        }
+    }
 }
 
 fn main() {

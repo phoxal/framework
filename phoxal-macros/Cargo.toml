@@ -20,7 +20,6 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 heck = { workspace = true }
-sha2 = { workspace = true }
 
 [dev-dependencies]
 phoxal-bus = { workspace = true }

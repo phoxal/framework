@@ -369,12 +369,12 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c.family == <api::power::Command as ContractBody>::FAMILY)
+                .any(|c| c.topic == <api::power::Command as ContractBody>::TOPIC)
         );
         assert!(
             contracts
                 .iter()
-                .any(|c| c.family == <api::power::State as ContractBody>::FAMILY)
+                .any(|c| c.topic == <api::power::State as ContractBody>::TOPIC)
         );
     }
 }

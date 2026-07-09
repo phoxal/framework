@@ -1,7 +1,7 @@
 error[E0433]: cannot find module or crate `y2026_2` in this scope
-  --> tests/trybuild/fail/preview_without_feature.rs:17:13
+  --> tests/trybuild/fail/preview_without_feature.rs:22:13
    |
-17 |     let _ = y2026_2::topic::new();
+22 |     let _ = y2026_2::topic::new();
    |             ^^^^^^^ use of unresolved module or unlinked crate `y2026_2`
    |
 note: found an item that was configured out
@@ -12,14 +12,15 @@ note: found an item that was configured out
  7 | |         sample {
  8 | |             struct Body { value: u8 }
 ...  |
-13 | |     preview version y2026_2 extends y2026_1 {}
+13 | |     preview version y2026_2 {
    | |                     ^^^^^^^
-14 | | }
+...  |
+19 | | }
    | |_- the item is gated behind the `preview-y2026_2` feature
 help: there is a crate or module with a similar name
    |
-17 -     let _ = y2026_2::topic::new();
-17 +     let _ = y2026_1::topic::new();
+22 -     let _ = y2026_2::topic::new();
+22 +     let _ = y2026_1::topic::new();
    |
 help: consider importing this module
    |
@@ -27,6 +28,6 @@ help: consider importing this module
    |
 help: if you import `topic`, refer to it directly
    |
-17 -     let _ = y2026_2::topic::new();
-17 +     let _ = topic::new();
+22 -     let _ = y2026_2::topic::new();
+22 +     let _ = topic::new();
    |

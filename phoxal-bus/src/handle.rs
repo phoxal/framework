@@ -26,9 +26,11 @@
 //!   the ring fill. Choose `Latest` when only current state matters and
 //!   `Subscriber` when a bounded history is useful.
 //!
-//! All receive paths fast-reject on the metadata `schema_id` before decoding
-//! the body; a mismatch is counted (`schema_mismatches`) + logged as a health
-//! signal, never a silent accept (D62).
+//! Identity now lives entirely in the Zenoh key (D1: the generation is folded
+//! into `<Body as ContractBody>::TOPIC`), so a receiver's per-key subscription
+//! is the fast-reject; the decode path only still validates the codec before
+//! touching the payload. A decode failure is counted (`decode_errors`) + logged
+//! as a health signal, never a silent accept.
 
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -46,7 +48,7 @@ use zenoh::sample::Sample;
 use crate::LogicalTime;
 use crate::abi::{CodecId, encoding_string, parse_encoding_string};
 use crate::codec::{Codec, MessagePack};
-use crate::contract::{ApiVersion, ContractBody};
+use crate::contract::ContractBody;
 use crate::error::{BusError, Result};
 use crate::metadata::{BusMetadata, Source};
 use crate::query::{QueryError, QueryFailure};
@@ -56,10 +58,10 @@ use crate::topic::{AskQuery, Publish, Subscribe, Topic};
 /// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Publishes plain bodies of `B` on a versionless key; schema/family/api identity
-/// rides in the [`BusMetadata`] attachment + encoding string, never in the key or
-/// body (D62). A publish is a non-blocking enqueue, so it is safe to call
-/// from the step loop (D35/D43e).
+/// Publishes plain bodies of `B` on `B`'s generation-qualified key (D1); the
+/// [`BusMetadata`] attachment carries only provenance (source + logical time)
+/// and the codec, never identity (D62). A publish is a non-blocking enqueue, so
+/// it is safe to call from the step loop (D35/D43e).
 pub struct Publisher<B> {
     bus: Bus,
     key: String,
@@ -92,19 +94,15 @@ impl<B: ContractBody> Publisher<B> {
 
     /// The explicit non-blocking publish op (D43e).
     ///
-    /// Encodes `body`, builds the [`BusMetadata`] (api version, family, codec,
-    /// `at`'s epoch + `produced_at_ns`, and this producer's next sequence), and
-    /// enqueues it on the outbound queue. Returns immediately. A saturated
-    /// outbound queue (sample or byte bound) returns [`BusError::Saturated`] - the
-    /// sample was dropped and `outbound_drops` bumped - so the caller can observe
-    /// the loss; a closed session returns [`BusError::Closed`].
+    /// Encodes `body`, builds the [`BusMetadata`] (codec, `at`'s epoch +
+    /// `produced_at_ns`, and this producer's next sequence), and enqueues it on
+    /// the outbound queue. Returns immediately. A saturated outbound queue
+    /// (sample or byte bound) returns [`BusError::Saturated`] - the sample was
+    /// dropped and `outbound_drops` bumped - so the caller can observe the loss;
+    /// a closed session returns [`BusError::Closed`].
     pub fn try_publish(&self, at: LogicalTime, body: B) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
-        let api_version = <B::Api as ApiVersion>::ID;
         let metadata = BusMetadata {
-            api_version: api_version.to_string(),
-            schema_id: B::SCHEMA_ID.to_string(),
-            family: B::FAMILY.to_string(),
             codec: MessagePack::ID.as_u8(),
             produced_at_ns: at.time_ns(),
             epoch: at.epoch(),
@@ -114,7 +112,7 @@ impl<B: ContractBody> Publisher<B> {
                 sequence: self.bus.next_sequence(),
             },
         };
-        let encoding = encoding_string(B::FAMILY, api_version, B::SCHEMA_ID, MessagePack::ID);
+        let encoding = encoding_string(MessagePack::ID);
         self.bus
             .enqueue(self.key.clone(), encoding, metadata.encode(), payload)
     }
@@ -167,11 +165,7 @@ where
     pub async fn query(&self, request: Req) -> std::result::Result<Resp, QueryError> {
         let payload =
             MessagePack::encode(&request).map_err(|e| QueryError::Protocol(e.to_string()))?;
-        let api_version = <Req::Api as ApiVersion>::ID;
         let metadata = BusMetadata {
-            api_version: api_version.to_string(),
-            schema_id: Req::SCHEMA_ID.to_string(),
-            family: Req::FAMILY.to_string(),
             codec: MessagePack::ID.as_u8(),
             produced_at_ns: 0,
             epoch: 0,
@@ -189,12 +183,7 @@ where
             .session()
             .get(key)
             .payload(payload)
-            .encoding(Encoding::from(encoding_string(
-                Req::FAMILY,
-                api_version,
-                Req::SCHEMA_ID,
-                MessagePack::ID,
-            )))
+            .encoding(Encoding::from(encoding_string(MessagePack::ID)))
             .attachment(metadata.encode())
             // Target ALL matching responders (not just BestMatching) and do not
             // consolidate, so a duplicate responder on an exclusive topic surfaces
@@ -270,9 +259,8 @@ pub struct Received<B> {
 /// A background task overwrites a single slot with each decoded sample, so a
 /// reader always sees current state and never a backlog. Use this when only the
 /// latest value matters (the common case for periodic state); reach for
-/// [`Subscriber`] when a bounded history is needed. Decode/`schema_id`
-/// failures are counted + logged, not stored. The subscription lives until the
-/// `Latest` is dropped.
+/// [`Subscriber`] when a bounded history is needed. Decode failures are counted
+/// + logged, not stored. The subscription lives until the `Latest` is dropped.
 pub struct Latest<B> {
     slot: Arc<ArcSwapOption<B>>,
     _guard: SubscriptionGuard,
@@ -308,8 +296,8 @@ impl<B: ContractBody> Latest<B> {
 /// buffered sample is evicted and `inbound_drops` is bumped - the newest sample
 /// always wins, the backlog never grows without bound. Use this when a short
 /// history is useful; reach for [`Latest`] when only current state matters.
-/// Decode/`schema_id` failures are counted + logged, not buffered. The
-/// subscription lives until the `Subscriber` is dropped.
+/// Decode failures are counted + logged, not buffered. The subscription lives
+/// until the `Subscriber` is dropped.
 pub struct Subscriber<B> {
     ring: Arc<Ring<B>>,
     _guard: SubscriptionGuard,
@@ -406,8 +394,8 @@ impl Drop for SubscriptionGuard {
 }
 
 /// Declare a Zenoh subscriber on `topic_key` (under the bus root) and spawn a
-/// task that decodes each sample and feeds it to `on_sample`. Decode failures and
-/// `schema_id` mismatches are counted + logged, never silently accepted.
+/// task that decodes each sample and feeds it to `on_sample`. Decode failures
+/// are counted + logged, never silently accepted.
 async fn spawn_subscription<B, F>(
     bus: &Bus,
     topic_key: &str,
@@ -434,20 +422,10 @@ where
             match decode_sample::<B>(&sample, &topic_owned) {
                 Ok((body, metadata)) => on_sample(body, metadata),
                 Err(err) => {
-                    match &err {
-                        BusError::SchemaIdMismatch { .. } => {
-                            health_bus
-                                .health()
-                                .schema_mismatches
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
-                        _ => {
-                            health_bus
-                                .health()
-                                .decode_errors
-                                .fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
+                    health_bus
+                        .health()
+                        .decode_errors
+                        .fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(target: "phoxal.bus", topic = %topic_owned, error = %err, "dropped inbound sample");
                 }
             }
@@ -457,8 +435,11 @@ where
     Ok(SubscriptionGuard { task })
 }
 
-/// Decode one Zenoh sample into a body of `B`, fast-rejecting on the metadata
-/// `schema_id` and codec before touching the payload.
+/// Decode one Zenoh sample into a body of `B`, validating the codec before
+/// touching the payload. Identity (which contract, which generation) is no
+/// longer checked here - it is guaranteed by the Zenoh key itself (D1): this
+/// function is only ever invoked for samples received on a subscription already
+/// scoped to `B`'s generation-qualified topic.
 pub(crate) fn decode_sample<B: ContractBody>(
     sample: &Sample,
     topic: &str,
@@ -468,23 +449,6 @@ pub(crate) fn decode_sample<B: ContractBody>(
             topic: topic.to_string(),
             detail: format!("malformed encoding string: {e}"),
         })?;
-    if encoding.schema_id != B::SCHEMA_ID {
-        return Err(BusError::SchemaIdMismatch {
-            topic: topic.to_string(),
-            expected: B::SCHEMA_ID.to_string(),
-            received: encoding.schema_id,
-        });
-    }
-    if encoding.family != B::FAMILY {
-        return Err(BusError::Metadata {
-            topic: topic.to_string(),
-            detail: format!(
-                "encoding family mismatch: expected '{}', received '{}'",
-                B::FAMILY,
-                encoding.family
-            ),
-        });
-    }
     match encoding.codec_id() {
         Some(CodecId::MessagePack) => {}
         None => {
@@ -505,45 +469,12 @@ pub(crate) fn decode_sample<B: ContractBody>(
             detail: format!("malformed BusMetadata: {e}"),
         })?;
 
-    if metadata.api_version != encoding.api_version
-        || metadata.schema_id != encoding.schema_id
-        || metadata.family != encoding.family
-        || metadata.codec != encoding.codec
-    {
+    if metadata.codec != encoding.codec {
         return Err(BusError::Metadata {
             topic: topic.to_string(),
             detail: format!(
-                "encoding/BusMetadata mismatch: encoding family='{}' api='{}' schema_id='{}' codec={}, \
-                 metadata family='{}' api='{}' schema_id='{}' codec={}",
-                encoding.family,
-                encoding.api_version,
-                encoding.schema_id,
-                encoding.codec,
-                metadata.family,
-                metadata.api_version,
-                metadata.schema_id,
-                metadata.codec
-            ),
-        });
-    }
-
-    if metadata.schema_id != B::SCHEMA_ID {
-        return Err(BusError::SchemaIdMismatch {
-            topic: topic.to_string(),
-            expected: B::SCHEMA_ID.to_string(),
-            received: metadata.schema_id,
-        });
-    }
-
-    // The metadata family must match the body we are decoding into - a body whose
-    // family disagrees with the topic is a producer bug, not a silent accept.
-    if metadata.family != B::FAMILY {
-        return Err(BusError::Metadata {
-            topic: topic.to_string(),
-            detail: format!(
-                "family mismatch: expected '{}', received '{}'",
-                B::FAMILY,
-                metadata.family
+                "encoding/BusMetadata codec mismatch: encoding codec={}, metadata codec={}",
+                encoding.codec, metadata.codec
             ),
         });
     }

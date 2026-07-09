@@ -44,18 +44,13 @@ impl<S> Deref for Snapshot<S> {
     }
 }
 
-/// A successful server reply: the encoded plain `Resp` body plus the metadata the
-/// runner needs to stamp the reply (D62).
+/// A successful server reply: the encoded plain `Resp` body (D62/D1). Identity
+/// no longer rides the reply - the request already arrived on `Resp`'s own
+/// generation-qualified topic key, so the reply needs no separate stamp.
 #[derive(Debug)]
 pub struct ServerReply {
     /// MessagePack-encoded `Resp` body.
     pub payload: Vec<u8>,
-    /// `<Resp as ContractBody>::FAMILY`.
-    pub family: &'static str,
-    /// `<Resp::Api as ApiVersion>::ID`.
-    pub api_version: &'static str,
-    /// `<Resp as ContractBody>::SCHEMA_ID`.
-    pub schema_id: &'static str,
 }
 
 /// What a generated server dispatcher returns: a [`ServerReply`] or a structured

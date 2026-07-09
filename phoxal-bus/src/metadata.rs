@@ -1,9 +1,12 @@
-//! `BusMetadata` - the per-sample attachment (D43c/D62).
+//! `BusMetadata` - the per-sample attachment (D43c/D62/D1).
 //!
-//! The wire body is the plain MessagePack payload (D62); schema/family/api
-//! identity and provenance ride here, in the Zenoh attachment. A receiver reads
-//! `schema_id`/`family`/`codec` to fast-reject before decoding the body, and
-//! `produced_at_ns`/`epoch`/`source` give logical-time + causality.
+//! The wire body is the plain MessagePack payload (D62); provenance +
+//! logical time ride here, in the Zenoh attachment. Identity (which contract,
+//! which generation) is no longer carried in the envelope at all - it lives in
+//! the Zenoh key itself (the generation is folded into
+//! `<Body as ContractBody>::TOPIC`, D1), so a receiver's per-key subscription is
+//! the whole fast-reject. `produced_at_ns`/`epoch`/`source` give logical-time +
+//! causality.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,12 +18,6 @@ use crate::abi::CodecId;
 /// decoders ignore them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BusMetadata {
-    /// The producing body's API version (`<Api as ApiVersion>::ID`).
-    pub api_version: String,
-    /// The producing body's schema id (`<Body as ContractBody>::SCHEMA_ID`).
-    pub schema_id: String,
-    /// The contract family id (`<Body as ContractBody>::FAMILY`).
-    pub family: String,
     /// The codec used for the body payload.
     pub codec: u8,
     /// Logical production time in nanoseconds (the clock's `time_ns`).
@@ -54,7 +51,7 @@ impl BusMetadata {
         rmp_serde::from_slice(bytes)
     }
 
-    /// The codec id, if recognized by this `bus_abi`.
+    /// The codec id, if recognized by this wire ABI.
     pub fn codec_id(&self) -> Option<CodecId> {
         CodecId::from_u8(self.codec)
     }
