@@ -182,6 +182,18 @@ impl ParticipantConfig for () {
     const SCHEMA_JSON: &'static str = "{}";
 }
 
+/// An optional config is a config: `config = Option<T>` (a participant whose
+/// `PHOXAL_CONFIG` may be absent, deserializing to `None`) works whenever
+/// `T: ParticipantConfig`. This mirrors the OLD model, which accepted
+/// `Option<T>` through its shape bound; `Option<T>`'s own `Deserialize` maps
+/// `null`/absent to `None` and a present object to `Some(T)`. A participant
+/// crate cannot write `impl ParticipantConfig for Option<LocalConfig>` itself
+/// (orphan rule: both the trait and `Option` are foreign), so the blanket lives
+/// here.
+impl<T: ParticipantConfig> ParticipantConfig for Option<T> {
+    const SCHEMA_JSON: &'static str = T::SCHEMA_JSON;
+}
+
 /// Emitted by `#[phoxal::service]` / `#[phoxal::driver]` /
 /// `#[phoxal::simulator]` / `#[phoxal::tool]`: participant identity plus the
 /// linked `Config`/`Api` types (the NEW authoring model's counterpart to
