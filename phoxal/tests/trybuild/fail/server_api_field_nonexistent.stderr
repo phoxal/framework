@@ -1,0 +1,5 @@
+error[E0609]: no field `get` on type `&Api`
+  --> tests/trybuild/fail/server_api_field_nonexistent.rs:25:20
+   |
+25 |     #[server(api = get)]
+   |                    ^^^ unknown field

@@ -20,9 +20,9 @@ pub mod server;
 pub mod spec;
 
 pub use api::{
-    ApiContractUse, ContractRole, Participant, ParticipantApi, ParticipantConfig,
-    ParticipantLifecycle, Server, SetupContextApiExt, SetupContextDriverExt,
-    SetupContextSimulatorExt, SetupContextToolExt,
+    ApiContractUse, ContractRole, DeclaresAsk, DeclaresPublish, DeclaresServe, DeclaresSubscribe,
+    Participant, ParticipantApi, ParticipantConfig, ParticipantLifecycle, Server,
+    SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
 };
 pub use clock::{ClockSource, RealClock, TestClock};
 pub use context::{SetupContext, ShutdownContext, StepContext};

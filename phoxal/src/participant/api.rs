@@ -19,30 +19,6 @@
 //!   `schemars` schema needs a host-side `build.rs` step (a recursive runtime
 //!   walk a proc-macro cannot reproduce across crate boundaries) - a later
 //!   slice (RECONCILIATION correction #12).
-//! - **`Declares*<B>`-style compile-time gating** on the `SetupContext`
-//!   builders below (`publisher`/`latest`/`server`/…) - "you must declare this
-//!   family before building a handle for it" (D44). This slice's builders are
-//!   **open** (any `ContractBody` compiles), matching "this slice only needs
-//!   the contract-identity metadata embedded and the const available."
-//!
-//!   Consequence for tooling: because the builders are open AND a handle can
-//!   be built and then stashed somewhere other than a scanned `Api` field
-//!   (e.g. moved into a `ctx.spawn_managed(...)` task), [`ParticipantApi::CONTRACTS`]
-//!   is the set of contracts named by the `Api` struct's fields, **not** a
-//!   guaranteed-complete picture of everything the participant actually
-//!   touches on the bus. It is a sound *lower bound* on the compatibility
-//!   surface, and for a participant authored to the target model (all handles
-//!   live as `Api` fields, nothing bypasses them) it is exact - but until
-//!   `Declares*<B>` gating lands to make "every handle is a declared `Api`
-//!   field" a compile-time guarantee, downstream tooling
-//!   (xtask/catalog/graph-check) must treat `CONTRACTS` as authoritative for
-//!   *what is declared*, not as a proof that nothing else is used.
-//! - **`#[server(api = field)]` field validation.** The `field` identifier is
-//!   parsed and recorded but not cross-checked against the `Api` struct's
-//!   actual `Server<Req, Resp>` field of that name - a proc-macro on the
-//!   `impl` block cannot see the separate `Api` struct definition it did not
-//!   derive, so binding the handler to its declared slot is deferred to a
-//!   later slice that owns both together.
 //! - **Deferred hardening for `#[server_snapshot]`.** The generated
 //!   [`ParticipantLifecycle::__serve_snapshot`] takes `Arc<Self::Api>`
 //!   (read-only, D3): the runner constructs that `Arc` (one clone of the
@@ -139,6 +115,34 @@ pub trait ParticipantApi: Send + Sync + Clone + 'static {
 impl ParticipantApi for () {
     const CONTRACTS: &'static [ApiContractUse] = &[];
 }
+
+/// Per-`Api`-struct marker: this `Api` declared a *publish* handle for body
+/// `B` (D44). Emitted by `#[derive(phoxal::Api)]` for each `Publisher<B>`
+/// field (including `Vec`/`BTreeMap`/`HashMap` of one). [`SetupContextApiExt::publisher`]
+/// carries `where R::Api: DeclaresPublish<B>`, so building a publisher for a
+/// family the `Api` struct never declared as a field is a compile error -
+/// this is what makes [`ParticipantApi::CONTRACTS`] a guaranteed-complete
+/// picture of the participant's bus surface, not just a lower bound (see the
+/// trait's docs).
+pub trait DeclaresPublish<B: ?Sized> {}
+
+/// Per-`Api`-struct marker: this `Api` declared a *subscribe* handle for body
+/// `B` (`Subscriber<B>`/`Latest<B>` fields, including `Vec`/`BTreeMap`/`HashMap`
+/// of one). See [`DeclaresPublish`]; [`SetupContextApiExt::latest`] and
+/// [`SetupContextApiExt::subscriber`] both carry `where R::Api: DeclaresSubscribe<B>`.
+pub trait DeclaresSubscribe<B: ?Sized> {}
+
+/// Per-`Api`-struct marker: this `Api` declared a *query* (asking/client)
+/// handle for `Req`/`Resp` (`Querier<Req, Resp>` fields). See
+/// [`DeclaresPublish`]; [`SetupContextApiExt::querier`] carries
+/// `where R::Api: DeclaresAsk<Req, Resp>`.
+pub trait DeclaresAsk<Req: ?Sized, Resp: ?Sized> {}
+
+/// Per-`Api`-struct marker: this `Api` declared a *serve* (answering/server)
+/// handle for `Req`/`Resp` (`Server<Req, Resp>` fields). See
+/// [`DeclaresPublish`]; [`SetupContextApiExt::server`] carries
+/// `where R::Api: DeclaresServe<Req, Resp>`.
+pub trait DeclaresServe<Req: ?Sized, Resp: ?Sized> {}
 
 /// Emitted by `#[derive(phoxal::Config)]`: participant config identity.
 ///
@@ -306,37 +310,51 @@ impl<Req, Resp> Copy for Server<Req, Resp> {}
 #[allow(async_fn_in_trait)]
 pub trait SetupContextApiExt<R: Participant> {
     /// Build a publisher for `B` (any generation - no per-participant API
-    /// version ceiling).
+    /// version ceiling). `R::Api: DeclaresPublish<B>` (D44): building a
+    /// publisher for a contract the `Api` struct did not declare as a
+    /// `Publisher<B>` field is a compile error.
     async fn publisher<B: ContractBody>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<Publisher<B>>;
+    ) -> crate::Result<Publisher<B>>
+    where
+        R::Api: DeclaresPublish<B>;
 
-    /// A keep-last-1 view of `B`.
-    async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>)
-    -> crate::Result<Latest<B>>;
+    /// A keep-last-1 view of `B`. `R::Api: DeclaresSubscribe<B>` (D44).
+    async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>) -> crate::Result<Latest<B>>
+    where
+        R::Api: DeclaresSubscribe<B>;
 
-    /// A drop-oldest ring subscription of `B` at `depth`.
+    /// A drop-oldest ring subscription of `B` at `depth`. `R::Api:
+    /// DeclaresSubscribe<B>` (D44).
     async fn subscriber<B: ContractBody>(
         &self,
         topic: Topic<Subscribe<B>>,
         depth: usize,
-    ) -> crate::Result<Subscriber<B>>;
+    ) -> crate::Result<Subscriber<B>>
+    where
+        R::Api: DeclaresSubscribe<B>;
 
-    /// Build a querier for a declared query contract.
+    /// Build a querier for a declared query contract. `R::Api:
+    /// DeclaresAsk<Req, Resp>` (D44).
     async fn querier<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Querier<Req, Resp>>;
+    ) -> crate::Result<Querier<Req, Resp>>
+    where
+        R::Api: DeclaresAsk<Req, Resp>;
 
     /// Declare an `Api` server slot for a query contract this participant
     /// serves. See [`Server`] - no live connection is opened here; the
     /// runner dispatches served queries to the generated
-    /// `ParticipantLifecycle::__serve_*` methods.
+    /// `ParticipantLifecycle::__serve_*` methods. `R::Api: DeclaresServe<Req,
+    /// Resp>` (D44).
     async fn server<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Server<Req, Resp>>;
+    ) -> crate::Result<Server<Req, Resp>>
+    where
+        R::Api: DeclaresServe<Req, Resp>;
 
     /// The runner-minted owner capability (plan #00 Layer 2) - the controlled
     /// path a participant takes to OWN its own topics. Bind it once in
@@ -368,14 +386,17 @@ impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
     async fn publisher<B: ContractBody>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<Publisher<B>> {
+    ) -> crate::Result<Publisher<B>>
+    where
+        R::Api: DeclaresPublish<B>,
+    {
         Ok(Publisher::new(self.bus().clone(), &topic)?)
     }
 
-    async fn latest<B: ContractBody>(
-        &self,
-        topic: Topic<Subscribe<B>>,
-    ) -> crate::Result<Latest<B>> {
+    async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>) -> crate::Result<Latest<B>>
+    where
+        R::Api: DeclaresSubscribe<B>,
+    {
         Ok(Latest::new(self.bus(), &topic).await?)
     }
 
@@ -383,14 +404,20 @@ impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
         &self,
         topic: Topic<Subscribe<B>>,
         depth: usize,
-    ) -> crate::Result<Subscriber<B>> {
+    ) -> crate::Result<Subscriber<B>>
+    where
+        R::Api: DeclaresSubscribe<B>,
+    {
         Ok(Subscriber::new(self.bus(), &topic, depth).await?)
     }
 
     async fn querier<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Querier<Req, Resp>> {
+    ) -> crate::Result<Querier<Req, Resp>>
+    where
+        R::Api: DeclaresAsk<Req, Resp>,
+    {
         Ok(Querier::new(
             self.bus().clone(),
             &topic,
@@ -401,7 +428,10 @@ impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
     async fn server<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Server<Req, Resp>> {
+    ) -> crate::Result<Server<Req, Resp>>
+    where
+        R::Api: DeclaresServe<Req, Resp>,
+    {
         // No live bus op: the topic argument only pins `Req`/`Resp` to the
         // declared query contract at the call site (a wrong pairing fails to
         // compile here); dispatch itself is runner-side (see `Server`'s docs).
