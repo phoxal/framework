@@ -1,0 +1,54 @@
+name: Frozen API generation guard
+
+# Blocks a PR (in particular release-plz's `chore(release)` PR) if a released
+# (non-`preview`) `version y2026_N { … }` span in `phoxal-api/src/lib.rs`
+# changed since the last `phoxal-api-v*` tag - a released contract type is
+# immutable; a changed contract is minted fresh in the current generation
+# instead (phoxal-api-refactor, "Frozen-contract enforcement").
+#
+# SECURITY - why this is not a "Pwn Request":
+# `pull_request_target` runs with the BASE repo's workflow + the elevated
+# base-repo `GITHUB_TOKEN`, and fires on release-plz's bot PR regardless of
+# author (the reason it is used instead of `pull_request`). The danger with
+# that trigger is executing PR-head code (build.rs, proc-macros, the xtask
+# binary itself) under that token - on a public repo that leaks the token.
+# This job avoids it entirely: it does NOT check out the PR head. The default
+# checkout is the trusted BASE ref, so the `cargo xtask` that compiles and runs
+# is the base repo's own code. The PR's candidate `phoxal-api/src/lib.rs` is
+# fetched and read ONLY as text (`git show <head-sha>:…`, via `--head-sha`) -
+# never checked out over the working tree, never fed to rustc. `pr-title-check`
+# gets away with `pull_request_target` because it only reads PR *metadata*;
+# this job earns the same trigger by only reading PR *file content as data*.
+#
+# `cargo xtask api frozen-generation-check` no-ops (logs + exits 0) when no
+# `phoxal-api-v*` tag exists yet (verified absent at Step 0 of the
+# phoxal-api-refactor) - a repo with no prior phoxal-api release has nothing
+# to freeze against.
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  frozen-generation-check:
+    runs-on: ubuntu-latest
+    steps:
+      # Default checkout: the trusted BASE ref (NOT the PR head). fetch-depth: 0
+      # brings the phoxal-api-v* tags the baseline diff needs.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # Make the PR head commit available locally so `git show <head-sha>:…` can
+      # read the candidate file as text. This fetches the object only - it does
+      # NOT check it out or run anything from it.
+      - name: Fetch PR head commit (read-only)
+        run: git fetch --no-tags origin ${{ github.event.pull_request.head.sha }}
+
+      - name: Check frozen API generations are unchanged
+        run: cargo xtask api frozen-generation-check --head-sha ${{ github.event.pull_request.head.sha }}

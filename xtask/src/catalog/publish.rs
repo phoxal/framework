@@ -310,10 +310,8 @@ mod tests {
         ArtifactEntry {
             package: package.to_string(),
             version: version.to_string(),
-            api_generation: "y2026_1".to_string(),
             contracts: Vec::new(),
             config_schema: Some(serde_json::json!({ "type": "object" })),
-            bus_abi: "phoxal-bus/v0".to_string(),
             artifacts: BTreeMap::<String, Artifact>::new(),
             channels,
             changed_contracts: Vec::new(),

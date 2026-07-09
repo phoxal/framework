@@ -47,27 +47,9 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    /// The `artifact.kind` string a real participant binary reports from its
-    /// `emit-apis` output. This is the runtime's own vocabulary
-    /// (`phoxal-macros`' `AuthoringKind::artifact_kind()`, `phoxal::check::ParticipantKind`)
-    /// and is intentionally distinct from [`Self::catalog_kind`]: the runtime
-    /// authoring surface still calls a component driver `"driver"` and does not
-    /// know about xtask's catalog vocabulary. `ComponentAssets` has no runtime
-    /// binary at all, so this value is never asserted against a real subprocess;
-    /// it exists only for uniform display (e.g. `release discover` tables).
-    pub fn emit_apis_kind(self) -> &'static str {
-        match self {
-            ArtifactKind::Service => "service",
-            ArtifactKind::ComponentAssets => "component_assets",
-            ArtifactKind::ComponentDriver => "driver",
-            ArtifactKind::Tool => "tool",
-            ArtifactKind::Simulator => "simulator",
-        }
-    }
-
-    /// The catalog's serialized `kind` tag (`xtask/src/catalog/schema.rs`). Unlike
-    /// [`Self::emit_apis_kind`], this is the public catalog vocabulary Phase 7
-    /// introduces for the assets/driver split.
+    /// The catalog's serialized `kind` tag (`xtask/src/catalog/schema.rs`):
+    /// the public catalog vocabulary Phase 7 introduces for the assets/driver
+    /// split.
     pub fn catalog_kind(self) -> &'static str {
         match self {
             ArtifactKind::Service => "service",

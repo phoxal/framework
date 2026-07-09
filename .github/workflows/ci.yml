@@ -35,9 +35,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libudev-dev
 
-      - name: Check preview feature sync
-        run: cargo xtask api sync-features --check
-
       # `release discover` runs workspace discovery, which enforces (via
       # validate_artifact_publish) that every official artifact crate sets
       # publish = false in its own Cargo.toml - the guard that keeps artifacts
@@ -45,12 +42,11 @@ jobs:
       - name: Check official artifact release scope
         run: cargo xtask release discover
 
-      - name: Check promoted API shape freeze
-        run: cargo xtask api freeze-shapes --check
-
       # Full package-output catalog generation builds all official release
-      # binaries. PRs use metadata-only mode to gate discovery, schema ids,
-      # coverage, and revision integrity without that release cost.
+      # binaries. PRs use metadata-only mode to gate discovery, contract
+      # coverage, and revision integrity without that release cost. Metadata
+      # is extracted from each artifact's compiled-in `#[derive(phoxal::Api)]`
+      # linker section (X-tools slice) - a plain host build, never `emit-apis`.
       - name: Generate metadata-only catalog
         run: cargo xtask catalog generate --metadata-only
 
@@ -59,18 +55,6 @@ jobs:
 
       - name: Verify metadata-only catalog
         run: cargo xtask catalog verify target/xtask/catalog/phoxal-artifacts.json
-
-      - name: Check no-orphan promotion gate
-        if: github.event_name == 'pull_request'
-        run: cargo xtask api promotion-gate --base ${{ github.event.pull_request.base.sha }} --catalog target/xtask/catalog/phoxal-artifacts.json
-
-      - name: Publish preview impact report
-        run: cargo xtask api preview-impact --catalog target/xtask/catalog/phoxal-artifacts.json --json-out target/xtask/api-preview-impact.json --github-summary
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: api-preview-impact
-          path: target/xtask/api-preview-impact.json
 
   # Tier-2 musl targets are not covered by upstream guarantees. Keep this
   # focused on the four library crates so the guard stays cheap and does not

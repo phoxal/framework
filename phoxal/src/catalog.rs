@@ -26,11 +26,18 @@
 //! not the workspace-discovery or packaging policy that produces a manifest -
 //! that stays in the tool that owns the release process.
 //!
-//! `api_generation` is deliberately per-[`ArtifactEntry`]: a participant authors
-//! against exactly one dated API generation (compile-enforced). Unlike the old
-//! model, [`Contract::family`] IS generation-qualified now (D1): the generation
-//! is folded into the contract's own name/key, not tracked as a separate axis,
-//! so contract identity alone (not a `schema_id` hash) decides compatibility.
+//! There is no `api_generation` field on [`ArtifactEntry`] either (X-tools
+//! slice, phoxal-api-refactor): a participant is no longer pinned to one dated
+//! API generation - its `Api` struct may mix contracts from several
+//! generations freely (per-contract versioning), so there is no single
+//! generation to record per artifact. [`Contract::family`] IS
+//! generation-qualified now (D1): the generation is folded into the
+//! contract's own name/key, not tracked as a separate axis, so contract
+//! identity alone (not a `schema_id` hash) decides compatibility, and
+//! [`Contract::role`] records which side of that contract this artifact plays
+//! (publish/subscribe/serve/ask), extracted from the participant's compiled-in
+//! `#[derive(phoxal::Api)]` metadata section rather than by running the
+//! binary.
 
 use std::collections::BTreeMap;
 
@@ -168,15 +175,22 @@ pub struct Artifact {
     pub sha256: String,
 }
 
-/// One graph contract a runtime binary uses: nothing beyond its
-/// generation-qualified identity (`family`, e.g. `"y2026_1::drive::Target"`,
-/// D1) - no `schema_id`, no `topic_template`, no `direction`. Those are a
-/// property of the API generation's own contract manifest, not of a specific
-/// artifact's catalog entry.
+/// One graph contract a runtime binary uses: its generation-qualified
+/// identity (`family`, e.g. `"y2026_1::drive::Target"`, D1) as embedded by
+/// `#[derive(phoxal::Api)]`, plus the [`role`](Self::role) this artifact plays
+/// for it (publish/subscribe/serve/ask). No `schema_id`, no `topic_template`:
+/// those are a property of the API generation's own contract manifest, not of
+/// a specific artifact's catalog entry.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Contract {
+    /// The contract's version-qualified name, exactly as embedded in the
+    /// artifact's compiled-in metadata section (e.g. `"y2026_1::drive::Target"`).
     pub family: String,
+    /// The role this artifact plays for the contract (`"publish"`,
+    /// `"subscribe"`, `"serve"`, or `"ask"` - see
+    /// `phoxal::participant::ContractRole`).
+    pub role: String,
 }
 
 /// A target-independent component asset bundle: meshes, URDF, `component.yaml`,
@@ -201,30 +215,25 @@ pub struct AssetEntry {
 pub struct ArtifactEntry {
     pub package: String,
     pub version: String,
-    /// The one dated API generation this binary authors against (e.g.
-    /// `"y2026_1"`). Correctly per-entry: do not fold this into
-    /// [`Contract::family`] - see the module docs.
-    pub api_generation: String,
-    /// Inlined from the artifact's own `emit-apis` report.
+    /// Inlined from the artifact's compiled-in `#[derive(phoxal::Api)]`
+    /// metadata section (extracted from the built binary, never by running
+    /// it). No `api_generation`: see the module docs - a participant is not
+    /// pinned to one generation.
     pub contracts: Vec<Contract>,
-    /// Inlined JSON Schema for this participant's `robot.yaml` config, from
-    /// `emit-apis`.
+    /// The participant's `robot.yaml` config JSON Schema. Currently always a
+    /// placeholder (`{}`): materializing the real `schemars` schema needs a
+    /// host-side `build.rs` step, not yet built (RECONCILIATION correction
+    /// #12).
     pub config_schema: Option<serde_json::Value>,
     /// Triple -> built tarball. The consumer reads supported triples from
     /// these keys; empty is valid (e.g. a metadata-only catalog).
     pub artifacts: BTreeMap<String, Artifact>,
     pub channels: BTreeMap<Channel, String>,
-    /// Contract families that changed vs. the previous API generation -
-    /// upgrade-preview signal, kept from the prior schema.
+    /// Contract families that changed vs. a previous API generation. Always
+    /// empty in this slice: computing it needed the now-removed `schema_id`
+    /// cross-generation diff; kept as a field for a future channel/coherence
+    /// mechanism to repopulate (see `organization/tmp/ci-release-refactor`).
     pub changed_contracts: Vec<String>,
-}
-
-/// Whether `value` is a valid `schema_id`: 16 lowercase hex characters.
-pub fn is_schema_id(value: &str) -> bool {
-    value.len() == 16
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 /// Whether `value` is a valid lowercase sha256 hex digest.
@@ -254,9 +263,9 @@ mod tests {
         ArtifactEntry {
             package: package.to_string(),
             version: "0.1.0".to_string(),
-            api_generation: "y2026_1".to_string(),
             contracts: vec![Contract {
                 family: "y2026_1::drive::Target".to_string(),
+                role: "publish".to_string(),
             }],
             config_schema: Some(serde_json::json!({ "type": "object" })),
             artifacts: BTreeMap::new(),
@@ -312,10 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_id_and_sha256_format_checks() {
-        assert!(is_schema_id("0123456789abcdef"));
-        assert!(!is_schema_id("0123456789ABCDEF"));
-        assert!(!is_schema_id("too-short"));
+    fn sha256_format_check() {
         assert!(is_sha256(&"a".repeat(64)));
         assert!(!is_sha256(&"A".repeat(64)));
     }

@@ -11,8 +11,13 @@ anyhow = { workspace = true }
 cargo_metadata = "0.23.1"
 clap = { workspace = true }
 hex = "0.4.3"
+object = "0.36"
 phoxal = { workspace = true }
-proc-macro2 = { workspace = true }
+# span-locations: the frozen-generation check (xtask/src/api/frozen_generation.rs)
+# needs real Span::start()/end() line/column info to slice exact source text
+# for each `phoxal_api_tree!` generation block out of two file revisions; off
+# by default in proc-macro2's non-macro ("fallback") mode.
+proc-macro2 = { workspace = true, features = ["span-locations"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = "1"
@@ -23,6 +28,12 @@ toml_edit = "0.25.12"
 zstd = "0.13.3"
 
 [dev-dependencies]
+# Cross-format extraction proof (xtask/src/release/metadata.rs tests): the
+# `write` feature synthesizes a foreign-arch object file at test time so the
+# reader is exercised against an architecture other than the host's. Feature
+# unification enables it only for the test build; the shipped xtask binary
+# keeps `object`'s default (read-only) feature set.
+object = { version = "0.36", features = ["write"] }
 tempfile = { workspace = true }
 
 [lints]

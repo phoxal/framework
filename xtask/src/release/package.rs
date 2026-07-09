@@ -5,15 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::release::metadata::{self, ParticipantMeta};
 use crate::workspace::{
-    ArtifactKind, OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
+    OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
 };
-
-const BUS_ABI: &str = "phoxal-bus/v0";
-const EMIT_SCHEMA: &str = "phoxal.emit-apis/v0";
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -142,7 +139,7 @@ pub(crate) fn package_artifact(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
     out_dir: &Path,
-    host_triple: &str,
+    _host_triple: &str,
     target_triple: &str,
 ) -> Result<PackagedArtifact> {
     if !artifact.kind.has_crate() {
@@ -153,21 +150,15 @@ pub(crate) fn package_artifact(
     validate_supported_target(artifact, target_triple)?;
     build_target_artifact(workspace.root(), artifact, target_triple)?;
     let binary_path = target_binary_path(workspace, artifact, target_triple)?;
-    let emit_binary_path = if target_triple == host_triple {
-        binary_path.clone()
-    } else {
-        build_host_artifact(workspace.root(), artifact)?;
-        host_binary_path(workspace, artifact)?
-    };
-    // Packaging still runs and validates `emit-apis` as a fail-fast gate (a
-    // broken participant must not reach the tarball stage), but no longer
-    // writes it anywhere: the catalog inlines contract/config metadata by
-    // running `emit-apis` itself at generation time (`xtask/src/catalog/generate.rs`),
-    // so there is no sidecar file for a consumer to fetch (killing the old
-    // "double emit-apis": a sidecar per packaged target plus a second copy
-    // implied by the catalog).
-    let emit_stdout = run_emit_apis(&emit_binary_path)?;
-    parse_emit_apis_json(&emit_stdout, &artifact.id, artifact.kind)?;
+    // Packaging still validates the participant's compiled-in API metadata as
+    // a fail-fast gate (a broken/absent `#[derive(phoxal::Api)]` section must
+    // not reach the tarball stage), but no longer writes it anywhere: the
+    // catalog inlines contract metadata by extracting the section itself at
+    // generation time (`xtask/src/catalog/generate.rs`). Extraction reads the
+    // object file directly - no execution, so (unlike the old `emit-apis`
+    // subprocess call) it needs no separate host-runnable build even when
+    // `target_triple` is cross-compiled.
+    extract_and_validate_metadata(&binary_path, artifact)?;
 
     let stem = asset_stem(artifact, target_triple);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
@@ -364,19 +355,6 @@ fn build_target_artifact(
     )
 }
 
-fn build_host_artifact(root: &Path, artifact: &OfficialArtifact) -> Result<()> {
-    let package_name = artifact.require_package_name()?;
-    let mut command = Command::new("cargo");
-    command
-        .args(["build", "-p", package_name, "--release"])
-        .current_dir(root);
-
-    run_cargo_build_command(
-        command,
-        &format!("host cargo build for {}", artifact.package),
-    )
-}
-
 fn run_cargo_build_command(mut command: Command, label: &str) -> Result<()> {
     let output = command
         .output()
@@ -391,14 +369,6 @@ fn run_cargo_build_command(mut command: Command, label: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn host_binary_path(workspace: &Workspace, artifact: &OfficialArtifact) -> Result<PathBuf> {
-    Ok(workspace.target_dir().join("release").join(format!(
-        "{}{}",
-        artifact.require_bin_name()?,
-        std::env::consts::EXE_SUFFIX
-    )))
 }
 
 fn target_binary_path(
@@ -425,61 +395,137 @@ fn exe_suffix_for_target(target_triple: &str) -> &'static str {
     }
 }
 
-fn run_emit_apis(binary_path: &Path) -> Result<Vec<u8>> {
-    let output = Command::new(binary_path)
-        .arg("emit-apis")
-        .output()
-        .with_context(|| format!("failed to spawn {} emit-apis", binary_path.display()))?;
-    if !output.status.success() {
-        bail!(
-            "{} emit-apis failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
-            binary_path.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+/// Fail-fast schema check on extracted metadata: every embedded contract entry
+/// must carry a non-empty contract name and role.
+fn validate_metadata(meta: &ParticipantMeta, artifact: &OfficialArtifact) -> Result<()> {
+    for contract in &meta.contracts {
+        if contract.contract.trim().is_empty() {
+            bail!(
+                "{} has a contract entry with an empty contract name",
+                artifact.package
+            );
+        }
+        if contract.role.trim().is_empty() {
+            bail!(
+                "{} has a contract entry with an empty role",
+                artifact.package
+            );
+        }
     }
-    if output.stdout.is_empty() {
-        bail!(
-            "{} emit-apis produced empty stdout\nstatus: {}\nstderr:\n{}",
-            binary_path.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(output.stdout)
+    Ok(())
 }
 
-pub(crate) fn emit_apis_from_cargo_run(
-    root: &Path,
+/// Runs `#[derive(phoxal::Api)]`'s fail-fast gate on a just-built binary: a
+/// broken/absent metadata section must not reach the tarball stage. Reads the
+/// object file directly - no execution of the artifact.
+fn extract_and_validate_metadata(
+    binary_path: &Path,
     artifact: &OfficialArtifact,
-) -> Result<Vec<u8>> {
-    let package_name = artifact.require_package_name()?;
-    let output = Command::new("cargo")
-        .args(["run", "--quiet", "-p", package_name, "--", "emit-apis"])
-        .current_dir(root)
-        .output()
-        .with_context(|| format!("failed to spawn cargo run for {}", artifact.package))?;
-    if !output.status.success() {
-        bail!(
-            "cargo run for {} emit-apis failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+) -> Result<ParticipantMeta> {
+    let meta = metadata::extract_participant_metadata(binary_path).with_context(|| {
+        format!(
+            "failed to extract API metadata for {} from {}",
             artifact.package,
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    if output.stdout.is_empty() {
-        bail!(
-            "{} emit-apis produced empty stdout\nstatus: {}\nstderr:\n{}",
-            artifact.package,
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+            binary_path.display()
+        )
+    })?;
+    validate_metadata(&meta, artifact)?;
+    Ok(meta)
+}
 
-    Ok(output.stdout)
+/// Extracts a participant's API metadata from the ACTUAL packaged binary being
+/// released - the cross-compiled artifact inside its `{stem}.tar.zst` under
+/// `package_dir`, not a fresh native rebuild. This is what makes the catalog's
+/// `contracts[]` physically inseparable from the shipped bytes: on the
+/// `catalog-publish` x86_64 host it reads the section straight out of an
+/// aarch64 (or any-target) binary, thanks to the format/arch-agnostic reader
+/// in [`crate::release::metadata`]. Picks the first `target_triples` entry
+/// whose tarball is present (the embedded section is identical across targets -
+/// contract identity is target-independent - so any one released binary is
+/// authoritative).
+pub(crate) fn extract_metadata_from_packaged(
+    artifact: &OfficialArtifact,
+    package_dir: &Path,
+    target_triples: &[String],
+) -> Result<ParticipantMeta> {
+    let bin_name = artifact.require_bin_name()?;
+    for triple in target_triples {
+        let stem = asset_stem(artifact, triple);
+        let tarball = package_dir.join(format!("{stem}.tar.zst"));
+        if !tarball.is_file() {
+            continue;
+        }
+        let object_bytes = read_binary_from_tarball(&tarball, bin_name)?;
+        let describe = format!(
+            "{} ({triple}, from {})",
+            artifact.package,
+            tarball.display()
+        );
+        let meta = metadata::extract_participant_metadata_from_bytes(&object_bytes, &describe)
+            .with_context(|| format!("failed to extract API metadata for {}", artifact.package))?;
+        validate_metadata(&meta, artifact)?;
+        return Ok(meta);
+    }
+    bail!(
+        "no packaged tarball found for {} in {} among targets [{}]",
+        artifact.package,
+        package_dir.display(),
+        target_triples.join(", ")
+    )
+}
+
+/// Reads the single binary named `bin_name` out of a `.tar.zst` release
+/// tarball into memory (the archive holds exactly that one entry - see
+/// [`write_tar_zst`]).
+fn read_binary_from_tarball(tarball: &Path, bin_name: &str) -> Result<Vec<u8>> {
+    let file = File::open(tarball)
+        .with_context(|| format!("failed to open tarball {}", tarball.display()))?;
+    let decoder = zstd::Decoder::new(file)
+        .with_context(|| format!("failed to start zstd decoder for {}", tarball.display()))?;
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive
+        .entries()
+        .with_context(|| format!("failed to read entries of {}", tarball.display()))?;
+    for entry in entries {
+        let mut entry =
+            entry.with_context(|| format!("failed to read an entry of {}", tarball.display()))?;
+        let path = entry
+            .path()
+            .with_context(|| format!("entry of {} has no path", tarball.display()))?;
+        if path.as_os_str() == std::ffi::OsStr::new(bin_name) {
+            let mut bytes = Vec::new();
+            entry
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("failed to read {bin_name} from {}", tarball.display()))?;
+            return Ok(bytes);
+        }
+    }
+    bail!("tarball {} does not contain {bin_name}", tarball.display())
+}
+
+/// Builds `artifact` for the host with a plain (non-`auditable`, non-release)
+/// `cargo build` and extracts its compiled-in API metadata. Used by `catalog
+/// generate --metadata-only` (CI's cheap PR gate): no tarball exists yet, so it
+/// builds just enough to populate the participant's `#[derive(phoxal::Api)]`
+/// linker section. Package-output mode reads the real released binary instead
+/// (see [`extract_metadata_from_packaged`]).
+pub(crate) fn build_and_extract_metadata(
+    workspace: &Workspace,
+    artifact: &OfficialArtifact,
+) -> Result<ParticipantMeta> {
+    let package_name = artifact.require_package_name()?;
+    let mut command = Command::new("cargo");
+    command
+        .args(["build", "--quiet", "-p", package_name])
+        .current_dir(workspace.root());
+    run_cargo_build_command(command, &format!("cargo build for {}", artifact.package))?;
+
+    let binary_path = workspace.target_dir().join("debug").join(format!(
+        "{}{}",
+        artifact.require_bin_name()?,
+        std::env::consts::EXE_SUFFIX
+    ));
+    extract_and_validate_metadata(&binary_path, artifact)
 }
 
 /// Returns the local host triple used in asset names. This seed packages only
@@ -653,277 +699,9 @@ pub(crate) fn file_name(path: &Path) -> Result<String> {
 }
 
 #[cfg(test)]
-fn validate_emit_apis_json(
-    stdout: &[u8],
-    expected_id: &str,
-    expected_kind: ArtifactKind,
-) -> Result<()> {
-    parse_emit_apis_json(stdout, expected_id, expected_kind).map(|_| ())
-}
-
-pub(crate) fn parse_emit_apis_json(
-    stdout: &[u8],
-    expected_id: &str,
-    expected_kind: ArtifactKind,
-) -> Result<EmitApisMetadata> {
-    let metadata: EmitApisMetadata =
-        serde_json::from_slice(stdout).context("emit-apis stdout was not valid JSON")?;
-    if metadata.schema != EMIT_SCHEMA {
-        bail!(
-            "emit-apis schema '{}' did not match expected '{}'",
-            metadata.schema,
-            EMIT_SCHEMA
-        );
-    }
-    if metadata.artifact.id != expected_id {
-        bail!(
-            "emit-apis artifact.id '{}' did not match expected '{}'",
-            metadata.artifact.id,
-            expected_id
-        );
-    }
-    let expected_kind_name = expected_kind.emit_apis_kind();
-    if metadata.artifact.kind != expected_kind_name {
-        bail!(
-            "emit-apis artifact.kind '{}' did not match expected '{}'",
-            metadata.artifact.kind,
-            expected_kind_name
-        );
-    }
-    match metadata.participant_class.as_deref() {
-        Some("checked" | "privileged") => {}
-        Some(value) => {
-            bail!("emit-apis participant_class '{value}' must be 'checked' or 'privileged'")
-        }
-        None => bail!("emit-apis participant_class is missing"),
-    }
-    if metadata.api_version.trim().is_empty() {
-        bail!("emit-apis api_version must not be empty");
-    }
-    if metadata.bus_abi != BUS_ABI {
-        bail!(
-            "emit-apis bus_abi '{}' did not match expected '{}'",
-            metadata.bus_abi,
-            BUS_ABI
-        );
-    }
-    if metadata.required_contracts.is_empty()
-        && !(expected_kind == ArtifactKind::Tool
-            && metadata.participant_class.as_deref() == Some("privileged"))
-    {
-        bail!("emit-apis required_contracts must not be empty");
-    }
-    for (index, contract) in metadata.required_contracts.iter().enumerate() {
-        let api_version = contract.api_version.as_deref().with_context(|| {
-            format!("emit-apis required_contracts[{index}] is missing api_version")
-        })?;
-        if api_version != metadata.api_version {
-            bail!(
-                "emit-apis required_contracts[{index}].api_version '{}' did not match artifact api_version '{}'",
-                api_version,
-                metadata.api_version
-            );
-        }
-        let schema_id = contract.schema_id.as_deref().with_context(|| {
-            format!("emit-apis required_contracts[{index}] is missing schema_id")
-        })?;
-        if !is_schema_id(schema_id) {
-            bail!(
-                "emit-apis required_contracts[{index}].schema_id '{}' is not 16 lowercase hex characters",
-                schema_id
-            );
-        }
-        let family = contract
-            .family
-            .as_deref()
-            .with_context(|| format!("emit-apis required_contracts[{index}] is missing family"))?;
-        if family.trim().is_empty() {
-            bail!("emit-apis required_contracts[{index}].family must not be empty");
-        }
-    }
-
-    Ok(metadata)
-}
-
-fn is_schema_id(value: &str) -> bool {
-    value.len() == 16
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct EmitApisMetadata {
-    pub schema: String,
-    pub artifact: Artifact,
-    pub framework: Framework,
-    pub api_version: String,
-    pub participant_class: Option<String>,
-    pub bus_abi: String,
-    pub required_contracts: Vec<Contract>,
-    /// The participant's `robot.yaml` config JSON Schema, inlined into the
-    /// catalog's `ArtifactEntry::config_schema` (docs: catalog rewrite).
-    pub config_schema: serde_json::Value,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Artifact {
-    pub kind: String,
-    pub id: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Framework {
-    pub version: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct Contract {
-    pub api_version: Option<String>,
-    pub schema_id: Option<String>,
-    pub family: Option<String>,
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
-
-    fn valid_emit() -> String {
-        r#"{
-  "schema": "phoxal.emit-apis/v0",
-  "artifact": { "kind": "service", "id": "frame" },
-  "framework": { "version": "0.21.0" },
-  "api_version": "y2026_1",
-  "participant_class": "checked",
-  "bus_abi": "phoxal-bus/v0",
-  "required_contracts": [
-    {
-      "api_version": "y2026_1",
-      "schema_id": "0123456789abcdef",
-      "family": "frame::LookupRequest"
-    }
-  ],
-  "config_schema": { "type": "object" }
-}"#
-        .to_string()
-    }
-
-    fn validate(json: &str) -> Result<()> {
-        validate_emit_apis_json(json.as_bytes(), "frame", ArtifactKind::Service)
-    }
-
-    fn assert_error_contains(error: &anyhow::Error, needle: &str) {
-        assert!(
-            error
-                .chain()
-                .any(|cause| cause.to_string().contains(needle)),
-            "expected error chain to contain {needle:?}, got {error:?}"
-        );
-    }
-
-    #[test]
-    fn validation_accepts_real_shaped_emit_json() {
-        validate(&valid_emit()).expect("valid emit JSON should pass");
-    }
-
-    #[test]
-    fn validation_rejects_wrong_kind() {
-        let json = valid_emit().replace(r#""kind": "service""#, r#""kind": "driver""#);
-        let err = validate(&json).expect_err("wrong kind should fail");
-        assert_error_contains(&err, "artifact.kind");
-    }
-
-    #[test]
-    fn validation_rejects_wrong_schema_marker() {
-        let json = valid_emit().replace("phoxal.emit-apis/v0", "phoxal.emit-apis/v1");
-        let err = validate(&json).expect_err("wrong schema marker should fail");
-        assert_error_contains(&err, "schema");
-    }
-
-    #[test]
-    fn validation_rejects_missing_schema_marker() {
-        let json = valid_emit().replace("  \"schema\": \"phoxal.emit-apis/v0\",\n", "");
-        let err = validate(&json).expect_err("missing schema marker should fail");
-        assert_error_contains(&err, "schema");
-    }
-
-    #[test]
-    fn validation_rejects_missing_participant_class() {
-        let json = valid_emit().replace("  \"participant_class\": \"checked\",\n", "");
-        let err = validate(&json).expect_err("missing participant_class should fail");
-        assert_error_contains(&err, "participant_class");
-    }
-
-    #[test]
-    fn validation_rejects_bad_schema_id() {
-        let json = valid_emit().replace("0123456789abcdef", "0123456789ABCDEF");
-        let err = validate(&json).expect_err("bad schema_id should fail");
-        assert_error_contains(&err, "schema_id");
-    }
-
-    #[test]
-    fn validation_rejects_wrong_bus_abi() {
-        let json = valid_emit().replace("phoxal-bus/v0", "phoxal-bus/v1");
-        let err = validate(&json).expect_err("wrong bus_abi should fail");
-        assert_error_contains(&err, "bus_abi");
-    }
-
-    #[test]
-    fn validation_rejects_missing_required_contracts() {
-        let json = valid_emit().replace("required_contracts", "renamed_contracts");
-        let err = validate(&json).expect_err("missing required_contracts should fail");
-        assert_error_contains(&err, "required_contracts");
-    }
-
-    #[test]
-    fn validation_rejects_empty_required_contracts() {
-        let json = valid_emit().replace(
-            r#"  "required_contracts": [
-    {
-      "api_version": "y2026_1",
-      "schema_id": "0123456789abcdef",
-      "family": "frame::LookupRequest"
-    }
-  ],"#,
-            r#"  "required_contracts": [],"#,
-        );
-        let err = validate(&json).expect_err("empty required_contracts should fail");
-        assert_error_contains(&err, "required_contracts");
-    }
-
-    #[test]
-    fn validation_accepts_empty_required_contracts_for_privileged_tool() {
-        let json = valid_emit()
-            .replace(r#""kind": "service""#, r#""kind": "tool""#)
-            .replace(r#""id": "frame""#, r#""id": "router""#)
-            .replace(
-                r#""participant_class": "checked""#,
-                r#""participant_class": "privileged""#,
-            )
-            .replace(
-                r#"  "required_contracts": [
-    {
-      "api_version": "y2026_1",
-      "schema_id": "0123456789abcdef",
-      "family": "frame::LookupRequest"
-    }
-  ],"#,
-                r#"  "required_contracts": [],"#,
-            );
-
-        validate_emit_apis_json(json.as_bytes(), "router", ArtifactKind::Tool)
-            .expect("privileged tool with no graph contracts should validate");
-    }
-
-    #[test]
-    fn validation_rejects_missing_contract_family() {
-        let json = valid_emit().replace(
-            "      \"schema_id\": \"0123456789abcdef\",\n      \"family\": \"frame::LookupRequest\"\n",
-            "      \"schema_id\": \"0123456789abcdef\"\n",
-        );
-        let err = validate(&json).expect_err("missing contract family should fail");
-        assert_error_contains(&err, "family");
-    }
+    use crate::workspace::ArtifactKind;
 
     #[test]
     fn asset_stem_uses_package_version_and_host_triple() {
@@ -961,5 +739,76 @@ mod tests {
             asset_stem(&artifact, "aarch64-unknown-linux-gnu"),
             "phoxal-component-ddsm115-driver-v0.1.5-aarch64-unknown-linux-gnu"
         );
+    }
+
+    /// Full package-output wiring proof (#2): build a real participant, tar it
+    /// exactly as the release path does, then read its contracts back out of
+    /// that `.tar.zst` via `extract_metadata_from_packaged` - i.e. from the
+    /// actual shipped binary bytes, not a separate rebuild. (On the release CI
+    /// host the same call reads a cross-compiled binary; the cross-FORMAT parse
+    /// itself is proven hermetically in `metadata.rs`'s foreign-object tests.)
+    #[test]
+    fn extract_metadata_from_packaged_reads_the_tarball_binary() -> Result<()> {
+        let workspace = Workspace::discover()?;
+        let bin_name = "phoxal-service-battery";
+        let status = Command::new("cargo")
+            .args(["build", "--quiet", "-p", bin_name])
+            .current_dir(workspace.root())
+            .status()
+            .context("failed to spawn cargo build for phoxal-service-battery")?;
+        assert!(status.success(), "cargo build -p {bin_name} failed");
+        let binary = workspace
+            .target_dir()
+            .join("debug")
+            .join(format!("{bin_name}{}", std::env::consts::EXE_SUFFIX));
+
+        let artifact = OfficialArtifact {
+            package: "phoxal/service-battery".to_string(),
+            package_name: Some(bin_name.to_string()),
+            kind: ArtifactKind::Service,
+            version: "0.1.0".to_string(),
+            crate_dir: PathBuf::from("service/battery"),
+            bin_name: Some(bin_name.to_string()),
+            id: "battery".to_string(),
+            metadata: Default::default(),
+        };
+
+        let dir = tempfile::tempdir().context("create tempdir")?;
+        let triple = "some-target-triple";
+        let stem = asset_stem(&artifact, triple);
+        let tarball = dir.path().join(format!("{stem}.tar.zst"));
+        write_tar_zst(&tarball, &binary, bin_name)?;
+
+        let meta = extract_metadata_from_packaged(&artifact, dir.path(), &[triple.to_string()])?;
+        assert_eq!(meta.contracts.len(), 1);
+        assert_eq!(meta.contracts[0].role, "publish");
+        assert_eq!(meta.contracts[0].contract, "api::battery::State");
+        Ok(())
+    }
+
+    #[test]
+    fn extract_metadata_from_packaged_fails_when_no_tarball_present() -> Result<()> {
+        let artifact = OfficialArtifact {
+            package: "phoxal/service-battery".to_string(),
+            package_name: Some("phoxal-service-battery".to_string()),
+            kind: ArtifactKind::Service,
+            version: "0.1.0".to_string(),
+            crate_dir: PathBuf::from("service/battery"),
+            bin_name: Some("phoxal-service-battery".to_string()),
+            id: "battery".to_string(),
+            metadata: Default::default(),
+        };
+        let dir = tempfile::tempdir().context("create tempdir")?;
+        let err = extract_metadata_from_packaged(
+            &artifact,
+            dir.path(),
+            &["some-target-triple".to_string()],
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("no packaged tarball found"),
+            "{err}"
+        );
+        Ok(())
     }
 }

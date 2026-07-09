@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,8 +8,8 @@ use phoxal::catalog::{
     Artifact as CatalogArtifact, ArtifactEntry, AssetEntry, Channel, Contract, Manifest,
 };
 
-use crate::api::sync_features::{ApiGeneration, GenerationChannel, api_generations_from_workspace};
-use crate::release::package::{self, EmitApisMetadata};
+use crate::release::metadata::ParticipantMeta;
+use crate::release::package;
 use crate::release::plan::{ReleasePlan, load_release_plan};
 use crate::workspace::{
     ArtifactKind, OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
@@ -30,9 +30,11 @@ pub struct Args {
     pub release_plan: Option<PathBuf>,
     #[arg(long, value_name = "PATH")]
     pub previous_catalog: Option<PathBuf>,
-    /// Generate from direct `emit-apis` projections, without release builds or
-    /// tarballs. CI uses this as the cheap PR gate; plan #01 release jobs should
-    /// use package-output mode so released assets carry real checksums.
+    /// Generate from a plain host build of each artifact (extracting its
+    /// compiled-in `#[derive(phoxal::Api)]` metadata section), without
+    /// release builds or tarballs. CI uses this as the cheap PR gate; plan
+    /// #01 release jobs should use package-output mode so released assets
+    /// carry real checksums.
     #[arg(long)]
     pub metadata_only: bool,
 }
@@ -167,31 +169,17 @@ pub(crate) fn build_catalog_revision(
 ) -> Result<Manifest> {
     let artifacts = workspace.official_artifacts();
     require_nonempty_artifacts(artifacts)?;
-    let api_generations = api_generations_from_workspace(workspace)?;
-    build_catalog_revision_from_artifacts(
-        workspace.root(),
-        artifacts,
-        &api_generations,
-        options,
-        host_triple,
-    )
+    build_catalog_revision_from_artifacts(workspace, artifacts, options, host_triple)
 }
 
 pub(crate) fn build_catalog_revision_from_artifacts(
-    root: &Path,
+    workspace: &Workspace,
     artifacts: &[OfficialArtifact],
-    api_generations: &[ApiGeneration],
     options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<Manifest> {
-    let live_metadata = live_metadata_for_artifacts(root, artifacts, options)?;
-    build_manifest_from_live_metadata(
-        artifacts,
-        api_generations,
-        &live_metadata,
-        options,
-        host_triple,
-    )
+    let metadata = extracted_metadata_for_artifacts(workspace, artifacts, options, host_triple)?;
+    build_manifest_from_metadata(artifacts, &metadata, options, host_triple)
 }
 
 /// Whether `artifact` is unaffected by the current release plan and should be
@@ -210,17 +198,28 @@ fn should_reuse_previous(artifact: &OfficialArtifact, options: &GenerateOptions)
         })
 }
 
-/// Fetches `emit-apis` live (via `cargo run`) for every runtime artifact that
-/// is not being carried over from the previous catalog. This is the single
-/// source of contract/config/bus-abi metadata regardless of generation mode:
-/// there is no packaged sidecar to read anymore (the old per-target
-/// `.emit-apis.json` is gone), so the generator always asks the artifact
-/// itself, once, on the host.
-fn live_metadata_for_artifacts(
-    root: &Path,
+/// Extracts the compiled-in `#[derive(phoxal::Api)]` metadata for every
+/// runtime artifact that is not being carried over from the previous catalog,
+/// reading the section straight off an object file (never running the binary).
+///
+/// Where the object file comes from is mode-dependent, and this is the
+/// difference that makes the metadata authoritative in the release pipeline:
+///
+/// - **`PackageOutputs`** (release / `catalog-publish`, and the local full
+///   `catalog generate`): read the ACTUAL released binary out of its
+///   `{stem}.tar.zst` in `package_dir` - the exact cross-compiled bytes being
+///   shipped, parsed format/arch-agnostically on whatever host runs the job.
+///   The catalog's `contracts[]` are therefore inseparable from the artifact.
+/// - **`MetadataOnly`** (the cheap CI PR gate): no tarball exists yet, so do a
+///   plain host `cargo build` purely to materialize the linker section, then
+///   extract from that. Valid because the section is target-independent (no
+///   `Api` is target-conditional today).
+fn extracted_metadata_for_artifacts(
+    workspace: &Workspace,
     artifacts: &[OfficialArtifact],
     options: &GenerateOptions,
-) -> Result<BTreeMap<String, EmitApisMetadata>> {
+    host_triple: &str,
+) -> Result<BTreeMap<String, ParticipantMeta>> {
     let mut metadata = BTreeMap::new();
     for artifact in artifacts {
         if artifact.kind == ArtifactKind::ComponentAssets
@@ -228,23 +227,31 @@ fn live_metadata_for_artifacts(
         {
             continue;
         }
-        let stdout = package::emit_apis_from_cargo_run(root, artifact)?;
-        let parsed = package::parse_emit_apis_json(&stdout, &artifact.id, artifact.kind)
-            .with_context(|| format!("invalid emit-apis metadata from {}", artifact.package))?;
-        metadata.insert(artifact.package.clone(), parsed);
+        let meta = match options.mode {
+            InputMode::PackageOutputs => {
+                let target_triples = target_triples_for_artifact(artifact, options, host_triple)?;
+                package::extract_metadata_from_packaged(
+                    artifact,
+                    &options.package_dir,
+                    &target_triples,
+                )?
+            }
+            InputMode::MetadataOnly => package::build_and_extract_metadata(workspace, artifact)
+                .with_context(|| {
+                    format!("failed to extract API metadata for {}", artifact.package)
+                })?,
+        };
+        metadata.insert(artifact.package.clone(), meta);
     }
     Ok(metadata)
 }
 
-fn build_manifest_from_live_metadata(
+fn build_manifest_from_metadata(
     artifacts: &[OfficialArtifact],
-    api_generations: &[ApiGeneration],
-    live_metadata: &BTreeMap<String, EmitApisMetadata>,
+    metadata: &BTreeMap<String, ParticipantMeta>,
     options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<Manifest> {
-    let channels_by_generation = channels_by_generation(api_generations)?;
-
     let previous_assets = options
         .previous_catalog
         .as_ref()
@@ -257,12 +264,6 @@ fn build_manifest_from_live_metadata(
         .map(previous_artifacts_by_package)
         .transpose()?
         .unwrap_or_default();
-
-    let mut schemas_by_generation = schemas_by_previous_artifacts(&previous_artifacts)?;
-    merge_schemas_by_generation(
-        &mut schemas_by_generation,
-        &schemas_by_live_metadata(live_metadata)?,
-    )?;
 
     let mut assets = Vec::new();
     let mut services = Vec::new();
@@ -278,11 +279,8 @@ fn build_manifest_from_live_metadata(
 
         let entry = artifact_entry(
             artifact,
-            &channels_by_generation,
-            live_metadata,
+            metadata,
             &previous_artifacts,
-            api_generations,
-            &schemas_by_generation,
             options,
             host_triple,
         )?;
@@ -343,14 +341,10 @@ fn asset_entry(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn artifact_entry(
     artifact: &OfficialArtifact,
-    channels_by_generation: &BTreeMap<String, Channel>,
-    live_metadata: &BTreeMap<String, EmitApisMetadata>,
+    metadata: &BTreeMap<String, ParticipantMeta>,
     previous_artifacts: &BTreeMap<String, &ArtifactEntry>,
-    api_generations: &[ApiGeneration],
-    schemas_by_generation: &BTreeMap<String, BTreeMap<String, String>>,
     options: &GenerateOptions,
     host_triple: &str,
 ) -> Result<ArtifactEntry> {
@@ -358,27 +352,10 @@ fn artifact_entry(
         return reuse_previous_artifact(artifact, previous_artifacts);
     }
 
-    let metadata = live_metadata
+    let meta = metadata
         .get(&artifact.package)
-        .with_context(|| format!("missing live emit-apis metadata for {}", artifact.package))?;
-
-    let api_generation = metadata.api_version.clone();
-    let channel = channels_by_generation
-        .get(&api_generation)
-        .with_context(|| {
-            format!(
-                "{} emitted unknown api_generation '{}'",
-                artifact.package, api_generation
-            )
-        })?;
-
-    let contracts = contracts_from_metadata(metadata, &artifact.package)?;
-    let changed = changed_contracts(
-        &api_generation,
-        &contracts,
-        api_generations,
-        schemas_by_generation,
-    );
+        .with_context(|| format!("missing extracted API metadata for {}", artifact.package))?;
+    let contracts = contracts_from_metadata(meta);
 
     let mut artifacts_map = BTreeMap::new();
     if options.mode == InputMode::PackageOutputs {
@@ -395,19 +372,25 @@ fn artifact_entry(
         }
     }
 
+    // No per-generation channel routing (X-tools slice): a participant's `Api`
+    // struct may mix contracts from several API generations freely, so there
+    // is no single generation left to key a preview/stable split off. Every
+    // artifact publishes on the stable channel until a coherence-driven
+    // `heads` mechanism replaces this (organization/tmp/ci-release-refactor).
     let mut channels = BTreeMap::new();
-    channels.insert(*channel, artifact.version.clone());
+    channels.insert(Channel::Stable, artifact.version.clone());
 
     Ok(ArtifactEntry {
         package: artifact.package.clone(),
         version: artifact.version.clone(),
-        api_generation,
         contracts,
-        config_schema: Some(metadata.config_schema.clone()),
-        bus_abi: metadata.bus_abi.clone(),
+        // Placeholder until the config JSON Schema gets a host-side `build.rs`
+        // materialization step (RECONCILIATION correction #12) - do not try to
+        // reproduce `schemars::schema_for!` here.
+        config_schema: Some(serde_json::json!({})),
         artifacts: artifacts_map,
         channels,
-        changed_contracts: changed,
+        changed_contracts: Vec::new(),
     })
 }
 
@@ -459,159 +442,22 @@ fn previous_artifacts_by_package(manifest: &Manifest) -> Result<BTreeMap<String,
     Ok(entries)
 }
 
-fn schemas_by_previous_artifacts(
-    previous: &BTreeMap<String, &ArtifactEntry>,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
-    let mut schemas = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for entry in previous.values() {
-        let generation_schemas = schemas.entry(entry.api_generation.clone()).or_default();
-        for contract in &entry.contracts {
-            match generation_schemas.get(&contract.family) {
-                Some(existing) if existing != &contract.schema_id => bail!(
-                    "{} reports schema_id {} for {}, but generation {} already has {}",
-                    entry.package,
-                    contract.schema_id,
-                    contract.family,
-                    entry.api_generation,
-                    existing
-                ),
-                Some(_) => {}
-                None => {
-                    generation_schemas.insert(contract.family.clone(), contract.schema_id.clone());
-                }
-            }
-        }
-    }
-    Ok(schemas)
-}
-
-fn schemas_by_live_metadata(
-    live_metadata: &BTreeMap<String, EmitApisMetadata>,
-) -> Result<BTreeMap<String, BTreeMap<String, String>>> {
-    let mut schemas = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for (package, metadata) in live_metadata {
-        let generation_schemas = schemas.entry(metadata.api_version.clone()).or_default();
-        for contract in &metadata.required_contracts {
-            let family = contract
-                .family
-                .as_ref()
-                .context("validated emit-apis metadata lost family")?;
-            let schema_id = contract
-                .schema_id
-                .as_ref()
-                .context("validated emit-apis metadata lost schema_id")?;
-            match generation_schemas.get(family) {
-                Some(existing) if existing != schema_id => bail!(
-                    "{package} reports schema_id {} for {family}, but generation {} already has {}",
-                    schema_id,
-                    metadata.api_version,
-                    existing
-                ),
-                Some(_) => {}
-                None => {
-                    generation_schemas.insert(family.clone(), schema_id.clone());
-                }
-            }
-        }
-    }
-    Ok(schemas)
-}
-
-fn merge_schemas_by_generation(
-    target: &mut BTreeMap<String, BTreeMap<String, String>>,
-    source: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Result<()> {
-    for (generation, source_schemas) in source {
-        let target_schemas = target.entry(generation.clone()).or_default();
-        for (family, schema_id) in source_schemas {
-            match target_schemas.get(family) {
-                Some(existing) if existing != schema_id => bail!(
-                    "schema_id {} for {family} conflicts with {} in generation {generation}",
-                    schema_id,
-                    existing
-                ),
-                Some(_) => {}
-                None => {
-                    target_schemas.insert(family.clone(), schema_id.clone());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn contracts_from_metadata(metadata: &EmitApisMetadata, package: &str) -> Result<Vec<Contract>> {
-    let mut contracts = Vec::with_capacity(metadata.required_contracts.len());
-    for contract in &metadata.required_contracts {
-        contracts.push(Contract {
-            family: contract
-                .family
-                .clone()
-                .with_context(|| format!("{package} contract missing family"))?,
-            schema_id: contract
-                .schema_id
-                .clone()
-                .with_context(|| format!("{package} contract missing schema_id"))?,
-        });
-    }
-    contracts.sort();
-    Ok(contracts)
-}
-
-fn changed_contracts(
-    api_generation: &str,
-    contracts: &[Contract],
-    api_generations: &[ApiGeneration],
-    schemas_by_generation: &BTreeMap<String, BTreeMap<String, String>>,
-) -> Vec<String> {
-    let Some(index) = api_generations
+/// Projects an extracted `#[derive(phoxal::Api)]` manifest into the catalog's
+/// `Contract` list: version-qualified name + role, deduplicated (a `Server<Req,
+/// Resp>` field contributes two entries that may collide with another field's
+/// entries in the same role).
+fn contracts_from_metadata(meta: &ParticipantMeta) -> Vec<Contract> {
+    let mut contracts: Vec<Contract> = meta
+        .contracts
         .iter()
-        .position(|generation| generation.name == api_generation)
-    else {
-        return Vec::new();
-    };
-    if index == 0 {
-        return Vec::new();
-    }
-
-    let previous_schemas = api_generations[..index]
-        .iter()
-        .rev()
-        .find_map(|generation| schemas_by_generation.get(&generation.name));
-    let Some(previous_schemas) = previous_schemas else {
-        return contracts
-            .iter()
-            .map(|contract| contract.family.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-    };
-
-    contracts
-        .iter()
-        .filter(|contract| {
-            previous_schemas
-                .get(&contract.family)
-                .is_none_or(|previous| previous != &contract.schema_id)
+        .map(|entry| Contract {
+            family: entry.contract.clone(),
+            role: entry.role.clone(),
         })
-        .map(|contract| contract.family.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn channels_by_generation(api_generations: &[ApiGeneration]) -> Result<BTreeMap<String, Channel>> {
-    let mut channels = BTreeMap::new();
-    for generation in api_generations {
-        let channel = match generation.channel {
-            GenerationChannel::Stable => Channel::Stable,
-            GenerationChannel::Preview => Channel::Preview,
-        };
-        if channels.insert(generation.name.clone(), channel).is_some() {
-            bail!("duplicate API generation {}", generation.name);
-        }
-    }
-    Ok(channels)
+        .collect();
+    contracts.sort();
+    contracts.dedup();
+    contracts
 }
 
 fn target_triples_for_artifact(
@@ -664,6 +510,18 @@ fn target_triples_for_artifact(
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
+    use crate::release::metadata::ParticipantMetaContract;
+
+    pub(crate) fn fixture_meta() -> ParticipantMeta {
+        ParticipantMeta {
+            participant_api: "Api".to_string(),
+            contracts: vec![ParticipantMetaContract {
+                field: "target".to_string(),
+                role: "publish".to_string(),
+                contract: "y2026_1::drive::Target".to_string(),
+            }],
+        }
+    }
 
     pub(crate) fn fixture_catalog() -> Result<Manifest> {
         let artifact = OfficialArtifact {
@@ -676,37 +534,11 @@ pub(crate) mod tests_support {
             id: "drive".to_string(),
             metadata: Default::default(),
         };
-        let metadata = package::parse_emit_apis_json(
-            br#"{
-  "schema": "phoxal.emit-apis/v0",
-  "artifact": { "kind": "service", "id": "drive" },
-  "framework": { "version": "0.21.0" },
-  "api_version": "y2026_1",
-  "participant_class": "checked",
-  "bus_abi": "phoxal-bus/v0",
-  "required_contracts": [
-    {
-      "api_version": "y2026_1",
-      "schema_id": "0123456789abcdef",
-      "family": "drive::Target",
-      "topic": "drive/target",
-      "direction": "publish"
-    }
-  ],
-  "config_schema": { "type": "object" }
-}"#,
-            "drive",
-            ArtifactKind::Service,
-        )?;
-        let mut live_metadata = BTreeMap::new();
-        live_metadata.insert(artifact.package.clone(), metadata);
-        build_manifest_from_live_metadata(
+        let mut metadata = BTreeMap::new();
+        metadata.insert(artifact.package.clone(), fixture_meta());
+        build_manifest_from_metadata(
             &[artifact],
-            &[ApiGeneration {
-                name: "y2026_1".to_string(),
-                channel: GenerationChannel::Stable,
-            }],
-            &live_metadata,
+            &metadata,
             &GenerateOptions {
                 package_dir: PathBuf::new(),
                 mode: InputMode::MetadataOnly,
@@ -728,6 +560,7 @@ mod tests {
 
     use super::*;
     use crate::catalog::check::compare_catalogs;
+    use crate::release::metadata::ParticipantMetaContract;
 
     fn artifact(
         package_name: &str,
@@ -760,39 +593,20 @@ mod tests {
         }
     }
 
-    fn generations() -> Vec<ApiGeneration> {
-        vec![ApiGeneration {
-            name: "y2026_1".to_string(),
-            channel: GenerationChannel::Stable,
-        }]
+    fn meta(family: &str, role: &str) -> ParticipantMeta {
+        ParticipantMeta {
+            participant_api: "Api".to_string(),
+            contracts: vec![ParticipantMetaContract {
+                field: "handle".to_string(),
+                role: role.to_string(),
+                contract: family.to_string(),
+            }],
+        }
     }
 
-    fn emit_json(id: &str, kind: &str, family: &str, schema_id: &str) -> String {
-        format!(
-            r#"{{
-  "schema": "phoxal.emit-apis/v0",
-  "artifact": {{ "kind": "{kind}", "id": "{id}" }},
-  "framework": {{ "version": "0.21.0" }},
-  "api_version": "y2026_1",
-  "participant_class": "checked",
-  "bus_abi": "phoxal-bus/v0",
-  "required_contracts": [
-    {{
-      "api_version": "y2026_1",
-      "schema_id": "{schema_id}",
-      "family": "{family}",
-      "topic": "fixture/topic",
-      "direction": "publish"
-    }}
-  ],
-  "config_schema": {{ "type": "object" }}
-}}"#
-        )
-    }
-
-    /// Writes a fake packaged tarball + checksum (no `emit-apis` sidecar: that
-    /// metadata is fetched live by the generator, not read from `package_dir`
-    /// - see [`live_metadata_for_artifacts`]).
+    /// Writes a fake packaged tarball + checksum (no metadata sidecar: the
+    /// generator extracts contracts from a plain host build, not from
+    /// `package_dir` - see [`extracted_metadata_for_artifacts`]).
     fn write_packaged_fixture(dir: &Path, artifact: &OfficialArtifact, triple: &str) -> Result<()> {
         fs::create_dir_all(dir)?;
         let stem = package::asset_stem(artifact, triple);
@@ -811,13 +625,12 @@ mod tests {
 
     fn build_from_outputs(
         artifacts: &[OfficialArtifact],
-        live_metadata: &BTreeMap<String, EmitApisMetadata>,
+        metadata: &BTreeMap<String, ParticipantMeta>,
         package_dir: &Path,
     ) -> Result<Manifest> {
-        build_manifest_from_live_metadata(
+        build_manifest_from_metadata(
             artifacts,
-            &generations(),
-            live_metadata,
+            metadata,
             &GenerateOptions {
                 package_dir: package_dir.to_path_buf(),
                 mode: InputMode::PackageOutputs,
@@ -827,16 +640,6 @@ mod tests {
             },
             "x86_64-unknown-linux-gnu",
         )
-    }
-
-    fn live_metadata_for(
-        artifact: &OfficialArtifact,
-        json: &str,
-    ) -> Result<BTreeMap<String, EmitApisMetadata>> {
-        let metadata = package::parse_emit_apis_json(json.as_bytes(), &artifact.id, artifact.kind)?;
-        let mut map = BTreeMap::new();
-        map.insert(artifact.package.clone(), metadata);
-        Ok(map)
     }
 
     #[test]
@@ -849,12 +652,10 @@ mod tests {
             "0.1.0",
         );
         write_packaged_fixture(temp.path(), &service, "x86_64-unknown-linux-gnu")?;
-        let live = live_metadata_for(
-            &service,
-            &emit_json("drive", "service", "drive::Target", "0123456789abcdef"),
-        )?;
+        let mut metadata = BTreeMap::new();
+        metadata.insert(service.package.clone(), meta("drive::Target", "publish"));
 
-        let catalog = build_from_outputs(&[service], &live, temp.path())?;
+        let catalog = build_from_outputs(&[service], &metadata, temp.path())?;
         catalog.verify()?;
         let json = serde_json::to_string_pretty(&catalog)?;
         let reparsed: Manifest = serde_json::from_str(&json)?;
@@ -873,16 +674,17 @@ mod tests {
             "0.1.0",
         );
         write_packaged_fixture(temp.path(), &service, "x86_64-unknown-linux-gnu")?;
-        let live = live_metadata_for(
-            &service,
-            &emit_json("drive", "service", "drive::Target", "0123456789abcdef"),
-        )?;
+        let mut metadata = BTreeMap::new();
+        metadata.insert(service.package.clone(), meta("drive::Target", "publish"));
 
-        let catalog = build_from_outputs(&[service], &live, temp.path())?;
+        let catalog = build_from_outputs(&[service], &metadata, temp.path())?;
         let entry = &catalog.services[0];
         assert_eq!(entry.package, "phoxal/service-drive");
         assert!(entry.artifacts.contains_key("x86_64-unknown-linux-gnu"));
         assert_eq!(entry.channels[&Channel::Stable], "0.1.0");
+        assert_eq!(entry.contracts.len(), 1);
+        assert_eq!(entry.contracts[0].family, "drive::Target");
+        assert_eq!(entry.contracts[0].role, "publish");
         Ok(())
     }
 
@@ -928,18 +730,16 @@ mod tests {
             "0.1.0",
         );
         write_packaged_fixture(temp.path(), &service, "x86_64-unknown-linux-gnu")?;
-        let live = live_metadata_for(
-            &service,
-            &emit_json("drive", "service", "drive::Target", "0123456789abcdef"),
-        )?;
+        let mut metadata = BTreeMap::new();
+        metadata.insert(service.package.clone(), meta("drive::Target", "publish"));
 
-        let err = build_from_outputs(&[service, driver], &live, temp.path()).unwrap_err();
-        assert_error_contains(&err, "missing live emit-apis metadata");
+        let err = build_from_outputs(&[service, driver], &metadata, temp.path()).unwrap_err();
+        assert_error_contains(&err, "missing extracted API metadata");
         Ok(())
     }
 
     #[test]
-    fn coverage_gate_fails_on_mismatched_schema_id() -> Result<()> {
+    fn coverage_gate_fails_on_hand_edited_contracts() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let service = artifact(
             "phoxal-service-drive",
@@ -948,22 +748,20 @@ mod tests {
             "0.1.0",
         );
         write_packaged_fixture(temp.path(), &service, "x86_64-unknown-linux-gnu")?;
-        let live = live_metadata_for(
-            &service,
-            &emit_json("drive", "service", "drive::Target", "0123456789abcdef"),
-        )?;
+        let mut metadata = BTreeMap::new();
+        metadata.insert(service.package.clone(), meta("drive::Target", "publish"));
 
-        let expected = build_from_outputs(std::slice::from_ref(&service), &live, temp.path())?;
+        let expected = build_from_outputs(std::slice::from_ref(&service), &metadata, temp.path())?;
         let mut edited = expected.clone();
-        edited.services[0].contracts[0].schema_id = "1111111111111111".to_string();
+        edited.services[0].contracts[0].family = "drive::OtherTarget".to_string();
         edited = edited.finalize()?;
         let err = compare_catalogs(&edited, &expected).unwrap_err();
-        assert_error_contains(&err, "schema_id drift");
+        assert_error_contains(&err, "contracts drift");
         Ok(())
     }
 
     #[test]
-    fn coverage_gate_fails_on_hand_edited_entry() -> Result<()> {
+    fn coverage_gate_fails_on_hand_edited_channel() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let service = artifact(
             "phoxal-service-drive",
@@ -972,14 +770,14 @@ mod tests {
             "0.1.0",
         );
         write_packaged_fixture(temp.path(), &service, "x86_64-unknown-linux-gnu")?;
-        let live = live_metadata_for(
-            &service,
-            &emit_json("drive", "service", "drive::Target", "0123456789abcdef"),
-        )?;
+        let mut metadata = BTreeMap::new();
+        metadata.insert(service.package.clone(), meta("drive::Target", "publish"));
 
-        let expected = build_from_outputs(std::slice::from_ref(&service), &live, temp.path())?;
+        let expected = build_from_outputs(std::slice::from_ref(&service), &metadata, temp.path())?;
         let mut edited = expected.clone();
-        edited.services[0].bus_abi = "phoxal-bus/v1".to_string();
+        edited.services[0]
+            .channels
+            .insert(Channel::Preview, "9.9.9".to_string());
         edited = edited.finalize()?;
         let err = compare_catalogs(&edited, &expected).unwrap_err();
         assert_error_contains(&err, "hand-edit drift");

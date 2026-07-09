@@ -178,7 +178,7 @@ fn compare_artifact_arrays(
             format!("catalog {label} array is missing official artifact entry {package}")
         })?;
         if actual_entry.contracts != expected_entry.contracts {
-            bail!("catalog schema_id drift for {package}; regenerate from packaged emit-apis");
+            bail!("catalog contracts drift for {package}; run `cargo xtask catalog generate`");
         }
     }
 

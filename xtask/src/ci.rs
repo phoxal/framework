@@ -469,7 +469,7 @@ fn write_report_markdown(path: &std::path::Path, report: &CompatReport) -> Resul
         writeln!(file)?;
         writeln!(
             file,
-            "Remediation: open a human PR with `cargo xtask release bump --affected` or `cargo xtask release bump --all`, then let the normal release path publish new assets."
+            "Remediation: open a human PR with `cargo xtask release bump --changed` or `cargo xtask release bump --all`, then let the normal release path publish new assets."
         )?;
     }
     Ok(())

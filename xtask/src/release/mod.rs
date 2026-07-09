@@ -5,6 +5,7 @@ pub mod bump;
 pub mod cut;
 pub mod discover;
 pub mod github;
+pub(crate) mod metadata;
 pub mod package;
 pub mod plan;
 pub mod upload;

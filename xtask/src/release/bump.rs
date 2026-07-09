@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -8,8 +7,6 @@ use clap::Args as ClapArgs;
 use semver::Version;
 use toml_edit::{DocumentMut, value};
 
-use crate::api::manifest::{self, ContractDiff};
-use crate::release::package;
 use crate::workspace::{
     ASSETS_VERSION_FILE, OfficialArtifact, Workspace, require_nonempty_artifacts,
 };
@@ -18,22 +15,18 @@ use crate::workspace::{
 pub struct Args {
     #[arg(
         value_name = "PACKAGE",
-        required_unless_present_any = ["affected", "all", "changed"],
-        conflicts_with_all = ["affected", "all", "changed"]
+        required_unless_present_any = ["all", "changed"],
+        conflicts_with_all = ["all", "changed"]
     )]
     pub package: Option<String>,
-    /// Bump every artifact that uses a contract changed by the latest API
-    /// generation relative to its prior generation.
-    #[arg(long, conflicts_with_all = ["all", "changed"])]
-    pub affected: bool,
     /// Bump every discovered artifact crate.
-    #[arg(long, conflicts_with_all = ["affected", "changed"])]
+    #[arg(long, conflicts_with = "changed")]
     pub all: bool,
     /// Bump every discovered artifact whose crate directory changed since its
     /// current version's release tag. Cheap (git diff only, no cargo package):
     /// artifact crates are no longer release-plz packages (see release-plz.toml's
     /// header), so their version bumps are computed here instead.
-    #[arg(long, conflicts_with_all = ["affected", "all"])]
+    #[arg(long, conflicts_with = "all")]
     pub changed: bool,
 }
 
@@ -69,9 +62,6 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
     if args.all {
         return Ok(workspace.official_artifacts().to_vec());
     }
-    if args.affected {
-        return affected_artifacts(workspace);
-    }
     if args.changed {
         return changed_artifacts(workspace, &CliGitQuery);
     }
@@ -79,7 +69,7 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
     let package_name = args
         .package
         .as_deref()
-        .context("package is required unless --affected, --all, or --changed is present")?;
+        .context("package is required unless --all or --changed is present")?;
     Ok(vec![workspace.official_artifact(package_name)?.clone()])
 }
 
@@ -180,51 +170,6 @@ fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<Of
     Ok(selected)
 }
 
-fn affected_artifacts(workspace: &Workspace) -> Result<Vec<OfficialArtifact>> {
-    let api_manifest = manifest::load_from_workspace(workspace)?;
-    let target_generation = api_manifest
-        .last()
-        .with_context(|| "API manifest contains no generations")?;
-    let base_generation = manifest::base_generation_name(&api_manifest, &target_generation.name)?;
-    let changed_contracts =
-        manifest::diff_contracts(&api_manifest, &base_generation, &target_generation.name)?;
-    let changed_keys = changed_contract_keys(&changed_contracts);
-    if changed_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut selected = Vec::new();
-    // `component_assets` packages have no runtime binary to run `emit-apis` on;
-    // they carry no contracts, so they are never "affected" by a contract change.
-    for artifact in workspace
-        .official_artifacts()
-        .iter()
-        .filter(|artifact| artifact.kind.has_crate())
-    {
-        let stdout = package::emit_apis_from_cargo_run(workspace.root(), artifact)?;
-        let metadata = package::parse_emit_apis_json(&stdout, &artifact.id, artifact.kind)
-            .with_context(|| format!("invalid emit-apis metadata from {}", artifact.package))?;
-        let uses_changed_contract = metadata.required_contracts.iter().any(|contract| {
-            let Some(family) = contract.family.as_deref() else {
-                return false;
-            };
-            changed_keys.contains(family)
-        });
-        if uses_changed_contract {
-            selected.push(artifact.clone());
-        }
-    }
-
-    Ok(selected)
-}
-
-fn changed_contract_keys(changed_contracts: &[ContractDiff]) -> BTreeSet<String> {
-    changed_contracts
-        .iter()
-        .map(|contract| contract.family.clone())
-        .collect()
-}
-
 fn bump_manifest_version(manifest_path: &std::path::Path) -> Result<(String, String)> {
     let text = fs::read_to_string(manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
@@ -294,19 +239,6 @@ mod tests {
     fn patch_bump_rejects_prerelease() {
         let err = bump_patch_version("0.2.0-alpha.1").unwrap_err();
         assert!(err.to_string().contains("pre-release"));
-    }
-
-    #[test]
-    fn changed_keys_include_family() {
-        let keys = changed_contract_keys(&[ContractDiff {
-            kind: crate::api::manifest::ContractDiffKind::Changed,
-            family: "battery::State".to_string(),
-            topic: "battery/state".to_string(),
-            from_schema_id: Some("aaaaaaaaaaaaaaaa".to_string()),
-            to_schema_id: Some("bbbbbbbbbbbbbbbb".to_string()),
-        }]);
-
-        assert!(keys.contains("battery::State"));
     }
 
     // --changed decision table: tag-missing -> skip, diff-clean -> skip, diff-dirty -> bump.

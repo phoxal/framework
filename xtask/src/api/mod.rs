@@ -1,28 +1,18 @@
 use anyhow::Result;
 use clap::Subcommand;
 
-pub mod freeze_shapes;
-pub mod manifest;
-pub mod preview_impact;
-pub mod promotion_gate;
-pub mod schema_diff;
-pub mod sync_features;
+pub mod frozen_generation;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    SyncFeatures(sync_features::Args),
-    SchemaDiff(schema_diff::Args),
-    PreviewImpact(preview_impact::Args),
-    PromotionGate(promotion_gate::Args),
-    FreezeShapes(freeze_shapes::Args),
+    /// Block a release-plz release PR if a released (non-`preview`)
+    /// `phoxal_api_tree!` generation span changed since the last
+    /// `phoxal-api-v*` tag.
+    FrozenGenerationCheck(frozen_generation::Args),
 }
 
 pub fn run(command: Command) -> Result<()> {
     match command {
-        Command::SyncFeatures(args) => sync_features::run(args),
-        Command::SchemaDiff(args) => schema_diff::run(args),
-        Command::PreviewImpact(args) => preview_impact::run(args),
-        Command::PromotionGate(args) => promotion_gate::run(args),
-        Command::FreezeShapes(args) => freeze_shapes::run(args),
+        Command::FrozenGenerationCheck(args) => frozen_generation::run(args),
     }
 }
