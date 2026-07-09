@@ -38,7 +38,14 @@ const DEFAULT_SUBSCRIBER_DEPTH: usize = 32;
 /// the public chain hands you as `Subscribe`) fails to compile - the owner side is
 /// reachable only through the explicit `internal` builder, whose entry requires the
 /// runner-minted owner capability from [`Self::owner_capability`] (L2, plan #00).
-pub struct SetupContext<R: ParticipantSpec> {
+/// `R` carries no bound at the struct level (widened for the NEW authoring
+/// model, `phoxal::participant::api`): the OLD `ParticipantSpec`-bound
+/// builders below still require it on their own `impl` block, and the NEW
+/// `SetupContextApiExt` extension impl in `participant::api` requires
+/// `R: Participant` on its own `impl` block instead - so `SetupContext<R>` is
+/// usable for either authoring model without a struct-level bound picking one
+/// (RECONCILIATION correction #7's "or `SetupContext` goes generic").
+pub struct SetupContext<R> {
     bus: Bus,
     owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
@@ -233,18 +240,38 @@ impl<R: ParticipantSpec> SetupContext<R> {
     pub(crate) fn take_managed_tasks(&mut self) -> ManagedTasks {
         std::mem::take(&mut self.managed_tasks)
     }
+}
 
+/// Unbounded on `R` (no `ParticipantSpec`/`Participant` bound needed - this
+/// just reads a raw field), so both the OLD builders above and the NEW
+/// model's `SetupContextApiExt` (`participant::api`, a sibling module) can
+/// call it.
+impl<R> SetupContext<R> {
     /// The underlying bus. Not on the default checked-participant surface (plan #00
     /// DoD #11 / plan #07): normal participants and examples cannot reach around
     /// the typed handle builders. Privileged participants that genuinely need raw
     /// access go through `phoxal::raw` (`Bus::open` + `run_with_bus`) or the
     /// tool-only [`Self::raw_bus`] accessor.
-    ///
-    /// Retained as an in-crate accessor (no current caller) so privileged phoxal
-    /// code/tests have the seam without re-widening the documented surface.
-    #[allow(dead_code)]
     pub(crate) fn bus(&self) -> &Bus {
         &self.bus
+    }
+
+    /// The runner-minted owner capability (plan #00 L2). In-crate accessor
+    /// mirroring [`bus`](Self::bus): the OLD-model public
+    /// [`owner_capability`](Self::owner_capability) is `ParticipantSpec`-bound,
+    /// so the NEW model's `SetupContextApiExt::owner_capability`
+    /// (`participant::api`) reads the raw field through this unbounded seam
+    /// instead.
+    pub(crate) fn owner_cap(&self) -> OwnerCap {
+        self.owner_cap
+    }
+
+    /// The bound `robot.components` instance, if any. In-crate accessor for the
+    /// NEW model's driver/simulator `component()` builders
+    /// (`participant::api`); the OLD-model [`component`](Self::component) is
+    /// `ParticipantSpec + IsDriver`-bound.
+    pub(crate) fn component_instance(&self) -> Option<&str> {
+        self.component_instance.as_deref()
     }
 }
 

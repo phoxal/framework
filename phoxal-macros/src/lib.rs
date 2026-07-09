@@ -31,8 +31,11 @@
 //! depend on the engine.
 
 mod api_tree;
+mod authoring_v2;
+mod behavior_v2;
 mod runtime_derive;
 mod runtime_impl;
+mod setup_shape;
 mod util;
 
 use proc_macro::TokenStream;
@@ -228,4 +231,88 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
     runtime_impl::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
+}
+
+/// Derive the bus-facing contract surface from an `Api` handle struct (NEW
+/// authoring model). See `phoxal::participant::api` for the trait shape and
+/// how this coexists with the derives above.
+///
+/// Scans fields by canonical syntactic form exactly like `derive@Service`
+/// (`Publisher<T>` / `Subscriber<T>` / `Latest<T>` / `Vec`/map thereof), plus
+/// the new `Server<Req, Resp>` field kind (a served query contract - no live
+/// connection, declared for `#[phoxal::behavior]`'s `#[server(api = …)]` /
+/// `#[server_snapshot(api = …)]` to implement). Unlike the old model, there is
+/// no participant-level API version: fields may name contracts from different
+/// generations. Also emits a `#[used]` linker-section static recording each
+/// field's role and version-qualified contract type (compile-time embedded
+/// metadata, cargo-auditable pattern) - see the module docs for what this
+/// slice does and does not materialize.
+#[proc_macro_derive(Api)]
+pub fn derive_api(input: TokenStream) -> TokenStream {
+    authoring_v2::expand_api(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Derive participant config identity from a `Config` struct (NEW authoring
+/// model). `SCHEMA_JSON` is a placeholder in this slice; see
+/// `phoxal::participant::api::ParticipantConfig`.
+#[proc_macro_derive(Config)]
+pub fn derive_config(input: TokenStream) -> TokenStream {
+    authoring_v2::expand_config(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Link a participant state struct to its `Config`/`Api` types as a checked
+/// service (NEW authoring model - distinct from `#[derive(phoxal::Service)]`,
+/// which scans the struct itself for handle fields). Defaults to the local
+/// `Config`/`Api` type names; override with `#[phoxal::service(id = "…",
+/// config = Type, api = Type)]`.
+#[proc_macro_attribute]
+pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
+    authoring_v2::expand_participant(
+        attr.into(),
+        item.into(),
+        authoring_v2::ParticipantKind::Service,
+    )
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
+}
+
+/// The driver-shaped counterpart to [`service`] (NEW authoring model).
+#[proc_macro_attribute]
+pub fn driver(attr: TokenStream, item: TokenStream) -> TokenStream {
+    authoring_v2::expand_participant(
+        attr.into(),
+        item.into(),
+        authoring_v2::ParticipantKind::Driver,
+    )
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
+}
+
+/// The simulator-shaped counterpart to [`service`] (NEW authoring model).
+#[proc_macro_attribute]
+pub fn simulator(attr: TokenStream, item: TokenStream) -> TokenStream {
+    authoring_v2::expand_participant(
+        attr.into(),
+        item.into(),
+        authoring_v2::ParticipantKind::Simulator,
+    )
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
+}
+
+/// The tool-shaped counterpart to [`service`] (NEW authoring model). `Api`
+/// defaults to `()` - tools stay raw-bus only (decided 2026-07-09).
+#[proc_macro_attribute]
+pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
+    authoring_v2::expand_participant(
+        attr.into(),
+        item.into(),
+        authoring_v2::ParticipantKind::Tool,
+    )
+    .unwrap_or_else(syn::Error::into_compile_error)
+    .into()
 }

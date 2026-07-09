@@ -1,0 +1,480 @@
+//! The NEW participant authoring model (`Api`/`Config`/`Participant`),
+//! coexisting with the OLD [`spec::ParticipantSpec`]/[`spec::ParticipantBehavior`]
+//! model during the migration window (see the phoxal-api-refactor "remove
+//! emit-apis" proposal: `organization/tmp/remove-emit-apis-api-authoring/readme.md`).
+//! `#[derive(phoxal::Api)]` / `#[derive(phoxal::Config)]` /
+//! `#[phoxal::service|driver|simulator|tool]` / `#[phoxal::behavior]`
+//! (new-shape `#[setup]`) target the traits here instead of [`spec`]'s.
+//!
+//! # The `type Api` name collision (Step 0 correction)
+//!
+//! [`spec::ParticipantSpec::Api`](super::spec::ParticipantSpec) already means the
+//! API *version marker* (`phoxal_api::y2026_N::Api`, an old-model concept: "one
+//! API version per participant"). The new model's `Api` means a
+//! participant-authored struct of bus handles, and a participant may mix
+//! contract generations freely across its `Api` fields - there is no version
+//! ceiling. Reusing the OLD trait for the NEW model would make `Self::Api`
+//! ambiguous (two associated items named `Api` on the same type), so the new
+//! model is a **distinct trait hierarchy** ([`Participant`],
+//! [`ParticipantLifecycle`]) that a participant struct implements *instead of*
+//! [`spec::ParticipantSpec`](super::spec::ParticipantSpec)/
+//! [`spec::ParticipantBehavior`](super::spec::ParticipantBehavior) - never
+//! both. A struct picks its model by which struct-level macro authored it
+//! (`#[derive(phoxal::Service)]` vs `#[phoxal::service]`), and
+//! `#[phoxal::behavior]` is transitional: it reads the `#[setup]` method's
+//! return type (`Result<Self>` vs `Result<(Self, Self::Api)>`) and emits the
+//! matching trait impl, so the two models can never collide on one struct.
+//!
+//! The runner's own system contracts (heartbeat/presence/simulation clock) do
+//! not resolve a version through either trait: `participant::runner` hardcodes
+//! `use phoxal_api::y2026_1 as api;` today, independent of any participant's
+//! chosen `Api` - so "a concrete generation for the runner's own contracts
+//! must remain resolvable participant-independent" (Step 0 correction) is
+//! already true and untouched by this module.
+//!
+//! # What this slice defers
+//!
+//! - **Config schema.** [`ParticipantConfig::SCHEMA_JSON`] is a placeholder
+//!   (`"{}"`) emitted by `#[derive(phoxal::Config)]`; materializing the real
+//!   `schemars` schema needs a host-side `build.rs` step (a recursive runtime
+//!   walk a proc-macro cannot reproduce across crate boundaries) - a later
+//!   slice (RECONCILIATION correction #12).
+//! - **`Declares*<B>`-style compile-time gating** on the `SetupContext`
+//!   builders below (`publisher`/`latest`/`server`/…) - the old model's
+//!   per-participant "you must declare this family before building a handle
+//!   for it" gate (D44). Moving that gate to key off `Self::Api` instead of
+//!   the participant struct is real trait redesign (RECONCILIATION
+//!   correction #7); this slice's builders are open (any `ContractBody`
+//!   compiles), matching "this slice only needs the contract-identity
+//!   metadata embedded and the const available."
+//! - **`#[server(api = field)]` field validation** (F-runtime slice). The
+//!   `field` identifier is parsed and recorded but not cross-checked against
+//!   the `Api` struct's actual `Server<Req, Resp>` field of that name - a
+//!   proc-macro on the `impl` block cannot see the separate `Api` struct
+//!   definition it did not derive, so binding the handler to its declared
+//!   slot is deferred to the runtime slice that owns both together.
+//! - **Concurrent snapshot-server `Api` sharing in a live runner.** The
+//!   generated [`ParticipantLifecycle::__serve_snapshot`] takes
+//!   `Arc<Self::Api>` (read-only, D3), which this module's traits and the
+//!   `#[phoxal::behavior]` codegen fully support end to end; wiring an actual
+//!   `phoxal::run`/`run_with` main loop to construct and hand out that `Arc`
+//!   for a *live* participant (bus connected, concurrent tasks) is deferred -
+//!   proven here by direct trait-method invocation in a test fixture instead
+//!   of a live bus loop. `Arc<Self::Api>` (not `&Self::Api`) is this slice's
+//!   chosen "api snapshot" shape (D3 offers either): every bus handle type's
+//!   real operations already take `&self` (see `phoxal-bus/src/handle.rs`),
+//!   so an `Arc` costs nothing extra and - unlike a borrowed reference - is
+//!   `'static` and can be moved into the spawned/boxed future
+//!   `__serve_snapshot` returns.
+//!
+//! The owner-capability / component / raw-bus setup accessors are **not**
+//! deferred: the new-model surface exposes `owner_capability()` for all
+//! participants, `component()` for drivers and simulators, and `raw_bus()`
+//! for tools (see [`SetupContextApiExt`], [`SetupContextDriverExt`],
+//! [`SetupContextSimulatorExt`], [`SetupContextToolExt`] below).
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use crate::bus::{
+    AskQuery, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, OwnerCap, Publish, Publisher, Querier,
+    Subscribe, Subscriber, Topic,
+};
+use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
+use crate::participant::server::ServerOutcome;
+use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
+use phoxal_bus::Bus;
+
+/// The role a [`ParticipantApi`] handle field plays on the bus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContractRole {
+    /// A `Publisher<B>` field (or `Vec`/map of one).
+    Publish,
+    /// A `Subscriber<B>`/`Latest<B>` field (or `Vec`/map of one).
+    Subscribe,
+    /// A `Server<Req, Resp>` field (or `Vec`/map of one); contributes one
+    /// entry for `Req` and one for `Resp`.
+    Serve,
+}
+
+/// One contract a `Api` struct field uses: its generation-qualified wire key
+/// (D1) plus the role that field plays. Built by `#[derive(phoxal::Api)]` from
+/// each field's `<Body as ContractBody>::TOPIC`, mirroring
+/// [`spec::ContractUse`](super::spec::ContractUse) for the old model.
+#[derive(Clone, Copy, Debug)]
+pub struct ApiContractUse {
+    /// The generation-qualified wire key.
+    pub topic: &'static str,
+    /// The role this field plays for that contract.
+    pub role: ContractRole,
+}
+
+/// Emitted by `#[derive(phoxal::Api)]`: the bus-facing contract surface of a
+/// participant's `Api` handle struct (the new model's per-field replacement
+/// for [`spec::ParticipantSpec::FIELD_CONTRACTS`](super::spec::ParticipantSpec)).
+pub trait ParticipantApi: Send + Sync + 'static {
+    /// Every contract this `Api` struct's fields use, deduplicated.
+    const CONTRACTS: &'static [ApiContractUse];
+}
+
+/// `Api = ()` for participants that opt out of a typed bus surface (tools,
+/// per decision - "Tools stay raw-bus only", `remove-emit-apis-api-authoring/readme.md`).
+impl ParticipantApi for () {
+    const CONTRACTS: &'static [ApiContractUse] = &[];
+}
+
+/// Emitted by `#[derive(phoxal::Config)]`: participant config identity.
+///
+/// `SCHEMA_JSON` is a placeholder in this slice (see the module docs); treat
+/// it as "the trait exists and is available for later wiring," not as a
+/// materialized schema.
+pub trait ParticipantConfig: serde::de::DeserializeOwned + Send + 'static {
+    /// Placeholder config JSON schema (real materialization is a later,
+    /// host-side `build.rs` slice - see the module docs).
+    const SCHEMA_JSON: &'static str;
+}
+
+impl ParticipantConfig for () {
+    const SCHEMA_JSON: &'static str = "{}";
+}
+
+/// Emitted by `#[phoxal::service]` / `#[phoxal::driver]` /
+/// `#[phoxal::simulator]` / `#[phoxal::tool]`: participant identity plus the
+/// linked `Config`/`Api` types (the NEW authoring model's counterpart to
+/// [`spec::ParticipantSpec`](super::spec::ParticipantSpec)).
+pub trait Participant: Sized + Send + 'static {
+    /// The authoring kind that produced this artifact (`"service"`,
+    /// `"driver"`, `"simulator"`, or `"tool"`).
+    const KIND: &'static str;
+    /// Whether normal graph topology applies to this participant.
+    const PARTICIPANT_CLASS: &'static str;
+    /// The participant id (`id = "…"`, default kebab of the type name).
+    const ID: &'static str;
+    /// The participant's typed config (`robot.yaml` input).
+    type Config: ParticipantConfig;
+    /// The participant's bus-facing contract surface (`()` for a raw-bus
+    /// tool).
+    type Api: ParticipantApi;
+}
+
+/// Coexistence-dispatch diagnostic (see [`ParticipantLifecycle`] /
+/// `#[phoxal::behavior]`). `#[phoxal::behavior]` routes to the NEW-model
+/// codegen when `#[setup]` returns `Result<(Self, Self::Api)>` - but at macro
+/// time it sees only the `impl` block, never which struct-level macro authored
+/// the type, so it cannot itself `compile_error!` on a struct/setup-shape
+/// mismatch. Instead the NEW codegen emits a one-line assertion that the type
+/// bounds `AssertNewModel`; when a type authored the OLD way
+/// (`#[derive(phoxal::Service)]`, so `ParticipantSpec` not `Participant`)
+/// accidentally returns the tuple shape, this fires FIRST with the message
+/// below instead of a wall of `ParticipantLifecycle`/`Participant` bound
+/// errors. Blanket-impl'd for every real new-model participant, so it is
+/// invisible when authoring is correct.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a new-model phoxal participant, but its `#[setup]` returns `Result<(Self, Self::Api)>`",
+    label = "author it with `#[phoxal::service|driver|simulator|tool]` (new model); an old-model `#[derive(phoxal::Service)]` participant's `#[setup]` must return `Result<Self>`"
+)]
+pub trait AssertNewModel {}
+impl<T: Participant> AssertNewModel for T {}
+
+/// The old-model twin of [`AssertNewModel`]. `#[phoxal::behavior]` routes to
+/// the OLD-model codegen for the default `Result<Self>` setup shape; that
+/// codegen emits a one-line assertion that the type bounds `AssertOldModel`,
+/// so a NEW-model type (`#[phoxal::service]`, so `Participant` not
+/// `ParticipantSpec`) that forgot to return `Result<(Self, Self::Api)>` fails
+/// with the message below rather than a wall of
+/// `ParticipantBehavior`/`ParticipantSpec` bound errors. Blanket-impl'd for
+/// every real old-model participant.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not an old-model phoxal participant, but its `#[setup]` returns `Result<Self>`",
+    label = "a new-model `#[phoxal::service|driver|simulator|tool]` participant's `#[setup]` must return `Result<(Self, Self::Api)>`; an old-model participant uses `#[derive(phoxal::Service)]`"
+)]
+pub trait AssertOldModel {}
+impl<T: super::spec::ParticipantSpec> AssertOldModel for T {}
+
+/// Emitted by `#[phoxal::behavior]` for a NEW-model `#[setup]`
+/// (`Result<(Self, Self::Api)>`): lifecycle dispatch + server-side metadata,
+/// mirroring [`spec::ParticipantBehavior`](super::spec::ParticipantBehavior)
+/// but threading `Self::Api` through every callback (D3):
+///
+/// - `#[step]` / the exclusive `#[server(api = …)]` get `&mut Self::Api`
+///   (same task as the caller, so exclusive access is free);
+/// - the concurrent `#[server_snapshot(api = …)]` gets a shared
+///   `Arc<Self::Api>`, not `&mut` - it may run concurrently with `#[step]`/an
+///   exclusive server (D3's "read-only … or an api snapshot"; see the module
+///   docs for why `Arc` is this slice's chosen shape).
+#[allow(async_fn_in_trait)]
+pub trait ParticipantLifecycle: Participant {
+    /// Contracts derived from `#[server]`/`#[server_snapshot]` handler
+    /// signatures.
+    const SERVER_CONTRACTS: &'static [ApiContractUse];
+
+    /// The committed-snapshot state type (`()` when there is no
+    /// `#[snapshot]`).
+    type Snapshot: Send + Sync + 'static;
+
+    /// Whether the participant provides a committed snapshot (`#[snapshot]`).
+    const HAS_SNAPSHOT: bool;
+
+    /// The versionless topic keys of exclusive `#[server]` handlers.
+    fn __exclusive_server_topics() -> &'static [&'static str];
+
+    /// The versionless topic keys of concurrent `#[server_snapshot]`
+    /// handlers.
+    fn __snapshot_server_topics() -> &'static [&'static str];
+
+    /// Reject a duplicate server topic before startup declares queryables.
+    fn __validate_server_topics() -> Result<(), String>;
+
+    /// The scheduled-step cadence, or `None` if the participant has no
+    /// `#[step]`.
+    fn __step_schedule() -> Option<StepSchedule>;
+
+    /// Construct the participant and its `Api` (`#[setup]`).
+    async fn __setup(
+        ctx: &mut SetupContext<Self>,
+        config: Self::Config,
+    ) -> crate::Result<(Self, Self::Api)>;
+
+    /// Run one scheduled step (`#[step]`; a no-op when none is declared).
+    async fn __step(&mut self, api: &mut Self::Api, step: StepContext) -> crate::Result<()>;
+
+    /// Graceful shutdown (`#[shutdown]`; a no-op when none is declared).
+    async fn __shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> crate::Result<()>;
+
+    /// Commit the current state as a snapshot (calls the `#[snapshot]`
+    /// provider; returns `()` when there is none).
+    fn __take_snapshot(&self) -> Self::Snapshot;
+
+    /// Serve one exclusive `#[server]` query (holds `&mut self` and
+    /// `&mut Self::Api`, serialized with `#[step]`).
+    async fn __serve_exclusive(
+        &mut self,
+        api: &mut Self::Api,
+        topic: &str,
+        request: &[u8],
+    ) -> ServerOutcome;
+
+    /// Serve one concurrent `#[server_snapshot]` query against a committed
+    /// state snapshot and a shared, read-only `Api` snapshot (D3). Returns a
+    /// boxed `Send` future so the caller can spawn it.
+    fn __serve_snapshot(
+        snapshot: Arc<Self::Snapshot>,
+        api: Arc<Self::Api>,
+        topic: String,
+        request: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;
+}
+
+/// A declared server slot in an `Api` struct (`#[derive(phoxal::Api)]`
+/// recognizes it as a [`ContractRole::Serve`] contract). Unlike
+/// [`Publisher`]/[`Latest`]/[`Subscriber`]/[`Querier`], this carries no live
+/// bus connection: serving is runner-dispatched from the generated
+/// `ParticipantLifecycle::__serve_*` methods keyed on
+/// `<Req as ContractBody>::TOPIC`, exactly as the old model's
+/// `#[server(topic = …)]` is today - the field exists purely so `Api` can
+/// *declare* the contract ("`Api` declares the bus contract; `behavior`
+/// implements runtime logic").
+pub struct Server<Req, Resp> {
+    _p: std::marker::PhantomData<fn(Req) -> Resp>,
+}
+
+impl<Req, Resp> Server<Req, Resp> {
+    /// Framework-internal (macro-only) constructor; the author-facing path is
+    /// `ctx.server(...)` in `#[setup]`. `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub fn new() -> Self {
+        Server {
+            _p: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<Req, Resp> Default for Server<Req, Resp> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// `PhantomData<fn(Req) -> Resp>` is `Send`/`Sync` regardless of `Req`/`Resp`
+// (a fn-pointer phantom, same trick the other handle types' `PhantomData<fn()
+// -> B>` markers use), so `Server<Req, Resp>` needs no manual impls to
+// satisfy `ParticipantApi: Send + Sync`.
+
+/// `SetupContext<R>` builders for the NEW model (`R: Participant`), added as
+/// an extension trait rather than a second inherent `impl<R: Participant>
+/// SetupContext<R>` block: Rust rejects two inherent impls of the same
+/// generic struct with an overlapping method name (E0592) even when, as
+/// here, no concrete type ever satisfies both bounds. A blanket trait impl
+/// sidesteps that: inherent methods win on the OLD `ParticipantSpec` side,
+/// and trait-method resolution finds this impl on the NEW `Participant` side,
+/// keeping the OLD `impl<R: ParticipantSpec> SetupContext<R>` block in
+/// `context.rs` completely untouched. Bring it into scope with
+/// `use phoxal::prelude::*;`, exactly like the OLD builders' inherent
+/// methods.
+#[allow(async_fn_in_trait)]
+pub trait SetupContextApiExt<R: Participant> {
+    /// Build a publisher for `B` (any generation - no per-participant API
+    /// version ceiling in the new model).
+    async fn publisher<B: ContractBody>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<Publisher<B>>;
+
+    /// A keep-last-1 view of `B`.
+    async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>)
+    -> crate::Result<Latest<B>>;
+
+    /// A drop-oldest ring subscription of `B` at `depth`.
+    async fn subscriber<B: ContractBody>(
+        &self,
+        topic: Topic<Subscribe<B>>,
+        depth: usize,
+    ) -> crate::Result<Subscriber<B>>;
+
+    /// Build a querier for a declared query contract.
+    async fn querier<Req: ContractBody, Resp: ContractBody>(
+        &self,
+        topic: Topic<AskQuery<Req, Resp>>,
+    ) -> crate::Result<Querier<Req, Resp>>;
+
+    /// Declare an `Api` server slot for a query contract this participant
+    /// serves. See [`Server`] - no live connection is opened here; the
+    /// runner dispatches served queries to the generated
+    /// `ParticipantLifecycle::__serve_*` methods.
+    async fn server<Req: ContractBody, Resp: ContractBody>(
+        &self,
+        topic: Topic<AskQuery<Req, Resp>>,
+    ) -> crate::Result<Server<Req, Resp>>;
+
+    /// The runner-minted owner capability (plan #00 Layer 2) - the controlled
+    /// path a participant takes to OWN its own topics. Bind it once in
+    /// `#[setup]` and pass it to the owner builder entry
+    /// `api::topic::internal::new(cap)`:
+    ///
+    /// ```ignore
+    /// let cap = ctx.owner_capability();
+    /// let state = ctx
+    ///     .publisher(api::topic::internal::new(cap).drive().state())
+    ///     .await?;
+    /// ```
+    ///
+    /// Every real participant starts here, so it is on the base new-model
+    /// surface (all `Participant` kinds), the same as the OLD-model
+    /// `SetupContext::owner_capability` is for every `ParticipantSpec`.
+    fn owner_capability(&self) -> OwnerCap;
+}
+
+impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
+    async fn publisher<B: ContractBody>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<Publisher<B>> {
+        Ok(Publisher::new(self.bus().clone(), &topic)?)
+    }
+
+    async fn latest<B: ContractBody>(
+        &self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<Latest<B>> {
+        Ok(Latest::new(self.bus(), &topic).await?)
+    }
+
+    async fn subscriber<B: ContractBody>(
+        &self,
+        topic: Topic<Subscribe<B>>,
+        depth: usize,
+    ) -> crate::Result<Subscriber<B>> {
+        Ok(Subscriber::new(self.bus(), &topic, depth).await?)
+    }
+
+    async fn querier<Req: ContractBody, Resp: ContractBody>(
+        &self,
+        topic: Topic<AskQuery<Req, Resp>>,
+    ) -> crate::Result<Querier<Req, Resp>> {
+        Ok(Querier::new(
+            self.bus().clone(),
+            &topic,
+            DEFAULT_QUERY_TIMEOUT,
+        )?)
+    }
+
+    async fn server<Req: ContractBody, Resp: ContractBody>(
+        &self,
+        topic: Topic<AskQuery<Req, Resp>>,
+    ) -> crate::Result<Server<Req, Resp>> {
+        // No live bus op: the topic argument only pins `Req`/`Resp` to the
+        // declared query contract at the call site (a wrong pairing fails to
+        // compile here); dispatch itself is runner-side (see `Server`'s docs).
+        let _ = topic;
+        Ok(Server::new())
+    }
+
+    fn owner_capability(&self) -> OwnerCap {
+        self.owner_cap()
+    }
+}
+
+/// Driver-only new-model `SetupContext` accessor (`R: Participant + IsDriver`),
+/// the counterpart to the OLD-model `ParticipantSpec + IsDriver`-gated
+/// [`SetupContext::component`](super::context::SetupContext::component).
+///
+/// `component()` lives on a separate extension trait per marker (not a single
+/// trait with two blanket impls) precisely because two blanket impls -
+/// `IsDriver` and `IsSimulator` - of one trait would overlap under coherence
+/// (a type *could* implement both markers, even though none does). Splitting
+/// per marker keeps each `ctx.component()` call resolvable to exactly one
+/// impl. See also [`SetupContextSimulatorExt`].
+pub trait SetupContextDriverExt {
+    /// The `robot.components` entry this driver drives (D47/D53), launched once
+    /// per instance. Errors if the driver was launched without one.
+    fn component(&self) -> crate::Result<&str>;
+}
+
+impl<R: Participant + IsDriver> SetupContextDriverExt for SetupContext<R> {
+    fn component(&self) -> crate::Result<&str> {
+        self.component_instance().ok_or_else(|| {
+            anyhow::anyhow!("no component instance is bound (this driver was launched without one)")
+        })
+    }
+}
+
+/// Simulator-only new-model `SetupContext` accessor
+/// (`R: Participant + IsSimulator`); the simulator-marker twin of
+/// [`SetupContextDriverExt`] (see its docs for why the two markers get
+/// separate traits). A simulator that owns a per-component instance reads it
+/// the same way a driver does.
+pub trait SetupContextSimulatorExt {
+    /// The bound `robot.components` instance, if the simulator was launched
+    /// per instance. Errors otherwise.
+    fn component(&self) -> crate::Result<&str>;
+}
+
+impl<R: Participant + IsSimulator> SetupContextSimulatorExt for SetupContext<R> {
+    fn component(&self) -> crate::Result<&str> {
+        self.component_instance().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no component instance is bound (this simulator was launched without one)"
+            )
+        })
+    }
+}
+
+/// Tool-only new-model `SetupContext` accessor (`R: Participant + IsTool`), the
+/// counterpart to the OLD-model `ParticipantSpec + IsTool`-gated
+/// [`SetupContext::raw_bus`](super::context::SetupContext::raw_bus). Tools stay
+/// raw-bus only (decided 2026-07-09), so this is their sole IO seam.
+pub trait SetupContextToolExt {
+    /// Clone the runner-owned raw bus for privileged tool internals. The bus is
+    /// already open from the launch contract, so a tool does not reparse launch
+    /// env or open an unrelated session.
+    fn raw_bus(&self) -> Bus;
+}
+
+impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
+    fn raw_bus(&self) -> Bus {
+        self.bus().clone()
+    }
+}

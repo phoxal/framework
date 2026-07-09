@@ -30,7 +30,18 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         ));
     }
 
-    let mut item_impl: ItemImpl = syn::parse2(item)?;
+    let item_impl: ItemImpl = syn::parse2(item)?;
+    // Transitional dispatch (coexistence during the migration window): a
+    // `#[setup]` returning `Result<(Self, Self::Api)>` is the NEW authoring
+    // model (`phoxal::participant::api::ParticipantLifecycle`); this whole
+    // function below is the OLD model's codegen
+    // (`phoxal::participant::spec::ParticipantBehavior`,
+    // `Result<Self>`-shaped `#[setup]`) and is otherwise untouched. See
+    // `crate::setup_shape` and `crate::behavior_v2`.
+    if crate::setup_shape::is_new_model(&item_impl) {
+        return crate::behavior_v2::expand(item_impl);
+    }
+    let mut item_impl = item_impl;
     let self_ty = (*item_impl.self_ty).clone();
 
     let mut setup: Option<LifecycleFn> = None;
@@ -138,6 +149,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     Ok(quote! {
         #item_impl
+
+        // Coexistence-dispatch guard (transitional window): this impl was routed
+        // to the OLD-model codegen because `#[setup]` returns the default
+        // `Result<Self>` shape. If the struct was actually authored the NEW way
+        // (`#[phoxal::service]`, so `Participant` not `ParticipantSpec`), it fails
+        // here with `AssertOldModel`'s targeted "setup must return
+        // `Result<(Self, Self::Api)>`" message rather than only a wall of
+        // downstream `ParticipantBehavior`/`ParticipantSpec` bound errors (see
+        // that trait). All 25 existing old participants satisfy this silently.
+        const _: () = {
+            fn __phoxal_assert_old_model<T: ::phoxal::participant::AssertOldModel>() {}
+            let _ = __phoxal_assert_old_model::<#self_ty>;
+        };
 
         #tool_forbidden_guards
 

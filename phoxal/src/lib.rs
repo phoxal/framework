@@ -209,6 +209,32 @@ pub use phoxal_macros::Tool;
 /// The bare `#[phoxal::behavior]` attribute for a participant's inherent impl.
 pub use phoxal_macros::behavior;
 
+/// NEW authoring model (coexists with the derives above during the
+/// migration window - see `phoxal::participant::api`): derive the bus-facing
+/// contract surface from an `Api` handle struct's fields.
+pub use phoxal_macros::Api;
+
+/// NEW authoring model: derive participant config identity from a `Config`
+/// struct (schema materialization is a later slice - see
+/// `phoxal::participant::api::ParticipantConfig`).
+pub use phoxal_macros::Config;
+
+/// NEW authoring model: link a participant state struct to its `Config`/`Api`
+/// types as a checked service.
+pub use phoxal_macros::service;
+
+/// NEW authoring model: link a participant state struct to its `Config`/`Api`
+/// types as a component driver.
+pub use phoxal_macros::driver;
+
+/// NEW authoring model: link a participant state struct to its `Config`/`Api`
+/// types as a simulation participant.
+pub use phoxal_macros::simulator;
+
+/// NEW authoring model: link a participant state struct to its `Config` as a
+/// raw-bus tool (`Api` defaults to `()` - tools stay raw-bus only).
+pub use phoxal_macros::tool;
+
 #[doc(inline)]
 pub use phoxal_macros::phoxal_api_tree;
 
@@ -234,6 +260,8 @@ pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{Latest, Publisher, Querier, QueryError, ServerResult, Subscriber};
     pub use crate::participant::{
-        LogicalTime, ManagedTaskPolicy, SetupContext, ShutdownContext, Snapshot, StepContext,
+        LogicalTime, ManagedTaskPolicy, Server, SetupContext, SetupContextApiExt,
+        SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt, ShutdownContext,
+        Snapshot, StepContext,
     };
 }

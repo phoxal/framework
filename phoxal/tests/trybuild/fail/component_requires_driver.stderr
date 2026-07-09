@@ -2,15 +2,36 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
   --> tests/trybuild/fail/component_requires_driver.rs:18:30
    |
  9 | struct ComponentRequiresDriver {
-   | ------------------------------ doesn't satisfy `_: IsDriver`
+   | ------------------------------ doesn't satisfy `ComponentRequiresDriver: Participant`, `_: IsDriver` or `_: IsSimulator`
 ...
 18 |         let _component = ctx.component()?;
    |                              ^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
    |
+  ::: src/participant/context.rs
+   |
+   | pub struct SetupContext<R> {
+   | -------------------------- doesn't satisfy `_: SetupContextDriverExt` or `_: SetupContextSimulatorExt`
+   |
    = note: the following trait bounds were not satisfied:
            `ComponentRequiresDriver: phoxal::participant::IsDriver`
-note: the trait `phoxal::participant::IsDriver` must be implemented
+           `ComponentRequiresDriver: Participant`
+           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextDriverExt`
+           `ComponentRequiresDriver: phoxal::participant::IsDriver`
+           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextDriverExt`
+           `ComponentRequiresDriver: Participant`
+           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextSimulatorExt`
+           `ComponentRequiresDriver: phoxal::participant::IsSimulator`
+           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextSimulatorExt`
+note: the traits `Participant`, `phoxal::participant::IsDriver`,  and `phoxal::participant::IsSimulator` must be implemented
   --> src/participant/spec.rs
    |
    | pub trait IsDriver {}
    | ^^^^^^^^^^^^^^^^^^
+...
+   | pub trait IsSimulator {}
+   | ^^^^^^^^^^^^^^^^^^^^^
+   |
+  ::: src/participant/api.rs
+   |
+   | pub trait Participant: Sized + Send + 'static {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

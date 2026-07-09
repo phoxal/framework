@@ -6,6 +6,7 @@
 //! `#[phoxal::behavior]` (see the crate docs); this module is the
 //! runner-facing machinery those macros target.
 
+pub mod api;
 mod bus_log;
 pub mod clock;
 pub mod context;
@@ -19,6 +20,11 @@ mod sd_notify;
 pub mod server;
 pub mod spec;
 
+pub use api::{
+    ApiContractUse, AssertNewModel, AssertOldModel, ContractRole, Participant, ParticipantApi,
+    ParticipantConfig, ParticipantLifecycle, Server, SetupContextApiExt, SetupContextDriverExt,
+    SetupContextSimulatorExt, SetupContextToolExt,
+};
 pub use clock::{ClockSource, RealClock, TestClock};
 pub use context::{SetupContext, ShutdownContext, StepContext, SubscribeBuilder, SubscribeOptions};
 pub use emit::{ParticipantMetadata, emit_apis_json, participant_metadata};
