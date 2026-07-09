@@ -1,42 +1,34 @@
 name: release-plz
 
-# Split release pipeline (plan #01, revised for release-pr performance).
+# Build-snapshot release pipeline (design doc
+# organization/tmp/ci-release-refactor/design.md §2, §4).
 #
-# release-plz owns versions, changelogs, tags, and GitHub releases for the 4
-# library crates only (see release-plz.toml's header for why artifact crates
-# are out of its scope entirely: they set publish = false, so release-plz drops
-# them before its own config even applies).
+# release-plz owns ALL crate versioning - libraries and binaries alike (the
+# latter via git_only, see release-plz.toml). There are no per-artifact
+# "warehouse" releases and no mutable "stable" front-door release anymore; a CI
+# run produces exactly one immutable `build-YYYYMMDD-<run_number>` release
+# holding this run's freshly-built tarballs plus the assembled `catalog.json`,
+# and marks it GitHub "latest" once the gate passes. The catalog is a FULL
+# INDEX: each run appends the (package, version) pairs it built to the previous
+# catalog (fetched from the current "latest" release), so a single catalog
+# resolves any pinned version. See the design doc for the whole model.
 #
-# Official artifacts (services/component drivers/tools/simulators, plus
-# target-independent component_assets bundles - docs #21) are owned by xtask
-# instead. Releases are two surfaces (docs #22, decision D25): a per-artifact-
-# version "warehouse" release (`--latest=false`, holds the tarballs/checksums)
-# and one mutable "stable" front-door release (holds the catalog only). GitHub
-# release immutability is off for this repo, so every
-# upload clobbers rather than guarding against re-upload.
-#   - `cargo xtask release cut` creates the tag + a published warehouse GitHub
-#     release for any artifact whose current version isn't tagged yet
-#     (idempotent - same reconcile-on-every-push semantics `release_always`
-#     gave release-plz; crate-backed artifacts version off Cargo.toml,
-#     component_assets bundles off their assets.version file) and emits a
-#     release-plz-JSON-compatible document. Releases are born published - there
-#     is no draft state to un-draft later;
-#   - `cargo xtask release plan` consumes that document exactly like it used to
-#     consume `release-plz release --output json`, so the native asset
-#     packaging/upload/gate/catalog steps below are unchanged; a
-#     component_assets bundle's matrix row packages once for the
-#     target-independent scope instead of once per real target triple;
-#   - `cargo xtask release bump --changed` (in the release-plz-pr job) computes
-#     artifact version bumps from git diff, cheaply, and lands them via a
-#     separate scheduled PR.
+# Three push-triggered jobs:
+#   1. release    - release-plz publishes the 4 libs to crates.io + creates all
+#                   tags (lib + binary git_only); then computes this run's build
+#                   set (artifact versions not already in the latest catalog)
+#                   and creates the empty `build-*` release.
+#   2. build      - one matrix leg per (artifact, target): package the tarball
+#                   and upload it to the `build-*` release.
+#   3. catalog    - assemble catalog.json from this run's facts + the previous
+#                   catalog, run the structural gate, upload it to the `build-*`
+#                   release, and mark that release "latest".
+# Plus a schedule/dispatch `release-plz-pr` job that keeps the one workspace
+# release PR (libs + binaries) open.
 
 on:
   push:
     branches: [main]
-  # release-plz-pr now only processes the 4 library crates (artifacts are out of
-  # its scope - see the header above), so it is no longer the ~100-minute job it
-  # used to be. It still runs on a schedule + on demand rather than every push,
-  # since it also opens/updates PRs, which isn't push-appropriate.
   schedule:
     - cron: "17 5,17 * * *"
   workflow_dispatch:
@@ -50,13 +42,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release-plz-release:
-    name: release-plz release
+  release:
+    name: release-plz release + build set
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.plan.outputs.released }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      build_tag: ${{ steps.provenance.outputs.build_tag }}
+      created_at: ${{ steps.provenance.outputs.created_at }}
     env:
       HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
     steps:
@@ -79,9 +73,11 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      # Libraries only: artifact crates set publish = false and never reach
-      # release-plz's scope (see this file's header).
-      - name: Run release-plz
+      # Libraries publish to crates.io; every managed crate (libs + the 27
+      # git_only binaries) gets its `{package}-v{version}` tag. No GitHub
+      # releases are created here - the binaries land in the `build-*` snapshot
+      # release below, the libs carry no artifact.
+      - name: Run release-plz release
         run: |
           set -euo pipefail
           release-plz release
@@ -89,25 +85,67 @@ jobs:
           GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      # Artifacts only: idempotent tag + warehouse-release reconciliation,
-      # cheap (git tag/log only, no cargo package). Emits a
-      # release-plz-JSON-compatible document so the plan step below needs no
-      # changes.
-      - name: Cut official artifact releases
+      # This run's identity: `build-YYYYMMDD-<zero-padded run_number>` and a
+      # single UTC timestamp reused by every downstream job so the catalog's
+      # provenance is internally consistent.
+      - name: Compute build provenance
+        id: provenance
         run: |
           set -euo pipefail
-          mkdir -p target/xtask
-          cargo xtask release cut --repo ${{ github.repository }} --out target/xtask/release-plz.json
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          build_tag="build-$(date -u +%Y%m%d)-$(printf '%07d' "${{ github.run_number }}")"
+          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "build_tag=$build_tag" >> "$GITHUB_OUTPUT"
+          echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
 
-      - name: Build native release plan
+      # The full index to diff against + accumulate onto is whatever catalog the
+      # current "latest" release carries. `gh release download` with no tag
+      # targets the latest release; a missing release or missing asset (cold
+      # start, design §4.3) leaves no file and the plan/generate steps below run
+      # unfiltered.
+      - name: Fetch previous catalog (latest release)
+        run: |
+          set -euo pipefail
+          mkdir -p prev
+          if gh release download --pattern catalog.json --dir prev --repo "${{ github.repository }}"; then
+            echo "fetched previous catalog"
+          else
+            rm -f prev/catalog.json
+            echo "no previous catalog (cold start)"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build set = discovered artifact versions NOT already in the previous
+      # catalog. Emits `released` (any artifact to build?) and `matrix`.
+      - name: Compute release plan
         id: plan
-        run: >
-          cargo xtask release plan
-          --release-plz-json target/xtask/release-plz.json
-          --out target/xtask/release-plan.json
-          --github-output
+        run: |
+          set -euo pipefail
+          previous=()
+          if [ -f prev/catalog.json ]; then
+            previous=(--previous-catalog prev/catalog.json)
+          fi
+          cargo xtask release plan \
+            --out target/xtask/release-plan.json \
+            --github-output \
+            "${previous[@]}"
+
+      # Create the immutable snapshot release up front (NOT latest yet - the
+      # catalog job marks it latest only after the gate passes). Carry the
+      # previous catalog forward as a workflow artifact so the catalog job needs
+      # no second network fetch.
+      - name: Create build-snapshot release
+        if: steps.plan.outputs.released == 'true'
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.provenance.outputs.build_tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "Phoxal build ${{ steps.provenance.outputs.build_tag }}" \
+            --notes "Automated build-snapshot release. Artifacts + catalog.json for run ${{ github.run_id }}." \
+            --target "${{ github.sha }}" \
+            --latest=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/upload-artifact@v4
         if: steps.plan.outputs.released == 'true'
@@ -115,24 +153,30 @@ jobs:
           name: release-plan
           path: target/xtask/release-plan.json
 
-  native-assets:
-    name: native asset (${{ matrix.package }} ${{ matrix.target }})
-    needs: release-plz-release
-    if: needs.release-plz-release.outputs.released == 'true'
+      - uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.released == 'true' && hashFiles('prev/catalog.json') != ''
+        with:
+          name: previous-catalog
+          path: prev/catalog.json
+
+  build:
+    name: build ${{ matrix.package }} (${{ matrix.target }})
+    needs: release
+    if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.release-plz-release.outputs.matrix) }}
+      matrix: ${{ fromJson(needs.release.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # `component_assets` packages (`matrix.target == 'target-independent'`)
-      # have no Cargo crate/binary: packaging them is just tarring files, so the
-      # per-target Rust toolchain and cargo-auditable below are skipped for them.
+      # `target-independent` component-asset bundles have no crate/binary to
+      # cross-compile: just tar the files, so skip the per-target toolchain +
+      # cargo-auditable for them.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         if: matrix.target != 'target-independent'
         with:
@@ -154,48 +198,45 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libudev-dev
 
-      - name: Package native asset
+      - name: Package artifact
         run: >
           cargo xtask release package ${{ matrix.package }}
           --target ${{ matrix.target }}
           --out target/xtask/release
 
-      - name: Upload release assets
+      # Upload the freshly-built tarball + checksum to THIS run's snapshot
+      # release (not the per-package version tag - that tag carries no release).
+      - name: Upload to build-snapshot release
         run: >
           cargo xtask release upload
           --package ${{ matrix.package }}
           --target ${{ matrix.target }}
-          --tag ${{ matrix.tag }}
+          --tag ${{ needs.release.outputs.build_tag }}
           --repo ${{ github.repository }}
           --package-dir target/xtask/release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # `matrix.package` is the provider-qualified public identity
-      # (`phoxal/component-ddsm115-assets`); packaged asset filenames are its
-      # filesystem-safe projection (`phoxal-component-ddsm115-assets-...`, docs
-      # #21), so the upload-artifact glob must match on that form, not the raw
-      # `/`-qualified package.
       - name: Compute filesystem-safe package name
         id: safe-name
         run: echo "value=$(echo '${{ matrix.package }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
 
+      # Hand the exact packaged bytes to the catalog job so it assembles the
+      # catalog from real facts without rebuilding or re-downloading.
       - uses: actions/upload-artifact@v4
         with:
-          name: native-${{ steps.safe-name.outputs.value }}-${{ matrix.target }}
+          name: facts-${{ steps.safe-name.outputs.value }}-${{ matrix.target }}
           path: target/xtask/release/${{ steps.safe-name.outputs.value }}-v${{ matrix.version }}-${{ matrix.target }}.*
 
-  catalog-publish:
-    name: catalog gate and publish
+  catalog:
+    name: assemble catalog + gate + mark latest
     needs:
-      - release-plz-release
-      - native-assets
-    if: needs.release-plz-release.outputs.released == 'true'
+      - release
+      - build
+    if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      STABLE_CATALOG_URL: https://github.com/${{ github.repository }}/releases/download/stable/latest.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -208,70 +249,68 @@ jobs:
           name: release-plan
           path: target/xtask
 
+      # Optional - absent on a cold start, in which case the merge starts empty.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: previous-catalog
+          path: prev
+
       - uses: actions/download-artifact@v4
         with:
-          pattern: native-*
+          pattern: facts-*
           path: target/xtask/release
           merge-multiple: true
 
-      - name: Fetch previous stable catalog if present
-        run: |
-          set -euo pipefail
-          if curl -fsSL "$STABLE_CATALOG_URL" -o target/xtask/previous-catalog.json; then
-            echo "previous catalog fetched"
-          else
-            rm -f target/xtask/previous-catalog.json
-            echo "no previous stable catalog found"
-          fi
-
-      - name: Generate catalog revision
+      # Assemble-from-facts: never builds, never runs a binary. Reads this run's
+      # tarballs/checksums + their embedded contract sections, merges onto the
+      # previous catalog keyed by (package, version), forms Blob URLs against
+      # this run's build-* tag.
+      - name: Generate catalog
         run: |
           set -euo pipefail
           previous=()
-          if [ -f target/xtask/previous-catalog.json ]; then
-            previous=(--previous-catalog target/xtask/previous-catalog.json)
+          if [ -f prev/catalog.json ]; then
+            previous=(--previous-catalog prev/catalog.json)
           fi
           cargo xtask catalog generate \
             --release-plan target/xtask/release-plan.json \
             --package-dir target/xtask/release \
-            --out target/xtask/catalog/phoxal-artifacts.json \
+            --out target/xtask/catalog/catalog.json \
+            --repo "${{ github.repository }}" \
+            --build-tag "${{ needs.release.outputs.build_tag }}" \
+            --run-number "${{ github.run_number }}" \
+            --run-id "${{ github.run_id }}" \
+            --commit "${{ github.sha }}" \
+            --created-at "${{ needs.release.outputs.created_at }}" \
             "${previous[@]}"
 
-      - name: Check catalog revision
-        run: |
-          set -euo pipefail
-          previous=()
-          if [ -f target/xtask/previous-catalog.json ]; then
-            previous=(--previous-catalog target/xtask/previous-catalog.json)
-          fi
-          cargo xtask catalog check \
-            --catalog target/xtask/catalog/phoxal-artifacts.json \
-            --release-plan target/xtask/release-plan.json \
-            --package-dir target/xtask/release \
-            "${previous[@]}"
+      - name: Check catalog (structural + coverage)
+        run: >
+          cargo xtask catalog check
+          --catalog target/xtask/catalog/catalog.json
 
-      - name: Final release gate
-        run: |
-          set -euo pipefail
-          previous=()
-          if [ -f target/xtask/previous-catalog.json ]; then
-            previous=(--previous-catalog target/xtask/previous-catalog.json)
-          fi
-          cargo xtask ci release-gate \
-            --catalog target/xtask/catalog/phoxal-artifacts.json \
-            --release-plan target/xtask/release-plan.json \
-            --package-dir target/xtask/release \
-            --verify-github \
-            --repo ${{ github.repository }} \
-            "${previous[@]}"
+      # Bounded partial-upload guard: confirm every filename this run's catalog
+      # entries expect actually landed in the build-* release (design §4.4).
+      - name: Release gate
+        run: >
+          cargo xtask ci release-gate
+          --catalog target/xtask/catalog/catalog.json
+          --repo ${{ github.repository }}
+          --verify-upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish stable catalog pointer
-        run: >
-          cargo xtask catalog publish
-          --catalog target/xtask/catalog/phoxal-artifacts.json
-          --repo ${{ github.repository }}
+      # Only now - gate green - does the catalog land and this release become
+      # "latest". A failed gate above leaves the previous latest authoritative.
+      - name: Publish catalog + mark latest
+        run: |
+          set -euo pipefail
+          gh release upload "${{ needs.release.outputs.build_tag }}" \
+            target/xtask/catalog/catalog.json \
+            --repo "${{ github.repository }}" --clobber
+          gh release edit "${{ needs.release.outputs.build_tag }}" \
+            --repo "${{ github.repository }}" --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -304,8 +343,8 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      # Libraries only: artifact crates set publish = false and never reach
-      # release-plz's scope (see this file's header).
+      # One workspace release PR now covers libraries AND binaries (binaries via
+      # git_only in release-plz.toml). No separate artifact-version-bump PR.
       - name: Run release-plz (release-pr)
         uses: release-plz/action@v0.5
         with:
@@ -313,41 +352,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      # Artifact crates are out of release-plz's scope entirely (see this file's
-      # header), so their version bumps are computed here instead: cheap (git
-      # diff only, no cargo package), safe to run on every scheduled/on-demand
-      # invocation of this job.
-      #
-      # Deliberately NOT handled here: dependency-driven artifact staleness (a
-      # library crate bumped but the artifact crate itself unchanged). That
-      # belongs to the rebuild-cadence machinery from the workspace-and-ci plan,
-      # not to this perf fix.
-      - name: Compute changed artifact version bumps
-        run: cargo xtask release bump --changed
-
-      - name: Open or update the artifact version bump PR
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if git diff --quiet; then
-            echo "no artifact version bumps; skipping PR"
-            exit 0
-          fi
-
-          branch="chore/artifact-version-bumps"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$branch"
-          git commit -am "chore(release): bump changed artifacts"
-          git push --force origin "$branch"
-
-          if gh pr view "$branch" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
-            echo "PR for $branch already open; branch updated"
-          else
-            gh pr create \
-              --head "$branch" \
-              --title "chore(release): bump changed artifacts" \
-              --body "Automated patch-version bumps for official artifact crates whose crate directory changed since their last release tag (computed by \`cargo xtask release bump --changed\`). See release-plz.toml's header comment for why artifact crates are bumped here instead of by release-plz."
-          fi
