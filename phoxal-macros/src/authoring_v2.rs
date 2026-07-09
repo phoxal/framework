@@ -39,6 +39,7 @@ enum ApiDecl {
     Publish(Type),
     Subscribe(Type),
     Serve { req: Type, resp: Type },
+    Ask { req: Type, resp: Type },
 }
 
 /// Recognize an `Api` struct field by canonical syntactic form (mirrors
@@ -54,6 +55,10 @@ fn classify_api_field(ty: &Type) -> Option<Vec<ApiDecl>> {
         "Publisher" => Some(vec![ApiDecl::Publish(generic_type(seg, 0)?)]),
         "Subscriber" | "Latest" => Some(vec![ApiDecl::Subscribe(generic_type(seg, 0)?)]),
         "Server" => Some(vec![ApiDecl::Serve {
+            req: generic_type(seg, 0)?,
+            resp: generic_type(seg, 1)?,
+        }]),
+        "Querier" => Some(vec![ApiDecl::Ask {
             req: generic_type(seg, 0)?,
             resp: generic_type(seg, 1)?,
         }]),
@@ -188,6 +193,10 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                 ApiDecl::Serve { req, resp } => {
                     push(&field_str, "serve", "Serve", &req);
                     push(&field_str, "serve", "Serve", &resp);
+                }
+                ApiDecl::Ask { req, resp } => {
+                    push(&field_str, "ask", "Ask", &req);
+                    push(&field_str, "ask", "Ask", &resp);
                 }
             }
         }

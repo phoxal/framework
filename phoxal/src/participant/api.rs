@@ -117,6 +117,10 @@ pub enum ContractRole {
     /// A `Server<Req, Resp>` field (or `Vec`/map of one); contributes one
     /// entry for `Req` and one for `Resp`.
     Serve,
+    /// A `Querier<Req, Resp>` field (or `Vec`/map of one) - the CLIENT/asking
+    /// side of a query contract (the counterpart to [`Serve`](Self::Serve));
+    /// contributes one entry for `Req` and one for `Resp`.
+    Ask,
 }
 
 /// One contract a `Api` struct field uses: its generation-qualified wire key
@@ -413,6 +417,18 @@ pub trait SetupContextApiExt<R: Participant> {
     /// surface (all `Participant` kinds), the same as the OLD-model
     /// `SetupContext::owner_capability` is for every `ParticipantSpec`.
     fn owner_capability(&self) -> OwnerCap;
+
+    /// The resolved robot model (`robot.yaml` + components + structure, D33):
+    /// participants build their typed state from it. Present only when the
+    /// runner was launched with a robot root; errors otherwise. New-model
+    /// counterpart to the OLD-model `ParticipantSpec`-bound
+    /// [`SetupContext::robot`](super::context::SetupContext::robot).
+    fn robot(&self) -> crate::Result<&crate::model::v0::Robot>;
+
+    /// The robot root directory (holds the robot model + assets). Present only
+    /// when launched with a robot root. New-model counterpart to the OLD-model
+    /// [`SetupContext::robot_root`](super::context::SetupContext::robot_root).
+    fn robot_root(&self) -> crate::Result<&std::path::Path>;
 }
 
 impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
@@ -462,6 +478,22 @@ impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
 
     fn owner_capability(&self) -> OwnerCap {
         self.owner_cap()
+    }
+
+    fn robot(&self) -> crate::Result<&crate::model::v0::Robot> {
+        self.robot_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no robot model is bound (this participant was launched without a robot root)"
+            )
+        })
+    }
+
+    fn robot_root(&self) -> crate::Result<&std::path::Path> {
+        self.robot_root_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no robot root is bound (this participant was launched without a robot root)"
+            )
+        })
     }
 }
 

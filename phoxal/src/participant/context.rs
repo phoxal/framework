@@ -279,6 +279,20 @@ impl<R> SetupContext<R> {
     pub(crate) fn component_instance(&self) -> Option<&str> {
         self.component_instance.as_deref()
     }
+
+    /// The resolved robot model, if bound. In-crate accessor for the NEW model's
+    /// [`SetupContextApiExt::robot`](super::api::SetupContextApiExt::robot); the
+    /// OLD-model [`robot`](Self::robot) is `ParticipantSpec`-bound.
+    pub(crate) fn robot_ref(&self) -> Option<&Robot> {
+        self.robot.as_deref()
+    }
+
+    /// The robot root directory, if bound. In-crate accessor for the NEW model's
+    /// [`SetupContextApiExt::robot_root`](super::api::SetupContextApiExt::robot_root);
+    /// the OLD-model [`robot_root`](Self::robot_root) is `ParticipantSpec`-bound.
+    pub(crate) fn robot_root_ref(&self) -> Option<&Path> {
+        self.robot_root.as_deref()
+    }
 }
 
 impl<R> SetupContext<R>
