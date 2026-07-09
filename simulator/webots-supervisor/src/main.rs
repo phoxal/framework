@@ -17,7 +17,7 @@ use phoxal_api::y2026_1 as api;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct WebotsSupervisorConfig {
     #[serde(default = "default_require_native")]
@@ -31,6 +31,31 @@ struct WebotsSupervisorConfig {
     #[serde(default)]
     spawn: Vec<SpawnRobot>,
 }
+
+/// `Self::Config` for [`WebotsSupervisorSimulator`] below.
+///
+/// The OLD model used `config = Option<WebotsSupervisorConfig>` directly
+/// (the runner deserializes `Self::Config` from JSON `null` when
+/// `PHOXAL_CONFIG` is unset - `ParticipantLaunch::config: Option<Value>` ->
+/// `None` -> `serde_json::from_value(Value::Null)` - and a plain struct,
+/// even with every field `#[serde(default)]`, rejects a bare `null`;
+/// verified: `serde_json::from_value::<WebotsSupervisorConfig>(Value::Null)`
+/// errors "invalid type: null, expected struct WebotsSupervisorConfig"). The
+/// new model's `ParticipantConfig` needs an explicit trait impl (no blanket
+/// bound on shape), and `impl ParticipantConfig for
+/// Option<WebotsSupervisorConfig>` is orphan-rule-illegal from this crate
+/// (`ParticipantConfig` and `Option` are both foreign here - verified against
+/// a real cross-crate compile, not just same-crate). This concrete, crate-local
+/// newtype sidesteps that without touching `phoxal::participant::api` (no
+/// `Option<T>: ParticipantConfig` blanket impl exists there yet):
+/// `#[serde(transparent)]` forwards (de)serialization straight to
+/// `Option<WebotsSupervisorConfig>`, so `null` -> `None` (default) and an
+/// object -> `Some(parsed fields)`, exactly the OLD model's semantics.
+#[derive(
+    Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config,
+)]
+#[serde(transparent)]
+struct WebotsSupervisorConfigSlot(Option<WebotsSupervisorConfig>);
 
 impl Default for WebotsSupervisorConfig {
     fn default() -> Self {
@@ -61,8 +86,15 @@ struct SpawnRobot {
     node_string: String,
 }
 
-#[derive(phoxal::Simulator)]
-#[phoxal(id = "webots-supervisor", api = y2026_1, config = Option<WebotsSupervisorConfig>)]
+#[derive(phoxal::Api)]
+struct Api {
+    clock: Publisher<api::simulation::Clock>,
+    control: Subscriber<api::simulation::Control>,
+    robot_pose: Publisher<api::simulation::RobotPose>,
+    contact: Publisher<api::simulation::Contact>,
+}
+
+#[phoxal::simulator(id = "webots-supervisor", config = WebotsSupervisorConfigSlot)]
 struct WebotsSupervisorSimulator {
     running: bool,
     epoch: u64,
@@ -70,10 +102,6 @@ struct WebotsSupervisorSimulator {
     time_ns: u64,
     dt_ns: u64,
     backend: Backend,
-    clock: Publisher<api::simulation::Clock>,
-    control: Subscriber<api::simulation::Control>,
-    robot_pose: Publisher<api::simulation::RobotPose>,
-    contact: Publisher<api::simulation::Contact>,
 }
 
 #[phoxal::behavior]
@@ -81,17 +109,21 @@ impl WebotsSupervisorSimulator {
     #[setup]
     async fn setup(
         ctx: &mut SetupContext<Self>,
-        config: Option<WebotsSupervisorConfig>,
-    ) -> Result<Self> {
-        let config = config.unwrap_or_default();
+        config: WebotsSupervisorConfigSlot,
+    ) -> Result<(Self, Self::Api)> {
+        let config = config.0.unwrap_or_default();
         let cap = ctx.owner_capability();
 
         let clock = ctx
             .publisher(api::topic::internal::new(cap).simulation().clock())
             .await?;
+        // New-model `SetupContextApiExt::subscriber` takes the ring depth
+        // directly (no `.subscribe(topic).subscriber()` builder chain like
+        // the OLD `ParticipantSpec`-bound inherent method); `32` matches the
+        // OLD model's implicit `SubscribeOptions::default()` depth, so this
+        // is an unchanged-behavior port, not a new choice.
         let control = ctx
-            .subscribe(api::topic::internal::new(cap).simulation().control())
-            .subscriber()
+            .subscriber(api::topic::internal::new(cap).simulation().control(), 32)
             .await?;
         let robot_pose = ctx
             .publisher(api::topic::internal::new(cap).simulation().robot_pose())
@@ -109,35 +141,39 @@ impl WebotsSupervisorSimulator {
             "webots supervisor simulator ready"
         );
 
-        Ok(Self {
-            running: true,
-            epoch: 0,
-            step_index: 0,
-            time_ns: 0,
-            dt_ns,
-            backend,
-            clock,
-            control,
-            robot_pose,
-            contact,
-        })
+        Ok((
+            Self {
+                running: true,
+                epoch: 0,
+                step_index: 0,
+                time_ns: 0,
+                dt_ns,
+                backend,
+            },
+            Self::Api {
+                clock,
+                control,
+                robot_pose,
+                contact,
+            },
+        ))
     }
 
     #[step(hz = 100)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        self.apply_control_commands()?;
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        self.apply_control_commands(api)?;
 
         if self.running {
             let outputs = self.backend.advance()?;
             self.time_ns = self.time_ns.saturating_add(self.dt_ns);
             self.step_index = self.step_index.saturating_add(1);
             let at = LogicalTime::new(self.epoch, self.time_ns);
-            self.publish_outputs(at, outputs).await?;
+            self.publish_outputs(api, at, outputs).await?;
         } else {
             self.dt_ns = self.dt_ns.max(step.dt_ns());
         }
 
-        self.clock
+        api.clock
             .publish_at(
                 LogicalTime::new(self.epoch, self.time_ns),
                 api::simulation::Clock {
@@ -155,14 +191,15 @@ impl WebotsSupervisorSimulator {
     }
 
     #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> Result<()> {
+        let _ = (api, ctx);
         Ok(())
     }
 }
 
 impl WebotsSupervisorSimulator {
-    fn apply_control_commands(&mut self) -> Result<()> {
-        while let Some(received) = self.control.try_recv() {
+    fn apply_control_commands(&mut self, api: &mut Api) -> Result<()> {
+        while let Some(received) = api.control.try_recv() {
             match received.body {
                 api::simulation::Control::Pause => self.running = false,
                 api::simulation::Control::Resume => self.running = true,
@@ -178,12 +215,17 @@ impl WebotsSupervisorSimulator {
         Ok(())
     }
 
-    async fn publish_outputs(&self, at: LogicalTime, outputs: BackendOutput) -> Result<()> {
+    async fn publish_outputs(
+        &self,
+        api: &Api,
+        at: LogicalTime,
+        outputs: BackendOutput,
+    ) -> Result<()> {
         if let Some(pose) = outputs.robot_pose {
-            self.robot_pose.publish_at(at, pose).await?;
+            api.robot_pose.publish_at(at, pose).await?;
         }
         if let Some(contact) = outputs.contact {
-            self.contact.publish_at(at, contact).await?;
+            api.contact.publish_at(at, contact).await?;
         }
         Ok(())
     }
@@ -425,42 +467,59 @@ fn yaw_from_axis_angle(rotation: [f64; 4]) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<WebotsSupervisorSimulator>()
+    phoxal::run_v2::<WebotsSupervisorSimulator>()
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContractMapping {
     topic: &'static str,
+    role: phoxal::participant::ContractRole,
 }
 
 #[cfg(test)]
 fn contract_mappings() -> Vec<ContractMapping> {
+    use phoxal::participant::ContractRole;
     vec![
-        mapping::<api::simulation::Clock>(),
-        mapping::<api::simulation::Control>(),
-        mapping::<api::simulation::RobotPose>(),
-        mapping::<api::simulation::Contact>(),
+        mapping::<api::simulation::Clock>(ContractRole::Publish),
+        mapping::<api::simulation::Control>(ContractRole::Subscribe),
+        mapping::<api::simulation::RobotPose>(ContractRole::Publish),
+        mapping::<api::simulation::Contact>(ContractRole::Publish),
     ]
 }
 
 #[cfg(test)]
-fn mapping<B: phoxal::bus::ContractBody>() -> ContractMapping {
-    ContractMapping { topic: B::TOPIC }
+fn mapping<B: phoxal::bus::ContractBody>(
+    role: phoxal::participant::ContractRole,
+) -> ContractMapping {
+    ContractMapping {
+        topic: B::TOPIC,
+        role,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phoxal::participant::{Participant, ParticipantApi};
 
     #[test]
-    fn emit_apis_reports_exactly_the_four_simulation_contracts() {
-        let json = phoxal::participant::emit_apis_json::<WebotsSupervisorSimulator>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "webots-supervisor");
-        assert_eq!(value["artifact"]["kind"], "simulator");
-        assert_eq!(value["participant_class"], "checked");
-        let contracts = value["required_contracts"].as_array().unwrap();
+    fn api_declares_exactly_the_four_simulation_contracts() {
+        assert_eq!(
+            <WebotsSupervisorSimulator as Participant>::ID,
+            "webots-supervisor"
+        );
+        assert_eq!(
+            <WebotsSupervisorSimulator as Participant>::KIND,
+            "simulator"
+        );
+        assert_eq!(
+            <WebotsSupervisorSimulator as Participant>::PARTICIPANT_CLASS,
+            "checked"
+        );
+
+        let contracts =
+            <<WebotsSupervisorSimulator as Participant>::Api as ParticipantApi>::CONTRACTS;
 
         let expected = contract_mappings();
         assert_eq!(
@@ -472,18 +531,16 @@ mod tests {
             assert!(
                 contracts
                     .iter()
-                    .any(|contract| contract["topic"] == mapping.topic),
-                "missing mapping for {}",
-                mapping.topic
+                    .any(|c| c.topic == mapping.topic && c.role == mapping.role),
+                "missing mapping for {} ({:?})",
+                mapping.topic,
+                mapping.role
             );
         }
 
         // Never leaks the controller's component::* contracts.
         assert!(
-            !contracts.iter().any(|contract| contract["topic"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("/component/")),
+            !contracts.iter().any(|c| c.topic.contains("/component/")),
             "supervisor must not report component::* contracts: {contracts:?}"
         );
     }
@@ -523,19 +580,45 @@ mod tests {
         assert!(config.spawn.is_empty());
     }
 
+    // Covers the exact gotcha `WebotsSupervisorConfigSlot` exists for: the
+    // runner deserializes `Self::Config` from JSON `null` when
+    // `PHOXAL_CONFIG` is unset (see the type's doc comment).
     #[test]
-    fn emit_apis_config_schema_includes_spawn_field() {
-        let json = phoxal::participant::emit_apis_json::<WebotsSupervisorSimulator>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let schema = value["config_schema"].to_string();
+    fn config_slot_treats_null_as_absent_and_defaults() {
+        let slot: WebotsSupervisorConfigSlot =
+            serde_json::from_value(serde_json::Value::Null).unwrap();
+        assert!(slot.0.is_none());
+        assert!(slot.0.unwrap_or_default().spawn.is_empty());
+    }
+
+    #[test]
+    fn config_slot_deserializes_an_object_as_present() {
+        let slot: WebotsSupervisorConfigSlot =
+            serde_json::from_value(serde_json::json!({"require_native": false})).unwrap();
+        assert!(!slot.0.unwrap().require_native);
+    }
+
+    // The new authoring model's `ParticipantConfig::SCHEMA_JSON` is a fixed
+    // `"{}"` placeholder (real materialization is a deferred host-side
+    // `build.rs` slice - see `phoxal::participant::api`'s module docs), so
+    // the OLD model's `phoxal::participant::emit_apis_json`-routed schema
+    // assertion has no new-model equivalent to route through. This keeps the
+    // same coverage intent (the config type's schema actually describes the
+    // `spawn` field) by asserting directly against `schemars`'s own output
+    // for `WebotsSupervisorConfig`, which still derives
+    // `phoxal::schemars::JsonSchema` unchanged.
+    #[test]
+    fn config_schema_includes_spawn_field() {
+        let schema = phoxal::schemars::schema_for!(WebotsSupervisorConfig);
+        let schema = serde_json::to_string(&schema).unwrap();
 
         assert!(
             schema.contains("spawn"),
-            "config_schema should describe the spawn field, got {schema}"
+            "config schema should describe the spawn field, got {schema}"
         );
         assert!(
             schema.contains("node_string") && schema.contains("name"),
-            "config_schema should describe SpawnRobot's fields, got {schema}"
+            "config schema should describe SpawnRobot's fields, got {schema}"
         );
     }
 

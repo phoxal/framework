@@ -25,16 +25,8 @@ use phoxal_api::y2026_1 as api;
 use crate::assessment::{SafetyInputs, Timed, assess, authorize, emergency_stop_engaged};
 use crate::robot_config::{RequiredSources, emergency_stop_bindings, required_sources};
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "safety", api = y2026_1)]
-struct Safety {
-    // Runtime-private typed state (not handles).
-    required: RequiredSources,
-    last_battery: Option<Timed<api::battery::State>>,
-    last_drive: Option<Timed<api::drive::State>>,
-    software_estop_engaged: bool,
-    component_estop_engaged: Vec<bool>,
-    // Handles.
+#[derive(phoxal::Api)]
+struct Api {
     battery: Subscriber<api::battery::State>,
     drive: Subscriber<api::drive::State>,
     software_estop: Subscriber<api::safety::EmergencyStopRequest>,
@@ -43,10 +35,20 @@ struct Safety {
     state: Publisher<api::safety::Status>,
 }
 
+#[phoxal::service(id = "safety", config = ())]
+struct Safety {
+    // Runtime-private typed state (not handles).
+    required: RequiredSources,
+    last_battery: Option<Timed<api::battery::State>>,
+    last_drive: Option<Timed<api::drive::State>>,
+    software_estop_engaged: bool,
+    component_estop_engaged: Vec<bool>,
+}
+
 #[phoxal::behavior]
 impl Safety {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -55,31 +57,28 @@ impl Safety {
         let emergency_stop_bindings = emergency_stop_bindings(robot);
 
         let battery = ctx
-            .subscribe(api::topic::new().battery().state())
-            .subscriber()
+            .subscriber(api::topic::new().battery().state(), 32)
             .await?;
         let drive = ctx
-            .subscribe(api::topic::new().drive().state())
-            .subscriber()
+            .subscriber(api::topic::new().drive().state(), 32)
             .await?;
         // Safety OWNS the `safety` node: it reads its e-stop command input here, and
         // publishes `authorization`/`state` below, all through the owner
         // (`internal`) builder. `battery/state`, `drive/state` and the component
         // e-stop states are CONSUMED via the public builder.
         let software_estop = ctx
-            .subscribe(api::topic::internal::new(cap).safety().estop())
-            .subscriber()
+            .subscriber(api::topic::internal::new(cap).safety().estop(), 32)
             .await?;
         let mut component_estops = Vec::with_capacity(emergency_stop_bindings.len());
         for binding in &emergency_stop_bindings {
             component_estops.push(
-                ctx.subscribe(
+                ctx.subscriber(
                     api::topic::new()
                         .component(&binding.component_id)
                         .emergency_stop(&binding.capability_id)
                         .state(),
+                    32,
                 )
-                .subscriber()
                 .await?,
             );
         }
@@ -90,39 +89,43 @@ impl Safety {
             .publisher(api::topic::internal::new(cap).safety().state())
             .await?;
 
-        Ok(Self {
-            required,
-            last_battery: None,
-            last_drive: None,
-            software_estop_engaged: false,
-            component_estop_engaged: vec![false; emergency_stop_bindings.len()],
-            battery,
-            drive,
-            software_estop,
-            component_estops,
-            authorization,
-            state,
-        })
+        Ok((
+            Self {
+                required,
+                last_battery: None,
+                last_drive: None,
+                software_estop_engaged: false,
+                component_estop_engaged: vec![false; emergency_stop_bindings.len()],
+            },
+            Self::Api {
+                battery,
+                drive,
+                software_estop,
+                component_estops,
+                authorization,
+                state,
+            },
+        ))
     }
 
     #[step(hz = 10)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.battery.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.battery.try_recv() {
             self.last_battery = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
-        while let Some(received) = self.drive.try_recv() {
+        while let Some(received) = api.drive.try_recv() {
             self.last_drive = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
-        while let Some(received) = self.software_estop.try_recv() {
+        while let Some(received) = api.software_estop.try_recv() {
             self.software_estop_engaged = received.body.engaged;
         }
-        for (index, subscriber) in self.component_estops.iter_mut().enumerate() {
+        for (index, subscriber) in api.component_estops.iter_mut().enumerate() {
             while let Some(received) = subscriber.try_recv() {
                 self.component_estop_engaged[index] = received.body.engaged;
             }
@@ -140,20 +143,21 @@ impl Safety {
         };
         let status = assess(&inputs, now_ns);
         let authorization = authorize(&status, &inputs, now_ns);
-        self.authorization
+        api.authorization
             .publish_at(step.time(), authorization)
             .await?;
-        self.state.publish_at(step.time(), status).await?;
+        api.state.publish_at(step.time(), status).await?;
         Ok(())
     }
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Safety>()
+    phoxal::run_v2::<Safety>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
     use super::{RequiredSources, Safety, SafetyInputs, Timed, api, assess, authorize};
@@ -356,25 +360,31 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_y2026_1_safety_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Safety>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "safety");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Safety as Participant>::ID, "safety");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::battery::State>(contracts);
-        assert_contract::<api::drive::State>(contracts);
-        assert_contract::<api::safety::EmergencyStopRequest>(contracts);
-        assert_contract::<api::component::emergency_stop::State>(contracts);
-        assert_contract::<api::safety::SafetyAuthorization>(contracts);
-        assert_contract::<api::safety::Status>(contracts);
+        let contracts = <<Safety as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::battery::State>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::drive::State>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::safety::EmergencyStopRequest>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::component::emergency_stop::State>(
+            contracts,
+            ContractRole::Subscribe,
+        );
+        assert_contract::<api::safety::SafetyAuthorization>(contracts, ContractRole::Publish);
+        assert_contract::<api::safety::Status>(contracts, ContractRole::Publish);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role),
+            "expected a {role:?} contract for {} in {contracts:?}",
+            B::TOPIC
+        );
     }
 
     fn inputs<'a>(

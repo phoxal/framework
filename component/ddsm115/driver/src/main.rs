@@ -20,22 +20,25 @@ use phoxal_api::y2026_1 as api;
 const MOTOR_CAPABILITY: &str = "motor";
 const ENCODER_CAPABILITY: &str = "encoder";
 
-#[derive(phoxal::Driver)]
-#[phoxal(id = "ddsm115", api = y2026_1)]
-struct Ddsm115 {
-    // Driver-private hardware state.
-    instance: String,
-    position_rad: f64,
-    velocity_radps: f32,
+#[derive(phoxal::Api)]
+struct Api {
     // Handles on this instance's dynamic per-component topics.
     command: Subscriber<api::component::motor::Command>,
     encoder: Publisher<api::component::encoder::Sample>,
 }
 
+#[phoxal::driver(id = "ddsm115", config = ())]
+struct Ddsm115 {
+    // Driver-private hardware state.
+    instance: String,
+    position_rad: f64,
+    velocity_radps: f32,
+}
+
 #[phoxal::behavior]
 impl Ddsm115 {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
         // (`internal`) topic builder requires. This driver OWNS its component node.
         let cap = ctx.owner_capability();
@@ -44,13 +47,13 @@ impl Ddsm115 {
         let _ = ctx.robot()?.component_instance(&instance)?;
 
         let command = ctx
-            .subscribe(
+            .subscriber(
                 api::topic::internal::new(cap)
                     .component(&instance)
                     .motor(MOTOR_CAPABILITY)
                     .command(),
+                32,
             )
-            .subscriber()
             .await?;
         let encoder = ctx
             .publisher(
@@ -61,21 +64,22 @@ impl Ddsm115 {
             )
             .await?;
 
-        Ok(Self {
-            instance,
-            position_rad: 0.0,
-            velocity_radps: 0.0,
-            command,
-            encoder,
-        })
+        Ok((
+            Self {
+                instance,
+                position_rad: 0.0,
+                velocity_radps: 0.0,
+            },
+            Self::Api { command, encoder },
+        ))
     }
 
     #[step(hz = 100)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let now = step.time();
 
         // Apply the most recent command(s) to the motor.
-        while let Some(received) = self.command.try_recv() {
+        while let Some(received) = api.command.try_recv() {
             self.velocity_radps = velocity_from(received.body, self.velocity_radps);
         }
 
@@ -86,7 +90,7 @@ impl Ddsm115 {
             step.dt().as_secs_f64(),
         );
 
-        self.encoder
+        api.encoder
             .publish_at(
                 now,
                 api::component::encoder::Sample {
@@ -124,12 +128,13 @@ fn integrate(position_rad: f64, velocity_radps: f32, dt_s: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Ddsm115>()
+    phoxal::run_v2::<Ddsm115>()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{integrate, velocity_from};
+    use super::{Ddsm115, integrate, velocity_from};
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -157,27 +162,16 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_per_component_contracts() {
-        let json = phoxal::participant::emit_apis_json::<super::Ddsm115>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "ddsm115");
-        assert_eq!(value["artifact"]["kind"], "driver");
-        assert_eq!(value["participant_class"], "checked");
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(
-            contracts
-                .iter()
-                .all(|c| c["topic"].as_str().is_some_and(|topic| !topic.is_empty())),
-            "each contract should include topic"
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::component::motor::Command as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::component::encoder::Sample as ContractBody>::TOPIC)
-        );
+        assert_eq!(<Ddsm115 as Participant>::ID, "ddsm115");
+
+        let contracts = <<Ddsm115 as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::component::motor::Command as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC
+                && c.role == ContractRole::Publish
+        }));
     }
 }

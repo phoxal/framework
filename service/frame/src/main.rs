@@ -40,23 +40,27 @@ struct FrameSnapshot {
     dynamics: Arc<BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>>,
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "frame", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    joints: Vec<Subscriber<api::joint::JointState>>,
+    tree: Publisher<api::frame::Tree>,
+    static_pub: Publisher<api::frame::StaticTransforms>,
+    lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
+}
+
+#[phoxal::service(id = "frame", config = ())]
 struct Frame {
     static_transforms: Arc<BTreeMap<String, api::frame::FrameTransform>>,
     parent_by_child: Arc<BTreeMap<String, (String, JointMeta)>>,
     dynamic_joints: Vec<DynamicJoint>,
     buffers: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
-    joints: Vec<Subscriber<api::joint::JointState>>,
-    tree: Publisher<api::frame::Tree>,
-    static_pub: Publisher<api::frame::StaticTransforms>,
     published_static: bool,
 }
 
 #[phoxal::behavior]
 impl Frame {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -66,8 +70,7 @@ impl Frame {
         let mut buffers = BTreeMap::new();
         for dynamic in &config.dynamic_joints {
             joints.push(
-                ctx.subscribe(api::topic::new().joint(&dynamic.joint_id).state())
-                    .subscriber()
+                ctx.subscriber(api::topic::new().joint(&dynamic.joint_id).state(), 32)
                     .await?,
             );
             buffers.insert(
@@ -76,28 +79,37 @@ impl Frame {
             );
         }
 
-        Ok(Self {
-            static_transforms: Arc::new(config.static_transforms),
-            parent_by_child: Arc::new(config.parent_by_child),
-            dynamic_joints: config.dynamic_joints,
-            buffers,
-            joints,
-            // Frame OWNS the `frame` node (tree, static transforms, and the
-            // `frame/lookup` query it serves below) -> owner (`internal`) builder;
-            // joint states are CONSUMED via the public builder.
-            tree: ctx
-                .publisher(api::topic::internal::new(cap).frame().tree())
-                .await?,
-            static_pub: ctx
-                .publisher(api::topic::internal::new(cap).frame().static_transforms())
-                .await?,
-            published_static: false,
-        })
+        // Frame OWNS the `frame` node (tree, static transforms, and the
+        // `frame/lookup` query it serves below) -> owner (`internal`) builder;
+        // joint states are CONSUMED via the public builder.
+        let tree = ctx
+            .publisher(api::topic::internal::new(cap).frame().tree())
+            .await?;
+        let static_pub = ctx
+            .publisher(api::topic::internal::new(cap).frame().static_transforms())
+            .await?;
+        let lookup = ctx.server(api::topic::new().frame().lookup()).await?;
+
+        Ok((
+            Self {
+                static_transforms: Arc::new(config.static_transforms),
+                parent_by_child: Arc::new(config.parent_by_child),
+                dynamic_joints: config.dynamic_joints,
+                buffers,
+                published_static: false,
+            },
+            Self::Api {
+                joints,
+                tree,
+                static_pub,
+                lookup,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        for (subscriber, dynamic) in self.joints.iter_mut().zip(&self.dynamic_joints) {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        for (subscriber, dynamic) in api.joints.iter_mut().zip(&self.dynamic_joints) {
             while let Some(received) = subscriber.try_recv() {
                 let Some((_, meta)) = self.parent_by_child.get(&dynamic.child_frame_id) else {
                     continue;
@@ -113,7 +125,7 @@ impl Frame {
         }
 
         if !self.published_static {
-            self.static_pub
+            api.static_pub
                 .publish_at(
                     step.time(),
                     api::frame::StaticTransforms {
@@ -124,7 +136,7 @@ impl Frame {
             self.published_static = true;
         }
 
-        self.tree
+        api.tree
             .publish_at(
                 step.time(),
                 api::frame::Tree {
@@ -135,11 +147,16 @@ impl Frame {
         Ok(())
     }
 
-    #[server_snapshot(topic = api::topic::new().frame().lookup())]
+    // Concurrent read against the committed snapshot: does not block the step
+    // loop. Reads only committed `Snapshot` state, never touches a `Subscriber`
+    // (the `joints` field is drained exclusively in `#[step]` above).
+    #[server_snapshot(api = lookup)]
     async fn lookup(
         state: Snapshot<FrameSnapshot>,
+        api: &Self::Api,
         request: api::frame::LookupRequest,
     ) -> ServerResult<api::frame::LookupResponse> {
+        let _ = api;
         Ok(api::frame::LookupResponse {
             transform: lookup_transform(&state, &request),
         })
@@ -178,7 +195,7 @@ impl Frame {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Frame>()
+    phoxal::run_v2::<Frame>()
 }
 
 #[cfg(test)]
@@ -188,6 +205,7 @@ mod tests {
 
     use nalgebra::{Quaternion, UnitQuaternion};
     use phoxal::model::structure::Structure;
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -372,15 +390,14 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::participant::participant_metadata::<Frame>();
-        assert_eq!(metadata.artifact.id, "frame");
+        assert_eq!(<Frame as Participant>::ID, "frame");
 
-        let contracts = metadata.required_contracts;
-        assert_contract::<api::joint::JointState>(&contracts);
-        assert_contract::<api::frame::Tree>(&contracts);
-        assert_contract::<api::frame::StaticTransforms>(&contracts);
-        assert_contract::<api::frame::LookupRequest>(&contracts);
-        assert_contract::<api::frame::LookupResponse>(&contracts);
+        let contracts = <<Frame as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::joint::JointState>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::frame::Tree>(contracts, ContractRole::Publish);
+        assert_contract::<api::frame::StaticTransforms>(contracts, ContractRole::Publish);
+        assert_contract::<api::frame::LookupRequest>(contracts, ContractRole::Serve);
+        assert_contract::<api::frame::LookupResponse>(contracts, ContractRole::Serve);
     }
 
     fn snapshot_from_config(
@@ -424,11 +441,17 @@ mod tests {
         }
     }
 
-    fn assert_contract<B>(contracts: &[phoxal::participant::emit::ContractView])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c.topic == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role),
+            "expected a {role:?} contract for {} in {contracts:?}",
+            B::TOPIC
+        );
     }
 
     fn assert_yaw(rotation_xyzw: [f64; 4], expected_yaw: f64) {

@@ -116,23 +116,25 @@ impl DriveConfig {
     }
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "drive", api = y2026_1)]
-struct Drive {
-    // Runtime-private typed state (not handles).
-    config: DriveConfig,
-    last_target: Option<(api::drive::Target, u64)>,
-    // Handles.
+#[derive(phoxal::Api)]
+struct Api {
     target: Subscriber<api::drive::Target>,
     state: Publisher<api::drive::State>,
     left_motors: Vec<Publisher<api::component::motor::Command>>,
     right_motors: Vec<Publisher<api::component::motor::Command>>,
 }
 
+#[phoxal::service(id = "drive", config = ())]
+struct Drive {
+    // Runtime-private typed state (not handles).
+    config: DriveConfig,
+    last_target: Option<(api::drive::Target, u64)>,
+}
+
 #[phoxal::behavior]
 impl Drive {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -141,8 +143,7 @@ impl Drive {
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner (`internal`) builder.
         let target = ctx
-            .subscribe(api::topic::internal::new(cap).drive().target())
-            .subscriber()
+            .subscriber(api::topic::internal::new(cap).drive().target(), 32)
             .await?;
         let state = ctx
             .publisher(api::topic::internal::new(cap).drive().state())
@@ -157,22 +158,26 @@ impl Drive {
             right_motors.push(ctx.publisher(binding.topic()).await?);
         }
 
-        Ok(Self {
-            config,
-            last_target: None,
-            target,
-            state,
-            left_motors,
-            right_motors,
-        })
+        Ok((
+            Self {
+                config,
+                last_target: None,
+            },
+            Self::Api {
+                target,
+                state,
+                left_motors,
+                right_motors,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let now = step.time();
 
         // Drain inbound targets, keeping the latest + its production time.
-        while let Some(received) = self.target.try_recv() {
+        while let Some(received) = api.target.try_recv() {
             self.last_target = Some((received.body, received.metadata.produced_at_ns));
         }
 
@@ -182,18 +187,18 @@ impl Drive {
             f64::from(limited_target.angular_z_radps),
         );
 
-        for (publisher, binding) in self.left_motors.iter().zip(&self.config.left) {
+        for (publisher, binding) in api.left_motors.iter().zip(&self.config.left) {
             publisher
                 .publish_at(now, command(left, binding.direction_sign))
                 .await?;
         }
-        for (publisher, binding) in self.right_motors.iter().zip(&self.config.right) {
+        for (publisher, binding) in api.right_motors.iter().zip(&self.config.right) {
             publisher
                 .publish_at(now, command(right, binding.direction_sign))
                 .await?;
         }
 
-        self.state
+        api.state
             .publish_at(
                 now,
                 api::drive::State {
@@ -208,10 +213,10 @@ impl Drive {
     }
 
     #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
         // Best-effort park: command every wheel to stop before the bus closes.
         let now = LogicalTime::new(0, 0);
-        for publisher in self.left_motors.iter().chain(&self.right_motors) {
+        for publisher in api.left_motors.iter().chain(&api.right_motors) {
             let _ = publisher
                 .publish_at(now, api::component::motor::Command::Stop)
                 .await;
@@ -291,14 +296,16 @@ fn clamp_f32(value: f32, limit: f64) -> f32 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Drive>()
+    phoxal::run_v2::<Drive>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
+    use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
-    use super::{DifferentialDrive, DriveConfig, resolve_target};
+    use super::{DifferentialDrive, Drive, DriveConfig, resolve_target};
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
@@ -348,5 +355,23 @@ mod tests {
         assert_eq!(limited_target.curvature_limit_radpm, Some(0.4));
         assert_eq!(authority, api::drive::ActuatorAuthority::Active);
         assert_eq!(stop_reason, None);
+    }
+
+    #[test]
+    fn api_declares_the_y2026_1_drive_contracts() {
+        assert_eq!(<Drive as Participant>::ID, "drive");
+
+        let contracts = <<Drive as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::drive::Target as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::drive::State as ContractBody>::TOPIC && c.role == ContractRole::Publish
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::component::motor::Command as ContractBody>::TOPIC
+                && c.role == ContractRole::Publish
+        }));
     }
 }

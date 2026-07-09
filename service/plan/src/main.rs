@@ -76,10 +76,8 @@ impl PlanDecision {
     }
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "plan", api = y2026_1)]
-struct Plan {
-    latest_mission_state: Option<api::mission::State>,
+#[derive(phoxal::Api)]
+struct Api {
     mission_state: Subscriber<api::mission::State>,
     localize: Latest<api::localize::LocalizationState>,
     map_revision: Latest<api::map::Revision>,
@@ -87,55 +85,57 @@ struct Plan {
     state: Publisher<api::plan::State>,
 }
 
+#[phoxal::service(id = "plan", config = ())]
+struct Plan {
+    latest_mission_state: Option<api::mission::State>,
+}
+
 #[phoxal::behavior]
 impl Plan {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            latest_mission_state: None,
-            mission_state: ctx
-                .subscribe(api::topic::new().mission().state())
-                .subscriber()
-                .await?,
-            localize: ctx
-                .subscribe(api::topic::new().localize().state())
-                .latest()
-                .await?,
-            map_revision: ctx
-                .subscribe(api::topic::new().map().revision())
-                .latest()
-                .await?,
-            // Plan OWNS the `plan` node (its path + state telemetry) -> owner
-            // (`internal`) builder; the subscriptions above are CONSUMED via the
-            // public builder.
-            path: ctx
-                .publisher(api::topic::internal::new(cap).plan().path())
-                .await?,
-            state: ctx
-                .publisher(api::topic::internal::new(cap).plan().state())
-                .await?,
-        })
+        Ok((
+            Self {
+                latest_mission_state: None,
+            },
+            Self::Api {
+                mission_state: ctx
+                    .subscriber(api::topic::new().mission().state(), 32)
+                    .await?,
+                localize: ctx.latest(api::topic::new().localize().state()).await?,
+                map_revision: ctx.latest(api::topic::new().map().revision()).await?,
+                // Plan OWNS the `plan` node (its path + state telemetry) -> owner
+                // (`internal`) builder; the subscriptions above are CONSUMED via the
+                // public builder.
+                path: ctx
+                    .publisher(api::topic::internal::new(cap).plan().path())
+                    .await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).plan().state())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 10)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.mission_state.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.mission_state.try_recv() {
             self.latest_mission_state = Some(received.body);
         }
 
-        let localize = self.localize.latest();
-        let map_revision = self.map_revision.latest();
+        let localize = api.localize.latest();
+        let map_revision = api.map_revision.latest();
         let decision = PlanDecision::decide(
             self.latest_mission_state.as_ref(),
             localize.as_ref(),
             map_revision.as_ref(),
         );
 
-        self.path.publish_at(step.time(), decision.path()).await?;
-        self.state.publish_at(step.time(), decision.state()).await?;
+        api.path.publish_at(step.time(), decision.path()).await?;
+        api.state.publish_at(step.time(), decision.state()).await?;
         Ok(())
     }
 }
@@ -199,13 +199,14 @@ fn valid_map_revision(map_revision: &api::map::Revision) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Plan>()
+    phoxal::run_v2::<Plan>()
 }
 
 #[cfg(test)]
 mod tests {
     use std::f64::consts::{FRAC_PI_4, PI};
 
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -368,24 +369,25 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_plan_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Plan>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "plan");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Plan as Participant>::ID, "plan");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::mission::State>(contracts);
-        assert_contract::<api::localize::LocalizationState>(contracts);
-        assert_contract::<api::map::Revision>(contracts);
-        assert_contract::<api::plan::Path>(contracts);
-        assert_contract::<api::plan::State>(contracts);
+        let contracts = <<Plan as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::mission::State>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::map::Revision>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::plan::Path>(contracts, ContractRole::Publish);
+        assert_contract::<api::plan::State>(contracts, ContractRole::Publish);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role)
+        );
     }
 
     fn goal(x_m: f64, y_m: f64, yaw_rad: Option<f64>) -> api::mission::Goal {

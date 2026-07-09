@@ -7,18 +7,21 @@ use phoxal_api::y2026_1 as api;
 
 const STEP_HZ: f64 = 100.0;
 
-#[derive(phoxal::Driver)]
-#[phoxal(id = "oak_d_lite", api = y2026_1)]
-struct OakDLite {
+#[derive(phoxal::Api)]
+struct Api {
     camera: Vec<Publisher<api::component::camera::Frame>>,
-    camera_specs: Vec<CameraSpec>,
     depth: Vec<Publisher<api::component::depth::Frame>>,
-    depth_specs: Vec<DepthSpec>,
     imu: Vec<Publisher<api::component::imu::Sample>>,
-    imu_divisors: Vec<u64>,
     accelerometer: Vec<Publisher<api::component::accelerometer::Sample>>,
-    accelerometer_divisors: Vec<u64>,
     gyroscope: Vec<Publisher<api::component::gyroscope::Sample>>,
+}
+
+#[phoxal::driver(id = "oak_d_lite", config = ())]
+struct OakDLite {
+    camera_specs: Vec<CameraSpec>,
+    depth_specs: Vec<DepthSpec>,
+    imu_divisors: Vec<u64>,
+    accelerometer_divisors: Vec<u64>,
     gyroscope_divisors: Vec<u64>,
 }
 
@@ -60,7 +63,7 @@ struct SensorSlot {
 #[phoxal::behavior]
 impl OakDLite {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
         // (`internal`) topic builder requires. This driver OWNS its component node.
         let cap = ctx.owner_capability();
@@ -222,50 +225,54 @@ impl OakDLite {
             gyroscope_divisors.push(slot.divisor);
         }
 
-        Ok(Self {
-            camera,
-            camera_specs,
-            depth,
-            depth_specs,
-            imu,
-            imu_divisors,
-            accelerometer,
-            accelerometer_divisors,
-            gyroscope,
-            gyroscope_divisors,
-        })
+        Ok((
+            Self {
+                camera_specs,
+                depth_specs,
+                imu_divisors,
+                accelerometer_divisors,
+                gyroscope_divisors,
+            },
+            Self::Api {
+                camera,
+                depth,
+                imu,
+                accelerometer,
+                gyroscope,
+            },
+        ))
     }
 
     #[step(hz = 100)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let at = step.time();
         let step_index = step.step_index();
 
-        for (publisher, spec) in self.camera.iter().zip(&self.camera_specs) {
+        for (publisher, spec) in api.camera.iter().zip(&self.camera_specs) {
             if is_due(step_index, spec.divisor) {
                 publisher.publish_at(at, camera_frame(spec)).await?;
             }
         }
 
-        for (publisher, spec) in self.depth.iter().zip(&self.depth_specs) {
+        for (publisher, spec) in api.depth.iter().zip(&self.depth_specs) {
             if is_due(step_index, spec.divisor) {
                 publisher.publish_at(at, depth_frame(spec)).await?;
             }
         }
 
-        for (publisher, divisor) in self.imu.iter().zip(&self.imu_divisors) {
+        for (publisher, divisor) in api.imu.iter().zip(&self.imu_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish_at(at, imu_sample()).await?;
             }
         }
 
-        for (publisher, divisor) in self.accelerometer.iter().zip(&self.accelerometer_divisors) {
+        for (publisher, divisor) in api.accelerometer.iter().zip(&self.accelerometer_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish_at(at, accelerometer_sample()).await?;
             }
         }
 
-        for (publisher, divisor) in self.gyroscope.iter().zip(&self.gyroscope_divisors) {
+        for (publisher, divisor) in api.gyroscope.iter().zip(&self.gyroscope_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish_at(at, gyroscope_sample()).await?;
             }
@@ -386,7 +393,7 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<OakDLite>()
+    phoxal::run_v2::<OakDLite>()
 }
 
 #[cfg(test)]
@@ -395,6 +402,7 @@ mod tests {
         OakDLite, channels_for_encoding, divisor_for_rate, encoding_for_mode, frame_byte_len,
     };
     use phoxal::model::component::v0::capability::CameraMode;
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -422,18 +430,9 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_per_component_contracts() {
-        let json = phoxal::participant::emit_apis_json::<OakDLite>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "oak_d_lite");
-        assert_eq!(value["artifact"]["kind"], "driver");
-        assert_eq!(value["participant_class"], "checked");
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(
-            contracts
-                .iter()
-                .all(|c| c["topic"].as_str().is_some_and(|topic| !topic.is_empty())),
-            "each contract should include topic"
-        );
+        assert_eq!(<OakDLite as Participant>::ID, "oak_d_lite");
+
+        let contracts = <<OakDLite as Participant>::Api as ParticipantApi>::CONTRACTS;
         for family in [
             <api::component::camera::Frame as ContractBody>::TOPIC,
             <api::component::depth::Frame as ContractBody>::TOPIC,
@@ -442,8 +441,10 @@ mod tests {
             <api::component::gyroscope::Sample as ContractBody>::TOPIC,
         ] {
             assert!(
-                contracts.iter().any(|c| c["topic"] == family),
-                "missing contract for {family}"
+                contracts
+                    .iter()
+                    .any(|c| { c.topic == family && c.role == ContractRole::Publish }),
+                "missing Publish contract for {family}"
             );
         }
     }

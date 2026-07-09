@@ -22,42 +22,48 @@ use phoxal_api::y2026_1 as api;
 const PARTICIPANT: &str = "presence";
 const STALE_NS: u64 = 3_000_000_000;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "presence", api = y2026_1)]
-struct Presence {
-    tracker: ReadinessTracker,
+#[derive(phoxal::Api)]
+struct Api {
     heartbeats: Subscriber<api::presence::Heartbeat>,
     state_pub: Publisher<api::presence::State>,
+}
+
+#[phoxal::service(id = "presence", config = ())]
+struct Presence {
+    tracker: ReadinessTracker,
 }
 
 #[phoxal::behavior]
 impl Presence {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            tracker: ReadinessTracker::default(),
-            heartbeats: ctx
-                .subscribe(api::topic::internal::new(cap).presence().heartbeat())
-                .subscriber()
-                .await?,
-            state_pub: ctx
-                .publisher(api::topic::internal::new(cap).presence().state())
-                .await?,
-        })
+        Ok((
+            Self {
+                tracker: ReadinessTracker::default(),
+            },
+            Self::Api {
+                heartbeats: ctx
+                    .subscriber(api::topic::internal::new(cap).presence().heartbeat(), 32)
+                    .await?,
+                state_pub: ctx
+                    .publisher(api::topic::internal::new(cap).presence().state())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 1)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.heartbeats.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.heartbeats.try_recv() {
             self.tracker
                 .ingest(received.body, received.metadata.produced_at_ns);
         }
 
         let readiness = self.tracker.aggregate(step.time().time_ns());
-        self.state_pub
+        api.state_pub
             .publish_at(step.time(), api::presence::State { readiness })
             .await?;
         Ok(())
@@ -124,11 +130,12 @@ fn is_stale(now_ns: u64, last_seen_ns: u64) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Presence>()
+    phoxal::run_v2::<Presence>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -213,20 +220,17 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::participant::participant_metadata::<Presence>();
-        assert_eq!(metadata.artifact.id, "presence");
+        assert_eq!(<Presence as Participant>::ID, "presence");
 
-        let contracts = metadata.required_contracts;
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == <api::presence::Heartbeat as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == <api::presence::State as ContractBody>::TOPIC)
-        );
+        let contracts = <<Presence as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::presence::Heartbeat as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::presence::State as ContractBody>::TOPIC
+                && c.role == ContractRole::Publish
+        }));
     }
 
     fn heartbeat(

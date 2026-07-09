@@ -25,9 +25,8 @@ use crate::scoring::score_frontiers;
 
 const SUBMAP_WINDOW_CELLS: f64 = 128.0;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "explore", api = y2026_1)]
-struct Explore {
+#[derive(phoxal::Api)]
+struct Api {
     map_revision: Latest<api::map::Revision>,
     localize: Latest<api::localize::LocalizationState>,
     submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
@@ -35,58 +34,58 @@ struct Explore {
     state: Publisher<api::explore::State>,
 }
 
+#[phoxal::service(id = "explore", config = ())]
+struct Explore {}
+
 #[phoxal::behavior]
 impl Explore {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            map_revision: ctx
-                .subscribe(api::topic::new().map().revision())
-                .latest()
-                .await?,
-            localize: ctx
-                .subscribe(api::topic::new().localize().state())
-                .latest()
-                .await?,
-            submap: ctx.querier(api::topic::new().map().submap()).await?,
-            // Explore OWNS the `explore` node (its frontiers + state telemetry) ->
-            // owner (`internal`) builder; `map/submap` is CLIENT-queried and the
-            // subscriptions are CONSUMED via the public builder.
-            frontiers: ctx
-                .publisher(api::topic::internal::new(cap).explore().frontiers())
-                .await?,
-            state: ctx
-                .publisher(api::topic::internal::new(cap).explore().state())
-                .await?,
-        })
+        Ok((
+            Self {},
+            Self::Api {
+                map_revision: ctx.latest(api::topic::new().map().revision()).await?,
+                localize: ctx.latest(api::topic::new().localize().state()).await?,
+                submap: ctx.querier(api::topic::new().map().submap()).await?,
+                // Explore OWNS the `explore` node (its frontiers + state telemetry) ->
+                // owner (`internal`) builder; `map/submap` is CLIENT-queried and the
+                // subscriptions are CONSUMED via the public builder.
+                frontiers: ctx
+                    .publisher(api::topic::internal::new(cap).explore().frontiers())
+                    .await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).explore().state())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 2)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        let Some(map_revision) = self.map_revision.latest() else {
-            self.publish_state(step.time(), false, None).await?;
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        let Some(map_revision) = api.map_revision.latest() else {
+            Self::publish_state(&api.state, step.time(), false, None).await?;
             return Ok(());
         };
-        let Some(localize) = self.localize.latest() else {
-            self.publish_state(step.time(), false, None).await?;
+        let Some(localize) = api.localize.latest() else {
+            Self::publish_state(&api.state, step.time(), false, None).await?;
             return Ok(());
         };
         if !valid_localization(&localize) {
-            self.publish_state(step.time(), false, None).await?;
+            Self::publish_state(&api.state, step.time(), false, None).await?;
             return Ok(());
         }
 
         let Some(request) = submap_request(&map_revision) else {
-            self.publish_state(step.time(), false, None).await?;
+            Self::publish_state(&api.state, step.time(), false, None).await?;
             return Ok(());
         };
-        let response = match self.submap.query(request.clone()).await {
+        let response = match api.submap.query(request.clone()).await {
             Ok(response) => response,
             Err(_) => {
-                self.publish_state(step.time(), false, None).await?;
+                Self::publish_state(&api.state, step.time(), false, None).await?;
                 return Ok(());
             }
         };
@@ -94,7 +93,7 @@ impl Explore {
         let frontiers = evaluate_frontiers(&request, response, (localize.x_m, localize.y_m))
             .unwrap_or_default();
         let selected = frontiers.first().cloned();
-        self.frontiers
+        api.frontiers
             .publish_at(
                 step.time(),
                 api::explore::Frontiers {
@@ -103,20 +102,19 @@ impl Explore {
                 },
             )
             .await?;
-        self.publish_state(step.time(), selected.is_some(), selected)
-            .await?;
+        Self::publish_state(&api.state, step.time(), selected.is_some(), selected).await?;
         Ok(())
     }
 }
 
 impl Explore {
     async fn publish_state(
-        &self,
+        state: &Publisher<api::explore::State>,
         at: LogicalTime,
         exploring: bool,
         selected: Option<api::explore::Frontier>,
     ) -> Result<()> {
-        self.state
+        state
             .publish_at(
                 at,
                 api::explore::State {
@@ -162,11 +160,12 @@ fn valid_localization(localize: &api::localize::LocalizationState) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Explore>()
+    phoxal::run_v2::<Explore>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -241,24 +240,25 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_explore_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Explore>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "explore");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Explore as Participant>::ID, "explore");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::map::Revision>(contracts);
-        assert_contract::<api::localize::LocalizationState>(contracts);
-        assert_contract::<api::map::SubmapRequest>(contracts);
-        assert_contract::<api::map::SubmapResponse>(contracts);
-        assert_contract::<api::explore::Frontiers>(contracts);
-        assert_contract::<api::explore::State>(contracts);
+        let contracts = <<Explore as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::map::Revision>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::map::SubmapRequest>(contracts, ContractRole::Ask);
+        assert_contract::<api::map::SubmapResponse>(contracts, ContractRole::Ask);
+        assert_contract::<api::explore::Frontiers>(contracts, ContractRole::Publish);
+        assert_contract::<api::explore::State>(contracts, ContractRole::Publish);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role)
+        );
     }
 }

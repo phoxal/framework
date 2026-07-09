@@ -94,47 +94,53 @@ impl MissionLifecycle {
     }
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "mission", api = y2026_1)]
-struct Mission {
-    lifecycle: MissionLifecycle,
+#[derive(phoxal::Api)]
+struct Api {
     command: Subscriber<api::mission::Command>,
     goal: Publisher<api::mission::Goal>,
     state: Publisher<api::mission::State>,
 }
 
+#[phoxal::service(id = "mission", config = ())]
+struct Mission {
+    lifecycle: MissionLifecycle,
+}
+
 #[phoxal::behavior]
 impl Mission {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            lifecycle: MissionLifecycle::idle(),
-            command: ctx
-                .subscribe(api::topic::internal::new(cap).mission().command())
-                .subscriber()
-                .await?,
-            goal: ctx
-                .publisher(api::topic::internal::new(cap).mission().goal())
-                .await?,
-            state: ctx
-                .publisher(api::topic::internal::new(cap).mission().state())
-                .await?,
-        })
+        Ok((
+            Self {
+                lifecycle: MissionLifecycle::idle(),
+            },
+            Self::Api {
+                command: ctx
+                    .subscriber(api::topic::internal::new(cap).mission().command(), 32)
+                    .await?,
+                goal: ctx
+                    .publisher(api::topic::internal::new(cap).mission().goal())
+                    .await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).mission().state())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 5)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.command.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.command.try_recv() {
             self.lifecycle.apply_command(received.body);
         }
 
         if let Some(goal) = self.lifecycle.goal_to_publish() {
-            self.goal.publish_at(step.time(), goal).await?;
+            api.goal.publish_at(step.time(), goal).await?;
         }
-        self.state
+        api.state
             .publish_at(step.time(), self.lifecycle.state())
             .await?;
         Ok(())
@@ -142,11 +148,12 @@ impl Mission {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Mission>()
+    phoxal::run_v2::<Mission>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -234,27 +241,28 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_mission_lifecycle_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Mission>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "mission");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Mission as Participant>::ID, "mission");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::mission::Command>(contracts);
-        assert_contract::<api::mission::Goal>(contracts);
-        assert_contract::<api::mission::State>(contracts);
+        let contracts = <<Mission as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::mission::Command>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::mission::Goal>(contracts, ContractRole::Publish);
+        assert_contract::<api::mission::State>(contracts, ContractRole::Publish);
         assert!(
             !contracts
                 .iter()
-                .any(|c| c["topic"] == <api::drive::Target as ContractBody>::TOPIC)
+                .any(|c| c.topic == <api::drive::Target as ContractBody>::TOPIC)
         );
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role)
+        );
     }
 
     fn goal(x_m: f64, y_m: f64) -> api::mission::Goal {

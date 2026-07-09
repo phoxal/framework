@@ -35,8 +35,16 @@ const DEPTH_STALE_NS: u64 = 1_000_000_000;
 const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "perception", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    cameras: Vec<Subscriber<api::component::camera::Frame>>,
+    depths: Vec<Subscriber<api::component::depth::Frame>>,
+    localization: Subscriber<api::localize::LocalizationState>,
+    detections: Publisher<api::perception::Detections>,
+    state: Publisher<api::perception::State>,
+}
+
+#[phoxal::service(id = "perception", config = ())]
 struct Perception {
     // Runtime-private state.
     camera_sources: Vec<SensorBinding>,
@@ -47,18 +55,12 @@ struct Perception {
     detector: PlaceholderDetector,
     tracker: PointTracker,
     health: HealthState,
-    // Handles.
-    cameras: Vec<Subscriber<api::component::camera::Frame>>,
-    depths: Vec<Subscriber<api::component::depth::Frame>>,
-    localization: Subscriber<api::localize::LocalizationState>,
-    detections: Publisher<api::perception::Detections>,
-    state: Publisher<api::perception::State>,
 }
 
 #[phoxal::behavior]
 impl Perception {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -67,44 +69,51 @@ impl Perception {
 
         let mut cameras = Vec::with_capacity(camera_sources.len());
         for source in &camera_sources {
-            cameras.push(ctx.subscribe(source.camera_topic()).subscriber().await?);
+            cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
         }
 
         let mut depths = Vec::with_capacity(depth_sources.len());
         for source in &depth_sources {
-            depths.push(ctx.subscribe(source.depth_topic()).subscriber().await?);
+            depths.push(ctx.subscriber(source.depth_topic(), 32).await?);
         }
 
-        Ok(Self {
-            latest_cameras: vec![None; camera_sources.len()],
-            latest_depths: vec![None; depth_sources.len()],
-            latest_localization: None,
-            detector: PlaceholderDetector,
-            tracker: PointTracker::default(),
-            health: HealthState::default(),
-            cameras,
-            depths,
-            localization: ctx
-                .subscribe(api::topic::new().localize().state())
-                .subscriber()
-                .await?,
-            // Perception OWNS the `perception` node (detections + state telemetry)
-            // -> owner (`internal`) builder; sensor frames and `localize/state` are
-            // CONSUMED via the public builder.
-            detections: ctx
-                .publisher(api::topic::internal::new(cap).perception().detections())
-                .await?,
-            state: ctx
-                .publisher(api::topic::internal::new(cap).perception().state())
-                .await?,
-            camera_sources,
-            depth_sources,
-        })
+        let localization = ctx
+            .subscriber(api::topic::new().localize().state(), 32)
+            .await?;
+        // Perception OWNS the `perception` node (detections + state telemetry)
+        // -> owner (`internal`) builder; sensor frames and `localize/state` are
+        // CONSUMED via the public builder.
+        let detections = ctx
+            .publisher(api::topic::internal::new(cap).perception().detections())
+            .await?;
+        let state = ctx
+            .publisher(api::topic::internal::new(cap).perception().state())
+            .await?;
+
+        Ok((
+            Self {
+                latest_cameras: vec![None; camera_sources.len()],
+                latest_depths: vec![None; depth_sources.len()],
+                latest_localization: None,
+                detector: PlaceholderDetector,
+                tracker: PointTracker::default(),
+                health: HealthState::default(),
+                camera_sources,
+                depth_sources,
+            },
+            Self::Api {
+                cameras,
+                depths,
+                localization,
+                detections,
+                state,
+            },
+        ))
     }
 
     #[step(hz = 10)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        self.drain_inputs();
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        self.drain_inputs(api);
 
         let now_ns = step.time().time_ns();
         let detections = self.detect(now_ns);
@@ -116,7 +125,7 @@ impl Perception {
             self.health.degrade();
         }
 
-        self.detections
+        api.detections
             .publish_at(
                 step.time(),
                 api::perception::Detections {
@@ -125,7 +134,7 @@ impl Perception {
                 },
             )
             .await?;
-        self.state
+        api.state
             .publish_at(
                 step.time(),
                 api::perception::State {
@@ -139,8 +148,8 @@ impl Perception {
 }
 
 impl Perception {
-    fn drain_inputs(&mut self) {
-        for (subscriber, slot) in self.cameras.iter().zip(&mut self.latest_cameras) {
+    fn drain_inputs(&mut self, api: &mut Api) {
+        for (subscriber, slot) in api.cameras.iter().zip(&mut self.latest_cameras) {
             while let Some(received) = subscriber.try_recv() {
                 *slot = Some(FrameSample {
                     body: received.body,
@@ -148,7 +157,7 @@ impl Perception {
                 });
             }
         }
-        for (subscriber, slot) in self.depths.iter().zip(&mut self.latest_depths) {
+        for (subscriber, slot) in api.depths.iter().zip(&mut self.latest_depths) {
             while let Some(received) = subscriber.try_recv() {
                 *slot = Some(FrameSample {
                     body: received.body,
@@ -156,7 +165,7 @@ impl Perception {
                 });
             }
         }
-        while let Some(received) = self.localization.try_recv() {
+        while let Some(received) = api.localization.try_recv() {
             self.latest_localization = Some(FrameSample {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
@@ -211,7 +220,7 @@ impl Perception {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Perception>()
+    phoxal::run_v2::<Perception>()
 }
 
 #[cfg(test)]
@@ -219,6 +228,7 @@ mod tests {
     use std::path::PathBuf;
 
     use phoxal::model::v0::Robot;
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
     use super::*;
@@ -318,27 +328,26 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_perception_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Perception>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "perception");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Perception as Participant>::ID, "perception");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::component::camera::Frame>(contracts);
-        assert_contract::<api::component::depth::Frame>(contracts);
-        assert_contract::<api::localize::LocalizationState>(contracts);
-        assert_contract::<api::perception::Detections>(contracts);
-        assert_contract::<api::perception::State>(contracts);
+        let contracts = <<Perception as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::component::camera::Frame>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::component::depth::Frame>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::perception::Detections>(contracts, ContractRole::Publish);
+        assert_contract::<api::perception::State>(contracts, ContractRole::Publish);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
         assert!(
             contracts
                 .iter()
-                .any(|contract| contract["topic"] == B::TOPIC)
+                .any(|c| c.topic == B::TOPIC && c.role == role),
+            "expected a {role:?} contract for {} in {contracts:?}",
+            B::TOPIC
         );
     }
 }

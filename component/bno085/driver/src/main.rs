@@ -7,14 +7,17 @@ use phoxal_api::y2026_1 as api;
 
 const STEP_HZ: f64 = 100.0;
 
-#[derive(phoxal::Driver)]
-#[phoxal(id = "bno085", api = y2026_1)]
-struct Bno085 {
+#[derive(phoxal::Api)]
+struct Api {
     imu: Vec<Publisher<api::component::imu::Sample>>,
-    imu_divisors: Vec<u64>,
     accelerometer: Vec<Publisher<api::component::accelerometer::Sample>>,
-    accelerometer_divisors: Vec<u64>,
     gyroscope: Vec<Publisher<api::component::gyroscope::Sample>>,
+}
+
+#[phoxal::driver(id = "bno085", config = ())]
+struct Bno085 {
+    imu_divisors: Vec<u64>,
+    accelerometer_divisors: Vec<u64>,
     gyroscope_divisors: Vec<u64>,
 }
 
@@ -27,7 +30,7 @@ struct CapabilitySchedule {
 #[phoxal::behavior]
 impl Bno085 {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
         // (`internal`) topic builder requires. This driver OWNS its component node.
         let cap = ctx.owner_capability();
@@ -112,34 +115,38 @@ impl Bno085 {
             gyroscope_divisors.push(slot.divisor);
         }
 
-        Ok(Self {
-            imu,
-            imu_divisors,
-            accelerometer,
-            accelerometer_divisors,
-            gyroscope,
-            gyroscope_divisors,
-        })
+        Ok((
+            Self {
+                imu_divisors,
+                accelerometer_divisors,
+                gyroscope_divisors,
+            },
+            Self::Api {
+                imu,
+                accelerometer,
+                gyroscope,
+            },
+        ))
     }
 
     #[step(hz = 100)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let at = step.time();
         let step_index = step.step_index();
 
-        for (publisher, divisor) in self.imu.iter().zip(&self.imu_divisors) {
+        for (publisher, divisor) in api.imu.iter().zip(&self.imu_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish_at(at, imu_sample()).await?;
             }
         }
 
-        for (publisher, divisor) in self.accelerometer.iter().zip(&self.accelerometer_divisors) {
+        for (publisher, divisor) in api.accelerometer.iter().zip(&self.accelerometer_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish_at(at, accelerometer_sample()).await?;
             }
         }
 
-        for (publisher, divisor) in self.gyroscope.iter().zip(&self.gyroscope_divisors) {
+        for (publisher, divisor) in api.gyroscope.iter().zip(&self.gyroscope_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish_at(at, gyroscope_sample()).await?;
             }
@@ -204,12 +211,13 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Bno085>()
+    phoxal::run_v2::<Bno085>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Bno085, divisor_for_rate, is_due};
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -225,26 +233,19 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_per_component_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Bno085>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "bno085");
-        assert_eq!(value["artifact"]["kind"], "driver");
-        assert_eq!(value["participant_class"], "checked");
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(
-            contracts
-                .iter()
-                .all(|c| c["topic"].as_str().is_some_and(|topic| !topic.is_empty())),
-            "each contract should include topic"
-        );
+        assert_eq!(<Bno085 as Participant>::ID, "bno085");
+
+        let contracts = <<Bno085 as Participant>::Api as ParticipantApi>::CONTRACTS;
         for family in [
             <api::component::imu::Sample as ContractBody>::TOPIC,
             <api::component::accelerometer::Sample as ContractBody>::TOPIC,
             <api::component::gyroscope::Sample as ContractBody>::TOPIC,
         ] {
             assert!(
-                contracts.iter().any(|c| c["topic"] == family),
-                "missing contract for {family}"
+                contracts
+                    .iter()
+                    .any(|c| { c.topic == family && c.role == ContractRole::Publish }),
+                "missing Publish contract for {family}"
             );
         }
     }

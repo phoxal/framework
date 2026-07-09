@@ -71,8 +71,14 @@ impl VideoSource {
 
 use api::video::stream::{StreamPhase, StreamState};
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "video", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    cameras: Vec<Subscriber<api::component::camera::Frame>>,
+    states: Vec<Publisher<StreamState>>,
+    open: Server<api::video::OpenRequest, api::video::OpenResponse>,
+}
+
+#[phoxal::service(id = "video", config = ())]
 struct Video {
     // Runtime-private state.
     sources: Vec<VideoSource>,
@@ -80,15 +86,17 @@ struct Video {
     phase: Vec<StreamPhase>,
     frames_seen: Vec<u64>,
     last_time: LogicalTime,
-    // Handles.
-    cameras: Vec<Subscriber<api::component::camera::Frame>>,
-    states: Vec<Publisher<StreamState>>,
 }
 
 impl Video {
     /// Publish the current `StreamState` snapshot for `index`.
-    async fn publish_state(&mut self, index: usize, time: LogicalTime) -> Result<()> {
-        self.states[index]
+    async fn publish_state(
+        &mut self,
+        api: &mut Api,
+        index: usize,
+        time: LogicalTime,
+    ) -> Result<()> {
+        api.states[index]
             .publish_at(
                 time,
                 StreamState {
@@ -104,7 +112,7 @@ impl Video {
 #[phoxal::behavior]
 impl Video {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -113,23 +121,29 @@ impl Video {
         let mut cameras = Vec::with_capacity(sources.len());
         let mut states = Vec::with_capacity(sources.len());
         for source in &sources {
-            cameras.push(ctx.subscribe(source.camera_topic()).subscriber().await?);
+            cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
             states.push(ctx.publisher(source.state_topic(cap)).await?);
         }
+        let open = ctx.server(api::topic::new().video().open()).await?;
 
-        Ok(Self {
-            active: vec![false; sources.len()],
-            phase: vec![StreamPhase::Stopped; sources.len()],
-            frames_seen: vec![0; sources.len()],
-            last_time: LogicalTime::new(0, 0),
-            cameras,
-            states,
-            sources,
-        })
+        Ok((
+            Self {
+                active: vec![false; sources.len()],
+                phase: vec![StreamPhase::Stopped; sources.len()],
+                frames_seen: vec![0; sources.len()],
+                last_time: LogicalTime::new(0, 0),
+                sources,
+            },
+            Self::Api {
+                cameras,
+                states,
+                open,
+            },
+        ))
     }
 
     #[step(hz = 30)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.last_time = step.time();
 
         // Bring newly-opened streams up: a still-`Stopped` active stream goes
@@ -137,15 +151,15 @@ impl Video {
         for index in 0..self.sources.len() {
             if self.active[index] && self.phase[index] == StreamPhase::Stopped {
                 self.phase[index] = StreamPhase::Starting;
-                self.publish_state(index, step.time()).await?;
+                self.publish_state(api, index, step.time()).await?;
                 self.phase[index] = StreamPhase::Active;
-                self.publish_state(index, step.time()).await?;
+                self.publish_state(api, index, step.time()).await?;
             }
         }
 
-        for index in 0..self.cameras.len() {
+        for index in 0..api.cameras.len() {
             let mut saw_frame = false;
-            while let Some(received) = self.cameras[index].try_recv() {
+            while let Some(received) = api.cameras[index].try_recv() {
                 let _raw_frame_identity = (
                     received.body.width,
                     received.body.height,
@@ -159,18 +173,20 @@ impl Video {
                 saw_frame = true;
             }
             if saw_frame {
-                self.publish_state(index, step.time()).await?;
+                self.publish_state(api, index, step.time()).await?;
             }
         }
 
         Ok(())
     }
 
-    #[server(topic = api::topic::new().video().open())]
+    #[server(api = open)]
     async fn open(
         &mut self,
+        api: &mut Self::Api,
         request: api::video::OpenRequest,
     ) -> ServerResult<api::video::OpenResponse> {
+        let _ = api;
         open_stream(
             &self.sources,
             &mut self.active,
@@ -181,11 +197,11 @@ impl Video {
     }
 
     #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
         for index in 0..self.sources.len() {
             if self.active[index] || self.phase[index] != StreamPhase::Stopped {
                 self.phase[index] = StreamPhase::Stopped;
-                let _ = self.publish_state(index, self.last_time).await;
+                let _ = self.publish_state(api, index, self.last_time).await;
             }
             self.active[index] = false;
         }
@@ -284,7 +300,7 @@ fn validate_requested_dimensions(
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Video>()
+    phoxal::run_v2::<Video>()
 }
 
 #[cfg(test)]
@@ -292,6 +308,7 @@ mod tests {
     use std::path::PathBuf;
 
     use phoxal::bus::QueryCode;
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
     use super::*;
@@ -385,26 +402,25 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_video_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Video>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "video");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Video as Participant>::ID, "video");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::component::camera::Frame>(contracts);
-        assert_contract::<api::video::stream::StreamState>(contracts);
-        assert_contract::<api::video::OpenRequest>(contracts);
-        assert_contract::<api::video::OpenResponse>(contracts);
+        let contracts = <<Video as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::component::camera::Frame>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::video::stream::StreamState>(contracts, ContractRole::Publish);
+        assert_contract::<api::video::OpenRequest>(contracts, ContractRole::Serve);
+        assert_contract::<api::video::OpenResponse>(contracts, ContractRole::Serve);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
         assert!(
             contracts
                 .iter()
-                .any(|contract| contract["topic"] == B::TOPIC)
+                .any(|c| c.topic == B::TOPIC && c.role == role),
+            "expected a {role:?} contract for {} in {contracts:?}",
+            B::TOPIC
         );
     }
 }

@@ -7,10 +7,13 @@ use phoxal_api::y2026_1 as api;
 
 const STEP_HZ: f64 = 20.0;
 
-#[derive(phoxal::Driver)]
-#[phoxal(id = "vl53l1x", api = y2026_1)]
-struct Vl53l1x {
+#[derive(phoxal::Api)]
+struct Api {
     range: Vec<Publisher<api::component::range::Sample>>,
+}
+
+#[phoxal::driver(id = "vl53l1x", config = ())]
+struct Vl53l1x {
     range_specs: Vec<RangeSpec>,
 }
 
@@ -30,7 +33,7 @@ struct RangeSpec {
 #[phoxal::behavior]
 impl Vl53l1x {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
         // (`internal`) topic builder requires. This driver OWNS its component node.
         let cap = ctx.owner_capability();
@@ -76,15 +79,15 @@ impl Vl53l1x {
             range_specs.push(slot.spec);
         }
 
-        Ok(Self { range, range_specs })
+        Ok((Self { range_specs }, Self::Api { range }))
     }
 
     #[step(hz = 20)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let at = step.time();
         let step_index = step.step_index();
 
-        for (publisher, spec) in self.range.iter().zip(&self.range_specs) {
+        for (publisher, spec) in api.range.iter().zip(&self.range_specs) {
             if is_due(step_index, spec.divisor) {
                 publisher.publish_at(at, range_sample(spec)).await?;
             }
@@ -128,12 +131,13 @@ fn range_sample(spec: &RangeSpec) -> api::component::range::Sample {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Vl53l1x>()
+    phoxal::run_v2::<Vl53l1x>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Vl53l1x, divisor_for_rate, range_sample};
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -154,22 +158,16 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_per_component_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Vl53l1x>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "vl53l1x");
-        assert_eq!(value["artifact"]["kind"], "driver");
-        assert_eq!(value["participant_class"], "checked");
-        let contracts = value["required_contracts"].as_array().unwrap();
+        assert_eq!(<Vl53l1x as Participant>::ID, "vl53l1x");
+
+        let contracts = <<Vl53l1x as Participant>::Api as ParticipantApi>::CONTRACTS;
         assert!(
-            contracts
-                .iter()
-                .all(|c| c["topic"].as_str().is_some_and(|topic| !topic.is_empty())),
-            "each contract should include topic"
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::component::range::Sample as ContractBody>::TOPIC)
+            contracts.iter().any(|c| {
+                c.topic == <api::component::range::Sample as ContractBody>::TOPIC
+                    && c.role == ContractRole::Publish
+            }),
+            "expected a Publish contract for {} in {contracts:?}",
+            <api::component::range::Sample as ContractBody>::TOPIC
         );
     }
 }

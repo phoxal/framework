@@ -43,6 +43,12 @@ struct JointConfig {
     encoders: Vec<EncoderBinding>,
 }
 
+#[derive(phoxal::Api)]
+struct Api {
+    encoders: Vec<Subscriber<api::component::encoder::Sample>>,
+    states: BTreeMap<String, Publisher<api::joint::JointState>>,
+}
+
 impl JointConfig {
     fn from_robot(robot: &Robot) -> Result<Self> {
         let mut encoders = Vec::new();
@@ -86,18 +92,15 @@ impl JointConfig {
     }
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "joint", api = y2026_1)]
+#[phoxal::service(id = "joint", config = ())]
 struct Joint {
     config: JointConfig,
-    encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    states: BTreeMap<String, Publisher<api::joint::JointState>>,
 }
 
 #[phoxal::behavior]
 impl Joint {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -105,7 +108,7 @@ impl Joint {
 
         let mut encoders = Vec::with_capacity(config.encoders.len());
         for binding in &config.encoders {
-            encoders.push(ctx.subscribe(binding.topic()).subscriber().await?);
+            encoders.push(ctx.subscriber(binding.topic(), 32).await?);
         }
 
         let joint_ids = config
@@ -124,17 +127,13 @@ impl Joint {
             );
         }
 
-        Ok(Self {
-            config,
-            encoders,
-            states,
-        })
+        Ok((Self { config }, Self::Api { encoders, states }))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let mut latest_by_joint = BTreeMap::new();
-        for (subscriber, binding) in self.encoders.iter_mut().zip(&self.config.encoders) {
+        for (subscriber, binding) in api.encoders.iter_mut().zip(&self.config.encoders) {
             let mut latest = None;
             while let Some(received) = subscriber.try_recv() {
                 latest = Some(received.body);
@@ -146,7 +145,7 @@ impl Joint {
         }
 
         for (joint_id, state) in latest_by_joint {
-            if let Some(publisher) = self.states.get(&joint_id) {
+            if let Some(publisher) = api.states.get(&joint_id) {
                 publisher.publish_at(step.time(), state).await?;
             }
         }
@@ -167,13 +166,14 @@ fn joint_state(
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Joint>()
+    phoxal::run_v2::<Joint>()
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -251,19 +251,16 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::participant::participant_metadata::<Joint>();
-        assert_eq!(metadata.artifact.id, "joint");
+        assert_eq!(<Joint as Participant>::ID, "joint");
 
-        let contracts = metadata.required_contracts;
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == <api::joint::JointState as ContractBody>::TOPIC)
-        );
+        let contracts = <<Joint as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::joint::JointState as ContractBody>::TOPIC
+                && c.role == ContractRole::Publish
+        }));
     }
 }

@@ -14,8 +14,12 @@ use std::path::PathBuf;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "asset", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    get: Server<api::asset::GetRequest, api::asset::GetResponse>,
+}
+
+#[phoxal::service(id = "asset", config = ())]
 struct Asset {
     robot_root: PathBuf,
 }
@@ -23,17 +27,24 @@ struct Asset {
 #[phoxal::behavior]
 impl Asset {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
-        Ok(Self {
-            robot_root: ctx.robot_root()?.to_path_buf(),
-        })
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self {
+                robot_root: ctx.robot_root()?.to_path_buf(),
+            },
+            Self::Api {
+                get: ctx.server(api::topic::new().asset().get()).await?,
+            },
+        ))
     }
 
-    #[server(topic = api::topic::new().asset().get())]
+    #[server(api = get)]
     async fn get(
         &mut self,
+        api: &mut Self::Api,
         request: api::asset::GetRequest,
     ) -> ServerResult<api::asset::GetResponse> {
+        let _ = api;
         Ok(resolve(&self.robot_root, &request.path))
     }
 }
@@ -61,12 +72,14 @@ fn is_safe_relative(path: &str) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Asset>()
+    phoxal::run_v2::<Asset>()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_safe_relative, resolve};
+    use super::{Asset, is_safe_relative, resolve};
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
+    use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
     #[test]
@@ -100,5 +113,20 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn api_declares_the_y2026_1_asset_get_serve_contract() {
+        assert_eq!(<Asset as Participant>::ID, "asset");
+
+        let contracts = <<Asset as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::asset::GetRequest as ContractBody>::TOPIC
+                && c.role == ContractRole::Serve
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::asset::GetResponse as ContractBody>::TOPIC
+                && c.role == ContractRole::Serve
+        }));
     }
 }

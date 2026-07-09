@@ -48,14 +48,8 @@ struct FollowUpdate {
     target: Option<api::follow::Target>,
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "follow", api = y2026_1)]
-struct Follow {
-    // Runtime-private typed state.
-    last_path: Option<Timed<api::plan::Path>>,
-    last_plan_state: Option<Timed<api::plan::State>>,
-    last_localize: Option<Timed<api::localize::LocalizationState>>,
-    // Handles.
+#[derive(phoxal::Api)]
+struct Api {
     path: Subscriber<api::plan::Path>,
     plan_state: Subscriber<api::plan::State>,
     localize: Subscriber<api::localize::LocalizationState>,
@@ -63,24 +57,25 @@ struct Follow {
     state: Publisher<api::follow::State>,
 }
 
+#[phoxal::service(id = "follow", config = ())]
+struct Follow {
+    // Runtime-private typed state.
+    last_path: Option<Timed<api::plan::Path>>,
+    last_plan_state: Option<Timed<api::plan::State>>,
+    last_localize: Option<Timed<api::localize::LocalizationState>>,
+}
+
 #[phoxal::behavior]
 impl Follow {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        let path = ctx
-            .subscribe(api::topic::new().plan().path())
-            .subscriber()
-            .await?;
-        let plan_state = ctx
-            .subscribe(api::topic::new().plan().state())
-            .subscriber()
-            .await?;
+        let path = ctx.subscriber(api::topic::new().plan().path(), 32).await?;
+        let plan_state = ctx.subscriber(api::topic::new().plan().state(), 32).await?;
         let localize = ctx
-            .subscribe(api::topic::new().localize().state())
-            .subscriber()
+            .subscriber(api::topic::new().localize().state(), 32)
             .await?;
         // Follow OWNS the `follow` node (its target + state telemetry) -> owner
         // (`internal`) builder; everything above is CONSUMED via the public builder.
@@ -91,33 +86,37 @@ impl Follow {
             .publisher(api::topic::internal::new(cap).follow().state())
             .await?;
 
-        Ok(Self {
-            last_path: None,
-            last_plan_state: None,
-            last_localize: None,
-            path,
-            plan_state,
-            localize,
-            target,
-            state,
-        })
+        Ok((
+            Self {
+                last_path: None,
+                last_plan_state: None,
+                last_localize: None,
+            },
+            Self::Api {
+                path,
+                plan_state,
+                localize,
+                target,
+                state,
+            },
+        ))
     }
 
     #[step(hz = 20)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.path.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.path.try_recv() {
             self.last_path = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
-        while let Some(received) = self.plan_state.try_recv() {
+        while let Some(received) = api.plan_state.try_recv() {
             self.last_plan_state = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
-        while let Some(received) = self.localize.try_recv() {
+        while let Some(received) = api.localize.try_recv() {
             self.last_localize = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
@@ -131,9 +130,9 @@ impl Follow {
             step.time().time_ns(),
         );
         if let Some(target) = update.target {
-            self.target.publish_at(step.time(), target).await?;
+            api.target.publish_at(step.time(), target).await?;
         }
-        self.state.publish_at(step.time(), update.state).await?;
+        api.state.publish_at(step.time(), update.state).await?;
         Ok(())
     }
 }
@@ -319,13 +318,14 @@ fn normalize_angle(angle_rad: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Follow>()
+    phoxal::run_v2::<Follow>()
 }
 
 #[cfg(test)]
 mod tests {
     use std::f64::consts::PI;
 
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
     use super::{
@@ -483,25 +483,28 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_follow_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Follow>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "follow");
-        assert_eq!(value["api_version"], "y2026_1");
+    fn api_declares_the_y2026_1_follow_contracts() {
+        assert_eq!(<Follow as Participant>::ID, "follow");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::plan::Path>(contracts);
-        assert_contract::<api::plan::State>(contracts);
-        assert_contract::<api::localize::LocalizationState>(contracts);
-        assert_contract::<api::follow::Target>(contracts);
-        assert_contract::<api::follow::State>(contracts);
+        let contracts = <<Follow as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::plan::Path>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::plan::State>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::follow::Target>(contracts, ContractRole::Publish);
+        assert_contract::<api::follow::State>(contracts, ContractRole::Publish);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role),
+            "expected a {role:?} contract for {} in {contracts:?}",
+            B::TOPIC
+        );
     }
 
     fn path_pose(x_m: f64, y_m: f64) -> api::plan::PathPose {

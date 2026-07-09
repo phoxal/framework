@@ -101,8 +101,14 @@ impl OdometryConfig {
     }
 }
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "odometry", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    left_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
+    right_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
+    state: Publisher<api::odometry::State>,
+}
+
+#[phoxal::service(id = "odometry", config = ())]
 struct Odometry {
     // Runtime-private typed state (not handles).
     config: OdometryConfig,
@@ -114,16 +120,12 @@ struct Odometry {
     // Production time (ns) of each wheel's last encoder sample; 0 = never seen.
     left_sample_ns: Vec<u64>,
     right_sample_ns: Vec<u64>,
-    // Handles.
-    left_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    right_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    state: Publisher<api::odometry::State>,
 }
 
 #[phoxal::behavior]
 impl Odometry {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -131,41 +133,45 @@ impl Odometry {
 
         let mut left_encoders = Vec::with_capacity(config.left.len());
         for binding in &config.left {
-            left_encoders.push(ctx.subscribe(binding.topic()).subscriber().await?);
+            left_encoders.push(ctx.subscriber(binding.topic(), 32).await?);
         }
         let mut right_encoders = Vec::with_capacity(config.right.len());
         for binding in &config.right {
-            right_encoders.push(ctx.subscribe(binding.topic()).subscriber().await?);
+            right_encoders.push(ctx.subscriber(binding.topic(), 32).await?);
         }
         let state = ctx
             .publisher(api::topic::internal::new(cap).odometry().state())
             .await?;
 
-        Ok(Self {
-            left_velocity_radps: vec![0.0; config.left.len()],
-            right_velocity_radps: vec![0.0; config.right.len()],
-            left_sample_ns: vec![0; config.left.len()],
-            right_sample_ns: vec![0; config.right.len()],
-            config,
-            x_m: 0.0,
-            y_m: 0.0,
-            yaw_rad: 0.0,
-            left_encoders,
-            right_encoders,
-            state,
-        })
+        Ok((
+            Self {
+                left_velocity_radps: vec![0.0; config.left.len()],
+                right_velocity_radps: vec![0.0; config.right.len()],
+                left_sample_ns: vec![0; config.left.len()],
+                right_sample_ns: vec![0; config.right.len()],
+                config,
+                x_m: 0.0,
+                y_m: 0.0,
+                yaw_rad: 0.0,
+            },
+            Self::Api {
+                left_encoders,
+                right_encoders,
+                state,
+            },
+        ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         drain_encoders(
-            &mut self.left_encoders,
+            &mut api.left_encoders,
             &self.config.left,
             &mut self.left_velocity_radps,
             &mut self.left_sample_ns,
         );
         drain_encoders(
-            &mut self.right_encoders,
+            &mut api.right_encoders,
             &self.config.right,
             &mut self.right_velocity_radps,
             &mut self.right_sample_ns,
@@ -193,7 +199,7 @@ impl Odometry {
         self.y_m = y_m;
         self.yaw_rad = yaw_rad;
 
-        self.state
+        api.state
             .publish_at(
                 step.time(),
                 api::odometry::State {
@@ -277,7 +283,7 @@ fn normalize_yaw(yaw_rad: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Odometry>()
+    phoxal::run_v2::<Odometry>()
 }
 
 #[cfg(test)]
@@ -285,11 +291,13 @@ mod tests {
     use std::f64::consts::PI;
     use std::path::PathBuf;
 
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
     use super::{
-        ENCODER_STALE_NS, OdometryConfig, average_side, forward, integrate_pose, normalize_yaw,
+        ENCODER_STALE_NS, Odometry, OdometryConfig, average_side, forward, integrate_pose,
+        normalize_yaw,
     };
 
     fn fixture() -> PathBuf {
@@ -370,19 +378,16 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let json = phoxal::participant::emit_apis_json::<super::Odometry>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "odometry");
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::component::encoder::Sample as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::odometry::State as ContractBody>::TOPIC)
-        );
+        assert_eq!(<Odometry as Participant>::ID, "odometry");
+
+        let contracts = <<Odometry as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::odometry::State as ContractBody>::TOPIC
+                && c.role == ContractRole::Publish
+        }));
     }
 }

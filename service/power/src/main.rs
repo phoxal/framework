@@ -31,42 +31,48 @@ const SUPERVISOR_ADDRESS_ENV: &str = "BALENA_SUPERVISOR_ADDRESS";
 const SUPERVISOR_API_KEY_ENV: &str = "BALENA_SUPERVISOR_API_KEY";
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "power", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    commands: Subscriber<api::power::Command>,
+    state: Publisher<api::power::State>,
+}
+
+#[phoxal::service(id = "power", config = ())]
 struct Power {
     latched: api::power::State,
     executor: Option<Arc<dyn PowerExecutor>>,
-    commands: Subscriber<api::power::Command>,
-    state: Publisher<api::power::State>,
 }
 
 #[phoxal::behavior]
 impl Power {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            latched: idle_state(None),
-            executor: BalenaExecutor::from_env().map(|executor| Arc::new(executor) as _),
-            commands: ctx
-                .subscribe(api::topic::internal::new(cap).power().command())
-                .subscriber()
-                .await?,
-            state: ctx
-                .publisher(api::topic::internal::new(cap).power().state())
-                .await?,
-        })
+        Ok((
+            Self {
+                latched: idle_state(None),
+                executor: BalenaExecutor::from_env().map(|executor| Arc::new(executor) as _),
+            },
+            Self::Api {
+                commands: ctx
+                    .subscriber(api::topic::internal::new(cap).power().command(), 32)
+                    .await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).power().state())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 1)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.commands.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.commands.try_recv() {
             self.latched = state_for_command(received.body, self.executor.as_deref()).await;
         }
 
-        self.state
+        api.state
             .publish_at(step.time(), self.latched.clone())
             .await?;
         Ok(())
@@ -265,7 +271,7 @@ fn command_label(command: api::power::Command) -> &'static str {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Power>()
+    phoxal::run_v2::<Power>()
 }
 
 #[cfg(test)]
@@ -273,6 +279,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
 
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -362,19 +369,15 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let metadata = phoxal::participant::participant_metadata::<Power>();
-        assert_eq!(metadata.artifact.id, "power");
+        assert_eq!(<Power as Participant>::ID, "power");
 
-        let contracts = metadata.required_contracts;
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == <api::power::Command as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == <api::power::State as ContractBody>::TOPIC)
-        );
+        let contracts = <<Power as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::power::Command as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::power::State as ContractBody>::TOPIC && c.role == ContractRole::Publish
+        }));
     }
 }

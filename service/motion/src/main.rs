@@ -22,14 +22,8 @@ use phoxal_api::y2026_1 as api;
 
 use crate::arbitration::{Timed, arbitrate};
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "motion", api = y2026_1)]
-struct Motion {
-    // Runtime-private typed state.
-    last_manual: Option<Timed<api::motion::ManualCommand>>,
-    last_follow: Option<Timed<api::follow::Target>>,
-    last_safety: Option<Timed<api::safety::SafetyAuthorization>>,
-    // Handles.
+#[derive(phoxal::Api)]
+struct Api {
     manual: Subscriber<api::motion::ManualCommand>,
     follow: Subscriber<api::follow::Target>,
     safety: Subscriber<api::safety::SafetyAuthorization>,
@@ -37,10 +31,18 @@ struct Motion {
     state: Publisher<api::motion::State>,
 }
 
+#[phoxal::service(id = "motion", config = ())]
+struct Motion {
+    // Runtime-private typed state.
+    last_manual: Option<Timed<api::motion::ManualCommand>>,
+    last_follow: Option<Timed<api::follow::Target>>,
+    last_safety: Option<Timed<api::safety::SafetyAuthorization>>,
+}
+
 #[phoxal::behavior]
 impl Motion {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
@@ -49,49 +51,50 @@ impl Motion {
         // `safety/authorization` and CLIENT-publishes `drive/target` (a command it
         // sends to the drive owner) -> public builder.
         let manual = ctx
-            .subscribe(api::topic::internal::new(cap).motion().manual())
-            .subscriber()
+            .subscriber(api::topic::internal::new(cap).motion().manual(), 32)
             .await?;
         let follow = ctx
-            .subscribe(api::topic::new().follow().target())
-            .subscriber()
+            .subscriber(api::topic::new().follow().target(), 32)
             .await?;
         let safety = ctx
-            .subscribe(api::topic::new().safety().authorization())
-            .subscriber()
+            .subscriber(api::topic::new().safety().authorization(), 32)
             .await?;
         let drive = ctx.publisher(api::topic::new().drive().target()).await?;
         let state = ctx
             .publisher(api::topic::internal::new(cap).motion().state())
             .await?;
 
-        Ok(Self {
-            last_manual: None,
-            last_follow: None,
-            last_safety: None,
-            manual,
-            follow,
-            safety,
-            drive,
-            state,
-        })
+        Ok((
+            Self {
+                last_manual: None,
+                last_follow: None,
+                last_safety: None,
+            },
+            Self::Api {
+                manual,
+                follow,
+                safety,
+                drive,
+                state,
+            },
+        ))
     }
 
     #[step(hz = 20)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.manual.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.manual.try_recv() {
             self.last_manual = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
-        while let Some(received) = self.follow.try_recv() {
+        while let Some(received) = api.follow.try_recv() {
             self.last_follow = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
             });
         }
-        while let Some(received) = self.safety.try_recv() {
+        while let Some(received) = api.safety.try_recv() {
             self.last_safety = Some(Timed {
                 body: received.body,
                 produced_at_ns: received.metadata.produced_at_ns,
@@ -105,8 +108,8 @@ impl Motion {
             step.time().time_ns(),
         );
         let drive_target = drive_target_from(arbitration.selected.clone());
-        self.drive.publish_at(step.time(), drive_target).await?;
-        self.state
+        api.drive.publish_at(step.time(), drive_target).await?;
+        api.state
             .publish_at(
                 step.time(),
                 api::motion::State {
@@ -129,11 +132,12 @@ fn drive_target_from(target: api::motion::Target) -> api::drive::Target {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Motion>()
+    phoxal::run_v2::<Motion>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
     use super::{Motion, api, drive_target_from};
@@ -372,24 +376,25 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_motion_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Motion>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "motion");
-        assert_eq!(value["api_version"], "y2026_1");
+        assert_eq!(<Motion as Participant>::ID, "motion");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert_contract::<api::motion::ManualCommand>(contracts);
-        assert_contract::<api::follow::Target>(contracts);
-        assert_contract::<api::safety::SafetyAuthorization>(contracts);
-        assert_contract::<api::drive::Target>(contracts);
-        assert_contract::<api::motion::State>(contracts);
+        let contracts = <<Motion as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::motion::ManualCommand>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::follow::Target>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::safety::SafetyAuthorization>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::drive::Target>(contracts, ContractRole::Publish);
+        assert_contract::<api::motion::State>(contracts, ContractRole::Publish);
     }
 
-    fn assert_contract<B>(contracts: &[serde_json::Value])
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
     where
         B: ContractBody,
     {
-        assert!(contracts.iter().any(|c| c["topic"] == B::TOPIC));
+        assert!(
+            contracts
+                .iter()
+                .any(|c| c.topic == B::TOPIC && c.role == role)
+        );
     }
 
     fn manual_command(linear_x_mps: f64, angular_z_radps: f64) -> api::motion::ManualCommand {

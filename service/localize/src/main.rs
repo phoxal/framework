@@ -16,41 +16,43 @@ use phoxal_api::y2026_1 as api;
 
 const LOCALIZE_STALE_NS: u64 = 1_000_000_000; // 1 s
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "localize", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    odometry: Subscriber<api::odometry::State>,
+    state: Publisher<api::localize::LocalizationState>,
+}
+
+#[phoxal::service(id = "localize", config = ())]
 struct Localize {
     // Runtime-private typed state (not handles).
     last_odometry: Option<(api::odometry::State, u64)>,
-    // Handles.
-    odometry: Subscriber<api::odometry::State>,
-    state: Publisher<api::localize::LocalizationState>,
 }
 
 #[phoxal::behavior]
 impl Localize {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
         let odometry = ctx
-            .subscribe(api::topic::new().odometry().state())
-            .subscriber()
+            .subscriber(api::topic::new().odometry().state(), 32)
             .await?;
         let state = ctx
             .publisher(api::topic::internal::new(cap).localize().state())
             .await?;
 
-        Ok(Self {
-            last_odometry: None,
-            odometry,
-            state,
-        })
+        Ok((
+            Self {
+                last_odometry: None,
+            },
+            Self::Api { odometry, state },
+        ))
     }
 
     #[step(hz = 20)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        while let Some(received) = self.odometry.try_recv() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        while let Some(received) = api.odometry.try_recv() {
             self.last_odometry = Some((received.body, received.metadata.produced_at_ns));
         }
 
@@ -61,7 +63,7 @@ impl Localize {
         };
 
         let confidence = confidence_for(step.time().time_ns().saturating_sub(*produced_at_ns));
-        self.state
+        api.state
             .publish_at(step.time(), localization_from(odometry, confidence))
             .await?;
         Ok(())
@@ -86,11 +88,12 @@ fn localization_from(
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Localize>()
+    phoxal::run_v2::<Localize>()
 }
 
 #[cfg(test)]
 mod tests {
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -124,20 +127,16 @@ mod tests {
 
     #[test]
     fn emit_apis_reports_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Localize>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "localize");
+        assert_eq!(<Localize as Participant>::ID, "localize");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::odometry::State as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts.iter().any(|c| {
-                c["topic"] == <api::localize::LocalizationState as ContractBody>::TOPIC
-            })
-        );
+        let contracts = <<Localize as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::odometry::State as ContractBody>::TOPIC
+                && c.role == ContractRole::Subscribe
+        }));
+        assert!(contracts.iter().any(|c| {
+            c.topic == <api::localize::LocalizationState as ContractBody>::TOPIC
+                && c.role == ContractRole::Publish
+        }));
     }
 }

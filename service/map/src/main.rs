@@ -19,11 +19,15 @@ use anyhow::Result;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "map", api = y2026_1)]
-struct Map {
+#[derive(phoxal::Api)]
+struct Api {
     localize: Latest<api::localize::LocalizationState>,
     revision: Publisher<api::map::Revision>,
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
+}
+
+#[phoxal::service(id = "map", config = ())]
+struct Map {
     grid: Arc<Grid>,
     rev: u64,
 }
@@ -64,29 +68,31 @@ struct MapState {
 #[phoxal::behavior]
 impl Map {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        Ok(Self {
-            localize: ctx
-                .subscribe(api::topic::new().localize().state())
-                .latest()
-                .await?,
-            // Map OWNS the `map` node (its revision telemetry and the `map/submap`
-            // query it serves below) -> owner (`internal`) builder; `localize/state`
-            // is CONSUMED via the public builder.
-            revision: ctx
-                .publisher(api::topic::internal::new(cap).map().revision())
-                .await?,
-            grid: Arc::new(Grid::empty(64, 64, 0.05)),
-            rev: 0,
-        })
+        Ok((
+            Self {
+                grid: Arc::new(Grid::empty(64, 64, 0.05)),
+                rev: 0,
+            },
+            Self::Api {
+                localize: ctx.latest(api::topic::new().localize().state()).await?,
+                // Map OWNS the `map` node (its revision telemetry and the
+                // `map/submap` query it serves below) -> owner (`internal`)
+                // builder; `localize/state` is CONSUMED via the public builder.
+                revision: ctx
+                    .publisher(api::topic::internal::new(cap).map().revision())
+                    .await?,
+                submap: ctx.server(api::topic::new().map().submap()).await?,
+            },
+        ))
     }
 
     #[step(hz = 5)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
-        if let Some(loc) = self.localize.latest() {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        if let Some(loc) = api.localize.latest() {
             // Copy-on-write before mutating, so committed snapshots stay stable.
             let grid = Arc::make_mut(&mut self.grid);
             if mark_free(grid, loc.x_m, loc.y_m) {
@@ -94,7 +100,7 @@ impl Map {
             }
         }
 
-        self.revision
+        api.revision
             .publish_at(
                 step.time(),
                 api::map::Revision {
@@ -107,11 +113,16 @@ impl Map {
     }
 
     // Concurrent read against the committed snapshot: does not block the step loop.
-    #[server_snapshot(topic = api::topic::new().map().submap())]
+    // Reads only committed `Snapshot` state, never touches a `Subscriber` (the
+    // `localize` field is a non-destructive `Latest`, safe even if read, but this
+    // handler does not need it either).
+    #[server_snapshot(api = submap)]
     async fn submap(
         state: Snapshot<MapState>,
+        api: &Self::Api,
         request: api::map::SubmapRequest,
     ) -> ServerResult<api::map::SubmapResponse> {
+        let _ = api;
         Ok(state.grid.submap(&request))
     }
 
@@ -148,12 +159,13 @@ fn mark_free(grid: &mut Grid, x_m: f64, y_m: f64) -> bool {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Map>()
+    phoxal::run_v2::<Map>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Grid, Map, mark_free};
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -196,26 +208,26 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_map_contracts() {
-        let json = phoxal::participant::emit_apis_json::<Map>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "map");
+    fn api_declares_the_y2026_1_map_contracts() {
+        assert_eq!(<Map as Participant>::ID, "map");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
+        let contracts = <<Map as Participant>::Api as ParticipantApi>::CONTRACTS;
+        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::map::Revision>(contracts, ContractRole::Publish);
+        assert_contract::<api::map::SubmapRequest>(contracts, ContractRole::Serve);
+        assert_contract::<api::map::SubmapResponse>(contracts, ContractRole::Serve);
+    }
+
+    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
+    where
+        B: ContractBody,
+    {
         assert!(
             contracts
                 .iter()
-                .any(|c| c["topic"] == <api::map::Revision as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::map::SubmapResponse as ContractBody>::TOPIC)
-        );
-        assert!(
-            contracts.iter().any(|c| {
-                c["topic"] == <api::localize::LocalizationState as ContractBody>::TOPIC
-            })
+                .any(|c| c.topic == B::TOPIC && c.role == role),
+            "expected a {role:?} contract for {} in {contracts:?}",
+            B::TOPIC
         );
     }
 }

@@ -37,12 +37,31 @@ const DEFAULT_DT_NS: u64 = 10_000_000;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
 
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct WebotsControllerConfig {
     #[serde(default = "default_require_native")]
     require_native: bool,
 }
+
+/// `Self::Config` for [`WebotsControllerSimulator`] below.
+///
+/// See `WebotsSupervisorConfigSlot` in `simulator/webots-supervisor/src/main.rs`
+/// (the sibling artifact this crate was split from) for the full rationale:
+/// the runner deserializes `Self::Config` from JSON `null` when
+/// `PHOXAL_CONFIG` is unset, a plain struct rejects a bare `null` even with
+/// every field `#[serde(default)]`, and `impl ParticipantConfig for
+/// Option<WebotsControllerConfig>` is orphan-rule-illegal from this crate
+/// (`ParticipantConfig` and `Option` are both foreign here). This
+/// crate-local, non-generic newtype - `#[serde(transparent)]` forwarding
+/// straight to `Option<WebotsControllerConfig>` - sidesteps that without
+/// touching `phoxal::participant::api`, matching the OLD model's
+/// `config = Option<WebotsControllerConfig>` semantics exactly.
+#[derive(
+    Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config,
+)]
+#[serde(transparent)]
+struct WebotsControllerConfigSlot(Option<WebotsControllerConfig>);
 
 impl Default for WebotsControllerConfig {
     fn default() -> Self {
@@ -56,15 +75,9 @@ fn default_require_native() -> bool {
     true
 }
 
-#[derive(phoxal::Simulator)]
-#[phoxal(id = "webots-controller", api = y2026_1, config = Option<WebotsControllerConfig>)]
-struct WebotsControllerSimulator {
-    step_index: u64,
-    time_ns: u64,
-    dt_ns: u64,
-    backend: Backend,
+#[derive(phoxal::Api)]
+struct Api {
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
-    motor_specs: Vec<MotorSpec>,
     encoders: Vec<Publisher<api::component::encoder::Sample>>,
     imus: Vec<Publisher<api::component::imu::Sample>>,
     accelerometers: Vec<Publisher<api::component::accelerometer::Sample>>,
@@ -75,29 +88,43 @@ struct WebotsControllerSimulator {
     gnss: Vec<Publisher<api::component::gnss::Sample>>,
 }
 
+#[phoxal::simulator(id = "webots-controller", config = WebotsControllerConfigSlot)]
+struct WebotsControllerSimulator {
+    step_index: u64,
+    time_ns: u64,
+    dt_ns: u64,
+    backend: Backend,
+    motor_specs: Vec<MotorSpec>,
+}
+
 #[phoxal::behavior]
 impl WebotsControllerSimulator {
     #[setup]
     async fn setup(
         ctx: &mut SetupContext<Self>,
-        config: Option<WebotsControllerConfig>,
-    ) -> Result<Self> {
-        let config = config.unwrap_or_default();
+        config: WebotsControllerConfigSlot,
+    ) -> Result<(Self, Self::Api)> {
+        let config = config.0.unwrap_or_default();
         let cap = ctx.owner_capability();
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
 
+        // New-model `SetupContextApiExt::subscriber` takes the ring depth
+        // directly (no `.subscribe(topic).subscriber()` builder chain like
+        // the OLD `ParticipantSpec`-bound inherent method); `32` matches the
+        // OLD model's implicit `SubscribeOptions::default()` depth, so this
+        // is an unchanged-behavior port, not a new choice.
         let mut motor_commands = Vec::new();
         for spec in &catalog.motors {
             motor_commands.push(
-                ctx.subscribe(
+                ctx.subscriber(
                     api::topic::internal::new(cap)
                         .component(&spec.reference.component_id)
                         .motor(&spec.reference.capability_id)
                         .command(),
+                    32,
                 )
-                .subscriber()
                 .await?,
             );
         }
@@ -224,42 +251,47 @@ impl WebotsControllerSimulator {
             "webots controller simulator ready"
         );
 
-        Ok(Self {
-            step_index: 0,
-            time_ns: 0,
-            dt_ns,
-            backend,
-            motor_commands,
-            motor_specs: catalog.motors,
-            encoders,
-            imus,
-            accelerometers,
-            gyroscopes,
-            ranges,
-            cameras,
-            depths,
-            gnss,
-        })
+        Ok((
+            Self {
+                step_index: 0,
+                time_ns: 0,
+                dt_ns,
+                backend,
+                motor_specs: catalog.motors,
+            },
+            Self::Api {
+                motor_commands,
+                encoders,
+                imus,
+                accelerometers,
+                gyroscopes,
+                ranges,
+                cameras,
+                depths,
+                gnss,
+            },
+        ))
     }
 
     #[step(hz = 100)]
-    async fn step(&mut self, _step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
         let now = LogicalTime::new(0, self.time_ns);
-        let commands = self.latest_motor_commands();
+        let commands = self.latest_motor_commands(api);
         let outputs = self
             .backend
             .advance(self.step_index, self.time_ns, &commands)?;
         self.time_ns = self.time_ns.saturating_add(self.dt_ns);
         self.step_index = self.step_index.saturating_add(1);
         let at = LogicalTime::new(0, self.time_ns);
-        self.publish_outputs(at, outputs).await?;
+        self.publish_outputs(api, at, outputs).await?;
         tracing::trace!(target: "simulator_webots_controller", time_ns = now.time_ns(), "controller step complete");
         Ok(())
     }
 
     #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
-        for (subscriber, spec) in self.motor_commands.iter().zip(&self.motor_specs) {
+    async fn shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> Result<()> {
+        let _ = ctx;
+        for (subscriber, spec) in api.motor_commands.iter().zip(&self.motor_specs) {
             let _latest = drain_latest(subscriber);
             let stop = api::component::motor::Command::Stop;
             if let Err(error) = self.backend.apply_motor_command(spec, &stop) {
@@ -276,47 +308,52 @@ impl WebotsControllerSimulator {
 }
 
 impl WebotsControllerSimulator {
-    fn latest_motor_commands(&self) -> Vec<Option<api::component::motor::Command>> {
-        self.motor_commands.iter().map(drain_latest).collect()
+    fn latest_motor_commands(&self, api: &Api) -> Vec<Option<api::component::motor::Command>> {
+        api.motor_commands.iter().map(drain_latest).collect()
     }
 
-    async fn publish_outputs(&self, at: LogicalTime, outputs: BackendOutput) -> Result<()> {
-        for (publisher, sample) in self.encoders.iter().zip(outputs.encoders) {
+    async fn publish_outputs(
+        &self,
+        api: &Api,
+        at: LogicalTime,
+        outputs: BackendOutput,
+    ) -> Result<()> {
+        for (publisher, sample) in api.encoders.iter().zip(outputs.encoders) {
             if let Some(sample) = sample {
                 publisher.publish_at(at, sample).await?;
             }
         }
-        for (publisher, sample) in self.imus.iter().zip(outputs.imus) {
+        for (publisher, sample) in api.imus.iter().zip(outputs.imus) {
             if let Some(sample) = sample {
                 publisher.publish_at(at, sample).await?;
             }
         }
-        for (publisher, sample) in self.accelerometers.iter().zip(outputs.accelerometers) {
+        for (publisher, sample) in api.accelerometers.iter().zip(outputs.accelerometers) {
             if let Some(sample) = sample {
                 publisher.publish_at(at, sample).await?;
             }
         }
-        for (publisher, sample) in self.gyroscopes.iter().zip(outputs.gyroscopes) {
+        for (publisher, sample) in api.gyroscopes.iter().zip(outputs.gyroscopes) {
             if let Some(sample) = sample {
                 publisher.publish_at(at, sample).await?;
             }
         }
-        for (publisher, sample) in self.ranges.iter().zip(outputs.ranges) {
+        for (publisher, sample) in api.ranges.iter().zip(outputs.ranges) {
             if let Some(sample) = sample {
                 publisher.publish_at(at, sample).await?;
             }
         }
-        for (publisher, frame) in self.cameras.iter().zip(outputs.cameras) {
+        for (publisher, frame) in api.cameras.iter().zip(outputs.cameras) {
             if let Some(frame) = frame {
                 publisher.publish_at(at, frame).await?;
             }
         }
-        for (publisher, frame) in self.depths.iter().zip(outputs.depths) {
+        for (publisher, frame) in api.depths.iter().zip(outputs.depths) {
             if let Some(frame) = frame {
                 publisher.publish_at(at, frame).await?;
             }
         }
-        for (publisher, sample) in self.gnss.iter().zip(outputs.gnss) {
+        for (publisher, sample) in api.gnss.iter().zip(outputs.gnss) {
             if let Some(sample) = sample {
                 publisher.publish_at(at, sample).await?;
             }
@@ -848,47 +885,62 @@ fn none_vec<T>(len: usize) -> Vec<Option<T>> {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<WebotsControllerSimulator>()
+    phoxal::run_v2::<WebotsControllerSimulator>()
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContractMapping {
     topic: &'static str,
+    role: phoxal::participant::ContractRole,
 }
 
 #[cfg(test)]
 fn contract_mappings() -> Vec<ContractMapping> {
+    use phoxal::participant::ContractRole;
     vec![
-        mapping::<api::component::motor::Command>(),
-        mapping::<api::component::encoder::Sample>(),
-        mapping::<api::component::imu::Sample>(),
-        mapping::<api::component::accelerometer::Sample>(),
-        mapping::<api::component::gyroscope::Sample>(),
-        mapping::<api::component::range::Sample>(),
-        mapping::<api::component::camera::Frame>(),
-        mapping::<api::component::depth::Frame>(),
-        mapping::<api::component::gnss::Sample>(),
+        mapping::<api::component::motor::Command>(ContractRole::Subscribe),
+        mapping::<api::component::encoder::Sample>(ContractRole::Publish),
+        mapping::<api::component::imu::Sample>(ContractRole::Publish),
+        mapping::<api::component::accelerometer::Sample>(ContractRole::Publish),
+        mapping::<api::component::gyroscope::Sample>(ContractRole::Publish),
+        mapping::<api::component::range::Sample>(ContractRole::Publish),
+        mapping::<api::component::camera::Frame>(ContractRole::Publish),
+        mapping::<api::component::depth::Frame>(ContractRole::Publish),
+        mapping::<api::component::gnss::Sample>(ContractRole::Publish),
     ]
 }
 
 #[cfg(test)]
-fn mapping<B: ContractBody>() -> ContractMapping {
-    ContractMapping { topic: B::TOPIC }
+fn mapping<B: ContractBody>(role: phoxal::participant::ContractRole) -> ContractMapping {
+    ContractMapping {
+        topic: B::TOPIC,
+        role,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phoxal::participant::{Participant, ParticipantApi};
 
     #[test]
-    fn emit_apis_reports_exactly_the_nine_component_contracts() {
-        let json = phoxal::participant::emit_apis_json::<WebotsControllerSimulator>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "webots-controller");
-        assert_eq!(value["artifact"]["kind"], "simulator");
-        assert_eq!(value["participant_class"], "checked");
-        let contracts = value["required_contracts"].as_array().unwrap();
+    fn api_declares_exactly_the_nine_component_contracts() {
+        assert_eq!(
+            <WebotsControllerSimulator as Participant>::ID,
+            "webots-controller"
+        );
+        assert_eq!(
+            <WebotsControllerSimulator as Participant>::KIND,
+            "simulator"
+        );
+        assert_eq!(
+            <WebotsControllerSimulator as Participant>::PARTICIPANT_CLASS,
+            "checked"
+        );
+
+        let contracts =
+            <<WebotsControllerSimulator as Participant>::Api as ParticipantApi>::CONTRACTS;
 
         let expected = contract_mappings();
         assert_eq!(
@@ -900,19 +952,35 @@ mod tests {
             assert!(
                 contracts
                     .iter()
-                    .any(|contract| contract["topic"] == mapping.topic),
-                "missing mapping for {}",
-                mapping.topic
+                    .any(|c| c.topic == mapping.topic && c.role == mapping.role),
+                "missing mapping for {} ({:?})",
+                mapping.topic,
+                mapping.role
             );
         }
 
         // Never leaks the supervisor's simulation::* contracts.
         assert!(
-            !contracts.iter().any(|contract| contract["topic"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("/simulation/")),
+            !contracts.iter().any(|c| c.topic.contains("/simulation/")),
             "controller must not report simulation::* contracts: {contracts:?}"
         );
+    }
+
+    // Covers the exact gotcha `WebotsControllerConfigSlot` exists for: the
+    // runner deserializes `Self::Config` from JSON `null` when
+    // `PHOXAL_CONFIG` is unset (see the type's doc comment).
+    #[test]
+    fn config_slot_treats_null_as_absent_and_defaults() {
+        let slot: WebotsControllerConfigSlot =
+            serde_json::from_value(serde_json::Value::Null).unwrap();
+        assert!(slot.0.is_none());
+        assert!(slot.0.unwrap_or_default().require_native);
+    }
+
+    #[test]
+    fn config_slot_deserializes_an_object_as_present() {
+        let slot: WebotsControllerConfigSlot =
+            serde_json::from_value(serde_json::json!({"require_native": false})).unwrap();
+        assert!(!slot.0.unwrap().require_native);
     }
 }
