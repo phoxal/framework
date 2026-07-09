@@ -1,4 +1,21 @@
-use std::collections::BTreeMap;
+//! `cargo xtask release plan` - the build-set decision (design doc
+//! `organization/tmp/ci-release-refactor/design.md` §4.1, "Which artifacts
+//! build this run").
+//!
+//! release-plz (`release-plz.toml`) now owns *all* crate versioning -
+//! libraries and binaries alike, the latter via `git_only` - so this command
+//! no longer reads release-plz's JSON output to learn which packages were
+//! released. Versioning and building are decoupled: release-plz decides
+//! versions on the release-PR merge; this command decides, independently,
+//! which of the workspace's *current* artifact versions still need building.
+//!
+//! The rule (§4.1): an artifact crate is built iff its current `Cargo.toml`
+//! version is **not already present** in the previous catalog - the catalog
+//! indexes every published `(package, version)`, so "already present" means
+//! "already built and indexed". With no `--previous-catalog` (cold start,
+//! §4.3), nothing is excluded and every discovered artifact builds.
+
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -6,16 +23,20 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
+use crate::catalog::model::Catalog;
+use crate::catalog::verify::verify_catalog_path;
 use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, runner_for_target};
 
 pub(crate) const RELEASE_PLAN_SCHEMA: &str = "phoxal.release-plan/v0";
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
+    /// The current "latest" `phoxal.catalog/v0` catalog, downloaded by the
+    /// workflow before this step. Absent means cold start (§4.3): every
+    /// discovered artifact is included in the plan.
     #[arg(long, value_name = "PATH")]
-    pub release_plz_json: PathBuf,
+    pub previous_catalog: Option<PathBuf>,
     #[arg(
         long,
         value_name = "PATH",
@@ -36,9 +57,12 @@ pub(crate) struct ReleasePlan {
     pub matrix: ReleaseMatrix,
 }
 
-/// One artifact release-plz (or `cargo xtask release cut`) reported cut. `package`
-/// is the provider-qualified public identity (`phoxal/component-ddsm115-driver`);
-/// there is no separate `artifact_id` alongside it (docs #21).
+/// One artifact this run's build-set includes. `package` is the
+/// provider-qualified public identity (`phoxal/component-ddsm115-driver`);
+/// there is no separate `artifact_id` alongside it (docs #21). `tag` is the
+/// artifact's release-plz-owned version tag (`{package}-v{version}`,
+/// informational only - the actual upload target is this run's `build-*`
+/// release, decided by the workflow, not this plan).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReleasePlanArtifact {
@@ -66,24 +90,20 @@ pub(crate) struct ReleaseMatrixEntry {
     pub runner: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReleasedPackage {
-    package: String,
-    version: String,
-    tag: Option<String>,
-}
-
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    let release_plz_text = fs::read_to_string(&args.release_plz_json)
-        .with_context(|| format!("failed to read {}", args.release_plz_json.display()))?;
-    let plan = build_release_plan(&workspace, &release_plz_text)?;
+    let previous_catalog = args
+        .previous_catalog
+        .as_deref()
+        .map(verify_catalog_path)
+        .transpose()?;
+    let plan = build_release_plan(&workspace, previous_catalog.as_ref())?;
     write_release_plan(&args.out, &plan)?;
     if args.github_output {
         write_github_output(&plan)?;
     }
     println!(
-        "release plan: {} artifact releases, {} matrix rows -> {}",
+        "release plan: {} artifact release(s), {} matrix rows -> {}",
         plan.artifacts.len(),
         plan.matrix.include.len(),
         args.out.display()
@@ -122,45 +142,34 @@ pub(crate) fn write_release_plan(path: &Path, plan: &ReleasePlan) -> Result<()> 
     fs::write(path, json).with_context(|| format!("failed to write {}", path.display()))
 }
 
+/// Builds the plan: every discovered artifact whose `(package, version)` is
+/// not already in `previous_catalog` (absent = cold start, nothing carried
+/// forward, everything builds).
+///
+/// Target selection deliberately keeps [`OfficialArtifact::supported_target_triples`]
+/// (per-kind triples, e.g. services get Linux only, tools/simulators also get
+/// macOS) rather than a uniform six-triple matrix: widening every artifact's
+/// target coverage is a real cost/behavior change out of this slice's scope.
 pub(crate) fn build_release_plan(
     workspace: &Workspace,
-    release_plz_text: &str,
+    previous_catalog: Option<&Catalog>,
 ) -> Result<ReleasePlan> {
-    // release-plz reports releases by Cargo crate name; `cargo xtask release
-    // cut`'s release-plz-JSON-compatible output additionally reports the
-    // provider-qualified `package` identity, which is the only identity a
-    // `component_assets` bundle has (it has no Cargo crate - docs #21). Index
-    // artifacts by both so a release entry correlates whichever identity its
-    // JSON carries. Crate names (`phoxal-service-drive`) and provider-qualified
-    // identities (`phoxal/service-drive`) never collide because only the latter
-    // contains `/`.
-    let official_by_package = workspace
-        .official_artifacts()
-        .iter()
-        .flat_map(|artifact| {
-            let by_package_name = artifact
-                .package_name
-                .as_deref()
-                .map(|package_name| (package_name, artifact));
-            let by_package = std::iter::once((artifact.package.as_str(), artifact));
-            by_package_name.into_iter().chain(by_package)
+    let already_published: BTreeSet<(&str, &str)> = previous_catalog
+        .map(|catalog| {
+            catalog
+                .artifacts
+                .iter()
+                .map(|entry| (entry.package.as_str(), entry.version.as_str()))
+                .collect()
         })
-        .collect::<BTreeMap<_, _>>();
-    let released = released_packages(release_plz_text)?;
+        .unwrap_or_default();
+
     let mut artifacts = Vec::new();
-    for release in released {
-        let Some(artifact) = official_by_package.get(release.package.as_str()) else {
+    for artifact in workspace.official_artifacts() {
+        if already_published.contains(&(artifact.package.as_str(), artifact.version.as_str())) {
             continue;
-        };
-        if release.version != artifact.version {
-            bail!(
-                "release-plz JSON says {} is v{}, but workspace discovery found v{}",
-                release.package,
-                release.version,
-                artifact.version
-            );
         }
-        artifacts.push(plan_artifact(artifact, release.tag.as_deref())?);
+        artifacts.push(plan_artifact(artifact));
     }
     artifacts.sort_by(|left, right| left.package.cmp(&right.package));
 
@@ -185,108 +194,14 @@ pub(crate) fn build_release_plan(
     })
 }
 
-fn plan_artifact(
-    artifact: &OfficialArtifact,
-    release_plz_tag: Option<&str>,
-) -> Result<ReleasePlanArtifact> {
-    let expected_tag = artifact.release_tag();
-    let tag = release_plz_tag.unwrap_or(&expected_tag);
-    if tag != expected_tag {
-        bail!(
-            "release-plz JSON tag for {} was '{}', expected '{}'",
-            artifact.package,
-            tag,
-            expected_tag
-        );
-    }
-    Ok(ReleasePlanArtifact {
+fn plan_artifact(artifact: &OfficialArtifact) -> ReleasePlanArtifact {
+    ReleasePlanArtifact {
         package: artifact.package.clone(),
         version: artifact.version.clone(),
-        tag: tag.to_string(),
+        tag: artifact.release_tag(),
         kind: artifact.kind,
         target_triples: artifact.supported_target_triples(),
-    })
-}
-
-fn released_packages(text: &str) -> Result<Vec<ReleasedPackage>> {
-    if text.trim().is_empty() {
-        return Ok(Vec::new());
     }
-    let value: Value =
-        serde_json::from_str(text).context("release-plz output was not valid JSON")?;
-    let mut releases = BTreeMap::<String, ReleasedPackage>::new();
-    collect_released_packages(&value, &mut releases)?;
-    Ok(releases.into_values().collect())
-}
-
-fn collect_released_packages(
-    value: &Value,
-    releases: &mut BTreeMap<String, ReleasedPackage>,
-) -> Result<()> {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                collect_released_packages(value, releases)?;
-            }
-        }
-        Value::Object(object) => {
-            if let Some(release) = release_from_object(object) {
-                match releases.get(&release.package) {
-                    Some(existing) if existing != &release => bail!(
-                        "release-plz JSON contains conflicting release facts for {}",
-                        release.package
-                    ),
-                    Some(_) => {}
-                    None => {
-                        releases.insert(release.package.clone(), release);
-                    }
-                }
-            }
-            for value in object.values() {
-                collect_released_packages(value, releases)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn release_from_object(object: &serde_json::Map<String, Value>) -> Option<ReleasedPackage> {
-    let package = string_field(
-        object,
-        &[
-            "package",
-            "package_name",
-            "packageName",
-            "crate",
-            "crate_name",
-            "name",
-        ],
-    )?;
-    let version =
-        string_field(object, &["version", "new_version", "next_version"]).or_else(|| {
-            version_from_tag(
-                string_field(object, &["tag", "tag_name", "git_tag"])?,
-                package,
-            )
-        })?;
-    let tag = string_field(object, &["tag", "tag_name", "git_tag"]).map(str::to_string);
-    Some(ReleasedPackage {
-        package: package.to_string(),
-        version: version.to_string(),
-        tag,
-    })
-}
-
-fn string_field<'a>(object: &'a serde_json::Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
-        .filter_map(|key| object.get(*key))
-        .find_map(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-}
-
-fn version_from_tag<'a>(tag: &'a str, package: &str) -> Option<&'a str> {
-    tag.strip_prefix(package)?.strip_prefix("-v")
 }
 
 fn write_github_output(plan: &ReleasePlan) -> Result<()> {
@@ -307,18 +222,25 @@ fn write_github_output(plan: &ReleasePlan) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    use crate::catalog::model::{Artifact as CatalogArtifact, Blob, BuildProvenance};
     use crate::workspace::{PhoxalPackageMetadata, Workspace};
 
     use super::*;
 
-    fn artifact(package_name: &str, kind: ArtifactKind, id: &str) -> OfficialArtifact {
+    fn artifact(
+        package_name: &str,
+        kind: ArtifactKind,
+        id: &str,
+        version: &str,
+    ) -> OfficialArtifact {
         OfficialArtifact {
             package: crate::workspace::package_identity(kind, id),
             package_name: Some(package_name.to_string()),
             kind,
-            version: "0.1.0".to_string(),
+            version: version.to_string(),
             crate_dir: PathBuf::new(),
             bin_name: Some(package_name.to_string()),
             id: id.to_string(),
@@ -334,22 +256,49 @@ mod tests {
         )
     }
 
+    fn fixture_build_provenance() -> BuildProvenance {
+        BuildProvenance {
+            tag: "build-20260701-0001180".to_string(),
+            run_number: 1180,
+            run_id: 1,
+            commit: "c".to_string(),
+            created_at: "2026-07-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn catalog_entry(package: &str, version: &str) -> CatalogArtifact {
+        let mut targets = BTreeMap::new();
+        targets.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            Blob {
+                url: "https://example.invalid/a.tar.zst".to_string(),
+                sha256: "a".repeat(64),
+                size: 1,
+            },
+        );
+        CatalogArtifact {
+            package: package.to_string(),
+            version: version.to_string(),
+            contracts: Vec::new(),
+            config_schema: None,
+            targets,
+            assets: None,
+        }
+    }
+
     #[test]
-    fn release_plz_output_expands_artifact_target_matrix() -> Result<()> {
+    fn cold_start_with_no_previous_catalog_builds_every_artifact() -> Result<()> {
         let workspace = workspace_with(vec![
-            artifact("phoxal-service-drive", ArtifactKind::Service, "drive"),
-            artifact("phoxal-tool-router", ArtifactKind::Tool, "router"),
+            artifact(
+                "phoxal-service-drive",
+                ArtifactKind::Service,
+                "drive",
+                "0.1.0",
+            ),
+            artifact("phoxal-tool-router", ArtifactKind::Tool, "router", "0.1.0"),
         ]);
-        let plan = build_release_plan(
-            &workspace,
-            r#"{
-  "releases": [
-    { "package_name": "phoxal-service-drive", "version": "0.1.0", "tag": "phoxal-service-drive-v0.1.0" },
-    { "package_name": "phoxal", "version": "0.25.0", "tag": "phoxal-v0.25.0" },
-    { "package_name": "phoxal-tool-router", "version": "0.1.0", "tag": "phoxal-tool-router-v0.1.0" }
-  ]
-}"#,
-        )?;
+
+        let plan = build_release_plan(&workspace, None)?;
 
         assert_eq!(plan.artifacts.len(), 2);
         assert_eq!(
@@ -369,40 +318,94 @@ mod tests {
     }
 
     #[test]
-    fn release_plz_shape_can_be_nested_or_array_based() -> Result<()> {
-        let workspace = workspace_with(vec![artifact(
-            "phoxal-component-ddsm115-driver",
-            ArtifactKind::ComponentDriver,
-            "ddsm115",
-        )]);
-        let plan = build_release_plan(
-            &workspace,
-            r#"[
-  { "name": "phoxal-component-ddsm115-driver", "version": "0.1.0", "git_tag": "phoxal-component-ddsm115-driver-v0.1.0" }
-]"#,
-        )?;
-
-        assert_eq!(plan.artifacts.len(), 1);
-        assert_eq!(
-            plan.artifacts[0].tag,
-            "phoxal-component-ddsm115-driver-v0.1.0"
-        );
-        assert_eq!(plan.artifacts[0].package, "phoxal/component-ddsm115-driver");
-        Ok(())
-    }
-
-    #[test]
-    fn mismatched_release_version_fails_closed() {
+    fn already_catalogued_version_is_excluded_from_the_plan() -> Result<()> {
         let workspace = workspace_with(vec![artifact(
             "phoxal-service-drive",
             ArtifactKind::Service,
             "drive",
+            "0.19.7",
         )]);
-        let err = build_release_plan(
-            &workspace,
-            r#"{ "package_name": "phoxal-service-drive", "version": "0.2.0" }"#,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("workspace discovery found"));
+        let previous = Catalog::new(
+            fixture_build_provenance(),
+            vec![catalog_entry("phoxal/service-drive", "0.19.7")],
+        );
+
+        let plan = build_release_plan(&workspace, Some(&previous))?;
+
+        assert!(plan.artifacts.is_empty());
+        assert!(plan.matrix.include.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn a_new_version_not_yet_in_the_catalog_is_included() -> Result<()> {
+        let workspace = workspace_with(vec![artifact(
+            "phoxal-service-drive",
+            ArtifactKind::Service,
+            "drive",
+            "0.19.8",
+        )]);
+        // Previous catalog only knows about the OLDER version - the workspace's
+        // current version (0.19.8) is new and must be built.
+        let previous = Catalog::new(
+            fixture_build_provenance(),
+            vec![catalog_entry("phoxal/service-drive", "0.19.7")],
+        );
+
+        let plan = build_release_plan(&workspace, Some(&previous))?;
+
+        assert_eq!(plan.artifacts.len(), 1);
+        assert_eq!(plan.artifacts[0].package, "phoxal/service-drive");
+        assert_eq!(plan.artifacts[0].version, "0.19.8");
+        assert_eq!(plan.artifacts[0].tag, "phoxal-service-drive-v0.19.8");
+        Ok(())
+    }
+
+    #[test]
+    fn a_mix_of_new_and_already_published_artifacts_only_plans_the_new_ones() -> Result<()> {
+        let workspace = workspace_with(vec![
+            artifact(
+                "phoxal-service-drive",
+                ArtifactKind::Service,
+                "drive",
+                "0.19.7",
+            ),
+            artifact("phoxal-tool-router", ArtifactKind::Tool, "router", "0.2.0"),
+        ]);
+        let previous = Catalog::new(
+            fixture_build_provenance(),
+            vec![catalog_entry("phoxal/service-drive", "0.19.7")],
+        );
+
+        let plan = build_release_plan(&workspace, Some(&previous))?;
+
+        assert_eq!(plan.artifacts.len(), 1);
+        assert_eq!(plan.artifacts[0].package, "phoxal/tool-router");
+        Ok(())
+    }
+
+    #[test]
+    fn component_driver_and_component_assets_are_planned_independently() -> Result<()> {
+        // The component-as-one-crate migration (design doc §9) hasn't landed in
+        // this workspace yet, so `ComponentDriver` and `ComponentAssets` still
+        // discover as two separate packages with two separate versions; the
+        // plan diffs each against the catalog on its own.
+        let workspace = workspace_with(vec![artifact(
+            "phoxal-component-ddsm115-driver",
+            ArtifactKind::ComponentDriver,
+            "ddsm115",
+            "0.2.0",
+        )]);
+        let previous = Catalog::new(
+            fixture_build_provenance(),
+            vec![catalog_entry("phoxal/component-ddsm115-driver", "0.1.0")],
+        );
+
+        let plan = build_release_plan(&workspace, Some(&previous))?;
+
+        assert_eq!(plan.artifacts.len(), 1);
+        assert_eq!(plan.artifacts[0].package, "phoxal/component-ddsm115-driver");
+        assert_eq!(plan.artifacts[0].version, "0.2.0");
+        Ok(())
     }
 }
