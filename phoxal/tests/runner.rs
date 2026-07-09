@@ -31,7 +31,9 @@ use phoxal::bus::{DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publishe
 use phoxal::participant::{ClockMode, ParticipantLaunch, RealClock, TestClock};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
+use phoxal_api::ContractBody;
 use phoxal_api::y2026_1 as api;
+use phoxal_api::y2026_7;
 
 static STEPS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -277,6 +279,12 @@ async fn new_model_participant_runs_through_a_real_bus() {
 // clone - a snapshot server that reads committed `Snapshot` state and never
 // `recv`s the `Subscriber`, so it steals nothing. This is the field-kind
 // coverage the D3 proof above is missing.
+//
+// It is ALSO the ground-breaker proof for per-contract generation mixing
+// (D1): `DrainApi` below holds a `y2026_1` command field (`incoming`) right
+// next to a `y2026_7` state field (`battery`, the contract moved out of
+// `y2026_1` in `phoxal-api/src/lib.rs`) - one participant, one live in-process
+// bus, two API generations round-tripping real bytes at once.
 
 static DRAIN_RECEIVED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static DRAIN_LAST_VOLTAGE_BITS: AtomicU64 = AtomicU64::new(0);
@@ -294,9 +302,11 @@ struct DrainApi {
     // destructive shared-queue field: it is cloned into the snapshot `Arc`,
     // but only `#[step]` (below) ever `recv`s it.
     incoming: Subscriber<api::drive::Target>,
-    // Client-side keep-last-1 of the `battery/state` STATE (owner publishes,
-    // client subscribes). The non-destructive inbound field.
-    battery: Latest<api::battery::State>,
+    // Client-side keep-last-1 of the `y2026_7/battery/state` STATE (owner
+    // publishes, client subscribes) - the moved contract, on its own
+    // generation, mixed into the same `Api` as the y2026_1 field above. The
+    // non-destructive inbound field.
+    battery: Latest<y2026_7::battery::State>,
     // The concurrent snapshot server, deliberately reading committed state
     // only.
     query: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
@@ -332,7 +342,7 @@ impl Drainer {
                 incoming: ctx
                     .subscriber(api::topic::internal::new(cap).drive().target(), 32)
                     .await?,
-                battery: ctx.latest(api::topic::new().battery().state()).await?,
+                battery: ctx.latest(y2026_7::topic::new().battery().state()).await?,
                 query: ctx.server(api::topic::new().map().submap()).await?,
             },
         ))
@@ -392,20 +402,26 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     .await
     .expect("open shared bus");
 
-    // Companion "client" handles on the same bus. `drive/target` is a command
-    // (client publishes), `battery/state` is a state (owner publishes), so the
-    // companion takes the client side of the former and the owner side of the
-    // latter - the mirror of what `Drainer` subscribes.
+    // Companion "client" handles on the same bus. `drive/target` (y2026_1) is a
+    // command (client publishes), `battery/state` (y2026_7 - the moved
+    // contract) is a state (owner publishes), so the companion takes the
+    // client side of the former and the owner side of the latter - the mirror
+    // of what `Drainer` subscribes. Two contract generations, one bus, one
+    // participant: this IS the ground-breaker round-trip.
     let target_pub =
         Publisher::<api::drive::Target>::new(bus.clone(), &api::topic::new().drive().target())
             .expect("build target publisher");
-    let battery_pub = Publisher::<api::battery::State>::new(
-        bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
-            .battery()
-            .state(),
-    )
-    .expect("build battery publisher");
+    let battery_topic = y2026_7::topic::internal::new(OwnerCap::__mint())
+        .battery()
+        .state();
+    assert_eq!(
+        <y2026_7::battery::State as ContractBody>::TOPIC,
+        "y2026_7/battery/state",
+        "the moved contract's generation-qualified wire key (D1)"
+    );
+    assert_eq!(battery_topic.key(), "y2026_7/battery/state");
+    let battery_pub = Publisher::<y2026_7::battery::State>::new(bus.clone(), &battery_topic)
+        .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
         &api::topic::new().map().submap(),
@@ -423,11 +439,11 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         // no sample is emitted before the drainer is listening.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // One battery state for the `Latest` field.
+        // One battery state (y2026_7) for the `Latest` field.
         battery_pub
             .publish_at(
                 LogicalTime::new(0, 1),
-                api::battery::State {
+                y2026_7::battery::State {
                     voltage_v: DRAIN_VOLTAGE_V,
                     current_a: 1.0,
                     charge_ratio: 0.9,
@@ -490,11 +506,15 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         "the step loop must receive all commands on its Subscriber - none stolen by the concurrent snapshot server"
     );
 
-    // The `Latest` field read the current value through the same owned `api`.
+    // The `Latest` field read the current value through the same owned `api` -
+    // the ground-breaker proof itself: a real `y2026_7/battery/state` publish
+    // was delivered over the live bus and observed correctly, WHILE the
+    // sibling `y2026_1/drive/target` command round-tripped on the same
+    // participant/bus at the same time (asserted above).
     assert_eq!(
         f32::from_bits(DRAIN_LAST_VOLTAGE_BITS.load(Ordering::Relaxed) as u32),
         DRAIN_VOLTAGE_V,
-        "the step loop should read the published battery voltage through its Latest field"
+        "the step loop should read the published y2026_7 battery voltage through its Latest field"
     );
 }
 

@@ -3,6 +3,7 @@
 //! `ApiVersion` id, and the topic keys produced by the api-local builders.
 
 use crate::y2026_1 as api;
+use crate::y2026_7;
 use crate::{ApiVersion, ContractBody};
 use phoxal_bus::TopicRole;
 
@@ -24,10 +25,6 @@ fn contract_body_topic_is_generation_qualified() {
     assert_eq!(
         <api::drive::Target as ContractBody>::TOPIC,
         "y2026_1/drive/target"
-    );
-    assert_eq!(
-        <api::battery::State as ContractBody>::TOPIC,
-        "y2026_1/battery/state"
     );
     assert_eq!(
         <api::safety::Status as ContractBody>::TOPIC,
@@ -64,6 +61,22 @@ fn contract_body_topic_is_generation_qualified() {
 }
 
 #[test]
+fn y2026_7_is_a_standalone_second_generation_carrying_only_the_moved_battery_contract() {
+    // The ground-breaker: `battery::State` moved OUT of y2026_1 and into its
+    // own, sparse y2026_7 generation (D1 - no `extends`, no copy of y2026_1).
+    const { assert!(!<y2026_7::Api as ApiVersion>::IS_PREVIEW) };
+    assert_eq!(<y2026_7::Api as ApiVersion>::ID, "y2026_7");
+    assert_eq!(
+        <y2026_7::battery::State as ContractBody>::TOPIC,
+        "y2026_7/battery/state"
+    );
+    assert_eq!(
+        y2026_7::topic::new().battery().state().key(),
+        "y2026_7/battery/state"
+    );
+}
+
+#[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     let generation = crate::API_CONTRACT_MANIFEST
         .iter()
@@ -77,6 +90,20 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .find(|contract| contract.family == "y2026_1::drive::State")
         .expect("drive::State should be in the generated manifest");
     assert_eq!(drive_state.topic, "y2026_1/drive/state");
+
+    // The manifest also carries the second, standalone generation, mixed-in
+    // alongside y2026_1 - the multi-generation catalog proof (task step 5).
+    let y2026_7_generation = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|generation| generation.name == "y2026_7")
+        .expect("y2026_7 should be in the generated manifest");
+    assert!(!y2026_7_generation.is_preview);
+    let battery_state = y2026_7_generation
+        .contracts
+        .iter()
+        .find(|contract| contract.family == "y2026_7::battery::State")
+        .expect("battery::State should be in the y2026_7 manifest entry");
+    assert_eq!(battery_state.topic, "y2026_7/battery/state");
 }
 
 #[test]
@@ -92,7 +119,7 @@ fn generated_role_const_matches_each_topic_role() {
 
     // State: telemetry the owning service publishes.
     assert_eq!(api::drive::State::ROLE, TopicRole::State);
-    assert_eq!(api::battery::State::ROLE, TopicRole::State);
+    assert_eq!(y2026_7::battery::State::ROLE, TopicRole::State);
 
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
@@ -328,10 +355,6 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         api::topic::new().drive().target().key(),
         "y2026_1/drive/target"
-    );
-    assert_eq!(
-        api::topic::new().battery().state().key(),
-        "y2026_1/battery/state"
     );
     assert_eq!(
         api::topic::new().safety().state().key(),
