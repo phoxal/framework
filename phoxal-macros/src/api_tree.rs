@@ -67,6 +67,81 @@
 //! no `SCHEMA_ID`/`FAMILY` and no cross-generation `extends`: a released
 //! contract type is immutable, and changing it means minting a new name in the
 //! current (or a new) generation, never overlaying the old one.
+//!
+//! # Self-contained absolute paths (no depth-counted `super::`)
+//!
+//! Every generated module - a node's own type module, or a leaf's topic-builder
+//! module, at any depth on either the client or the owner side - needs to name two
+//! things that live elsewhere in the SAME invocation's output: the version's `Api`
+//! marker, and (builder modules only) the body type declared in the parallel
+//! type-tree branch for the same node. Neither reference may assume WHERE
+//! `phoxal_api_tree!` itself was invoked (crate root for the one production call
+//! in `phoxal-api/src/lib.rs`; nested inside a `#[cfg(test)] mod tests` submodule
+//! for the fixtures in `phoxal-api/src/tests.rs`) - a proc-macro has no reliable
+//! way to learn its own module path, so a hardcoded `::phoxal_api::y2026_N::…`
+//! prefix is wrong the moment the invocation is not at the crate root, and simply
+//! is not an option here.
+//!
+//! Instead, every reference is built from a chain of single, ALWAYS-VALID hops to
+//! the reference's own immediate parent module - never a multi-hop count derived
+//! from how deep the referencing node happens to be nested. Two hidden,
+//! `#[doc(hidden)]` re-exports carry this:
+//!
+//! - `__PhoxalApiMarker` aliases `Api` once, in the version module
+//!   (`pub use self::Api as __PhoxalApiMarker;`). Every node module, at any depth,
+//!   re-exports its own parent's copy one hop up
+//!   (`pub use super::__PhoxalApiMarker;`), so by induction every node module, no
+//!   matter how deep, has a local `self::__PhoxalApiMarker` it can bind
+//!   `ContractBody::Api` to.
+//! - `__phoxal_type_root` is seeded per top-level node in `topic`
+//!   (`pub use super::<node> as __phoxal_type_root_<node>;`, one hop from `topic`
+//!   to the version module that holds the type tree), then forwarded one hop into
+//!   `topic::internal` under the same name, then every builder module along that
+//!   node's subtree, client or owner side, any depth, imports it from its own
+//!   parent under the uniform local name `__phoxal_type_root`. A leaf's body
+//!   reference is then `self::__phoxal_type_root::<rest of the node path>::<Body>`:
+//!   the hop count is always exactly one, never counted against the node's
+//!   authored depth or which side is being built.
+//!
+//! The result: no reference anywhere in the generated tree depends on a computed
+//! nesting depth, so lifting a node deeper (or invoking `phoxal_api_tree!` from a
+//! more deeply nested module, as the `reused_var_name` / `standalone_second_generation`
+//! fixtures in `phoxal-api/src/tests.rs` do) cannot desynchronize a path. The
+//! builder's OWN parent-chaining (`super::Root` / `super::Builder` in
+//! [`expand_builder_module`]) is intentionally left as a direct `super::`: it
+//! names this builder's immediate enclosing module, which is by construction
+//! always exactly one hop away regardless of depth, so it was never part of the
+//! depth-counted problem this section solves.
+//!
+//! # No path-based rename
+//!
+//! An earlier design draft considered a `rename = "seg"` attribute to decouple a
+//! node/leaf's wire key segment from its Rust identifier, so the Rust API could be
+//! refactored (renaming or moving a type in the node tree) without moving the wire
+//! key. Under the CURRENT model that capability is redundant, so it is
+//! deliberately not implemented:
+//!
+//! - A released (non-`preview`) `version` span is immutable by policy, enforced by
+//!   the release-PR frozen-generation check (`xtask/src/api/frozen_generation.rs`):
+//!   it diffs the exact DSL source text against the last release tag and fails the
+//!   PR if a single byte of a frozen span moved. Renaming an identifier inside a
+//!   frozen span is exactly the kind of edit that check exists to block - a
+//!   `rename` attribute could not legally be added there anyway, so it buys
+//!   nothing for released contracts.
+//! - A `preview` span carries no immutability promise at all: every identifier in
+//!   it, including node/leaf names, can be edited freely with no external
+//!   consumer to break, so there is no window where a Rust name and a wire name
+//!   would need to diverge.
+//! - The whole point of D1's move away from `schema_id`/`FAMILY` is that identity
+//!   collapses onto ONE axis - the version-qualified Rust path IS the wire key
+//!   (`y2026_1::drive::Target` <-> `y2026_1/drive/target`). A `rename` attribute
+//!   would reopen a second axis (Rust name vs. wire name) for exactly the
+//!   contracts where the model guarantees they can never need to diverge.
+//!
+//! If a future generation needs a differently-worded wire segment than its Rust
+//! name reads naturally, the sparse-generation model already provides the answer:
+//! mint it under the wire name that reads well from the start, in the current (or
+//! a new) generation - there is no cost to choosing the wire-facing name up front.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -489,15 +564,15 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
     let feature_name = format!("preview-{id}");
     let nodes = &version.nodes;
 
-    // Node modules (types + ContractBody impls), recursive. Each top-level node is
-    // at depth 1 under the version. The family prefix (`::`-joined node names) and
-    // the key prefix (`/`-joined `name` or `name/{var}` segments) are threaded
-    // down the walk. `id` (the version name) is threaded down too so every
-    // emitted `TOPIC` is generation-qualified (D1): the generation is folded into
-    // the wire key, so different versioned contracts can never collide.
+    // Node modules (types + ContractBody impls), recursive. The family prefix
+    // (`::`-joined node names) and the key prefix (`/`-joined `name` or
+    // `name/{var}` segments) are threaded down the walk. `id` (the version name)
+    // is threaded down too so every emitted `TOPIC` is generation-qualified (D1):
+    // the generation is folded into the wire key, so different versioned
+    // contracts can never collide.
     let mut node_mods = TokenStream::new();
     for node in nodes {
-        node_mods.extend(expand_node_module(node, &id, 1, "", "")?);
+        node_mods.extend(expand_node_module(node, &id, "", "")?);
     }
 
     let topic_mod = expand_topic_module(&id, nodes)?;
@@ -529,6 +604,16 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
                 const IS_PREVIEW: bool = #is_preview;
             }
 
+            // Self-contained absolute-path anchor (position-independent
+            // regardless of where `phoxal_api_tree!` is invoked - crate root or a
+            // nested test-fixture module, D1's "self-contained" redesign). Every
+            // node module and every topic-builder module below - no matter how
+            // deep the tree - re-exports this ONE hop from its own parent, so any
+            // of them reaches `Api` through a purely local `self::__PhoxalApiMarker`
+            // that never needs a supers count tied to its nesting depth.
+            #[doc(hidden)]
+            pub use self::Api as __PhoxalApiMarker;
+
             #node_mods
 
             #topic_mod
@@ -536,10 +621,9 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
     })
 }
 
-/// Emit a `pub mod <name>` for a node at `depth` under the version (depth 1 = a
-/// direct child of the version). The module carries the node's types, the
-/// `ContractBody` impls for its topics, and — recursively — its child node
-/// modules. Variables never appear in the module path (D61).
+/// Emit a `pub mod <name>` for a node under the version. The module carries the
+/// node's types, the `ContractBody` impls for its topics, and — recursively —
+/// its child node modules. Variables never appear in the module path (D61).
 ///
 /// `version` is the generation name (e.g. `"y2026_1"`), threaded down so every
 /// emitted `TOPIC` is generation-qualified (D1). `family_prefix` is the
@@ -549,7 +633,6 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
 fn expand_node_module(
     node: &Node,
     version: &str,
-    depth: usize,
     family_prefix: &str,
     key_prefix: &str,
 ) -> syn::Result<TokenStream> {
@@ -565,11 +648,6 @@ fn expand_node_module(
         None => name_str.clone(),
     };
     let node_key_prefix = join_seg(key_prefix, "/", &key_seg);
-
-    // `super` repeated `depth` times reaches the version module (which holds
-    // `Api`). Intra-tree module nesting, not cross-generation coupling: with
-    // `extends` gone, this is a single-generation, self-contained reference.
-    let api_supers = supers(depth);
 
     let mut types = TokenStream::new();
     for ty in &node.types {
@@ -599,7 +677,7 @@ fn expand_node_module(
                 // plan #00).
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #body {
-                        type Api = #api_supers Api;
+                        type Api = self::__PhoxalApiMarker;
                         const TOPIC: &'static str = #key;
                     }
                     impl #body {
@@ -612,11 +690,11 @@ fn expand_node_module(
             TopicKind::Query { request, response } => {
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #request {
-                        type Api = #api_supers Api;
+                        type Api = self::__PhoxalApiMarker;
                         const TOPIC: &'static str = #key;
                     }
                     impl ::phoxal_bus::ContractBody for #response {
-                        type Api = #api_supers Api;
+                        type Api = self::__PhoxalApiMarker;
                         const TOPIC: &'static str = #key;
                     }
                     impl #request {
@@ -640,7 +718,6 @@ fn expand_node_module(
         child_mods.extend(expand_node_module(
             child,
             version,
-            depth + 1,
             &family_path,
             &node_key_prefix,
         )?);
@@ -650,22 +727,20 @@ fn expand_node_module(
         pub mod #name {
             //! Version-local bodies for the `#name_str` node.
 
+            // Forward the version root's `Api` marker down exactly one hop from
+            // this node's own parent (the version module for a top-level node, or
+            // the parent node module for a nested one). Every node module - at any
+            // depth - carries this same single-hop re-export, so `Api` is always
+            // reachable as `self::__PhoxalApiMarker` without computing how deep
+            // this node sits (self-contained absolute path, D1).
+            #[doc(hidden)]
+            pub use super::__PhoxalApiMarker;
+
             #types
             #impls
             #child_mods
         }
     })
-}
-
-/// `super::` repeated `n` times as a path prefix token stream (empty for
-/// `n == 0`). Each `super` hop is `super ::`, so the result is usable as a path
-/// prefix before a final ident (e.g. `super :: super :: Api`).
-fn supers(n: usize) -> TokenStream {
-    let mut ts = TokenStream::new();
-    for _ in 0..n {
-        ts.extend(quote! { super:: });
-    }
-    ts
 }
 
 /// Positional private storage field for the `i`-th in-scope dynamic var of a
@@ -711,6 +786,15 @@ enum Side {
     Owner,
 }
 
+/// The name of the hidden alias, seeded once in `topic` per top-level node, that
+/// re-exports that node's type-tree module (e.g. `component`) under a name that
+/// cannot collide with the SAME-named builder submodule `topic` also declares for
+/// it. Builder modules import it (and re-forward it downward, see
+/// [`expand_builder_module`]) as `__phoxal_type_root`.
+fn type_root_alias_ident(node_name: &Ident) -> Ident {
+    quote::format_ident!("__phoxal_type_root_{}", node_name)
+}
+
 /// Emit the api-local `topic` builder module with BOTH side trees (L1).
 ///
 /// The PUBLIC client tree lives directly under `topic` (`topic::new()` + a builder
@@ -719,16 +803,44 @@ enum Side {
 /// mirror the node tree and format identical keys - only the leaf brand differs by
 /// side. A dynamic node's method takes its variable as `impl Display` and carries
 /// it forward; a leaf method formats the final key from the carried vars.
+///
+/// Self-contained absolute paths (D1): a builder leaf needs to name a body type
+/// that lives in the PARALLEL type-tree hanging off the same version module
+/// (`topic::component::motor::Builder` needs `component::motor::Command`). Rather
+/// than counting `super::` hops back to the version root and down again per leaf,
+/// `topic` seeds one hidden alias per top-level node
+/// (`#[doc(hidden)] pub use super::component as __phoxal_type_root_component;`,
+/// a single, always-valid hop since `topic` is a direct child of the version
+/// module) and `internal` re-forwards each of them one hop further. Every builder
+/// module under either side then imports its own top-level node's alias - a
+/// single hop from its immediate parent - under the uniform local name
+/// `__phoxal_type_root`, and deeper builder modules just forward THAT one hop at
+/// a time. A leaf reference is then always `self::__phoxal_type_root::…::Body`:
+/// no supers count, no dependency on how deep the node was authored.
 fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream> {
     let mut client_root_methods = TokenStream::new();
     let mut client_builder_mods = TokenStream::new();
     let mut owner_root_methods = TokenStream::new();
     let mut owner_builder_mods = TokenStream::new();
+    let mut type_root_seeds = TokenStream::new();
+    let mut type_root_forwards = TokenStream::new();
     for node in nodes {
+        let name = &node.name;
+        let alias = type_root_alias_ident(name);
+
         client_root_methods.extend(node_entry_method(node));
         client_builder_mods.extend(expand_builder_module(node, version, &[], Side::Client)?);
         owner_root_methods.extend(node_entry_method(node));
         owner_builder_mods.extend(expand_builder_module(node, version, &[], Side::Owner)?);
+
+        type_root_seeds.extend(quote! {
+            #[doc(hidden)]
+            pub use super::#name as #alias;
+        });
+        type_root_forwards.extend(quote! {
+            #[doc(hidden)]
+            pub use super::#alias;
+        });
     }
 
     Ok(quote! {
@@ -751,6 +863,11 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
             impl Root {
                 #client_root_methods
             }
+
+            // Per-top-level-node type-tree aliases (self-contained absolute
+            // paths, D1): seeded here because `topic` is always exactly one hop
+            // from the version module that holds the type tree.
+            #type_root_seeds
 
             #client_builder_mods
 
@@ -785,6 +902,10 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
                 impl Root {
                     #owner_root_methods
                 }
+
+                // Forward each top-level node's type-tree alias one more hop, from
+                // `topic` into `internal` (still a single, always-valid hop).
+                #type_root_forwards
 
                 #owner_builder_mods
             }
@@ -838,7 +959,6 @@ fn expand_builder_module(
 ) -> syn::Result<TokenStream> {
     let name = &node.name;
     let name_str = name.to_string();
-    let depth = ancestors.len() + 1;
 
     // Full node path (root → node) and the variables in scope (ancestors' + this
     // node's, in order).
@@ -865,8 +985,12 @@ fn expand_builder_module(
     // dynamic node also takes its var's string. It assembles all carried fields by
     // moving the parent's fields and adding this node's. From inside this node's
     // builder module, the parent builder is `super::Root` for a top-level node
-    // (depth 1) and `super::Builder` for a nested node.
-    let parent_builder_ty = if depth == 1 {
+    // (`ancestors` empty) and `super::Builder` for a nested one. Unlike the
+    // type-tree cross-reference below, this is a direct, single-hop reference to
+    // this builder's own immediate parent module - it is already
+    // depth-independent (always exactly one `super::`, never counted), so it is
+    // not part of the self-contained-path rework.
+    let parent_builder_ty = if ancestors.is_empty() {
         quote! { super::Root }
     } else {
         quote! { super::Builder }
@@ -905,7 +1029,7 @@ fn expand_builder_module(
     let mut leaf_methods = TokenStream::new();
     for topic in &node.topics {
         let leaf = topic.leaf.method_ident();
-        let kind_ty = builder_leaf_kind(topic, &path, depth, side);
+        let kind_ty = builder_leaf_kind(topic, &path, side);
         let (fmt_str, doc_key) = builder_leaf_key_parts(version, &path, &topic.leaf);
         let constructor = if field_idents.is_empty() {
             quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
@@ -930,9 +1054,31 @@ fn expand_builder_module(
         child_mods.extend(expand_builder_module(child, version, &path, side)?);
     }
 
+    // Self-contained absolute path to this top-level node's type-tree (D1): at the
+    // top of a top-level node's builder subtree (`ancestors` empty) import the
+    // alias `expand_topic_module` seeded one hop up (in `topic` for the client
+    // side, in `topic::internal` for the owner side - both are that alias's direct
+    // parent). Every deeper builder module just re-forwards it one more hop under
+    // the same local name, so a leaf at any depth reaches its body type through
+    // `self::__phoxal_type_root` with no supers count.
+    let type_root_import = if ancestors.is_empty() {
+        let alias = type_root_alias_ident(name);
+        quote! {
+            #[doc(hidden)]
+            pub use super::#alias as __phoxal_type_root;
+        }
+    } else {
+        quote! {
+            #[doc(hidden)]
+            pub use super::__phoxal_type_root;
+        }
+    };
+
     let builder_doc = format!("Topic builder for the `{name_str}` node.");
     Ok(quote! {
         pub mod #name {
+            #type_root_import
+
             #[doc = #builder_doc]
             // `#[non_exhaustive]` blocks cross-crate construction by struct literal,
             // so a node builder (incl. an empty static-node `Builder`) is only
@@ -956,27 +1102,23 @@ fn expand_builder_module(
 
 /// The branded `Kind` type for a builder leaf, side-aware (L1, plan #00).
 ///
-/// Each body path resolves from inside the builder module up to the version root
-/// and back down to the node module holding the body. A builder at `depth` (node
-/// depth under the version) is nested `depth` levels under `topic` on the CLIENT
-/// side, so reaching the version root is `depth + 1` supers (`depth` builder mods
-/// plus the `topic` mod); on the OWNER side the whole tree sits one level deeper
-/// under `topic::internal`, so it is `depth + 2`. From the version root, descend
-/// the node-module path (`n1::n2::…::nk`).
+/// The body path is built from `self::__phoxal_type_root` (this top-level node's
+/// type-tree alias, forwarded one hop at a time down from `topic`/`topic::internal`;
+/// see [`expand_topic_module`] and [`expand_builder_module`]), followed by the node
+/// path's segments after the top-level one (which the alias already denotes), then
+/// the body ident. This is a fixed-shape reference that never depends on how deep
+/// the node was authored or on which side (client/owner) is being built.
 ///
 /// The brand is picked from `(role, side)`:
 ///
 /// - `command`: client publishes (`Publish`), owner subscribes (`Subscribe`).
 /// - `state`: client subscribes (`Subscribe`), owner publishes (`Publish`).
 /// - `query`: client asks (`AskQuery`), owner serves (`ServeQuery`).
-fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], depth: usize, side: Side) -> TokenStream {
-    let supers_to_root = match side {
-        Side::Client => depth + 1,
-        Side::Owner => depth + 2,
-    };
-    let up = supers(supers_to_root);
-    let node_path: Vec<&Ident> = path.iter().map(|s| &s.name).collect();
-    let body_path = |body: &Ident| quote! { #up #(#node_path::)* #body };
+fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], side: Side) -> TokenStream {
+    // `path[0]` is the top-level node - exactly what `__phoxal_type_root` already
+    // aliases - so only the segments AFTER it need to be descended.
+    let rest_path: Vec<&Ident> = path[1..].iter().map(|s| &s.name).collect();
+    let body_path = |body: &Ident| quote! { self::__phoxal_type_root #(::#rest_path)* :: #body };
     match &topic.kind {
         TopicKind::PubSub(body) => {
             let b = body_path(body);
@@ -1299,6 +1441,55 @@ mod tests {
             2,
             "both the request and response bodies of a query topic share its \
              generation-qualified key: {expanded}"
+        );
+    }
+
+    /// Self-contained absolute paths (no depth-counted `super::`): a node nested
+    /// three levels deep must resolve `ContractBody::Api` and its builder-leaf
+    /// body type through the single-hop forwarding chain
+    /// (`__PhoxalApiMarker`/`__phoxal_type_root`), never through a `super::`
+    /// chain whose length is computed from the node's authored depth. A
+    /// regression back to depth-counted supers would need `super :: super` (or
+    /// deeper) somewhere in this expansion; the self-contained scheme never
+    /// does, on either the client or the owner builder tree.
+    #[test]
+    fn deeply_nested_dynamic_tree_never_emits_a_multi_hop_super_chain() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                version y2026_1 {
+                    a(x) {
+                        b(y) {
+                            c(z) {
+                                struct Body { v: u8 }
+                                topic leaf: state Body;
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("tree expands"),
+        );
+
+        assert!(
+            !expanded.contains("super :: super"),
+            "no reference should ever chain more than one `super::` hop, on \
+             either the type-tree or the builder-tree side: {expanded}"
+        );
+        assert!(
+            expanded.contains("const TOPIC : & 'static str = \"y2026_1/a/{x}/b/{y}/c/{z}/leaf\""),
+            "the three-level dynamic path must still be fully generation- and \
+             var-qualified: {expanded}"
+        );
+        assert!(
+            expanded.contains("type Api = self :: __PhoxalApiMarker ;"),
+            "ContractBody::Api must resolve through the forwarded, single-hop \
+             alias at any depth: {expanded}"
+        );
+        assert!(
+            expanded.contains("self :: __phoxal_type_root :: b :: c :: Body"),
+            "a deeply nested builder leaf must reach its body type through the \
+             forwarded type-root alias plus the remaining node path, not a \
+             counted supers chain: {expanded}"
         );
     }
 }
