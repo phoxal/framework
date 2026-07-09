@@ -18,34 +18,37 @@ const EMPTY_VOLTAGE_V: f64 = 12.0;
 const DRAW_CURRENT_A: f64 = 2.0;
 const CAPACITY_AH: f64 = 10.0;
 
-#[derive(phoxal::Service)]
-#[phoxal(id = "battery", api = y2026_1)]
+#[derive(phoxal::Api)]
+struct Api {
+    state: Publisher<api::battery::State>,
+}
+
+#[phoxal::service(id = "battery", config = ())]
 struct Battery {
     // Runtime-private simulated pack state.
     charge_ratio: f64,
-    // Handles.
-    state: Publisher<api::battery::State>,
 }
 
 #[phoxal::behavior]
 impl Battery {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<Self> {
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // Owner opt-in (plan #00 L2): the runner-minted capability that the
         // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        let state = ctx
-            .publisher(api::topic::internal::new(cap).battery().state())
-            .await?;
 
-        Ok(Self {
-            charge_ratio: 1.0,
-            state,
-        })
+        Ok((
+            Self { charge_ratio: 1.0 },
+            Self::Api {
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).battery().state())
+                    .await?,
+            },
+        ))
     }
 
     #[step(hz = 1)]
-    async fn step(&mut self, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let now = step.time();
 
         self.charge_ratio = discharge(
@@ -56,7 +59,7 @@ impl Battery {
         );
         let current_a = current_for(self.charge_ratio, DRAW_CURRENT_A);
 
-        self.state
+        api.state
             .publish_at(
                 now,
                 api::battery::State {
@@ -89,7 +92,7 @@ fn current_for(ratio: f64, draw_current_a: f64) -> f64 {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<Battery>()
+    phoxal::run_v2::<Battery>()
 }
 
 #[cfg(test)]
@@ -98,6 +101,7 @@ mod tests {
         Battery, CAPACITY_AH, DRAW_CURRENT_A, EMPTY_VOLTAGE_V, FULL_VOLTAGE_V, discharge,
         voltage_for,
     };
+    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::y2026_1 as api;
 
@@ -127,17 +131,17 @@ mod tests {
     }
 
     #[test]
-    fn emit_apis_reports_y2026_1_battery_contract() {
-        let json = phoxal::participant::emit_apis_json::<Battery>();
-        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["artifact"]["id"], "battery");
-        assert_eq!(value["api_version"], "y2026_1");
+    fn api_declares_the_y2026_1_battery_state_publish_contract() {
+        assert_eq!(<Battery as Participant>::ID, "battery");
 
-        let contracts = value["required_contracts"].as_array().unwrap();
+        let contracts = <<Battery as Participant>::Api as ParticipantApi>::CONTRACTS;
         assert!(
-            contracts
-                .iter()
-                .any(|c| c["topic"] == <api::battery::State as ContractBody>::TOPIC)
+            contracts.iter().any(|c| {
+                c.topic == <api::battery::State as ContractBody>::TOPIC
+                    && c.role == ContractRole::Publish
+            }),
+            "expected a Publish contract for {} in {contracts:?}",
+            <api::battery::State as ContractBody>::TOPIC
         );
     }
 
