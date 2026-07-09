@@ -12,7 +12,6 @@ cargo_metadata = "0.23.1"
 clap = { workspace = true }
 hex = "0.4.3"
 object = "0.36"
-phoxal = { workspace = true }
 # span-locations: the frozen-generation check (xtask/src/api/frozen_generation.rs)
 # needs real Span::start()/end() line/column info to slice exact source text
 # for each `phoxal_api_tree!` generation block out of two file revisions; off

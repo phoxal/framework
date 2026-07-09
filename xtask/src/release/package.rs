@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -49,6 +48,9 @@ pub(crate) struct PackagedOutput {
     pub tarball_name: String,
     pub checksum_name: String,
     pub tarball_sha256: String,
+    /// The tarball's byte length - the catalog's `Blob.size` (design doc
+    /// `organization/tmp/ci-release-refactor/design.md` §3).
+    pub tarball_size: u64,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -117,22 +119,6 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
         .context("package is required unless --all is present")?;
     let artifact = workspace.official_artifact(package_name)?;
     Ok(vec![artifact.clone()])
-}
-
-pub(crate) fn package_artifacts(
-    workspace: &Workspace,
-    artifacts: &[OfficialArtifact],
-    out_dir: &Path,
-    host_triple: &str,
-    target_triple: &str,
-) -> Result<BTreeMap<String, PackagedArtifact>> {
-    let mut packaged = BTreeMap::new();
-    for artifact in artifacts {
-        let output = package_artifact(workspace, artifact, out_dir, host_triple, target_triple)
-            .with_context(|| format!("failed to package {}", artifact.package))?;
-        packaged.insert(artifact.package.clone(), output);
-    }
-    Ok(packaged)
 }
 
 pub(crate) fn package_artifact(
@@ -639,11 +625,15 @@ pub(crate) fn read_packaged_output(
             computed
         );
     }
+    let tarball_size = fs::metadata(&tarball)
+        .with_context(|| format!("failed to stat {}", tarball.display()))?
+        .len();
 
     Ok(PackagedOutput {
         tarball_name: file_name(&tarball)?,
         checksum_name: file_name(&checksum)?,
         tarball_sha256: computed,
+        tarball_size,
         tarball,
         checksum,
     })
