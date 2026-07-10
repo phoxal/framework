@@ -906,6 +906,11 @@ mod tests {
         .expect("clock publisher should attach");
 
         let period = Duration::from_millis(10);
+        // Generous hang-guard for the positive release waits below. A correct
+        // feed releases the tick near-instantly once the sample arrives, so
+        // this deadline only trips on a genuine hang; it is sized to tolerate a
+        // starved runner (e.g. emulated musl under CI), not to assert latency.
+        let release_guard = Duration::from_secs(10);
         let (scheduler, handle) = SimulationScheduler::new(
             crate::participant::spec::MissedTick::Collapse,
             Some(period),
@@ -937,7 +942,7 @@ mod tests {
             )
             .await
             .expect("clock sample should publish");
-        let tick = tokio::time::timeout(Duration::from_secs(2), scheduler.wait_until(first_target))
+        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(first_target))
             .await
             .expect("scheduler should release once the feed advances past the target");
         assert_eq!(tick.fired_at, first_target);
@@ -977,10 +982,9 @@ mod tests {
             )
             .await
             .expect("resume clock sample should publish");
-        let tick =
-            tokio::time::timeout(Duration::from_secs(2), scheduler.wait_until(second_target))
-                .await
-                .expect("scheduler should release once resumed");
+        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(second_target))
+            .await
+            .expect("scheduler should release once resumed");
         assert_eq!(tick.fired_at, second_target);
 
         feed_task.abort();
