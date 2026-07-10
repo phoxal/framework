@@ -94,6 +94,36 @@ pub trait ContractBody:
     /// The single API version this body belongs to. Two bodies from different
     /// versions have different `Api`, so the type system keeps them apart.
     type Api: ApiVersion;
+    /// The version-qualified type path this body's own generation module
+    /// places it at: the version module name, then the `::`-joined node path
+    /// (dynamic-node vars are topic params, never type-path segments), then
+    /// the PascalCase type leaf, e.g. `"y2026_1::drive::Target"` or
+    /// `"y2026_1::component::motor::Command"`. This is the contract's source
+    /// identity (D1) - two contracts interoperate iff they share this exact
+    /// name - as distinct from [`TOPIC`](ContractBody::TOPIC), the resolved
+    /// wire key derived from it. `NAME` is exactly the `"::"`-join of
+    /// [`GENERATION`](ContractBody::GENERATION) and
+    /// [`CONTRACT`](ContractBody::CONTRACT); it stays available for callers
+    /// that want the whole identity as one string (e.g. display), while
+    /// metadata recording splices the two split consts instead (coherence-gate
+    /// design doc §2 - a joined name is not machine-parseable without
+    /// assuming the generation naming scheme).
+    const NAME: &'static str;
+    /// This body's generation alone, e.g. `"y2026_1"` - equal to
+    /// `<Self::Api as ApiVersion>::ID`, but exposed directly on the body so a
+    /// metadata recorder (`#[derive(phoxal::Api)]`'s linker-section
+    /// splicing) can const-splice it without routing through `Self::Api`.
+    /// Split from [`CONTRACT`](ContractBody::CONTRACT) so consumers (the
+    /// coherence gate, catalog) record generation and contract as two
+    /// separate fields rather than parsing a joined name.
+    const GENERATION: &'static str;
+    /// This body's contract path within its own generation: the `::`-joined
+    /// node path (dynamic-node vars excluded, as with `NAME`) plus the
+    /// PascalCase type leaf, e.g. `"drive::Target"`. The **logical
+    /// contract** - stable across a generation bump - is this value alone;
+    /// pairing it with [`GENERATION`](ContractBody::GENERATION) recovers the
+    /// full version-qualified identity (`NAME`).
+    const CONTRACT: &'static str;
     /// The generation-qualified wire key: the version module name, then the
     /// `/`-joined node path plus the topic leaf, with each dynamic node
     /// contributing a `{var}` placeholder, e.g. `"y2026_1/drive/state"` or

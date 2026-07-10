@@ -12,6 +12,11 @@ cargo_metadata = "0.23.1"
 clap = { workspace = true }
 hex = "0.4.3"
 object = "0.36"
+# The `#[derive(phoxal::Api)]` metadata section JSON shape (generation/contract/
+# role/external) is deserialized via the shared `phoxal::participant::metadata`
+# type, not a local re-definition - this crate only owns the object-file
+# section-BYTES extraction (`xtask/src/release/metadata.rs`).
+phoxal = { workspace = true }
 # span-locations: the frozen-generation check (xtask/src/api/frozen_generation.rs)
 # needs real Span::start()/end() line/column info to slice exact source text
 # for each `phoxal_api_tree!` generation block out of two file revisions; off

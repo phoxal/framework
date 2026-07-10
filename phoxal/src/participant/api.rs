@@ -68,12 +68,12 @@ use phoxal_bus::Bus;
 /// field's body type as written (`api::drive::Target`) has the generation
 /// erased - it cannot tell a `y2026_1` contract from a same-named `y2026_7`
 /// one. The generation-qualified identity *is* available, but only as
-/// `<Body as ContractBody>::TOPIC` (`phoxal-bus/src/contract.rs`), an
+/// `<Body as ContractBody>::NAME` (`phoxal-bus/src/contract.rs`), an
 /// associated const on a foreign type the proc-macro cannot evaluate at
 /// expansion time - only `rustc`, during the downstream participant crate's
 /// own const-eval, can resolve it. So the derive emits **tokens**, not a
 /// string: a call into [`__concatcp`] splicing `<Body as
-/// ContractBody>::TOPIC` between macro-time-known JSON literal fragments
+/// ContractBody>::NAME` between macro-time-known JSON literal fragments
 /// (field name, role), which `rustc` const-evaluates in the participant
 /// crate. The result is a `&'static str`, but the linker section is read as
 /// raw bytes by xtask's `object`-crate extractor (`xtask/src/release/metadata.rs`),
@@ -88,7 +88,7 @@ pub mod __meta {
     /// participant crate needing its own `const_format` dependency.
     /// `concatcp!` (unlike `std::concat!`) accepts constant *expressions*,
     /// not just literals - in particular, a path to a foreign associated
-    /// const like `<Body as ContractBody>::TOPIC` - which is exactly the
+    /// const like `<Body as ContractBody>::NAME` - which is exactly the
     /// piece a proc-macro cannot pre-resolve into a literal.
     pub use const_format::concatcp as __concatcp;
 

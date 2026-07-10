@@ -4902,6 +4902,7 @@ dependencies = [
  "clap",
  "hex",
  "object",
+ "phoxal",
  "proc-macro2",
  "semver",
  "serde",

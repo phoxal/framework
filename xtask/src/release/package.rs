@@ -376,9 +376,15 @@ fn exe_suffix_for_target(target_triple: &str) -> &'static str {
 }
 
 /// Fail-fast schema check on extracted metadata: every embedded contract entry
-/// must carry a non-empty contract name and role.
+/// must carry a non-empty generation, contract, and role.
 fn validate_metadata(meta: &ParticipantMeta, artifact: &OfficialArtifact) -> Result<()> {
     for contract in &meta.contracts {
+        if contract.generation.trim().is_empty() {
+            bail!(
+                "{} has a contract entry with an empty generation",
+                artifact.package
+            );
+        }
         if contract.contract.trim().is_empty() {
             bail!(
                 "{} has a contract entry with an empty contract name",
@@ -766,7 +772,9 @@ mod tests {
         let meta = extract_metadata_from_packaged(&artifact, dir.path(), &[triple.to_string()])?;
         assert_eq!(meta.contracts.len(), 1);
         assert_eq!(meta.contracts[0].role, "publish");
-        assert_eq!(meta.contracts[0].contract, "y2026_7/battery/state");
+        assert_eq!(meta.contracts[0].generation, "y2026_7");
+        assert_eq!(meta.contracts[0].contract, "battery::State");
+        assert!(!meta.contracts[0].external);
         Ok(())
     }
 
