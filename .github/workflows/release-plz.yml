@@ -23,8 +23,9 @@ name: release-plz
 #                   merge, computes this run's build set (artifact versions not
 #                   already in the latest catalog) and creates the empty
 #                   `build-*` release.
-#   2. build      - one matrix leg per (artifact, target): package the tarball
-#                   and upload it to the `build-*` release.
+#   2. build      - one matrix leg per binary target, packaging its artifacts
+#                   sequentially into a shared target directory.
+#      assets     - one cheap Linux job packages all target-independent bundles.
 #   3. catalog    - assemble catalog.json from this run's facts + the previous
 #                   catalog, run the structural gate, upload it to the `build-*`
 #                   release, and mark that release "latest".
@@ -54,6 +55,7 @@ jobs:
     outputs:
       released: ${{ steps.plan.outputs.released }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      assets: ${{ steps.plan.outputs.assets }}
       build_tag: ${{ steps.provenance.outputs.build_tag }}
       created_at: ${{ steps.provenance.outputs.created_at }}
     env:
@@ -193,7 +195,7 @@ jobs:
           path: prev/catalog.json
 
   build:
-    name: build ${{ matrix.package }} (${{ matrix.target }})
+    name: build ${{ matrix.target }}
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
@@ -207,19 +209,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      # `target-independent` component-asset bundles have no crate/binary to
-      # cross-compile: just tar the files, so skip the per-target toolchain +
-      # cargo-auditable for them.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        if: matrix.target != 'target-independent'
         with:
           target: ${{ matrix.target }}
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        if: matrix.target == 'target-independent'
-
       - name: Install cargo-auditable
-        if: matrix.target != 'target-independent'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-auditable
@@ -233,48 +227,152 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
 
+      # Every Linux row carries many packages, so install the joypad dependency
+      # for the row instead of trying to predicate it on one matrix package.
       - name: Install joypad Linux dependency
-        if: matrix.package == 'phoxal/tool-joypad' && contains(matrix.target, 'linux')
+        if: contains(matrix.target, 'linux')
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libudev-dev
 
-      - name: Package artifact
-        run: >
-          cargo xtask release package ${{ matrix.package }}
-          --target ${{ matrix.target }}
-          --out target/xtask/release
+      - name: Package target artifacts
+        env:
+          PACKAGES: ${{ toJson(matrix.packages) }}
+        run: |
+          set -uo pipefail
+          mkdir -p target/xtask/release
+          : > target/xtask/release-failures
+          while IFS= read -r package; do
+            echo "::group::$package"
+            if ! cargo xtask release package "$package" \
+              --target "${{ matrix.target }}" \
+              --out target/xtask/release; then
+              echo "package: $package" >> target/xtask/release-failures
+            fi
+            echo "::endgroup::"
+          done < <(jq -r '.[].package' <<< "$PACKAGES")
 
-      # Upload the freshly-built tarball + checksum to THIS run's snapshot
-      # release (not the per-package version tag - that tag carries no release).
+      # Upload every successfully packaged tarball + checksum to THIS run's
+      # snapshot release. Missing/failed packages are recorded without stopping
+      # the rest of the target row.
       - name: Upload to build-snapshot release
-        run: >
-          cargo xtask release upload
-          --package ${{ matrix.package }}
-          --target ${{ matrix.target }}
-          --tag ${{ needs.release.outputs.build_tag }}
-          --repo ${{ github.repository }}
-          --package-dir target/xtask/release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGES: ${{ toJson(matrix.packages) }}
+        run: |
+          set -uo pipefail
+          while IFS= read -r package; do
+            echo "::group::$package"
+            if ! cargo xtask release upload \
+              --package "$package" \
+              --target "${{ matrix.target }}" \
+              --tag "${{ needs.release.outputs.build_tag }}" \
+              --repo "${{ github.repository }}" \
+              --package-dir target/xtask/release; then
+              echo "upload: $package" >> target/xtask/release-failures
+            fi
+            echo "::endgroup::"
+          done < <(jq -r '.[].package' <<< "$PACKAGES")
 
-      - name: Compute filesystem-safe package name
-        id: safe-name
-        run: echo "value=$(echo '${{ matrix.package }}' | tr '/' '-')" >> "$GITHUB_OUTPUT"
-
-      # Hand the exact packaged bytes to the catalog job so it assembles the
-      # catalog from real facts without rebuilding or re-downloading.
+      # Hand the exact packaged bytes to the catalog job. One facts artifact
+      # per target replaces the old per-package facts artifacts.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: facts-${{ steps.safe-name.outputs.value }}-${{ matrix.target }}
-          path: target/xtask/release/${{ steps.safe-name.outputs.value }}-v${{ matrix.version }}-${{ matrix.target }}.*
+          name: facts-${{ matrix.target }}
+          path: |
+            target/xtask/release/*-${{ matrix.target }}.tar.zst
+            target/xtask/release/*-${{ matrix.target }}.tar.zst.sha256
+          if-no-files-found: error
+
+      - name: Report target failures
+        if: always()
+        run: |
+          if [ -s target/xtask/release-failures ]; then
+            echo "The following package operations failed:"
+            cat target/xtask/release-failures
+            exit 1
+          fi
+          echo "All packages completed for ${{ matrix.target }}"
+
+  assets:
+    name: package target-independent assets
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # Component bundles only tar files; `release package` does not invoke a
+      # Cargo artifact build for the target-independent scope.
+      - name: Package asset bundles
+        env:
+          PACKAGES: ${{ needs.release.outputs.assets }}
+        run: |
+          set -uo pipefail
+          mkdir -p target/xtask/release
+          : > target/xtask/release-failures
+          while IFS= read -r package; do
+            echo "::group::$package"
+            if ! cargo xtask release package "$package" \
+              --target target-independent \
+              --out target/xtask/release; then
+              echo "package: $package" >> target/xtask/release-failures
+            fi
+            echo "::endgroup::"
+          done < <(jq -r '.[].package' <<< "$PACKAGES")
+
+      - name: Upload to build-snapshot release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGES: ${{ needs.release.outputs.assets }}
+        run: |
+          set -uo pipefail
+          while IFS= read -r package; do
+            echo "::group::$package"
+            if ! cargo xtask release upload \
+              --package "$package" \
+              --target target-independent \
+              --tag "${{ needs.release.outputs.build_tag }}" \
+              --repo "${{ github.repository }}" \
+              --package-dir target/xtask/release; then
+              echo "upload: $package" >> target/xtask/release-failures
+            fi
+            echo "::endgroup::"
+          done < <(jq -r '.[].package' <<< "$PACKAGES")
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: facts-target-independent
+          path: |
+            target/xtask/release/*-target-independent.tar.zst
+            target/xtask/release/*-target-independent.tar.zst.sha256
+          if-no-files-found: error
+
+      - name: Report asset failures
+        if: always()
+        run: |
+          if [ -s target/xtask/release-failures ]; then
+            echo "The following asset operations failed:"
+            cat target/xtask/release-failures
+            exit 1
+          fi
+          echo "All target-independent packages completed"
 
   catalog:
     name: assemble catalog + gate + mark latest
     needs:
       - release
       - build
+      - assets
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-latest
     permissions:

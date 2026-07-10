@@ -4900,6 +4900,7 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "clap",
+ "glob",
  "hex",
  "object",
  "phoxal",

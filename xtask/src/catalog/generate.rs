@@ -520,6 +520,7 @@ mod tests {
             matrix: crate::release::plan::ReleaseMatrix {
                 include: Vec::new(),
             },
+            assets: Vec::new(),
         };
 
         let options = base_options(temp.path());

@@ -85,6 +85,11 @@ pub struct PhoxalPackageMetadata {
         alias = "extra_target_triples"
     )]
     pub extra_target_triples: Vec<String>,
+    /// Target triples this artifact cannot build for. Entries are glob
+    /// patterns, so a package can exclude a target family such as `*-musl` or
+    /// name an exact triple.
+    #[serde(default, rename = "unsupported-targets")]
+    pub unsupported_targets: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -126,9 +131,10 @@ impl OfficialArtifact {
     /// kind also ships a target-independent asset bundle
     /// ([`ArtifactKind::ships_assets`], design doc §9).
     pub fn supported_target_triples(&self) -> Vec<String> {
-        // Every discovered artifact is crate-backed and builds the uniform
-        // six-target matrix (#197); a `Component` additionally ships the
-        // target-independent asset bundle (design doc §9).
+        // Every discovered artifact starts from the uniform six-target matrix
+        // (#197); a `Component` additionally ships the target-independent
+        // asset bundle (design doc §9). Package metadata may add exceptional
+        // targets and subtract targets the artifact cannot build.
         let mut targets = BINARY_TARGETS
             .iter()
             .map(|target| (*target).to_string())
@@ -137,6 +143,13 @@ impl OfficialArtifact {
             targets.push(TARGET_INDEPENDENT_SCOPE.to_string());
         }
         targets.extend(self.metadata.extra_target_triples.iter().cloned());
+        targets.retain(|target| {
+            !self.metadata.unsupported_targets.iter().any(|pattern| {
+                glob::Pattern::new(pattern)
+                    .expect("unsupported-targets patterns are validated during discovery")
+                    .matches(target)
+            })
+        });
         targets.sort();
         targets.dedup();
         targets
@@ -511,6 +524,25 @@ fn parse_phoxal_metadata(package_name: &str, metadata: &Value) -> Result<PhoxalP
         }
     }
     parsed.extra_target_triples.sort();
+    seen.clear();
+    for pattern in &parsed.unsupported_targets {
+        if pattern.trim().is_empty() {
+            bail!(
+                "{package_name} [package.metadata.phoxal] unsupported-targets contains an empty pattern"
+            );
+        }
+        glob::Pattern::new(pattern).with_context(|| {
+            format!(
+                "{package_name} [package.metadata.phoxal] unsupported-targets contains invalid glob {pattern}"
+            )
+        })?;
+        if !seen.insert(pattern.clone()) {
+            bail!(
+                "{package_name} [package.metadata.phoxal] unsupported-targets contains duplicate {pattern}"
+            );
+        }
+    }
+    parsed.unsupported_targets.sort();
     Ok(parsed)
 }
 
@@ -667,6 +699,40 @@ mod tests {
         assert_eq!(
             metadata.extra_target_triples,
             vec!["aarch64-apple-darwin", "x86_64-apple-darwin"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_target_exclusions_support_globs_and_exact_triples() -> Result<()> {
+        let metadata = parse_phoxal_metadata(
+            "phoxal-tool-joypad",
+            &json!({
+                "phoxal": {
+                    "extra-target-triples": ["riscv64gc-unknown-linux-gnu"],
+                    "unsupported-targets": ["*-musl", "aarch64-apple-darwin"]
+                }
+            }),
+        )?;
+        let artifact = OfficialArtifact {
+            package: "phoxal/tool-joypad".to_string(),
+            package_name: Some("phoxal-tool-joypad".to_string()),
+            kind: ArtifactKind::Tool,
+            version: "0.1.6".to_string(),
+            crate_dir: PathBuf::from("tool/joypad"),
+            bin_name: Some("phoxal-tool-joypad".to_string()),
+            id: "joypad".to_string(),
+            metadata,
+        };
+
+        assert_eq!(
+            artifact.supported_target_triples(),
+            vec![
+                "aarch64-unknown-linux-gnu",
+                "riscv64gc-unknown-linux-gnu",
+                "x86_64-apple-darwin",
+                "x86_64-unknown-linux-gnu",
+            ]
         );
         Ok(())
     }
