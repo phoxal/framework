@@ -3,7 +3,6 @@ use clap::Subcommand;
 
 pub mod check;
 pub mod generate;
-pub mod model;
 pub mod verify;
 
 #[derive(Debug, Subcommand)]

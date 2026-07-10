@@ -146,8 +146,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build set = discovered artifact versions NOT already in the previous
-      # catalog. Emits `released` (any artifact to build?) and `matrix`.
+      # Build set = the complete official artifact set. Planning fails if any
+      # current version is already in the previous catalog: release_always
+      # requires every artifact to bump and be repackaged every train.
       - name: Compute release plan
         id: plan
         if: steps.gate.outputs.is_release == 'true'
@@ -304,9 +305,10 @@ jobs:
           merge-multiple: true
 
       # Assemble-from-facts: never builds, never runs a binary. Reads this run's
-      # tarballs/checksums + their embedded contract sections, merges onto the
-      # previous catalog keyed by (package, version), forms Blob URLs against
-      # this run's build-* tag.
+      # tarballs/checksums, verifies metadata-section equality across target
+      # binaries, computes heads from those packaged sections, merges locations
+      # onto the previous catalog keyed by (package, version), and forms Blob
+      # URLs against this run's build-* tag.
       - name: Generate catalog
         run: |
           set -euo pipefail

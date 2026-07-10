@@ -18,9 +18,9 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::Args as ClapArgs;
+use phoxal::catalog::Catalog;
 
 use super::generate::{default_catalog_path, workspace_relative_path};
-use super::model::Catalog;
 use super::verify::{load_catalog, validate_structure};
 use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
 
@@ -91,8 +91,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Heads};
     use crate::workspace::ArtifactKind;
+    use phoxal::catalog::{Artifact, Blob, BuildProvenance, Heads};
     use std::collections::BTreeMap;
 
     fn official(package: &str, version: &str) -> OfficialArtifact {
@@ -129,8 +129,6 @@ mod tests {
             vec![Artifact {
                 package: package.to_string(),
                 version: version.to_string(),
-                contracts: Vec::new(),
-                config_schema: None,
                 targets,
                 assets: None,
             }],

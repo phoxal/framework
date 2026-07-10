@@ -13,12 +13,6 @@
 //! Wired as the required status check on release-plz's `chore(release)` PR
 //! (`.github/workflows/coherence-check.yml`); "block" there means this
 //! command exits non-zero.
-//!
-//! TODO(coherence): source unchanged crates' surfaces from a
-//! `--previous-catalog`'s already-published `contracts[]` instead of
-//! host-rebuilding every official artifact on every run - design doc §5's
-//! target shape. Deferred: release PRs are rare and CI is free, so
-//! build-everything is an acceptable baseline for now.
 
 use std::collections::BTreeSet;
 

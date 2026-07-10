@@ -31,9 +31,8 @@ pub struct Args {
     pub dry_run: bool,
 }
 
-/// A packaged artifact: a tarball plus its checksum. No `emit-apis` sidecar -
-/// the catalog inlines contract/config metadata directly (`cargo xtask
-/// catalog generate` runs `emit-apis` itself; see `xtask/src/catalog/generate.rs`).
+/// A packaged artifact: a tarball plus its checksum. No metadata sidecar - the
+/// participant metadata section remains embedded in the packaged binary.
 #[derive(Clone, Debug)]
 pub struct PackagedArtifact {
     pub tarball: PathBuf,
@@ -129,14 +128,10 @@ pub(crate) fn package_artifact(
     artifact.require_package_name()?;
     build_target_artifact(workspace.root(), artifact, target_triple)?;
     let binary_path = target_binary_path(workspace, artifact, target_triple)?;
-    // Packaging still validates the participant's compiled-in API metadata as
-    // a fail-fast gate (a broken/absent `#[derive(phoxal::Api)]` section must
-    // not reach the tarball stage), but no longer writes it anywhere: the
-    // catalog inlines contract metadata by extracting the section itself at
-    // generation time (`xtask/src/catalog/generate.rs`). Extraction reads the
-    // object file directly - no execution, so (unlike the old `emit-apis`
-    // subprocess call) it needs no separate host-runnable build even when
-    // `target_triple` is cross-compiled.
+    // Packaging validates the participant's compiled-in API metadata as a
+    // fail-fast gate (a malformed section must not reach the tarball stage).
+    // Extraction reads the object file directly - no execution and no
+    // host-runnable rebuild when `target_triple` is cross-compiled.
     extract_and_validate_metadata(&binary_path, artifact)?;
 
     let stem = asset_stem(artifact, target_triple);
@@ -419,27 +414,30 @@ fn extract_and_validate_metadata(
     Ok(meta)
 }
 
-/// Extracts a participant's API metadata from the ACTUAL packaged binary being
-/// released - the cross-compiled artifact inside its `{stem}.tar.zst` under
-/// `package_dir`, not a fresh native rebuild. This is what makes the catalog's
-/// `contracts[]` physically inseparable from the shipped bytes: on the
-/// `catalog-publish` x86_64 host it reads the section straight out of an
-/// aarch64 (or any-target) binary, thanks to the format/arch-agnostic reader
-/// in [`crate::release::metadata`]. Picks the first `target_triples` entry
-/// whose tarball is present (the embedded section is identical across targets -
-/// contract identity is target-independent - so any one released binary is
-/// authoritative).
+/// Extracts a participant's API metadata from every packaged target binary
+/// being released and enforces that the raw embedded metadata section is
+/// byte-identical across them. This makes any target's section valid evidence
+/// for the whole `(package, version)` and lets publish-time coherence operate
+/// on the exact bytes users download without a fresh native rebuild.
 pub(crate) fn extract_metadata_from_packaged(
     artifact: &OfficialArtifact,
     package_dir: &Path,
     target_triples: &[String],
 ) -> Result<ParticipantMeta> {
     let bin_name = artifact.require_bin_name()?;
+    let mut canonical: Option<(String, Option<Vec<u8>>, ParticipantMeta)> = None;
+
     for triple in target_triples {
         let stem = asset_stem(artifact, triple);
         let tarball = package_dir.join(format!("{stem}.tar.zst"));
         if !tarball.is_file() {
-            continue;
+            bail!(
+                "missing packaged binary for {} v{} target {}: {}",
+                artifact.package,
+                artifact.version,
+                triple,
+                tarball.display()
+            );
         }
         let object_bytes = read_binary_from_tarball(&tarball, bin_name)?;
         let describe = format!(
@@ -447,17 +445,53 @@ pub(crate) fn extract_metadata_from_packaged(
             artifact.package,
             tarball.display()
         );
-        let meta = metadata::extract_participant_metadata_from_bytes(&object_bytes, &describe)
-            .with_context(|| format!("failed to extract API metadata for {}", artifact.package))?;
+        let section =
+            metadata::extract_participant_metadata_section_from_bytes(&object_bytes, &describe)
+                .with_context(|| {
+                    format!("failed to extract API metadata for {}", artifact.package)
+                })?;
+        let meta = metadata::parse_participant_metadata_section(section.as_deref(), &describe)?;
         validate_metadata(&meta, artifact)?;
-        return Ok(meta);
+
+        if let Some((canonical_target, canonical_section, _)) = &canonical {
+            ensure_metadata_sections_equal(
+                artifact,
+                canonical_target,
+                canonical_section.as_deref(),
+                triple,
+                section.as_deref(),
+            )?;
+        } else {
+            canonical = Some((triple.clone(), section, meta));
+        }
     }
-    bail!(
-        "no packaged tarball found for {} in {} among targets [{}]",
-        artifact.package,
-        package_dir.display(),
-        target_triples.join(", ")
-    )
+
+    canonical.map(|(_, _, meta)| meta).with_context(|| {
+        format!(
+            "no binary targets were provided for {} v{}",
+            artifact.package, artifact.version
+        )
+    })
+}
+
+fn ensure_metadata_sections_equal(
+    artifact: &OfficialArtifact,
+    canonical_target: &str,
+    canonical_section: Option<&[u8]>,
+    candidate_target: &str,
+    candidate_section: Option<&[u8]>,
+) -> Result<()> {
+    if canonical_section != candidate_section {
+        bail!(
+            "cross-target metadata mismatch for {} v{}: embedded metadata section differs between \
+             targets {} and {}",
+            artifact.package,
+            artifact.version,
+            canonical_target,
+            candidate_target
+        );
+    }
+    Ok(())
 }
 
 /// Reads the single binary named `bin_name` out of a `.tar.zst` release
@@ -490,11 +524,8 @@ fn read_binary_from_tarball(tarball: &Path, bin_name: &str) -> Result<Vec<u8>> {
 }
 
 /// Builds `artifact` for the host with a plain (non-`auditable`, non-release)
-/// `cargo build` and extracts its compiled-in API metadata. Used by `catalog
-/// generate --metadata-only` (CI's cheap PR gate): no tarball exists yet, so it
-/// builds just enough to populate the participant's `#[derive(phoxal::Api)]`
-/// linker section. Package-output mode reads the real released binary instead
-/// (see [`extract_metadata_from_packaged`]).
+/// `cargo build` and extracts its compiled-in API metadata. Used by the
+/// release-PR coherence gate, which checks the whole workspace before release.
 pub(crate) fn build_and_extract_metadata(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
@@ -731,12 +762,9 @@ mod tests {
         );
     }
 
-    /// Full package-output wiring proof (#2): build a real participant, tar it
-    /// exactly as the release path does, then read its contracts back out of
-    /// that `.tar.zst` via `extract_metadata_from_packaged` - i.e. from the
-    /// actual shipped binary bytes, not a separate rebuild. (On the release CI
-    /// host the same call reads a cross-compiled binary; the cross-FORMAT parse
-    /// itself is proven hermetically in `metadata.rs`'s foreign-object tests.)
+    /// Full package-output wiring proof: build a real participant, package the
+    /// same metadata-bearing binary for two target labels, then extract and
+    /// equality-check both tarballs rather than rebuilding.
     #[test]
     fn extract_metadata_from_packaged_reads_the_tarball_binary() -> Result<()> {
         let workspace = Workspace::discover()?;
@@ -764,17 +792,79 @@ mod tests {
         };
 
         let dir = tempfile::tempdir().context("create tempdir")?;
-        let triple = "some-target-triple";
-        let stem = asset_stem(&artifact, triple);
-        let tarball = dir.path().join(format!("{stem}.tar.zst"));
-        write_tar_zst(&tarball, &binary, bin_name)?;
+        let triples = ["target-a".to_string(), "target-b".to_string()];
+        for triple in &triples {
+            let stem = asset_stem(&artifact, triple);
+            let tarball = dir.path().join(format!("{stem}.tar.zst"));
+            write_tar_zst(&tarball, &binary, bin_name)?;
+        }
 
-        let meta = extract_metadata_from_packaged(&artifact, dir.path(), &[triple.to_string()])?;
+        let meta = extract_metadata_from_packaged(&artifact, dir.path(), &triples)?;
         assert_eq!(meta.contracts.len(), 1);
         assert_eq!(meta.contracts[0].role, "publish");
         assert_eq!(meta.contracts[0].generation, "y2026_7");
         assert_eq!(meta.contracts[0].contract, "battery::State");
         assert!(!meta.contracts[0].external);
+        Ok(())
+    }
+
+    #[test]
+    fn cross_target_metadata_mismatch_names_package_version_and_targets() -> Result<()> {
+        let artifact = OfficialArtifact {
+            package: "phoxal/service-battery".to_string(),
+            package_name: Some("phoxal-service-battery".to_string()),
+            kind: ArtifactKind::Service,
+            version: "0.19.7".to_string(),
+            crate_dir: PathBuf::from("service/battery"),
+            bin_name: Some("phoxal-service-battery".to_string()),
+            id: "battery".to_string(),
+            metadata: Default::default(),
+        };
+        let dir = tempfile::tempdir()?;
+        let targets = [
+            (
+                "x86_64-unknown-linux-gnu",
+                br#"{"participant_api":"Api","contracts":[]}"#.as_slice(),
+            ),
+            (
+                "aarch64-unknown-linux-gnu",
+                br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"battery::State","external":false}]}"#
+                    .as_slice(),
+            ),
+        ];
+        for (target, payload) in targets {
+            let mut object = object::write::Object::new(
+                object::BinaryFormat::Elf,
+                object::Architecture::Aarch64,
+                object::Endianness::Little,
+            );
+            let section = object.add_section(
+                Vec::new(),
+                b".phoxal_api_meta".to_vec(),
+                object::SectionKind::ReadOnlyData,
+            );
+            object.append_section_data(section, payload, 1);
+            let binary = dir.path().join(format!("{target}.bin"));
+            fs::write(&binary, object.write()?)?;
+            let tarball = dir
+                .path()
+                .join(format!("{}.tar.zst", asset_stem(&artifact, target)));
+            write_tar_zst(&tarball, &binary, "phoxal-service-battery")?;
+        }
+
+        let err = extract_metadata_from_packaged(
+            &artifact,
+            dir.path(),
+            &[
+                "x86_64-unknown-linux-gnu".to_string(),
+                "aarch64-unknown-linux-gnu".to_string(),
+            ],
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("phoxal/service-battery v0.19.7"));
+        assert!(message.contains("x86_64-unknown-linux-gnu"));
+        assert!(message.contains("aarch64-unknown-linux-gnu"));
         Ok(())
     }
 
@@ -797,10 +887,7 @@ mod tests {
             &["some-target-triple".to_string()],
         )
         .unwrap_err();
-        assert!(
-            err.to_string().contains("no packaged tarball found"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("missing packaged binary"), "{err}");
         Ok(())
     }
 }

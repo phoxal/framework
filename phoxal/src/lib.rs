@@ -159,6 +159,7 @@
 #[cfg(test)]
 extern crate self as phoxal;
 
+pub mod catalog;
 pub mod check;
 pub mod model;
 pub mod participant;

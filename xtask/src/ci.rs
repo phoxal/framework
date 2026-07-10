@@ -1,5 +1,5 @@
 //! `cargo xtask ci ...` - checks that gate the release PR/wave, layered on
-//! top of the `phoxal.catalog/v0` model (`xtask/src/catalog/model.rs`).
+//! top of the `phoxal.catalog/v0` model (`phoxal::catalog`).
 //!
 //! NOTE (S1-catalog slice): this module used to also host `ci compat-report`
 //! (a `schema_id`-era staleness/audit tracker) and a much larger
@@ -30,10 +30,10 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args as ClapArgs, Subcommand};
+use phoxal::catalog::Catalog;
 
 use crate::catalog::check::validate_coverage;
 use crate::catalog::generate::workspace_relative_path;
-use crate::catalog::model::Catalog;
 use crate::catalog::verify::{validate_structure, verify_catalog_path};
 use crate::release::upload::github_release_asset_names;
 use crate::workspace::Workspace;
@@ -140,7 +140,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Heads};
+    use phoxal::catalog::{Artifact, Blob, BuildProvenance, Heads};
 
     fn fixture_catalog(tag: &str) -> Catalog {
         let mut targets = BTreeMap::new();
@@ -165,8 +165,6 @@ mod tests {
             vec![Artifact {
                 package: "phoxal/service-drive".to_string(),
                 version: "0.1.0".to_string(),
-                contracts: Vec::new(),
-                config_schema: None,
                 targets,
                 assets: None,
             }],

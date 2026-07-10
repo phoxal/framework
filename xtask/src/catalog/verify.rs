@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
+use phoxal::catalog::{Blob, Catalog, SCHEMA, is_sha256};
 
-use super::model::{Catalog, SCHEMA};
 use crate::catalog::generate::default_catalog_path;
 use crate::workspace::Workspace;
 
@@ -63,7 +63,7 @@ pub(crate) fn load_catalog(path: &Path) -> Result<Catalog> {
 /// - `schema` is `"phoxal.catalog/v0"`;
 /// - `(package, version)` is unique across `artifacts[]`;
 /// - unless `metadata_only`: every entry has a `targets` and/or `assets`
-///   output, and every [`super::model::Blob`] it carries has a non-empty
+///   output, and every [`phoxal::catalog::Blob`] it carries has a non-empty
 ///   url, a valid sha256, and a non-zero size. A `--metadata-only` catalog
 ///   legitimately has neither (no tarballs exist yet - see
 ///   `catalog::generate`), so both checks are skipped in that mode.
@@ -118,11 +118,11 @@ pub(crate) fn validate_structure(catalog: &Catalog, metadata_only: bool) -> Resu
     Ok(())
 }
 
-fn validate_blob(blob: &super::model::Blob, describe: &str) -> Result<()> {
+fn validate_blob(blob: &Blob, describe: &str) -> Result<()> {
     if blob.url.trim().is_empty() {
         bail!("{describe} has an empty blob url");
     }
-    if !super::model::is_sha256(&blob.sha256) {
+    if !is_sha256(&blob.sha256) {
         bail!(
             "{describe} has an invalid sha256 checksum '{}'",
             blob.sha256
@@ -139,7 +139,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Contract, Heads};
+    use phoxal::catalog::{Artifact, BuildProvenance, Heads};
 
     fn fixture_build() -> BuildProvenance {
         BuildProvenance {
@@ -164,13 +164,6 @@ mod tests {
         Artifact {
             package: "phoxal/service-drive".to_string(),
             version: "0.1.0".to_string(),
-            contracts: vec![Contract {
-                generation: "y2026_1".to_string(),
-                contract: "drive::Target".to_string(),
-                role: "publish".to_string(),
-                external: false,
-            }],
-            config_schema: None,
             targets,
             assets: None,
         }

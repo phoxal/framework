@@ -1,25 +1,20 @@
-//! The `phoxal.catalog/v0` schema - xtask/CI-scoped only (design
-//! `organization/tmp/ci-release-refactor/design.md` §3).
+//! The shared `phoxal.catalog/v0` wire schema.
 //!
-//! This is a **full index**: `artifacts[]` holds one entry per published
-//! `(package, version)`, accumulating forever. A build-snapshot CI run
-//! appends the `(package, version)` pairs it built to whatever the previous
-//! catalog already indexed (`xtask/src/catalog/generate.rs`'s merge); nothing
-//! is ever replaced, refreshed, or dropped. There is no `revision`/checksum
-//! machinery (that guarded the old mutable-manifest model, which this
-//! replaces), and no five-per-kind-array split - one `artifacts` array, one
-//! shared [`Blob`] download descriptor.
+//! This is a **full location/integrity index**: `artifacts[]` holds one entry
+//! per published `(package, version)`, accumulating forever. A build-snapshot
+//! CI run appends the `(package, version)` pairs it built to whatever the
+//! previous catalog already indexed (`xtask/src/catalog/generate.rs`'s merge);
+//! nothing is ever replaced, refreshed, or dropped. There is no
+//! `revision`/checksum machinery (that guarded the old mutable-manifest model,
+//! which this replaces), and no five-per-kind-array split - one `artifacts`
+//! array, one shared [`Blob`] download descriptor. Contract and config-schema
+//! metadata stay in participant binaries' embedded metadata sections; the
+//! catalog does not duplicate them.
 //!
 //! `heads` is the one exception to "full index, nothing computed": the
-//! coherence-gate design doc §4 whole-set snapshot pointers, recomputed at
-//! every `catalog generate` over the *latest version of each package* in the
-//! assembled index (`xtask/src/catalog/generate.rs`'s `compute_heads`) - see
-//! [`Heads`].
-//!
-//! This type is **not** the local `phoxal-artifacts.json` the CLI reads (out
-//! of scope for the CI refactor - see the design doc §1); it lives in
-//! `xtask`, not the `phoxal` library crate, because nothing outside the
-//! release pipeline consumes it in this pass.
+//! coherence-gate design doc §4 whole-set snapshot pointers. The producer
+//! recomputes them from this run's packaged participant binaries before
+//! publishing the catalog - see [`Heads`].
 
 use std::collections::BTreeMap;
 
@@ -110,61 +105,27 @@ pub struct BuildProvenance {
 }
 
 /// One `(package, version)` entry in the full index. `package` is the
-/// provider-qualified crate identity - no `kind`, no `-driver`/`-assets`
-/// suffix mandated by the shape itself (today's workspace still discovers
-/// component drivers and component assets as separate packages - see the
-/// generate slice's report - so each may appear as its own entry until the
-/// component-as-one-crate migration, design doc §9, lands).
+/// provider-qualified crate identity. Components are one flattened
+/// `phoxal/component-<id>` entry carrying both `targets` (binary) and
+/// `assets`; no `kind` or `-driver`/`-assets` suffix is encoded by the shape.
 ///
-/// A service entry carries `targets` only; a driver-full component carries
-/// `targets` **and** `assets`; a driver-less component carries `assets`
-/// only. Every entry has at least one of the two (a structural invariant
-/// `catalog check`/`catalog verify` enforce, not the type itself - a
-/// metadata-only catalog legitimately has neither, see those modules).
+/// Services, tools, and simulators carry `targets`; a component carries
+/// `targets` **and** `assets`. Every published entry has at least one of the
+/// two (a structural invariant `catalog check`/`catalog verify` enforce, not
+/// the type itself). A metadata-only catalog legitimately has neither.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub package: String,
     pub version: String,
-    /// The compiled-in `#[derive(phoxal::Api)]` contract metadata, present
-    /// iff the crate has a binary. Empty for asset-only entries.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contracts: Vec<Contract>,
-    /// The participant's `robot.yaml` config JSON Schema. Always omitted for
-    /// now - the real `schemars` schema needs a host-side `build.rs` slice
-    /// that is not built yet (design doc §8/§10).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub config_schema: Option<serde_json::Value>,
-    /// Target triple -> the built binary tarball for that triple. Empty iff
-    /// the crate has no binary (an asset-only component) or the catalog was
-    /// generated `--metadata-only` (no tarballs exist yet).
+    /// Target triple -> the built binary tarball for that triple. Empty only
+    /// when the catalog was generated `--metadata-only` (no tarballs exist).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub targets: BTreeMap<String, Blob>,
     /// The target-independent component asset bundle, present iff the crate
     /// ships one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assets: Option<Blob>,
-}
-
-/// One graph contract a runtime binary uses: its identity as embedded by
-/// `#[derive(phoxal::Api)]` - `generation`/`contract` as SEPARATE fields
-/// (verbatim/opaque, carried through as extracted, never canonicalized here;
-/// coherence-gate design doc §2 - the logical contract for coherence purposes
-/// is `contract` alone, the version-qualified identity is the
-/// `generation`/`contract` join) - plus the role this artifact plays for it
-/// (`"publish"`, `"subscribe"`, `"serve"`, or `"ask"`), and whether this edge
-/// is excused from the coherence check (`external`, `#[phoxal(external)]`,
-/// design doc §1).
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Contract {
-    pub generation: String,
-    pub contract: String,
-    pub role: String,
-    /// `false` by default so an older catalog entry / hand-written fixture
-    /// written before this field existed still parses.
-    #[serde(default)]
-    pub external: bool,
 }
 
 /// One download primitive: every `targets{}` value and `assets` is a `Blob`.
@@ -210,13 +171,6 @@ mod tests {
             vec![Artifact {
                 package: "phoxal/service-drive".to_string(),
                 version: "0.19.8".to_string(),
-                contracts: vec![Contract {
-                    generation: "y2026_1".to_string(),
-                    contract: "drive::Target".to_string(),
-                    role: "publish".to_string(),
-                    external: false,
-                }],
-                config_schema: None,
                 targets,
                 assets: None,
             }],
@@ -227,7 +181,6 @@ mod tests {
         );
 
         let json = serde_json::to_string_pretty(&catalog).expect("serialize");
-        assert!(!json.contains("config_schema"));
         assert!(!json.contains("\"assets\""));
         let reparsed: Catalog = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(catalog, reparsed);
@@ -245,6 +198,18 @@ mod tests {
         let json = r#"{"schema":"phoxal.catalog/v0","build":{"tag":"t","run_number":1,"run_id":1,"commit":"c","created_at":"c"},"artifacts":[],"heads":{"stable":"","nightly":""},"bogus":true}"#;
         let err = serde_json::from_str::<Catalog>(json).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn removed_artifact_metadata_fields_are_rejected() {
+        let with_contracts =
+            r#"{"package":"phoxal/service-drive","version":"0.1.0","contracts":[],"targets":{}}"#;
+        let err = serde_json::from_str::<Artifact>(with_contracts).unwrap_err();
+        assert!(err.to_string().contains("unknown field `contracts`"));
+
+        let with_config_schema = r#"{"package":"phoxal/service-drive","version":"0.1.0","config_schema":null,"targets":{}}"#;
+        let err = serde_json::from_str::<Artifact>(with_config_schema).unwrap_err();
+        assert!(err.to_string().contains("unknown field `config_schema`"));
     }
 
     #[test]
