@@ -1,0 +1,79 @@
+name: Coherence gate
+
+# Deployment coherence gate for the release PR (coherence-gate design doc §4/§5,
+# `organization` `tmp/coherence-gate/readme.md`). Blocks release-plz's
+# `chore(release)` PR when the would-be-released whole official set is
+# incoherent: a contract bumped to a new generation on one side while its
+# counterpart was not (§3, "pub/sub - per-participant overlap" and
+# "serve/ask - every ask matched").
+#
+# TRIGGER - why plain `pull_request`, not `pull_request_target` (design §5):
+# this gate must BUILD PR-head code (proc-macros, build scripts) to extract
+# each changed crate's `#[derive(phoxal::Api)]` metadata section - exactly what
+# `frozen-api-generation.yml`'s own security comment forbids under
+# `pull_request_target` (that trigger runs with the elevated base-repo
+# `GITHUB_TOKEN` next to untrusted head code). Plain `pull_request` carries no
+# such elevated token, so building head code here is safe. It DOES fire on
+# release-plz's bot PR: that PR is created with the phoxal GitHub App's token
+# (`release-plz.yml`, `release-pr` step), which is verified sufficient to
+# trigger `pull_request` workflows - the existing `frozen-api-generation` and
+# `pr-title-check` checks already fire on those app-authored PRs today.
+#
+# SCOPE - enforced only on the release PR (design §1/§4): the gate protects the
+# RELEASE, not every feature branch. A feature PR may be temporarily
+# incoherent mid-migration (a rolling contract-generation move spans several
+# PRs), so only a PR whose title starts with `chore(release)` (release-plz's
+# fixed `pr_name`, `release-plz.toml`) pays the cost of a full workspace host
+# build; every other PR exits 0 immediately without building anything.
+#
+# NOTE for repo admins: this workflow only makes the check appear on PRs - it
+# does not itself make the check REQUIRED. Add "Coherence gate / coherence-check"
+# to the `chore(release)`-affecting branch protection's required-status-checks
+# list by hand (GitHub has no API/workflow surface to self-register a required
+# check); until that's done, this job runs and reports but a failure will not
+# block the merge button.
+
+on:
+  pull_request:
+
+# The workspace builds on a bare runner by design; a system package appears
+# here only together with the crate that needs it. tool-joypad's gilrs gamepad
+# backend (libudev-sys) is why `coherence-check` needs libudev-dev to host-build
+# the whole official set (mirrors `ci.yml`'s `rust-ci.yml` system-packages).
+jobs:
+  coherence-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check whether this is the release PR
+        id: release-pr
+        # The PR title is untrusted input; it is passed via `env:` (data) rather
+        # than interpolated directly into the script text (`${{ }}` inside `run:`)
+        # so a crafted title cannot inject shell syntax.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if [[ "$PR_TITLE" == chore\(release\)* ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "release PR detected - coherence will be enforced"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "not the release PR - coherence is enforced at release only; skipping"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.release-pr.outputs.is_release == 'true'
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: steps.release-pr.outputs.is_release == 'true'
+
+      - name: Install joypad Linux dependency
+        if: steps.release-pr.outputs.is_release == 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Run coherence check over the whole official set
+        if: steps.release-pr.outputs.is_release == 'true'
+        run: cargo xtask coherence-check
