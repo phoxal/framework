@@ -128,17 +128,24 @@ fn link_section_attrs() -> TokenStream {
 /// `quote!`d expression - the proc-macro itself never evaluates it as a
 /// string), plus
 /// a `#[used]` linker-section static recording each field's role and its
-/// version-qualified body type **as written** (`y2026_1::drive::Target`) -
-/// the doc's own definition of the compatibility surface, and the only piece
-/// that is a pure macro-time string literal (the resolved wire `TOPIC` is the
-/// same information, mechanically derived by `phoxal_api_tree!`; resolving it
-/// from the artifact is xtask/host-side work for a later slice, per the
-/// "Metadata materialization is two-part" correction), plus one
-/// `impl Declares*<..> for #struct_name {}` per distinct declared family
-/// (D44 - `DeclaresPublish`/`DeclaresSubscribe` per body, `DeclaresAsk`/
-/// `DeclaresServe` per `(Req, Resp)` pair): this is what lets the
-/// `SetupContext` builders (`SetupContextApiExt`) reject, at compile time, a
-/// handle for a contract this `Api` struct never declared as a field.
+/// **resolved, version-qualified wire key** (`<Body as ContractBody>::TOPIC`,
+/// e.g. `y2026_1/drive/target`) - the same identity `CONTRACTS` carries, not
+/// the body type as written in source (every participant writes `use
+/// phoxal_api::y2026_1 as api;`, so a source-text string like
+/// `api::drive::Target` has the generation erased and cannot distinguish a
+/// `y2026_1` contract from a same-named `y2026_7` one). Since `TOPIC` is a
+/// foreign associated const the proc-macro cannot evaluate at expansion time,
+/// the section static is built from **tokens**, not a precomputed string: see
+/// [`phoxal::participant::api::__meta`](phoxal::participant::api) for the
+/// const-eval machinery (`__concatcp!` splices the resolved `TOPIC` between
+/// macro-time JSON literal fragments; `__bytes_of` copies the resulting
+/// `rustc`-const-evaluated `&str` into the fixed `[u8; N]` the link section
+/// needs), plus one `impl Declares*<..> for #struct_name {}` per distinct
+/// declared family (D44 - `DeclaresPublish`/`DeclaresSubscribe` per body,
+/// `DeclaresAsk`/`DeclaresServe` per `(Req, Resp)` pair): this is what lets
+/// the `SetupContext` builders (`SetupContextApiExt`) reject, at compile
+/// time, a handle for a contract this `Api` struct never declared as a
+/// field.
 pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
     let struct_name = &input.ident;
@@ -159,16 +166,27 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     // entry) rather than a per-field multiset. The linker-section JSON is
     // deduplicated on the same key (its `field` is the first field that used
     // that contract in that role; the field name is incidental provenance, not
-    // part of the identity).
+    // part of the identity). Dedup keys off the type as written (a macro-time
+    // string) purely to collapse syntactic repeats of the same field type -
+    // it has no bearing on the *value* recorded for `contract`, which is the
+    // resolved `TOPIC` (built as tokens in `manifest_entry_tokens`, since
+    // `TOPIC` is a foreign associated const the proc-macro cannot evaluate at
+    // expansion time).
     let mut seen = std::collections::BTreeSet::<String>::new();
     let mut contract_entries = Vec::new();
-    let mut manifest_entries: Vec<String> = Vec::new();
+    let mut manifest_entry_tokens: Vec<TokenStream> = Vec::new();
+    let phoxal_for_manifest = phoxal();
     let mut push = |field: &str, role_snake: &str, role_pascal: &str, body: &Type| {
         let body_str = normalized_body_key(body);
         if !seen.insert(format!("{role_snake}:{body_str}")) {
             return;
         }
-        manifest_entries.push(manifest_entry(field, role_snake, &body_str));
+        manifest_entry_tokens.push(manifest_entry_tokens_for(
+            &phoxal_for_manifest,
+            field,
+            role_snake,
+            body,
+        ));
         contract_entries.push(contract_use_entry(body, role_pascal));
     };
 
@@ -251,13 +269,43 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     }
 
     let phoxal = phoxal();
-    let manifest_json = format!(
-        "{{\"participant_api\":\"{}\",\"contracts\":[{}]}}",
-        json_escape(&struct_name.to_string()),
-        manifest_entries.join(",")
+
+    // The manifest JSON's `contract` values are the RESOLVED `TOPIC` consts,
+    // not macro-time string literals, so the manifest itself must be built as
+    // a token expression `rustc` const-evaluates in the participant crate -
+    // see `phoxal::participant::api::__meta` for the mechanism. Comma-joining
+    // is done here, at macro-expansion time, purely as JSON-syntax literal
+    // text (the `,` between array elements); it carries none of the resolved
+    // identity.
+    let open_lit = json_lit(&format!(
+        "{{\"participant_api\":\"{}\",\"contracts\":[",
+        json_escape(&struct_name.to_string())
+    ));
+    let close_lit = json_lit("]}");
+    let comma_lit = json_lit(",");
+    let mut manifest_args: Vec<TokenStream> = vec![open_lit];
+    for (i, entry) in manifest_entry_tokens.iter().enumerate() {
+        if i > 0 {
+            manifest_args.push(comma_lit.clone());
+        }
+        manifest_args.push(entry.clone());
+    }
+    manifest_args.push(close_lit);
+
+    let manifest_const_ident = Ident::new(
+        &format!(
+            "__PHOXAL_API_META_JSON_{}",
+            struct_name.to_string().to_shouty_snake_case()
+        ),
+        struct_name.span(),
     );
-    let manifest_bytes = syn::LitByteStr::new(manifest_json.as_bytes(), struct_name.span());
-    let manifest_len = manifest_json.len();
+    let manifest_len_ident = Ident::new(
+        &format!(
+            "__PHOXAL_API_META_LEN_{}",
+            struct_name.to_string().to_shouty_snake_case()
+        ),
+        struct_name.span(),
+    );
     let static_ident = Ident::new(
         &format!(
             "__PHOXAL_API_META_{}",
@@ -300,9 +348,26 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
             }
         }
 
+        // Built in three const steps because the manifest's `contract` values
+        // are resolved `TOPIC` consts (only known to `rustc`, not to this
+        // proc-macro): (1) `#manifest_const_ident` const-evaluates the JSON
+        // string via `__concatcp!`; (2) `#manifest_len_ident` is its length,
+        // named so it can be used as the section static's array-length type
+        // (a bare `.len()` call is not itself accepted in that position, but
+        // a named `const usize` is); (3) `__bytes_of` copies the resolved
+        // string's bytes into that fixed-size array, which is what the
+        // `#[link_section]` actually holds - xtask's `object`-crate reader
+        // extracts it as raw bytes, never by evaluating Rust.
+        #[doc(hidden)]
+        const #manifest_const_ident: &'static str = #phoxal::participant::api::__meta::__concatcp!(
+            #(#manifest_args),*
+        );
+        #[doc(hidden)]
+        const #manifest_len_ident: usize = #manifest_const_ident.len();
         #link_section
         #[doc(hidden)]
-        static #static_ident: [u8; #manifest_len] = *#manifest_bytes;
+        static #static_ident: [u8; #manifest_len_ident] =
+            #phoxal::participant::api::__meta::__bytes_of(#manifest_const_ident);
     })
 }
 
@@ -317,22 +382,52 @@ fn contract_use_entry(body: &Type, role: &str) -> TokenStream {
     }
 }
 
-/// The contract type key used both for dedup and for the linker-section JSON:
-/// the body type exactly as written, whitespace-stripped (e.g.
-/// `y2026_1::drive::Target`). The macro cannot resolve the wire `TOPIC` string
-/// at expansion time, so the written type is the compatibility identity here
-/// (`CONTRACTS`'s topic const does resolve it, via `rustc`).
-fn normalized_body_key(body: &Type) -> String {
-    quote!(#body).to_string().replace(' ', "")
+/// Builds the token expression for one manifest entry's JSON object: a
+/// nested `__concatcp!` call splicing the resolved `<Body as
+/// ContractBody>::TOPIC` between macro-time-literal `field`/`role` JSON
+/// fragments. `field`/`role` are known at macro-expansion time (baked in as
+/// string literals); `contract` is not - it is spliced in as a path
+/// expression to a foreign associated const that only the participant
+/// crate's own const-eval can resolve.
+fn manifest_entry_tokens_for(
+    phoxal: &TokenStream,
+    field: &str,
+    role: &str,
+    body: &Type,
+) -> TokenStream {
+    let prefix = json_lit(&format!(
+        "{{\"field\":\"{}\",\"role\":\"{}\",\"contract\":\"",
+        json_escape(field),
+        role
+    ));
+    let suffix = json_lit("\"}");
+    quote! {
+        #phoxal::participant::api::__meta::__concatcp!(
+            #prefix,
+            <#body as #phoxal::bus::ContractBody>::TOPIC,
+            #suffix
+        )
+    }
 }
 
-fn manifest_entry(field: &str, role: &str, body_str: &str) -> String {
-    format!(
-        "{{\"field\":\"{}\",\"role\":\"{}\",\"contract\":\"{}\"}}",
-        json_escape(field),
-        role,
-        json_escape(body_str)
-    )
+/// A `syn::LitStr` token for a JSON literal fragment used as a
+/// `__concatcp!`/`concat!`-style macro argument.
+fn json_lit(s: &str) -> TokenStream {
+    let lit = syn::LitStr::new(s, proc_macro2::Span::call_site());
+    quote!(#lit)
+}
+
+/// The contract type key used ONLY for macro-time dedup (collapsing two
+/// fields that name the same contract in the same role - e.g. a
+/// `Publisher<X>` and a `Vec<Publisher<X>>` - to one `CONTRACTS`/manifest
+/// entry): the body type exactly as written, whitespace-stripped (e.g.
+/// `api::drive::Target`). This is a syntactic key only; it is never the
+/// *value* recorded for a contract's identity (that is the resolved `TOPIC`,
+/// spliced in as tokens by `manifest_entry_tokens_for` - see
+/// `phoxal::participant::api::__meta`'s docs for why the macro cannot resolve
+/// it directly).
+fn normalized_body_key(body: &Type) -> String {
+    quote!(#body).to_string().replace(' ', "")
 }
 
 // ---------------------------------------------------------------------------
