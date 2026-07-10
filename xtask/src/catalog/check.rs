@@ -129,8 +129,6 @@ mod tests {
             vec![Artifact {
                 package: package.to_string(),
                 version: version.to_string(),
-                contracts: Vec::new(),
-                config_schema: None,
                 targets,
                 assets: None,
             }],

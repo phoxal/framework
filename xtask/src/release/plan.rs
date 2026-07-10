@@ -6,14 +6,13 @@
 //! libraries and binaries alike, the latter via `git_only` - so this command
 //! no longer reads release-plz's JSON output to learn which packages were
 //! released. Versioning and building are decoupled: release-plz decides
-//! versions on the release-PR merge; this command decides, independently,
-//! which of the workspace's *current* artifact versions still need building.
+//! versions on the release-PR merge; this command turns the complete official
+//! artifact set into the build matrix.
 //!
-//! The rule (§4.1): an artifact crate is built iff its current `Cargo.toml`
-//! version is **not already present** in the previous catalog - the catalog
-//! indexes every published `(package, version)`, so "already present" means
-//! "already built and indexed". With no `--previous-catalog` (cold start,
-//! §4.3), nothing is excluded and every discovered artifact builds.
+//! `release_always = true` requires every official artifact to bump on every
+//! release train. If any current `(package, version)` is already present in the
+//! previous catalog, planning fails: silently excluding it would make the
+//! workspace at HEAD differ from the complete package set users download.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -59,7 +58,7 @@ pub(crate) struct ReleasePlan {
 }
 
 /// One artifact this run's build-set includes. `package` is the
-/// provider-qualified public identity (`phoxal/component-ddsm115-driver`);
+/// provider-qualified public identity (`phoxal/component-ddsm115`);
 /// there is no separate `artifact_id` alongside it (docs #21). `tag` is the
 /// artifact's release-plz-owned version tag (`{package}-v{version}`,
 /// informational only - the actual upload target is this run's `build-*`
@@ -143,14 +142,13 @@ pub(crate) fn write_release_plan(path: &Path, plan: &ReleasePlan) -> Result<()> 
     fs::write(path, json).with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Builds the plan: every discovered artifact whose `(package, version)` is
-/// not already in `previous_catalog` (absent = cold start, nothing carried
-/// forward, everything builds).
+/// Builds the complete official-artifact plan. A current `(package, version)`
+/// already present in `previous_catalog` is a release invariant violation,
+/// because `release_always = true` must bump and repackage the whole set.
 ///
-/// Target selection deliberately keeps [`OfficialArtifact::supported_target_triples`]
-/// (per-kind triples, e.g. services get Linux only, tools/simulators also get
-/// macOS) rather than a uniform six-triple matrix: widening every artifact's
-/// target coverage is a real cost/behavior change out of this slice's scope.
+/// Target selection uses [`OfficialArtifact::supported_target_triples`]: every
+/// binary gets the uniform six-target matrix and components additionally get
+/// their target-independent asset bundle.
 pub(crate) fn build_release_plan(
     workspace: &Workspace,
     previous_catalog: Option<&Catalog>,
@@ -165,13 +163,28 @@ pub(crate) fn build_release_plan(
         })
         .unwrap_or_default();
 
-    let mut artifacts = Vec::new();
-    for artifact in workspace.official_artifacts() {
-        if already_published.contains(&(artifact.package.as_str(), artifact.version.as_str())) {
-            continue;
-        }
-        artifacts.push(plan_artifact(artifact));
+    let offenders: Vec<String> = workspace
+        .official_artifacts()
+        .iter()
+        .filter(|artifact| {
+            already_published.contains(&(artifact.package.as_str(), artifact.version.as_str()))
+        })
+        .map(|artifact| format!("{} v{}", artifact.package, artifact.version))
+        .collect();
+    if !offenders.is_empty() {
+        bail!(
+            "release invariant violated: current official artifact version(s) already exist in \
+             the previous catalog: {}. With release_always = true every official artifact must \
+             bump and be repackaged on every release train; check release-plz.toml coverage",
+            offenders.join(", ")
+        );
     }
+
+    let mut artifacts: Vec<ReleasePlanArtifact> = workspace
+        .official_artifacts()
+        .iter()
+        .map(plan_artifact)
+        .collect();
     artifacts.sort_by(|left, right| left.package.cmp(&right.package));
 
     let mut include = Vec::new();
@@ -280,8 +293,6 @@ mod tests {
         CatalogArtifact {
             package: package.to_string(),
             version: version.to_string(),
-            contracts: Vec::new(),
-            config_schema: None,
             targets,
             assets: None,
         }
@@ -318,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn already_catalogued_version_is_excluded_from_the_plan() -> Result<()> {
+    fn already_catalogued_current_version_fails_the_release_invariant() -> Result<()> {
         let workspace = workspace_with(vec![artifact(
             "phoxal-service-drive",
             ArtifactKind::Service,
@@ -331,10 +342,11 @@ mod tests {
             Heads::empty(),
         );
 
-        let plan = build_release_plan(&workspace, Some(&previous))?;
+        let err = build_release_plan(&workspace, Some(&previous)).unwrap_err();
 
-        assert!(plan.artifacts.is_empty());
-        assert!(plan.matrix.include.is_empty());
+        assert!(err.to_string().contains("release invariant violated"));
+        assert!(err.to_string().contains("phoxal/service-drive v0.19.7"));
+        assert!(err.to_string().contains("release-plz.toml coverage"));
         Ok(())
     }
 
@@ -364,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mix_of_new_and_already_published_artifacts_only_plans_the_new_ones() -> Result<()> {
+    fn one_unbumped_artifact_blocks_a_mixed_release_train() -> Result<()> {
         let workspace = workspace_with(vec![
             artifact(
                 "phoxal-service-drive",
@@ -380,10 +392,10 @@ mod tests {
             Heads::empty(),
         );
 
-        let plan = build_release_plan(&workspace, Some(&previous))?;
+        let err = build_release_plan(&workspace, Some(&previous)).unwrap_err();
 
-        assert_eq!(plan.artifacts.len(), 1);
-        assert_eq!(plan.artifacts[0].package, "phoxal/tool-router");
+        assert!(err.to_string().contains("phoxal/service-drive v0.19.7"));
+        assert!(!err.to_string().contains("phoxal/tool-router v0.2.0"));
         Ok(())
     }
 

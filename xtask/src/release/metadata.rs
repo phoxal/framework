@@ -12,9 +12,9 @@
 //! but the binaries it indexes are the cross-compiled artifacts actually being
 //! shipped - aarch64/x86_64 ELF *and* aarch64/x86_64 Mach-O. Parsing the
 //! section out of *those* binaries (see `package::extract_metadata_from_packaged`,
-//! which reads them straight out of the released tarballs) rather than from a
-//! fresh native rebuild is what keeps the catalog metadata physically
-//! inseparable from the bytes that land on the robot.
+//! which reads every target straight out of the release tarballs) rather than
+//! from a fresh native rebuild is what makes publish-time coherence reflect the
+//! exact bytes that users download.
 //!
 //! This module owns only the object-file section-BYTES extraction (an
 //! `object`-crate walk over an ELF/Mach-O binary or tarball); the JSON shape
@@ -32,8 +32,8 @@ use object::{Object, ObjectSection};
 
 pub(crate) use phoxal::participant::metadata::ParticipantMeta;
 // Only named directly by test fixtures (`ParticipantMetaContract { .. }`
-// literals) - production code here and in `catalog::generate` only ever
-// iterates `ParticipantMeta::contracts`, never spells out the element type.
+// literals); production code moves `ParticipantMeta::contracts` directly into
+// coherence surfaces.
 #[cfg(test)]
 pub(crate) use phoxal::participant::metadata::ParticipantMetaContract;
 
@@ -55,7 +55,10 @@ const SECTION_NAMES: [&str; 2] = [".phoxal_api_meta", "__phoxal_meta"];
 /// section in the first place. A malformed/unrecognized *object file* is still
 /// a hard error. `describe` names the source (a file path, or a
 /// `pkg@target from tarball` label) for error messages.
-fn read_meta_section(object_bytes: &[u8], describe: &str) -> Result<Option<Vec<u8>>> {
+pub(crate) fn extract_participant_metadata_section_from_bytes(
+    object_bytes: &[u8],
+    describe: &str,
+) -> Result<Option<Vec<u8>>> {
     let file = object::File::parse(object_bytes)
         .with_context(|| format!("{describe} is not a recognized object file (ELF/Mach-O/...)"))?;
 
@@ -71,24 +74,35 @@ fn read_meta_section(object_bytes: &[u8], describe: &str) -> Result<Option<Vec<u
     Ok(None)
 }
 
-/// Parses the embedded participant metadata out of an in-memory object file
-/// (an ELF/Mach-O binary of any target architecture - this is how the
-/// `catalog-publish` job on an x86_64 host reads the section out of a
-/// cross-compiled aarch64 binary). Reads nothing, runs nothing. A binary with
-/// no section at all (an `Api = ()` participant - see [`read_meta_section`])
-/// parses as an empty contract list, not an error.
-pub(crate) fn extract_participant_metadata_from_bytes(
-    object_bytes: &[u8],
+/// Parses an already-extracted metadata section. `None` is the valid `Api = ()`
+/// participant shape and produces an empty contract list.
+pub(crate) fn parse_participant_metadata_section(
+    section: Option<&[u8]>,
     describe: &str,
 ) -> Result<ParticipantMeta> {
-    let Some(bytes) = read_meta_section(object_bytes, describe)? else {
+    let Some(bytes) = section else {
         return Ok(ParticipantMeta {
             participant_api: "()".to_string(),
             contracts: Vec::new(),
         });
     };
-    phoxal::participant::metadata::parse_participant_metadata(&bytes)
+    phoxal::participant::metadata::parse_participant_metadata(bytes)
         .with_context(|| format!("phoxal API metadata section in {describe} is not valid JSON"))
+}
+
+/// Parses the embedded participant metadata out of an in-memory object file
+/// (an ELF/Mach-O binary of any target architecture - this is how the
+/// `catalog-publish` job on an x86_64 host reads the section out of a
+/// cross-compiled aarch64 binary). Reads nothing, runs nothing. A binary with
+/// no section at all (an `Api = ()` participant - see
+/// [`extract_participant_metadata_section_from_bytes`])
+/// parses as an empty contract list, not an error.
+pub(crate) fn extract_participant_metadata_from_bytes(
+    object_bytes: &[u8],
+    describe: &str,
+) -> Result<ParticipantMeta> {
+    let section = extract_participant_metadata_section_from_bytes(object_bytes, describe)?;
+    parse_participant_metadata_section(section.as_deref(), describe)
 }
 
 /// Extracts and parses `binary_path`'s embedded participant metadata: reads the

@@ -139,7 +139,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use phoxal::catalog::{Artifact, BuildProvenance, Contract, Heads};
+    use phoxal::catalog::{Artifact, BuildProvenance, Heads};
 
     fn fixture_build() -> BuildProvenance {
         BuildProvenance {
@@ -164,13 +164,6 @@ mod tests {
         Artifact {
             package: "phoxal/service-drive".to_string(),
             version: "0.1.0".to_string(),
-            contracts: vec![Contract {
-                generation: "y2026_1".to_string(),
-                contract: "drive::Target".to_string(),
-                role: "publish".to_string(),
-                external: false,
-            }],
-            config_schema: None,
             targets,
             assets: None,
         }

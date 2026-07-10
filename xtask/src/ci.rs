@@ -165,8 +165,6 @@ mod tests {
             vec![Artifact {
                 package: "phoxal/service-drive".to_string(),
                 version: "0.1.0".to_string(),
-                contracts: Vec::new(),
-                config_schema: None,
                 targets,
                 assets: None,
             }],
