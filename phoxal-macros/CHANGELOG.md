@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1](https://github.com/phoxal/framework/compare/phoxal-macros-v0.20.0...phoxal-macros-v0.20.1) - 2026-07-10
+
+### Added
+
+- *(runtime)* wire new-model runner (run_v2), coexisting with old (F-runtime)
+- *(macros)* add new participant authoring model alongside old (F-macros)
+
+### Fixed
+
+- *(macros)* embed resolved version-qualified TOPIC in the Api metadata section (F2-names) ([#198](https://github.com/phoxal/framework/pull/198))
+- *(new-model)* add robot()/robot_root() accessors + Querier/Ask contract role
+
+### Other
+
+- *(api)* split generation/contract metadata fields + #[phoxal(external)] marker ([#200](https://github.com/phoxal/framework/pull/200))
+- phoxal-api refactor — finish batch (nested-nodes, Declares/server gating, y2026_7 mixing) ([#195](https://github.com/phoxal/framework/pull/195))
+- delete old authoring model + emit-apis; run_v2 -> run (Cleanup)
+- *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
+
 ## [0.20.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.6...phoxal-macros-v0.20.0) - 2026-07-08
 
 ### Other
