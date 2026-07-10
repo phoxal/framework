@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+  --> tests/trybuild/fail/server_api_field_type_mismatch.rs:35:20
+   |
+35 |     #[server(api = get)]
+   |                    ^^^ expected `&Server<SubmapRequest, SubmapResponse>`, found `&Server<GetRequest, GetResponse>`
+   |
+   = note: expected reference `&phoxal::participant::Server<SubmapRequest, SubmapResponse>`
+              found reference `&phoxal::participant::Server<GetRequest, GetResponse>`

@@ -133,7 +133,12 @@ fn link_section_attrs() -> TokenStream {
 /// that is a pure macro-time string literal (the resolved wire `TOPIC` is the
 /// same information, mechanically derived by `phoxal_api_tree!`; resolving it
 /// from the artifact is xtask/host-side work for a later slice, per the
-/// "Metadata materialization is two-part" correction).
+/// "Metadata materialization is two-part" correction), plus one
+/// `impl Declares*<..> for #struct_name {}` per distinct declared family
+/// (D44 - `DeclaresPublish`/`DeclaresSubscribe` per body, `DeclaresAsk`/
+/// `DeclaresServe` per `(Req, Resp)` pair): this is what lets the
+/// `SetupContext` builders (`SetupContextApiExt`) reject, at compile time, a
+/// handle for a contract this `Api` struct never declared as a field.
 pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
     let struct_name = &input.ident;
@@ -166,6 +171,21 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
         manifest_entries.push(manifest_entry(field, role_snake, &body_str));
         contract_entries.push(contract_use_entry(body, role_pascal));
     };
+
+    // `Declares*<B>` marker impls (D44): one per distinct (family, body-or-pair)
+    // this `Api` struct declares, deduplicated separately from `push` above
+    // because a query/serve declaration is keyed on the (Req, Resp) PAIR here
+    // (matching the two-type-parameter `DeclaresAsk`/`DeclaresServe` traits),
+    // not on the two split CONTRACTS entries `push` records for `Req` and
+    // `Resp` individually.
+    let mut seen_declares = std::collections::BTreeSet::<String>::new();
+    let mut declare_impls = Vec::new();
+    let phoxal_for_declares = phoxal();
+    let mut declare = |key: String, tokens: TokenStream| {
+        if seen_declares.insert(key) {
+            declare_impls.push(tokens);
+        }
+    };
     for field in &fields.named {
         let Some(field_name) = &field.ident else {
             continue;
@@ -176,15 +196,55 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
         let field_str = field_name.to_string();
         for decl in decls {
             match decl {
-                ApiDecl::Publish(body) => push(&field_str, "publish", "Publish", &body),
-                ApiDecl::Subscribe(body) => push(&field_str, "subscribe", "Subscribe", &body),
+                ApiDecl::Publish(body) => {
+                    push(&field_str, "publish", "Publish", &body);
+                    let key = format!("declpub:{}", normalized_body_key(&body));
+                    declare(
+                        key,
+                        quote! {
+                            impl #phoxal_for_declares::participant::DeclaresPublish<#body> for #struct_name {}
+                        },
+                    );
+                }
+                ApiDecl::Subscribe(body) => {
+                    push(&field_str, "subscribe", "Subscribe", &body);
+                    let key = format!("declsub:{}", normalized_body_key(&body));
+                    declare(
+                        key,
+                        quote! {
+                            impl #phoxal_for_declares::participant::DeclaresSubscribe<#body> for #struct_name {}
+                        },
+                    );
+                }
                 ApiDecl::Serve { req, resp } => {
                     push(&field_str, "serve", "Serve", &req);
                     push(&field_str, "serve", "Serve", &resp);
+                    let key = format!(
+                        "declserve:{}=>{}",
+                        normalized_body_key(&req),
+                        normalized_body_key(&resp)
+                    );
+                    declare(
+                        key,
+                        quote! {
+                            impl #phoxal_for_declares::participant::DeclaresServe<#req, #resp> for #struct_name {}
+                        },
+                    );
                 }
                 ApiDecl::Ask { req, resp } => {
                     push(&field_str, "ask", "Ask", &req);
                     push(&field_str, "ask", "Ask", &resp);
+                    let key = format!(
+                        "declask:{}=>{}",
+                        normalized_body_key(&req),
+                        normalized_body_key(&resp)
+                    );
+                    declare(
+                        key,
+                        quote! {
+                            impl #phoxal_for_declares::participant::DeclaresAsk<#req, #resp> for #struct_name {}
+                        },
+                    );
                 }
             }
         }
@@ -229,6 +289,8 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                 #(#contract_entries),*
             ];
         }
+
+        #(#declare_impls)*
 
         impl ::core::clone::Clone for #struct_name {
             fn clone(&self) -> Self {

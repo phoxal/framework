@@ -4,14 +4,20 @@
 //! a pack discharging under a constant load entirely from internal state.
 //! Each step it advances the charge ratio for the elapsed `dt`, derives a voltage
 //! by interpolating between the empty and full pack voltage, and publishes
-//! `battery/state` (voltage, current, charge ratio) at 1 Hz.
+//! `y2026_7/battery/state` (voltage, current, charge ratio) at 1 Hz.
 //! The pack starts full and the modelled current drops to zero once depleted.
 //! The numbers are placeholders for a real fuel gauge: a fixed draw and capacity,
 //! not a reading from any hardware sensor.
+//!
+//! `battery::State` targets the standalone `y2026_7` generation (moved out of
+//! `y2026_1`, D1's per-contract-versioning ground-breaker): a consumer that
+//! wants it must be built against `y2026_7`, exactly like any other contract
+//! identity - name identity across the graph is what makes two participants
+//! interoperate, not which generation module they happen to import it from.
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::y2026_7 as api;
 
 const FULL_VOLTAGE_V: f64 = 16.8;
 const EMPTY_VOLTAGE_V: f64 = 12.0;
@@ -103,7 +109,7 @@ mod tests {
     };
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::y2026_7 as api;
 
     #[test]
     fn discharge_reduces_charge_over_time() {
@@ -131,8 +137,14 @@ mod tests {
     }
 
     #[test]
-    fn api_declares_the_y2026_1_battery_state_publish_contract() {
+    fn api_declares_the_y2026_7_battery_state_publish_contract() {
         assert_eq!(<Battery as Participant>::ID, "battery");
+
+        // The moved contract's generation-qualified wire key (D1).
+        assert_eq!(
+            <api::battery::State as ContractBody>::TOPIC,
+            "y2026_7/battery/state"
+        );
 
         let contracts = <<Battery as Participant>::Api as ParticipantApi>::CONTRACTS;
         assert!(

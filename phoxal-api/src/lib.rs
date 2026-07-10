@@ -154,17 +154,6 @@ phoxal_api_tree! {
             topic state: state State;
         }
 
-        battery {
-            /// Battery state - a family that exists only from y2026_1 on.
-            struct State {
-                voltage_v: f32,
-                current_a: f32,
-                charge_ratio: f32,
-            }
-
-            topic state: state State;
-        }
-
         safety {
             /// Safety participant decision for a candidate motion command.
             #[derive(Copy, Eq)]
@@ -1114,6 +1103,26 @@ phoxal_api_tree! {
             }
 
             topic get: query GetRequest => GetResponse;
+        }
+    }
+
+    // The second minted generation (the per-contract-versioning ground-breaker):
+    // a standalone, sparse batch (D1) that mints only `battery::State`, moved
+    // here from y2026_1. There is no `extends` - this is not "y2026_1 plus a
+    // change," it is its own generation, and a participant may mix it with
+    // y2026_1 fields freely (`phoxal::participant::api`'s module docs).
+    version y2026_7 {
+        battery {
+            /// Battery state - re-minted in y2026_7 (moved from y2026_1, the
+            /// first contract to prove per-contract generation mixing works
+            /// end-to-end across the graph).
+            struct State {
+                voltage_v: f32,
+                current_a: f32,
+                charge_ratio: f32,
+            }
+
+            topic state: state State;
         }
     }
 }

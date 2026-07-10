@@ -11,10 +11,13 @@
 //! (`#[derive(phoxal::Api)]`, `phoxal::participant::api`'s module docs).
 //!
 //! `#[server(api = field)]`'s `field` names the `Api` struct field being
-//! implemented, recorded for documentation but not cross-checked against the
-//! `Api` struct's actual field type in this slice (a proc-macro on the `impl`
-//! block cannot see the separate `Api` struct definition it did not derive) -
-//! "`Api` declares the bus contract, `behavior` implements runtime logic".
+//! implemented; `server_field_assertions` cross-checks it against the `Api`
+//! struct's actual field type by emitting a small generated function that
+//! references `api.field` typed as the matching `Server<Req, Resp>` - a
+//! proc-macro on the `impl` block cannot see the separate `Api` struct
+//! definition it did not derive, so this leans on `rustc`'s own field/type
+//! resolution instead of a macro-time lookup - "`Api` declares the bus
+//! contract, `behavior` implements runtime logic".
 
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, quote_spanned};
@@ -179,6 +182,24 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     }
     .visit_item_impl_mut(&mut item_impl);
 
+    // `#[server(api = F)]` / `#[server_snapshot(api = F)]` field validation:
+    // one generated assertion function per handler, referencing the `Api`
+    // struct field `F` typed as the matching `Server<Req, Resp>` (see the
+    // module docs and `server_field_assertions`'s own doc comment). A
+    // nonexistent `F` is rustc's own "no field" error on the generated
+    // `&api.#F` expression; a `Server<WrongReq, WrongResp>` field is rustc's
+    // own type-mismatch error on the `let _: &Server<Req, Resp> = ...`
+    // binding - both point at the `api = F` identifier's span (the field name
+    // as written at the attribute site), so they land on the offending
+    // `#[server(api = F)]` / `#[server_snapshot(api = F)]`.
+    let server_field_assertions = server_field_assertions(
+        &phoxal,
+        &api_alias,
+        &self_ty_ident_string(&self_ty),
+        &servers,
+        &snapshot_servers,
+    );
+
     Ok(quote! {
         #[doc(hidden)]
         #[allow(non_camel_case_types)]
@@ -190,6 +211,8 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #item_impl
 
         #tool_forbidden_guards
+
+        #server_field_assertions
 
         impl #phoxal::participant::ParticipantLifecycle for #self_ty {
             const SERVER_CONTRACTS: &'static [#phoxal::participant::ApiContractUse] = #server_contracts;
@@ -522,6 +545,90 @@ fn encode_reply() -> TokenStream {
     }
 }
 
+/// One generated `fn` per `#[server(api = F)]` / `#[server_snapshot(api = F)]`
+/// handler, cross-checking `F` against the `Api` struct's actual field (a
+/// proc-macro on the `impl` block cannot see the separate `Api` struct
+/// definition it did not derive, so this leans on `rustc`'s own field/type
+/// resolution over the module-scope `#api_alias = <Self as Participant>::Api`
+/// type alias `expand` already defines - the same alias `Self::Api` gets
+/// rewritten to elsewhere in this impl):
+///
+/// ```ignore
+/// fn __phoxal_assert_server_api_field_<Self>_<idx>_<F>(api: &#api_alias) {
+///     let _: &phoxal::participant::Server<Req, Resp> = &api.F;
+/// }
+/// ```
+///
+/// A nonexistent `F` fails with rustc's own "no field `F` on type `Api`"
+/// (E0609); a `F` typed `Server<WrongReq, WrongResp>` fails with rustc's own
+/// mismatched-types error on the `let` binding. Both point at `F`'s span - the
+/// identifier as written in `#[server(api = F)]` - since `#F` is interpolated
+/// with its original span, not synthesized. `#[allow(dead_code)]`: the
+/// function exists purely for its body to typecheck, never called.
+fn server_field_assertions(
+    phoxal: &TokenStream,
+    api_alias: &Ident,
+    self_ty_ident: &str,
+    servers: &[ServerFn],
+    snapshot_servers: &[SnapshotServerFn],
+) -> TokenStream {
+    let mut out = TokenStream::new();
+    for (idx, s) in servers.iter().enumerate() {
+        out.extend(one_server_field_assertion(
+            phoxal,
+            api_alias,
+            self_ty_ident,
+            "server",
+            idx,
+            &s.api_field,
+            &s.req_ty,
+            &s.resp_ty,
+        ));
+    }
+    for (idx, s) in snapshot_servers.iter().enumerate() {
+        out.extend(one_server_field_assertion(
+            phoxal,
+            api_alias,
+            self_ty_ident,
+            "server_snapshot",
+            idx,
+            &s.api_field,
+            &s.req_ty,
+            &s.resp_ty,
+        ));
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn one_server_field_assertion(
+    phoxal: &TokenStream,
+    api_alias: &Ident,
+    self_ty_ident: &str,
+    kind: &str,
+    idx: usize,
+    api_field: &Ident,
+    req_ty: &Type,
+    resp_ty: &Type,
+) -> TokenStream {
+    let fn_name = Ident::new(
+        &format!("__phoxal_assert_{kind}_api_field_{self_ty_ident}_{idx}"),
+        api_field.span(),
+    );
+    // `quote_spanned!` (not plain `quote!`) over `api_field`'s span: the
+    // generated `let` statement's non-interpolated tokens inherit the `api =
+    // field` identifier's span rather than the macro invocation's call site,
+    // so a type mismatch here (a `Server<WrongReq, WrongResp>` field) points
+    // at the offending `#[server(api = field)]`/`#[server_snapshot(api =
+    // field)]` site instead of the whole attribute macro.
+    quote_spanned! {api_field.span()=>
+        #[allow(non_snake_case, dead_code)]
+        fn #fn_name(api: &#api_alias) {
+            let _: &#phoxal::participant::Server<#req_ty, #resp_ty> = &api.#api_field;
+        }
+    }
+}
+
 /// One `const _: () = { ... };` per `#[step]`/`#[server]`/`#[server_snapshot]`
 /// found, asserting the impl type has the `TypedGraphSurface` marker (emitted
 /// by `#[phoxal::service|driver|simulator]`, not `#[phoxal::tool]`), so a
@@ -720,7 +827,6 @@ impl ShutdownFn {
 
 struct ServerFn {
     name: Ident,
-    #[allow(dead_code)] // recorded for documentation/future cross-checking (see module docs)
     api_field: Ident,
     req_ty: Type,
     resp_ty: Type,
@@ -773,7 +879,6 @@ impl ServerFn {
 
 struct SnapshotServerFn {
     name: Ident,
-    #[allow(dead_code)] // recorded for documentation/future cross-checking (see module docs)
     api_field: Ident,
     req_ty: Type,
     resp_ty: Type,
