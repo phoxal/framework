@@ -300,20 +300,19 @@ mod tests {
 
         let plan = build_release_plan(&workspace, None)?;
 
+        let uniform_six = vec![
+            "aarch64-apple-darwin".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+            "aarch64-unknown-linux-musl".to_string(),
+            "x86_64-apple-darwin".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ];
+
         assert_eq!(plan.artifacts.len(), 2);
-        assert_eq!(
-            plan.artifacts[0].target_triples,
-            vec!["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
-        );
-        assert_eq!(
-            plan.artifacts[1].target_triples,
-            vec![
-                "aarch64-apple-darwin",
-                "aarch64-unknown-linux-gnu",
-                "x86_64-unknown-linux-gnu"
-            ]
-        );
-        assert_eq!(plan.matrix.include.len(), 5);
+        assert_eq!(plan.artifacts[0].target_triples, uniform_six);
+        assert_eq!(plan.artifacts[1].target_triples, uniform_six);
+        assert_eq!(plan.matrix.include.len(), 12);
         Ok(())
     }
 

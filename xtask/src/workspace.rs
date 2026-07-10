@@ -10,8 +10,19 @@ use serde_json::Value;
 
 const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"];
 const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["xtask", "fixture"];
-const LINUX_TARGETS: [&str; 2] = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
-const DARWIN_TARGET: &str = "aarch64-apple-darwin";
+
+/// The uniform six-target release matrix every binary artifact builds for
+/// (design doc `organization/tmp/ci-release-refactor/design.md` §3/§4.1): no
+/// per-kind target selection - a `Tool` and a `Service` build for exactly the
+/// same six triples.
+const BINARY_TARGETS: [&str; 6] = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+];
 
 /// Official Phoxal packages always use this provider segment in their public
 /// `package` identity (`phoxal/<name>`). Third-party catalogs will use their own
@@ -127,13 +138,10 @@ impl OfficialArtifact {
         if self.kind.is_target_independent() {
             return vec![TARGET_INDEPENDENT_SCOPE.to_string()];
         }
-        let mut targets = LINUX_TARGETS
+        let mut targets = BINARY_TARGETS
             .iter()
             .map(|target| (*target).to_string())
             .collect::<Vec<_>>();
-        if matches!(self.kind, ArtifactKind::Tool | ArtifactKind::Simulator) {
-            targets.push(DARWIN_TARGET.to_string());
-        }
         targets.extend(self.metadata.extra_target_triples.iter().cloned());
         targets.sort();
         targets.dedup();
@@ -180,9 +188,15 @@ pub fn filesystem_safe_package(package: &str) -> String {
 
 pub fn runner_for_target(target: &str) -> Result<&'static str> {
     match target {
-        "aarch64-unknown-linux-gnu" => Ok("ubuntu-24.04-arm"),
-        "x86_64-unknown-linux-gnu" => Ok("ubuntu-24.04"),
+        // Native Linux runners for the gnu targets; the musl targets
+        // cross-compile on the matching-arch Linux runner too (the `build`
+        // job installs `musl-tools` there - see `release-plz.yml`).
+        "aarch64-unknown-linux-gnu" | "aarch64-unknown-linux-musl" => Ok("ubuntu-24.04-arm"),
+        "x86_64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => Ok("ubuntu-24.04"),
+        // Native macOS runners: `macos-14` is Apple Silicon (aarch64),
+        // `macos-13` is the last Intel (x86_64) image GitHub hosts.
         "aarch64-apple-darwin" => Ok("macos-14"),
+        "x86_64-apple-darwin" => Ok("macos-13"),
         // `ComponentAssets` packaging just tars files (no cargo build, no
         // per-architecture binary), so any host runner works; the cheapest
         // Linux runner is used.
