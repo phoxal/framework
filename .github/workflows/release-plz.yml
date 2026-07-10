@@ -191,6 +191,15 @@ jobs:
         with:
           tool: cargo-auditable
 
+      # musl targets cross-compile on the matching-arch Linux runner and need
+      # the musl toolchain (mirrors the `musl-library` guard in ci.yml).
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
       - name: Install joypad Linux dependency
         if: matrix.package == 'phoxal/tool-joypad' && contains(matrix.target, 'linux')
         run: |
