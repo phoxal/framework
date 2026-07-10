@@ -673,11 +673,18 @@ fn expand_node_module(
         // type-path segments), then the body's own PascalCase leaf. This is the
         // exact same identity `contract_manifest_entries`' `family` computes for
         // the xtask manifest, kept in lockstep by construction (both derive it
-        // from `family_path`/`version`).
+        // from `family_path`/`version`). `GENERATION`/`CONTRACT` are the split
+        // form of the same identity (coherence-gate design doc §2): `GENERATION`
+        // is just `version` (already a plain literal at this point, not spliced
+        // per-body), `CONTRACT` is `family_path::body` with the generation
+        // dropped - `NAME == GENERATION + "::" + CONTRACT` by construction.
+        let generation = version.to_string();
         let name_for = |body: &Ident| format!("{version}::{family_path}::{body}");
+        let contract_for = |body: &Ident| format!("{family_path}::{body}");
         match &topic.kind {
             TopicKind::PubSub(body) => {
                 let name = name_for(body);
+                let contract = contract_for(body);
                 // The role rides as an inherent `#[doc(hidden)] pub const ROLE` on
                 // the body: additive surface that does not touch `ContractBody`.
                 // The side-branded builders are what enforce owner/client (L1);
@@ -687,6 +694,8 @@ fn expand_node_module(
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #name;
+                        const GENERATION: &'static str = #generation;
+                        const CONTRACT: &'static str = #contract;
                         const TOPIC: &'static str = #key;
                     }
                     impl #body {
@@ -699,15 +708,21 @@ fn expand_node_module(
             TopicKind::Query { request, response } => {
                 let request_name = name_for(request);
                 let response_name = name_for(response);
+                let request_contract = contract_for(request);
+                let response_contract = contract_for(response);
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #request {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #request_name;
+                        const GENERATION: &'static str = #generation;
+                        const CONTRACT: &'static str = #request_contract;
                         const TOPIC: &'static str = #key;
                     }
                     impl ::phoxal_bus::ContractBody for #response {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #response_name;
+                        const GENERATION: &'static str = #generation;
+                        const CONTRACT: &'static str = #response_contract;
                         const TOPIC: &'static str = #key;
                     }
                     impl #request {
@@ -1241,6 +1256,16 @@ mod tests {
             "NAME must be the version-qualified type path (D1): {expanded}"
         );
         assert!(
+            expanded.contains("const GENERATION : & 'static str = \"y2026_1\""),
+            "GENERATION must be the bare generation, split from CONTRACT (coherence-gate \
+             design §2): {expanded}"
+        );
+        assert!(
+            expanded.contains("const CONTRACT : & 'static str = \"drive::Target\""),
+            "CONTRACT must be the type path within its generation, with no generation \
+             prefix: {expanded}"
+        );
+        assert!(
             !expanded.contains("SCHEMA_ID"),
             "there is no schema_id left to emit: {expanded}"
         );
@@ -1276,6 +1301,10 @@ mod tests {
                 .contains("const NAME : & 'static str = \"y2026_1::component::motor::Command\""),
             "dynamic-node NAME must be the clean type path with no {{var}} placeholders - \
              dynamic-node vars are topic params, never type-path segments: {expanded}"
+        );
+        assert!(
+            expanded.contains("const CONTRACT : & 'static str = \"component::motor::Command\""),
+            "dynamic-node CONTRACT must also exclude every {{var}} placeholder: {expanded}"
         );
     }
 
@@ -1474,6 +1503,14 @@ mod tests {
             "the response body gets its own type-path NAME, distinct from the \
              request's even though they share one TOPIC: {expanded}"
         );
+        assert!(
+            expanded.contains("const CONTRACT : & 'static str = \"asset::GetRequest\""),
+            "the request body's CONTRACT is its own type path, generation excluded: {expanded}"
+        );
+        assert!(
+            expanded.contains("const CONTRACT : & 'static str = \"asset::GetResponse\""),
+            "the response body's CONTRACT is distinct from the request's: {expanded}"
+        );
     }
 
     /// Self-contained absolute paths (no depth-counted `super::`): a node nested
@@ -1515,6 +1552,10 @@ mod tests {
         assert!(
             expanded.contains("const NAME : & 'static str = \"y2026_1::a::b::c::Body\""),
             "NAME excludes every dynamic var from the type path, unlike TOPIC: {expanded}"
+        );
+        assert!(
+            expanded.contains("const CONTRACT : & 'static str = \"a::b::c::Body\""),
+            "CONTRACT excludes both the generation and every dynamic var: {expanded}"
         );
         assert!(
             expanded.contains("type Api = self :: __PhoxalApiMarker ;"),

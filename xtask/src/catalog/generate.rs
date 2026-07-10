@@ -357,16 +357,18 @@ fn blob_from_output(options: &GenerateOptions, output: &PackagedOutput) -> Blob 
 }
 
 /// Projects an extracted `#[derive(phoxal::Api)]` manifest into the catalog's
-/// `Contract` list: name + role, deduplicated (a `Server<Req, Resp>` field
-/// contributes two entries that may collide with another field's entries in
-/// the same role).
+/// `Contract` list: generation + contract + role + external, deduplicated (a
+/// `Server<Req, Resp>` field contributes two entries that may collide with
+/// another field's entries in the same role).
 fn contracts_from_metadata(meta: &ParticipantMeta) -> Vec<Contract> {
     let mut contracts: Vec<Contract> = meta
         .contracts
         .iter()
         .map(|entry| Contract {
-            name: entry.contract.clone(),
+            generation: entry.generation.clone(),
+            contract: entry.contract.clone(),
             role: entry.role.clone(),
+            external: entry.external,
         })
         .collect();
     contracts.sort();
@@ -608,14 +610,16 @@ mod tests {
             participant_api: "Api".to_string(),
             contracts: vec![
                 ParticipantMetaContract {
-                    field: "b".to_string(),
                     role: "publish".to_string(),
-                    contract: "y2026_1::drive::Target".to_string(),
+                    generation: "y2026_1".to_string(),
+                    contract: "drive::Target".to_string(),
+                    external: false,
                 },
                 ParticipantMetaContract {
-                    field: "a".to_string(),
                     role: "publish".to_string(),
-                    contract: "y2026_1::drive::Target".to_string(),
+                    generation: "y2026_1".to_string(),
+                    contract: "drive::Target".to_string(),
+                    external: false,
                 },
             ],
         };
@@ -623,8 +627,38 @@ mod tests {
         assert_eq!(
             contracts,
             vec![Contract {
-                name: "y2026_1::drive::Target".to_string(),
+                generation: "y2026_1".to_string(),
+                contract: "drive::Target".to_string(),
                 role: "publish".to_string(),
+                external: false,
+            }]
+        );
+    }
+
+    /// Two entries that share `(generation, contract, role)` but disagree on
+    /// `external` are NOT deduplicated - the derive itself never emits that
+    /// shape (a compile error catches the disagreement earlier,
+    /// `phoxal-macros/src/authoring.rs`), but this projection does not assume
+    /// it and sorts/dedups on the whole `Contract` value.
+    #[test]
+    fn contracts_from_metadata_carries_the_external_flag() {
+        let meta = ParticipantMeta {
+            participant_api: "Api".to_string(),
+            contracts: vec![ParticipantMetaContract {
+                role: "subscribe".to_string(),
+                generation: "y2026_1".to_string(),
+                contract: "drive::Target".to_string(),
+                external: true,
+            }],
+        };
+        let contracts = contracts_from_metadata(&meta);
+        assert_eq!(
+            contracts,
+            vec![Contract {
+                generation: "y2026_1".to_string(),
+                contract: "drive::Target".to_string(),
+                role: "subscribe".to_string(),
+                external: true,
             }]
         );
     }

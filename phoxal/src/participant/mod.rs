@@ -13,6 +13,7 @@ pub mod context;
 mod heartbeat;
 pub mod launch;
 mod managed;
+pub mod metadata;
 pub(crate) mod runner;
 pub mod scheduler;
 mod sd_notify;

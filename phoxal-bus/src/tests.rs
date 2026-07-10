@@ -46,6 +46,8 @@ struct Target {
 impl ContractBody for Target {
     type Api = TestApi;
     const NAME: &'static str = "yTEST::drive::Target";
+    const GENERATION: &'static str = "yTEST";
+    const CONTRACT: &'static str = "drive::Target";
     const TOPIC: &'static str = "yTEST/drive/target";
 }
 
@@ -56,6 +58,8 @@ struct GetRequest {
 impl ContractBody for GetRequest {
     type Api = TestApi;
     const NAME: &'static str = "yTEST::asset::GetRequest";
+    const GENERATION: &'static str = "yTEST";
+    const CONTRACT: &'static str = "asset::GetRequest";
     const TOPIC: &'static str = "yTEST/asset/get";
 }
 
@@ -67,6 +71,8 @@ enum GetResponse {
 impl ContractBody for GetResponse {
     type Api = TestApi;
     const NAME: &'static str = "yTEST::asset::GetResponse";
+    const GENERATION: &'static str = "yTEST";
+    const CONTRACT: &'static str = "asset::GetResponse";
     const TOPIC: &'static str = "yTEST/asset/get";
 }
 

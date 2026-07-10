@@ -102,14 +102,24 @@ pub struct Artifact {
 }
 
 /// One graph contract a runtime binary uses: its identity as embedded by
-/// `#[derive(phoxal::Api)]` (`name`, verbatim/opaque - carried through as
-/// extracted, never canonicalized here) plus the role this artifact plays
-/// for it (`"publish"`, `"subscribe"`, `"serve"`, or `"ask"`).
+/// `#[derive(phoxal::Api)]` - `generation`/`contract` as SEPARATE fields
+/// (verbatim/opaque, carried through as extracted, never canonicalized here;
+/// coherence-gate design doc §2 - the logical contract for coherence purposes
+/// is `contract` alone, the version-qualified identity is the
+/// `generation`/`contract` join) - plus the role this artifact plays for it
+/// (`"publish"`, `"subscribe"`, `"serve"`, or `"ask"`), and whether this edge
+/// is excused from the coherence check (`external`, `#[phoxal(external)]`,
+/// design doc §1).
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Contract {
-    pub name: String,
+    pub generation: String,
+    pub contract: String,
     pub role: String,
+    /// `false` by default so an older catalog entry / hand-written fixture
+    /// written before this field existed still parses.
+    #[serde(default)]
+    pub external: bool,
 }
 
 /// One download primitive: every `targets{}` value and `assets` is a `Blob`.
@@ -156,8 +166,10 @@ mod tests {
                 package: "phoxal/service-drive".to_string(),
                 version: "0.19.8".to_string(),
                 contracts: vec![Contract {
-                    name: "y2026_1::drive::Target".to_string(),
+                    generation: "y2026_1".to_string(),
+                    contract: "drive::Target".to_string(),
                     role: "publish".to_string(),
+                    external: false,
                 }],
                 config_schema: None,
                 targets,

@@ -172,11 +172,17 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `#[server_snapshot(api = …)]` to implement. A `Vec`/`BTreeMap`/`HashMap` of a
 /// handle carries the inner handle's declaration. There is no participant-level
 /// API version: fields may name contracts from different generations. Also
-/// emits a `#[used]` linker-section static recording each field's role and
-/// version-qualified contract type (compile-time embedded metadata,
-/// cargo-auditable pattern) - see the module docs for what this slice does and
-/// does not materialize.
-#[proc_macro_derive(Api)]
+/// emits a `#[used]` linker-section static recording each field's role,
+/// generation, and contract (compile-time embedded metadata, cargo-auditable
+/// pattern) - see the module docs for what this slice does and does not
+/// materialize.
+///
+/// A `subscribe`/`ask` field may carry `#[phoxal(external)]` (coherence-gate
+/// design doc §1) to mark that its counterpart legitimately lives outside the
+/// checked participant set; it is a compile error on a `publish`/`serve`
+/// field, and a compile error for two fields naming the same `(role,
+/// contract)` to disagree on the marker.
+#[proc_macro_derive(Api, attributes(phoxal))]
 pub fn derive_api(input: TokenStream) -> TokenStream {
     authoring::expand_api(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)

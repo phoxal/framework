@@ -165,8 +165,10 @@ mod tests {
             package: "phoxal/service-drive".to_string(),
             version: "0.1.0".to_string(),
             contracts: vec![Contract {
-                name: "y2026_1::drive::Target".to_string(),
+                generation: "y2026_1".to_string(),
+                contract: "drive::Target".to_string(),
                 role: "publish".to_string(),
+                external: false,
             }],
             config_schema: None,
             targets,

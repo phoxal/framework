@@ -15,13 +15,27 @@
 //! which reads them straight out of the released tarballs) rather than from a
 //! fresh native rebuild is what keeps the catalog metadata physically
 //! inseparable from the bytes that land on the robot.
+//!
+//! This module owns only the object-file section-BYTES extraction (an
+//! `object`-crate walk over an ELF/Mach-O binary or tarball); the JSON shape
+//! itself - `{"role","generation","contract","external"}` - is deserialized
+//! via the shared [`phoxal::participant::metadata`] type, per the
+//! coherence-gate design doc §5 ("move the parser alongside the rule into
+//! `phoxal`"), so this crate and `phoxal-cli` read exactly the same shape
+//! instead of each hand-copying the JSON schema.
 
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use object::{Object, ObjectSection};
-use serde::Deserialize;
+
+pub(crate) use phoxal::participant::metadata::ParticipantMeta;
+// Only named directly by test fixtures (`ParticipantMetaContract { .. }`
+// literals) - production code here and in `catalog::generate` only ever
+// iterates `ParticipantMeta::contracts`, never spells out the element type.
+#[cfg(test)]
+pub(crate) use phoxal::participant::metadata::ParticipantMetaContract;
 
 /// The linker section names `#[derive(phoxal::Api)]` places its metadata
 /// static under, tried in order (`phoxal-macros/src/authoring.rs::link_section_attrs`).
@@ -30,42 +44,6 @@ use serde::Deserialize;
 /// per-format branching is needed here - the two candidate names are simply
 /// disjoint across the object formats this framework ships binaries for.
 const SECTION_NAMES: [&str; 2] = [".phoxal_api_meta", "__phoxal_meta"];
-
-/// One `{"field","role","contract"}` entry from the embedded manifest: one
-/// participant `Api` struct field's role for one contract (a `Server<Req,
-/// Resp>` field contributes two entries - one per side).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct ParticipantMetaContract {
-    /// The `Api` struct field name that declared this contract (provenance
-    /// only - not part of the contract's identity).
-    #[allow(dead_code)]
-    pub field: String,
-    /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
-    /// (`phoxal::participant::ContractRole`, snake_case).
-    pub role: String,
-    /// The contract's RESOLVED, version-qualified type-path name - `<Body as
-    /// phoxal_bus::ContractBody>::NAME` (e.g. `"y2026_1::drive::Target"`),
-    /// not the body type as written in the participant's source. Every
-    /// participant writes `use phoxal_api::y2026_N as api;`, so a
-    /// source-text string like `"api::drive::Target"` would have the
-    /// generation erased and could not distinguish a `y2026_1` contract from
-    /// a same-named `y2026_7` one; `NAME` is the identity that actually
-    /// disambiguates generations (D1), so it is what
-    /// `#[derive(phoxal::Api)]` records here. Distinct from `TOPIC`, the
-    /// resolved wire key derived from the same name.
-    pub contract: String,
-}
-
-/// The embedded metadata manifest for one `#[derive(phoxal::Api)]` struct:
-/// `{"participant_api":"<StructName>","contracts":[...]}`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-pub(crate) struct ParticipantMeta {
-    /// The `Api` struct's type name (e.g. `"Api"`), recorded purely as
-    /// provenance by `#[derive(phoxal::Api)]`.
-    #[allow(dead_code)]
-    pub participant_api: String,
-    pub contracts: Vec<ParticipantMetaContract>,
-}
 
 /// Parses `object_bytes` as an object file and returns the bytes of its
 /// `#[derive(phoxal::Api)]` metadata section, trying each candidate section
@@ -109,7 +87,7 @@ pub(crate) fn extract_participant_metadata_from_bytes(
             contracts: Vec::new(),
         });
     };
-    serde_json::from_slice(&bytes)
+    phoxal::participant::metadata::parse_participant_metadata(&bytes)
         .with_context(|| format!("phoxal API metadata section in {describe} is not valid JSON"))
 }
 
@@ -132,9 +110,11 @@ mod tests {
     /// participant, extract its section from the actual built artifact on
     /// disk, and assert the parsed contracts match what `service/battery/src/main.rs`
     /// declares (`Api { state: Publisher<api::battery::State> }`), recorded
-    /// as the RESOLVED `NAME` (`"y2026_7::battery::State"` - `battery::State`
-    /// lives on the standalone `y2026_7` generation, D1's ground-breaker),
-    /// not the source-written `api::battery::State` (F2-names).
+    /// as the RESOLVED, SPLIT `generation`/`contract` (`"y2026_7"` /
+    /// `"battery::State"` - `battery::State` lives on the standalone `y2026_7`
+    /// generation, D1's ground-breaker), not the source-written
+    /// `api::battery::State` (F2-names), and not a joined name (coherence-gate
+    /// design doc §2).
     #[test]
     fn extracts_real_battery_binary_metadata() -> Result<()> {
         let workspace = Workspace::discover()?;
@@ -161,9 +141,10 @@ mod tests {
         assert_eq!(
             meta.contracts,
             vec![ParticipantMetaContract {
-                field: "state".to_string(),
                 role: "publish".to_string(),
-                contract: "y2026_7::battery::State".to_string(),
+                generation: "y2026_7".to_string(),
+                contract: "battery::State".to_string(),
+                external: false,
             }]
         );
         Ok(())
@@ -239,12 +220,12 @@ mod tests {
     /// aarch64 (ELF) and Apple (Mach-O) release binaries.
     #[test]
     fn extracts_metadata_from_foreign_format_and_arch_object_files() -> Result<()> {
-        let payload =
-            br#"{"participant_api":"Api","contracts":[{"field":"state","role":"publish","contract":"y2026_1::drive::State"}]}"#;
+        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}]}"#;
         let expected = vec![ParticipantMetaContract {
-            field: "state".to_string(),
             role: "publish".to_string(),
-            contract: "y2026_1::drive::State".to_string(),
+            generation: "y2026_1".to_string(),
+            contract: "drive::State".to_string(),
+            external: false,
         }];
 
         // aarch64 ELF (Linux robot / release binary shape), `.phoxal_api_meta`.
