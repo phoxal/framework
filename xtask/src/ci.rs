@@ -140,7 +140,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::catalog::model::{Artifact, Blob, BuildProvenance};
+    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Heads};
 
     fn fixture_catalog(tag: &str) -> Catalog {
         let mut targets = BTreeMap::new();
@@ -170,6 +170,7 @@ mod tests {
                 targets,
                 assets: None,
             }],
+            Heads::empty(),
         )
     }
 

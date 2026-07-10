@@ -7,8 +7,14 @@
 //! catalog already indexed (`xtask/src/catalog/generate.rs`'s merge); nothing
 //! is ever replaced, refreshed, or dropped. There is no `revision`/checksum
 //! machinery (that guarded the old mutable-manifest model, which this
-//! replaces), no `heads`, and no five-per-kind-array split - one `artifacts`
-//! array, one shared [`Blob`] download descriptor.
+//! replaces), and no five-per-kind-array split - one `artifacts` array, one
+//! shared [`Blob`] download descriptor.
+//!
+//! `heads` is the one exception to "full index, nothing computed": the
+//! coherence-gate design doc §4 whole-set snapshot pointers, recomputed at
+//! every `catalog generate` over the *latest version of each package* in the
+//! assembled index (`xtask/src/catalog/generate.rs`'s `compute_heads`) - see
+//! [`Heads`].
 //!
 //! This type is **not** the local `phoxal-artifacts.json` the CLI reads (out
 //! of scope for the CI refactor - see the design doc §1); it lives in
@@ -35,14 +41,53 @@ pub struct Catalog {
     /// from an older run (see the module docs).
     pub build: BuildProvenance,
     pub artifacts: Vec<Artifact>,
+    /// The coherence-gate design doc §4 whole-set snapshot pointers,
+    /// recomputed by every `catalog generate` run - see [`Heads`].
+    pub heads: Heads,
 }
 
 impl Catalog {
-    pub fn new(build: BuildProvenance, artifacts: Vec<Artifact>) -> Self {
+    pub fn new(build: BuildProvenance, artifacts: Vec<Artifact>, heads: Heads) -> Self {
         Self {
             schema: SCHEMA.to_string(),
             build,
             artifacts,
+            heads,
+        }
+    }
+}
+
+/// The coherence-gate design doc §4 whole-set snapshot pointers - **whole-set
+/// snapshot pointers, not per-binary versions** (design doc §4: a per-binary
+/// draft was rejected because holding back one binary can strand its
+/// counterparts transitively, and a snapshot pointer is coherent by
+/// construction with no fault attribution needed).
+///
+/// Both fields are a `build-*` release tag (e.g. `"build-20260710-0000123"`,
+/// [`BuildProvenance::tag`]), never a per-package version.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Heads {
+    /// The newest build snapshot whose full latest-version set passed the
+    /// coherence check (`phoxal::check::check_coherence`), carried forward
+    /// from the previous catalog's `stable` when this run's set is
+    /// incoherent. Empty iff no coherent snapshot has ever been published
+    /// (cold start, or every run so far has been incoherent).
+    pub stable: String,
+    /// The newest build snapshot, always - regardless of coherence. Empty
+    /// only for a `--metadata-only` catalog (the PR gate, not a publish -
+    /// there is no build snapshot to point at).
+    pub nightly: String,
+}
+
+impl Heads {
+    /// Both heads empty - the `--metadata-only` catalog shape (no build
+    /// snapshot exists yet to point at).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            stable: String::new(),
+            nightly: String::new(),
         }
     }
 }
@@ -175,6 +220,10 @@ mod tests {
                 targets,
                 assets: None,
             }],
+            Heads {
+                stable: "build-20260708-0001234".to_string(),
+                nightly: "build-20260708-0001234".to_string(),
+            },
         );
 
         let json = serde_json::to_string_pretty(&catalog).expect("serialize");
@@ -193,8 +242,23 @@ mod tests {
 
     #[test]
     fn deny_unknown_fields_rejects_stray_keys() {
-        let json = r#"{"schema":"phoxal.catalog/v0","build":{"tag":"t","run_number":1,"run_id":1,"commit":"c","created_at":"c"},"artifacts":[],"heads":{}}"#;
+        let json = r#"{"schema":"phoxal.catalog/v0","build":{"tag":"t","run_number":1,"run_id":1,"commit":"c","created_at":"c"},"artifacts":[],"heads":{"stable":"","nightly":""},"bogus":true}"#;
         let err = serde_json::from_str::<Catalog>(json).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn heads_round_trips_and_rejects_unknown_fields() {
+        let heads = Heads {
+            stable: "build-1".to_string(),
+            nightly: "build-2".to_string(),
+        };
+        let json = serde_json::to_string(&heads).expect("serialize");
+        let reparsed: Heads = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(heads, reparsed);
+
+        let err =
+            serde_json::from_str::<Heads>(r#"{"stable":"","nightly":"","extra":1}"#).unwrap_err();
         assert!(err.to_string().contains("unknown field"));
     }
 }
