@@ -90,7 +90,7 @@ pub struct Artifacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
     /// Unified fail-closed pin map keyed by provider-qualified package id
-    /// (`phoxal/service-drive`, `phoxal/component-ddsm115-driver`, ...).
+    /// (`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).
     ///
     /// Keys must have exactly one `/`, with a non-empty provider segment
     /// before it and a non-empty name segment after it; unqualified keys
@@ -1178,18 +1178,18 @@ robot:
     fn artifacts_pins_git_form_parses() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
-    phoxal/component-ddsm115-driver:
+    phoxal/component-ddsm115:
       git: https://github.com/you/ddsm115-component
       rev: 9f2c1e7
-      directory: component/ddsm115/driver"#,
+      directory: component/ddsm115"#,
         ))?;
 
         assert_eq!(
-            robot.artifacts.pins.get("phoxal/component-ddsm115-driver"),
+            robot.artifacts.pins.get("phoxal/component-ddsm115"),
             Some(&ArtifactPin::Git(ArtifactGitPin {
                 git: "https://github.com/you/ddsm115-component".to_string(),
                 rev: "9f2c1e7".to_string(),
-                directory: Some(PathBuf::from("component/ddsm115/driver")),
+                directory: Some(PathBuf::from("component/ddsm115")),
             }))
         );
 

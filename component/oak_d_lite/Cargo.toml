@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-component-bno085-driver"
+name = "phoxal-component-oak_d_lite"
 version = "0.1.6"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official driver: bno085 - IMU."
+description = "Phoxal official driver: oak_d_lite - camera/depth/IMU."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-component-bno085-driver"
+name = "phoxal-component-oak_d_lite"
 path = "src/main.rs"
 
 [dependencies]

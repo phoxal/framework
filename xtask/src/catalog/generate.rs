@@ -28,7 +28,7 @@ use crate::release::metadata::ParticipantMeta;
 use crate::release::package::{self, PackagedOutput};
 use crate::release::plan::{ReleasePlan, load_release_plan};
 use crate::workspace::{
-    ArtifactKind, OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
+    OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
 };
 
 const DEFAULT_CATALOG_OUT: &str = "target/xtask/catalog/catalog.json";
@@ -242,22 +242,15 @@ fn merge_artifacts(
 /// Whether `artifact`'s *current* version has facts on disk this run: in
 /// `MetadataOnly` mode every artifact always does (a fresh host build always
 /// happens); in `PackageOutputs` mode, whether at least one packaged tarball
-/// for it is present in `--package-dir`.
+/// (binary target or, for a [`ArtifactKind::Component`], the target-independent
+/// asset bundle) is present in `--package-dir`.
 fn artifact_has_new_facts(artifact: &OfficialArtifact, options: &GenerateOptions) -> Result<bool> {
     match options.mode {
         InputMode::MetadataOnly => Ok(true),
-        InputMode::PackageOutputs => {
-            if artifact.kind == ArtifactKind::ComponentAssets {
-                Ok(
-                    packaged_tarball_path(artifact, &options.package_dir, TARGET_INDEPENDENT_SCOPE)
-                        .is_file(),
-                )
-            } else {
-                Ok(artifact.supported_target_triples().iter().any(|triple| {
-                    packaged_tarball_path(artifact, &options.package_dir, triple).is_file()
-                }))
-            }
-        }
+        InputMode::PackageOutputs => Ok(artifact
+            .supported_target_triples()
+            .iter()
+            .any(|triple| packaged_tarball_path(artifact, &options.package_dir, triple).is_file())),
     }
 }
 
@@ -266,13 +259,43 @@ fn packaged_tarball_path(artifact: &OfficialArtifact, package_dir: &Path, triple
     package_dir.join(format!("{stem}.tar.zst"))
 }
 
+/// `artifact`'s binary target triples this run - every [`OfficialArtifact::supported_target_triples`]
+/// entry except [`TARGET_INDEPENDENT_SCOPE`] (a [`ArtifactKind::Component`]'s
+/// asset-bundle output is never a binary and has no `#[derive(phoxal::Api)]`
+/// section to extract).
+fn binary_target_triples(artifact: &OfficialArtifact) -> Vec<String> {
+    artifact
+        .supported_target_triples()
+        .into_iter()
+        .filter(|triple| triple != TARGET_INDEPENDENT_SCOPE)
+        .collect()
+}
+
 fn build_entry(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
     options: &GenerateOptions,
 ) -> Result<CatalogArtifact> {
-    let contracts = if artifact.kind.has_crate() {
-        contracts_from_metadata(&extract_metadata(workspace, artifact, options)?)
+    let binary_triples = binary_target_triples(artifact);
+    // `contracts[]` is present iff this run actually produced a binary output
+    // for `artifact` (model doc: "present iff the crate has a binary"). Every
+    // discovered artifact is crate-backed, but a given run may have packaged
+    // only the target-independent asset bundle for a `Component` (e.g. a
+    // partial run) - in that case there is no binary to extract metadata
+    // from, so contracts stay empty rather than erroring.
+    let has_binary_output = match options.mode {
+        InputMode::MetadataOnly => true,
+        InputMode::PackageOutputs => binary_triples
+            .iter()
+            .any(|triple| packaged_tarball_path(artifact, &options.package_dir, triple).is_file()),
+    };
+    let contracts = if has_binary_output {
+        contracts_from_metadata(&extract_metadata(
+            workspace,
+            artifact,
+            options,
+            &binary_triples,
+        )?)
     } else {
         Vec::new()
     };
@@ -281,21 +304,16 @@ fn build_entry(
     let mut assets = None;
 
     if options.mode == InputMode::PackageOutputs {
-        if artifact.kind == ArtifactKind::ComponentAssets {
-            let output = package::read_packaged_output(
-                artifact,
-                &options.package_dir,
-                TARGET_INDEPENDENT_SCOPE,
-            )?;
-            assets = Some(blob_from_output(options, &output));
-        } else {
-            for triple in artifact.supported_target_triples() {
-                if !packaged_tarball_path(artifact, &options.package_dir, &triple).is_file() {
-                    continue;
-                }
-                let output =
-                    package::read_packaged_output(artifact, &options.package_dir, &triple)?;
-                targets.insert(triple, blob_from_output(options, &output));
+        for triple in artifact.supported_target_triples() {
+            if !packaged_tarball_path(artifact, &options.package_dir, &triple).is_file() {
+                continue;
+            }
+            let output = package::read_packaged_output(artifact, &options.package_dir, &triple)?;
+            let blob = blob_from_output(options, &output);
+            if triple == TARGET_INDEPENDENT_SCOPE {
+                assets = Some(blob);
+            } else {
+                targets.insert(triple, blob);
             }
         }
     }
@@ -316,11 +334,11 @@ fn extract_metadata(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
     options: &GenerateOptions,
+    binary_triples: &[String],
 ) -> Result<ParticipantMeta> {
     match options.mode {
         InputMode::PackageOutputs => {
-            let target_triples = artifact.supported_target_triples();
-            package::extract_metadata_from_packaged(artifact, &options.package_dir, &target_triples)
+            package::extract_metadata_from_packaged(artifact, &options.package_dir, binary_triples)
         }
         InputMode::MetadataOnly => package::build_and_extract_metadata(workspace, artifact)
             .with_context(|| format!("failed to extract API metadata for {}", artifact.package)),
@@ -365,6 +383,7 @@ mod tests {
 
     use super::*;
     use crate::release::metadata::ParticipantMetaContract;
+    use crate::workspace::ArtifactKind;
 
     fn artifact(
         package_name: &str,
@@ -384,14 +403,19 @@ mod tests {
         }
     }
 
-    fn component_assets_artifact(id: &str, version: &str) -> OfficialArtifact {
+    /// A `Component` test fixture. Tests below only ever write its
+    /// [`TARGET_INDEPENDENT_SCOPE`] tarball to disk (never a binary-target
+    /// one), so `build_entry`'s "no binary output this run" branch keeps
+    /// `contracts` empty and no metadata extraction (which would need a real
+    /// object file) is attempted - see `build_entry`'s `has_binary_output`.
+    fn component_artifact(id: &str, version: &str) -> OfficialArtifact {
         OfficialArtifact {
-            package: crate::workspace::package_identity(ArtifactKind::ComponentAssets, id),
-            package_name: None,
-            kind: ArtifactKind::ComponentAssets,
+            package: crate::workspace::package_identity(ArtifactKind::Component, id),
+            package_name: Some(format!("phoxal-component-{id}")),
+            kind: ArtifactKind::Component,
             version: version.to_string(),
             crate_dir: PathBuf::new(),
-            bin_name: None,
+            bin_name: Some(format!("phoxal-component-{id}")),
             id: id.to_string(),
             metadata: Default::default(),
         }
@@ -454,9 +478,10 @@ mod tests {
         // test through the fixture's `.tar.zst` bytes being a *real* (if
         // trivial) archive is unnecessary - metadata extraction is exercised
         // end-to-end in `release::package`'s own tests. Here we only need
-        // `merge_artifacts`' bookkeeping, so use a component-assets artifact
-        // (no metadata extraction at all) to keep the fixture simple.
-        let assets = component_assets_artifact("ddsm115", "0.1.0");
+        // `merge_artifacts`' bookkeeping, so only package the component's
+        // target-independent asset tarball (no binary target) to keep the
+        // fixture simple - see `component_artifact`'s doc comment.
+        let assets = component_artifact("ddsm115", "0.1.0");
         write_packaged_fixture(temp.path(), &assets, TARGET_INDEPENDENT_SCOPE)?;
 
         let workspace = fixture_workspace();
@@ -464,14 +489,15 @@ mod tests {
         let merged = merge_artifacts(&workspace, std::slice::from_ref(&assets), &options)?;
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].package, "phoxal/component-ddsm115-assets");
+        assert_eq!(merged[0].package, "phoxal/component-ddsm115");
         assert_eq!(merged[0].version, "0.1.0");
         assert!(merged[0].targets.is_empty());
+        assert!(merged[0].contracts.is_empty());
         let blob = merged[0].assets.as_ref().expect("assets blob present");
         assert_eq!(
             blob.url,
             "https://github.com/phoxal/framework/releases/download/build-20260708-0001234/\
-             phoxal-component-ddsm115-assets-v0.1.0-target-independent.tar.zst"
+             phoxal-component-ddsm115-v0.1.0-target-independent.tar.zst"
         );
         assert_eq!(blob.size, b"fake tarball".len() as u64);
         Ok(())
@@ -484,13 +510,13 @@ mod tests {
     #[test]
     fn merge_appends_new_versions_without_dropping_old_ones() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let assets_v2 = component_assets_artifact("ddsm115", "0.2.0");
+        let assets_v2 = component_artifact("ddsm115", "0.2.0");
         write_packaged_fixture(temp.path(), &assets_v2, TARGET_INDEPENDENT_SCOPE)?;
 
         let previous = Catalog::new(
             fixture_build(),
             vec![CatalogArtifact {
-                package: "phoxal/component-ddsm115-assets".to_string(),
+                package: "phoxal/component-ddsm115".to_string(),
                 version: "0.1.0".to_string(),
                 contracts: Vec::new(),
                 config_schema: None,
@@ -527,7 +553,7 @@ mod tests {
     #[test]
     fn regenerating_from_the_same_facts_is_idempotent() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let assets = component_assets_artifact("ddsm115", "0.1.0");
+        let assets = component_artifact("ddsm115", "0.1.0");
         write_packaged_fixture(temp.path(), &assets, TARGET_INDEPENDENT_SCOPE)?;
 
         let workspace = fixture_workspace();
@@ -543,7 +569,7 @@ mod tests {
     #[test]
     fn release_plan_facts_are_required_when_present() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let assets = component_assets_artifact("ddsm115", "0.1.0");
+        let assets = component_artifact("ddsm115", "0.1.0");
         // No fixture written: the plan claims it was built, but it wasn't.
 
         let plan = ReleasePlan {
@@ -552,7 +578,7 @@ mod tests {
                 package: assets.package.clone(),
                 version: assets.version.clone(),
                 tag: assets.release_tag(),
-                kind: ArtifactKind::ComponentAssets,
+                kind: ArtifactKind::Component,
                 target_triples: vec![TARGET_INDEPENDENT_SCOPE.to_string()],
             }],
             matrix: crate::release::plan::ReleaseMatrix {
