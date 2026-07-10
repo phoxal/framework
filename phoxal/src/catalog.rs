@@ -110,11 +110,9 @@ pub struct BuildProvenance {
 }
 
 /// One `(package, version)` entry in the full index. `package` is the
-/// provider-qualified crate identity - no `kind`, no `-driver`/`-assets`
-/// suffix mandated by the shape itself (today's workspace still discovers
-/// component drivers and component assets as separate packages - see the
-/// generate slice's report - so each may appear as its own entry until the
-/// component-as-one-crate migration, design doc §9, lands).
+/// provider-qualified crate identity. Components are one flattened
+/// `phoxal/component-<id>` entry carrying both `targets` (binary) and
+/// `assets`; no `kind` or `-driver`/`-assets` suffix is encoded by the shape.
 ///
 /// A service entry carries `targets` only; a driver-full component carries
 /// `targets` **and** `assets`; a driver-less component carries `assets`
@@ -130,9 +128,9 @@ pub struct Artifact {
     /// iff the crate has a binary. Empty for asset-only entries.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contracts: Vec<Contract>,
-    /// The participant's `robot.yaml` config JSON Schema. Always omitted for
-    /// now - the real `schemars` schema needs a host-side `build.rs` slice
-    /// that is not built yet (design doc §8/§10).
+    /// The participant's `robot.yaml` config JSON Schema. This field stays an
+    /// `Option`, populated later by the const-schema derive; that work is out
+    /// of scope here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_schema: Option<serde_json::Value>,
     /// Target triple -> the built binary tarball for that triple. Empty iff

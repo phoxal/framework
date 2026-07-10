@@ -24,16 +24,17 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use semver::Version;
 
-use phoxal::check::{ParticipantContractSurface, check_coherence};
-use phoxal::participant::metadata::ParticipantMetaContract;
-
-use super::model::{Artifact as CatalogArtifact, Blob, BuildProvenance, Catalog, Contract, Heads};
 use crate::release::metadata::ParticipantMeta;
 use crate::release::package::{self, PackagedOutput};
 use crate::release::plan::{ReleasePlan, load_release_plan};
 use crate::workspace::{
     OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
 };
+use phoxal::catalog::{
+    Artifact as CatalogArtifact, Blob, BuildProvenance, Catalog, Contract, Heads,
+};
+use phoxal::check::{ParticipantContractSurface, check_coherence};
+use phoxal::participant::metadata::ParticipantMetaContract;
 
 const DEFAULT_CATALOG_OUT: &str = "target/xtask/catalog/catalog.json";
 const DEFAULT_PACKAGE_DIR: &str = "target/xtask/release";

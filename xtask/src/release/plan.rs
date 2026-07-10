@@ -24,7 +24,8 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::model::Catalog;
+use phoxal::catalog::Catalog;
+
 use crate::catalog::verify::verify_catalog_path;
 use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, runner_for_target};
 
@@ -225,8 +226,8 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    use crate::catalog::model::{Artifact as CatalogArtifact, Blob, BuildProvenance, Heads};
     use crate::workspace::{PhoxalPackageMetadata, Workspace};
+    use phoxal::catalog::{Artifact as CatalogArtifact, Blob, BuildProvenance, Heads};
 
     use super::*;
 
