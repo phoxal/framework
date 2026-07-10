@@ -94,6 +94,15 @@ pub trait ContractBody:
     /// The single API version this body belongs to. Two bodies from different
     /// versions have different `Api`, so the type system keeps them apart.
     type Api: ApiVersion;
+    /// The version-qualified type path this body's own generation module
+    /// places it at: the version module name, then the `::`-joined node path
+    /// (dynamic-node vars are topic params, never type-path segments), then
+    /// the PascalCase type leaf, e.g. `"y2026_1::drive::Target"` or
+    /// `"y2026_1::component::motor::Command"`. This is the contract's source
+    /// identity (D1) - two contracts interoperate iff they share this exact
+    /// name - as distinct from [`TOPIC`](ContractBody::TOPIC), the resolved
+    /// wire key derived from it.
+    const NAME: &'static str;
     /// The generation-qualified wire key: the version module name, then the
     /// `/`-joined node path plus the topic leaf, with each dynamic node
     /// contributing a `{var}` placeholder, e.g. `"y2026_1/drive/state"` or

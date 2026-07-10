@@ -766,7 +766,7 @@ mod tests {
         let meta = extract_metadata_from_packaged(&artifact, dir.path(), &[triple.to_string()])?;
         assert_eq!(meta.contracts.len(), 1);
         assert_eq!(meta.contracts[0].role, "publish");
-        assert_eq!(meta.contracts[0].contract, "y2026_7/battery/state");
+        assert_eq!(meta.contracts[0].contract, "y2026_7::battery::State");
         Ok(())
     }
 

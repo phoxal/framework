@@ -43,15 +43,16 @@ pub(crate) struct ParticipantMetaContract {
     /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
     /// (`phoxal::participant::ContractRole`, snake_case).
     pub role: String,
-    /// The contract's RESOLVED, generation-qualified wire key - `<Body as
-    /// phoxal_bus::ContractBody>::TOPIC` (e.g. `"y2026_1/drive/target"`),
+    /// The contract's RESOLVED, version-qualified type-path name - `<Body as
+    /// phoxal_bus::ContractBody>::NAME` (e.g. `"y2026_1::drive::Target"`),
     /// not the body type as written in the participant's source. Every
     /// participant writes `use phoxal_api::y2026_N as api;`, so a
     /// source-text string like `"api::drive::Target"` would have the
     /// generation erased and could not distinguish a `y2026_1` contract from
-    /// a same-named `y2026_7` one; `TOPIC` is the identity that actually
-    /// disambiguates generations on the wire (D1), so it is what
-    /// `#[derive(phoxal::Api)]` records here.
+    /// a same-named `y2026_7` one; `NAME` is the identity that actually
+    /// disambiguates generations (D1), so it is what
+    /// `#[derive(phoxal::Api)]` records here. Distinct from `TOPIC`, the
+    /// resolved wire key derived from the same name.
     pub contract: String,
 }
 
@@ -131,7 +132,7 @@ mod tests {
     /// participant, extract its section from the actual built artifact on
     /// disk, and assert the parsed contracts match what `service/battery/src/main.rs`
     /// declares (`Api { state: Publisher<api::battery::State> }`), recorded
-    /// as the RESOLVED `TOPIC` (`"y2026_7/battery/state"` - `battery::State`
+    /// as the RESOLVED `NAME` (`"y2026_7::battery::State"` - `battery::State`
     /// lives on the standalone `y2026_7` generation, D1's ground-breaker),
     /// not the source-written `api::battery::State` (F2-names).
     #[test]
@@ -162,7 +163,7 @@ mod tests {
             vec![ParticipantMetaContract {
                 field: "state".to_string(),
                 role: "publish".to_string(),
-                contract: "y2026_7/battery/state".to_string(),
+                contract: "y2026_7::battery::State".to_string(),
             }]
         );
         Ok(())
@@ -239,11 +240,11 @@ mod tests {
     #[test]
     fn extracts_metadata_from_foreign_format_and_arch_object_files() -> Result<()> {
         let payload =
-            br#"{"participant_api":"Api","contracts":[{"field":"state","role":"publish","contract":"y2026_1/drive/state"}]}"#;
+            br#"{"participant_api":"Api","contracts":[{"field":"state","role":"publish","contract":"y2026_1::drive::State"}]}"#;
         let expected = vec![ParticipantMetaContract {
             field: "state".to_string(),
             role: "publish".to_string(),
-            contract: "y2026_1/drive/state".to_string(),
+            contract: "y2026_1::drive::State".to_string(),
         }];
 
         // aarch64 ELF (Linux robot / release binary shape), `.phoxal_api_meta`.

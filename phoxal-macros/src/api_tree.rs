@@ -668,8 +668,16 @@ fn expand_node_module(
         // what makes different versioned names physically distinct Zenoh keys.
         let key = format!("{version}/{}", topic_key(&node_key_prefix, &topic.leaf));
         let role = topic.role.bus_variant();
+        // The version-qualified type-path name (D1): the generation, then the
+        // `::`-joined node path (vars excluded - they are topic params, not
+        // type-path segments), then the body's own PascalCase leaf. This is the
+        // exact same identity `contract_manifest_entries`' `family` computes for
+        // the xtask manifest, kept in lockstep by construction (both derive it
+        // from `family_path`/`version`).
+        let name_for = |body: &Ident| format!("{version}::{family_path}::{body}");
         match &topic.kind {
             TopicKind::PubSub(body) => {
+                let name = name_for(body);
                 // The role rides as an inherent `#[doc(hidden)] pub const ROLE` on
                 // the body: additive surface that does not touch `ContractBody`.
                 // The side-branded builders are what enforce owner/client (L1);
@@ -678,6 +686,7 @@ fn expand_node_module(
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = self::__PhoxalApiMarker;
+                        const NAME: &'static str = #name;
                         const TOPIC: &'static str = #key;
                     }
                     impl #body {
@@ -688,13 +697,17 @@ fn expand_node_module(
                 });
             }
             TopicKind::Query { request, response } => {
+                let request_name = name_for(request);
+                let response_name = name_for(response);
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #request {
                         type Api = self::__PhoxalApiMarker;
+                        const NAME: &'static str = #request_name;
                         const TOPIC: &'static str = #key;
                     }
                     impl ::phoxal_bus::ContractBody for #response {
                         type Api = self::__PhoxalApiMarker;
+                        const NAME: &'static str = #response_name;
                         const TOPIC: &'static str = #key;
                     }
                     impl #request {
@@ -1224,6 +1237,10 @@ mod tests {
             "TOPIC must fold the generation into the wire key (D1): {expanded}"
         );
         assert!(
+            expanded.contains("const NAME : & 'static str = \"y2026_1::drive::Target\""),
+            "NAME must be the version-qualified type path (D1): {expanded}"
+        );
+        assert!(
             !expanded.contains("SCHEMA_ID"),
             "there is no schema_id left to emit: {expanded}"
         );
@@ -1253,6 +1270,12 @@ mod tests {
                 "const TOPIC : & 'static str = \"y2026_1/component/{instance}/motor/{capability}/command\""
             ),
             "dynamic-node TOPIC must carry both the generation and the {{var}} placeholders: {expanded}"
+        );
+        assert!(
+            expanded
+                .contains("const NAME : & 'static str = \"y2026_1::component::motor::Command\""),
+            "dynamic-node NAME must be the clean type path with no {{var}} placeholders - \
+             dynamic-node vars are topic params, never type-path segments: {expanded}"
         );
     }
 
@@ -1442,6 +1465,15 @@ mod tests {
             "both the request and response bodies of a query topic share its \
              generation-qualified key: {expanded}"
         );
+        assert!(
+            expanded.contains("const NAME : & 'static str = \"y2026_1::asset::GetRequest\""),
+            "the request body gets its own type-path NAME: {expanded}"
+        );
+        assert!(
+            expanded.contains("const NAME : & 'static str = \"y2026_1::asset::GetResponse\""),
+            "the response body gets its own type-path NAME, distinct from the \
+             request's even though they share one TOPIC: {expanded}"
+        );
     }
 
     /// Self-contained absolute paths (no depth-counted `super::`): a node nested
@@ -1479,6 +1511,10 @@ mod tests {
             expanded.contains("const TOPIC : & 'static str = \"y2026_1/a/{x}/b/{y}/c/{z}/leaf\""),
             "the three-level dynamic path must still be fully generation- and \
              var-qualified: {expanded}"
+        );
+        assert!(
+            expanded.contains("const NAME : & 'static str = \"y2026_1::a::b::c::Body\""),
+            "NAME excludes every dynamic var from the type path, unlike TOPIC: {expanded}"
         );
         assert!(
             expanded.contains("type Api = self :: __PhoxalApiMarker ;"),

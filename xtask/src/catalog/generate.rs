@@ -610,12 +610,12 @@ mod tests {
                 ParticipantMetaContract {
                     field: "b".to_string(),
                     role: "publish".to_string(),
-                    contract: "y2026_1/drive/target".to_string(),
+                    contract: "y2026_1::drive::Target".to_string(),
                 },
                 ParticipantMetaContract {
                     field: "a".to_string(),
                     role: "publish".to_string(),
-                    contract: "y2026_1/drive/target".to_string(),
+                    contract: "y2026_1::drive::Target".to_string(),
                 },
             ],
         };
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(
             contracts,
             vec![Contract {
-                name: "y2026_1/drive/target".to_string(),
+                name: "y2026_1::drive::Target".to_string(),
                 role: "publish".to_string(),
             }]
         );
