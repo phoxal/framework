@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.19.5...phoxal-api-v0.20.0) - 2026-07-10
+
+### Other
+
+- phoxal-api refactor — finish batch (nested-nodes, Declares/server gating, y2026_7 mixing) ([#195](https://github.com/phoxal/framework/pull/195))
+- *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
+
 ## [0.19.5](https://github.com/phoxal/framework/compare/phoxal-api-v0.19.4...phoxal-api-v0.19.5) - 2026-07-08
 
 ### Other
