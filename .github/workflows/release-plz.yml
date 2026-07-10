@@ -386,10 +386,20 @@ jobs:
 
       # One workspace release PR now covers libraries AND binaries (binaries via
       # git_only in release-plz.toml). No separate artifact-version-bump PR.
+      #
+      # Token hardening (coherence-gate design doc §5): no `|| secrets.GITHUB_TOKEN`
+      # fallback here. A PR created with the plain repo `GITHUB_TOKEN` triggers NO
+      # downstream workflows (a hard GitHub restriction on Actions-authored
+      # content), which would silently deadlock the release train once
+      # `coherence-check.yml` becomes a required status on this PR - the PR would
+      # sit forever with no check ever reporting. Losing both the App token and
+      # `RELEASE_TOKEN` is a real misconfiguration and should fail this job loudly
+      # instead. `RELEASE_TOKEN` (a PAT) stays as the fallback because a
+      # PAT-created PR triggers workflows normally, same as the App token.
       - name: Run release-plz (release-pr)
         uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
