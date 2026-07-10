@@ -14,33 +14,32 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 ## Releasing
 
-Each crate carries its own version and is released only when it changes, but the
-4 library crates and the official artifact crates are released by different
-mechanisms.
+Each crate carries its own version and is released only when it changes.
+[release-plz](https://release-plz.dev) owns versioning for *every* crate in the
+workspace - the 4 library crates and the official artifact crates alike.
 
-[release-plz](https://release-plz.dev) owns the library crates only
-(`phoxal-bus`, `phoxal-api`, `phoxal`, `phoxal-macros`).
 On a schedule (and on demand via workflow dispatch), release-plz opens or
-updates a single `chore(release): release` PR that bumps just the library
-crates whose code changed since their last release and refreshes their
-changelogs.
-Merging that PR publishes the changed library crates to crates.io at their own
-versions and tags each `<crate>-v<version>` with a GitHub release.
+updates a single `chore(release): release` PR that bumps every crate whose code
+changed since its last release and refreshes its changelog.
+Merging that PR publishes the changed library crates (`phoxal-bus`,
+`phoxal-api`, `phoxal`, `phoxal-macros`) to crates.io and tags each
+`<crate>-v<version>`.
+The official artifact crates (`phoxal-service-<name>`, component drivers,
+`phoxal-tool-<name>`, `phoxal-simulator-<name>`) keep `publish = false` in their
+own `Cargo.toml`; release-plz versions them via `git_only` (a git-tag version
+ledger, never crates.io) and creates no per-artifact GitHub release.
 
-The official artifact crates (`phoxal-service-<name>`, `phoxal-driver-<name>`,
-`phoxal-tool-<name>`, and `phoxal-simulator-<name>`) set `publish = false` in
-their own `Cargo.toml`, so release-plz drops them before its own config ever
-applies - they are entirely outside release-plz's scope. Instead, `cargo xtask
-release cut` tags and drafts a GitHub release for each artifact whose current
-Cargo.toml version isn't tagged yet, and `cargo xtask release bump --changed`
-computes their version bumps from git diff. Both run in the same workflow as
-release-plz.
+Building and publishing the artifact binaries is decoupled from versioning.
+On each push to `main`, the release workflow computes which artifact versions
+are not yet in the catalog, builds only those, and uploads them - together with
+an assembled `catalog.json` full index - to a single immutable
+`build-YYYYMMDD-<run>` GitHub release, which is marked "latest" once the gate
+passes.
+A pinned artifact version resolves through that one catalog to its permanent
+download URL.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).
-
-> Per-target standalone binary tarballs are uploaded to the git-only artifact
-> releases created by this workflow.
 
 ## License
 

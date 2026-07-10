@@ -1,16 +1,36 @@
-# Library release configuration (plan #01, revised).
+# release-plz owns versioning for EVERY crate in the workspace - libraries and
+# binaries alike (design doc `organization/tmp/ci-release-refactor/design.md`
+# §4.1). One workspace release PR bumps everything, writes every changelog,
+# and on merge creates every tag; there is no separate artifact-bump PR and no
+# `cargo xtask release bump`/`cargo xtask release cut` (both deleted).
 #
-# release-plz owns per-package versions, changelogs, tags, and GitHub releases
-# for the 4 library crates only (phoxal, phoxal-api, phoxal-bus, phoxal-macros),
-# which inherit the workspace defaults below and publish to crates.io.
+# Two package classes, split by [[package]] overrides below:
 #
-# Official artifact crates (services/drivers/tools/simulator) are NOT release-plz
-# packages: their Cargo.toml sets `publish = false` (enforced by
-# `validate_artifact_publish` in xtask/src/workspace.rs), and release-plz drops
-# cargo-unpublishable packages before its own config ever applies - so they never
-# reach release-plz's update engine, cheaply and for free. Artifact tags, draft
-# GitHub releases, and version bumps are owned by xtask instead: see
-# `cargo xtask release cut` and `cargo xtask release bump --changed`.
+# - Libraries (`phoxal`, `phoxal-api`, `phoxal-bus`, `phoxal-macros`): inherit
+#   the [workspace] defaults - `publish = true` (release-plz's own default,
+#   not overridden here), `git_only = false`. They publish to crates.io and
+#   get `phoxal*-v*` tags on release-PR merge.
+# - Binaries (every service/tool/simulator/component-driver crate - 27 today):
+#   Cargo.toml keeps `publish = false` (cargo-level safety, enforced by
+#   `validate_artifact_publish` in xtask/src/workspace.rs) AND each gets an
+#   explicit [[package]] entry below setting release-plz's own `publish =
+#   false` (never `cargo publish`, redundant with Cargo.toml but explicit),
+#   `git_only = true` (release-plz reads/writes its version ledger from git
+#   tags instead of querying crates.io - the documented mode for a
+#   cargo-unpublishable crate that still needs version management), and
+#   `git_release_enable = false` (no per-binary GitHub release; the binary's
+#   build ends up in this run's `build-*` snapshot release instead, produced
+#   by the release workflow, not release-plz).
+#
+# VERIFIED (release-plz 0.3.159, local test - see design doc §4.1): with
+# `publish = false` + `git_only = true`, release-plz does NOT drop the crate.
+# It versions it and writes its changelog off the git tag, never touching
+# crates.io. With no matching tag yet it treats the package as an initial
+# release, so cold-start after the artifact-tag wipe works.
+#
+# release-plz has no glob/prefix matching for [[package]] - each entry names
+# one crate - hence the explicit list below rather than a directory pattern.
+
 [workspace]
 release_always = true
 dependencies_update = false
@@ -19,3 +39,180 @@ git_release_name = "{{ package }} v{{ version }}"
 pr_name = "chore(release): release"
 semver_check = true              # cargo-semver-checks decides breaking bump severity
 # no version_group (it reintroduces a shared version axis)
+#
+# GitHub's mutable "latest" release pointer belongs EXCLUSIVELY to the build-*
+# snapshot release (marked latest by the release workflow only after the catalog
+# gate passes) - because the CLI resolves the catalog by fetching "latest", and
+# the workflow accumulates the full-index catalog by reading the previous
+# "latest". release-plz creates a GitHub release for each published library
+# crate (`git_release_enable` defaults to true) and would, by default
+# (`git_release_latest` defaults to true), mark that library release "latest" -
+# stealing the pointer whenever a library bump rides the same shared release PR
+# as a binary bump, so the workflow's "fetch previous catalog from latest" would
+# miss the real catalog and silently truncate the index. Pin it off so only the
+# workflow's explicit `gh release edit "$build_tag" --latest` ever moves latest.
+git_release_latest = false
+
+# --- Binaries: versioned via git tags only, never published, no GitHub release ---
+
+[[package]]
+name = "phoxal-component-bno085-driver"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-ddsm115-driver"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-oak_d_lite-driver"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-vl53l1x-driver"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-zed_f9p-driver"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-asset"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-battery"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-drive"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-explore"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-follow"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-frame"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-joint"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-localize"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-map"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-mission"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-motion"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-odometry"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-perception"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-plan"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-power"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-presence"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-safety"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-video"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-simulator-webots-controller"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-simulator-webots-supervisor"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-joypad"
+publish = false
+git_only = true
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-router"
+publish = false
+git_only = true
+git_release_enable = false

@@ -520,8 +520,9 @@ fn validate_artifact_publish(
     if !publish.is_some_and(|registries| registries.is_empty()) {
         bail!(
             "{package_name} is an official artifact but {} does not set publish = false; \
-             artifacts are git-released by xtask (`cargo xtask release cut`) and must never be \
-             crates.io-publishable. Set publish = false",
+             artifacts stay off crates.io - release-plz versions them via `git_only` \
+             (release-plz.toml) and they are built into the build-snapshot release by the \
+             release workflow, never `cargo publish`ed. Set publish = false",
             relative_display(root, manifest_path)
         );
     }
