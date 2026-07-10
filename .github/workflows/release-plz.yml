@@ -13,11 +13,16 @@ name: release-plz
 # catalog (fetched from the current "latest" release), so a single catalog
 # resolves any pinned version. See the design doc for the whole model.
 #
-# Three push-triggered jobs:
+# Three push-triggered jobs. `release-plz release` runs on every push (a
+# version-based no-op except on the release merge), but the build-snapshot wave
+# (jobs 2-3, and the plan/provenance/create-release steps of job 1) runs ONLY
+# when the push is the merge of release-plz's `chore(release)` PR - the
+# deliberate release act. A plain feature merge never triggers a build.
 #   1. release    - release-plz publishes the 4 libs to crates.io + creates all
-#                   tags (lib + binary git_only); then computes this run's build
-#                   set (artifact versions not already in the latest catalog)
-#                   and creates the empty `build-*` release.
+#                   tags (lib + binary git_only); then, IF this is the release
+#                   merge, computes this run's build set (artifact versions not
+#                   already in the latest catalog) and creates the empty
+#                   `build-*` release.
 #   2. build      - one matrix leg per (artifact, target): package the tarball
 #                   and upload it to the `build-*` release.
 #   3. catalog    - assemble catalog.json from this run's facts + the previous
@@ -85,11 +90,36 @@ jobs:
           GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+      # The build-snapshot wave (build binaries + assemble catalog + mark latest)
+      # runs ONLY when this push is the merge of release-plz's `chore(release)`
+      # PR - the deliberate release act. A normal feature merge must NOT trigger
+      # a build, even one that introduces an artifact identity not yet in the
+      # catalog (a component rename did exactly that once and rebuilt the whole
+      # component set off a non-release merge). release-plz's PR title is fixed
+      # (`chore(release)`, see release-plz.toml `pr_name`); its squash-merge lands
+      # a commit whose subject starts with `chore(release)`, and that is the
+      # signal. `release-plz release` above still runs every push - it is a
+      # version-based no-op except on the release merge - so library publishing
+      # stays robust regardless of this gate.
+      - name: Detect release-PR merge
+        id: gate
+        run: |
+          set -euo pipefail
+          subject="$(git log -1 --pretty=%s)"
+          if [[ "$subject" == chore\(release\)* ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+            echo "release-plz PR merge detected: $subject"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+            echo "not a release merge ($subject); skipping the build-snapshot wave"
+          fi
+
       # This run's identity: `build-YYYYMMDD-<zero-padded run_number>` and a
       # single UTC timestamp reused by every downstream job so the catalog's
       # provenance is internally consistent.
       - name: Compute build provenance
         id: provenance
+        if: steps.gate.outputs.is_release == 'true'
         run: |
           set -euo pipefail
           build_tag="build-$(date -u +%Y%m%d)-$(printf '%07d' "${{ github.run_number }}")"
@@ -103,6 +133,7 @@ jobs:
       # start, design §4.3) leaves no file and the plan/generate steps below run
       # unfiltered.
       - name: Fetch previous catalog (latest release)
+        if: steps.gate.outputs.is_release == 'true'
         run: |
           set -euo pipefail
           mkdir -p prev
@@ -119,6 +150,7 @@ jobs:
       # catalog. Emits `released` (any artifact to build?) and `matrix`.
       - name: Compute release plan
         id: plan
+        if: steps.gate.outputs.is_release == 'true'
         run: |
           set -euo pipefail
           previous=()
