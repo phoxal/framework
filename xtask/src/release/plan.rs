@@ -14,7 +14,7 @@
 //! previous catalog, planning fails: silently excluding it would make the
 //! workspace at HEAD differ from the complete package set users download.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -55,6 +55,7 @@ pub(crate) struct ReleasePlan {
     pub schema: String,
     pub artifacts: Vec<ReleasePlanArtifact>,
     pub matrix: ReleaseMatrix,
+    pub assets: Vec<ReleasePackage>,
 }
 
 /// One artifact this run's build-set includes. `package` is the
@@ -82,12 +83,16 @@ pub(crate) struct ReleaseMatrix {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReleaseMatrixEntry {
-    pub package: String,
-    pub version: String,
-    pub tag: String,
-    pub kind: ArtifactKind,
     pub target: String,
     pub runner: String,
+    pub packages: Vec<ReleasePackage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReleasePackage {
+    pub package: String,
+    pub version: String,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -146,9 +151,10 @@ pub(crate) fn write_release_plan(path: &Path, plan: &ReleasePlan) -> Result<()> 
 /// already present in `previous_catalog` is a release invariant violation,
 /// because `release_always = true` must bump and repackage the whole set.
 ///
-/// Target selection uses [`OfficialArtifact::supported_target_triples`]: every
-/// binary gets the uniform six-target matrix and components additionally get
-/// their target-independent asset bundle.
+/// Target selection uses [`OfficialArtifact::supported_target_triples`].
+/// Binary work is grouped into one row per target, while components' additional
+/// target-independent bundles are kept in [`ReleasePlan::assets`] for the
+/// workflow's single assets job.
 pub(crate) fn build_release_plan(
     workspace: &Workspace,
     previous_catalog: Option<&Catalog>,
@@ -187,24 +193,40 @@ pub(crate) fn build_release_plan(
         .collect();
     artifacts.sort_by(|left, right| left.package.cmp(&right.package));
 
-    let mut include = Vec::new();
+    let mut packages_by_target: BTreeMap<String, Vec<ReleasePackage>> = BTreeMap::new();
+    let mut assets = Vec::new();
     for artifact in &artifacts {
         for target in &artifact.target_triples {
-            include.push(ReleaseMatrixEntry {
+            let package = ReleasePackage {
                 package: artifact.package.clone(),
                 version: artifact.version.clone(),
-                tag: artifact.tag.clone(),
-                kind: artifact.kind,
-                target: target.clone(),
-                runner: runner_for_target(target)?.to_string(),
-            });
+            };
+            if target == crate::workspace::TARGET_INDEPENDENT_SCOPE {
+                assets.push(package);
+            } else {
+                packages_by_target
+                    .entry(target.clone())
+                    .or_default()
+                    .push(package);
+            }
         }
     }
+    let include = packages_by_target
+        .into_iter()
+        .map(|(target, packages)| {
+            Ok(ReleaseMatrixEntry {
+                runner: runner_for_target(&target)?.to_string(),
+                target,
+                packages,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(ReleasePlan {
         schema: RELEASE_PLAN_SCHEMA.to_string(),
         artifacts,
         matrix: ReleaseMatrix { include },
+        assets,
     })
 }
 
@@ -224,6 +246,8 @@ fn write_github_output(plan: &ReleasePlan) -> Result<()> {
         .context("--github-output requires GITHUB_OUTPUT to be set")?;
     let matrix =
         serde_json::to_string(&plan.matrix).context("failed to serialize release matrix")?;
+    let assets = serde_json::to_string(&plan.assets)
+        .context("failed to serialize target-independent release packages")?;
     let mut output = OpenOptions::new()
         .create(true)
         .append(true)
@@ -231,6 +255,7 @@ fn write_github_output(plan: &ReleasePlan) -> Result<()> {
         .with_context(|| format!("failed to open {}", output_path.display()))?;
     writeln!(output, "released={}", !plan.artifacts.is_empty())?;
     writeln!(output, "matrix={matrix}")?;
+    writeln!(output, "assets={assets}")?;
     Ok(())
 }
 
@@ -324,7 +349,13 @@ mod tests {
         assert_eq!(plan.artifacts.len(), 2);
         assert_eq!(plan.artifacts[0].target_triples, uniform_six);
         assert_eq!(plan.artifacts[1].target_triples, uniform_six);
-        assert_eq!(plan.matrix.include.len(), 12);
+        assert_eq!(plan.matrix.include.len(), 6);
+        for row in &plan.matrix.include {
+            assert_eq!(row.packages.len(), 2);
+            assert_eq!(row.packages[0].package, "phoxal/service-drive");
+            assert_eq!(row.packages[1].package, "phoxal/tool-router");
+        }
+        assert!(plan.assets.is_empty());
         Ok(())
     }
 
@@ -434,7 +465,40 @@ mod tests {
                 "x86_64-unknown-linux-musl"
             ]
         );
-        assert_eq!(plan.matrix.include.len(), 7);
+        assert_eq!(plan.matrix.include.len(), 6);
+        assert_eq!(plan.assets.len(), 1);
+        assert_eq!(plan.assets[0].package, "phoxal/component-ddsm115");
+        Ok(())
+    }
+
+    #[test]
+    fn matrix_rows_only_contain_packages_supporting_the_target() -> Result<()> {
+        let service = artifact(
+            "phoxal-service-drive",
+            ArtifactKind::Service,
+            "drive",
+            "0.1.0",
+        );
+        let mut joypad = artifact("phoxal-tool-joypad", ArtifactKind::Tool, "joypad", "0.1.0");
+        joypad.metadata.unsupported_targets = vec!["*-musl".to_string()];
+        let workspace = workspace_with(vec![service, joypad]);
+
+        let plan = build_release_plan(&workspace, None)?;
+
+        assert_eq!(plan.matrix.include.len(), 6);
+        for row in &plan.matrix.include {
+            let packages = row
+                .packages
+                .iter()
+                .map(|package| package.package.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(packages.first(), Some(&"phoxal/service-drive"));
+            if row.target.ends_with("-musl") {
+                assert_eq!(packages, vec!["phoxal/service-drive"]);
+            } else {
+                assert_eq!(packages, vec!["phoxal/service-drive", "phoxal/tool-joypad"]);
+            }
+        }
         Ok(())
     }
 }
