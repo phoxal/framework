@@ -1,31 +1,45 @@
-//! Graph validation for Phoxal participant graphs (D59/D63/D1).
+//! Graph validation for Phoxal participant graphs (D59/D63/D1), plus the
+//! deployment coherence pass (coherence-gate design doc, `organization`
+//! `tmp/coherence-gate/readme.md`).
 //!
 //! This is the pure core: given the `emit-apis` report of every participant in a
 //! robot graph, it is fully unit-testable without Docker or a registry,
 //! independent of how the reports are obtained (resolved images, local
 //! binaries).
 //!
-//! **There is no interop gate (D1).** Contract identity is now the
-//! generation-qualified `family` name alone (e.g. `"y2026_1::drive::Target"`);
+//! **There is no interop gate on contract identity (D1).** Contract identity is
+//! the generation-qualified `family` name alone (e.g. `"y2026_1::drive::Target"`);
 //! there is no `schema_id` hash to agree on, because two participants naming the
 //! same generation-qualified contract are compatible by construction (same name
 //! ⇒ same frozen shape, enforced by the type system and made physically real by
 //! the generation-qualified wire key). Two participants naming *different*
-//! contracts are simply different topics, never a collision. So there is
-//! nothing left for this checker to gate on the contract axis; `Report` still
-//! carries [`Problem::InvalidConfig`] for the one thing that *is* still a real
-//! runtime hazard: a user runtime's manifest config not matching its emitted
-//! JSON Schema.
+//! contracts are simply different topics, never a collision. `check_plan`/
+//! `check_graph` below therefore carry only [`Problem::InvalidConfig`], the one
+//! thing that *is* still a real runtime hazard on that axis: a user runtime's
+//! manifest config not matching its emitted JSON Schema.
 //!
-//! Nothing about pub/sub topology, query responder counts, or topic shape is
-//! checked here. A robot legitimately consumes commands whose sender is
-//! external to the checked participant set (an operator UI, a joystick, a sim
-//! controller), and legitimately offers query endpoints that nothing on-robot
-//! currently calls (the callers are external tools). The bus already makes
-//! these non-issues at runtime: a publisher checks for subscribers before
-//! sending, and a query server starts regardless of current clients. So a
-//! consumed contract with no producer and a produced contract with no consumer
-//! are both legal states, not problems - this checker does not track them.
+//! Nothing about pub/sub topology or query responder counts is checked by
+//! `check_plan`/`check_graph`. A robot legitimately consumes commands whose
+//! sender is external to the checked participant set (an operator UI, a
+//! joystick, a sim controller), and legitimately offers query endpoints that
+//! nothing on-robot currently calls (the callers are external tools). The bus
+//! already makes these non-issues at runtime: a publisher checks for
+//! subscribers before sending, and a query server starts regardless of current
+//! clients. So a consumed contract with no producer and a produced contract
+//! with no consumer are both legal states on their own - **that open-world
+//! stance stays.**
+//!
+//! What the open-world stance does not cover is a contract that is
+//! demonstrably produced/served in-set at one generation while a participant
+//! consumes/asks a *different, disjoint* generation of that same logical
+//! contract - clear evidence of a botched migration, not an external
+//! counterpart. [`check_coherence`] is that one contract-axis check: a pure,
+//! mismatch-only pass over each participant's `#[derive(phoxal::Api)]`
+//! contract surface (the `generation`/`contract`/`role`/`external` entries of
+//! [`crate::participant::metadata::ParticipantMetaContract`]). It blocks only
+//! on generation disjointness where a counterpart is provably in-set, never on
+//! absence alone - see its own docs and the coherence-gate design doc §3 for
+//! the exact rule and worked examples.
 //!
 //! Simulation plans differ from deploy/run plans only in *which participants the
 //! caller passes*: in sim, a component driver is simply not launched and the
@@ -34,6 +48,10 @@
 //! construction. There is no separate substitution concept, no completeness
 //! gate, and no missing-producer diagnostic here - whether a contract has a
 //! producer is a caller/deployment choice, not something this checker judges.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::participant::metadata::ParticipantMetaContract;
 
 /// One participant's `emit-apis` report, reduced to what graph validation needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,6 +209,183 @@ pub fn check_graph(participants: &[ParticipantApis]) -> Report {
 pub fn check_plan(input: CheckInput<'_>) -> Report {
     let _ = input.participants;
     Report::default()
+}
+
+// ---------------------------------------------------------------------------
+// Coherence pass (coherence-gate design doc §3)
+// ---------------------------------------------------------------------------
+
+/// One participant's contract surface for [`check_coherence`]: its identity
+/// plus every `{role, generation, contract, external}` entry recorded by its
+/// `#[derive(phoxal::Api)]` metadata section (design doc §2).
+///
+/// Deliberately separate from [`ParticipantApis`] above: that type identifies
+/// a contract by a single generation-qualified `family` string with no role
+/// axis (it feeds the topology/config checker, `check_plan`), while the
+/// coherence pass needs `generation` and `contract` as separate fields plus
+/// the `role`/`external` facts to group by logical contract and apply the
+/// role-asymmetric rule (design doc §2 "the check never parses a name").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParticipantContractSurface {
+    /// The participant identity named in diagnostics.
+    pub participant_id: String,
+    /// This participant's contract surface entries, in any order.
+    pub contracts: Vec<ParticipantMetaContract>,
+}
+
+/// One coherence mismatch found by [`check_coherence`] (design doc §3).
+///
+/// Both variants block only on **positive disjointness evidence** - a
+/// counterpart that is demonstrably present in-set at generations that share
+/// nothing with this participant's own. Absence alone (an empty `Pub(L)` or
+/// `Serve(L)`) is never a mismatch; that is exactly the open-world stance the
+/// module docs describe, which this pass narrows only where evidence exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoherenceMismatch {
+    /// A participant's non-`external` `subscribe` generations for a logical
+    /// contract share no generation with any in-set publisher of that
+    /// contract, even though the contract *is* published in-set (design doc
+    /// §3, "pub/sub - per-participant overlap"). Checked per subscribing
+    /// participant, never pooled: one up-to-date subscriber elsewhere does
+    /// not excuse another participant's stranded hard cutover.
+    PubSubDisjoint {
+        participant_id: String,
+        /// The logical contract (the `contract` field alone; generation-independent).
+        contract: String,
+        /// This participant's non-`external` `subscribe` generations for `contract`.
+        subscribed: BTreeSet<String>,
+        /// Every generation published in-set for `contract`.
+        published: BTreeSet<String>,
+    },
+    /// A participant's non-`external` `ask` generation for a logical contract
+    /// has no same-generation `serve` in-set: a permanently dead query
+    /// (design doc §3, "serve/ask - every ask matched"; `QueryError::Timeout`,
+    /// D31). The one closed-world rule in the design - checked per ask
+    /// generation, since a server superset elsewhere in the same contract
+    /// does not answer a different, unserved generation.
+    UnservedAsk {
+        participant_id: String,
+        /// The logical contract (the `contract` field alone; generation-independent).
+        contract: String,
+        /// The ask generation with no matching in-set server.
+        generation: String,
+        /// Every generation served in-set for `contract` (may be empty).
+        served: BTreeSet<String>,
+    },
+}
+
+/// The outcome of the coherence pass: the mismatches found (empty == coherent).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CoherenceReport {
+    pub mismatches: Vec<CoherenceMismatch>,
+}
+
+impl CoherenceReport {
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        self.mismatches.is_empty()
+    }
+}
+
+/// Run the deployment coherence pass over a whole participant set (design doc
+/// §3).
+///
+/// Pure and total: no I/O, no building, no binary parsing - callers hand it
+/// already-parsed contract surfaces. Groups every entry by its **logical
+/// contract** (the `contract` field alone, generation-independent) and
+/// applies the role-asymmetric rule:
+///
+/// - **Pub/sub** blocks a subscribing participant only when the contract *is*
+///   published in-set (`Pub(L)` non-empty) and this participant's own
+///   non-`external` subscribe generations share nothing with it. Checked
+///   per-participant, not pooled, so one dual-subscribing participant never
+///   masks another's stranded hard cutover.
+/// - **Serve/ask** blocks every non-`external` ask generation that has no
+///   same-generation server in-set, regardless of whether the contract is
+///   served at *other* generations - the one closed-world rule in the design,
+///   because an unmatched ask never resolves to a useful intermediate state
+///   (it times out on every call, D31), unlike an unmatched subscribe.
+///
+/// An `external` entry (`#[phoxal(external)]`, design doc §1) skips its own
+/// edge's requirement entirely: it is excluded from `SubP(L)`/`AskP(L)` before
+/// either check runs, so a participant whose only edge for a contract is
+/// marked `external` is never flagged for it.
+#[must_use]
+pub fn check_coherence(participants: &[ParticipantContractSurface]) -> CoherenceReport {
+    // Pub(L)/Serve(L), pooled across the whole set (never filtered by
+    // `external`: the marker only ever applies to consumer roles, design doc
+    // §1, so every publish/serve entry counts toward these pools).
+    let mut published: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut served: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for p in participants {
+        for c in &p.contracts {
+            match c.role.as_str() {
+                "publish" => {
+                    published
+                        .entry(c.contract.as_str())
+                        .or_default()
+                        .insert(c.generation.as_str());
+                }
+                "serve" => {
+                    served
+                        .entry(c.contract.as_str())
+                        .or_default()
+                        .insert(c.generation.as_str());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut mismatches = Vec::new();
+
+    for p in participants {
+        // Pub/sub: per-participant SubP(L), non-external edges only.
+        let mut sub_by_contract: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for c in &p.contracts {
+            if c.role == "subscribe" && !c.external {
+                sub_by_contract
+                    .entry(c.contract.as_str())
+                    .or_default()
+                    .insert(c.generation.as_str());
+            }
+        }
+        for (contract, subscribed) in sub_by_contract {
+            let Some(published) = published.get(contract) else {
+                continue; // Pub(L) empty -> open world, OK.
+            };
+            if subscribed.is_disjoint(published) {
+                mismatches.push(CoherenceMismatch::PubSubDisjoint {
+                    participant_id: p.participant_id.clone(),
+                    contract: contract.to_string(),
+                    subscribed: subscribed.iter().map(|s| (*s).to_string()).collect(),
+                    published: published.iter().map(|s| (*s).to_string()).collect(),
+                });
+            }
+        }
+
+        // Serve/ask: every non-external ask generation needs a same-generation server.
+        for c in &p.contracts {
+            if c.role != "ask" || c.external {
+                continue;
+            }
+            let contract_served = served.get(c.contract.as_str());
+            let has_server =
+                contract_served.is_some_and(|gens| gens.contains(c.generation.as_str()));
+            if !has_server {
+                mismatches.push(CoherenceMismatch::UnservedAsk {
+                    participant_id: p.participant_id.clone(),
+                    contract: c.contract.clone(),
+                    generation: c.generation.clone(),
+                    served: contract_served
+                        .map(|gens| gens.iter().map(|s| (*s).to_string()).collect())
+                        .unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    CoherenceReport { mismatches }
 }
 
 #[cfg(test)]
@@ -370,5 +565,317 @@ mod tests {
     #[test]
     fn empty_graph_is_ok() {
         assert!(check_graph(&[]).is_ok());
+    }
+
+    // -----------------------------------------------------------------
+    // check_coherence (coherence-gate design doc §3 worked examples)
+    // -----------------------------------------------------------------
+
+    fn meta_contract(
+        role: &str,
+        generation: &str,
+        contract: &str,
+        external: bool,
+    ) -> ParticipantMetaContract {
+        ParticipantMetaContract {
+            role: role.to_string(),
+            generation: generation.to_string(),
+            contract: contract.to_string(),
+            external,
+        }
+    }
+
+    fn surface(id: &str, contracts: Vec<ParticipantMetaContract>) -> ParticipantContractSurface {
+        ParticipantContractSurface {
+            participant_id: id.to_string(),
+            contracts,
+        }
+    }
+
+    fn gens(vals: &[&str]) -> BTreeSet<String> {
+        vals.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn coherence_empty_participant_set_is_ok() {
+        assert!(check_coherence(&[]).is_ok());
+    }
+
+    /// §3 worked example 1: "pub `y2026_1`, sub `y2026_7`, nothing else ->
+    /// disjoint -> block".
+    #[test]
+    fn coherence_pub_sub_disjoint_generations_block() {
+        let participants = vec![
+            surface(
+                "drive",
+                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+            ),
+            surface(
+                "mission",
+                vec![meta_contract(
+                    "subscribe",
+                    "y2026_7",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+        ];
+
+        let report = check_coherence(&participants);
+
+        assert_eq!(
+            report.mismatches,
+            vec![CoherenceMismatch::PubSubDisjoint {
+                participant_id: "mission".to_string(),
+                contract: "drive::Target".to_string(),
+                subscribed: gens(&["y2026_7"]),
+                published: gens(&["y2026_1"]),
+            }]
+        );
+    }
+
+    /// §3 worked example 2: "pub `y2026_1`; one service subscribes both
+    /// `y2026_1` and `y2026_7` -> valid" (the dual-subscribe spans a
+    /// migration).
+    #[test]
+    fn coherence_dual_subscribe_spans_migration_is_valid() {
+        let participants = vec![
+            surface(
+                "drive",
+                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+            ),
+            surface(
+                "mission",
+                vec![
+                    meta_contract("subscribe", "y2026_1", "drive::Target", false),
+                    meta_contract("subscribe", "y2026_7", "drive::Target", false),
+                ],
+            ),
+        ];
+
+        assert!(check_coherence(&participants).is_ok());
+    }
+
+    /// §3 worked example 3: the same service then drops its `y2026_1` sub ->
+    /// `SubP={7}` vs `Pub={1}` -> disjoint -> block.
+    #[test]
+    fn coherence_dropping_old_sub_after_dual_subscribe_blocks() {
+        let participants = vec![
+            surface(
+                "drive",
+                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+            ),
+            surface(
+                "mission",
+                vec![meta_contract(
+                    "subscribe",
+                    "y2026_7",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+        ];
+
+        let report = check_coherence(&participants);
+
+        assert_eq!(
+            report.mismatches,
+            vec![CoherenceMismatch::PubSubDisjoint {
+                participant_id: "mission".to_string(),
+                contract: "drive::Target".to_string(),
+                subscribed: gens(&["y2026_7"]),
+                published: gens(&["y2026_1"]),
+            }]
+        );
+    }
+
+    /// §3 worked example 4 (the pooled-rule trap): "pub `y2026_1`; service A
+    /// subs `{1}`; service B subs `{7}` only -> A passes, B blocks". A pooled
+    /// `Pub(L) ∩ Sub(L)` over the union would wrongly pass this via A's
+    /// overlap; the per-participant rule must flag B specifically.
+    #[test]
+    fn coherence_pooled_overlap_does_not_excuse_a_stranded_subscriber() {
+        let participants = vec![
+            surface(
+                "drive",
+                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+            ),
+            surface(
+                "service_a",
+                vec![meta_contract(
+                    "subscribe",
+                    "y2026_1",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+            surface(
+                "service_b",
+                vec![meta_contract(
+                    "subscribe",
+                    "y2026_7",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+        ];
+
+        let report = check_coherence(&participants);
+
+        assert_eq!(
+            report.mismatches,
+            vec![CoherenceMismatch::PubSubDisjoint {
+                participant_id: "service_b".to_string(),
+                contract: "drive::Target".to_string(),
+                subscribed: gens(&["y2026_7"]),
+                published: gens(&["y2026_1"]),
+            }]
+        );
+    }
+
+    /// §3 ask worked example 1: "servers `{L, L+1}`, ask `{L+1}` -> valid"
+    /// (the extra server@L is a harmless unused server).
+    #[test]
+    fn coherence_ask_matched_by_a_superset_server_is_valid() {
+        let participants = vec![
+            surface(
+                "asset",
+                vec![
+                    meta_contract("serve", "y2026_1", "asset::Get", false),
+                    meta_contract("serve", "y2026_7", "asset::Get", false),
+                ],
+            ),
+            surface(
+                "client",
+                vec![meta_contract("ask", "y2026_7", "asset::Get", false)],
+            ),
+        ];
+
+        assert!(check_coherence(&participants).is_ok());
+    }
+
+    /// §3 ask worked example 2: "server `{L}`, ask `{L+1}` -> block".
+    #[test]
+    fn coherence_ask_with_no_matching_server_generation_blocks() {
+        let participants = vec![
+            surface(
+                "asset",
+                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+            ),
+            surface(
+                "client",
+                vec![meta_contract("ask", "y2026_7", "asset::Get", false)],
+            ),
+        ];
+
+        let report = check_coherence(&participants);
+
+        assert_eq!(
+            report.mismatches,
+            vec![CoherenceMismatch::UnservedAsk {
+                participant_id: "client".to_string(),
+                contract: "asset::Get".to_string(),
+                generation: "y2026_7".to_string(),
+                served: gens(&["y2026_1"]),
+            }]
+        );
+    }
+
+    /// §3 ask worked example 3: "server `{L}`, ask `{L, L+1}` -> ask@L is
+    /// answered, but ask@L+1 has no server -> block" - only the L+1 ask.
+    #[test]
+    fn coherence_partial_ask_coverage_blocks_only_the_unserved_generation() {
+        let participants = vec![
+            surface(
+                "asset",
+                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+            ),
+            surface(
+                "client",
+                vec![
+                    meta_contract("ask", "y2026_1", "asset::Get", false),
+                    meta_contract("ask", "y2026_7", "asset::Get", false),
+                ],
+            ),
+        ];
+
+        let report = check_coherence(&participants);
+
+        assert_eq!(
+            report.mismatches,
+            vec![CoherenceMismatch::UnservedAsk {
+                participant_id: "client".to_string(),
+                contract: "asset::Get".to_string(),
+                generation: "y2026_7".to_string(),
+                served: gens(&["y2026_1"]),
+            }]
+        );
+    }
+
+    /// §1: `#[phoxal(external)]` on a subscribe edge skips that edge's
+    /// pub/sub requirement entirely, even though the generations are
+    /// otherwise disjoint from the in-set publisher.
+    #[test]
+    fn coherence_external_marker_excuses_a_subscribe_mismatch() {
+        let participants = vec![
+            surface(
+                "drive",
+                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+            ),
+            surface(
+                "teleop",
+                vec![meta_contract("subscribe", "y2026_7", "drive::Target", true)],
+            ),
+        ];
+
+        assert!(check_coherence(&participants).is_ok());
+    }
+
+    /// §1: `#[phoxal(external)]` on an ask edge skips that edge's
+    /// serve/ask requirement entirely, even though no in-set server answers
+    /// that generation.
+    #[test]
+    fn coherence_external_marker_excuses_an_ask_mismatch() {
+        let participants = vec![
+            surface(
+                "asset",
+                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+            ),
+            surface(
+                "client",
+                vec![meta_contract("ask", "y2026_7", "asset::Get", true)],
+            ),
+        ];
+
+        assert!(check_coherence(&participants).is_ok());
+    }
+
+    /// §3: "if `Pub(L)` is empty -> OK (open world: the producer may be
+    /// external to the set... or intentionally absent)".
+    #[test]
+    fn coherence_open_world_ok_when_nothing_publishes_in_set() {
+        let participants = vec![surface(
+            "mission",
+            vec![meta_contract(
+                "subscribe",
+                "y2026_1",
+                "mission::Command",
+                false,
+            )],
+        )];
+
+        assert!(check_coherence(&participants).is_ok());
+    }
+
+    /// §3: "a server with no matching ask is harmless (unused server,
+    /// callers may be external tools)".
+    #[test]
+    fn coherence_server_with_no_asker_is_harmless() {
+        let participants = vec![surface(
+            "asset",
+            vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+        )];
+
+        assert!(check_coherence(&participants).is_ok());
     }
 }
