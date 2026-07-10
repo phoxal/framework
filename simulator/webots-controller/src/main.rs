@@ -536,11 +536,12 @@ fn load_simulation_specs(root: &Path, robot: &Robot) -> Result<BTreeMap<String, 
 }
 
 /// Resolves the on-disk directory for a used component type's simulation
-/// config, mirroring `phoxal::model::v0::Robot`'s component-assets
+/// config, mirroring `phoxal::model::v0::Robot`'s component-config
 /// resolution: the staged `<bundle_root>/components/<type>` directory by
 /// default, overridden by an `artifacts.pins` path pin keyed by the
-/// component's provider-qualified assets package id
-/// (`phoxal/component-<type>-assets`) when that override actually contains a
+/// component's provider-qualified package id (`phoxal/component-<type>` -
+/// one crate ships both the driver binary and the asset bundle, design doc
+/// §9, no `-assets` suffix) when that override actually contains a
 /// `simulation.yaml`.
 fn component_simulation_path(
     bundle_root: &Path,
@@ -548,8 +549,8 @@ fn component_simulation_path(
     component_type: &str,
 ) -> PathBuf {
     let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);
-    let assets_pin_key = format!("phoxal/component-{component_type}-assets");
-    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&assets_pin_key) else {
+    let pin_key = format!("phoxal/component-{component_type}");
+    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&pin_key) else {
         return staged_path;
     };
 

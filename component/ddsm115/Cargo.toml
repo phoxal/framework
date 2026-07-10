@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-component-oak_d_lite-driver"
+name = "phoxal-component-ddsm115"
 version = "0.1.6"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official driver: oak_d_lite - camera/depth/IMU."
+description = "Phoxal official driver: ddsm115 - wheel hub motor."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-component-oak_d_lite-driver"
+name = "phoxal-component-ddsm115"
 path = "src/main.rs"
 
 [dependencies]

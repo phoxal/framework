@@ -309,17 +309,18 @@ impl Robot {
 /// The default is the staged `<bundle_root>/components/<type>` directory that
 /// `phoxal-cli` populates for official/resolved components. A local/forked
 /// component overrides this via an `artifacts.pins` path pin keyed by its
-/// provider-qualified assets package id (`phoxal/component-<type>-assets`);
-/// the override is only honored when it actually contains a `component.yaml`,
-/// otherwise resolution falls back to the staged path.
+/// provider-qualified package id (`phoxal/component-<type>` - one crate ships
+/// both the driver binary and the asset bundle, design doc §9, no `-assets`
+/// suffix); the override is only honored when it actually contains a
+/// `component.yaml`, otherwise resolution falls back to the staged path.
 fn component_config_path(
     bundle_root: &Path,
     manifest: &crate::model::robot::v0::Robot,
     component_type: &str,
 ) -> PathBuf {
     let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);
-    let assets_pin_key = format!("phoxal/component-{component_type}-assets");
-    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&assets_pin_key) else {
+    let pin_key = format!("phoxal/component-{component_type}");
+    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&pin_key) else {
         return staged_path;
     };
 

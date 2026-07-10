@@ -10,7 +10,7 @@
 #   the [workspace] defaults - `publish = true` (release-plz's own default,
 #   not overridden here), `git_only = false`. They publish to crates.io and
 #   get `phoxal*-v*` tags on release-PR merge.
-# - Binaries (every service/tool/simulator/component-driver crate - 27 today):
+# - Binaries (every service/tool/simulator/component crate - 27 today):
 #   Cargo.toml keeps `publish = false` (cargo-level safety, enforced by
 #   `validate_artifact_publish` in xtask/src/workspace.rs) AND each gets an
 #   explicit [[package]] entry below setting release-plz's own `publish =
@@ -56,31 +56,31 @@ git_release_latest = false
 # --- Binaries: versioned via git tags only, never published, no GitHub release ---
 
 [[package]]
-name = "phoxal-component-bno085-driver"
+name = "phoxal-component-bno085"
 publish = false
 git_only = true
 git_release_enable = false
 
 [[package]]
-name = "phoxal-component-ddsm115-driver"
+name = "phoxal-component-ddsm115"
 publish = false
 git_only = true
 git_release_enable = false
 
 [[package]]
-name = "phoxal-component-oak_d_lite-driver"
+name = "phoxal-component-oak_d_lite"
 publish = false
 git_only = true
 git_release_enable = false
 
 [[package]]
-name = "phoxal-component-vl53l1x-driver"
+name = "phoxal-component-vl53l1x"
 publish = false
 git_only = true
 git_release_enable = false
 
 [[package]]
-name = "phoxal-component-zed_f9p-driver"
+name = "phoxal-component-zed_f9p"
 publish = false
 git_only = true
 git_release_enable = false

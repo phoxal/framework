@@ -11,7 +11,7 @@ repository = "https://github.com/phoxal/framework"
 [workspace]
 resolver = "3"
 # Greenfield rewrite (tmp/framework-rewrite): the engine crate + its proc-macros,
-# plus the official services and catalog component drivers on the new authoring
+# plus the official services and catalog component crates on the new authoring
 # surface (component/<name> also carries the component definition: component.yaml,
 # structure.urdf, simulation.yaml).
 members = [
@@ -19,11 +19,11 @@ members = [
     "phoxal-api",
     "phoxal-bus",
     "phoxal-macros",
-    "component/bno085/driver",
-    "component/ddsm115/driver",
-    "component/oak_d_lite/driver",
-    "component/vl53l1x/driver",
-    "component/zed_f9p/driver",
+    "component/bno085",
+    "component/ddsm115",
+    "component/oak_d_lite",
+    "component/vl53l1x",
+    "component/zed_f9p",
     "service/asset",
     "service/battery",
     "service/drive",
@@ -57,11 +57,11 @@ default-members = [
     "phoxal-api",
     "phoxal-bus",
     "phoxal-macros",
-    "component/bno085/driver",
-    "component/ddsm115/driver",
-    "component/oak_d_lite/driver",
-    "component/vl53l1x/driver",
-    "component/zed_f9p/driver",
+    "component/bno085",
+    "component/ddsm115",
+    "component/oak_d_lite",
+    "component/vl53l1x",
+    "component/zed_f9p",
     "service/asset",
     "service/battery",
     "service/drive",
@@ -138,7 +138,7 @@ zenoh = { version = "1.9.0", default-features = false, features = [
 # Carry a version (not just a path) on every internal dep: cargo strips the path
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
-# also covers the service and component driver crates' dependency on `phoxal`.
+# also covers the service and component crates' dependency on `phoxal`.
 phoxal = { path = "phoxal", version = "0.30" }
 phoxal-api = { path = "phoxal-api", version = "0.19" }
 phoxal-bus = { path = "phoxal-bus", version = "0.20" }

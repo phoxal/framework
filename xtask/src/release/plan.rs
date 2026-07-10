@@ -384,27 +384,40 @@ mod tests {
     }
 
     #[test]
-    fn component_driver_and_component_assets_are_planned_independently() -> Result<()> {
-        // The component-as-one-crate migration (design doc §9) hasn't landed in
-        // this workspace yet, so `ComponentDriver` and `ComponentAssets` still
-        // discover as two separate packages with two separate versions; the
-        // plan diffs each against the catalog on its own.
+    fn component_plans_as_one_artifact_with_binary_and_asset_target_triples() -> Result<()> {
+        // The component-as-one-crate migration (design doc §9): a `Component`
+        // is one package/version carrying both its binary targets and its
+        // target-independent asset bundle, so it plans as a single
+        // `ReleasePlanArtifact` whose `target_triples` cover both outputs.
         let workspace = workspace_with(vec![artifact(
-            "phoxal-component-ddsm115-driver",
-            ArtifactKind::ComponentDriver,
+            "phoxal-component-ddsm115",
+            ArtifactKind::Component,
             "ddsm115",
             "0.2.0",
         )]);
         let previous = Catalog::new(
             fixture_build_provenance(),
-            vec![catalog_entry("phoxal/component-ddsm115-driver", "0.1.0")],
+            vec![catalog_entry("phoxal/component-ddsm115", "0.1.0")],
         );
 
         let plan = build_release_plan(&workspace, Some(&previous))?;
 
         assert_eq!(plan.artifacts.len(), 1);
-        assert_eq!(plan.artifacts[0].package, "phoxal/component-ddsm115-driver");
+        assert_eq!(plan.artifacts[0].package, "phoxal/component-ddsm115");
         assert_eq!(plan.artifacts[0].version, "0.2.0");
+        assert_eq!(
+            plan.artifacts[0].target_triples,
+            vec![
+                "aarch64-apple-darwin",
+                "aarch64-unknown-linux-gnu",
+                "aarch64-unknown-linux-musl",
+                "target-independent",
+                "x86_64-apple-darwin",
+                "x86_64-unknown-linux-gnu",
+                "x86_64-unknown-linux-musl"
+            ]
+        );
+        assert_eq!(plan.matrix.include.len(), 7);
         Ok(())
     }
 }

@@ -71,22 +71,16 @@ pub fn run(args: Args) -> Result<()> {
                 artifact.package,
                 artifact.version,
                 target_triple,
-                if artifact.kind.has_crate() {
-                    "cargo auditable build"
-                } else {
+                if target_triple == TARGET_INDEPENDENT_SCOPE {
                     "a plain asset tarball"
+                } else {
+                    "cargo auditable build"
                 }
             );
             continue;
         }
-        let packaged = package_artifact(
-            &workspace,
-            &artifact,
-            &out_dir,
-            &host_triple,
-            &target_triple,
-        )
-        .with_context(|| format!("failed to package {}", artifact.package))?;
+        let packaged = package_artifact(&workspace, &artifact, &out_dir, &target_triple)
+            .with_context(|| format!("failed to package {}", artifact.package))?;
         println!(
             "packaged {} v{} for {} -> {}, {}",
             artifact.package,
@@ -125,15 +119,14 @@ pub(crate) fn package_artifact(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
     out_dir: &Path,
-    _host_triple: &str,
     target_triple: &str,
 ) -> Result<PackagedArtifact> {
-    if !artifact.kind.has_crate() {
+    validate_supported_target(artifact, target_triple)?;
+    if target_triple == TARGET_INDEPENDENT_SCOPE {
         return package_component_assets(artifact, out_dir, target_triple);
     }
 
     artifact.require_package_name()?;
-    validate_supported_target(artifact, target_triple)?;
     build_target_artifact(workspace.root(), artifact, target_triple)?;
     let binary_path = target_binary_path(workspace, artifact, target_triple)?;
     // Packaging still validates the participant's compiled-in API metadata as
@@ -156,29 +149,28 @@ pub(crate) fn package_artifact(
     Ok(PackagedArtifact { tarball, checksum })
 }
 
-/// The bundle files an [`ArtifactKind::ComponentAssets`] tarball includes,
-/// relative to `artifact.crate_dir` (the `component/<id>/` directory):
-/// `component.yaml`, `simulation.yaml`, `structure.urdf` when present, and the
-/// full `meshes/` tree. `driver/` (the separate `ComponentDriver` package) and
-/// `assets.version` (xtask-internal release metadata, not a runtime asset) are
-/// always excluded (docs #21).
+/// The bundle files a [`ArtifactKind::Component`] crate's target-independent
+/// asset output includes, relative to `artifact.crate_dir` (the flattened
+/// `component/<id>/` crate directory, design doc §9): `component.yaml`,
+/// `simulation.yaml`, `structure.urdf` when present, and the full `meshes/`
+/// tree. This is an explicit allowlist, so the crate's own files (`Cargo.toml`,
+/// `src/`, `CHANGELOG.md`) are naturally excluded without special-casing them.
 const COMPONENT_ASSETS_TOP_LEVEL_FILES: [&str; 3] =
     ["component.yaml", "simulation.yaml", "structure.urdf"];
 const COMPONENT_ASSETS_TREE_DIRS: [&str; 1] = ["meshes"];
 
-/// Packages a target-independent `ComponentAssets` bundle: no cargo build, no
-/// binary, no `emit-apis` sidecar - just a deterministic tarball of the
-/// component's asset files plus a checksum (docs #21).
+/// Packages a component crate's target-independent asset bundle: no cargo
+/// build, no binary, no `emit-apis` sidecar - just a deterministic tarball of
+/// the component's asset files plus a checksum (docs #21, design doc §9).
 fn package_component_assets(
     artifact: &OfficialArtifact,
     out_dir: &Path,
     target_triple: &str,
 ) -> Result<PackagedArtifact> {
-    validate_supported_target(artifact, target_triple)?;
     if target_triple != TARGET_INDEPENDENT_SCOPE {
         bail!(
-            "{} is a component_assets package and can only be packaged for the \
-             target-independent scope '{TARGET_INDEPENDENT_SCOPE}', not '{target_triple}'",
+            "{} asset bundle can only be packaged for the target-independent scope \
+             '{TARGET_INDEPENDENT_SCOPE}', not '{target_triple}'",
             artifact.package
         );
     }
@@ -194,9 +186,11 @@ fn package_component_assets(
     Ok(PackagedArtifact { tarball, checksum })
 }
 
-/// Walks `component_dir` (the `component/<id>/` directory) and returns every
-/// bundle file's path relative to `component_dir`, sorted for a deterministic
-/// tarball. Excludes `driver/` and [`crate::workspace::ASSETS_VERSION_FILE`].
+/// Walks `component_dir` (the `component/<id>/` crate directory) and returns
+/// every bundle file's path relative to `component_dir`, sorted for a
+/// deterministic tarball. Only the allowlisted asset files/dirs
+/// ([`COMPONENT_ASSETS_TOP_LEVEL_FILES`], [`COMPONENT_ASSETS_TREE_DIRS`]) are
+/// considered, so the crate's `Cargo.toml`/`src/` are never walked.
 fn component_assets_bundle_entries(component_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = Vec::new();
 
@@ -713,21 +707,21 @@ mod tests {
     }
 
     #[test]
-    fn asset_stem_projects_component_driver_package_to_filesystem_safe_form() {
+    fn asset_stem_projects_component_package_to_filesystem_safe_form() {
         let artifact = OfficialArtifact {
-            package: "phoxal/component-ddsm115-driver".to_string(),
-            package_name: Some("phoxal-component-ddsm115-driver".to_string()),
-            kind: ArtifactKind::ComponentDriver,
+            package: "phoxal/component-ddsm115".to_string(),
+            package_name: Some("phoxal-component-ddsm115".to_string()),
+            kind: ArtifactKind::Component,
             version: "0.1.5".to_string(),
-            crate_dir: PathBuf::from("component/ddsm115/driver"),
-            bin_name: Some("phoxal-component-ddsm115-driver".to_string()),
+            crate_dir: PathBuf::from("component/ddsm115"),
+            bin_name: Some("phoxal-component-ddsm115".to_string()),
             id: "ddsm115".to_string(),
             metadata: Default::default(),
         };
 
         assert_eq!(
             asset_stem(&artifact, "aarch64-unknown-linux-gnu"),
-            "phoxal-component-ddsm115-driver-v0.1.5-aarch64-unknown-linux-gnu"
+            "phoxal-component-ddsm115-v0.1.5-aarch64-unknown-linux-gnu"
         );
     }
 

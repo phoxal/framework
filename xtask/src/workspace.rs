@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::fmt;
-use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -29,58 +28,43 @@ const BINARY_TARGETS: [&str; 6] = [
 /// provider segment; the grammar has no other official provider today.
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
-/// The target-independent scope token recorded for a [`ArtifactKind::ComponentAssets`]
-/// package instead of a real target triple: assets are not per-architecture
-/// binaries, so catalog artifact maps carry exactly this one key rather than
-/// pretending to be a per-triple binary matrix.
+/// The target-independent scope token recorded for a [`ArtifactKind::Component`]
+/// package's asset bundle instead of a real target triple: assets are not
+/// per-architecture binaries, so catalog artifact maps carry exactly this one
+/// key for that output rather than pretending it is a per-triple binary.
 pub const TARGET_INDEPENDENT_SCOPE: &str = "target-independent";
-
-/// The file xtask reads for a driverless-package's component assets version,
-/// since a `ComponentAssets` package has no `Cargo.toml` to carry a `[package]
-/// version`. Lives beside `component.yaml` at the component root; holds nothing
-/// but a trimmed semver string. This is xtask-owned release metadata, not part
-/// of the `phoxal` robot/component model that parses `component.yaml`.
-pub const ASSETS_VERSION_FILE: &str = "assets.version";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Service,
-    /// Target-independent component files: `component.yaml`, `simulation.yaml`,
-    /// `structure.urdf`, meshes, and other asset data. Discovered from
-    /// `component/<id>/component.yaml`; carries no Cargo crate.
-    ComponentAssets,
-    /// The optional target-specific checked driver binary for a component.
-    /// Discovered from `component/<id>/driver/Cargo.toml`.
-    ComponentDriver,
+    /// A component crate: ships the driver binary (built for
+    /// [`TARGET_INDEPENDENT_SCOPE`]'s sibling per-target triples) AND the
+    /// component's target-independent asset bundle (`component.yaml`,
+    /// `simulation.yaml`, `structure.urdf`, `meshes/` if present) in one
+    /// crate/release (design doc §9). Discovered from
+    /// `component/<id>/Cargo.toml`.
+    Component,
     Tool,
     Simulator,
 }
 
 impl ArtifactKind {
-    /// The catalog's serialized `kind` tag (`xtask/src/catalog/schema.rs`):
-    /// the public catalog vocabulary Phase 7 introduces for the assets/driver
-    /// split.
+    /// The catalog's serialized `kind` tag (`xtask/src/catalog/schema.rs`).
     pub fn catalog_kind(self) -> &'static str {
         match self {
             ArtifactKind::Service => "service",
-            ArtifactKind::ComponentAssets => "component_assets",
-            ArtifactKind::ComponentDriver => "component_driver",
+            ArtifactKind::Component => "component",
             ArtifactKind::Tool => "tool",
             ArtifactKind::Simulator => "simulator",
         }
     }
 
-    /// Whether this kind is a target-independent package: a single
-    /// [`TARGET_INDEPENDENT_SCOPE`] token rather than a per-triple binary matrix.
-    pub fn is_target_independent(self) -> bool {
-        matches!(self, ArtifactKind::ComponentAssets)
-    }
-
-    /// Whether this kind has a Cargo crate backing it. `ComponentAssets` is
-    /// discovered from `component.yaml` alone and has no `Cargo.toml`/binary.
-    pub fn has_crate(self) -> bool {
-        !matches!(self, ArtifactKind::ComponentAssets)
+    /// Whether this kind ships a target-independent asset bundle in addition
+    /// to its per-target binary output (design doc §9: every `component/`
+    /// crate carries both).
+    pub fn ships_assets(self) -> bool {
+        matches!(self, ArtifactKind::Component)
     }
 }
 
@@ -105,19 +89,22 @@ pub struct PhoxalPackageMetadata {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OfficialArtifact {
-    /// The provider-qualified public identity, e.g. `phoxal/component-ddsm115-driver`.
+    /// The provider-qualified public identity, e.g. `phoxal/component-ddsm115`.
     /// This is the sole public identity; release tags/assets are filesystem-safe
     /// projections of it (see [`Self::release_tag`]).
     pub package: String,
-    /// The Cargo crate name backing this package (e.g. `phoxal-component-ddsm115-driver`),
-    /// or `None` for a [`ArtifactKind::ComponentAssets`] package, which has no
-    /// `Cargo.toml`. Internal-only: never a public identity.
+    /// The Cargo crate name backing this package (e.g. `phoxal-component-ddsm115`).
+    /// Every discovered [`OfficialArtifact`] is crate-backed today; this stays
+    /// `Option` for a future crate with no binary target (see
+    /// [`Self::require_package_name`]).
     pub package_name: Option<String>,
     pub kind: ArtifactKind,
     pub version: String,
     pub crate_dir: PathBuf,
-    /// The release binary name, or `None` for a [`ArtifactKind::ComponentAssets`]
-    /// package, which has no binary target.
+    /// The release binary name, or `None` for a future driver-less component
+    /// crate (design doc §9: a crate with an empty `src/lib.rs` and no
+    /// `[[bin]]`, ships only its asset bundle). None of today's discovered
+    /// components are driver-less.
     pub bin_name: Option<String>,
     pub id: String,
     pub metadata: PhoxalPackageMetadata,
@@ -125,7 +112,7 @@ pub struct OfficialArtifact {
 
 impl OfficialArtifact {
     /// The release tag: a filesystem-safe projection of the provider-qualified
-    /// `package` (`phoxal/component-ddsm115-driver` -> `phoxal-component-ddsm115-driver-v0.1.5`).
+    /// `package` (`phoxal/component-ddsm115` -> `phoxal-component-ddsm115-v0.1.5`).
     pub fn release_tag(&self) -> String {
         format!(
             "{}-v{}",
@@ -134,14 +121,21 @@ impl OfficialArtifact {
         )
     }
 
+    /// The full set of release targets this artifact packages for: its
+    /// per-triple binary targets, plus [`TARGET_INDEPENDENT_SCOPE`] when the
+    /// kind also ships a target-independent asset bundle
+    /// ([`ArtifactKind::ships_assets`], design doc §9).
     pub fn supported_target_triples(&self) -> Vec<String> {
-        if self.kind.is_target_independent() {
-            return vec![TARGET_INDEPENDENT_SCOPE.to_string()];
-        }
+        // Every discovered artifact is crate-backed and builds the uniform
+        // six-target matrix (#197); a `Component` additionally ships the
+        // target-independent asset bundle (design doc §9).
         let mut targets = BINARY_TARGETS
             .iter()
             .map(|target| (*target).to_string())
             .collect::<Vec<_>>();
+        if self.kind.ships_assets() {
+            targets.push(TARGET_INDEPENDENT_SCOPE.to_string());
+        }
         targets.extend(self.metadata.extra_target_triples.iter().cloned());
         targets.sort();
         targets.dedup();
@@ -154,9 +148,7 @@ impl OfficialArtifact {
             .any(|candidate| candidate == target)
     }
 
-    /// The Cargo crate name, or an error naming the package if it has none
-    /// (a [`ArtifactKind::ComponentAssets`] package has no `Cargo.toml`/binary,
-    /// so crate-oriented operations - build, package, upload, bump - do not apply).
+    /// The Cargo crate name, or an error naming the package if it has none.
     pub fn require_package_name(&self) -> Result<&str> {
         self.package_name.as_deref().with_context(|| {
             format!(
@@ -167,20 +159,21 @@ impl OfficialArtifact {
         })
     }
 
-    /// The release binary name, or an error naming the package if it has none.
+    /// The release binary name, or an error naming the package if it has none
+    /// (a driver-less component crate - see [`Self::bin_name`]).
     pub fn require_bin_name(&self) -> Result<&str> {
         self.bin_name.as_deref().with_context(|| {
             format!(
                 "{} is a {} package with no binary target; this operation only applies to \
-                 crate-backed packages",
+                 packages with a driver binary",
                 self.package, self.kind
             )
         })
     }
 }
 
-/// Projects a provider-qualified `package` (`phoxal/component-ddsm115-driver`)
-/// to its filesystem-safe form (`phoxal-component-ddsm115-driver`) for release
+/// Projects a provider-qualified `package` (`phoxal/component-ddsm115`)
+/// to its filesystem-safe form (`phoxal-component-ddsm115`) for release
 /// tags and asset filenames (`docs #21` "Release tags and assets").
 pub fn filesystem_safe_package(package: &str) -> String {
     package.replace('/', "-")
@@ -197,9 +190,9 @@ pub fn runner_for_target(target: &str) -> Result<&'static str> {
         // `macos-13` is the last Intel (x86_64) image GitHub hosts.
         "aarch64-apple-darwin" => Ok("macos-14"),
         "x86_64-apple-darwin" => Ok("macos-13"),
-        // `ComponentAssets` packaging just tars files (no cargo build, no
-        // per-architecture binary), so any host runner works; the cheapest
-        // Linux runner is used.
+        // A component's asset-bundle packaging just tars files (no cargo
+        // build, no per-architecture binary), so any host runner works; the
+        // cheapest Linux runner is used.
         TARGET_INDEPENDENT_SCOPE => Ok("ubuntu-24.04"),
         _ => bail!("no CI runner is configured for release target {target}"),
     }
@@ -281,8 +274,6 @@ impl Workspace {
             });
         }
 
-        official_artifacts.extend(discover_component_assets(&root)?);
-
         official_artifacts.sort_by(|left, right| {
             left.kind
                 .cmp(&right.kind)
@@ -339,72 +330,10 @@ impl Workspace {
     }
 }
 
-/// Discovers every `component/<id>/component.yaml` as a target-independent
-/// `ComponentAssets` package. Unlike crate-backed artifacts, these are not seen
-/// by `cargo_metadata` (no `Cargo.toml`), so they are walked directly off disk.
-fn discover_component_assets(root: &Path) -> Result<Vec<OfficialArtifact>> {
-    let component_root = root.join("component");
-    if !component_root.is_dir() {
-        return Ok(Vec::new());
-    }
-
-    let mut assets = Vec::new();
-    let mut entries = fs::read_dir(&component_root)
-        .with_context(|| format!("failed to read {}", component_root.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("failed to read {}", component_root.display()))?;
-    entries.sort();
-
-    for component_dir in entries {
-        if !component_dir.is_dir() {
-            continue;
-        }
-        let component_yaml = component_dir.join("component.yaml");
-        if !component_yaml.is_file() {
-            continue;
-        }
-        let id = component_dir
-            .file_name()
-            .and_then(|name| name.to_str())
-            .with_context(|| format!("{} has no UTF-8 directory name", component_dir.display()))?
-            .to_string();
-        if id.is_empty() {
-            bail!("{} has an empty component id", component_dir.display());
-        }
-        let version = read_assets_version(&component_dir, &id)?;
-        assets.push(OfficialArtifact {
-            package: package_identity(ArtifactKind::ComponentAssets, &id),
-            package_name: None,
-            kind: ArtifactKind::ComponentAssets,
-            version,
-            crate_dir: component_dir,
-            bin_name: None,
-            id,
-            metadata: PhoxalPackageMetadata::default(),
-        });
-    }
-
-    Ok(assets)
-}
-
-fn read_assets_version(component_dir: &Path, id: &str) -> Result<String> {
-    let version_path = component_dir.join(ASSETS_VERSION_FILE);
-    let text = fs::read_to_string(&version_path).with_context(|| {
-        format!(
-            "component '{id}' has a component.yaml but no {} recording its assets package version",
-            version_path.display()
-        )
-    })?;
-    let version = text.trim();
-    if version.is_empty() {
-        bail!("{} is empty", version_path.display());
-    }
-    Ok(version.to_string())
-}
-
 /// The provider-qualified public identity for a discovered package
-/// (`phoxal/service-drive`, `phoxal/component-ddsm115-assets`, ...).
+/// (`phoxal/service-drive`, `phoxal/component-ddsm115`, ...). No `kind`
+/// suffix - a component crate is one package carrying both its binary and
+/// asset outputs (design doc §9).
 pub fn package_identity(kind: ArtifactKind, id: &str) -> String {
     format!("{PHOXAL_PROVIDER}/{}", package_name_segment(kind, id))
 }
@@ -412,8 +341,7 @@ pub fn package_identity(kind: ArtifactKind, id: &str) -> String {
 fn package_name_segment(kind: ArtifactKind, id: &str) -> String {
     match kind {
         ArtifactKind::Service => format!("service-{id}"),
-        ArtifactKind::ComponentAssets => format!("component-{id}-assets"),
-        ArtifactKind::ComponentDriver => format!("component-{id}-driver"),
+        ArtifactKind::Component => format!("component-{id}"),
         ArtifactKind::Tool => format!("tool-{id}"),
         ArtifactKind::Simulator => format!("simulator-{id}"),
     }
@@ -448,32 +376,13 @@ fn classify_manifest_path(root: &Path, manifest_path: &Path) -> Result<ManifestC
         return Ok(ManifestClassification::Excluded);
     }
 
-    if top_level == "component" {
-        if components.len() != 4
-            || components[1].is_empty()
-            || components[2] != "driver"
-            || components[3] != "Cargo.toml"
-        {
-            bail!(
-                "workspace package manifest {} is nested under artifact root 'component'; \
-                 component driver crates must live exactly at \
-                 component/<id>/driver/Cargo.toml",
-                relative.display()
-            );
-        }
-        return Ok(ManifestClassification::Artifact {
-            kind: ArtifactKind::ComponentDriver,
-            id: components[1].to_string(),
-        });
-    }
-
     let Some(kind) = artifact_kind_from_directory(top_level) else {
         return Ok(ManifestClassification::NonArtifact);
     };
     if components.len() != 3 || components[2] != "Cargo.toml" || components[1].is_empty() {
         bail!(
             "workspace package manifest {} is nested under artifact root '{}'; official artifacts \
-             must live exactly at {{service,tool,simulator}}/<id>/Cargo.toml",
+             must live exactly at {{service,component,tool,simulator}}/<id>/Cargo.toml",
             relative.display(),
             top_level
         );
@@ -499,6 +408,7 @@ fn path_components(path: &Path) -> Result<Vec<&str>> {
 fn artifact_kind_from_directory(directory: &str) -> Option<ArtifactKind> {
     match directory {
         "service" => Some(ArtifactKind::Service),
+        "component" => Some(ArtifactKind::Component),
         "tool" => Some(ArtifactKind::Tool),
         "simulator" => Some(ArtifactKind::Simulator),
         _ => None,
@@ -544,15 +454,10 @@ fn validate_artifact_publish(
 }
 
 /// The Cargo `package.name` a crate-backed artifact must use for its kind + id.
-/// `ComponentAssets` has no Cargo crate, so it has no entry here; its identity
-/// comes from [`package_identity`] alone.
 fn expected_package_name(kind: ArtifactKind, id: &str) -> String {
     match kind {
         ArtifactKind::Service => format!("phoxal-service-{id}"),
-        ArtifactKind::ComponentAssets => {
-            unreachable!("ComponentAssets has no Cargo crate to validate a package name against")
-        }
-        ArtifactKind::ComponentDriver => format!("phoxal-component-{id}-driver"),
+        ArtifactKind::Component => format!("phoxal-component-{id}"),
         ArtifactKind::Tool => format!("phoxal-tool-{id}"),
         ArtifactKind::Simulator => format!("phoxal-simulator-{id}"),
     }
@@ -565,8 +470,7 @@ fn classify_package_prefix(package_name: &str) -> Option<(ArtifactKind, String)>
         .or_else(|| {
             package_name
                 .strip_prefix("phoxal-component-")
-                .and_then(|rest| rest.strip_suffix("-driver"))
-                .map(|id| (ArtifactKind::ComponentDriver, id.to_string()))
+                .map(|id| (ArtifactKind::Component, id.to_string()))
         })
         .or_else(|| {
             package_name
@@ -669,9 +573,9 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("component/ddsm115/driver/Cargo.toml")?,
+            classify("component/ddsm115/Cargo.toml")?,
             ManifestClassification::Artifact {
-                kind: ArtifactKind::ComponentDriver,
+                kind: ArtifactKind::Component,
                 id: "ddsm115".to_string()
             }
         );
@@ -693,26 +597,18 @@ mod tests {
     }
 
     #[test]
-    fn component_crate_directly_under_component_id_is_an_error() {
-        // Pre-Phase-7 layout (`component/<id>/Cargo.toml`) is no longer valid: the
-        // driver crate must live one level deeper, at `component/<id>/driver/`.
-        let err = classify("component/ddsm115/Cargo.toml").unwrap_err();
-        assert!(
-            err.to_string().contains("component/<id>/driver/Cargo.toml"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn nested_crates_under_artifact_roots_are_errors() {
         let err = classify("service/drive/helper/Cargo.toml").unwrap_err();
         assert!(err.to_string().contains("nested under artifact root"));
     }
 
     #[test]
-    fn nested_crates_under_component_driver_are_errors() {
-        let err = classify("component/ddsm115/driver/helper/Cargo.toml").unwrap_err();
-        assert!(err.to_string().contains("component/<id>/driver/Cargo.toml"));
+    fn nested_crates_under_component_are_errors() {
+        // The flattened layout (design doc §9) puts the crate directly at
+        // `component/<id>/Cargo.toml`; a subdirectory (the old `driver/` split)
+        // is no longer valid.
+        let err = classify("component/ddsm115/driver/Cargo.toml").unwrap_err();
+        assert!(err.to_string().contains("nested under artifact root"));
     }
 
     #[test]
@@ -782,12 +678,8 @@ mod tests {
             "phoxal/service-drive"
         );
         assert_eq!(
-            package_identity(ArtifactKind::ComponentAssets, "ddsm115"),
-            "phoxal/component-ddsm115-assets"
-        );
-        assert_eq!(
-            package_identity(ArtifactKind::ComponentDriver, "ddsm115"),
-            "phoxal/component-ddsm115-driver"
+            package_identity(ArtifactKind::Component, "ddsm115"),
+            "phoxal/component-ddsm115"
         );
         assert_eq!(
             package_identity(ArtifactKind::Tool, "router"),
@@ -802,40 +694,45 @@ mod tests {
     #[test]
     fn release_tag_projects_provider_qualified_package_to_filesystem_safe_form() {
         let artifact = OfficialArtifact {
-            package: "phoxal/component-ddsm115-driver".to_string(),
-            package_name: Some("phoxal-component-ddsm115-driver".to_string()),
-            kind: ArtifactKind::ComponentDriver,
+            package: "phoxal/component-ddsm115".to_string(),
+            package_name: Some("phoxal-component-ddsm115".to_string()),
+            kind: ArtifactKind::Component,
             version: "0.1.5".to_string(),
-            crate_dir: PathBuf::from("component/ddsm115/driver"),
-            bin_name: Some("phoxal-component-ddsm115-driver".to_string()),
+            crate_dir: PathBuf::from("component/ddsm115"),
+            bin_name: Some("phoxal-component-ddsm115".to_string()),
             id: "ddsm115".to_string(),
             metadata: PhoxalPackageMetadata::default(),
         };
-        assert_eq!(
-            artifact.release_tag(),
-            "phoxal-component-ddsm115-driver-v0.1.5"
-        );
+        assert_eq!(artifact.release_tag(), "phoxal-component-ddsm115-v0.1.5");
     }
 
     #[test]
-    fn component_assets_supports_only_the_target_independent_scope() {
+    fn component_supports_its_binary_targets_and_the_target_independent_scope() {
         let artifact = OfficialArtifact {
-            package: "phoxal/component-ddsm115-assets".to_string(),
-            package_name: None,
-            kind: ArtifactKind::ComponentAssets,
+            package: "phoxal/component-ddsm115".to_string(),
+            package_name: Some("phoxal-component-ddsm115".to_string()),
+            kind: ArtifactKind::Component,
             version: "0.1.0".to_string(),
             crate_dir: PathBuf::from("component/ddsm115"),
-            bin_name: None,
+            bin_name: Some("phoxal-component-ddsm115".to_string()),
             id: "ddsm115".to_string(),
             metadata: PhoxalPackageMetadata::default(),
         };
         assert_eq!(
             artifact.supported_target_triples(),
-            vec![TARGET_INDEPENDENT_SCOPE.to_string()]
+            vec![
+                "aarch64-apple-darwin".to_string(),
+                "aarch64-unknown-linux-gnu".to_string(),
+                "aarch64-unknown-linux-musl".to_string(),
+                TARGET_INDEPENDENT_SCOPE.to_string(),
+                "x86_64-apple-darwin".to_string(),
+                "x86_64-unknown-linux-gnu".to_string(),
+                "x86_64-unknown-linux-musl".to_string(),
+            ]
         );
         assert!(artifact.supports_target(TARGET_INDEPENDENT_SCOPE));
-        assert!(!artifact.supports_target("x86_64-unknown-linux-gnu"));
-        assert!(artifact.require_package_name().is_err());
-        assert!(artifact.require_bin_name().is_err());
+        assert!(artifact.supports_target("x86_64-unknown-linux-gnu"));
+        // Uniform-6 (#197): a component now builds the darwin/musl triples too.
+        assert!(artifact.supports_target("aarch64-apple-darwin"));
     }
 }
