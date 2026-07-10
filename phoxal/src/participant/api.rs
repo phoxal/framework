@@ -59,6 +59,63 @@ use crate::participant::server::ServerOutcome;
 use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
 use phoxal_bus::Bus;
 
+/// Const-eval plumbing `#[derive(phoxal::Api)]` (`phoxal-macros/src/authoring.rs`)
+/// uses to embed a **resolved, version-qualified** contract identity in the
+/// linker-section metadata static, rather than the source path as written.
+///
+/// The problem this solves: every participant writes
+/// `use phoxal_api::y2026_1 as api;`, so a macro-time string literal of a
+/// field's body type as written (`api::drive::Target`) has the generation
+/// erased - it cannot tell a `y2026_1` contract from a same-named `y2026_7`
+/// one. The generation-qualified identity *is* available, but only as
+/// `<Body as ContractBody>::TOPIC` (`phoxal-bus/src/contract.rs`), an
+/// associated const on a foreign type the proc-macro cannot evaluate at
+/// expansion time - only `rustc`, during the downstream participant crate's
+/// own const-eval, can resolve it. So the derive emits **tokens**, not a
+/// string: a call into [`__concatcp`] splicing `<Body as
+/// ContractBody>::TOPIC` between macro-time-known JSON literal fragments
+/// (field name, role), which `rustc` const-evaluates in the participant
+/// crate. The result is a `&'static str`, but the linker section is read as
+/// raw bytes by xtask's `object`-crate extractor (`xtask/src/release/metadata.rs`),
+/// so [`__bytes_of`] copies that resolved string into a fixed-size `[u8; N]`
+/// const array - `N` inferred from the manifest const's own `.len()` at the
+/// static's declaration site - which is what actually gets placed in the
+/// `#[link_section]`.
+#[doc(hidden)]
+pub mod __meta {
+    /// Re-exported so `#[derive(phoxal::Api)]`'s generated code can reach it
+    /// as `phoxal::participant::api::__meta::__concatcp!(..)` without every
+    /// participant crate needing its own `const_format` dependency.
+    /// `concatcp!` (unlike `std::concat!`) accepts constant *expressions*,
+    /// not just literals - in particular, a path to a foreign associated
+    /// const like `<Body as ContractBody>::TOPIC` - which is exactly the
+    /// piece a proc-macro cannot pre-resolve into a literal.
+    pub use const_format::concatcp as __concatcp;
+
+    /// Copies a `rustc`-const-evaluated `&str` into a fixed `[u8; N]` array so
+    /// it can be assigned to a `#[link_section]` static (which must be a
+    /// plain byte-sized value, not a fat `&str` pointer/len pair). Callers
+    /// are expected to pass `N` implicitly via the assignment's expected
+    /// array type (`static X: [u8; LEN] = __bytes_of(S);` with `const LEN:
+    /// usize = S.len();`); the `assert!` is a defense-in-depth check against
+    /// that inference ever mismatching, not the primary correctness
+    /// mechanism.
+    pub const fn __bytes_of<const N: usize>(s: &str) -> [u8; N] {
+        let bytes = s.as_bytes();
+        assert!(
+            bytes.len() == N,
+            "phoxal: metadata manifest length mismatch"
+        );
+        let mut out = [0u8; N];
+        let mut i = 0;
+        while i < N {
+            out[i] = bytes[i];
+            i += 1;
+        }
+        out
+    }
+}
+
 /// The role a [`ParticipantApi`] handle field plays on the bus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContractRole {
