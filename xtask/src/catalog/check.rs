@@ -91,7 +91,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::catalog::model::{Artifact, Blob, BuildProvenance};
+    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Heads};
     use crate::workspace::ArtifactKind;
     use std::collections::BTreeMap;
 
@@ -134,6 +134,7 @@ mod tests {
                 targets,
                 assets: None,
             }],
+            Heads::empty(),
         )
     }
 
@@ -165,6 +166,7 @@ mod tests {
                 created_at: "2026-01-01T00:00:00Z".to_string(),
             },
             Vec::new(),
+            Heads::empty(),
         );
         let err = validate_coverage(&catalog, &artifacts).unwrap_err();
         assert!(err.to_string().contains("phoxal/service-drive v0.1.0"));

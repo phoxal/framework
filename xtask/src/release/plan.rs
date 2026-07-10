@@ -225,7 +225,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    use crate::catalog::model::{Artifact as CatalogArtifact, Blob, BuildProvenance};
+    use crate::catalog::model::{Artifact as CatalogArtifact, Blob, BuildProvenance, Heads};
     use crate::workspace::{PhoxalPackageMetadata, Workspace};
 
     use super::*;
@@ -327,6 +327,7 @@ mod tests {
         let previous = Catalog::new(
             fixture_build_provenance(),
             vec![catalog_entry("phoxal/service-drive", "0.19.7")],
+            Heads::empty(),
         );
 
         let plan = build_release_plan(&workspace, Some(&previous))?;
@@ -349,6 +350,7 @@ mod tests {
         let previous = Catalog::new(
             fixture_build_provenance(),
             vec![catalog_entry("phoxal/service-drive", "0.19.7")],
+            Heads::empty(),
         );
 
         let plan = build_release_plan(&workspace, Some(&previous))?;
@@ -374,6 +376,7 @@ mod tests {
         let previous = Catalog::new(
             fixture_build_provenance(),
             vec![catalog_entry("phoxal/service-drive", "0.19.7")],
+            Heads::empty(),
         );
 
         let plan = build_release_plan(&workspace, Some(&previous))?;
@@ -398,6 +401,7 @@ mod tests {
         let previous = Catalog::new(
             fixture_build_provenance(),
             vec![catalog_entry("phoxal/component-ddsm115", "0.1.0")],
+            Heads::empty(),
         );
 
         let plan = build_release_plan(&workspace, Some(&previous))?;

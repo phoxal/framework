@@ -139,7 +139,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Contract};
+    use crate::catalog::model::{Artifact, Blob, BuildProvenance, Contract, Heads};
 
     fn fixture_build() -> BuildProvenance {
         BuildProvenance {
@@ -178,13 +178,13 @@ mod tests {
 
     #[test]
     fn accepts_a_well_formed_catalog() {
-        let catalog = Catalog::new(fixture_build(), vec![fixture_artifact()]);
+        let catalog = Catalog::new(fixture_build(), vec![fixture_artifact()], Heads::empty());
         validate_structure(&catalog, false).expect("valid catalog");
     }
 
     #[test]
     fn rejects_wrong_schema() {
-        let mut catalog = Catalog::new(fixture_build(), vec![fixture_artifact()]);
+        let mut catalog = Catalog::new(fixture_build(), vec![fixture_artifact()], Heads::empty());
         catalog.schema = "phoxal-artifacts".to_string();
         let err = validate_structure(&catalog, false).unwrap_err();
         assert!(err.to_string().contains("catalog schema"));
@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_package_version() {
         let entry = fixture_artifact();
-        let catalog = Catalog::new(fixture_build(), vec![entry.clone(), entry]);
+        let catalog = Catalog::new(fixture_build(), vec![entry.clone(), entry], Heads::empty());
         let err = validate_structure(&catalog, false).unwrap_err();
         assert!(err.to_string().contains("duplicate entry"));
     }
@@ -202,7 +202,7 @@ mod tests {
     fn rejects_entry_with_neither_targets_nor_assets() {
         let mut entry = fixture_artifact();
         entry.targets.clear();
-        let catalog = Catalog::new(fixture_build(), vec![entry]);
+        let catalog = Catalog::new(fixture_build(), vec![entry], Heads::empty());
         let err = validate_structure(&catalog, false).unwrap_err();
         assert!(err.to_string().contains("neither targets nor assets"));
     }
@@ -213,7 +213,7 @@ mod tests {
         for blob in entry.targets.values_mut() {
             blob.sha256 = "not-a-hash".to_string();
         }
-        let catalog = Catalog::new(fixture_build(), vec![entry]);
+        let catalog = Catalog::new(fixture_build(), vec![entry], Heads::empty());
         let err = validate_structure(&catalog, false).unwrap_err();
         assert!(err.to_string().contains("invalid sha256"));
     }
@@ -222,7 +222,7 @@ mod tests {
     fn metadata_only_mode_allows_entries_with_no_outputs() {
         let mut entry = fixture_artifact();
         entry.targets.clear();
-        let catalog = Catalog::new(fixture_build(), vec![entry]);
+        let catalog = Catalog::new(fixture_build(), vec![entry], Heads::empty());
         validate_structure(&catalog, true).expect("metadata-only catalog is valid");
     }
 }

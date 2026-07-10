@@ -22,8 +22,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
+use semver::Version;
 
-use super::model::{Artifact as CatalogArtifact, Blob, BuildProvenance, Catalog, Contract};
+use phoxal::check::{ParticipantContractSurface, check_coherence};
+use phoxal::participant::metadata::ParticipantMetaContract;
+
+use super::model::{Artifact as CatalogArtifact, Blob, BuildProvenance, Catalog, Contract, Heads};
 use crate::release::metadata::ParticipantMeta;
 use crate::release::package::{self, PackagedOutput};
 use crate::release::plan::{ReleasePlan, load_release_plan};
@@ -163,7 +167,8 @@ pub(crate) fn write_catalog(path: &Path, catalog: &Catalog) -> Result<()> {
 }
 
 /// Builds the full-index catalog: `options.previous_catalog`'s entries merged
-/// with fresh entries for every artifact this run has facts for.
+/// with fresh entries for every artifact this run has facts for, plus the
+/// coherence-gate design doc §4 `heads` computed over that merged set.
 pub(crate) fn build_catalog(
     workspace: &Workspace,
     artifacts: &[OfficialArtifact],
@@ -174,7 +179,105 @@ pub(crate) fn build_catalog(
         validate_release_plan_facts(plan, artifacts, options)?;
     }
     let merged = merge_artifacts(workspace, artifacts, options)?;
-    Ok(Catalog::new(build, merged))
+    let heads = compute_heads(&merged, options);
+    Ok(Catalog::new(build, merged, heads))
+}
+
+// ---------------------------------------------------------------------------
+// Heads (coherence-gate design doc §4: whole-set snapshot pointers)
+// ---------------------------------------------------------------------------
+
+/// Computes the coherence-gate design doc §4 `heads`: `nightly` is always
+/// this run's build tag; `stable` is this run's build tag iff the
+/// **latest-version set** of `merged` (the would-be-deployed default set -
+/// [`latest_version_surfaces`]) passes `phoxal::check::check_coherence`,
+/// else it is carried forward from `options.previous_catalog`'s `stable`
+/// (empty if there is no previous catalog or its `stable` was itself empty -
+/// cold start with an incoherent set has no coherent snapshot to point at,
+/// design doc §4.3/§7 decision 3).
+///
+/// `--metadata-only` mode (the PR gate, not a publish - see the module docs)
+/// has no build snapshot to point at, so both heads stay empty regardless of
+/// coherence.
+fn compute_heads(merged: &[CatalogArtifact], options: &GenerateOptions) -> Heads {
+    if options.mode == InputMode::MetadataOnly {
+        return Heads::empty();
+    }
+
+    let surfaces = latest_version_surfaces(merged);
+    let report = check_coherence(&surfaces);
+    let nightly = options.build_tag.clone();
+
+    let stable = if report.is_ok() {
+        options.build_tag.clone()
+    } else {
+        let previous_stable = options
+            .previous_catalog
+            .as_ref()
+            .map(|catalog| catalog.heads.stable.clone())
+            .unwrap_or_default();
+        if previous_stable.is_empty() {
+            eprintln!(
+                "warning: the latest-version set is incoherent and no previous coherent \
+                 snapshot exists - heads.stable stays empty until a coherent snapshot is \
+                 published (coherence-gate design doc §4)"
+            );
+        }
+        previous_stable
+    };
+
+    Heads { stable, nightly }
+}
+
+/// Reduces `artifacts` to one [`ParticipantContractSurface`] per package's
+/// **latest version** (by semver) - the would-be-deployed default set the
+/// design doc §4 heads are computed over, not the whole historical index.
+/// Entries with an empty `contracts[]` (asset-only artifacts, which carry no
+/// `#[derive(phoxal::Api)]` section - model doc on [`CatalogArtifact::contracts`])
+/// are skipped: they cannot affect coherence, so including them would only be
+/// a no-op.
+fn latest_version_surfaces(artifacts: &[CatalogArtifact]) -> Vec<ParticipantContractSurface> {
+    let mut latest: BTreeMap<&str, &CatalogArtifact> = BTreeMap::new();
+    for artifact in artifacts {
+        latest
+            .entry(artifact.package.as_str())
+            .and_modify(|current| {
+                if version_newer(&artifact.version, &current.version) {
+                    *current = artifact;
+                }
+            })
+            .or_insert(artifact);
+    }
+
+    latest
+        .into_values()
+        .filter(|artifact| !artifact.contracts.is_empty())
+        .map(|artifact| ParticipantContractSurface {
+            participant_id: artifact.package.clone(),
+            contracts: artifact
+                .contracts
+                .iter()
+                .map(|contract| ParticipantMetaContract {
+                    role: contract.role.clone(),
+                    generation: contract.generation.clone(),
+                    contract: contract.contract.clone(),
+                    external: contract.external,
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// Whether `candidate` is a newer version than `current`. Parses both as
+/// semver (every official artifact's version comes from its `Cargo.toml`, so
+/// this should always succeed); falls back to a plain string comparison if
+/// either fails to parse, rather than panicking on a malformed fixture/hand
+/// edited catalog.
+fn version_newer(candidate: &str, current: &str) -> bool {
+    match (Version::parse(candidate), Version::parse(current)) {
+        (Ok(candidate), Ok(current)) => candidate > current,
+        _ => candidate > current,
+    }
 }
 
 /// A release plan names the packages this run was *supposed* to build; if one
@@ -531,6 +634,7 @@ mod tests {
                     size: 7,
                 }),
             }],
+            Heads::empty(),
         );
 
         let workspace = fixture_workspace();
@@ -671,5 +775,180 @@ mod tests {
             commit: "old".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
         }
+    }
+
+    fn contract_entry(role: &str, generation: &str, contract: &str, external: bool) -> Contract {
+        Contract {
+            generation: generation.to_string(),
+            contract: contract.to_string(),
+            role: role.to_string(),
+            external,
+        }
+    }
+
+    fn artifact_with_contracts(
+        package: &str,
+        version: &str,
+        contracts: Vec<Contract>,
+    ) -> CatalogArtifact {
+        CatalogArtifact {
+            package: package.to_string(),
+            version: version.to_string(),
+            contracts,
+            config_schema: None,
+            targets: BTreeMap::new(),
+            assets: None,
+        }
+    }
+
+    /// A coherent latest-version set: `heads.stable` and `heads.nightly` both
+    /// point at this run's own build tag (design doc §4).
+    #[test]
+    fn compute_heads_coherent_set_points_stable_and_nightly_at_this_run() {
+        let merged = vec![
+            artifact_with_contracts(
+                "phoxal/service-drive",
+                "0.1.0",
+                vec![contract_entry("publish", "y2026_1", "drive::Target", false)],
+            ),
+            artifact_with_contracts(
+                "phoxal/service-mission",
+                "0.1.0",
+                vec![contract_entry(
+                    "subscribe",
+                    "y2026_1",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+        ];
+        let options = base_options(Path::new("/unused"));
+
+        let heads = compute_heads(&merged, &options);
+
+        assert_eq!(heads.nightly, options.build_tag);
+        assert_eq!(heads.stable, options.build_tag);
+    }
+
+    /// An incoherent latest-version set with a previously coherent catalog:
+    /// `nightly` still advances to this run's tag, but `stable` is carried
+    /// forward from the previous catalog's `stable` (design doc §4: "an
+    /// incoherent snapshot is therefore nightly-only").
+    #[test]
+    fn compute_heads_incoherent_set_carries_forward_previous_stable() {
+        let merged = vec![
+            artifact_with_contracts(
+                "phoxal/service-drive",
+                "0.1.0",
+                vec![contract_entry("publish", "y2026_1", "drive::Target", false)],
+            ),
+            artifact_with_contracts(
+                "phoxal/service-mission",
+                "0.1.0",
+                vec![contract_entry(
+                    "subscribe",
+                    "y2026_7",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+        ];
+        let mut options = base_options(Path::new("/unused"));
+        options.previous_catalog = Some(Catalog::new(
+            fixture_build(),
+            Vec::new(),
+            Heads {
+                stable: "build-previous-good".to_string(),
+                nightly: "build-previous-good".to_string(),
+            },
+        ));
+
+        let heads = compute_heads(&merged, &options);
+
+        assert_eq!(heads.nightly, options.build_tag);
+        assert_eq!(heads.stable, "build-previous-good");
+    }
+
+    /// Cold start (no previous catalog) with an incoherent latest-version
+    /// set: there has never been a coherent snapshot, so `stable` stays
+    /// empty rather than pointing at a mismatched set (design doc §7
+    /// decision 3).
+    #[test]
+    fn compute_heads_cold_start_incoherent_set_leaves_stable_empty() {
+        let merged = vec![
+            artifact_with_contracts(
+                "phoxal/service-drive",
+                "0.1.0",
+                vec![contract_entry("publish", "y2026_1", "drive::Target", false)],
+            ),
+            artifact_with_contracts(
+                "phoxal/service-mission",
+                "0.1.0",
+                vec![contract_entry(
+                    "subscribe",
+                    "y2026_7",
+                    "drive::Target",
+                    false,
+                )],
+            ),
+        ];
+        let options = base_options(Path::new("/unused"));
+
+        let heads = compute_heads(&merged, &options);
+
+        assert_eq!(heads.nightly, options.build_tag);
+        assert_eq!(heads.stable, "");
+    }
+
+    /// `--metadata-only` (the PR gate, not a publish) has no build snapshot
+    /// to point at, so both heads stay empty even over a coherent set.
+    #[test]
+    fn compute_heads_metadata_only_mode_leaves_both_heads_empty_even_when_coherent() {
+        let merged = vec![artifact_with_contracts(
+            "phoxal/service-drive",
+            "0.1.0",
+            vec![contract_entry("publish", "y2026_1", "drive::Target", false)],
+        )];
+        let mut options = base_options(Path::new("/unused"));
+        options.mode = InputMode::MetadataOnly;
+
+        let heads = compute_heads(&merged, &options);
+
+        assert_eq!(heads.stable, "");
+        assert_eq!(heads.nightly, "");
+    }
+
+    /// `latest_version_surfaces` picks the newest semver per package (not the
+    /// lexicographically-last string) and skips asset-only entries (empty
+    /// `contracts[]`), which cannot affect coherence.
+    #[test]
+    fn latest_version_surfaces_picks_newest_semver_and_skips_asset_only_entries() {
+        let merged = vec![
+            artifact_with_contracts(
+                "phoxal/service-drive",
+                "0.1.0",
+                vec![contract_entry("publish", "y2026_1", "drive::Target", false)],
+            ),
+            // "0.9.0" < "0.10.0" as semver but > as a plain string - proves
+            // the comparison is semver-aware, not lexicographic.
+            artifact_with_contracts(
+                "phoxal/service-drive",
+                "0.10.0",
+                vec![contract_entry("publish", "y2026_7", "drive::Target", false)],
+            ),
+            artifact_with_contracts(
+                "phoxal/service-drive",
+                "0.9.0",
+                vec![contract_entry("publish", "y2026_3", "drive::Target", false)],
+            ),
+            artifact_with_contracts("phoxal/component-ddsm115", "0.1.0", Vec::new()),
+        ];
+
+        let surfaces = latest_version_surfaces(&merged);
+
+        assert_eq!(surfaces.len(), 1);
+        assert_eq!(surfaces[0].participant_id, "phoxal/service-drive");
+        assert_eq!(surfaces[0].contracts.len(), 1);
+        assert_eq!(surfaces[0].contracts[0].generation, "y2026_7");
     }
 }
