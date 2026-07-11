@@ -61,7 +61,7 @@ jobs:
             echo "not the release PR - coherence is enforced at release only; skipping"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.release-pr.outputs.is_release == 'true'
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1

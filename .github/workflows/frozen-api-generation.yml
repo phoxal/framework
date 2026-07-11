@@ -38,11 +38,17 @@ jobs:
     steps:
       # Default checkout: the trusted BASE ref (NOT the PR head). fetch-depth: 0
       # brings the phoxal-api-v* tags the baseline diff needs.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      # Shares the xtask-only build cache with ci.yml's artifact-release-scope
+      # and release-plz.yml's release/assets/catalog jobs (see ci.yml). This
+      # job runs on every PR in the base-branch cache scope, so it also keeps
+      # that cache warm for the release wave.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-shared-key: xtask
 
       # Make the PR head commit available locally so `git show <head-sha>:…` can
       # read the candidate file as text. This fetches the object only - it does

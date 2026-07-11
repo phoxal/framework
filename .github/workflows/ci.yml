@@ -30,11 +30,18 @@ jobs:
   artifact-release-scope:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      # `cache-shared-key: xtask` - one Rust cache shared by every ubuntu-x64
+      # job whose only cargo work is building the xtask binary (this job, the
+      # frozen-api-generation check, and the release/assets/catalog jobs in
+      # release-plz.yml). The default per-job cache key meant each of them
+      # rebuilt xtask's whole dependency tree from scratch.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-shared-key: xtask
 
       - name: Check official artifact release scope
         run: cargo xtask release discover
@@ -54,7 +61,7 @@ jobs:
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
