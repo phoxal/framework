@@ -3,7 +3,6 @@ use clap::Subcommand;
 
 pub mod assets;
 pub mod discover;
-pub mod github;
 pub(crate) mod metadata;
 pub mod package;
 pub mod plan;
