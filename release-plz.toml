@@ -60,159 +60,186 @@ name = "phoxal-component-bno085"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-ddsm115"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-vl53l1x"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-zed_f9p"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-asset"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-battery"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-drive"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-explore"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-follow"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-frame"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-joint"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-localize"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-map"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-mission"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-motion"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-odometry"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-perception"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-plan"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-power"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-presence"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-safety"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-video"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-simulator-webots-supervisor"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-tool-joypad"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-tool-router"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
