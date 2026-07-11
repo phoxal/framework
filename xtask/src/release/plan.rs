@@ -337,19 +337,18 @@ mod tests {
 
         let plan = build_release_plan(&workspace, None)?;
 
-        let uniform_six = vec![
+        let uniform_five = vec![
             "aarch64-apple-darwin".to_string(),
             "aarch64-unknown-linux-gnu".to_string(),
             "aarch64-unknown-linux-musl".to_string(),
-            "x86_64-apple-darwin".to_string(),
             "x86_64-unknown-linux-gnu".to_string(),
             "x86_64-unknown-linux-musl".to_string(),
         ];
 
         assert_eq!(plan.artifacts.len(), 2);
-        assert_eq!(plan.artifacts[0].target_triples, uniform_six);
-        assert_eq!(plan.artifacts[1].target_triples, uniform_six);
-        assert_eq!(plan.matrix.include.len(), 6);
+        assert_eq!(plan.artifacts[0].target_triples, uniform_five);
+        assert_eq!(plan.artifacts[1].target_triples, uniform_five);
+        assert_eq!(plan.matrix.include.len(), 5);
         for row in &plan.matrix.include {
             assert_eq!(row.packages.len(), 2);
             assert_eq!(row.packages[0].package, "phoxal/service-drive");
@@ -460,12 +459,11 @@ mod tests {
                 "aarch64-unknown-linux-gnu",
                 "aarch64-unknown-linux-musl",
                 "target-independent",
-                "x86_64-apple-darwin",
                 "x86_64-unknown-linux-gnu",
                 "x86_64-unknown-linux-musl"
             ]
         );
-        assert_eq!(plan.matrix.include.len(), 6);
+        assert_eq!(plan.matrix.include.len(), 5);
         assert_eq!(plan.assets.len(), 1);
         assert_eq!(plan.assets[0].package, "phoxal/component-ddsm115");
         Ok(())
@@ -485,7 +483,7 @@ mod tests {
 
         let plan = build_release_plan(&workspace, None)?;
 
-        assert_eq!(plan.matrix.include.len(), 6);
+        assert_eq!(plan.matrix.include.len(), 5);
         for row in &plan.matrix.include {
             let packages = row
                 .packages

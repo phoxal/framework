@@ -38,6 +38,11 @@ on:
   schedule:
     - cron: "17 5,17 * * *"
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: "Force the build-snapshot wave on the current main HEAD (no version bump, no crates.io publish). Use to (re)produce a catalog when a release merge's wave failed or a target was unschedulable."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -50,7 +55,9 @@ concurrency:
 jobs:
   release:
     name: release-plz release + build set
-    if: github.event_name == 'push'
+    # Runs on every push (library publish + the gated wave on a release merge),
+    # and on a manual `force_build` dispatch (wave only, see the gate step).
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.force_build)
     runs-on: ubuntu-latest
     outputs:
       released: ${{ steps.plan.outputs.released }}
@@ -85,6 +92,10 @@ jobs:
       # releases are created here - the binaries land in the `build-*` snapshot
       # release below, the libs carry no artifact.
       - name: Run release-plz release
+        # Push only: a `force_build` dispatch (re)builds an already-released set,
+        # so it must NOT re-run crate publishing/tagging - it goes straight to
+        # the wave via the gate step below.
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
           release-plz release
@@ -107,13 +118,18 @@ jobs:
         id: gate
         run: |
           set -euo pipefail
-          subject="$(git log -1 --pretty=%s)"
-          if [[ "$subject" == chore\(release\)* ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.force_build }}" == "true" ]]; then
             echo "is_release=true" >> "$GITHUB_OUTPUT"
-            echo "release-plz PR merge detected: $subject"
+            echo "forced build-snapshot wave (workflow_dispatch force_build) on $(git log -1 --pretty=%s)"
           else
-            echo "is_release=false" >> "$GITHUB_OUTPUT"
-            echo "not a release merge ($subject); skipping the build-snapshot wave"
+            subject="$(git log -1 --pretty=%s)"
+            if [[ "$subject" == chore\(release\)* ]]; then
+              echo "is_release=true" >> "$GITHUB_OUTPUT"
+              echo "release-plz PR merge detected: $subject"
+            else
+              echo "is_release=false" >> "$GITHUB_OUTPUT"
+              echo "not a release merge ($subject); skipping the build-snapshot wave"
+            fi
           fi
 
       # This run's identity: `build-YYYYMMDD-<zero-padded run_number>` and a
@@ -457,7 +473,8 @@ jobs:
 
   release-plz-pr:
     name: release-plz PR
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # A `force_build` dispatch targets the wave only, not the release PR.
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.force_build)
     runs-on: ubuntu-latest
     env:
       HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
