@@ -39,7 +39,7 @@ dependencies_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
 git_release_name = "{{ package }} v{{ version }}"
 pr_name = "chore(release): release"
-semver_check = true              # cargo-semver-checks decides breaking bump severity
+semver_check = false             # OFF workspace-wide. The 27 git_only binaries have no library API to check, and release-plz@v0.5 does NOT honor per-package `semver_check = false` on git_only crates (sweeps them into the workspace check anyway: ~4.5 min build each = ~2 h release-pr). Advisory only; pre-1.0 bump severity comes from conventional commits. Restoring lib-only semver-check needs a release-plz action upgrade (follow-up).
 # no version_group (it reintroduces a shared version axis)
 #
 # GitHub's mutable "latest" release pointer belongs EXCLUSIVELY to the build-*
