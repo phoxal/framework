@@ -223,7 +223,11 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn discover() -> Result<Self> {
-        let metadata = MetadataCommand::new()
+        Self::discover_with(&mut MetadataCommand::new())
+    }
+
+    fn discover_with(command: &mut MetadataCommand) -> Result<Self> {
+        let metadata = command
             .no_deps()
             .exec()
             .context("failed to read cargo metadata")?;
@@ -575,6 +579,19 @@ mod tests {
 
     fn classify(relative: &str) -> Result<ManifestClassification> {
         classify_manifest_path(&root(), &root().join(relative))
+    }
+
+    #[test]
+    fn real_workspace_release_scope_is_valid() -> Result<()> {
+        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("xtask manifest directory has no workspace parent")?
+            .join("Cargo.toml");
+        let workspace =
+            Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
+
+        assert_eq!(workspace.official_artifacts().len(), 27);
+        Ok(())
     }
 
     #[test]
