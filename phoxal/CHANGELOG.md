@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1](https://github.com/phoxal/framework/compare/phoxal-v0.32.0...phoxal-v0.32.1) - 2026-07-11
+
+### Added
+
+- *(release)* git-diff per-artifact versioning (change one binary → only it bumps) ([#227](https://github.com/phoxal/framework/pull/227))
+
 ## [0.32.0](https://github.com/phoxal/framework/compare/phoxal-v0.31.1...phoxal-v0.32.0) - 2026-07-11
 
 ### Added
