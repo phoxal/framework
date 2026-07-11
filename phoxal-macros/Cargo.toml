@@ -18,6 +18,7 @@ proc-macro = true
 [dependencies]
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
+serde_derive_internals = { workspace = true }
 # `visit-mut` on top of the workspace's `full`/`extra-traits`: only this crate
 # needs the mutable AST visitor (`behavior`'s `Self::Api`/`Self::Config`
 # fully-qualification rewrite).

@@ -8,9 +8,7 @@ const DEFAULT_RETRY_MAX_MS: u64 = 30_000;
 const SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC: &str = "serial_listen_transport_unavailable";
 
 /// Launch-time router configuration carried in `PHOXAL_CONFIG`.
-#[derive(
-    Clone, Debug, Default, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config,
-)]
+#[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct RouterConfig {
     /// Additional listen endpoints merged by the launch plan from `bus.listen`.
@@ -22,7 +20,7 @@ struct RouterConfig {
 }
 
 /// Optional upstream connection configuration for the site router.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct UplinkConfig {
     /// Upstream Zenoh endpoint the router should connect to.
@@ -36,7 +34,7 @@ struct UplinkConfig {
 }
 
 /// mTLS material used when connecting the router uplink.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct MtlsAuth {
     /// Root CA certificate path used to verify the upstream router.
@@ -48,7 +46,7 @@ struct MtlsAuth {
 }
 
 /// Capped backoff configuration for the optional uplink.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct RetryConfig {
     /// Initial retry delay in milliseconds.

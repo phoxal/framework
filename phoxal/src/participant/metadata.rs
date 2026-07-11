@@ -1,13 +1,13 @@
-//! Shared deserialization of the `#[derive(phoxal::Api)]` linker-section
+//! Shared deserialization of the participant linker-section
 //! metadata JSON (coherence-gate design doc §2/§5).
 //!
-//! `#[derive(phoxal::Api)]` (`phoxal-macros/src/authoring.rs`) embeds one JSON
+//! A participant attribute (`phoxal-macros/src/authoring.rs`) embeds one JSON
 //! manifest per participant binary in a dedicated linker section - see
 //! `phoxal::participant::api::__meta` for the const-eval mechanism that
 //! resolves it. The entry shape is `{"role","generation","contract","external"}`:
 //! generation and contract are recorded as SEPARATE fields (never a joined
-//! name a reader would have to parse), and `external` defaults to `false` so
-//! older sections/hand-written fixtures without the key still parse.
+//! name a reader would have to parse). The shape is strict: this pre-1.0
+//! writer/parser cut has no compatibility fallback.
 //!
 //! This module owns ONLY the JSON shape, not the object-file section-BYTES
 //! extraction, which stays host-specific (an `object`-crate walk over an
@@ -30,6 +30,7 @@ use serde::Deserialize;
 /// made it name an arbitrary first field, and nothing read it (coherence-gate
 /// design doc §2).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ParticipantMetaContract {
     /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
     /// (`phoxal::participant::ContractRole`, snake_case).
@@ -48,21 +49,21 @@ pub struct ParticipantMetaContract {
     /// (`#[phoxal(external)]`, coherence-gate design doc §1): the counterpart
     /// is known, at authoring time, to legitimately live outside the checked
     /// participant set. Only ever `true` for a `subscribe`/`ask` entry - the
-    /// derive rejects the attribute on `publish`/`serve` fields. `false` by
-    /// default so a section/fixture written before this field existed still
-    /// parses.
-    #[serde(default)]
+    /// derive rejects the attribute on `publish`/`serve` fields.
     pub external: bool,
 }
 
-/// The embedded metadata manifest for one `#[derive(phoxal::Api)]` struct:
-/// `{"participant_api":"<StructName>","contracts":[...]}`.
+/// The embedded metadata manifest for one participant. This is a strict
+/// pre-1.0 format whose writer and parsers move in lockstep.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ParticipantMeta {
     /// The `Api` struct's type name (e.g. `"Api"`), recorded purely as
     /// provenance by `#[derive(phoxal::Api)]`.
     pub participant_api: String,
     pub contracts: Vec<ParticipantMetaContract>,
+    /// The participant's compile-time Draft 2020-12 config schema.
+    pub config_schema: serde_json::Value,
 }
 
 /// Parses the metadata section's raw JSON bytes - already extracted from an
@@ -81,9 +82,10 @@ mod tests {
         let json = br#"{"participant_api":"Api","contracts":[
             {"role":"subscribe","generation":"y2026_1","contract":"drive::Target","external":false},
             {"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}
-        ]}"#;
+        ],"config_schema":{"type":"object","properties":{"speed":{"type":"number"}}}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
         assert_eq!(meta.participant_api, "Api");
+        assert_eq!(meta.config_schema["type"], "object");
         assert_eq!(
             meta.contracts,
             vec![
@@ -107,26 +109,23 @@ mod tests {
     fn external_true_is_recorded() {
         let json = br#"{"participant_api":"Api","contracts":[
             {"role":"subscribe","generation":"y2026_1","contract":"drive::Target","external":true}
-        ]}"#;
+        ],"config_schema":{"type":"null"}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
         assert!(meta.contracts[0].external);
     }
 
-    /// A section written before `external` existed (or a hand-written
-    /// fixture that omits it) still parses, defaulting to `false` - the
-    /// module docs' forward/backward-tolerance guarantee.
     #[test]
-    fn missing_external_key_defaults_to_false() {
+    fn missing_external_key_is_rejected() {
         let json = br#"{"participant_api":"Api","contracts":[
             {"role":"publish","generation":"y2026_1","contract":"drive::State"}
-        ]}"#;
-        let meta = parse_participant_metadata(json).expect("valid metadata JSON");
-        assert!(!meta.contracts[0].external);
+        ],"config_schema":{"type":"null"}}"#;
+        let err = parse_participant_metadata(json).unwrap_err();
+        assert!(err.to_string().contains("external"));
     }
 
     #[test]
     fn empty_contracts_list_parses() {
-        let json = br#"{"participant_api":"()","contracts":[]}"#;
+        let json = br#"{"participant_api":"()","contracts":[],"config_schema":{"type":"null"}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
         assert!(meta.contracts.is_empty());
     }
@@ -135,5 +134,12 @@ mod tests {
     fn malformed_json_is_a_clear_error() {
         let err = parse_participant_metadata(b"not json").unwrap_err();
         assert!(err.to_string().contains("expected"));
+    }
+
+    #[test]
+    fn missing_config_schema_is_rejected() {
+        let err =
+            parse_participant_metadata(br#"{"participant_api":"Api","contracts":[]}"#).unwrap_err();
+        assert!(err.to_string().contains("config_schema"));
     }
 }

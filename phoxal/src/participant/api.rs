@@ -14,11 +14,6 @@
 //!
 //! # What this slice defers
 //!
-//! - **Config schema.** [`ParticipantConfig::SCHEMA_JSON`] is a placeholder
-//!   (`"{}"`) emitted by `#[derive(phoxal::Config)]`; materializing the real
-//!   `schemars` schema needs a host-side `build.rs` step (a recursive runtime
-//!   walk a proc-macro cannot reproduce across crate boundaries) - a later
-//!   slice (RECONCILIATION correction #12).
 //! - **Deferred hardening for `#[server_snapshot]`.** The generated
 //!   [`ParticipantLifecycle::__serve_snapshot`] takes `Arc<Self::Api>`
 //!   (read-only, D3): the runner constructs that `Arc` (one clone of the
@@ -60,8 +55,8 @@ use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
 use phoxal_bus::Bus;
 
 /// Const-eval plumbing `#[derive(phoxal::Api)]` (`phoxal-macros/src/authoring.rs`)
-/// uses to embed a **resolved, version-qualified** contract identity in the
-/// linker-section metadata static, rather than the source path as written.
+/// uses to build a **resolved, version-qualified** contract fragment that the
+/// participant attribute embeds in its linker-section metadata static.
 ///
 /// The problem this solves: every participant writes
 /// `use phoxal_api::y2026_1 as api;`, so a macro-time string literal of a
@@ -75,12 +70,9 @@ use phoxal_bus::Bus;
 /// string: a call into [`__concatcp`] splicing `<Body as
 /// ContractBody>::NAME` between macro-time-known JSON literal fragments
 /// (field name, role), which `rustc` const-evaluates in the participant
-/// crate. The result is a `&'static str`, but the linker section is read as
-/// raw bytes by xtask's `object`-crate extractor (`xtask/src/release/metadata.rs`),
-/// so [`__bytes_of`] copies that resolved string into a fixed-size `[u8; N]`
-/// const array - `N` inferred from the manifest const's own `.len()` at the
-/// static's declaration site - which is what actually gets placed in the
-/// `#[link_section]`.
+/// crate. The participant attribute combines that fragment with its concrete
+/// config schema; [`__bytes_of`] then copies the final string into the fixed
+/// byte array placed in the linker section.
 #[doc(hidden)]
 pub mod __meta {
     /// Re-exported so `#[derive(phoxal::Api)]`'s generated code can reach it
@@ -91,6 +83,58 @@ pub mod __meta {
     /// const like `<Body as ContractBody>::NAME` - which is exactly the
     /// piece a proc-macro cannot pre-resolve into a literal.
     pub use const_format::concatcp as __concatcp;
+
+    /// Fixed-capacity const-eval string builder used for recursively composed
+    /// config schemas. A fixed backing array is necessary because stable Rust
+    /// cannot express an array length computed from a generic associated
+    /// constant; only the used prefix is exposed by [`ConstSchema::as_str`].
+    #[derive(Clone, Copy)]
+    pub struct ConstSchema {
+        bytes: [u8; 65_536],
+        len: usize,
+    }
+
+    impl Default for ConstSchema {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl ConstSchema {
+        pub const fn new() -> Self {
+            Self {
+                bytes: [0; 65_536],
+                len: 0,
+            }
+        }
+
+        pub const fn from_str(value: &str) -> Self {
+            Self::new().push_str(value)
+        }
+
+        #[must_use]
+        pub const fn push_str(mut self, value: &str) -> Self {
+            let value = value.as_bytes();
+            assert!(
+                self.len + value.len() <= self.bytes.len(),
+                "phoxal: const config schema exceeds 64 KiB"
+            );
+            let mut index = 0;
+            while index < value.len() {
+                self.bytes[self.len + index] = value[index];
+                index += 1;
+            }
+            self.len += value.len();
+            self
+        }
+
+        pub const fn as_str(&self) -> &str {
+            let (used, _) = self.bytes.split_at(self.len);
+            // Every byte originates in a Rust `&str`, so concatenation
+            // preserves UTF-8 validity.
+            unsafe { core::str::from_utf8_unchecked(used) }
+        }
+    }
 
     /// Copies a `rustc`-const-evaluated `&str` into a fixed `[u8; N]` array so
     /// it can be assigned to a `#[link_section]` static (which must be a
@@ -163,6 +207,10 @@ pub struct ApiContractUse {
 /// is exactly D3's "read-only `&Self::Api`, or an api snapshot" - here
 /// realized as a cloned api snapshot.
 pub trait ParticipantApi: Send + Sync + Clone + 'static {
+    #[doc(hidden)]
+    const __NAME: &'static str;
+    #[doc(hidden)]
+    const __CONTRACTS_JSON: &'static str;
     /// Every contract this `Api` struct's fields use, deduplicated.
     const CONTRACTS: &'static [ApiContractUse];
 }
@@ -170,6 +218,8 @@ pub trait ParticipantApi: Send + Sync + Clone + 'static {
 /// `Api = ()` for participants that opt out of a typed bus surface (tools,
 /// per decision - "Tools stay raw-bus only", `remove-emit-apis-api-authoring/readme.md`).
 impl ParticipantApi for () {
+    const __NAME: &'static str = "()";
+    const __CONTRACTS_JSON: &'static str = "[]";
     const CONTRACTS: &'static [ApiContractUse] = &[];
 }
 
@@ -201,19 +251,18 @@ pub trait DeclaresAsk<Req: ?Sized, Resp: ?Sized> {}
 /// `where R::Api: DeclaresServe<Req, Resp>`.
 pub trait DeclaresServe<Req: ?Sized, Resp: ?Sized> {}
 
-/// Emitted by `#[derive(phoxal::Config)]`: participant config identity.
-///
-/// `SCHEMA_JSON` is a placeholder in this slice (see the module docs); treat
-/// it as "the trait exists and is available for later wiring," not as a
-/// materialized schema.
+/// Emitted by `#[derive(phoxal::Config)]`: the participant config's compile-time
+/// JSON Schema (Draft 2020-12).
 pub trait ParticipantConfig: serde::de::DeserializeOwned + Send + 'static {
-    /// Placeholder config JSON schema (real materialization is a later,
-    /// host-side `build.rs` slice - see the module docs).
-    const SCHEMA_JSON: &'static str;
+    #[doc(hidden)]
+    const __SCHEMA: __meta::ConstSchema;
+    /// A complete schema or subschema, const-composable by another derived
+    /// config without runtime allocation.
+    const SCHEMA_JSON: &'static str = Self::__SCHEMA.as_str();
 }
 
 impl ParticipantConfig for () {
-    const SCHEMA_JSON: &'static str = "{}";
+    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::from_str(r#"{"type":"null"}"#);
 }
 
 /// An optional config is a config: `config = Option<T>` (a participant whose
@@ -223,8 +272,58 @@ impl ParticipantConfig for () {
 /// write `impl ParticipantConfig for Option<LocalConfig>` itself (orphan
 /// rule: both the trait and `Option` are foreign), so the blanket lives here.
 impl<T: ParticipantConfig> ParticipantConfig for Option<T> {
-    const SCHEMA_JSON: &'static str = T::SCHEMA_JSON;
+    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+        .push_str(r#"{"anyOf":["#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str(r#",{"type":"null"}]}"#);
 }
+
+impl<T: ParticipantConfig> ParticipantConfig for Vec<T> {
+    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+        .push_str(r#"{"type":"array","items":"#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str("}");
+}
+
+impl<T: ParticipantConfig> ParticipantConfig for std::collections::BTreeMap<String, T> {
+    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+        .push_str(r#"{"type":"object","additionalProperties":"#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str("}");
+}
+
+impl<T: ParticipantConfig> ParticipantConfig for std::collections::HashMap<String, T> {
+    const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::new()
+        .push_str(r#"{"type":"object","additionalProperties":"#)
+        .push_str(T::SCHEMA_JSON)
+        .push_str("}");
+}
+
+macro_rules! primitive_config_schema {
+    ($ty:ty => $schema:literal) => {
+        impl ParticipantConfig for $ty {
+            const __SCHEMA: __meta::ConstSchema = __meta::ConstSchema::from_str($schema);
+        }
+    };
+}
+
+primitive_config_schema!(bool => r#"{"type":"boolean"}"#);
+primitive_config_schema!(String => r#"{"type":"string"}"#);
+primitive_config_schema!(char => r#"{"type":"string","minLength":1,"maxLength":1}"#);
+primitive_config_schema!(i8 => r#"{"type":"integer","format":"int8"}"#);
+primitive_config_schema!(i16 => r#"{"type":"integer","format":"int16"}"#);
+primitive_config_schema!(i32 => r#"{"type":"integer","format":"int32"}"#);
+primitive_config_schema!(i64 => r#"{"type":"integer","format":"int64"}"#);
+primitive_config_schema!(i128 => r#"{"type":"integer"}"#);
+primitive_config_schema!(isize => r#"{"type":"integer"}"#);
+primitive_config_schema!(u8 => r#"{"type":"integer","format":"uint8","minimum":0,"maximum":255}"#);
+primitive_config_schema!(u16 => r#"{"type":"integer","format":"uint16","minimum":0,"maximum":65535}"#);
+primitive_config_schema!(u32 => r#"{"type":"integer","format":"uint32","minimum":0}"#);
+primitive_config_schema!(u64 => r#"{"type":"integer","format":"uint64","minimum":0}"#);
+primitive_config_schema!(u128 => r#"{"type":"integer","minimum":0}"#);
+primitive_config_schema!(usize => r#"{"type":"integer","minimum":0}"#);
+primitive_config_schema!(f32 => r#"{"type":"number","format":"float"}"#);
+primitive_config_schema!(f64 => r#"{"type":"number","format":"double"}"#);
 
 /// Emitted by `#[phoxal::service]` / `#[phoxal::driver]` /
 /// `#[phoxal::simulator]` / `#[phoxal::tool]`: participant identity plus the

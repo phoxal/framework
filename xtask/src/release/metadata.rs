@@ -1,6 +1,6 @@
 //! Compile-time participant metadata extraction (X-tools slice).
 //!
-//! `#[derive(phoxal::Api)]` embeds one JSON manifest per participant binary in
+//! The participant attribute embeds one JSON manifest per participant binary in
 //! a dedicated linker section - `__DATA,__phoxal_meta` on Mach-O, `.phoxal_api_meta`
 //! everywhere else (`phoxal-macros/src/authoring.rs`'s `link_section_attrs`).
 //! `xtask` no longer runs `emit-apis` (that runtime subcommand is being retired
@@ -37,7 +37,7 @@ pub(crate) use phoxal::participant::metadata::ParticipantMeta;
 #[cfg(test)]
 pub(crate) use phoxal::participant::metadata::ParticipantMetaContract;
 
-/// The linker section names `#[derive(phoxal::Api)]` places its metadata
+/// The linker section names a participant attribute places its metadata
 /// static under, tried in order (`phoxal-macros/src/authoring.rs::link_section_attrs`).
 /// `object`'s generic [`Object::section_by_name`] matches on the section name
 /// alone (Mach-O segment qualification is not part of the match), so no
@@ -46,15 +46,12 @@ pub(crate) use phoxal::participant::metadata::ParticipantMetaContract;
 const SECTION_NAMES: [&str; 2] = [".phoxal_api_meta", "__phoxal_meta"];
 
 /// Parses `object_bytes` as an object file and returns the bytes of its
-/// `#[derive(phoxal::Api)]` metadata section, trying each candidate section
+/// participant metadata section, trying each candidate section
 /// name in [`SECTION_NAMES`] in turn. `Ok(None)` means the object file parsed
-/// fine but carries no such section at all - the expected, valid shape for a
-/// participant whose `Api` is `()` (privileged tools default to this; see
-/// `phoxal-macros/src/authoring.rs::ParticipantKind::default_api`), which
-/// never derives `#[derive(phoxal::Api)]` and so never emits the linker
-/// section in the first place. A malformed/unrecognized *object file* is still
-/// a hard error. `describe` names the source (a file path, or a
-/// `pkg@target from tarball` label) for error messages.
+/// but is not a participant: every participant attribute emits the section,
+/// including `Api = ()`. A malformed/unrecognized *object file* is still a
+/// hard error. `describe` names the source (a file path, or a `pkg@target from
+/// tarball` label) for error messages.
 pub(crate) fn extract_participant_metadata_section_from_bytes(
     object_bytes: &[u8],
     describe: &str,
@@ -74,18 +71,13 @@ pub(crate) fn extract_participant_metadata_section_from_bytes(
     Ok(None)
 }
 
-/// Parses an already-extracted metadata section. `None` is the valid `Api = ()`
-/// participant shape and produces an empty contract list.
+/// Parses an already-extracted metadata section. Every participant, including
+/// `Api = ()`, must carry the coordinated metadata format.
 pub(crate) fn parse_participant_metadata_section(
     section: Option<&[u8]>,
     describe: &str,
 ) -> Result<ParticipantMeta> {
-    let Some(bytes) = section else {
-        return Ok(ParticipantMeta {
-            participant_api: "()".to_string(),
-            contracts: Vec::new(),
-        });
-    };
+    let bytes = section.with_context(|| format!("{describe} has no phoxal metadata section"))?;
     phoxal::participant::metadata::parse_participant_metadata(bytes)
         .with_context(|| format!("phoxal API metadata section in {describe} is not valid JSON"))
 }
@@ -152,6 +144,7 @@ mod tests {
 
         let meta = extract_participant_metadata(&binary_path)?;
         assert_eq!(meta.participant_api, "Api");
+        assert_eq!(meta.config_schema["type"], "null");
         assert_eq!(
             meta.contracts,
             vec![ParticipantMetaContract {
@@ -164,13 +157,10 @@ mod tests {
         Ok(())
     }
 
-    /// A privileged tool defaults to `Api = ()` (`ParticipantKind::default_api`
-    /// in `phoxal-macros/src/authoring.rs`), so it never derives
-    /// `#[derive(phoxal::Api)]` and its binary carries no metadata section at
-    /// all - a valid, expected shape (zero contracts), not an extraction
-    /// error. Proven end-to-end against the real `phoxal-tool-joypad` binary.
+    /// A privileged tool defaults to `Api = ()`, but the participant attribute
+    /// still emits config schema metadata and an empty contract list.
     #[test]
-    fn a_binary_with_no_section_parses_as_zero_contracts() -> Result<()> {
+    fn api_unit_binary_still_carries_metadata() -> Result<()> {
         let workspace = Workspace::discover()?;
         let package_name = "phoxal-tool-joypad";
         let status = Command::new("cargo")
@@ -187,6 +177,8 @@ mod tests {
 
         let meta = extract_participant_metadata(&binary_path)?;
         assert!(meta.contracts.is_empty());
+        assert_eq!(meta.participant_api, "()");
+        assert_eq!(meta.config_schema["type"], "object");
         Ok(())
     }
 
@@ -234,7 +226,7 @@ mod tests {
     /// aarch64 (ELF) and Apple (Mach-O) release binaries.
     #[test]
     fn extracts_metadata_from_foreign_format_and_arch_object_files() -> Result<()> {
-        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}]}"#;
+        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}],"config_schema":{"type":"null"}}"#;
         let expected = vec![ParticipantMetaContract {
             role: "publish".to_string(),
             generation: "y2026_1".to_string(),
@@ -267,11 +259,9 @@ mod tests {
         Ok(())
     }
 
-    /// A foreign-format object file with NO phoxal section still parses cleanly
-    /// as zero contracts (the `Api = ()` shape), proving the None-vs-error split
-    /// is not host-format-specific.
+    /// A foreign-format object file with no phoxal section is not a participant.
     #[test]
-    fn foreign_object_without_section_is_zero_contracts() -> Result<()> {
+    fn foreign_object_without_section_is_rejected() -> Result<()> {
         let elf = synthesize_object(
             object::BinaryFormat::Elf,
             object::Architecture::Aarch64,
@@ -279,8 +269,9 @@ mod tests {
             b"",
             b"unrelated",
         );
-        let meta = extract_participant_metadata_from_bytes(&elf, "synthetic aarch64 ELF")?;
-        assert!(meta.contracts.is_empty());
+        let err =
+            extract_participant_metadata_from_bytes(&elf, "synthetic aarch64 ELF").unwrap_err();
+        assert!(err.to_string().contains("no phoxal metadata section"));
         Ok(())
     }
 }

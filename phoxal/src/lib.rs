@@ -230,10 +230,6 @@ pub use phoxal_macros::tool;
 #[doc(inline)]
 pub use phoxal_macros::phoxal_api_tree;
 
-/// Re-exported so participant config types can derive/implement
-/// `phoxal::schemars::JsonSchema`, which feeds config schemas.
-pub use schemars;
-
 /// Run a participant (`#[phoxal::service|driver|simulator|tool]` +
 /// `#[phoxal::behavior]`) to completion on a framework-owned blocking Tokio
 /// runtime.
