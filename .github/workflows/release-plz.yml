@@ -23,9 +23,10 @@ name: release-plz
 # job - only after the catalog is generated and the structural/coverage gate
 # passes. The build/assets jobs never touch GitHub releases; each just PACKAGES
 # its artifacts and hands the tarballs to `catalog` as workflow artifacts
-# (`facts-*`). So there is no window in which a half-populated release exists,
-# and no per-leg upload path to reconcile - the artifacts flow through Actions
-# storage, and one atomic `gh release create` publishes the complete set.
+# (`facts-*`). So there is no window in which a half-populated release is
+# authoritative, and no per-leg upload path to reconcile - the artifacts flow
+# through Actions storage, and one `gh release create` invocation publishes the
+# complete set before the release is marked latest.
 #   1. release    - release-plz publishes the 4 libs to crates.io + creates all
 #                   tags (lib + binary git_only); then, IF this is the release
 #                   merge, computes this run's build set (artifact versions not
@@ -217,6 +218,8 @@ jobs:
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.release.outputs.matrix) }}
@@ -268,7 +271,7 @@ jobs:
             --out target/xtask/release
 
       # Hand the exact packaged bytes to the catalog job, which owns the single
-      # atomic upload to the build-* release. One facts artifact per target.
+      # publish path to the build-* release. One facts artifact per target.
       - uses: actions/upload-artifact@v6
         with:
           name: facts-${{ matrix.target }}
@@ -282,6 +285,8 @@ jobs:
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -385,13 +390,21 @@ jobs:
           cargo xtask catalog check
           --catalog target/xtask/catalog/catalog.json
 
-      # The gate is green, so the release is born complete: create it with every
-      # packaged tarball + checksum + catalog.json in one shot, then flip it to
-      # "latest". Nothing created a release earlier in this run, so any failure
-      # before the final `edit --latest` leaves the previous latest
-      # authoritative. Idempotent for a `force_build` rerun after a partial
-      # attempt: if the build-* tag already exists, clobber its assets instead of
-      # failing on a duplicate-tag create.
+      # The gate is green: create the release with every packaged tarball +
+      # checksum + catalog.json in one command, then flip it to "latest". This
+      # run created no release earlier, so any failure before the final
+      # `edit --latest` leaves the previous latest authoritative.
+      #
+      # Rerun handling turns on whether the tag is already the published latest:
+      #   - absent            -> fresh create (--latest=false), then mark latest.
+      #   - exists, NOT latest-> a prior attempt died before `edit --latest`;
+      #                          clobber its assets to repair, then mark latest.
+      #   - exists AND latest -> a completed wave is being re-run. build-* releases
+      #                          are immutable once published, so refuse to mutate
+      #                          it in place (an interrupted clobber would corrupt
+      #                          the authoritative latest). Re-running a finished
+      #                          release is a no-op; to genuinely rebuild, delete
+      #                          the release first and dispatch a fresh run.
       - name: Create build-snapshot release + mark latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -405,7 +418,11 @@ jobs:
             target/xtask/catalog/catalog.json
           )
           if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            echo "release $tag already exists (rerun) - clobbering its assets"
+            if [ "$(gh release view "$tag" --repo "$repo" --json isLatest -q .isLatest)" = "true" ]; then
+              echo "release $tag is already the published latest - refusing to mutate an immutable release; nothing to do"
+              exit 0
+            fi
+            echo "release $tag exists but is not latest (partial prior attempt) - clobbering its assets to repair"
             gh release upload "$tag" "${assets[@]}" --repo "$repo" --clobber
           else
             gh release create "$tag" "${assets[@]}" \
