@@ -10,15 +10,18 @@ use serde_json::Value;
 const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"];
 const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["xtask", "fixture"];
 
-/// The uniform six-target release matrix every binary artifact builds for
-/// (design doc `organization/tmp/ci-release-refactor/design.md` §3/§4.1): no
-/// per-kind target selection - a `Tool` and a `Service` build for exactly the
-/// same six triples.
-const BINARY_TARGETS: [&str; 6] = [
+/// The uniform release matrix every binary artifact builds for (design doc
+/// `organization/tmp/ci-release-refactor/design.md` §3/§4.1): no per-kind
+/// target selection - a `Tool` and a `Service` build for exactly the same
+/// triples. `x86_64-apple-darwin` is intentionally absent: GitHub is retiring
+/// its last Intel macOS image (`macos-13`), and it left release build waves
+/// queued indefinitely for a runner that never arrives. Nearly all dev hosts
+/// are Apple Silicon now; an Intel macOS target can be re-added later (as an
+/// ARM-host cross-build) if a user actually needs it.
+const BINARY_TARGETS: [&str; 5] = [
     "aarch64-apple-darwin",
     "aarch64-unknown-linux-gnu",
     "aarch64-unknown-linux-musl",
-    "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
     "x86_64-unknown-linux-musl",
 ];
@@ -199,10 +202,9 @@ pub fn runner_for_target(target: &str) -> Result<&'static str> {
         // job installs `musl-tools` there - see `release-plz.yml`).
         "aarch64-unknown-linux-gnu" | "aarch64-unknown-linux-musl" => Ok("ubuntu-24.04-arm"),
         "x86_64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => Ok("ubuntu-24.04"),
-        // Native macOS runners: `macos-14` is Apple Silicon (aarch64),
-        // `macos-13` is the last Intel (x86_64) image GitHub hosts.
+        // Native macOS runner: `macos-14` is Apple Silicon (aarch64). There is
+        // no Intel (x86_64) macOS target in the matrix - see `BINARY_TARGETS`.
         "aarch64-apple-darwin" => Ok("macos-14"),
-        "x86_64-apple-darwin" => Ok("macos-13"),
         // A component's asset-bundle packaging just tars files (no cargo
         // build, no per-architecture binary), so any host runner works; the
         // cheapest Linux runner is used.
@@ -730,7 +732,6 @@ mod tests {
             vec![
                 "aarch64-unknown-linux-gnu",
                 "riscv64gc-unknown-linux-gnu",
-                "x86_64-apple-darwin",
                 "x86_64-unknown-linux-gnu",
             ]
         );
@@ -791,14 +792,13 @@ mod tests {
                 "aarch64-unknown-linux-gnu".to_string(),
                 "aarch64-unknown-linux-musl".to_string(),
                 TARGET_INDEPENDENT_SCOPE.to_string(),
-                "x86_64-apple-darwin".to_string(),
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-unknown-linux-musl".to_string(),
             ]
         );
         assert!(artifact.supports_target(TARGET_INDEPENDENT_SCOPE));
         assert!(artifact.supports_target("x86_64-unknown-linux-gnu"));
-        // Uniform-6 (#197): a component now builds the darwin/musl triples too.
+        // A component builds the darwin (Apple Silicon) and musl triples too.
         assert!(artifact.supports_target("aarch64-apple-darwin"));
     }
 }
