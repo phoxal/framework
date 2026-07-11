@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use tokio::sync::watch;
+
 use crate::bus::LogicalTime;
 
 /// A source of logical robot time.
@@ -70,6 +72,46 @@ impl ClockSource for RealClock {
         let mut last = self.last_ns.lock().expect("real clock poisoned");
         *last = (*last).max(now);
         LogicalTime::new(self.epoch, *last)
+    }
+}
+
+/// The simulation-time clock (the deferred "Webots port" source named in this
+/// module's docs). In [`ClockMode::Simulation`](crate::participant::launch::ClockMode::Simulation)
+/// the runner stamps `StepContext`/`produced_at_ns` from this clock instead of
+/// [`RealClock`], so every simulated participant shares the *simulation* time
+/// domain (0-based, owned by the Webots supervisor) rather than the host UNIX
+/// domain. Cross-participant staleness checks (safety/motion/follow) then
+/// compare sensor timestamps against the same sim clock the samples were
+/// produced under; stamping sim participants from the wall clock instead makes
+/// every sim-time sensor sample look arbitrarily stale and breaks those checks.
+///
+/// It reads the same authoritative logical time the
+/// [`SimulationScheduler`](crate::participant::scheduler::SimulationScheduler)
+/// releases ticks from - both share one [`watch`] channel driven by the live
+/// `simulation/clock` feed - so "what time is it" and "when does the next
+/// `#[step]` fire" never diverge. Before the first clock sample arrives it
+/// reports the channel's seed (logical zero).
+#[derive(Clone)]
+pub struct SimulationClock {
+    rx: watch::Receiver<LogicalTime>,
+}
+
+impl SimulationClock {
+    /// Build a clock that observes `rx` - the receiver half of the same
+    /// [`watch`] channel a
+    /// [`SimulationScheduler`](crate::participant::scheduler::SimulationScheduler)
+    /// is driven through, so both see identical logical time.
+    pub(crate) fn from_receiver(rx: watch::Receiver<LogicalTime>) -> Self {
+        Self { rx }
+    }
+}
+
+impl ClockSource for SimulationClock {
+    fn now(&self) -> LogicalTime {
+        // The feed only ever advances the watched value (see
+        // `SimulationClockHandle::advance`), so this is already monotonic within
+        // an epoch and needs no latching of its own.
+        *self.rx.borrow()
     }
 }
 

@@ -29,6 +29,7 @@ const ROBOT_FILE: &str = "robot.yaml";
 /// The single-variant enum is the future-versioning seam: a second schema
 /// generation adds a sibling variant here without disturbing `v0::Robot`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(tag = "schema")]
 pub enum Robot {
     #[serde(rename = "robot/v0")]
@@ -116,4 +117,119 @@ fn validation_error(errors: Vec<ValidationError>) -> anyhow::Error {
         .collect::<Vec<_>>()
         .join("\n");
     anyhow::anyhow!("Robot errors:\n{message}")
+}
+
+/// The editor-facing `robot.yaml` JSON Schema is a structural grammar aid.
+/// `Robot` and every serde-shaped type it reaches carry a
+/// `#[cfg_attr(test, derive(schemars::JsonSchema))]`, so the schema is derived
+/// from the manifest structs rather than maintained separately.
+/// `schema_matches_model` fails when the checked-in
+/// `examples/robot.schema.json` stops matching that derived serde shape.
+/// The schema is not an executable specification.
+/// It does not cover `strict_yaml::check`, semantic [`Robot::validate`]
+/// constraints, custom `FromStr` validation, or cross-file component and URDF
+/// constraints.
+///
+/// Kept test-only (not a normal dependency) on purpose: `schemars` and
+/// `jsonschema` are dev-dependencies of `phoxal` (see `phoxal/Cargo.toml`),
+/// so the published crate carries no schema-generation code or its
+/// dependency weight - only `cargo test` regenerates and checks the schema.
+#[cfg(test)]
+mod schema_guard {
+    use super::Robot;
+
+    /// Path to the checked-in JSON Schema, relative to this crate's manifest
+    /// directory (`phoxal/`).
+    const SCHEMA_PATH: &str = "../examples/robot.schema.json";
+
+    fn generated_schema_json() -> String {
+        let schema = schemars::schema_for!(Robot);
+        serde_json::to_string_pretty(&schema).expect("schema serializes to JSON") + "\n"
+    }
+
+    fn schema_path() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SCHEMA_PATH)
+    }
+
+    /// Regenerate-and-diff guard: run `cargo test -p phoxal schema_guard::print_schema
+    /// -- --ignored --nocapture > examples/robot.schema.json` (from the
+    /// `framework/phoxal` directory) and re-check the file in when this fails.
+    #[test]
+    fn schema_matches_model() {
+        let generated = generated_schema_json();
+        let checked_in = std::fs::read_to_string(schema_path()).unwrap_or_default();
+
+        assert_eq!(
+            generated,
+            checked_in,
+            "examples/robot.schema.json is stale relative to the schemars-derived \
+             schema for phoxal::model::robot::Robot. Regenerate it with:\n\n  \
+             cargo test -p phoxal schema_guard::print_schema -- --ignored --nocapture \
+             > {}\n\nthen re-check the file in.",
+            schema_path().display()
+        );
+    }
+
+    /// Not an assertion - an opt-in helper (`--ignored`) that prints the
+    /// freshly generated schema so `schema_matches_model`'s failure message
+    /// can be piped straight into `examples/robot.schema.json`.
+    #[test]
+    #[ignore = "prints the schema; run explicitly to regenerate examples/robot.schema.json"]
+    fn print_schema() {
+        print!("{}", generated_schema_json());
+    }
+
+    fn validator_for_model() -> jsonschema::Validator {
+        let schema = schemars::schema_for!(Robot);
+        jsonschema::validator_for(&serde_json::to_value(&schema).expect("schema is valid JSON"))
+            .expect("generated schema should itself be a valid JSON Schema")
+    }
+
+    /// The schema must actually accept the checked-in example manifest - proof
+    /// that the drift guard tracks a schema that validates real content, not
+    /// just two frozen blobs that happen to match each other.
+    #[test]
+    fn schema_validates_the_hello_rover_example() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let robot_yaml =
+            std::fs::read_to_string(manifest_dir.join("../examples/hello-rover/robot.yaml"))
+                .expect("examples/hello-rover/robot.yaml should be readable");
+        let value: serde_json::Value = serde_yaml::from_str(&robot_yaml)
+            .expect("examples/hello-rover/robot.yaml should parse as YAML");
+
+        let validator = validator_for_model();
+        let errors: Vec<_> = validator
+            .iter_errors(&value)
+            .map(|error| error.to_string())
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "examples/hello-rover/robot.yaml should validate against robot.schema.json: {errors:?}"
+        );
+    }
+
+    /// A manifest with an unknown root key must be rejected - proof that
+    /// `deny_unknown_fields` really propagates into the schema's
+    /// `additionalProperties: false`, not just that the happy path validates.
+    #[test]
+    fn schema_rejects_unknown_root_key() {
+        let yaml = r#"
+schema: robot/v0
+robot:
+  id: test-bot
+  namespace: dev
+  kinematic:
+    kind: omnidirectional
+    actuators: []
+    encoders: []
+  components: {}
+not_a_real_key: {}
+"#;
+        let value: serde_json::Value = serde_yaml::from_str(yaml).expect("valid YAML");
+
+        assert!(
+            !validator_for_model().is_valid(&value),
+            "schema should reject an unknown root key"
+        );
+    }
 }

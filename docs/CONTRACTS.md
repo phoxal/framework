@@ -15,11 +15,14 @@ These rules are the target contract discipline the workspace is converging to
 Where a runtime's current implementation lags, the rule is the direction, not a
 claim that every handler already enforces it.
 
-## One API version per participant; per-contract compatibility per graph
+## Per-field contract generations and per-contract identity
 
 There is no version-tagged wire enum and no `{"v":…,"data":…}` body wrapper.
-A participant authors against **one** API version; the graph may mix generations,
-proven compatible **per contract** by `schema_id` agreement (#16).
+A participant's `#[derive(phoxal::Api)]` handle struct may mix contract types
+from multiple dated generations field by field.
+There is no participant-wide or graph-wide generation pin.
+The graph is compatible **per contract** by exact generation-qualified name
+identity (D1), not by a wire-shape hash.
 
 - API versions are **dated modules** in the `phoxal-api` crate -
   `phoxal_api::y2026_1`, `phoxal_api::y2026_2` - each with a zero-variant marker
@@ -27,25 +30,30 @@ proven compatible **per contract** by `schema_id` agreement (#16).
   string, `"y2026_1"`).
 - Contract bodies are **version-local plain serde structs/enums**
   (`api::drive::State`, `api::drive::Target`), each with a generated `ContractBody`
-  impl that fixes its `Api`, `FAMILY`, `TOPIC`, and `SCHEMA_ID` (the normalized
-  transitive wire-shape hash - the per-contract compatibility key).
+  impl that fixes its `Api`, `NAME`, `GENERATION`, `CONTRACT`, and `TOPIC`. There
+  is no `SCHEMA_ID`/`FAMILY`: the generation is folded into `TOPIC` itself, so two
+  differently-versioned contracts are physically distinct Zenoh keys and cannot
+  collide.
 - One macro - **`phoxal_api_tree!`** (in `phoxal-macros`) - owns the whole tree:
-  the dated version modules, the bodies, the topic keys + family ids, the pub/sub
-  vs query kind, the `schema_id`s, and the api-local `topic` builders.
-- A breaking change mints a new dated version; only the participants using a
-  contract whose `schema_id` changed must move to it - it is not a per-contract
-  body bump on the same bus, and not a whole-graph move either.
+  the dated version modules, the bodies, the topic keys, the pub/sub vs query
+  kind, and the api-local `topic` builders.
+- Each generation is a standalone, sparse batch: there is no `extends`. An
+  unchanged contract simply keeps its existing name as the one live identity; a
+  changed contract is minted fresh under the new generation. Only the
+  participants using a contract whose name changed must move to it - it is not a
+  per-contract body bump on the same bus, and not a whole-graph move either.
 
 ## Wire body and metadata placement
 
 The wire body is the **plain MessagePack payload** of the version-local type - the
 struct's fields, nothing more.
-There is no envelope struct, no in-body timestamp, and no version tag in the body
-or the key.
+There is no envelope struct, no generic in-body produce timestamp, and no
+separate version tag in the body or metadata.
+The generation is part of the contract's topic key.
 
-- `api_version`, `family`, and `codec` ride **bus metadata**: the Zenoh encoding
-  string (a fast-reject hint) and the `BusMetadata` attachment.
-  The canonical version identity is the body type's API module.
+- The codec rides the Zenoh encoding string and the `BusMetadata` attachment.
+  Contract generation and identity do not ride metadata because they are already
+  fixed by the subscribed topic key.
 - Production time rides metadata too: `BusMetadata` carries
   `produced_at_ns` + `epoch` + `source { participant, incarnation, sequence }`
   ([`phoxal-bus/src/metadata.rs`](../phoxal-bus/src/metadata.rs)), so a payload
@@ -60,10 +68,14 @@ or the key.
 - Query request/response bodies carry no produce-time field; a query response that
   needs a time names it explicitly.
 
-The `bus_abi` envelope (the Zenoh key layout + encoding-string format +
-`BusMetadata` layout + codec id) is a separate, orthogonal framework-owned
-constant; see [CONVENTIONS.md](./CONVENTIONS.md) and
-[`phoxal-bus/src/abi.rs`](../phoxal-bus/src/abi.rs).
+The Zenoh key layout, the encoding-string format, the `BusMetadata` layout, and
+the codec id are a separate, orthogonal framework-owned wire ABI; see
+[CONVENTIONS.md](./CONVENTIONS.md) and
+[`phoxal-bus/src/abi.rs`](../phoxal-bus/src/abi.rs). Identity used to live in a
+separately-maintained triple carried in the encoding string; that axis is gone
+now that the generation is folded into the Zenoh key itself, so `BusMetadata`
+carries only provenance (codec, produce time, source) - never schema/family/
+version.
 
 ## Typed variants and closed-set reasons
 
@@ -129,20 +141,23 @@ publisher profile, never inflating a control-state topic.
 
 Additive changes within a dated version edit that version's `phoxal_api_tree!`
 block in place.
-A breaking change adds a new dated version (`version y2026_2 extends y2026_1`); the
-macro generates a **fresh** Rust type per inherited contract (same `FAMILY`/`TOPIC`,
-different `Api`), so an unchanged contract is wire-identical by construction yet a
-distinct compile-time type.
-Only the participants that use a contract whose transitive shape changed (a new
-`SCHEMA_ID`) must move to the new generation; participants on unchanged contracts
-keep interoperating across generations (#16). There are no per-service independent
-semver tracks for contracts, and there is no mixed-version *decoding*: a shared
-topic's producers and consumers must agree on the exact `schema_id`.
+A breaking change mints a **new dated version** (`preview version y2026_2 { … }`,
+promoted once stable). There is no `extends`: an unchanged contract simply keeps
+its existing name as the one live identity across generations - the macro does
+not regenerate a copy of it - while a changed contract is minted fresh in the
+new generation under a new name.
+Only the participants that use a contract whose name actually changed must move
+to the new generation; participants on unchanged-name contracts keep
+interoperating across generations by construction, because they never stopped
+naming the same contract. There are no per-service independent semver tracks
+for contracts, and there is no mixed-version *decoding* on one topic: a shared
+topic's key is generation-qualified, so producers and consumers on it are
+already using the exact same name.
 
-A subscriber fails loud on a body it cannot decode or whose metadata `schema_id`
-does not match what the handle expects: the sample is counted
-(`schema_mismatches`/`decode_errors`) and logged as a health signal, never silently
-accepted ([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
-This decode-time loudness is the framework's compatibility backstop - contracts are
-statically known to consumers, so mismatches surface at decode time rather than via
-a runtime descriptor protocol.
+A subscriber fails loud on a body it cannot decode: the sample is counted
+(`decode_errors`) and logged as a health signal, never silently accepted
+([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
+This decode-time loudness is the framework's compatibility backstop - contracts
+are statically known to consumers, and identity lives in the key itself, so
+mismatches surface as an unreachable/unpublished topic or a decode error rather
+than via a runtime descriptor protocol.

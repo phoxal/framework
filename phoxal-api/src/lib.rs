@@ -32,15 +32,18 @@
 //!
 //! [`Api`]: y2026_1::Api
 //!
-//! # One API version per participant; per-contract identity across the graph
+//! # Per-field generations and per-contract identity
 //!
-//! A participant authors against exactly one version module
-//! (`use phoxal_api::y2026_1 as api;`) and declares it on the derive
-//! (`#[phoxal(api = y2026_1)]`). Every handle body is bound
-//! `ContractBody<Api = R::Api>`, so passing a body from another API version is a
-//! compile error (D60). Across the graph, participants may mix generations:
-//! compatibility is **name identity** (D1) - two participants interoperate on a
-//! contract iff they use the exact same version-qualified name
+//! A participant declares its bus surface with a companion
+//! `#[derive(phoxal::Api)]` handle struct.
+//! Each handle field names its own generation-qualified contract type, so one
+//! participant may freely mix fields from modules such as `y2026_1` and
+//! `y2026_7`.
+//! The derive records each field's resolved [`ContractBody::GENERATION`] and
+//! [`ContractBody::CONTRACT`] in the participant's embedded metadata and does
+//! not declare a participant-wide API generation.
+//! Across the graph, compatibility is **name identity** (D1) - two participants
+//! interoperate on a contract iff they use the exact same version-qualified name
 //! (`y2026_1::drive::Target`), which is real on the wire because the generation
 //! is folded into the key ([`ContractBody::TOPIC`]). There is no `schema_id`: a
 //! released contract type is immutable, so the name alone is the whole identity.

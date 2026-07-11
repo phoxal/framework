@@ -62,3 +62,41 @@ jobs:
           -p phoxal-macros
           -p phoxal
           --lib
+
+  # Living authoring entry point: proves
+  # `examples/hello-rover` is not just checked-in text but a robot.yaml +
+  # user service that actually compiles and passes `phoxal-cli check`, and
+  # that `examples/robot.schema.json` has not drifted from the `Robot` model.
+  # `ci`/`rust-ci.yml` above already builds/tests/lints `hello-rover-cruise`
+  # as an ordinary workspace default-member; this job adds the two checks
+  # that need a sibling `phoxal-cli` checkout: the schema drift guard and a
+  # real `phoxal-cli check` run against the example robot graph.
+  examples:
+    name: hello-rover example (schema guard + phoxal-cli check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/checkout@v6
+        with:
+          repository: phoxal/phoxal-cli
+          path: .phoxal-cli-checkout
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Compile the hello-rover example user service
+        run: cargo build -p hello-rover-cruise
+
+      - name: Run the robot.yaml schema drift guard
+        run: cargo test -p phoxal --lib schema_guard
+
+      - name: Build phoxal-cli
+        working-directory: .phoxal-cli-checkout
+        run: >
+          cargo build -p phoxal-cli
+          --config 'patch."https://github.com/phoxal/framework".phoxal.path="${{ github.workspace }}/phoxal"'
+          --config 'patch."https://github.com/phoxal/framework".phoxal-api.path="${{ github.workspace }}/phoxal-api"'
+
+      - name: Check the hello-rover example robot graph with local component assets
+        working-directory: examples/hello-rover
+        run: ../../.phoxal-cli-checkout/target/debug/phoxal-cli --quiet check --env dev

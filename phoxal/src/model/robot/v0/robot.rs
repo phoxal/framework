@@ -11,6 +11,7 @@ const ROBOT_FILE: &str = "robot.yaml";
 /// Top-level `robot:` section - the robot model, and exactly what
 /// `ctx.robot()` exposes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Robot {
     pub robot: RobotSection,
@@ -32,6 +33,7 @@ pub struct Robot {
 /// `robot:` - the robot model: identity, structure, kinematic, and
 /// components.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct RobotSection {
     /// The robot id (was `identity.id`).
@@ -53,6 +55,7 @@ pub struct RobotSection {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
     #[default]
@@ -80,6 +83,7 @@ impl fmt::Display for Channel {
 ///
 /// The whole section is optional; a day-0 robot can omit it entirely.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Artifacts {
     /// Release channel used when resolving official framework packages.
@@ -111,6 +115,7 @@ impl Artifacts {
 /// One `artifacts.pins` entry. Accepts a version string, a git reference, a
 /// `sha256:...` checksum string, or a local path override.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum ArtifactPin {
     /// Resolve this package from a local source checkout (dev-overlay-only).
@@ -124,6 +129,7 @@ pub enum ArtifactPin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactPathPin {
     /// Project-relative or overlay-relative source path for this package.
@@ -131,6 +137,7 @@ pub struct ArtifactPathPin {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactGitPin {
     /// Git repository URL.
@@ -172,6 +179,25 @@ impl<'de> Deserialize<'de> for Sha256Pin {
     }
 }
 
+/// Test-only: `Sha256Pin` hand-rolls `Serialize`/`Deserialize` (above) rather
+/// than deriving them, so `#[derive(schemars::JsonSchema)]` cannot see it;
+/// this manual impl keeps the generated `robot.schema.json` matching what the
+/// hand-rolled `Deserialize` actually accepts (see `docs/GETTING_STARTED.md`
+/// and the drift-guard test in `robot.rs`).
+#[cfg(test)]
+impl schemars::JsonSchema for Sha256Pin {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Sha256Pin".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": "^sha256:.+$"
+        })
+    }
+}
+
 /// A `vX.Y.Z` / semver version pin, validated at parse time so it cannot
 /// collide with a `sha256:...` string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +225,21 @@ impl<'de> Deserialize<'de> for VersionPin {
                 "version pin must be a 'vX.Y.Z' or semver-shaped string",
             ))
         }
+    }
+}
+
+/// Test-only: see the parallel `Sha256Pin` impl above for why this is manual.
+#[cfg(test)]
+impl schemars::JsonSchema for VersionPin {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "VersionPin".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$"
+        })
     }
 }
 
@@ -233,6 +274,7 @@ fn is_version_pin_string(value: &str) -> bool {
 /// `tools` map) - user services only; official services are framework
 /// packages pinned via `artifacts.pins`, never declared here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UserService {
     pub path: PathBuf,
@@ -242,6 +284,7 @@ pub struct UserService {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Bus {
     /// Router listen endpoints merged into the default localhost listen set.
@@ -260,6 +303,7 @@ impl Bus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BusUplink {
     /// Upstream Zenoh endpoint the site router should connect to.
@@ -273,6 +317,7 @@ pub struct BusUplink {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BusMtlsAuth {
     /// Project-local root CA certificate path used to verify the upstream router.
@@ -284,6 +329,7 @@ pub struct BusMtlsAuth {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BusRetry {
     /// Initial retry delay in milliseconds.

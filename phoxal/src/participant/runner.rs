@@ -110,15 +110,10 @@ pub async fn run_async<R: ParticipantLifecycle>() -> crate::Result<()> {
     run_with::<R, _, _>(launch, clock, shutdown_signal()).await
 }
 
-/// The timestamp source for a launch. Both clock modes stamp
-/// `StepContext`/`produced_at_ns` from the same host-wide real clock (D34) -
-/// what [`ClockMode::Simulation`] changes is *when* `#[step]` ticks are
-/// released (see [`step_scheduler_for`] and [`spawn_simulation_clock_feed`],
-/// which now drives that release from the live `simulation/clock` bus feed),
-/// not what time is read once a tick fires. A `ClockSource` that instead
-/// subscribes the authoritative `simulation/clock` for timestamps is future
-/// work (the Webots port, see the `clock` module docs); until it lands,
-/// simulation mode still timestamps from the host-monotonic domain.
+/// The caller-provided clock for a launch. Real mode uses it directly for
+/// timestamps and scheduler anchoring. Simulation mode replaces it with the
+/// clock derived from its [`SimulationScheduler`] so step release and every
+/// lifecycle timestamp share the authoritative `simulation/clock` domain.
 pub(crate) fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
     match launch.clock {
         ClockMode::Real | ClockMode::Simulation => Ok(RealClock::new()),
@@ -151,7 +146,18 @@ pub(crate) fn step_scheduler_for(
             None,
         ),
         ClockMode::Simulation => {
-            let (scheduler, handle) = SimulationScheduler::new(missed_tick, period, now);
+            // Seed at logical zero, NOT `now` (the wall clock): the live
+            // `simulation/clock` feed publishes sim-relative time starting near
+            // 0, and `SimulationClockHandle::advance` only moves logical time
+            // forward. Seeding from the host UNIX-epoch clock (~1.75e18 ns)
+            // would make every sim tick (0-based, far smaller) fail that
+            // monotonic guard, so the scheduler would never release a tick and
+            // the participant would freeze - the live-gate "services never step"
+            // symptom. The matching `SimulationClock` timestamp source shares
+            // this same seed via the scheduler's watch channel.
+            let _ = now;
+            let (scheduler, handle) =
+                SimulationScheduler::new(missed_tick, period, LogicalTime::new(0, 0));
             (AnyStepScheduler::Simulation(scheduler), Some(handle))
         }
     }
@@ -294,22 +300,70 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
-    let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), launch.participant_id.clone());
-    heartbeat.publish(clock.now());
+    let schedule = R::__step_schedule();
+    let (scheduler, clock_handle) = step_scheduler_for(launch.clock, schedule, clock.now());
+    let effective_clock = match &scheduler {
+        AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
+        AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
+    };
+    // Subscribe before setup so every lifecycle heartbeat uses the effective
+    // clock domain and the simulation clock can advance while setup runs.
+    let clock_feed = clock_handle
+        .map(|handle| spawn_simulation_clock_feed(bus, handle))
+        .transpose()?;
 
-    let result =
-        run_lifecycle_inner::<R, C, S>(bus, launch, &clock, shutdown, &mut heartbeat).await;
+    let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), launch.participant_id.clone());
+    heartbeat.publish(effective_clock.now());
+
+    let result = run_lifecycle_inner::<R, C, S>(
+        bus,
+        launch,
+        &effective_clock,
+        scheduler,
+        schedule,
+        shutdown,
+        &mut heartbeat,
+    )
+    .await;
     if result.is_err() {
         heartbeat.set_readiness(api::presence::Readiness::Failed);
-        heartbeat.publish(clock.now());
+        heartbeat.publish(effective_clock.now());
+    }
+    if let Some(task) = clock_feed {
+        task.abort();
     }
     result
+}
+
+/// The runner's effective timestamp clock, chosen once the scheduler is built.
+///
+/// In real mode it simply delegates to the caller-provided [`ClockSource`] (the
+/// host [`RealClock`], or a [`TestClock`](crate::participant::clock::TestClock)
+/// under the test harness). In simulation mode it is the
+/// [`SimulationClock`](crate::participant::clock::SimulationClock) that shares
+/// the `SimulationScheduler`'s live `simulation/clock` feed, so stamped time and
+/// step-release time stay in the one simulation domain (see the `SimulationClock`
+/// docs for why wall-stamping a simulated participant is wrong).
+enum RunnerClock<C: ClockSource> {
+    Delegated(C),
+    Simulation(crate::participant::clock::SimulationClock),
+}
+
+impl<C: ClockSource> ClockSource for RunnerClock<C> {
+    fn now(&self) -> LogicalTime {
+        match self {
+            RunnerClock::Delegated(clock) => clock.now(),
+            RunnerClock::Simulation(clock) => clock.now(),
+        }
+    }
 }
 
 async fn run_lifecycle_inner<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
-    clock: &C,
+    clock: &RunnerClock<C>,
+    scheduler: AnyStepScheduler,
+    schedule: Option<StepSchedule>,
     shutdown: S,
     heartbeat: &mut HeartbeatPublisher,
 ) -> crate::Result<()>
@@ -412,25 +466,13 @@ where
         }));
     }
 
-    let schedule = R::__step_schedule();
-    let (scheduler, clock_handle) = step_scheduler_for(launch.clock, schedule, clock.now());
-    // `ClockMode::Simulation` hands back a driving handle: keep it alive by
-    // moving it into the feed task rather than dropping it (the
-    // `SimulationScheduler` also retains its own sender keepalive, so the
-    // watch channel would not actually close either way - see the scheduler's
-    // keepalive docs - but the handle is only useful for as long as something
-    // holds it and drives it, which is this task's whole job). Pushed
-    // alongside the other bus-driven tasks so it is aborted at shutdown.
-    if let Some(handle) = clock_handle {
-        server_tasks.push(spawn_simulation_clock_feed(bus, handle)?);
-    }
     let shutdown = pin!(shutdown);
     heartbeat.set_readiness(api::presence::Readiness::Ready);
     heartbeat.publish(clock.now());
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
     super::sd_notify::ready();
     let watchdog = super::sd_notify::Watchdog::start();
-    let fault = main_loop::<R, C, S>(
+    let fault = main_loop::<R, _, S>(
         &mut participant,
         &mut api,
         bus,
@@ -574,8 +616,20 @@ where
                 watchdog.feed();
                 advance_deadline(&mut next_heartbeat, heartbeat::HEARTBEAT_INTERVAL);
             }
-            SchedulerTick { missed_ticks, .. } = step_tick(scheduler, next_step_target) => {
+            SchedulerTick { fired_at, missed_ticks } = step_tick(scheduler, next_step_target) => {
                 let (Some(period), Some(target)) = (period, next_step_target) else { continue };
+
+                if fired_at.epoch() > target.epoch() {
+                    // An epoch bump resets logical time. The old-epoch target is
+                    // lexicographically before every value in the new epoch, so
+                    // retaining it would make wait_until resolve immediately on
+                    // every loop iteration. Start a fresh cadence from the reset
+                    // sample and do not turn the reset itself into a step.
+                    next_step_target = Some(advance_logical_deadline(fired_at, period, 0));
+                    step_index = 0;
+                    last_time_ns = fired_at.time_ns();
+                    continue;
+                }
                 next_step_target = Some(advance_logical_deadline(target, period, missed_ticks));
 
                 let now = clock.now();

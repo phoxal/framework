@@ -73,9 +73,10 @@ impl TopicRole {
 /// [`ApiVersion`] and one contract topic (D61/D1).
 ///
 /// Every body declared inside a `phoxal_api_tree!` node gets a generated impl.
-/// Handles, `SetupContext` builders, and the `Service`/`Driver` derive assertions
-/// all key off [`Api`](ContractBody::Api)/[`TOPIC`](ContractBody::TOPIC), which is
-/// how a body from the wrong API version is rejected at compile time.
+/// Each body carries its own [`Api`](ContractBody::Api) generation marker and
+/// generation-qualified [`TOPIC`](ContractBody::TOPIC).
+/// Participant `Api` derives record contract bodies field by field, and setup
+/// builders require the requested handle body to be declared by that struct.
 ///
 /// The serde encoding of an implementor *is* the wire payload; there is no version
 /// envelope (D62).
@@ -85,8 +86,8 @@ impl TopicRole {
 /// hypothetically re-minted `y2026_2::drive::Target` publish on different Zenoh
 /// keys and physically cannot collide. There is therefore no `SCHEMA_ID`/`FAMILY`
 /// axis: two participants interoperate on a contract iff they use the exact same
-/// version-qualified name, which is enforced by the type system (`Api` bound) and
-/// realized on the wire by the key. A receiver's per-key Zenoh subscription is the
+/// version-qualified name, which is realized on the wire by the key.
+/// A receiver's per-key Zenoh subscription is the
 /// whole fast-reject; the bus decode path validates only the codec.
 pub trait ContractBody:
     serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static

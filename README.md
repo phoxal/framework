@@ -12,6 +12,16 @@ library crates are published to crates.io (see [Releasing](#releasing)).
 Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 [conventions](docs/CONVENTIONS.md), and [validation](docs/VALIDATION.md).
 
+## Getting started
+
+Robot projects are hand-authored: a `robot.yaml` manifest, a `structure.urdf`,
+component definitions, and user service crates.
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) walks through authoring
+one using the checked-in [`examples/hello-rover`](examples/hello-rover)
+project, and links the editor-facing
+[`examples/robot.schema.json`](examples/robot.schema.json) JSON Schema for
+`robot.yaml`.
+
 ## Releasing
 
 Each crate carries its own version and advances only when its own source
