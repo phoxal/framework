@@ -477,11 +477,15 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p prev
-          if gh release download --pattern catalog.json --dir prev --repo "${{ github.repository }}"; then
-            cargo xtask release bootstrap-tags --catalog prev/catalog.json --push
+          # Download OUTSIDE the git working tree. The next step runs release-plz,
+          # whose is_clean check aborts ("failed to determine next versions") if
+          # any uncommitted, non-ignored path exists - a prev/ dir in the repo
+          # root would trip it.
+          prev_dir="$RUNNER_TEMP/prev"
+          mkdir -p "$prev_dir"
+          if gh release download --pattern catalog.json --dir "$prev_dir" --repo "${{ github.repository }}"; then
+            cargo xtask release bootstrap-tags --catalog "$prev_dir/catalog.json" --push
           else
-            rm -f prev/catalog.json
             echo "no previous catalog (cold start); no git-only baselines to restore"
           fi
 
