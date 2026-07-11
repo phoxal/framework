@@ -5080,6 +5080,7 @@ dependencies = [
  "object",
  "phoxal",
  "proc-macro2",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

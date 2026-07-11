@@ -10,9 +10,10 @@
 //! The merge is keyed by `(package, version)` (§4.2): start from
 //! `--previous-catalog`'s full `artifacts[]` (empty if absent - cold start,
 //! §4.3), then upsert one fresh entry per `(package, version)` this run has
-//! facts for in `--package-dir`. Nothing is dropped, refreshed, or reshaped;
-//! `(package, version)` is unique, so re-running generate against the same
-//! `--package-dir` is idempotent.
+//! facts for in `--package-dir`. Older versions are retained; a rebuilt current
+//! `(package, version)` replaces its prior location with this wave's immutable
+//! `build-*` URL. Re-running generate against the same `--package-dir` is
+//! idempotent.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -487,6 +488,44 @@ mod tests {
         assert_eq!(
             merged[0].assets.as_ref().unwrap().url,
             "https://github.com/phoxal/framework/releases/download/build-old/a.tar.zst"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn merge_refreshes_a_rebuilt_unchanged_version() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let assets = component_artifact("ddsm115", "0.1.0");
+        write_packaged_fixture(temp.path(), &assets, TARGET_INDEPENDENT_SCOPE)?;
+        let previous = Catalog::new(
+            fixture_build(),
+            vec![CatalogArtifact {
+                package: assets.package.clone(),
+                version: assets.version.clone(),
+                targets: BTreeMap::new(),
+                assets: Some(Blob {
+                    url:
+                        "https://github.com/phoxal/framework/releases/download/build-old/a.tar.zst"
+                            .to_string(),
+                    sha256: "b".repeat(64),
+                    size: 7,
+                }),
+            }],
+            Heads::empty(),
+        );
+
+        let mut options = base_options(temp.path());
+        options.previous_catalog = Some(previous);
+        let merged = merge_artifacts(std::slice::from_ref(&assets), &options)?;
+
+        assert_eq!(merged.len(), 1);
+        assert!(
+            merged[0]
+                .assets
+                .as_ref()
+                .unwrap()
+                .url
+                .contains("build-20260708-0001234")
         );
         Ok(())
     }

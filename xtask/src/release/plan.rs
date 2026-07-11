@@ -2,17 +2,13 @@
 //! `organization/tmp/ci-release-refactor/design.md` §4.1, "Which artifacts
 //! build this run").
 //!
-//! release-plz (`release-plz.toml`) now owns *all* crate versioning -
-//! libraries and binaries alike, the latter via `git_only` - so this command
-//! no longer reads release-plz's JSON output to learn which packages were
-//! released. Versioning and building are decoupled: release-plz decides
-//! versions on the release-PR merge; this command turns the complete official
-//! artifact set into the build matrix.
+//! Artifact versions are independent: `release cut` reports only newly tagged
+//! versions, while this command deliberately plans every official artifact for
+//! the build-snapshot wave. Rebuilding all artifacts keeps the catalog and its
+//! embedded config schemas complete without coupling their version numbers.
 //!
-//! `release_always = true` requires every official artifact to bump on every
-//! release train. If any current `(package, version)` is already present in the
-//! previous catalog, planning fails: silently excluding it would make the
-//! workspace at HEAD differ from the complete package set users download.
+//! The cut document is still consumed and validated: every newly cut release
+//! must identify an official crate at its current workspace version and tag.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -23,20 +19,15 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use serde::{Deserialize, Serialize};
 
-use phoxal::catalog::Catalog;
-
-use crate::catalog::verify::verify_catalog_path;
+use crate::release::cut::ReleaseDocument;
 use crate::workspace::{ArtifactKind, OfficialArtifact, Workspace, runner_for_target};
 
 pub(crate) const RELEASE_PLAN_SCHEMA: &str = "phoxal.release-plan/v0";
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// The current "latest" `phoxal.catalog/v0` catalog, downloaded by the
-    /// workflow before this step. Absent means cold start (§4.3): every
-    /// discovered artifact is included in the plan.
     #[arg(long, value_name = "PATH")]
-    pub previous_catalog: Option<PathBuf>,
+    pub artifact_releases_json: PathBuf,
     #[arg(
         long,
         value_name = "PATH",
@@ -61,7 +52,7 @@ pub(crate) struct ReleasePlan {
 /// One artifact this run's build-set includes. `package` is the
 /// provider-qualified public identity (`phoxal/component-ddsm115`);
 /// there is no separate `artifact_id` alongside it (docs #21). `tag` is the
-/// artifact's release-plz-owned version tag (`{package}-v{version}`,
+/// artifact's xtask-owned version tag (`{package}-v{version}`,
 /// informational only - the actual upload target is this run's `build-*`
 /// release, decided by the workflow, not this plan).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -97,18 +88,15 @@ pub(crate) struct ReleasePackage {
 
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    let previous_catalog = args
-        .previous_catalog
-        .as_deref()
-        .map(verify_catalog_path)
-        .transpose()?;
-    let plan = build_release_plan(&workspace, previous_catalog.as_ref())?;
+    let releases = fs::read_to_string(&args.artifact_releases_json)
+        .with_context(|| format!("failed to read {}", args.artifact_releases_json.display()))?;
+    let plan = build_release_plan(&workspace, &releases)?;
     write_release_plan(&args.out, &plan)?;
     if args.github_output {
         write_github_output(&plan)?;
     }
     println!(
-        "release plan: {} artifact release(s), {} matrix rows -> {}",
+        "release plan: {} artifacts, {} matrix rows -> {}",
         plan.artifacts.len(),
         plan.matrix.include.len(),
         args.out.display()
@@ -147,44 +135,15 @@ pub(crate) fn write_release_plan(path: &Path, plan: &ReleasePlan) -> Result<()> 
     fs::write(path, json).with_context(|| format!("failed to write {}", path.display()))
 }
 
-/// Builds the complete official-artifact plan. A current `(package, version)`
-/// already present in `previous_catalog` is a release invariant violation,
-/// because `release_always = true` must bump and repackage the whole set.
-///
 /// Target selection uses [`OfficialArtifact::supported_target_triples`].
 /// Binary work is grouped into one row per target, while components' additional
 /// target-independent bundles are kept in [`ReleasePlan::assets`] for the
 /// workflow's single assets job.
 pub(crate) fn build_release_plan(
     workspace: &Workspace,
-    previous_catalog: Option<&Catalog>,
+    artifact_releases_json: &str,
 ) -> Result<ReleasePlan> {
-    let already_published: BTreeSet<(&str, &str)> = previous_catalog
-        .map(|catalog| {
-            catalog
-                .artifacts
-                .iter()
-                .map(|entry| (entry.package.as_str(), entry.version.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let offenders: Vec<String> = workspace
-        .official_artifacts()
-        .iter()
-        .filter(|artifact| {
-            already_published.contains(&(artifact.package.as_str(), artifact.version.as_str()))
-        })
-        .map(|artifact| format!("{} v{}", artifact.package, artifact.version))
-        .collect();
-    if !offenders.is_empty() {
-        bail!(
-            "release invariant violated: current official artifact version(s) already exist in \
-             the previous catalog: {}. With release_always = true every official artifact must \
-             bump and be repackaged on every release train; check release-plz.toml coverage",
-            offenders.join(", ")
-        );
-    }
+    validate_release_document(workspace, artifact_releases_json)?;
 
     let mut artifacts: Vec<ReleasePlanArtifact> = workspace
         .official_artifacts()
@@ -230,6 +189,53 @@ pub(crate) fn build_release_plan(
     })
 }
 
+fn validate_release_document(workspace: &Workspace, text: &str) -> Result<()> {
+    let document: ReleaseDocument =
+        serde_json::from_str(text).context("artifact release output was not valid JSON")?;
+    let official_by_crate = workspace
+        .official_artifacts()
+        .iter()
+        .filter_map(|artifact| {
+            artifact
+                .package_name
+                .as_deref()
+                .map(|name| (name, artifact))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut seen = BTreeSet::new();
+    for release in document.releases {
+        if !seen.insert(release.package_name.clone()) {
+            bail!("artifact release output repeats {}", release.package_name);
+        }
+        let artifact = official_by_crate
+            .get(release.package_name.as_str())
+            .with_context(|| {
+                format!(
+                    "artifact release output names unknown crate {}",
+                    release.package_name
+                )
+            })?;
+        if release.version != artifact.version {
+            bail!(
+                "artifact release output says {} is v{}, but workspace discovery found v{}",
+                release.package_name,
+                release.version,
+                artifact.version
+            );
+        }
+        let expected_tag = artifact.release_tag();
+        if release.tag != expected_tag {
+            bail!(
+                "artifact release output tag for {} was '{}', expected '{}'",
+                release.package_name,
+                release.tag,
+                expected_tag
+            );
+        }
+    }
+    Ok(())
+}
+
 fn plan_artifact(artifact: &OfficialArtifact) -> ReleasePlanArtifact {
     ReleasePlanArtifact {
         package: artifact.package.clone(),
@@ -261,11 +267,10 @@ fn write_github_output(plan: &ReleasePlan) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    use crate::release::cut::{CutRelease, ReleaseDocument};
     use crate::workspace::{PhoxalPackageMetadata, Workspace};
-    use phoxal::catalog::{Artifact as CatalogArtifact, Blob, BuildProvenance, Heads};
 
     use super::*;
 
@@ -295,36 +300,14 @@ mod tests {
         )
     }
 
-    fn fixture_build_provenance() -> BuildProvenance {
-        BuildProvenance {
-            tag: "build-20260701-0001180".to_string(),
-            run_number: 1180,
-            run_id: 1,
-            commit: "c".to_string(),
-            created_at: "2026-07-01T00:00:00Z".to_string(),
-        }
-    }
-
-    fn catalog_entry(package: &str, version: &str) -> CatalogArtifact {
-        let mut targets = BTreeMap::new();
-        targets.insert(
-            "x86_64-unknown-linux-gnu".to_string(),
-            Blob {
-                url: "https://example.invalid/a.tar.zst".to_string(),
-                sha256: "a".repeat(64),
-                size: 1,
-            },
-        );
-        CatalogArtifact {
-            package: package.to_string(),
-            version: version.to_string(),
-            targets,
-            assets: None,
-        }
+    fn releases(entries: Vec<CutRelease>) -> Result<String> {
+        Ok(serde_json::to_string(&ReleaseDocument {
+            releases: entries,
+        })?)
     }
 
     #[test]
-    fn cold_start_with_no_previous_catalog_builds_every_artifact() -> Result<()> {
+    fn empty_cut_document_still_builds_every_artifact() -> Result<()> {
         let workspace = workspace_with(vec![
             artifact(
                 "phoxal-service-drive",
@@ -335,7 +318,7 @@ mod tests {
             artifact("phoxal-tool-router", ArtifactKind::Tool, "router", "0.1.0"),
         ]);
 
-        let plan = build_release_plan(&workspace, None)?;
+        let plan = build_release_plan(&workspace, &releases(Vec::new())?)?;
 
         let uniform_five = vec![
             "aarch64-apple-darwin".to_string(),
@@ -359,54 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn already_catalogued_current_version_fails_the_release_invariant() -> Result<()> {
-        let workspace = workspace_with(vec![artifact(
-            "phoxal-service-drive",
-            ArtifactKind::Service,
-            "drive",
-            "0.19.7",
-        )]);
-        let previous = Catalog::new(
-            fixture_build_provenance(),
-            vec![catalog_entry("phoxal/service-drive", "0.19.7")],
-            Heads::empty(),
-        );
-
-        let err = build_release_plan(&workspace, Some(&previous)).unwrap_err();
-
-        assert!(err.to_string().contains("release invariant violated"));
-        assert!(err.to_string().contains("phoxal/service-drive v0.19.7"));
-        assert!(err.to_string().contains("release-plz.toml coverage"));
-        Ok(())
-    }
-
-    #[test]
-    fn a_new_version_not_yet_in_the_catalog_is_included() -> Result<()> {
-        let workspace = workspace_with(vec![artifact(
-            "phoxal-service-drive",
-            ArtifactKind::Service,
-            "drive",
-            "0.19.8",
-        )]);
-        // Previous catalog only knows about the OLDER version - the workspace's
-        // current version (0.19.8) is new and must be built.
-        let previous = Catalog::new(
-            fixture_build_provenance(),
-            vec![catalog_entry("phoxal/service-drive", "0.19.7")],
-            Heads::empty(),
-        );
-
-        let plan = build_release_plan(&workspace, Some(&previous))?;
-
-        assert_eq!(plan.artifacts.len(), 1);
-        assert_eq!(plan.artifacts[0].package, "phoxal/service-drive");
-        assert_eq!(plan.artifacts[0].version, "0.19.8");
-        assert_eq!(plan.artifacts[0].tag, "phoxal-service-drive-v0.19.8");
-        Ok(())
-    }
-
-    #[test]
-    fn one_unbumped_artifact_blocks_a_mixed_release_train() -> Result<()> {
+    fn one_new_tag_still_plans_unchanged_artifacts_for_catalog_completeness() -> Result<()> {
         let workspace = workspace_with(vec![
             artifact(
                 "phoxal-service-drive",
@@ -416,16 +352,43 @@ mod tests {
             ),
             artifact("phoxal-tool-router", ArtifactKind::Tool, "router", "0.2.0"),
         ]);
-        let previous = Catalog::new(
-            fixture_build_provenance(),
-            vec![catalog_entry("phoxal/service-drive", "0.19.7")],
-            Heads::empty(),
+        let cut = releases(vec![CutRelease {
+            package_name: "phoxal-tool-router".to_string(),
+            version: "0.2.0".to_string(),
+            tag: "phoxal-tool-router-v0.2.0".to_string(),
+        }])?;
+
+        let plan = build_release_plan(&workspace, &cut)?;
+
+        assert_eq!(plan.artifacts.len(), 2);
+        assert_eq!(plan.artifacts[0].package, "phoxal/service-drive");
+        assert_eq!(plan.artifacts[0].version, "0.19.7");
+        assert_eq!(plan.artifacts[1].package, "phoxal/tool-router");
+        assert_eq!(plan.artifacts[1].version, "0.2.0");
+        Ok(())
+    }
+
+    #[test]
+    fn cut_document_version_must_match_workspace() -> Result<()> {
+        let workspace = workspace_with(vec![artifact(
+            "phoxal-service-drive",
+            ArtifactKind::Service,
+            "drive",
+            "0.19.7",
+        )]);
+        let cut = releases(vec![CutRelease {
+            package_name: "phoxal-service-drive".to_string(),
+            version: "0.19.8".to_string(),
+            tag: "phoxal-service-drive-v0.19.8".to_string(),
+        }])?;
+
+        let error = build_release_plan(&workspace, &cut).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("workspace discovery found v0.19.7")
         );
-
-        let err = build_release_plan(&workspace, Some(&previous)).unwrap_err();
-
-        assert!(err.to_string().contains("phoxal/service-drive v0.19.7"));
-        assert!(!err.to_string().contains("phoxal/tool-router v0.2.0"));
         Ok(())
     }
 
@@ -441,13 +404,7 @@ mod tests {
             "ddsm115",
             "0.2.0",
         )]);
-        let previous = Catalog::new(
-            fixture_build_provenance(),
-            vec![catalog_entry("phoxal/component-ddsm115", "0.1.0")],
-            Heads::empty(),
-        );
-
-        let plan = build_release_plan(&workspace, Some(&previous))?;
+        let plan = build_release_plan(&workspace, &releases(Vec::new())?)?;
 
         assert_eq!(plan.artifacts.len(), 1);
         assert_eq!(plan.artifacts[0].package, "phoxal/component-ddsm115");
@@ -481,7 +438,7 @@ mod tests {
         joypad.metadata.unsupported_targets = vec!["*-musl".to_string()];
         let workspace = workspace_with(vec![service, joypad]);
 
-        let plan = build_release_plan(&workspace, None)?;
+        let plan = build_release_plan(&workspace, &releases(Vec::new())?)?;
 
         assert_eq!(plan.matrix.include.len(), 5);
         for row in &plan.matrix.include {
