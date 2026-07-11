@@ -25,10 +25,9 @@
 # VERIFIED (release-plz 0.3.159, local test - see design doc §4.1): with
 # `publish = false` + `git_only = true`, release-plz does NOT drop the crate.
 # It versions it and writes its changelog off the git tag, never touching
-# crates.io. With no matching tag yet it treats the package as an initial
-# release without bumping it. The release-PR workflow therefore restores any
-# missing baselines from the latest published catalog before invoking
-# release-plz; see `cargo xtask release bootstrap-tags`.
+# crates.io. Every official binary already carries a `{package}-v{version}`
+# baseline tag on origin, so release-plz reads each baseline directly (with no
+# matching tag it would treat the package as an initial release and not bump).
 #
 # release-plz has no glob/prefix matching for [[package]] - each entry names
 # one crate - hence the explicit list below rather than a directory pattern.
