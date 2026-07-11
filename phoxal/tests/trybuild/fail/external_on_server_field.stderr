@@ -27,3 +27,21 @@ note: required by a bound in `phoxal::participant::Participant::Api`
    |     type Api: ParticipantApi;
    |               ^^^^^^^^^^^^^^ required by this bound in `Participant::Api`
    = note: this error originates in the attribute macro `phoxal::service` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Api: ParticipantApi` is not satisfied
+  --> tests/trybuild/fail/external_on_server_field.rs:16:1
+   |
+16 | #[phoxal::service(id = "external-on-server")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `ParticipantApi` is not implemented for `Api`
+  --> tests/trybuild/fail/external_on_server_field.rs:11:1
+   |
+11 | struct Api {
+   | ^^^^^^^^^^
+help: the trait `ParticipantApi` is implemented for `()`
+  --> src/participant/api.rs
+   |
+   | impl ParticipantApi for () {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `phoxal::service` (in Nightly builds, run with -Z macro-backtrace for more info)

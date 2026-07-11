@@ -17,7 +17,7 @@ use phoxal_api::y2026_1 as api;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct WebotsSupervisorConfig {
     #[serde(default = "default_require_native")]
@@ -52,7 +52,7 @@ fn default_require_native() -> bool {
 /// world-staging step renders it (including that robot's `controller` and
 /// `controllerArgs` fields) before handing it to the supervisor; this crate
 /// treats it as an opaque string to import verbatim.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct SpawnRobot {
     /// Robot id, used only for logging/diagnostics.
@@ -570,15 +570,9 @@ mod tests {
         assert!(!config.unwrap().require_native);
     }
 
-    // `ParticipantConfig::SCHEMA_JSON` is a fixed `"{}"` placeholder (real
-    // materialization is a deferred host-side `build.rs` slice - see
-    // `phoxal::participant::api`'s module docs), so this asserts directly
-    // against `schemars`'s own output for `WebotsSupervisorConfig`, which
-    // still derives `phoxal::schemars::JsonSchema` unchanged.
     #[test]
     fn config_schema_includes_spawn_field() {
-        let schema = phoxal::schemars::schema_for!(WebotsSupervisorConfig);
-        let schema = serde_json::to_string(&schema).unwrap();
+        let schema = <WebotsSupervisorConfig as ParticipantConfig>::SCHEMA_JSON;
 
         assert!(
             schema.contains("spawn"),

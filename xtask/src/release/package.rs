@@ -824,11 +824,11 @@ mod tests {
         let targets = [
             (
                 "x86_64-unknown-linux-gnu",
-                br#"{"participant_api":"Api","contracts":[]}"#.as_slice(),
+                br#"{"participant_api":"Api","contracts":[],"config_schema":{"type":"null"}}"#.as_slice(),
             ),
             (
                 "aarch64-unknown-linux-gnu",
-                br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"battery::State","external":false}]}"#
+                br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"battery::State","external":false}],"config_schema":{"type":"null"}}"#
                     .as_slice(),
             ),
         ];

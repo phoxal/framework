@@ -32,7 +32,6 @@ derive-new = { workspace = true }
 dotenvy = { workspace = true }
 nalgebra = { workspace = true }
 rmp-serde = { workspace = true }
-schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
@@ -45,6 +44,8 @@ urdf-rs = { workspace = true }
 zenoh = { workspace = true }
 
 [dev-dependencies]
+jsonschema = { version = "0.46.6", default-features = false }
+schemars = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
 trybuild = { workspace = true }

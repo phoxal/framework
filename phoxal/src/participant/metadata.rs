@@ -6,8 +6,8 @@
 //! `phoxal::participant::api::__meta` for the const-eval mechanism that
 //! resolves it. The entry shape is `{"role","generation","contract","external"}`:
 //! generation and contract are recorded as SEPARATE fields (never a joined
-//! name a reader would have to parse), and `external` defaults to `false` so
-//! older sections/hand-written fixtures without the key still parse.
+//! name a reader would have to parse). The shape is strict: this pre-1.0
+//! writer/parser cut has no compatibility fallback.
 //!
 //! This module owns ONLY the JSON shape, not the object-file section-BYTES
 //! extraction, which stays host-specific (an `object`-crate walk over an
@@ -30,6 +30,7 @@ use serde::Deserialize;
 /// made it name an arbitrary first field, and nothing read it (coherence-gate
 /// design doc §2).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ParticipantMetaContract {
     /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
     /// (`phoxal::participant::ContractRole`, snake_case).
@@ -48,16 +49,14 @@ pub struct ParticipantMetaContract {
     /// (`#[phoxal(external)]`, coherence-gate design doc §1): the counterpart
     /// is known, at authoring time, to legitimately live outside the checked
     /// participant set. Only ever `true` for a `subscribe`/`ask` entry - the
-    /// derive rejects the attribute on `publish`/`serve` fields. `false` by
-    /// default so a section/fixture written before this field existed still
-    /// parses.
-    #[serde(default)]
+    /// derive rejects the attribute on `publish`/`serve` fields.
     pub external: bool,
 }
 
 /// The embedded metadata manifest for one participant. This is a strict
 /// pre-1.0 format whose writer and parsers move in lockstep.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ParticipantMeta {
     /// The `Api` struct's type name (e.g. `"Api"`), recorded purely as
     /// provenance by `#[derive(phoxal::Api)]`.
@@ -115,16 +114,13 @@ mod tests {
         assert!(meta.contracts[0].external);
     }
 
-    /// A section written before `external` existed (or a hand-written
-    /// fixture that omits it) still parses, defaulting to `false` - the
-    /// module docs' forward/backward-tolerance guarantee.
     #[test]
-    fn missing_external_key_defaults_to_false() {
+    fn missing_external_key_is_rejected() {
         let json = br#"{"participant_api":"Api","contracts":[
             {"role":"publish","generation":"y2026_1","contract":"drive::State"}
         ],"config_schema":{"type":"null"}}"#;
-        let meta = parse_participant_metadata(json).expect("valid metadata JSON");
-        assert!(!meta.contracts[0].external);
+        let err = parse_participant_metadata(json).unwrap_err();
+        assert!(err.to_string().contains("external"));
     }
 
     #[test]

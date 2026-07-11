@@ -1,0 +1,5 @@
+error: unsupported serde attribute `flatten` for #[derive(phoxal::Config)]; supported container attributes: rename, rename_all, default, deny_unknown_fields; supported field attributes: rename, default
+ --> tests/trybuild/fail/config_unsupported_serde_attribute.rs:8:13
+  |
+8 |     #[serde(flatten)]
+  |             ^^^^^^^

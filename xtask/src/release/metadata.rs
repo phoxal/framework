@@ -1,6 +1,6 @@
 //! Compile-time participant metadata extraction (X-tools slice).
 //!
-//! `#[derive(phoxal::Api)]` embeds one JSON manifest per participant binary in
+//! The participant attribute embeds one JSON manifest per participant binary in
 //! a dedicated linker section - `__DATA,__phoxal_meta` on Mach-O, `.phoxal_api_meta`
 //! everywhere else (`phoxal-macros/src/authoring.rs`'s `link_section_attrs`).
 //! `xtask` no longer runs `emit-apis` (that runtime subcommand is being retired
@@ -37,7 +37,7 @@ pub(crate) use phoxal::participant::metadata::ParticipantMeta;
 #[cfg(test)]
 pub(crate) use phoxal::participant::metadata::ParticipantMetaContract;
 
-/// The linker section names `#[derive(phoxal::Api)]` places its metadata
+/// The linker section names a participant attribute places its metadata
 /// static under, tried in order (`phoxal-macros/src/authoring.rs::link_section_attrs`).
 /// `object`'s generic [`Object::section_by_name`] matches on the section name
 /// alone (Mach-O segment qualification is not part of the match), so no
@@ -46,7 +46,7 @@ pub(crate) use phoxal::participant::metadata::ParticipantMetaContract;
 const SECTION_NAMES: [&str; 2] = [".phoxal_api_meta", "__phoxal_meta"];
 
 /// Parses `object_bytes` as an object file and returns the bytes of its
-/// `#[derive(phoxal::Api)]` metadata section, trying each candidate section
+/// participant metadata section, trying each candidate section
 /// name in [`SECTION_NAMES`] in turn. `Ok(None)` means the object file parsed
 /// fine but carries no such section at all - the expected, valid shape for a
 /// participant whose `Api` is `()` (privileged tools default to this; see
@@ -147,6 +147,7 @@ mod tests {
 
         let meta = extract_participant_metadata(&binary_path)?;
         assert_eq!(meta.participant_api, "Api");
+        assert_eq!(meta.config_schema["type"], "null");
         assert_eq!(
             meta.contracts,
             vec![ParticipantMetaContract {
@@ -228,7 +229,7 @@ mod tests {
     /// aarch64 (ELF) and Apple (Mach-O) release binaries.
     #[test]
     fn extracts_metadata_from_foreign_format_and_arch_object_files() -> Result<()> {
-        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}]}"#;
+        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}],"config_schema":{"type":"null"}}"#;
         let expected = vec![ParticipantMetaContract {
             role: "publish".to_string(),
             generation: "y2026_1".to_string(),

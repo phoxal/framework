@@ -18,7 +18,6 @@ path = "src/main.rs"
 phoxal = { workspace = true }
 phoxal-api = { workspace = true }
 anyhow = { workspace = true }
-schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }

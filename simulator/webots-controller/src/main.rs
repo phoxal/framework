@@ -37,7 +37,7 @@ const DEFAULT_DT_NS: u64 = 10_000_000;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
 
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct WebotsControllerConfig {
     #[serde(default = "default_require_native")]
