@@ -2,9 +2,9 @@ name: Frozen API generation guard
 
 # Blocks a PR (in particular release-plz's `chore(release)` PR) if a released
 # (non-`preview`) `version y2026_N { … }` span in `phoxal-api/src/lib.rs`
-# changed since the last `phoxal-api-v*` tag - a released contract type is
-# immutable; a changed contract is minted fresh in the current generation
-# instead (phoxal-api-refactor, "Frozen-contract enforcement").
+# changed since the commit recorded in crates.io's published phoxal-api crate.
+# A released contract type is immutable; a changed contract is minted fresh in
+# the current generation instead.
 #
 # SECURITY - why this is not a "Pwn Request":
 # `pull_request_target` runs with the BASE repo's workflow + the elevated
@@ -20,11 +20,6 @@ name: Frozen API generation guard
 # gets away with `pull_request_target` because it only reads PR *metadata*;
 # this job earns the same trigger by only reading PR *file content as data*.
 #
-# `cargo xtask api frozen-generation-check` no-ops (logs + exits 0) when no
-# `phoxal-api-v*` tag exists yet (verified absent at Step 0 of the
-# phoxal-api-refactor) - a repo with no prior phoxal-api release has nothing
-# to freeze against.
-
 on:
   pull_request_target:
     types: [opened, edited, synchronize]
@@ -36,16 +31,16 @@ jobs:
   frozen-generation-check:
     runs-on: ubuntu-latest
     steps:
-      # Default checkout: the trusted BASE ref (NOT the PR head). fetch-depth: 0
-      # brings the phoxal-api-v* tags the baseline diff needs.
+      # Default checkout: the trusted BASE ref (NOT the PR head). Full history
+      # makes the registry crate's recorded source commit available to git show.
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      # Shares the xtask-only build cache with ci.yml's artifact-release-scope
-      # and release-plz.yml's release/assets/catalog jobs (see ci.yml). This
-      # job runs on every PR in the base-branch cache scope, so it also keeps
-      # that cache warm for the release wave.
+      # Shares the xtask-only build cache with release-plz.yml's
+      # release/assets/catalog jobs. This job runs on every PR in the
+      # base-branch cache scope, so it also keeps that cache warm for the
+      # release wave.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-shared-key: xtask
@@ -57,4 +52,18 @@ jobs:
         run: git fetch --no-tags origin ${{ github.event.pull_request.head.sha }}
 
       - name: Check frozen API generations are unchanged
-        run: cargo xtask api frozen-generation-check --head-sha ${{ github.event.pull_request.head.sha }}
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -er '.packages[] | select(.name == "phoxal-api") | .version')"
+          baseline_sha="$(
+            curl --proto '=https' --tlsv1.2 -fsSL \
+              "https://static.crates.io/crates/phoxal-api/phoxal-api-${version}.crate" \
+              | tar -xzOf - "phoxal-api-${version}/.cargo_vcs_info.json" \
+              | jq -er '.git.sha1'
+          )"
+          cargo xtask api frozen-generation-check \
+            --baseline-sha "$baseline_sha" \
+            --head-sha "$HEAD_SHA"

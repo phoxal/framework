@@ -2,14 +2,11 @@
 //! "Frozen-contract enforcement").
 //!
 //! A released (non-`preview`) `version y2026_N { … }` span in
-//! `phoxal-api/src/lib.rs` is immutable: once its per-package tag
-//! (`phoxal-api-v{version}`, release-plz's `git_tag_name`) is cut, that span
-//! must never change again - a changed contract is minted fresh in the
-//! current generation instead (D1's sparse-generation model). This check is
-//! the CI backstop for that rule: it diffs every `version` span that was
-//! already released at the last `phoxal-api-v*` tag against the candidate
-//! revision, byte-for-byte, and fails if a frozen span moved, or was demoted
-//! back to `preview`, or disappeared.
+//! `phoxal-api/src/lib.rs` is immutable. The published crate's
+//! `.cargo_vcs_info.json` identifies the exact registry baseline commit; this
+//! check diffs every `version` span at that commit against the candidate
+//! revision byte-for-byte and fails if a frozen span moved, was demoted back
+//! to `preview`, or disappeared.
 //!
 //! # It never executes the candidate revision's code
 //!
@@ -32,9 +29,8 @@
 //! semantic/whitespace-insensitive comparison, no promotion policy beyond
 //! "frozen means byte-identical".
 //!
-//! No `phoxal-api-v*` tag exists yet before the first release (verified at
-//! Step 0); this gracefully no-ops (log + pass) in that case rather than
-//! failing a repo that has never cut a release.
+//! Before the first release, callers omit `--baseline-sha` and this gracefully
+//! no-ops rather than failing a crate that has no registry baseline.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -51,11 +47,11 @@ pub struct Args {
     /// The phoxal-api DSL source file, relative to the workspace root.
     #[arg(long, value_name = "PATH", default_value = "phoxal-api/src/lib.rs")]
     pub lib_path: PathBuf,
-    /// Git tag glob identifying the last released phoxal-api baseline
-    /// (release-plz's per-package tag format is `phoxal-api-v{version}`,
-    /// `release-plz.toml`'s `git_tag_name`).
-    #[arg(long, value_name = "GLOB", default_value = "phoxal-api-v*")]
-    pub tag_glob: String,
+    /// Commit recorded in the published phoxal-api crate's
+    /// `.cargo_vcs_info.json`. CI obtains it from crates.io without executing
+    /// package code. Omit only before the first registry release.
+    #[arg(long, value_name = "SHA")]
+    pub baseline_sha: Option<String>,
     /// The candidate (PR head) commit whose `lib_path` is checked, read as text
     /// via `git show <head-sha>:<lib_path>` - never checked out or compiled.
     /// Set by the CI workflow (which runs the TRUSTED base-ref xtask, not the
@@ -68,16 +64,12 @@ pub struct Args {
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
 
-    let Some(baseline_tag) = latest_matching_tag(workspace.root(), &args.tag_glob)? else {
-        println!(
-            "frozen-generation check: no tag matching '{}' found (phoxal-api has not been \
-             released yet); nothing to check",
-            args.tag_glob
-        );
+    let Some(baseline_sha) = args.baseline_sha else {
+        println!("frozen-generation check: no registry baseline; nothing to check");
         return Ok(());
     };
 
-    let baseline_source = git_show(workspace.root(), &baseline_tag, &args.lib_path)?;
+    let baseline_source = git_show_commit(workspace.root(), &baseline_sha, &args.lib_path)?;
     // The candidate side is read as DATA, never executed: from the PR head
     // commit via `git show` under CI (trusted base-ref xtask, untrusted head
     // *content* only), or the local working tree for a dev run.
@@ -94,28 +86,32 @@ pub fn run(args: Args) -> Result<()> {
         }
     };
 
-    let violations = frozen_generation_violations(&baseline_tag, &baseline_source, &current_source)
-        .with_context(|| {
-            format!(
-                "failed to compare {} at {baseline_tag} against {candidate_desc}",
-                args.lib_path.display()
-            )
-        })?;
+    let baseline_desc = format!("registry commit {baseline_sha}");
+    let violations =
+        frozen_generation_violations(&baseline_desc, &baseline_source, &current_source)
+            .with_context(|| {
+                format!(
+                    "failed to compare {} at {baseline_desc} against {candidate_desc}",
+                    args.lib_path.display()
+                )
+            })?;
 
     if !violations.is_empty() {
         bail!(
-            "frozen-generation check failed ({} generation(s) changed since {baseline_tag}):\n{}",
+            "frozen-generation check failed ({} generation(s) changed since {baseline_desc}):\n{}",
             violations.len(),
             violations.join("\n")
         );
     }
 
-    println!("frozen-generation check passed: no released generation changed since {baseline_tag}");
+    println!(
+        "frozen-generation check passed: no released generation changed since {baseline_desc}"
+    );
     Ok(())
 }
 
 fn frozen_generation_violations(
-    baseline_tag: &str,
+    baseline_desc: &str,
     baseline_source: &str,
     current_source: &str,
 ) -> Result<Vec<String>> {
@@ -128,16 +124,16 @@ fn frozen_generation_violations(
     for baseline in baseline_spans.iter().filter(|span| !span.is_preview) {
         match current_spans.iter().find(|span| span.name == baseline.name) {
             None => violations.push(format!(
-                "  - generation '{}' was released (frozen) at {baseline_tag} but is missing now",
+                "  - generation '{}' was released (frozen) at {baseline_desc} but is missing now",
                 baseline.name
             )),
             Some(current) if current.is_preview => violations.push(format!(
-                "  - generation '{}' was released (frozen) at {baseline_tag} but is now marked \
+                "  - generation '{}' was released (frozen) at {baseline_desc} but is now marked \
                  `preview`",
                 baseline.name
             )),
             Some(current) if current.text != baseline.text => violations.push(format!(
-                "  - generation '{}' was released (frozen) at {baseline_tag} and must not \
+                "  - generation '{}' was released (frozen) at {baseline_desc} and must not \
                  change; mint a new generation instead",
                 baseline.name
             )),
@@ -145,30 +141,6 @@ fn frozen_generation_violations(
         }
     }
     Ok(violations)
-}
-
-fn latest_matching_tag(root: &Path, glob: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
-        .args(["tag", "-l", glob, "--sort=-v:refname"])
-        .current_dir(root)
-        .output()
-        .with_context(|| format!("failed to spawn git tag -l {glob}"))?;
-    if !output.status.success() {
-        bail!(
-            "git tag -l {glob} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let stdout = String::from_utf8(output.stdout).context("git tag -l output was not UTF-8")?;
-    Ok(stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string))
-}
-
-fn git_show(root: &Path, tag: &str, relative_path: &Path) -> Result<String> {
-    git_show_commit(root, tag, relative_path)
 }
 
 /// Reads one file's content at a given commit-ish as text (`git show
@@ -361,7 +333,8 @@ mod tests {
             "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
         let current = baseline.clone();
-        let violations = frozen_generation_violations("phoxal-api-v0.1.0", &baseline, &current)?;
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
@@ -374,7 +347,8 @@ mod tests {
         let current = wrap(
             "    version y2026_1 {\n        drive { struct Target { x: f64 } topic target: command Target; }\n    }",
         );
-        let violations = frozen_generation_violations("phoxal-api-v0.1.0", &baseline, &current)?;
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("y2026_1"));
         assert!(violations[0].contains("must not change"));
@@ -389,7 +363,8 @@ mod tests {
         let current = wrap(
             "    preview version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
-        let violations = frozen_generation_violations("phoxal-api-v0.1.0", &baseline, &current)?;
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("preview"));
         Ok(())
@@ -403,7 +378,8 @@ mod tests {
         let current = wrap(
             "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version y2026_2 {\n        drive { struct Target { x: f32, y: f32 } topic target: command Target; }\n    }",
         );
-        let violations = frozen_generation_violations("phoxal-api-v0.1.0", &baseline, &current)?;
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
@@ -416,7 +392,8 @@ mod tests {
         let current = wrap(
             "    version y2026_2 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
-        let violations = frozen_generation_violations("phoxal-api-v0.1.0", &baseline, &current)?;
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
@@ -429,24 +406,11 @@ mod tests {
         let current = wrap(
             "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
-        let violations = frozen_generation_violations("phoxal-api-v0.1.0", &baseline, &current)?;
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("y2026_2"));
         assert!(violations[0].contains("missing"));
-        Ok(())
-    }
-
-    #[test]
-    fn no_matching_tag_returns_none() -> Result<()> {
-        let dir = tempfile::tempdir().context("create tempdir")?;
-        let status = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(dir.path())
-            .status()
-            .context("git init")?;
-        assert!(status.success());
-        let result = latest_matching_tag(dir.path(), "phoxal-api-v*")?;
-        assert!(result.is_none());
         Ok(())
     }
 

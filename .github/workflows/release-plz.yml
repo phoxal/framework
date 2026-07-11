@@ -27,8 +27,8 @@ name: release-plz
 # authoritative, and no per-leg upload path to reconcile - the artifacts flow
 # through Actions storage, and one `gh release create` invocation publishes the
 # complete set before the release is marked latest.
-#   1. release    - release-plz publishes the 4 libs to crates.io + creates all
-#                   tags (lib + binary git_only); then, IF this is the release
+#   1. release    - release-plz publishes the 4 libs to crates.io and creates
+#                   binary git_only tags; then, IF this is the release
 #                   merge, computes this run's build set (artifact versions not
 #                   already in the latest catalog) and its build provenance. It
 #                   does NOT create the build-* release.
@@ -85,8 +85,8 @@ jobs:
 
       # `cache-shared-key: xtask` - this job's cargo work is the xtask binary
       # (`release plan`); share its cache with the assets/catalog jobs below
-      # and the PR-side xtask jobs (see ci.yml) instead of each job rebuilding
-      # xtask's dependency tree under its own per-job cache key.
+      # and the frozen-generation guard instead of each job rebuilding xtask's
+      # dependency tree under its own per-job cache key.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-shared-key: xtask
@@ -104,10 +104,9 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      # Libraries publish to crates.io; every managed crate (libs + the 27
-      # git_only binaries) gets its `{package}-v{version}` tag. No GitHub
-      # releases are created here - the binaries land in the `build-*` snapshot
-      # release below, the libs carry no artifact.
+      # Libraries publish to crates.io without git tags or GitHub releases. The
+      # 27 git_only binaries get their `{package}-v{version}` ledger tags and
+      # land in the `build-*` snapshot release below.
       - name: Run release-plz release
         # Push only: a `force_build` dispatch (re)builds an already-released set,
         # so it must NOT re-run crate publishing/tagging - it goes straight to
@@ -462,19 +461,6 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # release-plz's semver-check runs `cargo package --verify` on every binary
-      # once baselines exist; artifacts that link native udev (the joypad gilrs
-      # backend, and anything sharing that dep) need libudev-dev to verify-build.
-      - name: Install libudev
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libudev-dev
-
-      - name: Install cargo-semver-checks
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-semver-checks
-
       # git_only is the durable version ledger for official binaries. A clean-
       # sheet tag wipe removed that ledger while the build catalog retained the
       # released versions. Reconcile missing tags from the latest catalog before
@@ -516,5 +502,11 @@ jobs:
         with:
           command: release-pr
         env:
+          # release-plz 0.3.159 packages and verify-builds the entire workspace
+          # once for every git_only crate while reconstructing tagged
+          # baselines. Source comparison needs the packages, not 27 duplicate
+          # builds; the wrapper adds --no-verify only to cargo package. The
+          # normal PR CI remains the build/test gate.
+          CARGO: ${{ github.workspace }}/.github/scripts/release-plz-cargo
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

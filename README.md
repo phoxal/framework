@@ -14,16 +14,19 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 ## Releasing
 
-Each crate carries its own version and is released only when it changes.
-[release-plz](https://release-plz.dev) owns versioning for *every* crate in the
-workspace - the 4 library crates and the official artifact crates alike.
+Each crate carries its own version. [release-plz](https://release-plz.dev) owns
+versioning for *every* crate in the workspace - the 4 library crates and the
+official artifact crates alike. Libraries release when their packaged source
+changes; every artifact advances on each release train so the catalog carries a
+fresh coherent binary set.
 
 On a schedule (and on demand via workflow dispatch), release-plz opens or
 updates a single `chore(release): release` PR that bumps every crate whose code
 changed since its last release and refreshes its changelog.
 Merging that PR publishes the changed library crates (`phoxal-bus`,
-`phoxal-api`, `phoxal`, `phoxal-macros`) to crates.io and tags each
-`<crate>-v<version>`.
+`phoxal-api`, `phoxal`, `phoxal-macros`) to crates.io. The registry is their
+only distribution and version-baseline channel; they create no per-library git
+tags or GitHub releases.
 The official artifact crates (`phoxal-service-<name>`, component drivers,
 `phoxal-tool-<name>`, `phoxal-simulator-<name>`) keep `publish = false` in their
 own `Cargo.toml`; release-plz versions them via `git_only` (a git-tag version

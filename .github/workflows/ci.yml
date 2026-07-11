@@ -16,36 +16,6 @@ jobs:
       system-packages: libudev-dev
     secrets: inherit
 
-  # Cheap per-PR guard: `release discover` runs workspace discovery, which
-  # enforces (via validate_artifact_publish) that every official artifact crate
-  # keeps publish = false in its own Cargo.toml. That is the invariant the whole
-  # release model rests on - release-plz versions those crates via git_only and
-  # they must never `cargo publish`.
-  #
-  # The old per-PR full catalog build (host-building every artifact + libudev to
-  # gate contract coverage) is gone (design §6): the main `ci` job already
-  # builds every crate, and `cargo test -p xtask` already proves metadata
-  # section extraction against a real binary - so this job needs no toolchain
-  # heavy lifting, only discovery.
-  artifact-release-scope:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      # `cache-shared-key: xtask` - one Rust cache shared by every ubuntu-x64
-      # job whose only cargo work is building the xtask binary (this job, the
-      # frozen-api-generation check, and the release/assets/catalog jobs in
-      # release-plz.yml). The default per-job cache key meant each of them
-      # rebuilt xtask's whole dependency tree from scratch.
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache-shared-key: xtask
-
-      - name: Check official artifact release scope
-        run: cargo xtask release discover
-
   # Tier-2 musl targets are not covered by upstream guarantees. Keep this
   # focused on the four library crates so the guard stays cheap and does not
   # become the native-asset build matrix from the next slice.
