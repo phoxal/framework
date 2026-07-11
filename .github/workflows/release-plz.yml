@@ -445,9 +445,20 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: env.HAS_RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          # The bootstrap below pushes tags. This job already deliberately has
+          # no GITHUB_TOKEN fallback (see the release-pr step's token note).
+          token: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -456,13 +467,25 @@ jobs:
         with:
           tool: cargo-semver-checks
 
-      - name: Generate GitHub App token
-        id: app-token
-        if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+      # git_only is the durable version ledger for official binaries. A clean-
+      # sheet tag wipe removed that ledger while the build catalog retained the
+      # released versions. Reconcile missing tags from the latest catalog before
+      # release-plz computes its diff: without a baseline it correctly treats a
+      # package as an initial release and does not bump the existing version.
+      # Existing tags are never moved; the command fails if the catalog cannot
+      # prove the current workspace version was published.
+      - name: Restore missing git-only baselines from latest catalog
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p prev
+          if gh release download --pattern catalog.json --dir prev --repo "${{ github.repository }}"; then
+            cargo xtask release bootstrap-tags --catalog prev/catalog.json --push
+          else
+            rm -f prev/catalog.json
+            echo "no previous catalog (cold start); no git-only baselines to restore"
+          fi
 
       # One workspace release PR now covers libraries AND binaries (binaries via
       # git_only in release-plz.toml). No separate artifact-version-bump PR.

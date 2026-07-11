@@ -26,7 +26,9 @@
 # `publish = false` + `git_only = true`, release-plz does NOT drop the crate.
 # It versions it and writes its changelog off the git tag, never touching
 # crates.io. With no matching tag yet it treats the package as an initial
-# release, so cold-start after the artifact-tag wipe works.
+# release without bumping it. The release-PR workflow therefore restores any
+# missing baselines from the latest published catalog before invoking
+# release-plz; see `cargo xtask release bootstrap-tags`.
 #
 # release-plz has no glob/prefix matching for [[package]] - each entry names
 # one crate - hence the explicit list below rather than a directory pattern.
@@ -60,159 +62,186 @@ name = "phoxal-component-bno085"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-ddsm115"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-vl53l1x"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-component-zed_f9p"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-asset"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-battery"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-drive"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-explore"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-follow"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-frame"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-joint"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-localize"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-map"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-mission"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-motion"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-odometry"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-perception"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-plan"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-power"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-presence"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-safety"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-service-video"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-simulator-webots-supervisor"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-tool-joypad"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
 
 [[package]]
 name = "phoxal-tool-router"
 publish = false
 git_only = true
 git_release_enable = false
+changelog_include = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"]
