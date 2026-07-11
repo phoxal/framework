@@ -55,8 +55,8 @@ use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
 use phoxal_bus::Bus;
 
 /// Const-eval plumbing `#[derive(phoxal::Api)]` (`phoxal-macros/src/authoring.rs`)
-/// uses to embed a **resolved, version-qualified** contract identity in the
-/// linker-section metadata static, rather than the source path as written.
+/// uses to build a **resolved, version-qualified** contract fragment that the
+/// participant attribute embeds in its linker-section metadata static.
 ///
 /// The problem this solves: every participant writes
 /// `use phoxal_api::y2026_1 as api;`, so a macro-time string literal of a
@@ -70,12 +70,9 @@ use phoxal_bus::Bus;
 /// string: a call into [`__concatcp`] splicing `<Body as
 /// ContractBody>::NAME` between macro-time-known JSON literal fragments
 /// (field name, role), which `rustc` const-evaluates in the participant
-/// crate. The result is a `&'static str`, but the linker section is read as
-/// raw bytes by xtask's `object`-crate extractor (`xtask/src/release/metadata.rs`),
-/// so [`__bytes_of`] copies that resolved string into a fixed-size `[u8; N]`
-/// const array - `N` inferred from the manifest const's own `.len()` at the
-/// static's declaration site - which is what actually gets placed in the
-/// `#[link_section]`.
+/// crate. The participant attribute combines that fragment with its concrete
+/// config schema; [`__bytes_of`] then copies the final string into the fixed
+/// byte array placed in the linker section.
 #[doc(hidden)]
 pub mod __meta {
     /// Re-exported so `#[derive(phoxal::Api)]`'s generated code can reach it
@@ -95,6 +92,12 @@ pub mod __meta {
     pub struct ConstSchema {
         bytes: [u8; 65_536],
         len: usize,
+    }
+
+    impl Default for ConstSchema {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl ConstSchema {

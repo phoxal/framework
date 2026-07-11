@@ -172,8 +172,7 @@ fn link_section_attrs() -> TokenStream {
 /// `Api` handle struct: one `ApiContractUse` per recognized field (role +
 /// `<Body as ContractBody>::TOPIC`, resolved by `rustc` from the emitted
 /// `quote!`d expression - the proc-macro itself never evaluates it as a
-/// string), plus
-/// a `#[used]` linker-section static recording each field's role and its
+/// string), plus a const JSON fragment recording each field's role and its
 /// **resolved generation and contract, as separate fields** (`<Body as
 /// ContractBody>::GENERATION`/`::CONTRACT`, e.g. `"y2026_1"` /
 /// `"drive::Target"`) plus an `external` boolean - the contract's source
@@ -190,13 +189,13 @@ fn link_section_attrs() -> TokenStream {
 /// wire key - the section is what this records for xtask/CLI identity,
 /// `TOPIC` is what the bus actually subscribes/publishes on. Since
 /// `GENERATION`/`CONTRACT` are foreign associated consts the proc-macro
-/// cannot evaluate at expansion time, the section static is built from
+/// cannot evaluate at expansion time, the fragment is built from
 /// **tokens**, not a precomputed string: see
 /// [`phoxal::participant::api::__meta`](phoxal::participant::api) for the
 /// const-eval machinery (`__concatcp!` splices the resolved consts between
-/// macro-time JSON literal fragments; `__bytes_of` copies the resulting
-/// `rustc`-const-evaluated `&str` into the fixed `[u8; N]` the link section
-/// needs), plus one `impl Declares*<..> for #struct_name {}` per distinct
+/// macro-time JSON literal fragments). The participant attribute combines it
+/// with the config schema and writes the section. The derive also emits one
+/// `impl Declares*<..> for #struct_name {}` per distinct
 /// declared family (D44 - `DeclaresPublish`/`DeclaresSubscribe` per body,
 /// `DeclaresAsk`/`DeclaresServe` per `(Req, Resp)` pair): this is what lets
 /// the `SetupContext` builders (`SetupContextApiExt`) reject, at compile

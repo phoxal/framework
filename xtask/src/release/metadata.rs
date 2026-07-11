@@ -48,13 +48,10 @@ const SECTION_NAMES: [&str; 2] = [".phoxal_api_meta", "__phoxal_meta"];
 /// Parses `object_bytes` as an object file and returns the bytes of its
 /// participant metadata section, trying each candidate section
 /// name in [`SECTION_NAMES`] in turn. `Ok(None)` means the object file parsed
-/// fine but carries no such section at all - the expected, valid shape for a
-/// participant whose `Api` is `()` (privileged tools default to this; see
-/// `phoxal-macros/src/authoring.rs::ParticipantKind::default_api`), which
-/// never derives `#[derive(phoxal::Api)]` and so never emits the linker
-/// section in the first place. A malformed/unrecognized *object file* is still
-/// a hard error. `describe` names the source (a file path, or a
-/// `pkg@target from tarball` label) for error messages.
+/// but is not a participant: every participant attribute emits the section,
+/// including `Api = ()`. A malformed/unrecognized *object file* is still a
+/// hard error. `describe` names the source (a file path, or a `pkg@target from
+/// tarball` label) for error messages.
 pub(crate) fn extract_participant_metadata_section_from_bytes(
     object_bytes: &[u8],
     describe: &str,

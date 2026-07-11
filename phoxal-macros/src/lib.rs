@@ -172,10 +172,8 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `#[server_snapshot(api = …)]` to implement. A `Vec`/`BTreeMap`/`HashMap` of a
 /// handle carries the inner handle's declaration. There is no participant-level
 /// API version: fields may name contracts from different generations. Also
-/// emits a `#[used]` linker-section static recording each field's role,
-/// generation, and contract (compile-time embedded metadata, cargo-auditable
-/// pattern) - see the module docs for what this slice does and does not
-/// materialize.
+/// emits the const contract JSON fragment that the participant attribute puts
+/// in the linker section alongside its config schema.
 ///
 /// A `subscribe`/`ask` field may carry `#[phoxal(external)]` (coherence-gate
 /// design doc §1) to mark that its counterpart legitimately lives outside the
@@ -190,7 +188,9 @@ pub fn derive_api(input: TokenStream) -> TokenStream {
 }
 
 /// Derive a compile-time Draft 2020-12 JSON Schema from the same supported
-/// `#[serde(...)]` attributes used by `Deserialize`.
+/// `#[serde(...)]` attributes used by `Deserialize`: `rename`, `rename_all`,
+/// `default`, and `deny_unknown_fields`. Unsupported Serde attributes are a
+/// compile error rather than an approximate schema.
 #[proc_macro_derive(Config, attributes(serde))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     authoring::expand_config(input.into())
@@ -201,6 +201,11 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
 /// Link a participant state struct to its `Config`/`Api` types as a checked
 /// service. Defaults to the local `Config`/`Api` type names; override with
 /// `#[phoxal::service(id = "…", config = Type, api = Type)]`.
+///
+/// For user runtimes, `Config` is the user-authored `robot.yaml` surface. A
+/// framework runtime may use this same slot for a CLI-synthesized launch
+/// payload (for example a cross-robot staging product); ordinary framework
+/// knobs belong in the robot model received through `ctx.robot()`.
 #[proc_macro_attribute]
 pub fn service(attr: TokenStream, item: TokenStream) -> TokenStream {
     authoring::expand_participant(

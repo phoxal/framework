@@ -572,7 +572,8 @@ mod tests {
 
     #[test]
     fn config_schema_includes_spawn_field() {
-        let schema = <WebotsSupervisorConfig as ParticipantConfig>::SCHEMA_JSON;
+        let schema =
+            <WebotsSupervisorConfig as phoxal::participant::ParticipantConfig>::SCHEMA_JSON;
 
         assert!(
             schema.contains("spawn"),
