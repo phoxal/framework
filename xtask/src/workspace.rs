@@ -122,11 +122,12 @@ impl OfficialArtifact {
     /// The release tag: a filesystem-safe projection of the provider-qualified
     /// `package` (`phoxal/component-ddsm115` -> `phoxal-component-ddsm115-v0.1.5`).
     pub fn release_tag(&self) -> String {
-        format!(
-            "{}-v{}",
-            filesystem_safe_package(&self.package),
-            self.version
-        )
+        self.release_tag_for_version(&self.version)
+    }
+
+    /// The release tag for an explicitly selected version.
+    pub fn release_tag_for_version(&self, version: &str) -> String {
+        format!("{}-v{version}", filesystem_safe_package(&self.package))
     }
 
     /// The full set of release targets this artifact packages for: its
@@ -771,6 +772,10 @@ mod tests {
             metadata: PhoxalPackageMetadata::default(),
         };
         assert_eq!(artifact.release_tag(), "phoxal-component-ddsm115-v0.1.5");
+        assert_eq!(
+            artifact.release_tag_for_version("0.1.6"),
+            "phoxal-component-ddsm115-v0.1.6"
+        );
     }
 
     #[test]
