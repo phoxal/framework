@@ -454,40 +454,14 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
+          # Full history + all git_only ledger tags so release-plz can read each
+          # crate's baseline. release-plz pushes the chore(release) PR branch with
+          # this token; the job deliberately has no GITHUB_TOKEN fallback (see the
+          # release-pr step's token note).
           fetch-depth: 0
-          # The bootstrap below pushes tags. This job already deliberately has
-          # no GITHUB_TOKEN fallback (see the release-pr step's token note).
           token: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      # git_only is the durable version ledger for official binaries. A clean-
-      # sheet tag wipe removed that ledger while the build catalog retained the
-      # released versions. Reconcile missing tags from the latest catalog before
-      # release-plz computes its diff: without a baseline it correctly treats a
-      # package as an initial release and does not bump the existing version.
-      # Existing tags are never moved; the command fails if the catalog cannot
-      # prove the current workspace version was published. Two exact refs are
-      # explicitly skipped because a confirmed GitHub backend defect makes
-      # them permanently uncreatable after the clean-sheet tag wipe:
-      # phoxal-service-asset-v0.19.6 -> v0.19.7 baseline and
-      # phoxal-tool-router-v0.1.5 -> v0.1.6 baseline. See bootstrap_tags.rs.
-      - name: Restore missing git-only baselines from latest catalog
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Download OUTSIDE the git working tree. The next step runs release-plz,
-          # whose is_clean check aborts ("failed to determine next versions") if
-          # any uncommitted, non-ignored path exists - a prev/ dir in the repo
-          # root would trip it.
-          prev_dir="$RUNNER_TEMP/prev"
-          mkdir -p "$prev_dir"
-          if gh release download --pattern catalog.json --dir "$prev_dir" --repo "${{ github.repository }}"; then
-            cargo xtask release bootstrap-tags --catalog "$prev_dir/catalog.json" --push
-          else
-            echo "no previous catalog (cold start); no git-only baselines to restore"
-          fi
 
       # One workspace release PR now covers libraries AND binaries (binaries via
       # git_only in release-plz.toml). No separate artifact-version-bump PR.
