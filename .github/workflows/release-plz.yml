@@ -473,7 +473,11 @@ jobs:
       # release-plz computes its diff: without a baseline it correctly treats a
       # package as an initial release and does not bump the existing version.
       # Existing tags are never moved; the command fails if the catalog cannot
-      # prove the current workspace version was published.
+      # prove the current workspace version was published. Two exact refs are
+      # explicitly skipped because a confirmed GitHub backend defect makes
+      # them permanently uncreatable after the clean-sheet tag wipe:
+      # phoxal-service-asset-v0.19.6 -> v0.19.7 baseline and
+      # phoxal-tool-router-v0.1.5 -> v0.1.6 baseline. See bootstrap_tags.rs.
       - name: Restore missing git-only baselines from latest catalog
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}

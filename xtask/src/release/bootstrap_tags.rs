@@ -5,7 +5,9 @@
 //! recorded workspace version was released from `build.commit`. This command
 //! uses that evidence to recreate only missing `{package}-v{version}` tags.
 //! Existing tags are never moved, and a workspace version absent from the
-//! catalog is an error rather than an invented baseline.
+//! catalog is an error rather than an invented baseline. Two exact versions
+//! whose refs are permanently blocked by a confirmed GitHub backend defect are
+//! explicitly advanced by one patch; see [`CORRUPTED_TAG_SKIPS`].
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -16,6 +18,34 @@ use clap::Args as ClapArgs;
 
 use crate::catalog::verify::verify_catalog_path;
 use crate::workspace::Workspace;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CorruptedTagSkip {
+    package: &'static str,
+    catalog_version: &'static str,
+    baseline_version: &'static str,
+}
+
+/// One-time remaps for refs corrupted by GitHub's create/delete ref cache bug.
+///
+/// GitHub permanently rejects the exact refs
+/// `refs/tags/phoxal-service-asset-v0.19.6` and
+/// `refs/tags/phoxal-tool-router-v0.1.5` with GH013 even though no ruleset
+/// applies. See <https://github.com/orgs/community/discussions/183879>.
+/// Matching both package and catalog version keeps the exception narrow: a
+/// future catalog version is handled by the normal exact-version invariant.
+const CORRUPTED_TAG_SKIPS: [CorruptedTagSkip; 2] = [
+    CorruptedTagSkip {
+        package: "phoxal/service-asset",
+        catalog_version: "0.19.6",
+        baseline_version: "0.19.7",
+    },
+    CorruptedTagSkip {
+        package: "phoxal/tool-router",
+        catalog_version: "0.1.5",
+        baseline_version: "0.1.6",
+    },
+];
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
@@ -44,11 +74,15 @@ pub fn run(args: Args) -> Result<()> {
     let mut missing_from_catalog = Vec::new();
     let mut tags_to_create = Vec::new();
     for artifact in workspace.official_artifacts() {
-        if !published.contains(&(artifact.package.as_str(), artifact.version.as_str())) {
+        let Some(baseline_version) = bootstrap_version(
+            &published,
+            artifact.package.as_str(),
+            artifact.version.as_str(),
+        ) else {
             missing_from_catalog.push(format!("{} v{}", artifact.package, artifact.version));
             continue;
-        }
-        let tag = artifact.release_tag();
+        };
+        let tag = artifact.release_tag_for_version(baseline_version);
         if !ref_exists(&format!("refs/tags/{tag}"))? {
             tags_to_create.push(tag);
         }
@@ -91,6 +125,27 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Returns the version whose tag should seed release-plz, but only when the
+/// catalog proves the current official `(package, version)` was published.
+/// The two synthetic baseline versions are deliberately not required to exist
+/// in the catalog: they are empty ledger waypoints anchored to the catalog's
+/// proven build commit so release-plz advances past the uncreatable refs.
+fn bootstrap_version<'a>(
+    published: &BTreeSet<(&str, &str)>,
+    package: &str,
+    workspace_version: &'a str,
+) -> Option<&'a str> {
+    if !published.contains(&(package, workspace_version)) {
+        return None;
+    }
+
+    CORRUPTED_TAG_SKIPS
+        .iter()
+        .find(|skip| skip.package == package && skip.catalog_version == workspace_version)
+        .map(|skip| skip.baseline_version)
+        .or(Some(workspace_version))
+}
+
 fn verify_commit(commit: &str) -> Result<()> {
     if commit.is_empty() {
         bail!("catalog build.commit is empty");
@@ -120,4 +175,64 @@ fn git(arguments: &[&str]) -> Result<()> {
         bail!("git {} exited with {status}", arguments.join(" "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remaps_only_the_two_exact_corrupted_catalog_versions() {
+        let published = BTreeSet::from([
+            ("phoxal/service-asset", "0.19.6"),
+            ("phoxal/tool-router", "0.1.5"),
+            ("phoxal/service-drive", "0.19.8"),
+        ]);
+
+        assert_eq!(
+            bootstrap_version(&published, "phoxal/service-asset", "0.19.6"),
+            Some("0.19.7")
+        );
+        assert_eq!(
+            bootstrap_version(&published, "phoxal/tool-router", "0.1.5"),
+            Some("0.1.6")
+        );
+        assert_eq!(
+            bootstrap_version(&published, "phoxal/service-drive", "0.19.8"),
+            Some("0.19.8")
+        );
+    }
+
+    #[test]
+    fn does_not_remap_nearby_versions_or_packages() {
+        let published = BTreeSet::from([
+            ("phoxal/service-asset", "0.19.7"),
+            ("acme/service-asset", "0.19.6"),
+            ("phoxal/tool-router", "0.1.6"),
+        ]);
+
+        for (package, version) in published.iter().copied() {
+            assert_eq!(
+                bootstrap_version(&published, package, version),
+                Some(version)
+            );
+        }
+    }
+
+    #[test]
+    fn still_requires_the_current_pair_in_the_catalog_for_skips() {
+        let published = BTreeSet::from([
+            ("phoxal/service-asset", "0.19.7"),
+            ("phoxal/tool-router", "0.1.6"),
+        ]);
+
+        assert_eq!(
+            bootstrap_version(&published, "phoxal/service-asset", "0.19.6"),
+            None
+        );
+        assert_eq!(
+            bootstrap_version(&published, "phoxal/tool-router", "0.1.5"),
+            None
+        );
+    }
 }

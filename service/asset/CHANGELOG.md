@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- *(release)* Skip the GitHub-corrupted, permanently uncreatable
+  `phoxal-service-asset-v0.19.6` ref by seeding the release ledger at v0.19.7;
+  the next release advances to a fresh tag.
+
 ## [0.19.6](https://github.com/phoxal/framework/releases/tag/phoxal-service-asset-v0.19.6) - 2026-07-10
 
 ### Added
