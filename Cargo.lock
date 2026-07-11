@@ -2438,7 +2438,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-asset"
-version = "0.19.6"
+version = "0.19.7"
 dependencies = [
  "phoxal",
  "phoxal-api",
@@ -2654,7 +2654,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-router"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "phoxal",
