@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.8](https://github.com/phoxal/framework/compare/phoxal-service-video-v0.19.7...phoxal-service-video-v0.19.8) - 2026-07-11
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.19.7](https://github.com/phoxal/framework/releases/tag/phoxal-service-video-v0.19.7) - 2026-07-10
 
 ### Added

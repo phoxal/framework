@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/phoxal/framework/compare/phoxal-component-oak_d_lite-v0.1.6...phoxal-component-oak_d_lite-v0.1.7) - 2026-07-11
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.1.6](https://github.com/phoxal/framework/releases/tag/phoxal-component-oak_d_lite-v0.1.6) - 2026-07-10
 
 ### Added

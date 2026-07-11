@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.7](https://github.com/phoxal/framework/compare/phoxal-service-asset-v0.19.6...phoxal-service-asset-v0.19.7) - 2026-07-11
+
+### Fixed
+
+- *(release)* reconcile asset+router versions past the GH013-cursed tags ([#225](https://github.com/phoxal/framework/pull/225))
+- *(release)* skip two GitHub-corrupted baseline tags (service-asset v0.19.6, tool-router v0.1.5) ([#218](https://github.com/phoxal/framework/pull/218))
+
 ### Fixed
 
 - *(release)* Skip the GitHub-corrupted, permanently uncreatable

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/phoxal/framework/compare/phoxal-simulator-webots-supervisor-v0.1.2...phoxal-simulator-webots-supervisor-v0.2.0) - 2026-07-11
+
+### Added
+
+- *(config)* [**breaking**] const-schema Config derive + schema slot in metadata section ([#214](https://github.com/phoxal/framework/pull/214))
+
 ## [0.1.2](https://github.com/phoxal/framework/releases/tag/phoxal-simulator-webots-supervisor-v0.1.2) - 2026-07-10
 
 ### Added
