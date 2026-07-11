@@ -448,7 +448,7 @@ mod tests {
         assert_eq!(
             blob.url,
             "https://github.com/phoxal/framework/releases/download/build-20260708-0001234/\
-             phoxal-component-ddsm115-v0.1.0-target-independent.tar.zst"
+             phoxal-component-ddsm115-v0.1.0.tar.zst"
         );
         assert_eq!(blob.size, b"fake tarball".len() as u64);
         Ok(())

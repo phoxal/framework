@@ -13,12 +13,11 @@ use crate::workspace::{
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    #[arg(
-        value_name = "PACKAGE",
-        required_unless_present = "all",
-        conflicts_with = "all"
-    )]
-    pub package: Option<String>,
+    /// One or more package names to build and package together (one
+    /// aggregate `cargo auditable build`, then packaged individually). Pass
+    /// `--all` instead to select every official binary artifact.
+    #[arg(value_name = "PACKAGE", conflicts_with = "all")]
+    pub packages: Vec<String>,
     #[arg(long)]
     pub all: bool,
     #[arg(long, value_name = "DIR", default_value = "target/xtask/release")]
@@ -39,16 +38,17 @@ pub struct PackagedArtifact {
     pub checksum: PathBuf,
 }
 
-/// A previously packaged artifact's on-disk facts, read back from `package_dir`.
+/// A previously packaged artifact's on-disk facts, read back from
+/// `package_dir` - exactly what the catalog needs to form a `Blob` (design
+/// doc `organization/tmp/ci-release-refactor/design.md` §3). The tarball/
+/// checksum paths themselves aren't carried: the only reader
+/// ([`crate::catalog::generate`]) forms its release URL from `tarball_name`,
+/// never re-opens the file on disk.
 #[derive(Clone, Debug)]
 pub(crate) struct PackagedOutput {
-    pub tarball: PathBuf,
-    pub checksum: PathBuf,
     pub tarball_name: String,
-    pub checksum_name: String,
     pub tarball_sha256: String,
-    /// The tarball's byte length - the catalog's `Blob.size` (design doc
-    /// `organization/tmp/ci-release-refactor/design.md` §3).
+    /// The tarball's byte length - the catalog's `Blob.size`.
     pub tarball_size: u64,
 }
 
@@ -62,31 +62,60 @@ pub fn run(args: Args) -> Result<()> {
     let host_triple = host_triple(workspace.root())?;
     let target_triple = args.target.clone().unwrap_or_else(|| host_triple.clone());
 
-    for artifact in selected {
-        validate_supported_target(&artifact, &target_triple)?;
-        if args.dry_run {
+    if target_triple == TARGET_INDEPENDENT_SCOPE {
+        bail!(
+            "'{TARGET_INDEPENDENT_SCOPE}' is not a valid --target for `release package` \
+             (it packages binaries only); use `release assets` for a component's \
+             target-independent asset bundle"
+        );
+    }
+    for artifact in &selected {
+        validate_supported_target(artifact, &target_triple)?;
+    }
+
+    if args.dry_run {
+        for artifact in &selected {
             println!(
-                "would package {} v{} for {} using {}",
+                "would package {} v{} for {} using cargo auditable build",
+                artifact.package, artifact.version, target_triple,
+            );
+        }
+        return Ok(());
+    }
+
+    let package_names = selected
+        .iter()
+        .map(|artifact| artifact.require_package_name())
+        .collect::<Result<Vec<_>>>()?;
+    build_target_artifacts(workspace.root(), &package_names, &target_triple).with_context(
+        || {
+            format!(
+                "failed to build {} for target {target_triple}",
+                package_names.join(", ")
+            )
+        },
+    )?;
+
+    let mut failures = Vec::new();
+    for artifact in &selected {
+        match package_artifact(&workspace, artifact, &out_dir, &target_triple) {
+            Ok(packaged) => println!(
+                "packaged {} v{} for {} -> {}, {}",
                 artifact.package,
                 artifact.version,
                 target_triple,
-                if target_triple == TARGET_INDEPENDENT_SCOPE {
-                    "a plain asset tarball"
-                } else {
-                    "cargo auditable build"
-                }
-            );
-            continue;
+                packaged.tarball.display(),
+                packaged.checksum.display(),
+            ),
+            Err(err) => failures.push(format!("{}: {err:#}", artifact.package)),
         }
-        let packaged = package_artifact(&workspace, &artifact, &out_dir, &target_triple)
-            .with_context(|| format!("failed to package {}", artifact.package))?;
-        println!(
-            "packaged {} v{} for {} -> {}, {}",
-            artifact.package,
-            artifact.version,
-            target_triple,
-            packaged.tarball.display(),
-            packaged.checksum.display(),
+    }
+    if !failures.is_empty() {
+        bail!(
+            "failed to package {} of {} artifact(s):\n{}",
+            failures.len(),
+            selected.len(),
+            failures.join("\n")
         );
     }
 
@@ -105,15 +134,19 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
     if args.all {
         return Ok(workspace.official_artifacts().to_vec());
     }
+    if args.packages.is_empty() {
+        bail!("at least one PACKAGE is required, or pass --all");
+    }
 
-    let package_name = args
-        .package
-        .as_deref()
-        .context("package is required unless --all is present")?;
-    let artifact = workspace.official_artifact(package_name)?;
-    Ok(vec![artifact.clone()])
+    args.packages
+        .iter()
+        .map(|package_name| workspace.official_artifact(package_name).cloned())
+        .collect()
 }
 
+/// Packages `artifact`'s already-built `target_triple` binary (built by an
+/// earlier, aggregate [`build_target_artifacts`] call - this function never
+/// invokes cargo itself).
 pub(crate) fn package_artifact(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
@@ -121,12 +154,7 @@ pub(crate) fn package_artifact(
     target_triple: &str,
 ) -> Result<PackagedArtifact> {
     validate_supported_target(artifact, target_triple)?;
-    if target_triple == TARGET_INDEPENDENT_SCOPE {
-        return package_component_assets(artifact, out_dir, target_triple);
-    }
-
     artifact.require_package_name()?;
-    build_target_artifact(workspace.root(), artifact, target_triple)?;
     let binary_path = target_binary_path(workspace, artifact, target_triple)?;
     // Packaging validates the participant's compiled-in API metadata as a
     // fail-fast gate (a malformed section must not reach the tarball stage).
@@ -157,20 +185,21 @@ const COMPONENT_ASSETS_TREE_DIRS: [&str; 1] = ["meshes"];
 /// Packages a component crate's target-independent asset bundle: no cargo
 /// build, no binary, no `emit-apis` sidecar - just a deterministic tarball of
 /// the component's asset files plus a checksum (docs #21, design doc §9).
-fn package_component_assets(
+/// The `release assets` verb's implementation; `artifact` must be a
+/// [`ArtifactKind::Component`] that [`ArtifactKind::ships_assets`].
+pub(crate) fn package_component_asset_bundle(
     artifact: &OfficialArtifact,
     out_dir: &Path,
-    target_triple: &str,
 ) -> Result<PackagedArtifact> {
-    if target_triple != TARGET_INDEPENDENT_SCOPE {
+    if !artifact.kind.ships_assets() {
         bail!(
-            "{} asset bundle can only be packaged for the target-independent scope \
-             '{TARGET_INDEPENDENT_SCOPE}', not '{target_triple}'",
-            artifact.package
+            "{} is a {} package; only a Component package ships a target-independent asset bundle",
+            artifact.package,
+            artifact.kind
         );
     }
 
-    let stem = asset_stem(artifact, target_triple);
+    let stem = asset_stem(artifact, TARGET_INDEPENDENT_SCOPE);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
     let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
 
@@ -302,30 +331,25 @@ pub(crate) fn validate_supported_target(
     )
 }
 
-fn build_target_artifact(
-    root: &Path,
-    artifact: &OfficialArtifact,
-    target_triple: &str,
-) -> Result<()> {
-    let package_name = artifact.require_package_name()?;
+/// Issues ONE `cargo auditable build --release --target <target_triple> -p A
+/// -p B ...` for every selected package name, so Cargo compiles the
+/// independent crates concurrently instead of once per artifact. Packaging
+/// (writing each tarball) happens afterwards, per artifact, from these
+/// already-built binaries - see [`package_artifact`].
+fn build_target_artifacts(root: &Path, package_names: &[&str], target_triple: &str) -> Result<()> {
     let mut command = Command::new("cargo");
     command
-        .args([
-            "auditable",
-            "build",
-            "-p",
-            package_name,
-            "--release",
-            "--target",
-            target_triple,
-        ])
+        .args(["auditable", "build", "--release", "--target", target_triple])
         .current_dir(root);
+    for package_name in package_names {
+        command.args(["-p", package_name]);
+    }
 
     run_cargo_build_command(
         command,
         &format!(
-            "cargo auditable build for {} target {}",
-            artifact.package, target_triple
+            "cargo auditable build for {} target {target_triple}",
+            package_names.join(", ")
         ),
     )
 }
@@ -571,14 +595,22 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
 }
 
 /// The release asset filename stem: a filesystem-safe projection of the
-/// provider-qualified `package` (docs #21), not the Cargo crate name.
+/// provider-qualified `package` (docs #21), not the Cargo crate name. A
+/// target-independent asset bundle ([`TARGET_INDEPENDENT_SCOPE`]) carries no
+/// trailing scope token - it is the one release output for its
+/// `(package, version)` with no sibling to disambiguate from by filename, and
+/// the packaged-output reader ([`crate::catalog::generate`]) classifies by
+/// the release plan's `target_triples`, never the filename. A real target
+/// triple keeps the `-{triple}` suffix so distinct architectures don't
+/// collide in the same directory.
 pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
-    format!(
-        "{}-v{}-{}",
-        crate::workspace::filesystem_safe_package(&artifact.package),
-        artifact.version,
-        host_triple
-    )
+    let package = crate::workspace::filesystem_safe_package(&artifact.package);
+    let version = &artifact.version;
+    if host_triple == TARGET_INDEPENDENT_SCOPE {
+        format!("{package}-v{version}")
+    } else {
+        format!("{package}-v{version}-{host_triple}")
+    }
 }
 
 fn write_tar_zst(tarball: &Path, binary_path: &Path, bin_name: &str) -> Result<()> {
@@ -662,11 +694,8 @@ pub(crate) fn read_packaged_output(
 
     Ok(PackagedOutput {
         tarball_name: file_name(&tarball)?,
-        checksum_name: file_name(&checksum)?,
         tarball_sha256: computed,
         tarball_size,
-        tarball,
-        checksum,
     })
 }
 
@@ -759,6 +788,25 @@ mod tests {
         assert_eq!(
             asset_stem(&artifact, "aarch64-unknown-linux-gnu"),
             "phoxal-component-ddsm115-v0.1.5-aarch64-unknown-linux-gnu"
+        );
+    }
+
+    #[test]
+    fn asset_stem_drops_the_triple_suffix_for_the_target_independent_scope() {
+        let artifact = OfficialArtifact {
+            package: "phoxal/component-ddsm115".to_string(),
+            package_name: Some("phoxal-component-ddsm115".to_string()),
+            kind: ArtifactKind::Component,
+            version: "0.1.0".to_string(),
+            crate_dir: PathBuf::from("component/ddsm115"),
+            bin_name: Some("phoxal-component-ddsm115".to_string()),
+            id: "ddsm115".to_string(),
+            metadata: Default::default(),
+        };
+
+        assert_eq!(
+            asset_stem(&artifact, TARGET_INDEPENDENT_SCOPE),
+            "phoxal-component-ddsm115-v0.1.0"
         );
     }
 

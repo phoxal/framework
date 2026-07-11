@@ -1,3 +1,16 @@
+//! `gh api`-backed GitHub release lookups.
+//!
+//! Every caller of this module (`release upload`, `ci release-gate`) was
+//! deleted by the framework issue #212 CI-deploy refactor slice 1 (xtask
+//! verbs only) - the reshaped pipeline's single final workflow job now
+//! creates the release and uploads every asset via `gh` directly, so nothing
+//! in-tree calls `resolve_release`/`release_asset_names` today. Left in place
+//! rather than pruned per that slice's brief: the workflow-YAML slice (#212,
+//! owned separately) may still want a bounded "did this run's uploads land"
+//! guard built on it. Remove this module outright if that slice concludes it
+//! doesn't need one.
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 use std::process::{Command, Output};
 
