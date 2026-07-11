@@ -6,8 +6,8 @@ pub mod frozen_generation;
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Block a release-plz release PR if a released (non-`preview`)
-    /// `phoxal_api_tree!` generation span changed since the last
-    /// `phoxal-api-v*` tag.
+    /// `phoxal_api_tree!` generation span changed since the crates.io
+    /// baseline commit.
     FrozenGenerationCheck(frozen_generation::Args),
 }
 

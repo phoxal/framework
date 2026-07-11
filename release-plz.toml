@@ -1,15 +1,15 @@
 # release-plz owns versioning for EVERY crate in the workspace - libraries and
 # binaries alike (design doc `organization/tmp/ci-release-refactor/design.md`
-# §4.1). One workspace release PR bumps everything, writes every changelog,
-# and on merge creates every tag; there is no separate artifact-bump PR and no
-# `cargo xtask release bump`/`cargo xtask release cut` (both deleted).
+# §4.1). One workspace release PR bumps everything and writes every changelog;
+# merging it publishes libraries and creates the artifact ledger tags. There is
+# no separate artifact-bump PR and no `cargo xtask release bump`/`cargo xtask
+# release cut` (both deleted).
 #
 # Two package classes, split by [[package]] overrides below:
 #
-# - Libraries (`phoxal`, `phoxal-api`, `phoxal-bus`, `phoxal-macros`): inherit
-#   the [workspace] defaults - `publish = true` (release-plz's own default,
-#   not overridden here), `git_only = false`. They publish to crates.io and
-#   get `phoxal*-v*` tags on release-PR merge.
+# - Libraries (`phoxal`, `phoxal-api`, `phoxal-bus`, `phoxal-macros`): publish
+#   to crates.io, which is also release-plz's previous-version source. They do
+#   not create redundant per-library git tags or GitHub releases.
 # - Binaries (every service/tool/simulator/component crate - 27 today):
 #   Cargo.toml keeps `publish = false` (cargo-level safety, enforced by
 #   `validate_artifact_publish` in xtask/src/workspace.rs) AND each gets an
@@ -37,23 +37,31 @@
 release_always = true
 dependencies_update = false
 git_tag_name = "{{ package }}-v{{ version }}"
-git_release_name = "{{ package }} v{{ version }}"
 pr_name = "chore(release): release"
-semver_check = false             # OFF workspace-wide. The 27 git_only binaries have no library API to check, and release-plz@v0.5 does NOT honor per-package `semver_check = false` on git_only crates (sweeps them into the workspace check anyway: ~4.5 min build each = ~2 h release-pr). Advisory only; pre-1.0 bump severity comes from conventional commits. Restoring lib-only semver-check needs a release-plz action upgrade (follow-up).
+semver_check = false             # Advisory only for this pre-1.0 workspace; bump severity comes from conventional commits.
 # no version_group (it reintroduces a shared version axis)
-#
-# GitHub's mutable "latest" release pointer belongs EXCLUSIVELY to the build-*
-# snapshot release (marked latest by the release workflow only after the catalog
-# gate passes) - because the CLI resolves the catalog by fetching "latest", and
-# the workflow accumulates the full-index catalog by reading the previous
-# "latest". release-plz creates a GitHub release for each published library
-# crate (`git_release_enable` defaults to true) and would, by default
-# (`git_release_latest` defaults to true), mark that library release "latest" -
-# stealing the pointer whenever a library bump rides the same shared release PR
-# as a binary bump, so the workflow's "fetch previous catalog from latest" would
-# miss the real catalog and silently truncate the index. Pin it off so only the
-# workflow's explicit `gh release edit "$build_tag" --latest` ever moves latest.
-git_release_latest = false
+
+# --- Libraries: crates.io only; no per-library git tag or GitHub release ---
+
+[[package]]
+name = "phoxal"
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-api"
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-bus"
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-macros"
+git_tag_enable = false
+git_release_enable = false
 
 # --- Binaries: versioned via git tags only, never published, no GitHub release ---
 
