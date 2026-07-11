@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand};
 
 mod api;
 mod catalog;
-mod ci;
 mod coherence;
 mod release;
 mod workspace;
@@ -29,10 +28,6 @@ enum Command {
         #[command(subcommand)]
         command: catalog::Command,
     },
-    Ci {
-        #[command(subcommand)]
-        command: ci::Command,
-    },
     /// The deployment coherence gate over the whole official artifact set
     /// (coherence-gate design doc §4/§5): host-builds every official
     /// artifact, extracts its `#[derive(phoxal::Api)]` contract surface, and
@@ -48,7 +43,6 @@ fn main() -> Result<()> {
         Command::Api { command } => api::run(command),
         Command::Release { command } => release::run(command),
         Command::Catalog { command } => catalog::run(command),
-        Command::Ci { command } => ci::run(command),
         Command::CoherenceCheck(args) => coherence::run(args),
     }
 }

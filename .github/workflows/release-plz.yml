@@ -15,20 +15,31 @@ name: release-plz
 #
 # Three push-triggered jobs. `release-plz release` runs on every push (a
 # version-based no-op except on the release merge), but the build-snapshot wave
-# (jobs 2-3, and the plan/provenance/create-release steps of job 1) runs ONLY
-# when the push is the merge of release-plz's `chore(release)` PR - the
-# deliberate release act. A plain feature merge never triggers a build.
+# (jobs 2-3, and the plan/provenance steps of job 1) runs ONLY when the push is
+# the merge of release-plz's `chore(release)` PR - the deliberate release act. A
+# plain feature merge never triggers a build.
+#
+# The build-* GitHub release is created ONCE, at the very end, by the `catalog`
+# job - only after the catalog is generated and the structural/coverage gate
+# passes. The build/assets jobs never touch GitHub releases; each just PACKAGES
+# its artifacts and hands the tarballs to `catalog` as workflow artifacts
+# (`facts-*`). So there is no window in which a half-populated release is
+# authoritative, and no per-leg upload path to reconcile - the artifacts flow
+# through Actions storage, and one `gh release create` invocation publishes the
+# complete set before the release is marked latest.
 #   1. release    - release-plz publishes the 4 libs to crates.io + creates all
 #                   tags (lib + binary git_only); then, IF this is the release
 #                   merge, computes this run's build set (artifact versions not
-#                   already in the latest catalog) and creates the empty
-#                   `build-*` release.
-#   2. build      - one matrix leg per binary target, packaging its artifacts
-#                   sequentially into a shared target directory.
-#      assets     - one cheap Linux job packages all target-independent bundles.
+#                   already in the latest catalog) and its build provenance. It
+#                   does NOT create the build-* release.
+#   2. build      - one matrix leg per binary target: a single `release package`
+#                   builds+packages that row's artifacts, uploaded as `facts-*`.
+#      assets     - one cheap Linux job packages all target-independent bundles
+#                   via `release assets`, uploaded as `facts-target-independent`.
 #   3. catalog    - assemble catalog.json from this run's facts + the previous
-#                   catalog, run the structural gate, upload it to the `build-*`
-#                   release, and mark that release "latest".
+#                   catalog, run the structural gate, then create the `build-*`
+#                   release with every tarball + catalog.json in one shot and
+#                   mark it "latest".
 # Plus a schedule/dispatch `release-plz-pr` job that keeps the one workspace
 # release PR (libs + binaries) open.
 
@@ -187,23 +198,9 @@ jobs:
             --github-output \
             "${previous[@]}"
 
-      # Create the immutable snapshot release up front (NOT latest yet - the
-      # catalog job marks it latest only after the gate passes). Carry the
-      # previous catalog forward as a workflow artifact so the catalog job needs
-      # no second network fetch.
-      - name: Create build-snapshot release
-        if: steps.plan.outputs.released == 'true'
-        run: |
-          set -euo pipefail
-          gh release create "${{ steps.provenance.outputs.build_tag }}" \
-            --repo "${{ github.repository }}" \
-            --title "Phoxal build ${{ steps.provenance.outputs.build_tag }}" \
-            --notes "Automated build-snapshot release. Artifacts + catalog.json for run ${{ github.run_id }}." \
-            --target "${{ github.sha }}" \
-            --latest=false
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+      # The build-* release is NOT created here - the catalog job creates it at
+      # the end, once the gate passes (see this file's header). This job only
+      # hands the plan + previous catalog forward as workflow artifacts.
       - uses: actions/upload-artifact@v6
         if: steps.plan.outputs.released == 'true'
         with:
@@ -222,7 +219,7 @@ jobs:
     if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.release.outputs.matrix) }}
@@ -258,49 +255,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libudev-dev
 
+      # One `release package` call for the whole row: it issues a single
+      # `cargo auditable build -p A -p B ...` (Cargo compiles the row's crates
+      # concurrently) and packages each into target/xtask/release. The command
+      # fails the step if any package fails - no per-package loop, no
+      # release-failures bookkeeping.
       - name: Package target artifacts
         env:
           PACKAGES: ${{ toJson(matrix.packages) }}
         run: |
-          set -uo pipefail
-          mkdir -p target/xtask/release
-          : > target/xtask/release-failures
-          while IFS= read -r package; do
-            echo "::group::$package"
-            if ! cargo xtask release package "$package" \
-              --target "${{ matrix.target }}" \
-              --out target/xtask/release; then
-              echo "package: $package" >> target/xtask/release-failures
-            fi
-            echo "::endgroup::"
-          done < <(jq -r '.[].package' <<< "$PACKAGES")
+          set -euo pipefail
+          mapfile -t names < <(jq -r '.[].package' <<< "$PACKAGES")
+          cargo xtask release package "${names[@]}" \
+            --target "${{ matrix.target }}" \
+            --out target/xtask/release
 
-      # Upload every successfully packaged tarball + checksum to THIS run's
-      # snapshot release. Missing/failed packages are recorded without stopping
-      # the rest of the target row.
-      - name: Upload to build-snapshot release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGES: ${{ toJson(matrix.packages) }}
-        run: |
-          set -uo pipefail
-          while IFS= read -r package; do
-            echo "::group::$package"
-            if ! cargo xtask release upload \
-              --package "$package" \
-              --target "${{ matrix.target }}" \
-              --tag "${{ needs.release.outputs.build_tag }}" \
-              --repo "${{ github.repository }}" \
-              --package-dir target/xtask/release; then
-              echo "upload: $package" >> target/xtask/release-failures
-            fi
-            echo "::endgroup::"
-          done < <(jq -r '.[].package' <<< "$PACKAGES")
-
-      # Hand the exact packaged bytes to the catalog job. One facts artifact
-      # per target replaces the old per-package facts artifacts.
+      # Hand the exact packaged bytes to the catalog job, which owns the single
+      # publish path to the build-* release. One facts artifact per target.
       - uses: actions/upload-artifact@v6
-        if: always()
         with:
           name: facts-${{ matrix.target }}
           path: |
@@ -308,23 +280,13 @@ jobs:
             target/xtask/release/*-${{ matrix.target }}.tar.zst.sha256
           if-no-files-found: error
 
-      - name: Report target failures
-        if: always()
-        run: |
-          if [ -s target/xtask/release-failures ]; then
-            echo "The following package operations failed:"
-            cat target/xtask/release-failures
-            exit 1
-          fi
-          echo "All packages completed for ${{ matrix.target }}"
-
   assets:
     name: package target-independent assets
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
@@ -335,65 +297,31 @@ jobs:
         with:
           cache-shared-key: xtask
 
-      # Component bundles only tar files; `release package` does not invoke a
-      # Cargo artifact build for the target-independent scope.
+      # `release assets` tars each component's asset bundle (component.yaml,
+      # simulation.yaml, structure.urdf, meshes/) - no cargo build. One call for
+      # the whole asset set; it fails the step if any package fails.
       - name: Package asset bundles
         env:
           PACKAGES: ${{ needs.release.outputs.assets }}
         run: |
-          set -uo pipefail
-          mkdir -p target/xtask/release
-          : > target/xtask/release-failures
-          while IFS= read -r package; do
-            echo "::group::$package"
-            if ! cargo xtask release package "$package" \
-              --target target-independent \
-              --out target/xtask/release; then
-              echo "package: $package" >> target/xtask/release-failures
-            fi
-            echo "::endgroup::"
-          done < <(jq -r '.[].package' <<< "$PACKAGES")
+          set -euo pipefail
+          mapfile -t names < <(jq -r '.[].package' <<< "$PACKAGES")
+          cargo xtask release assets "${names[@]}" \
+            --out target/xtask/release
 
-      - name: Upload to build-snapshot release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PACKAGES: ${{ needs.release.outputs.assets }}
-        run: |
-          set -uo pipefail
-          while IFS= read -r package; do
-            echo "::group::$package"
-            if ! cargo xtask release upload \
-              --package "$package" \
-              --target target-independent \
-              --tag "${{ needs.release.outputs.build_tag }}" \
-              --repo "${{ github.repository }}" \
-              --package-dir target/xtask/release; then
-              echo "upload: $package" >> target/xtask/release-failures
-            fi
-            echo "::endgroup::"
-          done < <(jq -r '.[].package' <<< "$PACKAGES")
-
+      # Asset bundles have no target triple in their filename any more
+      # (`<pkg>-v<version>.tar.zst`), so the facts glob is target-independent by
+      # exclusion: the binary targets all carry a `-<triple>` infix.
       - uses: actions/upload-artifact@v6
-        if: always()
         with:
           name: facts-target-independent
           path: |
-            target/xtask/release/*-target-independent.tar.zst
-            target/xtask/release/*-target-independent.tar.zst.sha256
+            target/xtask/release/*.tar.zst
+            target/xtask/release/*.tar.zst.sha256
           if-no-files-found: error
 
-      - name: Report asset failures
-        if: always()
-        run: |
-          if [ -s target/xtask/release-failures ]; then
-            echo "The following asset operations failed:"
-            cat target/xtask/release-failures
-            exit 1
-          fi
-          echo "All target-independent packages completed"
-
   catalog:
-    name: assemble catalog + gate + mark latest
+    name: assemble catalog + create release + mark latest
     needs:
       - release
       - build
@@ -454,34 +382,57 @@ jobs:
             --created-at "${{ needs.release.outputs.created_at }}" \
             "${previous[@]}"
 
+      # Structural + coverage gate. `catalog generate` already failed the job if
+      # any artifact the plan requires was missing from the facts, so a green
+      # check means target/xtask/release holds this run's complete set.
       - name: Check catalog (structural + coverage)
         run: >
           cargo xtask catalog check
           --catalog target/xtask/catalog/catalog.json
 
-      # Bounded partial-upload guard: confirm every filename this run's catalog
-      # entries expect actually landed in the build-* release (design §4.4).
-      - name: Release gate
-        run: >
-          cargo xtask ci release-gate
-          --catalog target/xtask/catalog/catalog.json
-          --repo ${{ github.repository }}
-          --verify-upload
+      # The gate is green: create the release with every packaged tarball +
+      # checksum + catalog.json in one command, then flip it to "latest". This
+      # run created no release earlier, so any failure before the final
+      # `edit --latest` leaves the previous latest authoritative.
+      #
+      # Rerun handling turns on whether the tag is already the published latest:
+      #   - absent            -> fresh create (--latest=false), then mark latest.
+      #   - exists, NOT latest-> a prior attempt died before `edit --latest`;
+      #                          clobber its assets to repair, then mark latest.
+      #   - exists AND latest -> a completed wave is being re-run. build-* releases
+      #                          are immutable once published, so refuse to mutate
+      #                          it in place (an interrupted clobber would corrupt
+      #                          the authoritative latest). Re-running a finished
+      #                          release is a no-op; to genuinely rebuild, delete
+      #                          the release first and dispatch a fresh run.
+      - name: Create build-snapshot release + mark latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Only now - gate green - does the catalog land and this release become
-      # "latest". A failed gate above leaves the previous latest authoritative.
-      - name: Publish catalog + mark latest
         run: |
           set -euo pipefail
-          gh release upload "${{ needs.release.outputs.build_tag }}" \
-            target/xtask/catalog/catalog.json \
-            --repo "${{ github.repository }}" --clobber
-          gh release edit "${{ needs.release.outputs.build_tag }}" \
-            --repo "${{ github.repository }}" --latest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag="${{ needs.release.outputs.build_tag }}"
+          repo="${{ github.repository }}"
+          assets=(
+            target/xtask/release/*.tar.zst
+            target/xtask/release/*.tar.zst.sha256
+            target/xtask/catalog/catalog.json
+          )
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --repo "$repo" --json isLatest -q .isLatest)" = "true" ]; then
+              echo "release $tag is already the published latest - refusing to mutate an immutable release; nothing to do"
+              exit 0
+            fi
+            echo "release $tag exists but is not latest (partial prior attempt) - clobbering its assets to repair"
+            gh release upload "$tag" "${assets[@]}" --repo "$repo" --clobber
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --repo "$repo" \
+              --title "Phoxal build $tag" \
+              --notes "Automated build-snapshot release. Artifacts + catalog.json for run ${{ github.run_id }}." \
+              --target "${{ github.sha }}" \
+              --latest=false
+          fi
+          gh release edit "$tag" --repo "$repo" --latest
 
   release-plz-pr:
     name: release-plz PR
