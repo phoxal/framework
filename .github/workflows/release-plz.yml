@@ -3,10 +3,10 @@ name: release-plz
 # Build-snapshot release pipeline (design doc
 # organization/tmp/ci-release-refactor/design.md §2, §4).
 #
-# release-plz owns ALL crate versioning - libraries and binaries alike (the
-# latter via git_only, see release-plz.toml). There are no per-artifact
-# "warehouse" releases and no mutable "stable" front-door release anymore; a CI
-# run produces exactly one immutable `build-YYYYMMDD-<run_number>` release
+# release-plz owns only the 4 crates.io libraries. Artifact crates are excluded
+# by their Cargo.toml `publish = false`; xtask owns their independent patch
+# versions and `{package}-v{version}` tags. There are no per-artifact GitHub
+# releases: a CI run produces one immutable `build-YYYYMMDD-<run_number>` release
 # holding this run's freshly-built tarballs plus the assembled `catalog.json`,
 # and marks it GitHub "latest" once the gate passes. The catalog is a FULL
 # INDEX: each run appends the (package, version) pairs it built to the previous
@@ -27,11 +27,11 @@ name: release-plz
 # authoritative, and no per-leg upload path to reconcile - the artifacts flow
 # through Actions storage, and one `gh release create` invocation publishes the
 # complete set before the release is marked latest.
-#   1. release    - release-plz publishes the 4 libs to crates.io and creates
-#                   binary git_only tags; then, IF this is the release
-#                   merge, computes this run's build set (artifact versions not
-#                   already in the latest catalog) and its build provenance. It
-#                   does NOT create the build-* release.
+#   1. release    - release-plz publishes the 4 libs to crates.io. IF this is the
+#                   release merge, xtask cuts missing current artifact tags,
+#                   validates that JSON handoff, and plans ALL 27 artifacts so
+#                   the catalog/config-schema snapshot is complete. It does NOT
+#                   create the build-* release.
 #   2. build      - one matrix leg per binary target: a single `release package`
 #                   builds+packages that row's artifacts, uploaded as `facts-*`.
 #      assets     - one cheap Linux job packages all target-independent bundles
@@ -40,8 +40,8 @@ name: release-plz
 #                   catalog, run the structural gate, then create the `build-*`
 #                   release with every tarball + catalog.json in one shot and
 #                   mark it "latest".
-# Plus a schedule/dispatch `release-plz-pr` job that keeps the one workspace
-# release PR (libs + binaries) open.
+# Plus a schedule/dispatch `release-plz-pr` job that lets release-plz prepare the
+# libraries, then adds git-diff-selected artifact bumps to that same PR branch.
 
 on:
   push:
@@ -65,7 +65,7 @@ concurrency:
 
 jobs:
   release:
-    name: release-plz release + build set
+    name: release libraries + cut artifacts + build set
     # Runs on every push (library publish + the gated wave on a release merge),
     # and on a manual `force_build` dispatch (wave only, see the gate step).
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.force_build)
@@ -104,9 +104,8 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
-      # Libraries publish to crates.io without git tags or GitHub releases. The
-      # 27 git_only binaries get their `{package}-v{version}` ledger tags and
-      # land in the `build-*` snapshot release below.
+      # Libraries publish to crates.io without git tags or GitHub releases.
+      # Artifact crates are publish=false and never enter release-plz.
       - name: Run release-plz release
         # Push only: a `force_build` dispatch (re)builds an already-released set,
         # so it must NOT re-run crate publishing/tagging - it goes straight to
@@ -161,8 +160,8 @@ jobs:
           echo "build_tag=$build_tag" >> "$GITHUB_OUTPUT"
           echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
 
-      # The full index to diff against + accumulate onto is whatever catalog the
-      # current "latest" release carries. `gh release download` with no tag
+      # The full index to accumulate onto is whatever catalog the current "latest"
+      # release carries. `gh release download` with no tag
       # targets the latest release; a missing release or missing asset (cold
       # start, design §4.3) leaves no file and the plan/generate steps below run
       # unfiltered.
@@ -180,22 +179,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build set = the complete official artifact set. Planning fails if any
-      # current version is already in the previous catalog: release_always
-      # requires every artifact to bump and be repackaged every train.
+      # Reconcile only missing current-version artifact tags and emit the
+      # release-plz-compatible JSON document consumed by the plan. Existing
+      # tags are the independent per-artifact version ledger and are skipped.
+      - name: Cut changed artifact versions
+        if: steps.gate.outputs.is_release == 'true'
+        run: >
+          cargo xtask release cut
+          --out target/xtask/artifact-releases.json
+
+      # The cut document identifies only versions newly tagged above. Planning
+      # validates it, then intentionally includes ALL official artifacts at
+      # their current independent versions so every build snapshot has all
+      # tarballs and embedded config_schema metadata.
       - name: Compute release plan
         id: plan
         if: steps.gate.outputs.is_release == 'true'
         run: |
           set -euo pipefail
-          previous=()
-          if [ -f prev/catalog.json ]; then
-            previous=(--previous-catalog prev/catalog.json)
-          fi
           cargo xtask release plan \
+            --artifact-releases-json target/xtask/artifact-releases.json \
             --out target/xtask/release-plan.json \
-            --github-output \
-            "${previous[@]}"
+            --github-output
 
       # The build-* release is NOT created here - the catalog job creates it at
       # the end, once the gate passes (see this file's header). This job only
@@ -454,18 +459,14 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          # Full history + all git_only ledger tags so release-plz can read each
-          # crate's baseline. release-plz pushes the chore(release) PR branch with
-          # this token; the job deliberately has no GITHUB_TOKEN fallback (see the
-          # release-pr step's token note).
+          # Full history + artifact tags are required by `release bump --changed`.
+          # release-plz and the follow-up push both use this token; the job
+          # deliberately has no GITHUB_TOKEN fallback (see below).
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # One workspace release PR now covers libraries AND binaries (binaries via
-      # git_only in release-plz.toml). No separate artifact-version-bump PR.
-      #
       # Token hardening (coherence-gate design doc §5): no `|| secrets.GITHUB_TOKEN`
       # fallback here. A PR created with the plain repo `GITHUB_TOKEN` triggers NO
       # downstream workflows (a hard GitHub restriction on Actions-authored
@@ -476,15 +477,60 @@ jobs:
       # instead. `RELEASE_TOKEN` (a PAT) stays as the fallback because a
       # PAT-created PR triggers workflows normally, same as the App token.
       - name: Run release-plz (release-pr)
+        id: release-pr
         uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
-          # release-plz 0.3.159 packages and verify-builds the entire workspace
-          # once for every git_only crate while reconstructing tagged
-          # baselines. Source comparison needs the packages, not 27 duplicate
-          # builds; the wrapper adds --no-verify only to cargo package. The
-          # normal PR CI remains the build/test gate.
+          # Keep the cargo-package wrapper for the 4 libraries: source comparison
+          # needs package contents, while the normal PR CI is the build/test gate.
           CARGO: ${{ github.workspace }}/.github/scripts/release-plz-cargo
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # release-plz creates/updates the library release PR first and reports its
+      # head branch as JSON. Check out that branch, add only per-crate git-diff
+      # artifact bumps, and push them into the same PR. If no library needs a
+      # release, create that same release PR only when an artifact bump exists.
+      - name: Add changed artifact bumps to the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
+          RELEASE_PR: ${{ steps.release-pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch="$(jq -r '.head_branch // empty' <<< "$RELEASE_PR")"
+          if [ -z "$branch" ]; then
+            branch="$(
+              gh pr list --state open --base main --json title,headRefName |
+                jq -r 'map(select(.title == "chore(release): release"))[0].headRefName // empty'
+            )"
+          fi
+          release_pr_exists=true
+          if [ -n "$branch" ]; then
+            git fetch origin "$branch"
+            git checkout -B "$branch" "origin/$branch"
+          else
+            release_pr_exists=false
+            branch="release-plz-artifact-versions-${{ github.run_id }}"
+            git checkout -B "$branch" origin/main
+          fi
+
+          cargo xtask release bump --changed
+          if git diff --quiet; then
+            echo "no changed artifact versions to add"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -u
+          git commit --signoff -m "chore(release): bump changed artifacts"
+          git push --force-with-lease origin "$branch"
+
+          if [ "$release_pr_exists" = false ]; then
+            gh pr create \
+              --head "$branch" \
+              --base main \
+              --title "chore(release): release" \
+              --body "Automated release PR. Artifact patch versions are selected independently by git diff of each crate directory against its current version tag."
+          fi

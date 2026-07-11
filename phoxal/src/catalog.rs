@@ -1,10 +1,11 @@
 //! The shared `phoxal.catalog/v0` wire schema.
 //!
 //! This is a **full location/integrity index**: `artifacts[]` holds one entry
-//! per published `(package, version)`, accumulating forever. A build-snapshot
-//! CI run appends the `(package, version)` pairs it built to whatever the
-//! previous catalog already indexed (`xtask/src/catalog/generate.rs`'s merge);
-//! nothing is ever replaced, refreshed, or dropped. There is no
+//! per published `(package, version)`, accumulating versions forever. A
+//! build-snapshot CI run upserts every `(package, version)` it rebuilt into the
+//! previous catalog (`xtask/src/catalog/generate.rs`'s merge), so unchanged
+//! versions point at the newest complete build while older versions remain
+//! indexed. There is no
 //! `revision`/checksum machinery (that guarded the old mutable-manifest model,
 //! which this replaces), and no five-per-kind-array split - one `artifacts`
 //! array, one shared [`Blob`] download descriptor. Contract and config-schema
@@ -25,8 +26,8 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA: &str = "phoxal.catalog/v0";
 
 /// The full artifact index for one `build-*` release stream: the previous
-/// catalog's complete `artifacts[]` plus whatever `(package, version)` pairs
-/// this run appended.
+/// catalog's complete `artifacts[]` with this run's rebuilt `(package, version)`
+/// pairs upserted.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
