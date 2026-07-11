@@ -2293,6 +2293,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
+ "serde_derive_internals",
  "syn 2.0.117",
  "trybuild",
 ]

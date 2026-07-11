@@ -52,7 +52,7 @@ fn default_require_native() -> bool {
 /// world-staging step renders it (including that robot's `controller` and
 /// `controllerArgs` fields) before handing it to the supervisor; this crate
 /// treats it as an opaque string to import verbatim.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Deserialize, phoxal::schemars::JsonSchema, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct SpawnRobot {
     /// Robot id, used only for logging/diagnostics.

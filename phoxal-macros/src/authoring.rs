@@ -380,11 +380,8 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     // is done here, at macro-expansion time, purely as JSON-syntax literal
     // text (the `,` between array elements); it carries none of the resolved
     // identity.
-    let open_lit = json_lit(&format!(
-        "{{\"participant_api\":\"{}\",\"contracts\":[",
-        json_escape(&struct_name.to_string())
-    ));
-    let close_lit = json_lit("]}");
+    let open_lit = json_lit("[");
+    let close_lit = json_lit("]");
     let comma_lit = json_lit(",");
     let mut manifest_args: Vec<TokenStream> = vec![open_lit];
     for (i, entry) in manifest_entry_tokens.iter().enumerate() {
@@ -395,28 +392,7 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     }
     manifest_args.push(close_lit);
 
-    let manifest_const_ident = Ident::new(
-        &format!(
-            "__PHOXAL_API_META_JSON_{}",
-            struct_name.to_string().to_shouty_snake_case()
-        ),
-        struct_name.span(),
-    );
-    let manifest_len_ident = Ident::new(
-        &format!(
-            "__PHOXAL_API_META_LEN_{}",
-            struct_name.to_string().to_shouty_snake_case()
-        ),
-        struct_name.span(),
-    );
-    let static_ident = Ident::new(
-        &format!(
-            "__PHOXAL_API_META_{}",
-            struct_name.to_string().to_shouty_snake_case()
-        ),
-        struct_name.span(),
-    );
-    let link_section = link_section_attrs();
+    let api_name = json_escape(&struct_name.to_string());
 
     // `ParticipantApi: Clone` (F-runtime slice - see that trait's docs): every
     // real handle field type (`Publisher`/`Latest`/`Subscriber`/`Querier`/
@@ -436,6 +412,9 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl #phoxal::participant::ParticipantApi for #struct_name {
+            const __NAME: &'static str = #api_name;
+            const __CONTRACTS_JSON: &'static str =
+                #phoxal::participant::api::__meta::__concatcp!(#(#manifest_args),*);
             const CONTRACTS: &'static [#phoxal::participant::ApiContractUse] = &[
                 #(#contract_entries),*
             ];
@@ -450,28 +429,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                 }
             }
         }
-
-        // Built in three const steps because the manifest's `generation`/
-        // `contract` values are resolved `GENERATION`/`CONTRACT` consts (only
-        // known to `rustc`, not to this proc-macro): (1) `#manifest_const_ident`
-        // const-evaluates the JSON
-        // string via `__concatcp!`; (2) `#manifest_len_ident` is its length,
-        // named so it can be used as the section static's array-length type
-        // (a bare `.len()` call is not itself accepted in that position, but
-        // a named `const usize` is); (3) `__bytes_of` copies the resolved
-        // string's bytes into that fixed-size array, which is what the
-        // `#[link_section]` actually holds - xtask's `object`-crate reader
-        // extracts it as raw bytes, never by evaluating Rust.
-        #[doc(hidden)]
-        const #manifest_const_ident: &'static str = #phoxal::participant::api::__meta::__concatcp!(
-            #(#manifest_args),*
-        );
-        #[doc(hidden)]
-        const #manifest_len_ident: usize = #manifest_const_ident.len();
-        #link_section
-        #[doc(hidden)]
-        static #static_ident: [u8; #manifest_len_ident] =
-            #phoxal::participant::api::__meta::__bytes_of(#manifest_const_ident);
     })
 }
 
@@ -540,9 +497,7 @@ fn normalized_body_key(body: &Type) -> String {
 // ---------------------------------------------------------------------------
 
 /// Derive [`ParticipantConfig`](phoxal::participant::api::ParticipantConfig)
-/// from a `Config` struct. `SCHEMA_JSON` is a placeholder (`"{}"`) in this
-/// slice - see `phoxal::participant::api`'s module docs for why (the real
-/// schema needs a host-side `build.rs` walk, not macro-time syntax).
+/// from a named struct using Serde's own deserialize attribute model.
 pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
     let struct_name = &input.ident;
@@ -553,21 +508,159 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
             "#[derive(phoxal::Config)] does not support generic structs",
         ));
     }
-    // Identity-only derive: any struct/enum shape is a valid config (the old
-    // model's `Config` type is likewise unconstrained in shape - it is
-    // whatever `serde`/`schemars` can walk). No field scan is needed here.
+    validate_config_serde_attributes(&input)?;
+
+    let cx = serde_derive_internals::Ctxt::new();
+    let container = serde_derive_internals::ast::Container::from_ast(
+        &cx,
+        &input,
+        serde_derive_internals::Derive::Deserialize,
+    );
+    cx.check()?;
+    let container = container.ok_or_else(|| {
+        syn::Error::new_spanned(&input, "unable to parse Config with Serde's derive model")
+    })?;
+
+    let serde_derive_internals::ast::Data::Struct(
+        serde_derive_internals::ast::Style::Struct,
+        fields,
+    ) = &container.data
+    else {
+        return Err(syn::Error::new_spanned(
+            &input,
+            "#[derive(phoxal::Config)] supports only structs with named fields",
+        ));
+    };
 
     let phoxal = phoxal();
+    let title = container.attrs.name().deserialize_name();
+    let mut schema_args = vec![json_lit(&format!(
+        "{{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":{},\"type\":\"object\",\"properties\":{{",
+        serde_json_string(title)
+    ))];
+    let mut required = Vec::new();
+    for (index, field) in fields.iter().enumerate() {
+        if index > 0 {
+            schema_args.push(json_lit(","));
+        }
+        let field_name = field.attrs.name().deserialize_name();
+        schema_args.push(json_lit(&format!("{}:", serde_json_string(field_name))));
+        let ty = field.ty;
+        schema_args.push(quote!(<#ty as #phoxal::participant::ParticipantConfig>::SCHEMA_JSON));
+
+        if field.attrs.default().is_none() && !is_option_type(ty) {
+            required.push(field_name.to_string());
+        }
+    }
+    schema_args.push(json_lit("}"));
+    if !required.is_empty() {
+        let required_json = required
+            .iter()
+            .map(|name| serde_json_string(name))
+            .collect::<Vec<_>>()
+            .join(",");
+        schema_args.push(json_lit(&format!(",\"required\":[{required_json}]")));
+    }
+    if container.attrs.deny_unknown_fields() {
+        schema_args.push(json_lit(",\"additionalProperties\":false"));
+    }
+    schema_args.push(json_lit("}"));
+
     Ok(quote! {
         impl #phoxal::participant::ParticipantConfig for #struct_name {
-            // TODO(phoxal-api-refactor, config-schema slice): materialize the
-            // real `schemars` JSON schema via a host-side `build.rs` step and
-            // `include_str!` it here; a proc-macro cannot reproduce
-            // schemars's recursive trait walk across crate boundaries
-            // (RECONCILIATION correction #12).
-            const SCHEMA_JSON: &'static str = "{}";
+            const __SCHEMA: #phoxal::participant::api::__meta::ConstSchema =
+                #phoxal::participant::api::__meta::ConstSchema::new()
+                    #(.push_str(#schema_args))*;
         }
     })
+}
+
+fn is_option_type(ty: &Type) -> bool {
+    as_type_path(ty)
+        .and_then(|path| path.path.segments.last())
+        .is_some_and(|segment| segment.ident == "Option")
+}
+
+fn serde_json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch <= '\u{1f}' => {
+                use std::fmt::Write;
+                write!(out, "\\u{:04x}", ch as u32).expect("writing to String cannot fail");
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn validate_config_serde_attributes(input: &DeriveInput) -> syn::Result<()> {
+    validate_serde_attrs(&input.attrs, SerdeAttrLocation::Container)?;
+    let Data::Struct(data) = &input.data else {
+        return Err(syn::Error::new_spanned(
+            input,
+            "#[derive(phoxal::Config)] supports only structs with named fields",
+        ));
+    };
+    for field in &data.fields {
+        validate_serde_attrs(&field.attrs, SerdeAttrLocation::Field)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum SerdeAttrLocation {
+    Container,
+    Field,
+}
+
+fn validate_serde_attrs(attrs: &[syn::Attribute], location: SerdeAttrLocation) -> syn::Result<()> {
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        attr.parse_nested_meta(|meta| {
+            let path = &meta.path;
+            let name = meta
+                .path
+                .get_ident()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| quote!(#path).to_string());
+            let supported = match location {
+                SerdeAttrLocation::Container => {
+                    matches!(name.as_str(), "rename" | "rename_all" | "default" | "deny_unknown_fields")
+                }
+                SerdeAttrLocation::Field => matches!(name.as_str(), "rename" | "default"),
+            };
+            if !supported {
+                return Err(meta.error(format!(
+                    "unsupported serde attribute `{name}` for #[derive(phoxal::Config)]; supported container attributes: rename, rename_all, default, deny_unknown_fields; supported field attributes: rename, default"
+                )));
+            }
+
+            match name.as_str() {
+                "rename" | "rename_all" => {
+                    let _: LitStr = meta.value()?.parse()?;
+                }
+                "default" if meta.input.peek(syn::Token![=]) => {
+                    let _: LitStr = meta.value()?.parse()?;
+                }
+                "default" | "deny_unknown_fields" if meta.input.is_empty() => {}
+                _ => {
+                    return Err(meta.error(format!(
+                        "unsupported form of serde attribute `{name}` for #[derive(phoxal::Config)]"
+                    )));
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +796,28 @@ pub fn expand_participant(
     let artifact_kind = kind.artifact_kind();
     let participant_class = kind.participant_class();
     let marker = kind.marker_impl(&phoxal, struct_name);
+    let metadata_const_ident = Ident::new(
+        &format!(
+            "__PHOXAL_PARTICIPANT_META_JSON_{}",
+            struct_name.to_string().to_shouty_snake_case()
+        ),
+        struct_name.span(),
+    );
+    let metadata_len_ident = Ident::new(
+        &format!(
+            "__PHOXAL_PARTICIPANT_META_LEN_{}",
+            struct_name.to_string().to_shouty_snake_case()
+        ),
+        struct_name.span(),
+    );
+    let metadata_static_ident = Ident::new(
+        &format!(
+            "__PHOXAL_PARTICIPANT_META_{}",
+            struct_name.to_string().to_shouty_snake_case()
+        ),
+        struct_name.span(),
+    );
+    let link_section = link_section_attrs();
 
     Ok(quote! {
         #item_struct
@@ -716,5 +831,23 @@ pub fn expand_participant(
         }
 
         #marker
+
+        #[doc(hidden)]
+        const #metadata_const_ident: &'static str =
+            #phoxal::participant::api::__meta::__concatcp!(
+                "{\"participant_api\":\"",
+                <#api_ty as #phoxal::participant::ParticipantApi>::__NAME,
+                "\",\"contracts\":",
+                <#api_ty as #phoxal::participant::ParticipantApi>::__CONTRACTS_JSON,
+                ",\"config_schema\":",
+                <#config_ty as #phoxal::participant::ParticipantConfig>::SCHEMA_JSON,
+                "}"
+            );
+        #[doc(hidden)]
+        const #metadata_len_ident: usize = #metadata_const_ident.len();
+        #link_section
+        #[doc(hidden)]
+        static #metadata_static_ident: [u8; #metadata_len_ident] =
+            #phoxal::participant::api::__meta::__bytes_of(#metadata_const_ident);
     })
 }

@@ -189,10 +189,9 @@ pub fn derive_api(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Derive participant config identity from a `Config` struct. `SCHEMA_JSON` is
-/// a placeholder in this slice; see
-/// `phoxal::participant::api::ParticipantConfig`.
-#[proc_macro_derive(Config)]
+/// Derive a compile-time Draft 2020-12 JSON Schema from the same supported
+/// `#[serde(...)]` attributes used by `Deserialize`.
+#[proc_macro_derive(Config, attributes(serde))]
 pub fn derive_config(input: TokenStream) -> TokenStream {
     authoring::expand_config(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)

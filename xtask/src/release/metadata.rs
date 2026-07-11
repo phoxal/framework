@@ -74,18 +74,13 @@ pub(crate) fn extract_participant_metadata_section_from_bytes(
     Ok(None)
 }
 
-/// Parses an already-extracted metadata section. `None` is the valid `Api = ()`
-/// participant shape and produces an empty contract list.
+/// Parses an already-extracted metadata section. Every participant, including
+/// `Api = ()`, must carry the coordinated metadata format.
 pub(crate) fn parse_participant_metadata_section(
     section: Option<&[u8]>,
     describe: &str,
 ) -> Result<ParticipantMeta> {
-    let Some(bytes) = section else {
-        return Ok(ParticipantMeta {
-            participant_api: "()".to_string(),
-            contracts: Vec::new(),
-        });
-    };
+    let bytes = section.with_context(|| format!("{describe} has no phoxal metadata section"))?;
     phoxal::participant::metadata::parse_participant_metadata(bytes)
         .with_context(|| format!("phoxal API metadata section in {describe} is not valid JSON"))
 }
@@ -164,13 +159,10 @@ mod tests {
         Ok(())
     }
 
-    /// A privileged tool defaults to `Api = ()` (`ParticipantKind::default_api`
-    /// in `phoxal-macros/src/authoring.rs`), so it never derives
-    /// `#[derive(phoxal::Api)]` and its binary carries no metadata section at
-    /// all - a valid, expected shape (zero contracts), not an extraction
-    /// error. Proven end-to-end against the real `phoxal-tool-joypad` binary.
+    /// A privileged tool defaults to `Api = ()`, but the participant attribute
+    /// still emits config schema metadata and an empty contract list.
     #[test]
-    fn a_binary_with_no_section_parses_as_zero_contracts() -> Result<()> {
+    fn api_unit_binary_still_carries_metadata() -> Result<()> {
         let workspace = Workspace::discover()?;
         let package_name = "phoxal-tool-joypad";
         let status = Command::new("cargo")
@@ -187,6 +179,8 @@ mod tests {
 
         let meta = extract_participant_metadata(&binary_path)?;
         assert!(meta.contracts.is_empty());
+        assert_eq!(meta.participant_api, "()");
+        assert_eq!(meta.config_schema["type"], "object");
         Ok(())
     }
 
@@ -267,11 +261,9 @@ mod tests {
         Ok(())
     }
 
-    /// A foreign-format object file with NO phoxal section still parses cleanly
-    /// as zero contracts (the `Api = ()` shape), proving the None-vs-error split
-    /// is not host-format-specific.
+    /// A foreign-format object file with no phoxal section is not a participant.
     #[test]
-    fn foreign_object_without_section_is_zero_contracts() -> Result<()> {
+    fn foreign_object_without_section_is_rejected() -> Result<()> {
         let elf = synthesize_object(
             object::BinaryFormat::Elf,
             object::Architecture::Aarch64,
@@ -279,8 +271,9 @@ mod tests {
             b"",
             b"unrelated",
         );
-        let meta = extract_participant_metadata_from_bytes(&elf, "synthetic aarch64 ELF")?;
-        assert!(meta.contracts.is_empty());
+        let err =
+            extract_participant_metadata_from_bytes(&elf, "synthetic aarch64 ELF").unwrap_err();
+        assert!(err.to_string().contains("no phoxal metadata section"));
         Ok(())
     }
 }
