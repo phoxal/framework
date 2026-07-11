@@ -14,32 +14,38 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 
 ## Releasing
 
-Each crate carries its own version. [release-plz](https://release-plz.dev) owns
-versioning for *every* crate in the workspace - the 4 library crates and the
-official artifact crates alike. Libraries release when their packaged source
-changes; every artifact advances on each release train so the catalog carries a
-fresh coherent binary set.
+Each crate carries its own version and advances only when its own source
+changes. The 4 library crates and the official artifact crates use different
+version authorities.
 
-On a schedule (and on demand via workflow dispatch), release-plz opens or
-updates a single `chore(release): release` PR that bumps every crate whose code
-changed since its last release and refreshes its changelog.
+[release-plz](https://release-plz.dev) owns only the libraries (`phoxal-bus`,
+`phoxal-api`, `phoxal`, `phoxal-macros`). On a schedule (and on demand via
+workflow dispatch), it opens or updates a single `chore(release): release` PR
+for their version and changelog changes.
 Merging that PR publishes the changed library crates (`phoxal-bus`,
 `phoxal-api`, `phoxal`, `phoxal-macros`) to crates.io. The registry is their
 only distribution and version-baseline channel; they create no per-library git
 tags or GitHub releases.
-The official artifact crates (`phoxal-service-<name>`, component drivers,
-`phoxal-tool-<name>`, `phoxal-simulator-<name>`) keep `publish = false` in their
-own `Cargo.toml`; release-plz versions them via `git_only` (a git-tag version
-ledger, never crates.io) and creates no per-artifact GitHub release.
+
+The official artifact crates (`phoxal-service-<name>`, component crates,
+`phoxal-tool-<name>`, `phoxal-simulator-<name>`) set `publish = false`, which
+keeps them entirely outside release-plz. `cargo xtask release bump --changed`
+compares each artifact's own crate directory with its current
+`{package}-v{version}` tag and adds only the changed artifacts' patch bumps to
+the same release PR. Workspace lockfile and library changes cannot select an
+artifact. After merge, `cargo xtask release cut` creates the missing artifact
+tags and emits the JSON handoff consumed by `cargo xtask release plan`.
 
 Building and publishing the artifact binaries is decoupled from versioning.
-On each push to `main`, the release workflow computes which artifact versions
-are not yet in the catalog, builds only those, and uploads them - together with
-an assembled `catalog.json` full index - to a single immutable
+Every release wave builds all official artifacts at their current independent
+versions and uploads them - together with an assembled `phoxal.catalog/v0`
+`catalog.json` full index - to a single immutable
 `build-YYYYMMDD-<run>` GitHub release, which is marked "latest" once the gate
-passes.
-A pinned artifact version resolves through that one catalog to its permanent
-download URL.
+passes. Catalog assembly extracts and cross-target-validates each binary's
+embedded contract metadata, including its `config_schema` slot; the schema stays
+in the packaged binary rather than being duplicated in the location index. A
+pinned artifact version resolves through the catalog to its permanent download
+URL.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).
