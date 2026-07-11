@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# release-plz 0.3.159's git-only change detection runs `cargo package
+# --allow-dirty --workspace` once per git-only crate. Cargo verifies every
+# package by building it unless --no-verify is present, so that implementation
+# rebuilds this workspace 27 times during release-pr. The packaged files—not
+# the verification build—are what release-plz compares with the tagged
+# baseline. CI already builds and tests the workspace before release.
+if [[ "${1:-}" == "package" ]]; then
+  for argument in "$@"; do
+    if [[ "$argument" == "--no-verify" ]]; then
+      exec cargo "$@"
+    fi
+  done
+  cargo "$@" --no-verify
+
+  # The normal verification step also extracts each archive before building
+  # it, and release-plz reads metadata from those extracted directories.
+  # --no-verify intentionally leaves only the archives, so reproduce that
+  # inexpensive part of Cargo's output contract.
+  package_dir="${CARGO_TARGET_DIR:-target}/package"
+  shopt -s nullglob
+  archives=("$package_dir"/*.crate)
+  for archive in "${archives[@]}"; do
+    tar -xzf "$archive" -C "$package_dir"
+  done
+  exit 0
+fi
+
+exec cargo "$@"
