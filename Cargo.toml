@@ -141,10 +141,10 @@ zenoh = { version = "1.9.0", default-features = false, features = [
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
-phoxal = { path = "phoxal", version = "0.31" }
+phoxal = { path = "phoxal", version = "0.32" }
 phoxal-api = { path = "phoxal-api", version = "0.20" }
 phoxal-bus = { path = "phoxal-bus", version = "0.21" }
-phoxal-macros = { path = "phoxal-macros", version = "0.20" }
+phoxal-macros = { path = "phoxal-macros", version = "0.21" }
 
 [workspace.lints.rust]
 unused = "warn"

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/phoxal/framework/compare/phoxal-v0.31.1...phoxal-v0.32.0) - 2026-07-11
+
+### Added
+
+- *(config)* [**breaking**] const-schema Config derive + schema slot in metadata section ([#214](https://github.com/phoxal/framework/pull/214))
+
 ## [0.31.1](https://github.com/phoxal/framework/compare/phoxal-v0.31.0...phoxal-v0.31.1) - 2026-07-10
 
 ### Fixed

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.0...phoxal-api-v0.20.1) - 2026-07-11
+
+### Other
+
+- updated the following local packages: phoxal-macros
+
 ## [0.20.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.19.5...phoxal-api-v0.20.0) - 2026-07-10
 
 ### Other
