@@ -68,11 +68,17 @@ jobs:
     env:
       HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      # `cache-shared-key: xtask` - this job's cargo work is the xtask binary
+      # (`release plan`); share its cache with the assets/catalog jobs below
+      # and the PR-side xtask jobs (see ci.yml) instead of each job rebuilding
+      # xtask's dependency tree under its own per-job cache key.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-shared-key: xtask
 
       - name: Install release-plz
         uses: taiki-e/install-action@v2
@@ -82,7 +88,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token
         if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -198,13 +204,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: steps.plan.outputs.released == 'true'
         with:
           name: release-plan
           path: target/xtask/release-plan.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: steps.plan.outputs.released == 'true' && hashFiles('prev/catalog.json') != ''
         with:
           name: previous-catalog
@@ -221,7 +227,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.release.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -293,7 +299,7 @@ jobs:
 
       # Hand the exact packaged bytes to the catalog job. One facts artifact
       # per target replaces the old per-package facts artifacts.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: facts-${{ matrix.target }}
@@ -320,11 +326,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      # Shares the xtask-only build cache (see the release job above).
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-shared-key: xtask
 
       # Component bundles only tar files; `release package` does not invoke a
       # Cargo artifact build for the target-independent scope.
@@ -364,7 +373,7 @@ jobs:
             echo "::endgroup::"
           done < <(jq -r '.[].package' <<< "$PACKAGES")
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: facts-target-independent
@@ -394,25 +403,28 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
+      # Shares the xtask-only build cache (see the release job above).
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache-shared-key: xtask
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: release-plan
           path: target/xtask
 
       # Optional - absent on a cold start, in which case the merge starts empty.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         continue-on-error: true
         with:
           name: previous-catalog
           path: prev
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: facts-*
           path: target/xtask/release
@@ -482,7 +494,7 @@ jobs:
       group: release-plz-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -496,7 +508,7 @@ jobs:
       - name: Generate GitHub App token
         id: app-token
         if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
