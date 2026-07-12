@@ -8,12 +8,13 @@
 //!
 //! Robot-spawning (instantiating robot nodes into the world at startup, and
 //! re-spawning them on `simulation::Control::Reset`) is this artifact's
-//! spawn authority - see [`SpawnRobot`] for the config shape and
-//! `spawn_robots` (the SPAWN SEAM) for where it attaches on [`NativeBackend`].
+//! spawn authority. The spawn set is obtained reliably through the
+//! `simulation::spawn` query before the first simulation step.
 
 use anyhow::{Result, anyhow, bail};
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
+use phoxal_api::y2026_8 as open_api;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
@@ -22,21 +23,12 @@ const DEFAULT_DT_NS: u64 = 10_000_000;
 struct WebotsSupervisorConfig {
     #[serde(default = "default_require_native")]
     require_native: bool,
-    /// Robot nodes the supervisor imports into the world at startup (and
-    /// re-imports on `simulation::Control::Reset`). Each entry is a complete
-    /// Webots PROTO instance node string, already carrying its own
-    /// `controller` + `controllerArgs` fields, rendered by the CLI's world
-    /// staging. Defaults to empty: a supervisor with no spawn list behaves
-    /// exactly as a world pre-staged entirely by Webots.
-    #[serde(default)]
-    spawn: Vec<SpawnRobot>,
 }
 
 impl Default for WebotsSupervisorConfig {
     fn default() -> Self {
         Self {
             require_native: default_require_native(),
-            spawn: Vec::new(),
         }
     }
 }
@@ -45,28 +37,16 @@ fn default_require_native() -> bool {
     true
 }
 
-/// One robot node for the supervisor to import into the world at startup
-/// (and re-import after a `simulation::Control::Reset`).
-///
-/// The `node_string` is a complete Webots VRML PROTO instance - the CLI's
-/// world-staging step renders it (including that robot's `controller` and
-/// `controllerArgs` fields) before handing it to the supervisor; this crate
-/// treats it as an opaque string to import verbatim.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
-#[serde(deny_unknown_fields)]
-struct SpawnRobot {
-    /// Robot id, used only for logging/diagnostics.
-    name: String,
-    /// Complete Webots VRML node text (a PROTO instance) to import.
-    node_string: String,
-}
-
 #[derive(phoxal::Api)]
 struct Api {
     clock: Publisher<api::simulation::Clock>,
     control: Subscriber<api::simulation::Control>,
     robot_pose: Publisher<api::simulation::RobotPose>,
     contact: Publisher<api::simulation::Contact>,
+    // Served by privileged phoxal-cli orchestration outside the checked
+    // participant graph.
+    #[phoxal(external)]
+    spawn: Querier<open_api::simulation::SpawnRequest, open_api::simulation::SpawnSet>,
 }
 
 #[phoxal::simulator(id = "webots-supervisor", config = Option<WebotsSupervisorConfig>)]
@@ -101,8 +81,13 @@ impl WebotsSupervisorSimulator {
         let contact = ctx
             .publisher(api::topic::internal::new(cap).simulation().contact())
             .await?;
+        let spawn = ctx
+            .querier(open_api::topic::new().simulation().spawn())
+            .await?;
 
-        let backend = Backend::open(&config)?;
+        let mut backend = Backend::open(&config)?;
+        let spawn_set = query_spawn_set(&spawn).await;
+        backend.spawn(&spawn_set.robots)?;
         let dt_ns = backend.dt_ns();
 
         tracing::info!(
@@ -125,6 +110,7 @@ impl WebotsSupervisorSimulator {
                 control,
                 robot_pose,
                 contact,
+                spawn,
             },
         ))
     }
@@ -164,6 +150,29 @@ impl WebotsSupervisorSimulator {
     async fn shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> Result<()> {
         let _ = (api, ctx);
         Ok(())
+    }
+}
+
+async fn query_spawn_set(
+    spawn: &Querier<open_api::simulation::SpawnRequest, open_api::simulation::SpawnSet>,
+) -> open_api::simulation::SpawnSet {
+    loop {
+        match spawn
+            .query(open_api::simulation::SpawnRequest {
+                known_revision: None,
+            })
+            .await
+        {
+            Ok(spawn_set) => return spawn_set,
+            Err(error) => {
+                tracing::warn!(
+                    target: "simulator_webots_supervisor",
+                    %error,
+                    "spawn set query failed; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
     }
 }
 
@@ -211,7 +220,7 @@ enum Backend {
 impl Backend {
     fn open(config: &WebotsSupervisorConfig) -> Result<Self> {
         if webots_rs::WEBOTS_RUNTIME_LINKED {
-            return Ok(Self::Native(Box::new(NativeBackend::new(&config.spawn)?)));
+            return Ok(Self::Native(Box::new(NativeBackend::new()?)));
         }
 
         if config.require_native {
@@ -220,7 +229,7 @@ impl Backend {
             );
         }
 
-        Ok(Self::Stub(StubBackend::new(&config.spawn)))
+        Ok(Self::Stub(StubBackend::new()))
     }
 
     fn dt_ns(&self) -> u64 {
@@ -246,32 +255,47 @@ impl Backend {
             }
         }
     }
+
+    fn spawn(&mut self, spawn: &[open_api::simulation::RobotSpawn]) -> Result<()> {
+        match self {
+            Self::Native(backend) => backend.spawn(spawn),
+            Self::Stub(backend) => {
+                backend.spawn(spawn);
+                Ok(())
+            }
+        }
+    }
 }
 
 struct StubBackend {
     dt_ns: u64,
+    spawn: Vec<open_api::simulation::RobotSpawn>,
 }
 
 impl StubBackend {
-    /// Builds the headless (no Webots linked) stand-in. There is no real
-    /// Supervisor to import nodes into, so the spawn list is only logged -
-    /// this lets tests assert the configured list was read without ever
-    /// attempting a live import.
-    fn new(spawn: &[SpawnRobot]) -> Self {
-        Self::log_spawn(spawn);
+    fn new() -> Self {
         Self {
             dt_ns: DEFAULT_DT_NS,
+            spawn: Vec::new(),
         }
     }
 
-    fn log_spawn(spawn: &[SpawnRobot]) {
+    fn spawn(&mut self, spawn: &[open_api::simulation::RobotSpawn]) {
         for entry in spawn {
+            if self
+                .spawn
+                .iter()
+                .any(|spawned| spawned.robot_id == entry.robot_id)
+            {
+                continue;
+            }
             tracing::info!(
                 target: "simulator_webots_supervisor",
-                robot = %entry.name,
+                robot = %entry.robot_id,
                 node_string_len = entry.node_string.len(),
                 "stub backend: would spawn robot (no Webots runtime linked)"
             );
+            self.spawn.push(entry.clone());
         }
     }
 
@@ -289,7 +313,15 @@ impl StubBackend {
         }
     }
 
-    fn reset(&mut self) {}
+    fn reset(&mut self) {
+        for entry in &self.spawn {
+            tracing::info!(
+                target: "simulator_webots_supervisor",
+                robot = %entry.robot_id,
+                "stub backend: would re-spawn robot after reset"
+            );
+        }
+    }
 }
 
 /// Owns the Webots supervisor-process handle: base handle open, per-step
@@ -303,11 +335,11 @@ struct NativeBackend {
     /// Retained so `reset` can re-import the same robots: a world reset
     /// restores the *saved* world file, which does not include nodes that
     /// were imported at runtime, so they must be re-spawned every reset.
-    spawn: Vec<SpawnRobot>,
+    spawn: Vec<open_api::simulation::RobotSpawn>,
 }
 
 impl NativeBackend {
-    fn new(spawn: &[SpawnRobot]) -> Result<Self> {
+    fn new() -> Result<Self> {
         let webots = webots_rs::Webots::new().map_err(|error| anyhow!(error))?;
         let step_ms = webots
             .get_basic_time_step()
@@ -320,18 +352,28 @@ impl NativeBackend {
             .unwrap_or(u64::MAX);
         let supervisor = webots.get_supervisor();
 
-        // SPAWN SEAM: import every configured robot node before the first
-        // `webots.step()` call in `advance` - this is what makes Webots
-        // launch that robot's controller process.
-        spawn_robots(&supervisor, spawn)?;
-
         Ok(Self {
             webots,
             supervisor,
             dt_ns,
             step_ms,
-            spawn: spawn.to_vec(),
+            spawn: Vec::new(),
         })
+    }
+
+    fn spawn(&mut self, spawn: &[open_api::simulation::RobotSpawn]) -> Result<()> {
+        for entry in spawn {
+            if self
+                .spawn
+                .iter()
+                .any(|spawned| spawned.robot_id == entry.robot_id)
+            {
+                continue;
+            }
+            spawn_robots(&self.supervisor, std::slice::from_ref(entry))?;
+            self.spawn.push(entry.clone());
+        }
+        Ok(())
     }
 
     fn advance(&mut self) -> Result<BackendOutput> {
@@ -399,7 +441,10 @@ impl NativeBackend {
 /// so a successful import is what makes Webots launch that robot's
 /// controller process. A malformed node string fails loudly - naming the
 /// robot - rather than silently skipping it.
-fn spawn_robots(supervisor: &webots_rs::Supervisor, spawn: &[SpawnRobot]) -> Result<()> {
+fn spawn_robots(
+    supervisor: &webots_rs::Supervisor,
+    spawn: &[open_api::simulation::RobotSpawn],
+) -> Result<()> {
     if spawn.is_empty() {
         return Ok(());
     }
@@ -410,10 +455,10 @@ fn spawn_robots(supervisor: &webots_rs::Supervisor, spawn: &[SpawnRobot]) -> Res
     for entry in spawn {
         children
             .import_mf_node_from_string(-1, &entry.node_string)
-            .map_err(|error| anyhow!("failed to spawn robot '{}': {error}", entry.name))?;
+            .map_err(|error| anyhow!("failed to spawn robot '{}': {error}", entry.robot_id))?;
         tracing::info!(
             target: "simulator_webots_supervisor",
-            robot = %entry.name,
+            robot = %entry.robot_id,
             "spawned robot node into world"
         );
     }
@@ -455,6 +500,8 @@ fn contract_mappings() -> Vec<ContractMapping> {
         mapping::<api::simulation::Control>(ContractRole::Subscribe),
         mapping::<api::simulation::RobotPose>(ContractRole::Publish),
         mapping::<api::simulation::Contact>(ContractRole::Publish),
+        mapping::<open_api::simulation::SpawnRequest>(ContractRole::Ask),
+        mapping::<open_api::simulation::SpawnSet>(ContractRole::Ask),
     ]
 }
 
@@ -471,10 +518,12 @@ fn mapping<B: phoxal::bus::ContractBody>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use phoxal::bus::{Codec, ContractBody, DEFAULT_QUERY_TIMEOUT, MessagePack};
     use phoxal::participant::{Participant, ParticipantApi};
+    use phoxal::raw::{Bus, BusConfig};
 
     #[test]
-    fn api_declares_exactly_the_four_simulation_contracts() {
+    fn api_declares_simulation_runtime_and_spawn_contracts() {
         assert_eq!(
             <WebotsSupervisorSimulator as Participant>::ID,
             "webots-supervisor"
@@ -495,7 +544,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             expected.len(),
-            "supervisor must emit exactly the 4 simulation contracts, got {contracts:?}"
+            "supervisor must declare exactly the simulation runtime and spawn contracts, got {contracts:?}"
         );
         for mapping in &expected {
             assert!(
@@ -507,6 +556,13 @@ mod tests {
                 mapping.role
             );
         }
+        assert!(
+            <Api as ParticipantApi>::__CONTRACTS_JSON.contains(
+                r#""generation":"y2026_8","contract":"simulation::SpawnRequest","external":true"#
+            ),
+            "spawn ask must be marked external because phoxal-cli serves it outside the checked participant graph; got {}",
+            <Api as ParticipantApi>::__CONTRACTS_JSON
+        );
 
         // Never leaks the controller's component::* contracts.
         assert!(
@@ -525,29 +581,14 @@ mod tests {
     }
 
     #[test]
-    fn config_deserializes_spawn_list_from_phoxal_config_json() {
-        let json = serde_json::json!({
+    fn config_rejects_spawn_field() {
+        let error = serde_json::from_value::<WebotsSupervisorConfig>(serde_json::json!({
             "require_native": false,
-            "spawn": [
-                {"name": "robot-a", "node_string": "Robot { name \"robot-a\" }"},
-                {"name": "robot-b", "node_string": "Robot { name \"robot-b\" }"},
-            ],
-        });
+            "spawn": [{"robot_id": "robot-a", "node_string": "Robot {}"}],
+        }))
+        .unwrap_err();
 
-        let config: WebotsSupervisorConfig = serde_json::from_value(json).unwrap();
-
-        assert!(!config.require_native);
-        assert_eq!(config.spawn.len(), 2);
-        assert_eq!(config.spawn[0].name, "robot-a");
-        assert_eq!(config.spawn[0].node_string, "Robot { name \"robot-a\" }");
-        assert_eq!(config.spawn[1].name, "robot-b");
-    }
-
-    #[test]
-    fn config_spawn_defaults_to_empty() {
-        let json = serde_json::json!({});
-        let config: WebotsSupervisorConfig = serde_json::from_value(json).unwrap();
-        assert!(config.spawn.is_empty());
+        assert!(error.to_string().contains("unknown field `spawn`"));
     }
 
     // The runner deserializes `Self::Config` from JSON `null` when
@@ -560,7 +601,7 @@ mod tests {
         let config: Option<WebotsSupervisorConfig> =
             serde_json::from_value(serde_json::Value::Null).unwrap();
         assert!(config.is_none());
-        assert!(config.unwrap_or_default().spawn.is_empty());
+        assert!(config.unwrap_or_default().require_native);
     }
 
     #[test]
@@ -571,41 +612,89 @@ mod tests {
     }
 
     #[test]
-    fn config_schema_includes_spawn_field() {
+    fn config_schema_excludes_spawn_field() {
         let schema =
             <WebotsSupervisorConfig as phoxal::participant::ParticipantConfig>::SCHEMA_JSON;
 
         assert!(
-            schema.contains("spawn"),
-            "config schema should describe the spawn field, got {schema}"
-        );
-        assert!(
-            schema.contains("node_string") && schema.contains("name"),
-            "config schema should describe SpawnRobot's fields, got {schema}"
+            !schema.contains("spawn") && !schema.contains("node_string"),
+            "config schema must not expose spawn data, got {schema}"
         );
     }
 
     #[test]
-    fn stub_backend_logs_intended_spawns_without_panicking() {
+    fn stub_backend_import_is_idempotent_and_reset_keeps_cached_set() {
         let spawn = vec![
-            SpawnRobot {
-                name: "robot-a".to_string(),
+            open_api::simulation::RobotSpawn {
+                robot_id: "robot-a".to_string(),
                 node_string: "Robot { name \"robot-a\" }".to_string(),
             },
-            SpawnRobot {
-                name: "robot-b".to_string(),
+            open_api::simulation::RobotSpawn {
+                robot_id: "robot-b".to_string(),
                 node_string: "Robot { name \"robot-b\" }".to_string(),
             },
         ];
 
-        // Must not attempt a real Supervisor import - only log the intent.
-        let backend = StubBackend::new(&spawn);
+        let mut backend = StubBackend::new();
+        backend.spawn(&spawn);
+        backend.spawn(&spawn);
+        backend.reset();
+
         assert_eq!(backend.dt_ns, DEFAULT_DT_NS);
+        assert_eq!(backend.spawn.len(), 2);
+        assert_eq!(backend.spawn[0].robot_id, "robot-a");
+        assert_eq!(backend.spawn[1].robot_id, "robot-b");
     }
 
     #[test]
-    fn stub_backend_handles_empty_spawn_list() {
-        let backend = StubBackend::new(&[]);
+    fn stub_backend_starts_with_empty_spawn_set() {
+        let backend = StubBackend::new();
         assert_eq!(backend.dt_ns, DEFAULT_DT_NS);
+        assert!(backend.spawn.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spawn_query_retries_until_responder_is_declared() {
+        let bus = Bus::open(BusConfig::in_process("test", "spawn-retry"))
+            .await
+            .unwrap();
+        let topic = open_api::topic::new().simulation().spawn();
+        let querier =
+            Querier::<open_api::simulation::SpawnRequest, open_api::simulation::SpawnSet>::new(
+                bus.clone(),
+                &topic,
+                DEFAULT_QUERY_TIMEOUT,
+            )
+            .unwrap();
+
+        let server_bus = bus.clone();
+        let server_task = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let server = server_bus
+                .declare_server(<open_api::simulation::SpawnRequest as ContractBody>::TOPIC)
+                .await
+                .unwrap();
+            let incoming = server.recv().await.unwrap();
+            let request: open_api::simulation::SpawnRequest =
+                MessagePack::decode(&incoming.request_bytes().unwrap()).unwrap();
+            assert_eq!(request.known_revision, None);
+            let response = MessagePack::encode(&open_api::simulation::SpawnSet {
+                revision: 1,
+                robots: vec![open_api::simulation::RobotSpawn {
+                    robot_id: "robot-a".to_string(),
+                    node_string: "Robot { name \"robot-a\" }".to_string(),
+                }],
+            })
+            .unwrap();
+            incoming.reply(&server_bus, response).await.unwrap();
+        });
+
+        let spawn_set = query_spawn_set(&querier).await;
+        assert_eq!(spawn_set.revision, 1);
+        assert_eq!(spawn_set.robots.len(), 1);
+        assert_eq!(spawn_set.robots[0].robot_id, "robot-a");
+
+        server_task.await.unwrap();
+        bus.close().await.unwrap();
     }
 }
