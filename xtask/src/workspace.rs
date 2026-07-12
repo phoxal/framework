@@ -31,19 +31,19 @@ const BINARY_TARGETS: [&str; 5] = [
 /// provider segment; the grammar has no other official provider today.
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
-/// The target-independent scope token recorded for a [`ArtifactKind::Component`]
-/// package's asset bundle instead of a real target triple: assets are not
-/// per-architecture binaries, so catalog artifact maps carry exactly this one
-/// key for that output rather than pretending it is a per-triple binary.
-pub const TARGET_INDEPENDENT_SCOPE: &str = "target-independent";
+/// The assets scope token recorded for a [`ArtifactKind::Component`] package's
+/// asset bundle instead of a real target triple. Catalog artifact maps carry
+/// exactly this key for that output rather than pretending it is a binary
+/// target.
+pub const ASSETS_SCOPE: &str = "assets";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Service,
     /// A component crate: ships the driver binary (built for
-    /// [`TARGET_INDEPENDENT_SCOPE`]'s sibling per-target triples) AND the
-    /// component's target-independent asset bundle (`component.yaml`,
+    /// [`ASSETS_SCOPE`]'s sibling per-target triples) AND the component's asset
+    /// bundle (`component.yaml`,
     /// `simulation.yaml`, `structure.urdf`, `meshes/` if present) in one
     /// crate/release (design doc §9). Discovered from
     /// `component/<id>/Cargo.toml`.
@@ -63,9 +63,8 @@ impl ArtifactKind {
         }
     }
 
-    /// Whether this kind ships a target-independent asset bundle in addition
-    /// to its per-target binary output (design doc §9: every `component/`
-    /// crate carries both).
+    /// Whether this kind ships an asset bundle in addition to its per-target
+    /// binary output (design doc §9: every `component/` crate carries both).
     pub fn ships_assets(self) -> bool {
         matches!(self, ArtifactKind::Component)
     }
@@ -131,20 +130,20 @@ impl OfficialArtifact {
     }
 
     /// The full set of release targets this artifact packages for: its
-    /// per-triple binary targets, plus [`TARGET_INDEPENDENT_SCOPE`] when the
-    /// kind also ships a target-independent asset bundle
+    /// per-triple binary targets, plus [`ASSETS_SCOPE`] when the kind also
+    /// ships an asset bundle
     /// ([`ArtifactKind::ships_assets`], design doc §9).
     pub fn supported_target_triples(&self) -> Vec<String> {
         // Every discovered artifact starts from the uniform six-target matrix
-        // (#197); a `Component` additionally ships the target-independent
-        // asset bundle (design doc §9). Package metadata may add exceptional
+        // (#197); a `Component` additionally ships the asset bundle (design
+        // doc §9). Package metadata may add exceptional
         // targets and subtract targets the artifact cannot build.
         let mut targets = BINARY_TARGETS
             .iter()
             .map(|target| (*target).to_string())
             .collect::<Vec<_>>();
         if self.kind.ships_assets() {
-            targets.push(TARGET_INDEPENDENT_SCOPE.to_string());
+            targets.push(ASSETS_SCOPE.to_string());
         }
         targets.extend(self.metadata.extra_target_triples.iter().cloned());
         targets.retain(|target| {
@@ -209,7 +208,7 @@ pub fn runner_for_target(target: &str) -> Result<&'static str> {
         // A component's asset-bundle packaging just tars files (no cargo
         // build, no per-architecture binary), so any host runner works; the
         // cheapest Linux runner is used.
-        TARGET_INDEPENDENT_SCOPE => Ok("ubuntu-24.04"),
+        ASSETS_SCOPE => Ok("ubuntu-24.04"),
         _ => bail!("no CI runner is configured for release target {target}"),
     }
 }
@@ -795,7 +794,7 @@ mod tests {
     }
 
     #[test]
-    fn component_supports_its_binary_targets_and_the_target_independent_scope() {
+    fn component_supports_its_binary_targets_and_the_assets_scope() {
         let artifact = OfficialArtifact {
             package: "phoxal/component-ddsm115".to_string(),
             package_name: Some("phoxal-component-ddsm115".to_string()),
@@ -812,12 +811,12 @@ mod tests {
                 "aarch64-apple-darwin".to_string(),
                 "aarch64-unknown-linux-gnu".to_string(),
                 "aarch64-unknown-linux-musl".to_string(),
-                TARGET_INDEPENDENT_SCOPE.to_string(),
+                ASSETS_SCOPE.to_string(),
                 "x86_64-unknown-linux-gnu".to_string(),
                 "x86_64-unknown-linux-musl".to_string(),
             ]
         );
-        assert!(artifact.supports_target(TARGET_INDEPENDENT_SCOPE));
+        assert!(artifact.supports_target(ASSETS_SCOPE));
         assert!(artifact.supports_target("x86_64-unknown-linux-gnu"));
         // A component builds the darwin (Apple Silicon) and musl triples too.
         assert!(artifact.supports_target("aarch64-apple-darwin"));

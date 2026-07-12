@@ -34,8 +34,8 @@ name: release-plz
 #                   (artifact-only wave). It does NOT create the build-* release.
 #   2. build      - one matrix leg per binary target: a single `release package`
 #                   builds+packages that row's artifacts, uploaded as `facts-*`.
-#      assets     - one cheap Linux job packages all target-independent bundles
-#                   via `release assets`, uploaded as `facts-target-independent`.
+#      assets     - one cheap Linux job packages all component asset bundles via
+#                   `release assets`, uploaded as `facts-assets`.
 #   3. catalog    - assemble catalog.json from this run's facts + the previous
 #                   catalog, run the structural gate, then create the `build-*`
 #                   release with every tarball + catalog.json in one shot and
@@ -344,7 +344,7 @@ jobs:
           if-no-files-found: error
 
   assets:
-    name: package target-independent assets
+    name: package component assets
     needs: release
     if: needs.release.outputs.released == 'true' && needs.release.outputs.assets != '[]'
     runs-on: ubuntu-24.04
@@ -372,12 +372,12 @@ jobs:
           cargo xtask release assets "${names[@]}" \
             --out target/xtask/release
 
-      # Asset bundles have no target triple in their filename any more
-      # (`<pkg>-v<version>.tar.zst`), so the facts glob is target-independent by
-      # exclusion: the binary targets all carry a `-<triple>` infix.
+      # Asset bundles have no target triple in their filename
+      # (`<pkg>-v<version>.tar.zst`); binary targets all carry a `-<triple>`
+      # infix, so this glob selects the bundle filenames by exclusion.
       - uses: actions/upload-artifact@v6
         with:
-          name: facts-target-independent
+          name: facts-assets
           path: |
             target/xtask/release/*.tar.zst
             target/xtask/release/*.tar.zst.sha256
