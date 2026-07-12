@@ -86,6 +86,7 @@ use crate::participant::scheduler::{
 };
 use crate::participant::spec::StepSchedule;
 use phoxal_api::y2026_1 as api;
+use phoxal_api::y2026_9;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
@@ -170,8 +171,8 @@ pub(crate) fn step_scheduler_for(
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
 /// the other server tasks, aborted at shutdown): this subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
-/// observes (`api::topic::new().simulation().clock()`, the CLIENT side of the
-/// `Simulator`'s owner-side publish - both sides format the identical
+/// observes (`y2026_9::topic::new().simulation().clock()`, the CLIENT side of
+/// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
 /// - calls [`SimulationClockHandle::advance`] with the sample's ENVELOPE
@@ -198,8 +199,9 @@ pub(crate) fn spawn_simulation_clock_feed(
 ) -> crate::Result<JoinHandle<()>> {
     let bus = bus.clone();
     Ok(tokio::spawn(async move {
-        let topic = api::topic::new().simulation().clock();
-        let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
+        let topic = y2026_9::topic::new().simulation().clock();
+        let subscriber = match Subscriber::<y2026_9::simulation::Clock>::new(&bus, &topic, 1).await
+        {
             Ok(subscriber) => subscriber,
             Err(error) => {
                 tracing::error!(
@@ -951,9 +953,9 @@ mod tests {
         let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
         let bus = Bus::open(bus_config).await.expect("bus should open");
 
-        let clock_publisher = crate::bus::Publisher::<api::simulation::Clock>::new(
+        let clock_publisher = crate::bus::Publisher::<y2026_9::simulation::Clock>::new(
             bus.clone(),
-            &api::topic::internal::new(crate::bus::OwnerCap::__mint())
+            &y2026_9::topic::internal::new(crate::bus::OwnerCap::__mint())
                 .simulation()
                 .clock(),
         )
@@ -989,8 +991,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 first_target,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: period_ns,
+                    step: 1,
                     running: true,
                 },
             )
@@ -1007,8 +1010,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 second_target,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: 2 * period_ns,
+                    step: 2,
                     running: false,
                 },
             )
@@ -1029,8 +1033,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 second_target,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: 2 * period_ns,
+                    step: 2,
                     running: true,
                 },
             )
