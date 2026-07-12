@@ -355,6 +355,16 @@ fn base_device_id(uuid: [u8; 16], name: &str) -> String {
 /// Disambiguate a base id against ids already present in `entries` (two
 /// identical controllers report the same uuid), appending `#2`, `#3`, ...
 /// until the id is unique.
+///
+/// Known limitation: a `base` is derived from the pad's uuid (or its name when
+/// the backend reports an all-zero uuid), so ids are restart-stable for any pad
+/// with a distinct uuid/name. Two *physically identical* controllers that share
+/// the same uuid - or two zero-uuid pads with the same name - are separated only
+/// by observation-order `#N` suffixes, which can swap across a restart or a
+/// reconnect in a different order. Selecting the "wrong twin" is the only
+/// consequence (both are the same model); for the current development-grade
+/// robots this is acceptable. A stronger per-device identity (persisted mapping
+/// or a hardware serial) is deferred until a real requirement appears.
 fn assign_stable_id(entries: &HashMap<String, PadEntry>, base: &str) -> String {
     if !entries.contains_key(base) {
         return base.to_string();
