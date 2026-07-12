@@ -3,8 +3,8 @@
 //! `ApiVersion` id, and the topic keys produced by the api-local builders.
 
 use crate::y2026_1 as api;
-use crate::y2026_7;
 use crate::{ApiVersion, ContractBody};
+use crate::{y2026_7, y2026_8};
 use phoxal_bus::TopicRole;
 
 #[test]
@@ -77,6 +77,20 @@ fn y2026_7_is_a_standalone_second_generation_carrying_only_the_moved_battery_con
 }
 
 #[test]
+fn y2026_8_is_a_standalone_generation_for_simulation_spawn() {
+    const { assert!(!<y2026_8::Api as ApiVersion>::IS_PREVIEW) };
+    assert_eq!(<y2026_8::Api as ApiVersion>::ID, "y2026_8");
+    assert_eq!(
+        <y2026_8::simulation::SpawnRequest as ContractBody>::TOPIC,
+        "y2026_8/simulation/spawn"
+    );
+    assert_eq!(
+        y2026_8::topic::new().simulation().spawn().key(),
+        "y2026_8/simulation/spawn"
+    );
+}
+
+#[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     let generation = crate::API_CONTRACT_MANIFEST
         .iter()
@@ -104,6 +118,18 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .find(|contract| contract.family == "y2026_7::battery::State")
         .expect("battery::State should be in the y2026_7 manifest entry");
     assert_eq!(battery_state.topic, "y2026_7/battery/state");
+
+    let y2026_8_generation = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|generation| generation.name == "y2026_8")
+        .expect("y2026_8 should be in the generated manifest");
+    assert!(!y2026_8_generation.is_preview);
+    assert!(
+        y2026_8_generation
+            .contracts
+            .iter()
+            .any(|contract| contract.family == "y2026_8::simulation::SpawnRequest")
+    );
 }
 
 #[test]
@@ -294,6 +320,16 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
         y_m: 2.0,
         yaw_rad: 0.3,
     });
+    round_trip(&y2026_8::simulation::SpawnRequest {
+        known_revision: Some(4),
+    });
+    round_trip(&y2026_8::simulation::SpawnSet {
+        revision: 5,
+        robots: vec![y2026_8::simulation::RobotSpawn {
+            robot_id: "rover".to_string(),
+            node_string: "Rover { name \"rover\" }".to_string(),
+        }],
+    });
 }
 
 #[test]
@@ -405,6 +441,10 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         api::topic::new().simulation().robot_pose().key(),
         "y2026_1/simulation/robot_pose"
+    );
+    assert_eq!(
+        y2026_8::topic::new().simulation().spawn().key(),
+        "y2026_8/simulation/spawn"
     );
     assert_eq!(api::topic::new().video().open().key(), "y2026_1/video/open");
     assert_eq!(

@@ -1128,6 +1128,35 @@ phoxal_api_tree! {
             topic state: state State;
         }
     }
+
+    // The next standalone sparse generation. y2026_1 and y2026_7 have both
+    // shipped and are frozen, so new simulation bootstrap contracts start here.
+    version y2026_8 {
+        simulation {
+            /// One robot node that the simulator spawn authority should import.
+            struct RobotSpawn {
+                robot_id: String,
+                node_string: String,
+            }
+
+            /// Requests the current complete robot spawn set.
+            ///
+            /// `known_revision` lets a future responder distinguish initial
+            /// bootstrap from refreshes after a runtime join. Responders may
+            /// still return the current set when the revision is unchanged.
+            struct SpawnRequest {
+                known_revision: Option<u64>,
+            }
+
+            /// The complete robot spawn set for one simulation world.
+            struct SpawnSet {
+                revision: u64,
+                robots: Vec<RobotSpawn>,
+            }
+
+            topic spawn: query SpawnRequest => SpawnSet;
+        }
+    }
 }
 
 #[cfg(test)]
