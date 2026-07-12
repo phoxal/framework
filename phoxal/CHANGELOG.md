@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.2](https://github.com/phoxal/framework/compare/phoxal-v0.32.1...phoxal-v0.32.2) - 2026-07-12
+
+### Added
+
+- live Webots simulation, docs reconciliation, authoring example ([#229](https://github.com/phoxal/framework/pull/229))
+
 ## [0.32.1](https://github.com/phoxal/framework/compare/phoxal-v0.32.0...phoxal-v0.32.1) - 2026-07-11
 
 ### Added

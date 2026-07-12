@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.2](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.1...phoxal-api-v0.20.2) - 2026-07-12
+
+### Added
+
+- *(simulation)* supervisor pulls robot spawn set over the bus, not --config ([#235](https://github.com/phoxal/framework/pull/235))
+- live Webots simulation, docs reconciliation, authoring example ([#229](https://github.com/phoxal/framework/pull/229))
+
 ## [0.20.1](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.0...phoxal-api-v0.20.1) - 2026-07-11
 
 ### Other
