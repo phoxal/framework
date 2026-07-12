@@ -10,8 +10,8 @@ repository = "https://github.com/phoxal/framework"
 
 [workspace]
 resolver = "3"
-# Greenfield rewrite (tmp/framework-rewrite): the engine crate + its proc-macros,
-# plus the official services and catalog component crates on the new authoring
+# The engine crate and its proc-macros, plus the official services and catalog
+# component crates on the current authoring
 # surface (component/<name> also carries the component definition: component.yaml,
 # structure.urdf, simulation.yaml).
 members = [
@@ -24,6 +24,7 @@ members = [
     "component/oak_d_lite",
     "component/vl53l1x",
     "component/zed_f9p",
+    "examples/hello-rover/services/cruise",
     "service/asset",
     "service/battery",
     "service/drive",
@@ -62,6 +63,7 @@ default-members = [
     "component/oak_d_lite",
     "component/vl53l1x",
     "component/zed_f9p",
+    "examples/hello-rover/services/cruise",
     "service/asset",
     "service/battery",
     "service/drive",

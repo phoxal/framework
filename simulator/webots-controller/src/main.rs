@@ -3,9 +3,10 @@
 //! The per-robot substitution provider: binds one Webots controller process to
 //! a robot's component capabilities (motor, encoder, IMU, accelerometer,
 //! gyroscope, range, camera, depth, GNSS) and publishes/subscribes exactly the
-//! `component::*` contracts those capabilities need. This binary never touches
-//! the Webots Supervisor API and never publishes `simulation::*` topics - that
-//! is `phoxal-simulator-webots-supervisor`'s job (see `simulator/webots-supervisor`).
+//! `component::*` contracts those capabilities need. It observes the supervisor's
+//! full `simulation/clock` time for coherent sensor timestamps, but never publishes
+//! `simulation::*` topics. Clock authority stays with
+//! `phoxal-simulator-webots-supervisor` (see `simulator/webots-supervisor`).
 
 mod capabilities;
 
@@ -33,7 +34,6 @@ use capabilities::motor::{MotorSpec, NativeMotor};
 use capabilities::range::{NativeRange, RangeSpec};
 
 const STEP_HZ: f64 = 100.0;
-const DEFAULT_DT_NS: u64 = 10_000_000;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
 
@@ -58,6 +58,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
+    simulation_clock: Subscriber<api::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
     encoders: Vec<Publisher<api::component::encoder::Sample>>,
     imus: Vec<Publisher<api::component::imu::Sample>>,
@@ -71,9 +72,9 @@ struct Api {
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
 struct WebotsControllerSimulator {
+    authoritative_time: Option<LogicalTime>,
+    last_published_time: Option<LogicalTime>,
     step_index: u64,
-    time_ns: u64,
-    dt_ns: u64,
     backend: Backend,
     motor_specs: Vec<MotorSpec>,
 }
@@ -90,6 +91,9 @@ impl WebotsControllerSimulator {
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
+        let simulation_clock = ctx
+            .subscriber(api::topic::new().simulation().clock(), 4)
+            .await?;
 
         let mut motor_commands = Vec::new();
         for spec in &catalog.motors {
@@ -210,8 +214,6 @@ impl WebotsControllerSimulator {
         }
 
         let backend = Backend::open(&config, &catalog)?;
-        let dt_ns = backend.dt_ns();
-
         tracing::info!(
             target: "simulator_webots_controller",
             webots_runtime_linked = webots_rs::WEBOTS_RUNTIME_LINKED,
@@ -229,13 +231,14 @@ impl WebotsControllerSimulator {
 
         Ok((
             Self {
+                authoritative_time: None,
+                last_published_time: None,
                 step_index: 0,
-                time_ns: 0,
-                dt_ns,
                 backend,
                 motor_specs: catalog.motors,
             },
             Self::Api {
+                simulation_clock,
                 motor_commands,
                 encoders,
                 imus,
@@ -251,16 +254,21 @@ impl WebotsControllerSimulator {
 
     #[step(hz = 100)]
     async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
-        let now = LogicalTime::new(0, self.time_ns);
+        self.observe_authoritative_time(api);
         let commands = self.latest_motor_commands(api);
-        let outputs = self
-            .backend
-            .advance(self.step_index, self.time_ns, &commands)?;
-        self.time_ns = self.time_ns.saturating_add(self.dt_ns);
+        let time_ns = self.authoritative_time.map_or(0, |time| time.time_ns());
+        let outputs = self.backend.advance(self.step_index, time_ns, &commands)?;
         self.step_index = self.step_index.saturating_add(1);
-        let at = LogicalTime::new(0, self.time_ns);
-        self.publish_outputs(api, at, outputs).await?;
-        tracing::trace!(target: "simulator_webots_controller", time_ns = now.time_ns(), "controller step complete");
+
+        if let Some(at) = self.authoritative_time
+            && self.last_published_time.is_none_or(|last| at > last)
+        {
+            self.publish_outputs(api, at, outputs).await?;
+            self.last_published_time = Some(at);
+            tracing::trace!(target: "simulator_webots_controller", epoch = at.epoch(), time_ns = at.time_ns(), "controller step complete");
+        } else {
+            tracing::trace!(target: "simulator_webots_controller", "waiting for authoritative simulation clock advance");
+        }
         Ok(())
     }
 
@@ -284,6 +292,24 @@ impl WebotsControllerSimulator {
 }
 
 impl WebotsControllerSimulator {
+    fn observe_authoritative_time(&mut self, api: &Api) {
+        let mut latest = None;
+        while let Some(received) = api.simulation_clock.try_recv() {
+            latest = Some(LogicalTime::new(
+                received.metadata.epoch,
+                received.body.now_ns,
+            ));
+        }
+        if let Some(time) = latest {
+            let previous_epoch = self.authoritative_time.map(|current| current.epoch());
+            if advance_authoritative_time(&mut self.authoritative_time, time)
+                && previous_epoch != Some(time.epoch())
+            {
+                self.step_index = 0;
+            }
+        }
+    }
+
     fn latest_motor_commands(&self, api: &Api) -> Vec<Option<api::component::motor::Command>> {
         api.motor_commands.iter().map(drain_latest).collect()
     }
@@ -335,6 +361,15 @@ impl WebotsControllerSimulator {
             }
         }
         Ok(())
+    }
+}
+
+fn advance_authoritative_time(current: &mut Option<LogicalTime>, candidate: LogicalTime) -> bool {
+    if current.is_none_or(|time| candidate > time) {
+        *current = Some(candidate);
+        true
+    } else {
+        false
     }
 }
 
@@ -584,13 +619,6 @@ impl Backend {
         Ok(Self::Stub(StubBackend::new(catalog)))
     }
 
-    fn dt_ns(&self) -> u64 {
-        match self {
-            Self::Native(backend) => backend.dt_ns,
-            Self::Stub(backend) => backend.dt_ns,
-        }
-    }
-
     fn advance(
         &mut self,
         step_index: u64,
@@ -616,14 +644,12 @@ impl Backend {
 }
 
 struct StubBackend {
-    dt_ns: u64,
     counts: OutputCounts,
 }
 
 impl StubBackend {
     fn new(catalog: &CapabilityCatalog) -> Self {
         Self {
-            dt_ns: DEFAULT_DT_NS,
             counts: OutputCounts::from_catalog(catalog),
         }
     }
@@ -644,7 +670,6 @@ impl StubBackend {
 /// for the world/session authority half of the old monolith.
 struct NativeBackend {
     webots: webots_rs::Webots,
-    dt_ns: u64,
     step_ms: i32,
     motors: Vec<NativeMotor>,
     encoders: Vec<NativeEncoder>,
@@ -667,9 +692,6 @@ impl NativeBackend {
         if step_ms <= 0 {
             bail!("Webots basicTimeStep must be > 0");
         }
-        let dt_ns = u64::try_from(std::time::Duration::from_millis(step_ms as u64).as_nanos())
-            .unwrap_or(u64::MAX);
-
         let mut motors = Vec::new();
         let mut encoders = Vec::new();
         let mut imus = Vec::new();
@@ -710,7 +732,6 @@ impl NativeBackend {
 
         Ok(Self {
             webots,
-            dt_ns,
             step_ms,
             motors,
             encoders,
@@ -876,6 +897,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
+        mapping::<api::simulation::Clock>(ContractRole::Subscribe),
         mapping::<api::component::motor::Command>(ContractRole::Subscribe),
         mapping::<api::component::encoder::Sample>(ContractRole::Publish),
         mapping::<api::component::imu::Sample>(ContractRole::Publish),
@@ -902,7 +924,7 @@ mod tests {
     use phoxal::participant::{Participant, ParticipantApi};
 
     #[test]
-    fn api_declares_exactly_the_nine_component_contracts() {
+    fn api_declares_the_clock_input_and_nine_component_contracts() {
         assert_eq!(
             <WebotsControllerSimulator as Participant>::ID,
             "webots-controller"
@@ -923,7 +945,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             expected.len(),
-            "controller must emit exactly the 9 component contracts, got {contracts:?}"
+            "controller must declare one clock input and 9 component contracts, got {contracts:?}"
         );
         for mapping in &expected {
             assert!(
@@ -936,10 +958,16 @@ mod tests {
             );
         }
 
-        // Never leaks the supervisor's simulation::* contracts.
+        // The controller observes the clock but never takes simulation authority.
         assert!(
-            !contracts.iter().any(|c| c.topic.contains("/simulation/")),
-            "controller must not report simulation::* contracts: {contracts:?}"
+            contracts
+                .iter()
+                .filter(|c| c.topic.contains("/simulation/"))
+                .all(|c| {
+                    c.topic == api::simulation::Clock::TOPIC
+                        && c.role == phoxal::participant::ContractRole::Subscribe
+                }),
+            "controller may only subscribe to simulation/clock: {contracts:?}"
         );
     }
 
@@ -961,5 +989,33 @@ mod tests {
         let config: Option<WebotsControllerConfig> =
             serde_json::from_value(serde_json::json!({"require_native": false})).unwrap();
         assert!(!config.unwrap().require_native);
+    }
+
+    #[test]
+    fn authoritative_time_advances_within_an_epoch_and_across_reset() {
+        let mut current = None;
+
+        assert!(advance_authoritative_time(
+            &mut current,
+            LogicalTime::new(0, 10)
+        ));
+        assert_eq!(current, Some(LogicalTime::new(0, 10)));
+        assert!(!advance_authoritative_time(
+            &mut current,
+            LogicalTime::new(0, 5)
+        ));
+        assert!(!advance_authoritative_time(
+            &mut current,
+            LogicalTime::new(0, 10)
+        ));
+        assert!(advance_authoritative_time(
+            &mut current,
+            LogicalTime::new(0, 20)
+        ));
+        assert!(advance_authoritative_time(
+            &mut current,
+            LogicalTime::new(1, 0)
+        ));
+        assert_eq!(current, Some(LogicalTime::new(1, 0)));
     }
 }

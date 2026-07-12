@@ -62,3 +62,31 @@ jobs:
           -p phoxal-macros
           -p phoxal
           --lib
+
+  # Living authoring entry point: proves
+  # `examples/hello-rover` is not just checked-in text but a robot.yaml +
+  # user service that actually compiles, and that `examples/robot.schema.json`
+  # has not drifted from the `Robot` model.
+  #
+  # A full `phoxal-cli check` run against the example is intentionally NOT done
+  # here: it requires a sibling `phoxal-cli` checkout whose own dependency on
+  # `phoxal`/`phoxal-api` currently resolves from framework `main` via git, so a
+  # PR-branch CI cannot build a matched revision reliably (mismatched trait
+  # bounds). That end-to-end check belongs in an integration context once the
+  # framework is published and the CLI consumes released versions; see the
+  # schema/validation plan under `organization/tmp`. `ci`/`rust-ci.yml` above
+  # already builds/tests/lints `hello-rover-cruise` as an ordinary workspace
+  # default-member.
+  examples:
+    name: hello-rover example (schema guard + user service)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Compile the hello-rover example user service
+        run: cargo build -p hello-rover-cruise
+
+      - name: Run the robot.yaml schema drift guard
+        run: cargo test -p phoxal --lib schema_guard

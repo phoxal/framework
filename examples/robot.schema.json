@@ -1,0 +1,997 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Robot",
+  "description": "Version dispatcher for `robot.yaml`.\n\nOn the wire, manifests use `schema: robot/v0` for the manifest grammar.\nThe single-variant enum is the future-versioning seam: a second schema\ngeneration adds a sibling variant here without disturbing `v0::Robot`.",
+  "oneOf": [
+    {
+      "description": "Top-level `robot:` section - the robot model, and exactly what\n`ctx.robot()` exposes.",
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "description": "Framework-resolved packages: channel, generation ceiling, and the\nunified provider-qualified pins map. Optional; a day-0 robot may omit\nthis section entirely.",
+          "$ref": "#/$defs/Artifacts"
+        },
+        "bus": {
+          "description": "Bus wiring - listen endpoints and the optional uplink. Never robot\nmodel; participants never parse bus facts from `robot.yaml`.",
+          "$ref": "#/$defs/Bus"
+        },
+        "robot": {
+          "$ref": "#/$defs/RobotSection"
+        },
+        "schema": {
+          "type": "string",
+          "const": "robot/v0"
+        },
+        "services": {
+          "description": "User services: project-local source crates built by `phoxal-cli` for\nrun/sim/deploy. Official services are never declared here.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/UserService"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "robot"
+      ]
+    }
+  ],
+  "$defs": {
+    "ArtifactGitPin": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "description": "Optional subdirectory within the repository that holds the package.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git": {
+          "description": "Git repository URL.",
+          "type": "string"
+        },
+        "rev": {
+          "description": "Pinned revision (commit sha, tag, or branch).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "git",
+        "rev"
+      ]
+    },
+    "ArtifactPathPin": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Project-relative or overlay-relative source path for this package.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
+    "ArtifactPin": {
+      "description": "One `artifacts.pins` entry. Accepts a version string, a git reference, a\n`sha256:...` checksum string, or a local path override.",
+      "anyOf": [
+        {
+          "description": "Resolve this package from a local source checkout (dev-overlay-only).",
+          "$ref": "#/$defs/ArtifactPathPin"
+        },
+        {
+          "description": "Resolve this package from a git repository at a pinned revision.",
+          "$ref": "#/$defs/ArtifactGitPin"
+        },
+        {
+          "description": "Pin to an exact `sha256:...` checksum.",
+          "$ref": "#/$defs/Sha256Pin"
+        },
+        {
+          "description": "Pin to a `vX.Y.Z` / semver version string.",
+          "$ref": "#/$defs/VersionPin"
+        }
+      ]
+    },
+    "Artifacts": {
+      "description": "`artifacts:` (was `phoxal_artifacts`) - framework-resolved packages.\n\nThe whole section is optional; a day-0 robot can omit it entirely.",
+      "type": "object",
+      "properties": {
+        "channel": {
+          "description": "Release channel used when resolving official framework packages.",
+          "$ref": "#/$defs/Channel",
+          "default": "stable"
+        },
+        "generation": {
+          "description": "Optional API generation ceiling or pin for official package\nresolution.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pins": {
+          "description": "Unified fail-closed pin map keyed by provider-qualified package id\n(`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).\n\nKeys must have exactly one `/`, with a non-empty provider segment\nbefore it and a non-empty name segment after it; unqualified keys\n(`service-drive`, `driver-ddsm115`) are rejected. The CLI validates\nexistence in the resolved graph, dev-overlay-only path pins, and\nwhether each key is actually used; the model only validates key shape.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ArtifactPin"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Bus": {
+      "type": "object",
+      "properties": {
+        "listen": {
+          "description": "Router listen endpoints merged into the default localhost listen set.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "uplink": {
+          "description": "Optional upstream router connection used for deployed robots.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BusUplink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "BusMtlsAuth": {
+      "type": "object",
+      "properties": {
+        "ca": {
+          "description": "Project-local root CA certificate path used to verify the upstream router.",
+          "type": "string"
+        },
+        "cert": {
+          "description": "Project-local client certificate path identifying this robot/site.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Project-local client private-key path paired with `cert`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ca",
+        "cert",
+        "key"
+      ]
+    },
+    "BusRetry": {
+      "type": "object",
+      "properties": {
+        "initial_ms": {
+          "description": "Initial retry delay in milliseconds.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 1000,
+          "minimum": 0
+        },
+        "max_ms": {
+          "description": "Maximum retry delay in milliseconds.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 30000,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "BusUplink": {
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "Optional project-local mTLS material for the upstream connection.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BusMtlsAuth"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connect": {
+          "description": "Upstream Zenoh endpoint the site router should connect to.",
+          "type": "string"
+        },
+        "retry": {
+          "description": "Capped retry backoff; retry is forever and never gates readiness.",
+          "$ref": "#/$defs/BusRetry"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connect"
+      ]
+    },
+    "Channel": {
+      "type": "string",
+      "enum": [
+        "stable",
+        "preview"
+      ]
+    },
+    "Component": {
+      "type": "object",
+      "properties": {
+        "component": {
+          "type": "string"
+        },
+        "driver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DriverConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mount_link": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Parameters"
+          }
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Role"
+            }
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "mount_link"
+      ]
+    },
+    "ConnectionConfig": {
+      "description": "Connection configuration for executable drivers.",
+      "oneOf": [
+        {
+          "description": "CAN bus connection.",
+          "type": "object",
+          "properties": {
+            "bus": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "node_id": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "can"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "bus",
+            "node_id"
+          ]
+        },
+        {
+          "description": "I2C connection.",
+          "type": "object",
+          "properties": {
+            "address": {
+              "type": "integer",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "bus": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "i2c"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "bus",
+            "address"
+          ]
+        },
+        {
+          "description": "SPI connection.",
+          "type": "object",
+          "properties": {
+            "bus": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "chip_select": {
+              "type": "integer",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "spi"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "bus",
+            "chip_select"
+          ]
+        },
+        {
+          "description": "Serial port connection (RS-232/RS-485).",
+          "type": "object",
+          "properties": {
+            "baud": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "port": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "serial"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "port",
+            "baud"
+          ]
+        },
+        {
+          "description": "UART connection (distinct from Serial for hardware-specific drivers).",
+          "type": "object",
+          "properties": {
+            "baud_rate": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "port": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "uart"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "port",
+            "baud_rate"
+          ]
+        },
+        {
+          "description": "USB connection.",
+          "type": "object",
+          "properties": {
+            "product_id": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "usb"
+            },
+            "vendor_id": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "GPIO pins.",
+          "type": "object",
+          "properties": {
+            "chip": {
+              "type": "string"
+            },
+            "pins": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GpioPinConfig"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "gpio"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "chip",
+            "pins"
+          ]
+        }
+      ]
+    },
+    "DriverConfig": {
+      "type": "object",
+      "properties": {
+        "connection": {
+          "$ref": "#/$defs/ConnectionConfig"
+        },
+        "runtime_clock_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "default": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "connection"
+      ]
+    },
+    "GpioDirection": {
+      "type": "string",
+      "enum": [
+        "input",
+        "output"
+      ]
+    },
+    "GpioPinConfig": {
+      "type": "object",
+      "properties": {
+        "active_low": {
+          "type": "boolean",
+          "default": false
+        },
+        "direction": {
+          "$ref": "#/$defs/GpioDirection"
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "line",
+        "direction"
+      ]
+    },
+    "KinematicConfig": {
+      "description": "The robot's kinematic model - a direct field of `robot:` (was\n`motion.kinematic`; the `motion:` wrapper is gone).\n\nEvery `CapabilityRef` field carries a test-only\n`#[schemars(with = \"String\")]` override: `CapabilityRef` lives in\n`crate::model::component::v0` (out of this module's schema-derive scope)\nand serializes as a plain `\"<component>.<capability>\"` string\n(`#[serde(try_from = \"String\", into = \"String\")]`), so treating it as\n`String` in the generated JSON Schema is exact, not an approximation.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "differential"
+            },
+            "left_actuators": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "left_encoders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "right_actuators": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "right_encoders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "wheel_base_m": {
+              "type": "number",
+              "format": "double"
+            },
+            "wheel_radius_m": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "left_actuators",
+            "right_actuators",
+            "left_encoders",
+            "right_encoders",
+            "wheel_radius_m",
+            "wheel_base_m"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "front_left_actuator": {
+              "type": "string"
+            },
+            "front_right_actuator": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "mecanum"
+            },
+            "rear_left_actuator": {
+              "type": "string"
+            },
+            "rear_right_actuator": {
+              "type": "string"
+            },
+            "track_m": {
+              "type": "number",
+              "format": "double"
+            },
+            "wheel_base_m": {
+              "type": "number",
+              "format": "double"
+            },
+            "wheel_radius_m": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "front_left_actuator",
+            "front_right_actuator",
+            "rear_left_actuator",
+            "rear_right_actuator",
+            "wheel_radius_m",
+            "wheel_base_m",
+            "track_m"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "drive_actuator": {
+              "type": "string"
+            },
+            "drive_encoder": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "ackermann"
+            },
+            "max_steering_angle_rad": {
+              "type": "number",
+              "format": "double"
+            },
+            "steering_actuator": {
+              "type": "string"
+            },
+            "steering_encoder": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "track_m": {
+              "type": "number",
+              "format": "double"
+            },
+            "wheel_base_m": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "steering_actuator",
+            "drive_actuator",
+            "wheel_base_m",
+            "track_m",
+            "max_steering_angle_rad"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "actuators": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "encoders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "omnidirectional"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "actuators",
+            "encoders"
+          ]
+        }
+      ]
+    },
+    "Parameters": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "direction_sign": {
+              "type": "integer",
+              "format": "int8",
+              "default": 1,
+              "maximum": 127,
+              "minimum": -128
+            },
+            "kind": {
+              "type": "string",
+              "const": "motor"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction_sign": {
+              "type": "integer",
+              "format": "int8",
+              "default": 1,
+              "maximum": 127,
+              "minimum": -128
+            },
+            "kind": {
+              "type": "string",
+              "const": "encoder"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "accelerometer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "gyroscope"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "magnetometer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "imu"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "gnss"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "camera"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "depth"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "range"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lidar"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "mmwave"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "microphone"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "speaker"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "battery"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "led"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "emergency_stop"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "RobotSection": {
+      "description": "`robot:` - the robot model: identity, structure, kinematic, and\ncomponents.",
+      "type": "object",
+      "properties": {
+        "components": {
+          "description": "Component instance map: instance-id -> instance (was\n`components.instances`; `components.sources` no longer exists -\nofficial components resolve from the catalog, forks are\n`artifacts.pins` entries).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Component"
+          }
+        },
+        "id": {
+          "description": "The robot id (was `identity.id`).",
+          "type": "string"
+        },
+        "kinematic": {
+          "description": "The kinematic model (was `motion.kinematic`; the `motion:` wrapper is\ngone - `kinematic` is a direct field of `robot:`).",
+          "$ref": "#/$defs/KinematicConfig"
+        },
+        "namespace": {
+          "description": "The bus namespace (was `identity.namespace`).",
+          "type": "string"
+        },
+        "structure": {
+          "description": "Path to the URDF structure file, relative to the robot root.",
+          "type": "string",
+          "default": "structure.urdf"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "namespace",
+        "kinematic"
+      ]
+    },
+    "Role": {
+      "type": "string",
+      "enum": [
+        "localization",
+        "mapping",
+        "traversability",
+        "safety",
+        "odometry",
+        "perception"
+      ]
+    },
+    "Sha256Pin": {
+      "type": "string",
+      "pattern": "^sha256:.+$"
+    },
+    "UserService": {
+      "description": "`services:` (was `user_participants` / `user_services`, and the separate\n`tools` map) - user services only; official services are framework\npackages pinned via `artifacts.pins`, never declared here.",
+      "type": "object",
+      "properties": {
+        "config": {
+          "description": "First-class typed config block, read by the service as `Self::Config`."
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
+    "VersionPin": {
+      "type": "string",
+      "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+artifacts:
+  pins:
+    # wheel_drive is a hello-rover-local component (no official catalog
+    # package); pin its assets to the in-repo directory so simulate can
+    # stage its model. Base robot.yaml stays fail-closed for `{ path: ... }`
+    # pins, so this dev overlay is what makes the local component usable
+    # (load it with `--env dev`).
+    phoxal/component-wheel_drive:
+      path: ./components/wheel_drive

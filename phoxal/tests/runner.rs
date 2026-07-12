@@ -24,6 +24,7 @@
 //! - `#[shutdown]` publishes through `&mut Self::Api` one last time, observed
 //!   by the companion `Latest` after the runner returns.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -41,6 +42,7 @@ static COUNTER_STEPS: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 static SIM_CLOCK_STEPS: AtomicU64 = AtomicU64::new(0);
+static SIM_CLOCK_CONTEXTS: Mutex<Vec<(LogicalTime, u64)>> = Mutex::new(Vec::new());
 
 /// A fresh in-process namespace per test invocation, so concurrently-run
 /// `#[tokio::test]`s never share a Zenoh in-process session (mirrors
@@ -576,6 +578,17 @@ impl IdlePresence {
     }
 }
 
+#[phoxal::service(id = "setup-failure", config = (), api = ())]
+struct SetupFailure;
+
+#[phoxal::behavior]
+impl SetupFailure {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Err(anyhow::anyhow!("intentional setup failure"))
+    }
+}
+
 #[phoxal::service(id = "slow-shutdown", config = (), api = ())]
 struct SlowShutdown;
 
@@ -600,19 +613,43 @@ impl SlowShutdown {
 /// Acceptance fixture (P6-3): a `#[step]` participant with no other IO, used
 /// to prove `#[step]` ticks under `ClockMode::Simulation` release only as the
 /// live `simulation/clock` feed advances (see `simulation_mode_step_advances_only_with_the_clock_feed`).
-#[phoxal::service(id = "sim-clock-stepper", config = (), api = ())]
+#[derive(phoxal::Api)]
+struct SimClockApi {
+    target: Publisher<api::drive::Target>,
+}
+
+#[phoxal::service(id = "sim-clock-stepper", config = (), api = SimClockApi)]
 struct SimClockStepper;
 
 #[phoxal::behavior]
 impl SimClockStepper {
     #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        Ok((Self, ()))
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((
+            Self,
+            Self::Api {
+                target: ctx.publisher(api::topic::new().drive().target()).await?,
+            },
+        ))
     }
 
     #[step(hz = 1000)]
-    async fn step(&mut self, _api: &mut Self::Api, _step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        SIM_CLOCK_CONTEXTS
+            .lock()
+            .expect("simulation context log poisoned")
+            .push((step.time(), step.step_index()));
         SIM_CLOCK_STEPS.fetch_add(1, Ordering::Relaxed);
+        api.target
+            .publish_at(
+                step.time(),
+                api::drive::Target {
+                    linear_x_mps: 0.0,
+                    angular_z_radps: 0.0,
+                    curvature_limit_radpm: None,
+                },
+            )
+            .await?;
         Ok(())
     }
 }
@@ -749,6 +786,53 @@ async fn runner_publishes_presence_heartbeats_from_idle_loop() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simulation_setup_failure_heartbeats_use_simulation_time() {
+    let participant_id = "setup-failure-1";
+    let namespace = unique_namespace("simulation-failed-heartbeat");
+    let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
+    bus_config.participant = participant_id.to_string();
+    let bus = Bus::open(bus_config).await.expect("bus should open");
+    let heartbeat_topic = api::topic::internal::new(OwnerCap::__mint())
+        .presence()
+        .heartbeat();
+    let heartbeats = Subscriber::<api::presence::Heartbeat>::new(&bus, &heartbeat_topic, 8)
+        .await
+        .expect("heartbeat subscriber should attach");
+
+    let mut launch = ParticipantLaunch::local(participant_id, "robot");
+    launch.namespace = namespace;
+    launch.clock = ClockMode::Simulation;
+    let injected_clock = TestClock::new();
+    injected_clock.advance(Duration::from_secs(123));
+
+    let error = run_with_bus::<SetupFailure, _, _>(&bus, launch, injected_clock, async {})
+        .await
+        .expect_err("setup should fail");
+    assert!(error.to_string().contains("intentional setup failure"));
+
+    let mut observed = Vec::new();
+    while observed.len() < 2 {
+        let received = tokio::time::timeout(Duration::from_secs(2), heartbeats.recv())
+            .await
+            .expect("heartbeat should arrive")
+            .expect("heartbeat should decode");
+        if received.body.participant == participant_id {
+            observed.push((received.body.readiness, received.metadata.produced_at_ns));
+        }
+    }
+    bus.close().await.expect("bus should close");
+
+    assert_eq!(
+        observed,
+        vec![
+            (api::presence::Readiness::Initializing, 0),
+            (api::presence::Readiness::Failed, 0),
+        ],
+        "both lifecycle heartbeats must use the simulation clock seed, not the injected 123-second clock"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_shutdown_hook_is_bounded_by_grace() {
     let mut launch = ParticipantLaunch::local("slow-shutdown-1", "robot");
     launch.shutdown_grace_ms = 100;
@@ -799,6 +883,10 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     SIM_CLOCK_STEPS.store(0, Ordering::Relaxed);
+    SIM_CLOCK_CONTEXTS
+        .lock()
+        .expect("simulation context log poisoned")
+        .clear();
 
     let namespace = unique_namespace("sim-clock-feed");
     let bus_config = BusConfig::in_process(namespace.clone(), "robot");
@@ -815,18 +903,26 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             .clock(),
     )
     .expect("clock publisher should attach");
+    let target_subscriber = Subscriber::<api::drive::Target>::new(
+        &bus,
+        &api::topic::internal::new(OwnerCap::__mint())
+            .drive()
+            .target(),
+        16,
+    )
+    .await
+    .expect("target subscriber should attach");
 
     let mut launch = ParticipantLaunch::local("sim-clock-stepper-1", "robot");
     launch.namespace = namespace;
     launch.clock = ClockMode::Simulation;
 
     let period_ns = 1_000_000; // 1ms period at the participant's 1000 Hz schedule.
-    // A `TestClock` starts at logical `(epoch 0, time_ns 0)` (unlike `RealClock`,
-    // which stamps host-wide Unix time) so the scheduler's `start` lines up with
-    // the small `LogicalTime` values this test publishes below - the point being
-    // tested is the scheduler tracking the *feed*, not this clock's role (which
-    // only stamps `StepContext`/`produced_at_ns`, untouched by this slice).
-    let runner = run_with_bus::<SimClockStepper, _, _>(&bus, launch, TestClock::new(), async {
+    // Deliberately move the injected clock far away from the feed. Simulation
+    // mode must ignore it for StepContext and publication timestamps.
+    let injected_clock = TestClock::new();
+    injected_clock.advance(Duration::from_secs(123));
+    let runner = run_with_bus::<SimClockStepper, _, _>(&bus, launch, injected_clock, async {
         // No steps should have released yet: the feed has not published a
         // single sample, so the scheduler's logical time has never left
         // `start`.
@@ -867,6 +963,12 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 step,
                 "exactly one step should have released per clock advance, no more"
             );
+            let published = tokio::time::timeout(Duration::from_secs(2), target_subscriber.recv())
+                .await
+                .expect("step publication should arrive")
+                .expect("step publication should decode");
+            assert_eq!(published.metadata.epoch, at.epoch());
+            assert_eq!(published.metadata.produced_at_ns, at.time_ns());
         }
 
         // Pause: even though the next sample's envelope logical time DOES
@@ -888,6 +990,50 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             5,
             "a paused (running=false) sample must not release a step even though logical time advanced"
         );
+
+        // Reset to a new epoch at time zero. The old epoch's pending target
+        // must be discarded without releasing a step or spinning the loop.
+        let reset_at = LogicalTime::new(1, 0);
+        clock_publisher
+            .publish_at(
+                reset_at,
+                api::simulation::Clock {
+                    now_ns: 0,
+                    running: true,
+                },
+            )
+            .await
+            .expect("reset clock sample should publish");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+            5,
+            "an epoch reset must rebase the target without releasing or spinning"
+        );
+
+        let first_after_reset = LogicalTime::new(1, period_ns);
+        clock_publisher
+            .publish_at(
+                first_after_reset,
+                api::simulation::Clock {
+                    now_ns: period_ns,
+                    running: true,
+                },
+            )
+            .await
+            .expect("first post-reset clock sample should publish");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while SIM_CLOCK_STEPS.load(Ordering::Relaxed) < 6 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "first post-reset step did not release"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let contexts = SIM_CLOCK_CONTEXTS
+            .lock()
+            .expect("simulation context log poisoned");
+        assert_eq!(contexts.last(), Some(&(first_after_reset, 0)));
     });
 
     tokio::time::timeout(Duration::from_secs(10), runner)
@@ -898,7 +1044,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
 
     assert_eq!(
         SIM_CLOCK_STEPS.load(Ordering::Relaxed),
-        5,
+        6,
         "shutdown must not have released any further steps"
     );
 }

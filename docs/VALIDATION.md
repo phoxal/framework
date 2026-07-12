@@ -20,16 +20,16 @@ workspace is converging to, not all wired up yet.
    (`Config::from_robot(&Robot)`).
    Identical inputs produce identical facts.
    There is no generated per-service config file, deploy descriptor, or Phoxal
-   lockfile in this workspace. Runtime compatibility is checked live from the
-   resolved contracts: each body carries a `schema_id`, mirrored in the Zenoh
-   encoding string and `BusMetadata`, so peers reject mismatched wire shapes
-   before decoding.
+   lockfile in this workspace. Runtime compatibility is checked by construction:
+   each contract's generation is folded into its Zenoh key, so two participants
+   interoperate on a contract iff they use the exact same version-qualified name
+   - there is no wire-shape hash to agree on.
 3. **Contract.** The api tree carries golden + drift tests
    ([`phoxal-api/src/tests.rs`](../phoxal-api/src/tests.rs), see
    [CONTRACTS.md](./CONTRACTS.md)): the **plain** MessagePack body bytes are pinned
    (no `{"v":…,"data":…}` wrapper - the body is just the struct's fields), each
-   body's `ContractBody` consts (`FAMILY`/`TOPIC`/`SCHEMA_ID`) and its `Api::ID`
-   are asserted, topic keys + family ids are pinned, the encoding string +
+   body's `ContractBody` consts (`NAME`/`GENERATION`/`CONTRACT`/`TOPIC`) and its
+   `Api::ID` are asserted, topic keys are pinned, the encoding string +
    `BusMetadata` shape is pinned, query responses are typed bodies/enums, reasons
    are closed-set typed enums, and bodies carry no generic produce-time field.
 4. **Backend.** Replaceable service backends (notably localization) prove state
@@ -48,7 +48,7 @@ workspace is converging to, not all wired up yet.
    + `runtime::test::Harness`), discovery/orchestration belongs to `phoxal-cli`,
    and live-sim scenarios belong to the Webots tooling.
    The autonomy-profile model already names a scenario-coverage set per profile
-   ([`phoxal/src/model/robot/v1/profile.rs`](../phoxal/src/model/robot/v1/profile.rs));
+   ([`phoxal/src/model/robot/v0/profile.rs`](../phoxal/src/model/robot/v0/profile.rs));
    the harness that runs them is not yet built in this crate.
 
 ## Scenario surfaces

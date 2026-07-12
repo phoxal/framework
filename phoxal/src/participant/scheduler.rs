@@ -168,19 +168,13 @@ impl StepScheduler for RealScheduler {
 ///
 /// # The live seam
 ///
-/// In a real distributed simulation the `Simulator` kind is the sole
-/// authoritative owner of the `simulation/clock` state topic (decisions.md D1;
-/// see `tmp/framework-rewrite/follow-ups/15-service-driver-split.md`); a
-/// running participant would subscribe that topic and forward each observed
-/// `LogicalTime` into this scheduler via [`SimulationClockHandle::advance`].
-/// That bus subscription is a live-Webots-in-the-loop integration (needs a
-/// running sim, like deploy's hardware E2E) and is explicitly **out of scope**
-/// for this slice - what ships here is the scheduler side of that seam:
-/// anything that can produce a `LogicalTime` (a bus subscription task, a test,
-/// a REPL) drives this scheduler through the same
-/// [`SimulationClockHandle`], so wiring the live feed later is "subscribe
-/// `simulation/clock`, call `.advance(sample.time)` per sample" with no
-/// change to this type.
+/// The Webots supervisor is the authoritative owner of the
+/// `simulation/clock` state topic.
+/// In simulation mode the participant runner subscribes that topic through
+/// `spawn_simulation_clock_feed` and forwards each observed `LogicalTime` into
+/// this scheduler through [`SimulationClockHandle::advance`].
+/// Tests drive the same handle directly, so live and deterministic test paths
+/// share the scheduler boundary.
 ///
 /// # Determinism
 ///
@@ -278,6 +272,14 @@ impl SimulationScheduler {
         };
         let handle = SimulationClockHandle { tx, paused };
         (scheduler, handle)
+    }
+
+    /// A [`SimulationClock`](crate::participant::clock::SimulationClock) that
+    /// observes the same logical-time feed this scheduler releases ticks from.
+    /// The runner uses it as the timestamp source in simulation mode so
+    /// `#[step]` release time and stamped `produced_at_ns` never diverge.
+    pub(crate) fn simulation_clock(&self) -> crate::participant::clock::SimulationClock {
+        crate::participant::clock::SimulationClock::from_receiver(self.rx.clone())
     }
 
     fn is_paused(&self) -> bool {

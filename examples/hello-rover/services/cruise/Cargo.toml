@@ -1,0 +1,21 @@
+[package]
+name = "hello-rover-cruise"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "hello-rover example: a user service that cruises forward while safety authorizes it."
+
+[[bin]]
+name = "hello-rover-cruise"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+
+[lints]
+workspace = true

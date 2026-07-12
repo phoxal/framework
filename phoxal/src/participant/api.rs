@@ -58,11 +58,11 @@ use phoxal_bus::Bus;
 /// uses to build a **resolved, version-qualified** contract fragment that the
 /// participant attribute embeds in its linker-section metadata static.
 ///
-/// The problem this solves: every participant writes
-/// `use phoxal_api::y2026_1 as api;`, so a macro-time string literal of a
-/// field's body type as written (`api::drive::Target`) has the generation
-/// erased - it cannot tell a `y2026_1` contract from a same-named `y2026_7`
-/// one. The generation-qualified identity *is* available, but only as
+/// The problem this solves: a participant may alias a generation module, so a
+/// macro-time string literal of a field's body type as written
+/// (`api::drive::Target`) can have the generation erased and cannot distinguish
+/// a `y2026_1` contract from a same-named `y2026_7` one.
+/// The generation-qualified identity *is* available, but only as
 /// `<Body as ContractBody>::NAME` (`phoxal-bus/src/contract.rs`), an
 /// associated const on a foreign type the proc-macro cannot evaluate at
 /// expansion time - only `rustc`, during the downstream participant crate's

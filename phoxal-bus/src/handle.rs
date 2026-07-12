@@ -1,4 +1,4 @@
-//! Body-typed handles over the `bus_abi` boundary (D35).
+//! Body-typed handles over the generation-qualified bus boundary (D35).
 //!
 //! - [`Publisher<B>`] - MessagePack-encodes the plain body and enqueues it on the
 //!   non-blocking outbound queue (a publish never blocks the step loop).
