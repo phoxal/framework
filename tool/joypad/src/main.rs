@@ -140,6 +140,7 @@ async fn run_joypad(
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "connect subscription failed");
+                        return;
                     }
                 }
             }
@@ -155,6 +156,7 @@ async fn run_joypad(
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "rescan subscription failed");
+                        return;
                     }
                 }
             }

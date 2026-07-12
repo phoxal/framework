@@ -684,7 +684,7 @@ impl WorldSimulator {
     }
 }
 
-#[phoxal::tool(id = "robot-inspector", config = ())]
+#[phoxal::tool(id = "robot-inspector")]
 struct RobotInspector;
 
 #[phoxal::behavior]
@@ -694,6 +694,47 @@ impl RobotInspector {
         let _ = ctx.robot();
         Ok((Self, ()))
     }
+}
+
+#[derive(serde::Deserialize, phoxal::Config)]
+struct ConfiguredInspectorConfig {
+    label: String,
+}
+
+#[phoxal::tool(id = "configured-inspector", config = ConfiguredInspectorConfig)]
+struct ConfiguredInspector;
+
+#[phoxal::behavior]
+impl ConfiguredInspector {
+    #[setup]
+    async fn setup(
+        _ctx: &mut SetupContext<Self>,
+        config: Self::Config,
+    ) -> Result<(Self, Self::Api)> {
+        let _ = config.label;
+        Ok((Self, ()))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configless_tool_accepts_absent_config_but_configured_tool_rejects_it() {
+    let configless = ParticipantLaunch::local("robot-inspector", "robot");
+    phoxal::participant::run_with::<RobotInspector, _, _>(configless, RealClock::new(), async {})
+        .await
+        .expect("a tool with omitted config type should accept absent PHOXAL_CONFIG");
+
+    let configured = ParticipantLaunch::local("configured-inspector", "robot");
+    let error = phoxal::participant::run_with::<ConfiguredInspector, _, _>(
+        configured,
+        RealClock::new(),
+        async {},
+    )
+    .await
+    .expect_err("a tool with an explicit non-optional config should require PHOXAL_CONFIG");
+    assert!(
+        error.to_string().contains("invalid type: null"),
+        "unexpected absent-config error: {error:#}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

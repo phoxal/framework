@@ -237,8 +237,11 @@ pub fn simulator(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
-/// The tool-shaped counterpart to [`service`]. `Api` defaults to `()` - tools
-/// stay raw-bus only (decided 2026-07-09).
+/// The tool-shaped counterpart to [`service`]. `Api` and `Config` default to
+/// `()` - tools stay raw-bus only (decided 2026-07-09), and a configless tool
+/// can launch without `PHOXAL_CONFIG`. An explicit `config = Type` remains
+/// required at launch unless that type itself accepts `null` (for example,
+/// `Option<T>`).
 #[proc_macro_attribute]
 pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     authoring::expand_participant(attr.into(), item.into(), authoring::ParticipantKind::Tool)

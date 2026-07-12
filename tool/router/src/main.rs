@@ -208,10 +208,17 @@ async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Sessi
         async move {
             let mut ticker = tokio::time::interval(METRICS_WINDOW);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Tokio intervals yield their first tick immediately. Consume that
+            // bootstrap tick so the first published snapshot covers a real
+            // window instead of reporting a near-zero interval as one second.
+            ticker.tick().await;
+            let mut window_started = tokio::time::Instant::now();
             loop {
                 ticker.tick().await;
+                let window_ended = tokio::time::Instant::now();
                 let samples = drain_window(&publish_counters);
-                let metrics = build_metrics(&samples, METRICS_WINDOW);
+                let metrics = build_metrics(&samples, window_ended.duration_since(window_started));
+                window_started = window_ended;
                 if let Err(error) = metrics_publisher.publish_at(now(), metrics).await {
                     tracing::warn!(target: "tool_router", error = %error, "router metrics publish failed");
                 }
@@ -240,8 +247,8 @@ fn participant_from_attachment(sample: &zenoh::sample::Sample) -> Option<String>
 fn record_sample(counters: &IngressCounters, topic: String, from_participant: Option<String>) {
     let mut guard = counters.lock().expect("ingress counters mutex poisoned");
     let entry = guard.entry(topic).or_default();
-    entry.cumulative += 1;
-    entry.window += 1;
+    entry.cumulative = entry.cumulative.saturating_add(1);
+    entry.window = entry.window.saturating_add(1);
     if let Some(participant) = from_participant {
         entry.from_participant = participant;
     }
@@ -288,6 +295,7 @@ fn build_metrics(samples: &[TopicWindowSample], window: Duration) -> api9::route
             count: sample.cumulative_count,
         });
     }
+    topics.sort_by(|left, right| left.topic.cmp(&right.topic));
     api9::router::Metrics {
         topics,
         throughput_msg_s,
@@ -534,13 +542,13 @@ mod tests {
     fn build_metrics_sums_throughput_across_topics() {
         let samples = vec![
             TopicWindowSample {
-                topic: "a".to_string(),
+                topic: "b".to_string(),
                 from_participant: String::new(),
                 window_count: 4,
                 cumulative_count: 4,
             },
             TopicWindowSample {
-                topic: "b".to_string(),
+                topic: "a".to_string(),
                 from_participant: String::new(),
                 window_count: 6,
                 cumulative_count: 6,
@@ -548,6 +556,8 @@ mod tests {
         ];
         let metrics = build_metrics(&samples, Duration::from_secs(1));
         assert_eq!(metrics.throughput_msg_s, 10.0);
+        assert_eq!(metrics.topics[0].topic, "a");
+        assert_eq!(metrics.topics[1].topic, "b");
     }
 
     #[test]
