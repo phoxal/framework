@@ -6,7 +6,8 @@
 //! `component::*` contracts those capabilities need. It observes the
 //! supervisor's full `simulation/clock` time for coherent sensor timestamps,
 //! but never publishes `simulation::*` topics. Clock authority stays with
-//! `phoxal-simulator-webots-supervisor` (see `simulator/webots-supervisor`).
+//! `phoxal-simulator-webots-supervisor` (see
+//! `simulator/webots-supervisor`).
 
 mod capabilities;
 

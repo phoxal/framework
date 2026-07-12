@@ -312,7 +312,7 @@ jobs:
   assets:
     name: package target-independent assets
     needs: release
-    if: needs.release.outputs.released == 'true'
+    if: needs.release.outputs.released == 'true' && needs.release.outputs.assets != '[]'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -355,7 +355,11 @@ jobs:
       - release
       - build
       - assets
-    if: needs.release.outputs.released == 'true'
+    if: >-
+      always() &&
+      needs.release.outputs.released == 'true' &&
+      needs.build.result == 'success' &&
+      (needs.assets.result == 'success' || needs.assets.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
