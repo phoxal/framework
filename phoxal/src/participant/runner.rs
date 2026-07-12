@@ -69,7 +69,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::bus::{LogicalTime, QueryFailure, Subscriber};
@@ -317,10 +317,6 @@ where
 
     let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), launch.participant_id.clone());
     heartbeat.publish(effective_clock.now());
-    // Separate from the heartbeat publisher above on purpose (D-telemetry):
-    // its own timer, its own publisher, so a slow `sysinfo` sample can never
-    // delay the liveness beacon.
-    let mut process_metrics = ProcessMetricsPublisher::attach(bus.clone());
 
     let result = run_lifecycle_inner::<R, C, S>(
         bus,
@@ -330,7 +326,6 @@ where
         schedule,
         shutdown,
         &mut heartbeat,
-        &mut process_metrics,
     )
     .await;
     if result.is_err() {
@@ -375,7 +370,6 @@ async fn run_lifecycle_inner<R, C, S>(
     schedule: Option<StepSchedule>,
     shutdown: S,
     heartbeat: &mut HeartbeatPublisher,
-    process_metrics: &mut ProcessMetricsPublisher,
 ) -> crate::Result<()>
 where
     R: ParticipantLifecycle,
@@ -476,6 +470,16 @@ where
         }));
     }
 
+    // Per-participant process telemetry (D-telemetry): the `sysinfo` sampling
+    // runs entirely on a dedicated background task (its own timer,
+    // `spawn_blocking` refresh), so a resource sample can never delay the
+    // heartbeat or step loop. The lifecycle loop only publishes the
+    // already-computed sample it receives over the watch channel. The sampler
+    // task is aborted at shutdown alongside the server tasks.
+    let process_metrics = ProcessMetricsPublisher::attach(bus.clone());
+    let (mut process_metrics_rx, process_metrics_task) = process_metrics::spawn_sampler();
+    server_tasks.push(process_metrics_task);
+
     let shutdown = pin!(shutdown);
     heartbeat.set_readiness(api::presence::Readiness::Ready);
     heartbeat.publish(clock.now());
@@ -493,7 +497,8 @@ where
         &mut excl_rx,
         shutdown,
         heartbeat,
-        process_metrics,
+        &process_metrics,
+        &mut process_metrics_rx,
         &watchdog,
         &mut managed_tasks,
     )
@@ -583,7 +588,8 @@ async fn main_loop<R, C, S>(
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
     heartbeat: &mut HeartbeatPublisher,
-    process_metrics: &mut ProcessMetricsPublisher,
+    process_metrics: &ProcessMetricsPublisher,
+    process_metrics_rx: &mut watch::Receiver<Option<y2026_9::telemetry::Process>>,
     watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
@@ -602,21 +608,19 @@ where
         advance_logical_deadline(now, period, 0)
     });
     let mut next_heartbeat = tokio::time::Instant::now();
-    // Own timer, deliberately separate from `next_heartbeat`: process-metrics
-    // sampling must never be able to delay the heartbeat tick above (D-telemetry).
-    let mut next_process_metrics = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
             // Order matters: shutdown first, then a managed-task fault (both are
             // "stop the loop" events and should preempt routine work), then the
             // framework health tick, then a *due* step, then server queries, then
-            // the lowest-priority background process-metrics sample last (best-
-            // effort diagnostic telemetry - never allowed to preempt anything
-            // above it). Health is cheap and must not be starved by an overloaded
-            // participant; due steps still take priority over a steady query
-            // backlog. `Some(..)` disables the query branch if the channel ever
-            // closes, so it never busy-loops.
+            // the lowest-priority process-metrics publish last (a background task
+            // does the sampling; this branch only enqueues the already-computed
+            // sample, never allowed to preempt anything above it). Health is
+            // cheap and must not be starved by an overloaded participant; due
+            // steps still take priority over a steady query backlog. `Some(..)`
+            // disables the query branch if the channel ever closes, so it never
+            // busy-loops.
             biased;
             _ = &mut shutdown => return None,
             exit = managed_tasks.next_unexpected_exit() => {
@@ -676,9 +680,16 @@ where
                 }
                 watchdog.feed();
             }
-            _ = process_metrics_tick(next_process_metrics) => {
-                process_metrics.sample_and_publish(clock.now());
-                advance_deadline(&mut next_process_metrics, process_metrics::PROCESS_METRICS_INTERVAL);
+            // A fresh sample landed from the background sampler; publish the
+            // latest (this is a `state` contract, so latest wins). Once the
+            // sampler task ends (only at shutdown, or if it faults) `changed()`
+            // errors and this branch simply stops firing - no busy-loop, the
+            // loop keeps parking on the heartbeat tick above.
+            Ok(()) = process_metrics_rx.changed() => {
+                let sample = process_metrics_rx.borrow_and_update().clone();
+                if let Some(body) = sample {
+                    process_metrics.publish(clock.now(), body);
+                }
             }
         }
     }
@@ -700,14 +711,6 @@ pub(crate) fn advance_logical_deadline(
 }
 
 pub(crate) async fn heartbeat_tick(next: tokio::time::Instant) {
-    tokio::time::sleep_until(next).await;
-}
-
-/// Same shape as [`heartbeat_tick`], on its own deadline (D-telemetry): kept
-/// as a distinct function/timer pair rather than reusing `heartbeat_tick` so
-/// the two cadences can never be accidentally coupled by sharing one deadline
-/// variable.
-pub(crate) async fn process_metrics_tick(next: tokio::time::Instant) {
     tokio::time::sleep_until(next).await;
 }
 

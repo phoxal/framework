@@ -488,6 +488,36 @@ fn y2026_9_bodies_round_trip_through_messagepack() {
 }
 
 #[test]
+fn y2026_9_telemetry_process_rejects_malformed_payloads() {
+    // `round_trip` only proves encode+decode are self-consistent - both drift
+    // together and it still passes. This asserts the decode side actually
+    // validates the wire bytes, so a corrupt/wrong-shape payload is surfaced as
+    // an error rather than silently accepted (the same guarantee the bus
+    // subscription path relies on; see the engine-side
+    // `y2026_9_process_subscription_counts_decode_errors` for the counted,
+    // through-a-subscription version).
+
+    // Corrupt MessagePack: 0xc1 is the format's never-used marker byte.
+    let corrupt = [0xc1u8, 0xc1, 0xc1];
+    assert!(
+        rmp_serde::from_slice::<y2026_9::telemetry::Process>(&corrupt).is_err(),
+        "corrupt MessagePack must not decode as telemetry::Process"
+    );
+
+    // Valid MessagePack of the WRONG shape: a sibling y2026_9 body whose named
+    // fields do not satisfy `Process { cpu_pct, rss_bytes, window_ns }`. It must
+    // be rejected, not coerced.
+    let wrong_shape = rmp_serde::to_vec_named(&y2026_9::joypad::Connect {
+        id: "not-a-process-sample".to_string(),
+    })
+    .unwrap();
+    assert!(
+        rmp_serde::from_slice::<y2026_9::telemetry::Process>(&wrong_shape).is_err(),
+        "a differently-shaped body must not decode as telemetry::Process"
+    );
+}
+
+#[test]
 fn component_capability_bodies_round_trip_through_messagepack() {
     let imu = api::component::imu::Sample {
         orientation: Some([1.0, 0.0, 0.0, 0.0]),
