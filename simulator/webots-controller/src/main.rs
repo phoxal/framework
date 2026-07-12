@@ -4,8 +4,8 @@
 //! a robot's component capabilities (motor, encoder, IMU, accelerometer,
 //! gyroscope, range, camera, depth, GNSS) and publishes/subscribes exactly the
 //! `component::*` contracts those capabilities need. It observes the supervisor's
-//! full `simulation/clock` time for coherent sensor timestamps, but never publishes
-//! `simulation::*` topics. Clock authority stays with
+//! full `simulation/clock` time for coherent sensor timestamps, but never
+//! publishes `simulation::*` topics. Clock authority stays with
 //! `phoxal-simulator-webots-supervisor` (see `simulator/webots-supervisor`).
 
 mod capabilities;
