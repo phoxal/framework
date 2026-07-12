@@ -157,8 +157,12 @@ mod tests {
         Ok(())
     }
 
-    /// A privileged tool defaults to `Api = ()`, but the participant attribute
-    /// still emits config schema metadata and an empty contract list.
+    /// A privileged tool defaults to `Api = ()` AND (since the shared
+    /// configless-tool fix) `Config = ()`, but the participant attribute
+    /// still emits config schema metadata and an empty contract list. A `()`
+    /// config schema is `{"type":"null"}`, not `"object"`: a configless tool
+    /// must start with `PHOXAL_CONFIG` ABSENT, which only `()`'s
+    /// `Deserialize` accepts (a zero-field struct expects a map).
     #[test]
     fn api_unit_binary_still_carries_metadata() -> Result<()> {
         let workspace = Workspace::discover()?;
@@ -178,7 +182,7 @@ mod tests {
         let meta = extract_participant_metadata(&binary_path)?;
         assert!(meta.contracts.is_empty());
         assert_eq!(meta.participant_api, "()");
-        assert_eq!(meta.config_schema["type"], "object");
+        assert_eq!(meta.config_schema["type"], "null");
         Ok(())
     }
 

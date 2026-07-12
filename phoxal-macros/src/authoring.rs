@@ -712,6 +712,22 @@ impl ParticipantKind {
         }
     }
 
+    /// Default `Config` type when `config = …` is not given.
+    ///
+    /// Tools default to `()` (no declared config): a configless tool must
+    /// start cleanly with `PHOXAL_CONFIG` ABSENT (the runner deserializes an
+    /// absent config as `Value::Null`, which `()`'s `Deserialize` accepts but
+    /// a zero-field struct's derived `Deserialize` rejects - it expects a
+    /// map). Every other kind keeps the historical default of a local
+    /// `Config` struct, since services/drivers routinely declare one with
+    /// real fields and still require `PHOXAL_CONFIG` to be present.
+    fn default_config(self) -> Type {
+        match self {
+            ParticipantKind::Tool => syn::parse_quote!(()),
+            _ => syn::parse_quote!(Config),
+        }
+    }
+
     fn marker_impl(self, phoxal: &TokenStream, struct_name: &Ident) -> TokenStream {
         match self {
             ParticipantKind::Service => {
@@ -788,7 +804,7 @@ pub fn expand_participant(
     let id = args
         .id
         .unwrap_or_else(|| struct_name.to_string().to_kebab_case());
-    let config_ty: Type = args.config.unwrap_or_else(|| syn::parse_quote!(Config));
+    let config_ty: Type = args.config.unwrap_or_else(|| kind.default_config());
     let api_ty: Type = args.api.unwrap_or_else(|| kind.default_api());
 
     let phoxal = phoxal();

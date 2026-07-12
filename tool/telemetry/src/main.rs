@@ -10,9 +10,9 @@ use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 /// load source on the host it is reporting on.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
-#[derive(serde::Deserialize, phoxal::Config)]
-struct Config {}
-
+// Configless (Part 3 fix, shared runner/macro default): the `#[phoxal::tool]`
+// macro now defaults an omitted `config = …` to `()` for tools, so this
+// starts cleanly with `PHOXAL_CONFIG` ABSENT rather than requiring `'{}'`.
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
 #[phoxal::tool(id = "telemetry")]
