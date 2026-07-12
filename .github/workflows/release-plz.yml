@@ -26,12 +26,12 @@ name: release-plz
 # (`facts-*`). So there is no window in which a half-populated release is
 # authoritative, and no per-leg upload path to reconcile - the artifacts flow
 # through Actions storage, and one `gh release create` invocation publishes the
-# complete set before the release is marked latest.
+# selected set before the release is marked latest.
 #   1. release    - release-plz publishes the 4 libs to crates.io. IF this is the
 #                   release merge, xtask cuts missing current artifact tags,
-#                   validates that JSON handoff, and plans ALL 27 artifacts so
-#                   the catalog/config-schema snapshot is complete. It does NOT
-#                   create the build-* release.
+#                   validates that JSON handoff, and plans either all artifacts
+#                   (shared-library/recovery wave) or only newly tagged artifacts
+#                   (artifact-only wave). It does NOT create the build-* release.
 #   2. build      - one matrix leg per binary target: a single `release package`
 #                   builds+packages that row's artifacts, uploaded as `facts-*`.
 #      assets     - one cheap Linux job packages all target-independent bundles
@@ -188,19 +188,44 @@ jobs:
           cargo xtask release cut
           --out target/xtask/artifact-releases.json
 
-      # The cut document identifies only versions newly tagged above. Planning
-      # validates it, then intentionally includes ALL official artifacts at
-      # their current independent versions so every build snapshot has all
-      # tarballs and embedded config_schema metadata.
+      # A shared-library publication can affect every linked binary, so it
+      # rebuilds the complete official set. A forced recovery build and a cold
+      # start/non-coherent previous latest catalog do the same. Otherwise the
+      # cut document is the exact artifact-only build set; unchanged entries
+      # remain pinned to their immutable URLs in the accumulated catalog.
       - name: Compute release plan
         id: plan
         if: steps.gate.outputs.is_release == 'true'
         run: |
           set -euo pipefail
+          all_artifacts=false
+          reason="artifact-only release"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            all_artifacts=true
+            reason="forced recovery build"
+          elif ! git diff --quiet HEAD^ HEAD -- \
+            phoxal/Cargo.toml \
+            phoxal-api/Cargo.toml \
+            phoxal-bus/Cargo.toml \
+            phoxal-macros/Cargo.toml; then
+            all_artifacts=true
+            reason="shared-library publication"
+          elif [[ ! -f prev/catalog.json ]] || \
+            ! jq -e '(.heads.stable != "") and (.heads.stable == .build.tag)' prev/catalog.json >/dev/null; then
+            all_artifacts=true
+            reason="no coherent previous latest catalog"
+          fi
+
+          scope_args=()
+          if [[ "$all_artifacts" == "true" ]]; then
+            scope_args+=(--all-artifacts)
+          fi
+          echo "release plan scope: $reason"
           cargo xtask release plan \
             --artifact-releases-json target/xtask/artifact-releases.json \
             --out target/xtask/release-plan.json \
-            --github-output
+            --github-output \
+            "${scope_args[@]}"
 
       # The build-* release is NOT created here - the catalog job creates it at
       # the end, once the gate passes (see this file's header). This job only

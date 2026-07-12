@@ -46,16 +46,22 @@ the same release PR. Workspace lockfile and library changes cannot select an
 artifact. After merge, `cargo xtask release cut` creates the missing artifact
 tags and emits the JSON handoff consumed by `cargo xtask release plan`.
 
-Building and publishing the artifact binaries is decoupled from versioning.
-Every release wave builds all official artifacts at their current independent
-versions and uploads them - together with an assembled `phoxal.catalog/v0`
-`catalog.json` full index - to a single immutable
+Building and publishing the artifact binaries is decoupled from versioning. A
+release that publishes any of the four shared libraries rebuilds every official
+artifact because their linked code may have changed. An artifact-only release
+builds and uploads only the artifacts whose independent versions were newly
+tagged. A forced recovery build, cold start, or non-coherent previous latest
+catalog also rebuilds the complete set.
+
+Each wave uploads its selected archives together with an assembled
+`phoxal.catalog/v0` `catalog.json` full index to one immutable
 `build-YYYYMMDD-<run>` GitHub release, which is marked "latest" once the gate
-passes. Catalog assembly extracts and cross-target-validates each binary's
-embedded contract metadata, including its `config_schema` slot; the schema stays
-in the packaged binary rather than being duplicated in the location index. A
-pinned artifact version resolves through the catalog to its permanent download
-URL.
+passes. The catalog carries unchanged artifact versions forward with their
+existing permanent download URLs. Catalog assembly cross-target-validates the
+changed binaries' embedded metadata, including their `config_schema` slot; the
+release-PR gate checks coherence across the complete official participant set.
+A pinned artifact version resolves through the catalog to its permanent
+download URL.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).

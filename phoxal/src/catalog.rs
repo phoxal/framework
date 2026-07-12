@@ -4,7 +4,7 @@
 //! per published `(package, version)`, accumulating versions forever. A
 //! build-snapshot CI run upserts every `(package, version)` it rebuilt into the
 //! previous catalog (`xtask/src/catalog/generate.rs`'s merge), so unchanged
-//! versions point at the newest complete build while older versions remain
+//! versions retain their prior immutable locations while older versions remain
 //! indexed. There is no
 //! `revision`/checksum machinery (that guarded the old mutable-manifest model,
 //! which this replaces), and no five-per-kind-array split - one `artifacts`
@@ -14,8 +14,9 @@
 //!
 //! `heads` is the one exception to "full index, nothing computed": the
 //! coherence-gate design doc §4 whole-set snapshot pointers. The producer
-//! recomputes them from this run's packaged participant binaries before
-//! publishing the catalog - see [`Heads`].
+//! computes them from the full packaged participant set, or extends a previous
+//! coherent head after the PR gate checks the full set and the changed binaries
+//! are cross-target validated - see [`Heads`].
 
 use std::collections::BTreeMap;
 
@@ -64,11 +65,11 @@ impl Catalog {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Heads {
-    /// The newest build snapshot whose full latest-version set passed the
-    /// coherence check (`phoxal::check::check_coherence`), carried forward
-    /// from the previous catalog's `stable` when this run's set is
-    /// incoherent. Empty iff no coherent snapshot has ever been published
-    /// (cold start, or every run so far has been incoherent).
+    /// The newest catalog whose full latest-version set passed the coherence
+    /// gate. A full rebuild checks packaged metadata directly; an artifact-only
+    /// build extends an already coherent latest catalog after the release PR's
+    /// full-set check and cross-target validation of changed binaries. Empty iff
+    /// no coherent snapshot has ever been published.
     pub stable: String,
     /// The newest build snapshot, always - regardless of coherence. Empty
     /// only for a `--metadata-only` catalog (the PR gate, not a publish -
