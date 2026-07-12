@@ -25,7 +25,7 @@ use phoxal::catalog::{Artifact as CatalogArtifact, Blob, BuildProvenance, Catalo
 use phoxal::check::{ParticipantContractSurface, check_coherence};
 
 use crate::release::package::{self, PackagedOutput};
-use crate::release::plan::{ReleasePlan, load_release_plan};
+use crate::release::plan::{ReleasePlan, ReleaseScope, load_release_plan};
 use crate::workspace::{
     OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
 };
@@ -197,6 +197,15 @@ fn compute_heads(artifacts: &[OfficialArtifact], options: &GenerateOptions) -> R
         return Ok(Heads::empty());
     }
 
+    if options
+        .release_plan
+        .as_ref()
+        .is_some_and(|plan| plan.scope == ReleaseScope::ChangedArtifacts)
+    {
+        validate_changed_artifact_metadata(artifacts, options)?;
+        return heads_for_changed_artifacts(options);
+    }
+
     let mut surfaces = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
         let triples = binary_target_triples(artifact);
@@ -218,6 +227,61 @@ fn compute_heads(artifacts: &[OfficialArtifact], options: &GenerateOptions) -> R
     }
 
     Ok(heads_from_surfaces(&surfaces, options))
+}
+
+/// A changed-artifact build extends the preceding coherent full set. The PR
+/// gate has already checked the complete source-level participant set; here we
+/// still extract every changed binary's metadata to enforce cross-target
+/// equality. A cold start or a previous non-coherent latest build must never
+/// enter this path: the workflow requests an all-artifacts plan instead.
+fn validate_changed_artifact_metadata(
+    artifacts: &[OfficialArtifact],
+    options: &GenerateOptions,
+) -> Result<()> {
+    let plan = options
+        .release_plan
+        .as_ref()
+        .context("changed-artifact catalog generation requires a release plan")?;
+    for planned in &plan.artifacts {
+        let artifact = artifacts
+            .iter()
+            .find(|artifact| artifact.package == planned.package)
+            .with_context(|| {
+                format!(
+                    "release plan references unknown package {}",
+                    planned.package
+                )
+            })?;
+        package::extract_metadata_from_packaged(
+            artifact,
+            &options.package_dir,
+            &binary_target_triples(artifact),
+        )
+        .with_context(|| {
+            format!(
+                "failed to validate changed packaged metadata for {} v{}",
+                artifact.package, artifact.version
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn heads_for_changed_artifacts(options: &GenerateOptions) -> Result<Heads> {
+    let previous = options.previous_catalog.as_ref().context(
+        "changed-artifact release requires a previous coherent latest catalog; rebuild all artifacts",
+    )?;
+    if previous.heads.stable.is_empty() || previous.heads.stable != previous.build.tag {
+        bail!(
+            "changed-artifact release cannot extend previous build {} because its stable head is '{}'; rebuild all artifacts",
+            previous.build.tag,
+            previous.heads.stable
+        );
+    }
+    Ok(Heads {
+        stable: options.build_tag.clone(),
+        nightly: options.build_tag.clone(),
+    })
 }
 
 fn heads_from_surfaces(
@@ -549,6 +613,7 @@ mod tests {
         let assets = component_artifact("ddsm115", "0.1.0");
         let plan = ReleasePlan {
             schema: crate::release::plan::RELEASE_PLAN_SCHEMA.to_string(),
+            scope: ReleaseScope::AllArtifacts,
             artifacts: vec![crate::release::plan::ReleasePlanArtifact {
                 package: assets.package.clone(),
                 version: assets.version.clone(),
@@ -682,5 +747,42 @@ mod tests {
 
         assert_eq!(heads, Heads::empty());
         Ok(())
+    }
+
+    #[test]
+    fn changed_artifacts_advance_heads_from_a_coherent_latest_catalog() -> Result<()> {
+        let mut options = base_options(Path::new("/unused"));
+        let previous_build = fixture_build();
+        options.previous_catalog = Some(Catalog::new(
+            previous_build.clone(),
+            Vec::new(),
+            Heads {
+                stable: previous_build.tag.clone(),
+                nightly: previous_build.tag,
+            },
+        ));
+
+        let heads = heads_for_changed_artifacts(&options)?;
+
+        assert_eq!(heads.stable, options.build_tag);
+        assert_eq!(heads.nightly, options.build_tag);
+        Ok(())
+    }
+
+    #[test]
+    fn changed_artifacts_reject_a_non_coherent_previous_latest_catalog() {
+        let mut options = base_options(Path::new("/unused"));
+        options.previous_catalog = Some(Catalog::new(
+            fixture_build(),
+            Vec::new(),
+            Heads {
+                stable: "build-previous-good".to_string(),
+                nightly: "build-old".to_string(),
+            },
+        ));
+
+        let error = heads_for_changed_artifacts(&options).unwrap_err();
+
+        assert!(error.to_string().contains("rebuild all artifacts"));
     }
 }
