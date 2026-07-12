@@ -30,6 +30,7 @@ pub fn run(args: Args) -> Result<()> {
     require_nonempty_artifacts(&selected)?;
 
     bump_artifacts(&selected)?;
+    sync_lockfile(&selected)?;
     println!("release bump: bumped {} artifact(s)", selected.len());
     Ok(())
 }
@@ -117,6 +118,34 @@ fn bump_artifacts(artifacts: &[OfficialArtifact]) -> Result<()> {
         let (from, to) = bump_manifest_version(&manifest_path)
             .with_context(|| format!("failed to bump {}", manifest_path.display()))?;
         println!("bumped {}: {from} -> {to}", artifact.package);
+    }
+    Ok(())
+}
+
+/// Keep path-package versions in `Cargo.lock` in the same release PR as their
+/// manifests. `cargo xtask` resolves the lockfile before xtask starts, so the
+/// manifest edits above would otherwise remain stale until the next run.
+fn sync_lockfile(artifacts: &[OfficialArtifact]) -> Result<()> {
+    let package_names = artifacts
+        .iter()
+        .map(OfficialArtifact::require_package_name)
+        .collect::<Result<Vec<_>>>()?;
+    let mut command = Command::new("cargo");
+    command.args(["update", "--offline"]);
+    for package_name in &package_names {
+        command.arg("-p").arg(package_name);
+    }
+    let status = command.status().with_context(|| {
+        format!(
+            "failed to spawn cargo update for {}",
+            package_names.join(", ")
+        )
+    })?;
+    if !status.success() {
+        bail!(
+            "cargo update failed for {} with {status}",
+            package_names.join(", ")
+        );
     }
     Ok(())
 }
