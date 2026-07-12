@@ -109,10 +109,28 @@ pub(crate) fn spawn_sampler() -> (
 
 async fn run_sampler(tx: watch::Sender<Option<api::telemetry::Process>>) {
     let pid = Pid::from_u32(std::process::id());
-    let mut system = System::new_with_specifics(
-        RefreshKind::nothing()
-            .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
-    );
+    // `System::new_with_specifics` performs the requested refresh immediately,
+    // so it belongs on the blocking pool too. This matters for callers that use
+    // `phoxal::tokio::run` from a single-worker runtime: no sysinfo work may
+    // briefly occupy the lifecycle executor before the first sample.
+    let mut system = match tokio::task::spawn_blocking(|| {
+        System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
+        )
+    })
+    .await
+    {
+        Ok(system) => system,
+        Err(error) => {
+            tracing::warn!(
+                target: "phoxal.runtime",
+                error = %error,
+                "process telemetry sampler initialization failed; stopping self-sampling"
+            );
+            return;
+        }
+    };
     let mut interval = tokio::time::interval(PROCESS_METRICS_INTERVAL);
     // Delay (not Burst): if a refresh ever runs long, do not fire back-to-back
     // catch-up ticks - keep refreshes ~one interval apart so the cpu delta
