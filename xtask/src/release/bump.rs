@@ -1,5 +1,6 @@
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -18,11 +19,20 @@ pub struct Args {
     /// workspace lockfile or library churn cannot select an artifact.
     #[arg(long, conflicts_with = "package")]
     pub changed: bool,
+    /// Write release-plz-style Markdown for the selected official artifacts.
+    /// The file lives outside the git tree in CI and is appended to the PR body.
+    #[arg(long, value_name = "PATH")]
+    pub notes_out: Option<PathBuf>,
 }
 
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    let selected = select_artifacts(&workspace, &args, &CliGitQuery)?;
+    let git = CliGitQuery;
+    let selected = select_artifacts(&workspace, &args, &git)?;
+    if let Some(path) = &args.notes_out {
+        let releases = release_note_artifacts(&workspace, &selected, &git)?;
+        write_release_notes(path, &releases, &git)?;
+    }
     if selected.is_empty() {
         println!("release bump: no artifact version bumps needed");
         return Ok(());
@@ -55,6 +65,7 @@ fn select_artifacts(
 trait GitQuery {
     fn tag_exists(&self, tag: &str) -> Result<bool>;
     fn changed_since(&self, tag: &str, path: &Path) -> Result<bool>;
+    fn commit_subjects_since(&self, tag: &str, path: &Path) -> Result<Vec<String>>;
 }
 
 struct CliGitQuery;
@@ -82,6 +93,29 @@ impl GitQuery for CliGitQuery {
             Some(1) => Ok(true),
             _ => bail!("git diff --quiet {tag}..HEAD -- {path:?} failed with {status}"),
         }
+    }
+
+    fn commit_subjects_since(&self, tag: &str, path: &Path) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args([
+                "log",
+                "--no-merges",
+                "--format=%s",
+                &format!("{tag}..HEAD"),
+                "--",
+            ])
+            .arg(path)
+            .output()
+            .with_context(|| format!("failed to spawn git log for {tag}..HEAD -- {path:?}"))?;
+        if !output.status.success() {
+            bail!(
+                "git log {tag}..HEAD -- {path:?} failed with {}",
+                output.status
+            );
+        }
+        String::from_utf8(output.stdout)
+            .context("git log emitted non-UTF-8 commit subjects")
+            .map(|text| text.lines().map(str::to_owned).collect())
     }
 }
 
@@ -120,6 +154,153 @@ fn bump_artifacts(artifacts: &[OfficialArtifact]) -> Result<()> {
         println!("bumped {}: {from} -> {to}", artifact.package);
     }
     Ok(())
+}
+
+const NOTES_START: &str = "<!-- phoxal-artifact-releases:start -->";
+const NOTES_END: &str = "<!-- phoxal-artifact-releases:end -->";
+
+#[derive(Debug)]
+struct ArtifactRelease {
+    artifact: OfficialArtifact,
+    from: String,
+    to: String,
+    from_tag: String,
+    to_tag: String,
+}
+
+fn release_note_artifacts(
+    workspace: &Workspace,
+    selected: &[OfficialArtifact],
+    git: &dyn GitQuery,
+) -> Result<Vec<ArtifactRelease>> {
+    let mut releases = Vec::new();
+    for artifact in selected {
+        let to = bump_patch_version(&artifact.version)?;
+        releases.push(ArtifactRelease {
+            artifact: artifact.clone(),
+            from: artifact.version.clone(),
+            to_tag: artifact.release_tag_for_version(&to),
+            from_tag: artifact.release_tag(),
+            to,
+        });
+    }
+
+    // On an artifact-only PR rerun, the manifest is already bumped but its new
+    // tag does not exist until the PR merges. Reconstruct that pending release
+    // from the previous patch tag so new commits refresh the notes without a
+    // second version bump.
+    for artifact in workspace.official_artifacts() {
+        if selected.iter().any(|item| item.package == artifact.package)
+            || git.tag_exists(&artifact.release_tag())?
+        {
+            continue;
+        }
+        let Some(from) = previous_patch_version(&artifact.version)? else {
+            continue;
+        };
+        let from_tag = artifact.release_tag_for_version(&from);
+        if !git.tag_exists(&from_tag)? {
+            continue;
+        }
+        releases.push(ArtifactRelease {
+            artifact: artifact.clone(),
+            from,
+            to: artifact.version.clone(),
+            from_tag,
+            to_tag: artifact.release_tag(),
+        });
+    }
+    releases.sort_by(|left, right| left.artifact.package.cmp(&right.artifact.package));
+    Ok(releases)
+}
+
+fn write_release_notes(
+    path: &Path,
+    releases: &[ArtifactRelease],
+    git: &dyn GitQuery,
+) -> Result<()> {
+    let notes = render_release_notes(releases, git)?;
+    fs::write(path, notes).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn render_release_notes(releases: &[ArtifactRelease], git: &dyn GitQuery) -> Result<String> {
+    if releases.is_empty() {
+        return Ok(String::new());
+    }
+    let mut notes = format!("{NOTES_START}\n\n## 📦 Official artifact releases\n\n");
+    for release in releases {
+        let package_name = release.artifact.require_package_name()?;
+        notes.push_str(&format!(
+            "* `{package_name}`: {} -> {}\n",
+            release.from, release.to
+        ));
+    }
+    notes.push_str("\n<details><summary><i><b>Artifact changelog</b></i></summary><p>\n\n");
+
+    for release in releases {
+        let package_name = release.artifact.require_package_name()?;
+        let subjects = git.commit_subjects_since(&release.from_tag, &release.artifact.crate_dir)?;
+        let mut sections: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for subject in subjects {
+            let (section, entry) = changelog_entry(&subject);
+            sections.entry(section).or_default().push(entry);
+        }
+
+        notes.push_str(&format!(
+            "## `{package_name}`\n\n<blockquote>\n\n## [{}](https://github.com/phoxal/framework/compare/{}...{})\n",
+            release.to, release.from_tag, release.to_tag
+        ));
+        for section in ["Added", "Fixed", "Other"] {
+            let Some(entries) = sections.get(section) else {
+                continue;
+            };
+            notes.push_str(&format!("\n### {section}\n\n"));
+            for entry in entries {
+                notes.push_str(&format!("- {}\n", link_pull_request(entry)));
+            }
+        }
+        if sections.is_empty() {
+            notes.push_str(&format!(
+                "\n### Other\n\n- Changes since `{}`\n",
+                release.from_tag
+            ));
+        }
+        notes.push_str("\n</blockquote>\n\n");
+    }
+
+    notes.push_str(&format!("</p></details>\n\n{NOTES_END}\n"));
+    Ok(notes)
+}
+
+fn changelog_entry(subject: &str) -> (&'static str, String) {
+    let (prefix, summary) = subject
+        .split_once(": ")
+        .filter(|(prefix, _)| !prefix.contains(' '))
+        .unwrap_or(("", subject));
+    let section = if prefix.starts_with("feat") {
+        "Added"
+    } else if prefix.starts_with("fix") {
+        "Fixed"
+    } else {
+        "Other"
+    };
+    (section, summary.to_owned())
+}
+
+fn link_pull_request(entry: &str) -> String {
+    let Some(start) = entry.rfind(" (#") else {
+        return entry.to_owned();
+    };
+    let Some(number) = entry[start + 3..].strip_suffix(')') else {
+        return entry.to_owned();
+    };
+    if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
+        return entry.to_owned();
+    }
+    format!(
+        "{} ([#{number}](https://github.com/phoxal/framework/pull/{number}))",
+        &entry[..start]
+    )
 }
 
 /// Keep path-package versions in `Cargo.lock` in the same release PR as their
@@ -182,6 +363,16 @@ fn bump_patch_version(version: &str) -> Result<String> {
     Ok(version.to_string())
 }
 
+fn previous_patch_version(version: &str) -> Result<Option<String>> {
+    let mut version = Version::parse(version)
+        .with_context(|| format!("artifact version '{version}' is not valid semver"))?;
+    if !version.pre.is_empty() || !version.build.is_empty() || version.patch == 0 {
+        return Ok(None);
+    }
+    version.patch -= 1;
+    Ok(Some(version.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -218,9 +409,20 @@ mod tests {
         Ok(())
     }
 
+    fn release(artifact: &OfficialArtifact, from: &str, to: &str) -> ArtifactRelease {
+        ArtifactRelease {
+            artifact: artifact.clone(),
+            from: from.to_owned(),
+            to: to.to_owned(),
+            from_tag: artifact.release_tag_for_version(from),
+            to_tag: artifact.release_tag_for_version(to),
+        }
+    }
+
     struct FakeGitQuery {
         tags: HashMap<String, bool>,
         diffs: HashMap<String, bool>,
+        subjects: HashMap<String, Vec<String>>,
     }
 
     impl GitQuery for FakeGitQuery {
@@ -230,6 +432,10 @@ mod tests {
 
         fn changed_since(&self, tag: &str, _path: &Path) -> Result<bool> {
             Ok(*self.diffs.get(tag).unwrap_or(&false))
+        }
+
+        fn commit_subjects_since(&self, tag: &str, _path: &Path) -> Result<Vec<String>> {
+            Ok(self.subjects.get(tag).cloned().unwrap_or_default())
         }
     }
 
@@ -258,6 +464,7 @@ mod tests {
                 (map.release_tag(), false),
                 (router.release_tag(), false),
             ]),
+            subjects: HashMap::new(),
         };
 
         let selected = changed_artifacts(&workspace, &git)?;
@@ -289,6 +496,7 @@ mod tests {
             &FakeGitQuery {
                 tags: HashMap::new(),
                 diffs: HashMap::new(),
+                subjects: HashMap::new(),
             },
         )?;
         assert!(selected.is_empty());
@@ -299,5 +507,67 @@ mod tests {
     fn patch_bump_rejects_prerelease() {
         let error = bump_patch_version("0.2.0-alpha.1").unwrap_err();
         assert!(error.to_string().contains("pre-release"));
+    }
+
+    #[test]
+    fn release_notes_include_only_selected_artifacts_and_full_changelog() -> Result<()> {
+        let drive = artifact(Path::new("/repo/service"), "drive");
+        let notes = render_release_notes(
+            &[release(&drive, "0.1.0", "0.1.1")],
+            &FakeGitQuery {
+                tags: HashMap::new(),
+                diffs: HashMap::new(),
+                subjects: HashMap::from([(
+                    drive.release_tag(),
+                    vec![
+                        "feat(drive): add traction control (#41)".to_owned(),
+                        "fix: clamp invalid velocity (#42)".to_owned(),
+                        "docs: explain tuning".to_owned(),
+                    ],
+                )]),
+            },
+        )?;
+
+        assert!(notes.contains("`phoxal-service-drive`: 0.1.0 -> 0.1.1"));
+        assert!(notes.contains("### Added"));
+        assert!(notes.contains("add traction control ([#41]"));
+        assert!(notes.contains("### Fixed"));
+        assert!(notes.contains("clamp invalid velocity ([#42]"));
+        assert!(notes.contains("### Other"));
+        assert!(notes.contains("explain tuning"));
+        assert!(!notes.contains("phoxal-service-map"));
+        assert_eq!(notes.matches(NOTES_START).count(), 1);
+        assert_eq!(notes.matches(NOTES_END).count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_bump_refreshes_notes_without_selecting_another_bump() -> Result<()> {
+        let mut drive = artifact(Path::new("/repo/service"), "drive");
+        drive.version = "0.1.1".to_owned();
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![drive.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([
+                (drive.release_tag_for_version("0.1.0"), true),
+                (drive.release_tag(), false),
+            ]),
+            diffs: HashMap::new(),
+            subjects: HashMap::from([(
+                drive.release_tag_for_version("0.1.0"),
+                vec!["fix(drive): include late follow-up (#43)".to_owned()],
+            )]),
+        };
+
+        let releases = release_note_artifacts(&workspace, &[], &git)?;
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].from, "0.1.0");
+        assert_eq!(releases[0].to, "0.1.1");
+        let notes = render_release_notes(&releases, &git)?;
+        assert!(notes.contains("include late follow-up ([#43]"));
+        Ok(())
     }
 }

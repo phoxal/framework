@@ -516,22 +516,45 @@ jobs:
             git checkout -B "$branch" origin/main
           fi
 
-          cargo xtask release bump --changed
+          artifact_notes="$RUNNER_TEMP/artifact-release-notes.md"
+          cargo xtask release bump --changed --notes-out "$artifact_notes"
           if git diff --quiet; then
-            echo "no changed artifact versions to add"
-            exit 0
+            if [ ! -s "$artifact_notes" ]; then
+              echo "no changed or pending artifact versions to add"
+              exit 0
+            fi
+            echo "artifact versions are already pending; refreshing release notes only"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -u
+            git commit --signoff -m "chore(release): bump changed artifacts"
+            git push --force-with-lease origin "$branch"
+
+            if [ "$release_pr_exists" = false ]; then
+              gh pr create \
+                --head "$branch" \
+                --base main \
+                --title "chore(release): release" \
+                --body "Automated release PR. Artifact patch versions are selected independently by git diff of each crate directory against its current version tag."
+            fi
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -u
-          git commit --signoff -m "chore(release): bump changed artifacts"
-          git push --force-with-lease origin "$branch"
-
-          if [ "$release_pr_exists" = false ]; then
-            gh pr create \
-              --head "$branch" \
-              --base main \
-              --title "chore(release): release" \
-              --body "Automated release PR. Artifact patch versions are selected independently by git diff of each crate directory against its current version tag."
+          # release-plz wrote the library section before xtask amended the PR.
+          # Append exactly one generated artifact section so the visible release
+          # list and changelog match the artifact manifests in the PR diff.
+          if [ -s "$artifact_notes" ]; then
+            pr_number="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number')"
+            gh pr view "$pr_number" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
+            awk '
+              index($0, "<!-- phoxal-artifact-releases:start -->") { skipping = 1; next }
+              index($0, "<!-- phoxal-artifact-releases:end -->") { skipping = 0; next }
+              !skipping { print }
+            ' "$RUNNER_TEMP/release-body.md" > "$RUNNER_TEMP/release-body-without-artifacts.md"
+            {
+              cat "$RUNNER_TEMP/release-body-without-artifacts.md"
+              printf '\n\n'
+              cat "$artifact_notes"
+            } > "$RUNNER_TEMP/release-body-updated.md"
+            gh pr edit "$pr_number" --body-file "$RUNNER_TEMP/release-body-updated.md"
           fi
