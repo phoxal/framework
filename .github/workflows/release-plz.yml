@@ -490,8 +490,9 @@ jobs:
 
       # release-plz creates/updates the library release PR first and reports its
       # head branch as JSON. Check out that branch, add only per-crate git-diff
-      # artifact bumps, and push them into the same PR. If no library needs a
-      # release, create that same release PR only when an artifact bump exists.
+      # artifact bumps (including their lockfile entries), and push them into
+      # the same PR. If no library needs a release, create that same release PR
+      # only when an artifact bump exists.
       - name: Add changed artifact bumps to the release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
