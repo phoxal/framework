@@ -11,7 +11,9 @@
 //! heartbeat is older than the stale threshold (3 s) counts as `Degraded`;
 //! otherwise `Degraded` beats `Initializing`/`NotStarted`, which beats `Ready`.
 //! The participant's own id is excluded from the fold so it cannot poison its own
-//! aggregate.
+//! aggregate. Having observed nobody at all is never `Ready` either - an empty
+//! tracker has no basis for that claim, so it folds to `Initializing` instead of
+//! defaulting to the vacuously-true "no failures seen" reading.
 
 use std::collections::BTreeMap;
 
@@ -89,11 +91,13 @@ impl ReadinessTracker {
     fn aggregate(&self, now_ns: u64) -> api::presence::Readiness {
         let mut saw_initializing = false;
         let mut saw_degraded = false;
+        let mut saw_any = false;
 
         for (participant, record) in &self.participants {
             if participant == PARTICIPANT {
                 continue;
             }
+            saw_any = true;
             if is_stale(now_ns, record.last_seen_ns) {
                 saw_degraded = true;
                 continue;
@@ -111,7 +115,12 @@ impl ReadinessTracker {
 
         if saw_degraded {
             api::presence::Readiness::Degraded
-        } else if saw_initializing {
+        } else if saw_initializing || !saw_any {
+            // `!saw_any`: nobody has ever been observed (including at boot,
+            // before the first heartbeat arrives). Claiming `Ready` here would
+            // be a vacuous truth - "no failures" is not the same as "checked
+            // and healthy" - and is exactly the bug that let a graph with every
+            // participant silently missing still read as ready.
             api::presence::Readiness::Initializing
         } else {
             api::presence::Readiness::Ready
@@ -205,10 +214,38 @@ mod tests {
             heartbeat("presence", api::presence::Readiness::Degraded),
             1_000_000,
         );
+        tracker.ingest(
+            heartbeat("drive", api::presence::Readiness::Ready),
+            1_000_000,
+        );
 
         assert_eq!(
             tracker.aggregate(1_000_000),
             api::presence::Readiness::Ready
+        );
+    }
+
+    #[test]
+    fn nobody_observed_is_never_ready() {
+        let tracker = ReadinessTracker::default();
+
+        assert_eq!(
+            tracker.aggregate(1_000_000),
+            api::presence::Readiness::Initializing
+        );
+    }
+
+    #[test]
+    fn only_own_heartbeat_observed_is_never_ready() {
+        let mut tracker = ReadinessTracker::default();
+        tracker.ingest(
+            heartbeat("presence", api::presence::Readiness::Ready),
+            1_000_000,
+        );
+
+        assert_eq!(
+            tracker.aggregate(1_000_000),
+            api::presence::Readiness::Initializing
         );
     }
 
