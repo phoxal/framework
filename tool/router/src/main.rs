@@ -1,11 +1,25 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, LogicalTime, OwnerCap, Publisher};
+use phoxal::raw::{Bus, BusMetadata, LogicalTime, OwnerCap, Publisher};
 use phoxal_api::y2026_1 as api;
+use phoxal_api::y2026_9 as api9;
 
 const DEFAULT_LISTEN: &str = "tcp/localhost:7447";
 const DEFAULT_RETRY_INITIAL_MS: u64 = 1_000;
 const DEFAULT_RETRY_MAX_MS: u64 = 30_000;
 const SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC: &str = "serial_listen_transport_unavailable";
+
+/// The mirror-subscription measurement window: per-topic counts are rolled up
+/// and republished on this cadence.
+const METRICS_WINDOW: Duration = Duration::from_secs(1);
+/// Scopes the mirror subscription to phoxal's generation-qualified application
+/// traffic (`y2026_*/...`, wherever it falls under a namespace/robot key
+/// root) and away from Zenoh's own admin/liveliness keys - bounding what the
+/// router pays to mirror-inspect.
+const MIRROR_KEY_EXPR: &str = "**/y2026_*/**";
 
 /// Launch-time router configuration carried in `PHOXAL_CONFIG`.
 #[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
@@ -103,6 +117,8 @@ impl ToolRouter {
             }
         }
 
+        spawn_metrics(ctx, &router).await?;
+
         // Dynamic egress downsampling belongs here later: this process owns the
         // uplink session and can re-establish it with refreshed rules.
         tracing::info!(
@@ -121,6 +137,169 @@ impl ToolRouter {
             tracing::warn!(target: "tool_router", error = %error, "router close failed");
         }
         Ok(())
+    }
+}
+
+/// Per-topic ingress counters, keyed by the full Zenoh key observed on the
+/// mirror subscription. `cumulative` never resets (the contract's `count`
+/// field); `window` resets every [`METRICS_WINDOW`] tick (feeds
+/// `ingress_rate_hz`).
+#[derive(Default)]
+struct TopicCounter {
+    cumulative: u64,
+    window: u64,
+    from_participant: String,
+}
+
+/// Shared ingest state: one background task increments it per received
+/// sample, another drains + resets the window count on a timer.
+type IngressCounters = Mutex<HashMap<String, TopicCounter>>;
+
+/// A drained window's worth of one topic's ingress, ready to become a
+/// `TopicMetric`.
+struct TopicWindowSample {
+    topic: String,
+    from_participant: String,
+    window_count: u64,
+    cumulative_count: u64,
+}
+
+/// Declare the wildcard mirror subscription on the embedded router's own
+/// session and spawn the two managed tasks that turn it into
+/// `router::Metrics`: one ingests samples into the shared counters, the
+/// other drains + publishes on [`METRICS_WINDOW`].
+///
+/// This mirror subscription adds bus traffic proportional to everything it
+/// observes - the accepted tradeoff of measuring ingress this way (there is
+/// no cheaper vantage point that sees traffic actually transiting the
+/// router). It does not amplify itself: the publish cadence is timer-driven,
+/// not triggered by inbound samples, so `Metrics` being itself mirrored and
+/// counted (like any other topic) never feeds back into more publishes.
+async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Session) -> Result<()> {
+    let mirror_subscriber = router
+        .declare_subscriber(MIRROR_KEY_EXPR)
+        .await
+        .map_err(|error| anyhow::anyhow!("failed to declare router mirror subscriber: {error}"))?;
+
+    let counters: Arc<IngressCounters> = Arc::new(Mutex::new(HashMap::new()));
+
+    let ingest_counters = Arc::clone(&counters);
+    ctx.spawn_managed_with(
+        "router-metrics-ingest",
+        ManagedTaskPolicy::FaultOnExit,
+        async move {
+            while let Ok(sample) = mirror_subscriber.recv_async().await {
+                let topic = sample.key_expr().to_string();
+                let from_participant = participant_from_attachment(&sample);
+                record_sample(&ingest_counters, topic, from_participant);
+            }
+        },
+    );
+
+    let cap = ctx.owner_capability();
+    let metrics_publisher = Publisher::new(
+        ctx.raw_bus(),
+        &api9::topic::internal::new(cap).router().metrics(),
+    )?;
+    let publish_counters = Arc::clone(&counters);
+    ctx.spawn_managed_with(
+        "router-metrics-publish",
+        ManagedTaskPolicy::FaultOnExit,
+        async move {
+            let mut ticker = tokio::time::interval(METRICS_WINDOW);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Tokio intervals yield their first tick immediately. Consume that
+            // bootstrap tick so the first published snapshot covers a real
+            // window instead of reporting a near-zero interval as one second.
+            ticker.tick().await;
+            let mut window_started = tokio::time::Instant::now();
+            loop {
+                ticker.tick().await;
+                let window_ended = tokio::time::Instant::now();
+                let samples = drain_window(&publish_counters);
+                let metrics = build_metrics(&samples, window_ended.duration_since(window_started));
+                window_started = window_ended;
+                if let Err(error) = metrics_publisher.publish_at(now(), metrics).await {
+                    tracing::warn!(target: "tool_router", error = %error, "router metrics publish failed");
+                }
+            }
+        },
+    );
+
+    Ok(())
+}
+
+/// Best-effort producer id for one sample, decoded from the phoxal
+/// `BusMetadata` attachment if present and well-formed. `None` (not an
+/// error) when the attachment is absent, malformed, or empty - not every
+/// mirrored key carries phoxal's envelope, and the measured rate/count stay
+/// honest either way.
+fn participant_from_attachment(sample: &zenoh::sample::Sample) -> Option<String> {
+    let attachment = sample.attachment()?;
+    let metadata = BusMetadata::decode(attachment.to_bytes().as_ref()).ok()?;
+    if metadata.source.participant.is_empty() {
+        None
+    } else {
+        Some(metadata.source.participant)
+    }
+}
+
+fn record_sample(counters: &IngressCounters, topic: String, from_participant: Option<String>) {
+    let mut guard = counters.lock().expect("ingress counters mutex poisoned");
+    let entry = guard.entry(topic).or_default();
+    entry.cumulative = entry.cumulative.saturating_add(1);
+    entry.window = entry.window.saturating_add(1);
+    if let Some(participant) = from_participant {
+        entry.from_participant = participant;
+    }
+}
+
+/// Snapshot every topic's window count (resetting it to 0) and cumulative
+/// count (left untouched).
+fn drain_window(counters: &IngressCounters) -> Vec<TopicWindowSample> {
+    let mut guard = counters.lock().expect("ingress counters mutex poisoned");
+    guard
+        .iter_mut()
+        .map(|(topic, counter)| {
+            let sample = TopicWindowSample {
+                topic: topic.clone(),
+                from_participant: counter.from_participant.clone(),
+                window_count: counter.window,
+                cumulative_count: counter.cumulative,
+            };
+            counter.window = 0;
+            sample
+        })
+        .collect()
+}
+
+/// Turn one window's drained samples into the wire `Metrics` state.
+/// `ingress_rate_hz` is each topic's window count over the window length in
+/// seconds; `throughput_msg_s` sums those rates; `count` is the cumulative
+/// (all-time) total, unaffected by the window reset.
+fn build_metrics(samples: &[TopicWindowSample], window: Duration) -> api9::router::Metrics {
+    let window_secs = window.as_secs_f32();
+    let mut topics = Vec::with_capacity(samples.len());
+    let mut throughput_msg_s = 0.0f32;
+    for sample in samples {
+        let ingress_rate_hz = if window_secs > 0.0 {
+            sample.window_count as f32 / window_secs
+        } else {
+            0.0
+        };
+        throughput_msg_s += ingress_rate_hz;
+        topics.push(api9::router::TopicMetric {
+            topic: sample.topic.clone(),
+            from_participant: sample.from_participant.clone(),
+            ingress_rate_hz,
+            count: sample.cumulative_count,
+        });
+    }
+    topics.sort_by(|left, right| left.topic.cmp(&right.topic));
+    api9::router::Metrics {
+        topics,
+        throughput_msg_s,
+        window_ns: u64::try_from(window.as_nanos()).unwrap_or(u64::MAX),
     }
 }
 
@@ -327,5 +506,86 @@ mod tests {
         };
 
         zenoh_router_config(&config).expect("router config should be accepted by zenoh");
+    }
+
+    #[test]
+    fn build_metrics_computes_rate_from_window_count() {
+        let samples = vec![TopicWindowSample {
+            topic: "dev/robots/robot/y2026_9/joypad/devices".to_string(),
+            from_participant: "joypad".to_string(),
+            window_count: 10,
+            cumulative_count: 1_000,
+        }];
+        let metrics = build_metrics(&samples, Duration::from_secs(1));
+        assert_eq!(metrics.topics.len(), 1);
+        assert_eq!(metrics.topics[0].ingress_rate_hz, 10.0);
+        assert_eq!(metrics.topics[0].count, 1_000);
+        assert_eq!(metrics.topics[0].from_participant, "joypad");
+        assert_eq!(metrics.throughput_msg_s, 10.0);
+        assert_eq!(metrics.window_ns, 1_000_000_000);
+    }
+
+    #[test]
+    fn build_metrics_halves_the_rate_for_a_two_second_window() {
+        let samples = vec![TopicWindowSample {
+            topic: "dev/robots/robot/y2026_9/router/metrics".to_string(),
+            from_participant: String::new(),
+            window_count: 10,
+            cumulative_count: 10,
+        }];
+        let metrics = build_metrics(&samples, Duration::from_secs(2));
+        assert_eq!(metrics.topics[0].ingress_rate_hz, 5.0);
+        assert_eq!(metrics.window_ns, 2_000_000_000);
+    }
+
+    #[test]
+    fn build_metrics_sums_throughput_across_topics() {
+        let samples = vec![
+            TopicWindowSample {
+                topic: "b".to_string(),
+                from_participant: String::new(),
+                window_count: 4,
+                cumulative_count: 4,
+            },
+            TopicWindowSample {
+                topic: "a".to_string(),
+                from_participant: String::new(),
+                window_count: 6,
+                cumulative_count: 6,
+            },
+        ];
+        let metrics = build_metrics(&samples, Duration::from_secs(1));
+        assert_eq!(metrics.throughput_msg_s, 10.0);
+        assert_eq!(metrics.topics[0].topic, "a");
+        assert_eq!(metrics.topics[1].topic, "b");
+    }
+
+    #[test]
+    fn record_sample_accumulates_cumulative_and_window_counts() {
+        let counters: IngressCounters = Mutex::new(HashMap::new());
+        record_sample(&counters, "topic".to_string(), Some("alice".to_string()));
+        record_sample(&counters, "topic".to_string(), None);
+        let guard = counters.lock().unwrap();
+        let entry = guard.get("topic").expect("topic counted");
+        assert_eq!(entry.cumulative, 2);
+        assert_eq!(entry.window, 2);
+        // A later sample with no attachment does not clobber a previously
+        // observed participant.
+        assert_eq!(entry.from_participant, "alice");
+    }
+
+    #[test]
+    fn drain_window_resets_window_but_keeps_cumulative() {
+        let counters: IngressCounters = Mutex::new(HashMap::new());
+        record_sample(&counters, "topic".to_string(), None);
+        record_sample(&counters, "topic".to_string(), None);
+        let first = drain_window(&counters);
+        assert_eq!(first[0].window_count, 2);
+        assert_eq!(first[0].cumulative_count, 2);
+
+        record_sample(&counters, "topic".to_string(), None);
+        let second = drain_window(&counters);
+        assert_eq!(second[0].window_count, 1);
+        assert_eq!(second[0].cumulative_count, 3);
     }
 }

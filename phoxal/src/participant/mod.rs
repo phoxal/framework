@@ -14,6 +14,7 @@ mod heartbeat;
 pub mod launch;
 mod managed;
 pub mod metadata;
+mod process_metrics;
 pub(crate) mod runner;
 pub mod scheduler;
 mod sd_notify;

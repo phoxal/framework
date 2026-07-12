@@ -1,0 +1,26 @@
+[package]
+name = "phoxal-tool-telemetry"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Phoxal official tool: telemetry - host resource sampling for the CLI dashboard."
+documentation.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phoxal-tool-telemetry"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = { workspace = true }
+phoxal-api = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sysinfo = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

@@ -4,7 +4,7 @@
 
 use crate::y2026_1 as api;
 use crate::{ApiVersion, ContractBody};
-use crate::{y2026_7, y2026_8};
+use crate::{y2026_7, y2026_8, y2026_9};
 use phoxal_bus::TopicRole;
 
 #[test]
@@ -91,6 +91,72 @@ fn y2026_8_is_a_standalone_generation_for_simulation_spawn() {
 }
 
 #[test]
+fn y2026_9_is_a_standalone_generation_for_clock_router_telemetry_and_joypad() {
+    const { assert!(!<y2026_9::Api as ApiVersion>::IS_PREVIEW) };
+    assert_eq!(<y2026_9::Api as ApiVersion>::ID, "y2026_9");
+
+    assert_eq!(
+        <y2026_9::simulation::Clock as ContractBody>::TOPIC,
+        "y2026_9/simulation/clock"
+    );
+    assert_eq!(
+        y2026_9::topic::new().simulation().clock().key(),
+        "y2026_9/simulation/clock"
+    );
+
+    assert_eq!(
+        <y2026_9::router::Metrics as ContractBody>::TOPIC,
+        "y2026_9/router/metrics"
+    );
+    assert_eq!(
+        y2026_9::topic::new().router().metrics().key(),
+        "y2026_9/router/metrics"
+    );
+
+    assert_eq!(
+        <y2026_9::telemetry::Host as ContractBody>::TOPIC,
+        "y2026_9/telemetry/host"
+    );
+    assert_eq!(
+        y2026_9::topic::new().telemetry().host().key(),
+        "y2026_9/telemetry/host"
+    );
+    assert_eq!(
+        <y2026_9::telemetry::Process as ContractBody>::TOPIC,
+        "y2026_9/telemetry/process"
+    );
+    assert_eq!(
+        y2026_9::topic::new().telemetry().process().key(),
+        "y2026_9/telemetry/process"
+    );
+
+    assert_eq!(
+        <y2026_9::joypad::Devices as ContractBody>::TOPIC,
+        "y2026_9/joypad/devices"
+    );
+    assert_eq!(
+        y2026_9::topic::new().joypad().devices().key(),
+        "y2026_9/joypad/devices"
+    );
+    assert_eq!(
+        <y2026_9::joypad::Connect as ContractBody>::TOPIC,
+        "y2026_9/joypad/connect"
+    );
+    assert_eq!(
+        y2026_9::topic::new().joypad().connect().key(),
+        "y2026_9/joypad/connect"
+    );
+    assert_eq!(
+        <y2026_9::joypad::Rescan as ContractBody>::TOPIC,
+        "y2026_9/joypad/rescan"
+    );
+    assert_eq!(
+        y2026_9::topic::new().joypad().rescan().key(),
+        "y2026_9/joypad/rescan"
+    );
+}
+
+#[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     let generation = crate::API_CONTRACT_MANIFEST
         .iter()
@@ -130,6 +196,31 @@ fn generated_contract_manifest_lists_contract_shapes() {
             .iter()
             .any(|contract| contract.family == "y2026_8::simulation::SpawnRequest")
     );
+
+    // The fourth generation - clock re-mint plus the new router/telemetry/
+    // joypad contracts (task step 1).
+    let y2026_9_generation = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|generation| generation.name == "y2026_9")
+        .expect("y2026_9 should be in the generated manifest");
+    assert!(!y2026_9_generation.is_preview);
+    for family in [
+        "y2026_9::simulation::Clock",
+        "y2026_9::router::Metrics",
+        "y2026_9::telemetry::Host",
+        "y2026_9::telemetry::Process",
+        "y2026_9::joypad::Devices",
+        "y2026_9::joypad::Connect",
+        "y2026_9::joypad::Rescan",
+    ] {
+        assert!(
+            y2026_9_generation
+                .contracts
+                .iter()
+                .any(|contract| contract.family == family),
+            "{family} should be in the y2026_9 manifest entry"
+        );
+    }
 }
 
 #[test]
@@ -146,6 +237,15 @@ fn generated_role_const_matches_each_topic_role() {
     // State: telemetry the owning service publishes.
     assert_eq!(api::drive::State::ROLE, TopicRole::State);
     assert_eq!(y2026_7::battery::State::ROLE, TopicRole::State);
+    assert_eq!(y2026_9::simulation::Clock::ROLE, TopicRole::State);
+    assert_eq!(y2026_9::router::Metrics::ROLE, TopicRole::State);
+    assert_eq!(y2026_9::telemetry::Host::ROLE, TopicRole::State);
+    assert_eq!(y2026_9::telemetry::Process::ROLE, TopicRole::State);
+    assert_eq!(y2026_9::joypad::Devices::ROLE, TopicRole::State);
+
+    // Command: the new y2026_9 joypad commands the tool subscribes.
+    assert_eq!(y2026_9::joypad::Connect::ROLE, TopicRole::Command);
+    assert_eq!(y2026_9::joypad::Rescan::ROLE, TopicRole::Command);
 
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
@@ -333,6 +433,91 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
 }
 
 #[test]
+fn y2026_9_bodies_round_trip_through_messagepack() {
+    round_trip(&y2026_9::simulation::Clock {
+        now_ns: 1_000_000,
+        step: 100,
+        running: true,
+    });
+    round_trip(&y2026_9::router::TopicMetric {
+        topic: "y2026_1/drive/state".to_string(),
+        from_participant: "drive".to_string(),
+        ingress_rate_hz: 10.0,
+        count: 42,
+    });
+    round_trip(&y2026_9::router::Metrics {
+        topics: vec![y2026_9::router::TopicMetric {
+            topic: "y2026_1/drive/state".to_string(),
+            from_participant: "drive".to_string(),
+            ingress_rate_hz: 10.0,
+            count: 42,
+        }],
+        throughput_msg_s: 12.5,
+        window_ns: 1_000_000_000,
+    });
+    round_trip(&y2026_9::telemetry::Host {
+        cpu_pct: 12.5,
+        ram_used_bytes: 1_073_741_824,
+        ram_total_bytes: 17_179_869_184,
+        load_1m: 0.75,
+        window_ns: 1_000_000_000,
+    });
+    round_trip(&y2026_9::telemetry::Process {
+        cpu_pct: 3.5,
+        rss_bytes: 41_943_040,
+        window_ns: 1_000_000_000,
+    });
+    round_trip(&y2026_9::joypad::Device {
+        id: "xbox-controller-0".to_string(),
+        name: "Xbox Wireless Controller".to_string(),
+        connected: true,
+    });
+    round_trip(&y2026_9::joypad::Devices {
+        available: vec![y2026_9::joypad::Device {
+            id: "xbox-controller-0".to_string(),
+            name: "Xbox Wireless Controller".to_string(),
+            connected: true,
+        }],
+        selected: Some("xbox-controller-0".to_string()),
+        last_error: None,
+    });
+    round_trip(&y2026_9::joypad::Connect {
+        id: "xbox-controller-0".to_string(),
+    });
+    round_trip(&y2026_9::joypad::Rescan {});
+}
+
+#[test]
+fn y2026_9_telemetry_process_rejects_malformed_payloads() {
+    // `round_trip` only proves encode+decode are self-consistent - both drift
+    // together and it still passes. This asserts the decode side actually
+    // validates the wire bytes, so a corrupt/wrong-shape payload is surfaced as
+    // an error rather than silently accepted (the same guarantee the bus
+    // subscription path relies on; see the engine-side
+    // `y2026_9_process_subscription_counts_decode_errors` for the counted,
+    // through-a-subscription version).
+
+    // Corrupt MessagePack: 0xc1 is the format's never-used marker byte.
+    let corrupt = [0xc1u8, 0xc1, 0xc1];
+    assert!(
+        rmp_serde::from_slice::<y2026_9::telemetry::Process>(&corrupt).is_err(),
+        "corrupt MessagePack must not decode as telemetry::Process"
+    );
+
+    // Valid MessagePack of the WRONG shape: a sibling y2026_9 body whose named
+    // fields do not satisfy `Process { cpu_pct, rss_bytes, window_ns }`. It must
+    // be rejected, not coerced.
+    let wrong_shape = rmp_serde::to_vec_named(&y2026_9::joypad::Connect {
+        id: "not-a-process-sample".to_string(),
+    })
+    .unwrap();
+    assert!(
+        rmp_serde::from_slice::<y2026_9::telemetry::Process>(&wrong_shape).is_err(),
+        "a differently-shaped body must not decode as telemetry::Process"
+    );
+}
+
+#[test]
 fn component_capability_bodies_round_trip_through_messagepack() {
     let imu = api::component::imu::Sample {
         orientation: Some([1.0, 0.0, 0.0, 0.0]),
@@ -445,6 +630,34 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         y2026_8::topic::new().simulation().spawn().key(),
         "y2026_8/simulation/spawn"
+    );
+    assert_eq!(
+        y2026_9::topic::new().simulation().clock().key(),
+        "y2026_9/simulation/clock"
+    );
+    assert_eq!(
+        y2026_9::topic::new().router().metrics().key(),
+        "y2026_9/router/metrics"
+    );
+    assert_eq!(
+        y2026_9::topic::new().telemetry().host().key(),
+        "y2026_9/telemetry/host"
+    );
+    assert_eq!(
+        y2026_9::topic::new().telemetry().process().key(),
+        "y2026_9/telemetry/process"
+    );
+    assert_eq!(
+        y2026_9::topic::new().joypad().devices().key(),
+        "y2026_9/joypad/devices"
+    );
+    assert_eq!(
+        y2026_9::topic::new().joypad().connect().key(),
+        "y2026_9/joypad/connect"
+    );
+    assert_eq!(
+        y2026_9::topic::new().joypad().rescan().key(),
+        "y2026_9/joypad/rescan"
     );
     assert_eq!(api::topic::new().video().open().key(), "y2026_1/video/open");
     assert_eq!(

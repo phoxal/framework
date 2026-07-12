@@ -69,7 +69,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
 use crate::bus::{LogicalTime, QueryFailure, Subscriber};
@@ -80,12 +80,14 @@ use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, ParticipantLaunch};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
+use crate::participant::process_metrics::{self, ProcessMetricsPublisher};
 use crate::participant::scheduler::{
     AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
     StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::StepSchedule;
 use phoxal_api::y2026_1 as api;
+use phoxal_api::y2026_9;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
@@ -170,8 +172,8 @@ pub(crate) fn step_scheduler_for(
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
 /// the other server tasks, aborted at shutdown): this subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
-/// observes (`api::topic::new().simulation().clock()`, the CLIENT side of the
-/// `Simulator`'s owner-side publish - both sides format the identical
+/// observes (`y2026_9::topic::new().simulation().clock()`, the CLIENT side of
+/// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
 /// - calls [`SimulationClockHandle::advance`] with the sample's ENVELOPE
@@ -198,8 +200,9 @@ pub(crate) fn spawn_simulation_clock_feed(
 ) -> crate::Result<JoinHandle<()>> {
     let bus = bus.clone();
     Ok(tokio::spawn(async move {
-        let topic = api::topic::new().simulation().clock();
-        let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
+        let topic = y2026_9::topic::new().simulation().clock();
+        let subscriber = match Subscriber::<y2026_9::simulation::Clock>::new(&bus, &topic, 1).await
+        {
             Ok(subscriber) => subscriber,
             Err(error) => {
                 tracing::error!(
@@ -358,6 +361,7 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_lifecycle_inner<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
@@ -466,6 +470,16 @@ where
         }));
     }
 
+    // Per-participant process telemetry (D-telemetry): the `sysinfo` sampling
+    // runs entirely on a dedicated background task (its own timer,
+    // `spawn_blocking` refresh), so a resource sample can never delay the
+    // heartbeat or step loop. The lifecycle loop only publishes the
+    // already-computed sample it receives over the watch channel. The sampler
+    // task is aborted at shutdown alongside the server tasks.
+    let process_metrics = ProcessMetricsPublisher::attach(bus.clone());
+    let (mut process_metrics_rx, process_metrics_task) = process_metrics::spawn_sampler();
+    server_tasks.push(process_metrics_task);
+
     let shutdown = pin!(shutdown);
     heartbeat.set_readiness(api::presence::Readiness::Ready);
     heartbeat.publish(clock.now());
@@ -483,6 +497,8 @@ where
         &mut excl_rx,
         shutdown,
         heartbeat,
+        &process_metrics,
+        &mut process_metrics_rx,
         &watchdog,
         &mut managed_tasks,
     )
@@ -572,6 +588,8 @@ async fn main_loop<R, C, S>(
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
     heartbeat: &mut HeartbeatPublisher,
+    process_metrics: &ProcessMetricsPublisher,
+    process_metrics_rx: &mut watch::Receiver<Option<y2026_9::telemetry::Process>>,
     watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
@@ -595,11 +613,14 @@ where
         tokio::select! {
             // Order matters: shutdown first, then a managed-task fault (both are
             // "stop the loop" events and should preempt routine work), then the
-            // framework health tick, then a *due* step, then server queries.
-            // Health is cheap and must not be starved by an overloaded
-            // participant; due steps still take priority over a steady query
-            // backlog. `Some(..)` disables the query branch if the channel ever
-            // closes, so it never busy-loops.
+            // framework health tick, then a *due* step, then server queries, then
+            // the lowest-priority process-metrics publish last (a background task
+            // does the sampling; this branch only enqueues the already-computed
+            // sample, never allowed to preempt anything above it). Health is
+            // cheap and must not be starved by an overloaded participant; due
+            // steps still take priority over a steady query backlog. `Some(..)`
+            // disables the query branch if the channel ever closes, so it never
+            // busy-loops.
             biased;
             _ = &mut shutdown => return None,
             exit = managed_tasks.next_unexpected_exit() => {
@@ -658,6 +679,17 @@ where
                     commit_snapshot::<R>(participant, committed);
                 }
                 watchdog.feed();
+            }
+            // A fresh sample landed from the background sampler; publish the
+            // latest (this is a `state` contract, so latest wins). Once the
+            // sampler task ends (only at shutdown, or if it faults) `changed()`
+            // errors and this branch simply stops firing - no busy-loop, the
+            // loop keeps parking on the heartbeat tick above.
+            Ok(()) = process_metrics_rx.changed() => {
+                let sample = process_metrics_rx.borrow_and_update().clone();
+                if let Some(body) = sample {
+                    process_metrics.publish(clock.now(), body);
+                }
             }
         }
     }
@@ -951,9 +983,9 @@ mod tests {
         let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
         let bus = Bus::open(bus_config).await.expect("bus should open");
 
-        let clock_publisher = crate::bus::Publisher::<api::simulation::Clock>::new(
+        let clock_publisher = crate::bus::Publisher::<y2026_9::simulation::Clock>::new(
             bus.clone(),
-            &api::topic::internal::new(crate::bus::OwnerCap::__mint())
+            &y2026_9::topic::internal::new(crate::bus::OwnerCap::__mint())
                 .simulation()
                 .clock(),
         )
@@ -989,8 +1021,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 first_target,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: period_ns,
+                    step: 1,
                     running: true,
                 },
             )
@@ -1007,8 +1040,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 second_target,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: 2 * period_ns,
+                    step: 2,
                     running: false,
                 },
             )
@@ -1029,8 +1063,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 second_target,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: 2 * period_ns,
+                    step: 2,
                     running: true,
                 },
             )

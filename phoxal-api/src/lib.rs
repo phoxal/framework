@@ -1157,6 +1157,100 @@ phoxal_api_tree! {
             topic spawn: query SpawnRequest => SpawnSet;
         }
     }
+
+    // The fourth standalone sparse generation (y2026_1/y2026_7/y2026_8 are all
+    // shipped and frozen): re-mints `simulation::Clock` to add the
+    // authoritative `step` counter the CLI top bar reads directly, and mints
+    // the first `router`/`telemetry`/`joypad` contracts for the CLI-UX tool
+    // surface.
+    version y2026_9 {
+        simulation {
+            // Re-minted from y2026_1 to add the authoritative `step`. The CLI top
+            // bar reads `step` directly; `running` makes a paused sim an observed
+            // state, not inferred from silence. now_ns unchanged.
+            struct Clock {
+                now_ns: u64,
+                step: u64,
+                running: bool,
+            }
+
+            topic clock: state Clock;
+        }
+
+        router {
+            /// One topic's measured ingress over the sample window.
+            struct TopicMetric {
+                topic: String,
+                from_participant: String,
+                ingress_rate_hz: f32,
+                count: u64,
+            }
+
+            /// The router's measured message-flow snapshot. `window_ns` is the
+            /// measurement interval LENGTH (not a timestamp; production time is
+            /// the envelope `publish_at`, per the guide's logical-time
+            /// discipline).
+            struct Metrics {
+                topics: Vec<TopicMetric>,
+                throughput_msg_s: f32,
+                window_ns: u64,
+            }
+
+            topic metrics: state Metrics;
+        }
+
+        telemetry {
+            /// Host OS resource sample (published by the new tool-telemetry).
+            struct Host {
+                cpu_pct: f32,
+                ram_used_bytes: u64,
+                ram_total_bytes: u64,
+                load_1m: f32,
+                window_ns: u64,
+            }
+
+            /// One participant's OWN process resource sample (published by the
+            /// runner off the heartbeat loop). Subscriber demuxes by envelope
+            /// source, like `presence::Heartbeat`.
+            struct Process {
+                cpu_pct: f32,
+                rss_bytes: u64,
+                window_ns: u64,
+            }
+
+            topic host: state Host;
+            topic process: state Process;
+        }
+
+        joypad {
+            /// One gamepad the tool can see. `id` is a STABLE wire id the tool
+            /// assigns (name/guid-derived) - NOT a process-local gilrs id.
+            struct Device {
+                id: String,
+                name: String,
+                connected: bool,
+            }
+
+            /// The joypad tool's published device state.
+            struct Devices {
+                available: Vec<Device>,
+                selected: Option<String>,
+                last_error: Option<String>,
+            }
+
+            /// Client asks the tool to select/connect a device by its stable id.
+            struct Connect {
+                id: String,
+            }
+
+            /// Client asks the tool to re-enumerate devices.
+            struct Rescan {}
+
+            topic devices: state Devices;
+            topic connect: command Connect;
+            topic rescan: command Rescan;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -15,6 +15,7 @@ use anyhow::{Result, anyhow, bail};
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 use phoxal_api::y2026_8 as open_api;
+use phoxal_api::y2026_9;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
@@ -39,7 +40,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
-    clock: Publisher<api::simulation::Clock>,
+    clock: Publisher<y2026_9::simulation::Clock>,
     control: Subscriber<api::simulation::Control>,
     robot_pose: Publisher<api::simulation::RobotPose>,
     contact: Publisher<api::simulation::Contact>,
@@ -70,7 +71,7 @@ impl WebotsSupervisorSimulator {
         let cap = ctx.owner_capability();
 
         let clock = ctx
-            .publisher(api::topic::internal::new(cap).simulation().clock())
+            .publisher(y2026_9::topic::internal::new(cap).simulation().clock())
             .await?;
         let control = ctx
             .subscriber(api::topic::internal::new(cap).simulation().control(), 32)
@@ -132,8 +133,9 @@ impl WebotsSupervisorSimulator {
         api.clock
             .publish_at(
                 LogicalTime::new(self.epoch, self.time_ns),
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: self.time_ns,
+                    step: self.step_index,
                     running: self.running,
                 },
             )
@@ -496,7 +498,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<api::simulation::Clock>(ContractRole::Publish),
+        mapping::<y2026_9::simulation::Clock>(ContractRole::Publish),
         mapping::<api::simulation::Control>(ContractRole::Subscribe),
         mapping::<api::simulation::RobotPose>(ContractRole::Publish),
         mapping::<api::simulation::Contact>(ContractRole::Publish),

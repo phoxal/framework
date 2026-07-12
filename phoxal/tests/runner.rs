@@ -35,6 +35,7 @@ use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::ContractBody;
 use phoxal_api::y2026_1 as api;
 use phoxal_api::y2026_7;
+use phoxal_api::y2026_9;
 
 static STEPS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -683,7 +684,7 @@ impl WorldSimulator {
     }
 }
 
-#[phoxal::tool(id = "robot-inspector", config = ())]
+#[phoxal::tool(id = "robot-inspector")]
 struct RobotInspector;
 
 #[phoxal::behavior]
@@ -693,6 +694,47 @@ impl RobotInspector {
         let _ = ctx.robot();
         Ok((Self, ()))
     }
+}
+
+#[derive(serde::Deserialize, phoxal::Config)]
+struct ConfiguredInspectorConfig {
+    label: String,
+}
+
+#[phoxal::tool(id = "configured-inspector", config = ConfiguredInspectorConfig)]
+struct ConfiguredInspector;
+
+#[phoxal::behavior]
+impl ConfiguredInspector {
+    #[setup]
+    async fn setup(
+        _ctx: &mut SetupContext<Self>,
+        config: Self::Config,
+    ) -> Result<(Self, Self::Api)> {
+        let _ = config.label;
+        Ok((Self, ()))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configless_tool_accepts_absent_config_but_configured_tool_rejects_it() {
+    let configless = ParticipantLaunch::local("robot-inspector", "robot");
+    phoxal::participant::run_with::<RobotInspector, _, _>(configless, RealClock::new(), async {})
+        .await
+        .expect("a tool with omitted config type should accept absent PHOXAL_CONFIG");
+
+    let configured = ParticipantLaunch::local("configured-inspector", "robot");
+    let error = phoxal::participant::run_with::<ConfiguredInspector, _, _>(
+        configured,
+        RealClock::new(),
+        async {},
+    )
+    .await
+    .expect_err("a tool with an explicit non-optional config should require PHOXAL_CONFIG");
+    assert!(
+        error.to_string().contains("invalid type: null"),
+        "unexpected absent-config error: {error:#}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -896,9 +938,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // same `simulation().clock()` builder `simulator/webots-supervisor`
     // uses, so this test proves the runner subscribes the identical wire key
     // a real supervisor publishes (not a look-alike topic).
-    let clock_publisher = Publisher::<api::simulation::Clock>::new(
+    let clock_publisher = Publisher::<y2026_9::simulation::Clock>::new(
         bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
+        &y2026_9::topic::internal::new(OwnerCap::__mint())
             .simulation()
             .clock(),
     )
@@ -942,8 +984,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             clock_publisher
                 .publish_at(
                     at,
-                    api::simulation::Clock {
+                    y2026_9::simulation::Clock {
                         now_ns: step * period_ns,
+                        step,
                         running: true,
                     },
                 )
@@ -977,8 +1020,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         clock_publisher
             .publish_at(
                 paused_at,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: 6 * period_ns,
+                    step: 6,
                     running: false,
                 },
             )
@@ -997,8 +1041,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         clock_publisher
             .publish_at(
                 reset_at,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: 0,
+                    step: 0,
                     running: true,
                 },
             )
@@ -1015,8 +1060,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         clock_publisher
             .publish_at(
                 first_after_reset,
-                api::simulation::Clock {
+                y2026_9::simulation::Clock {
                     now_ns: period_ns,
+                    step: 1,
                     running: true,
                 },
             )
