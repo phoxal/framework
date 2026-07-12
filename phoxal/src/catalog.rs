@@ -124,8 +124,7 @@ pub struct Artifact {
     /// when the catalog was generated `--metadata-only` (no tarballs exist).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub targets: BTreeMap<String, Blob>,
-    /// The target-independent component asset bundle, present iff the crate
-    /// ships one.
+    /// The component asset bundle, present iff the crate ships one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assets: Option<Blob>,
 }

@@ -153,9 +153,8 @@ pub(crate) fn write_release_plan(path: &Path, plan: &ReleasePlan) -> Result<()> 
 }
 
 /// Target selection uses [`OfficialArtifact::supported_target_triples`].
-/// Binary work is grouped into one row per target, while components' additional
-/// target-independent bundles are kept in [`ReleasePlan::assets`] for the
-/// workflow's single assets job.
+/// Binary work is grouped into one row per target, while components' bundles
+/// are kept in [`ReleasePlan::assets`] for the workflow's single assets job.
 pub(crate) fn build_release_plan(
     workspace: &Workspace,
     artifact_releases_json: &str,
@@ -185,7 +184,7 @@ pub(crate) fn build_release_plan(
                 package: artifact.package.clone(),
                 version: artifact.version.clone(),
             };
-            if target == crate::workspace::TARGET_INDEPENDENT_SCOPE {
+            if target == crate::workspace::ASSETS_SCOPE {
                 assets.push(package);
             } else {
                 packages_by_target
@@ -278,8 +277,8 @@ fn write_github_output(plan: &ReleasePlan) -> Result<()> {
         .context("--github-output requires GITHUB_OUTPUT to be set")?;
     let matrix =
         serde_json::to_string(&plan.matrix).context("failed to serialize release matrix")?;
-    let assets = serde_json::to_string(&plan.assets)
-        .context("failed to serialize target-independent release packages")?;
+    let assets =
+        serde_json::to_string(&plan.assets).context("failed to serialize asset packages")?;
     let mut output = OpenOptions::new()
         .create(true)
         .append(true)
@@ -458,7 +457,7 @@ mod tests {
     fn component_plans_as_one_artifact_with_binary_and_asset_target_triples() -> Result<()> {
         // The component-as-one-crate migration (design doc §9): a `Component`
         // is one package/version carrying both its binary targets and its
-        // target-independent asset bundle, so it plans as a single
+        // asset bundle, so it plans as a single
         // `ReleasePlanArtifact` whose `target_triples` cover both outputs.
         let workspace = workspace_with(vec![artifact(
             "phoxal-component-ddsm115",
@@ -481,7 +480,7 @@ mod tests {
                 "aarch64-apple-darwin",
                 "aarch64-unknown-linux-gnu",
                 "aarch64-unknown-linux-musl",
-                "target-independent",
+                "assets",
                 "x86_64-unknown-linux-gnu",
                 "x86_64-unknown-linux-musl"
             ]

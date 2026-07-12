@@ -1,10 +1,10 @@
 //! `cargo xtask release assets` - packages one or more [`ArtifactKind::Component`]
-//! crates' target-independent asset bundles (`component.yaml`,
+//! crates' asset bundles (`component.yaml`,
 //! `simulation.yaml`, `structure.urdf`, `meshes/` - design doc
 //! `organization/tmp/ci-release-refactor/design.md` §9). No cargo build, no
 //! binary, no `--target` flag: this is a plain file-tarball job, so any host
 //! runner works (`crate::workspace::runner_for_target`'s
-//! [`TARGET_INDEPENDENT_SCOPE`] arm).
+//! [`ASSETS_SCOPE`] arm).
 //!
 //! Kept as a separate verb from `release package` (which is binaries-only):
 //! the two outputs have unrelated build steps, and the workflow's assets job
@@ -72,8 +72,8 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
             let artifact = workspace.official_artifact(package_name)?;
             if !artifact.kind.ships_assets() {
                 bail!(
-                    "{} is a {} package; only a Component package ships a \
-                     target-independent asset bundle",
+                    "{} is a {} package; only a Component package ships an \
+                     asset bundle",
                     artifact.package,
                     artifact.kind
                 );

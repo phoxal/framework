@@ -26,9 +26,7 @@ use phoxal::check::{ParticipantContractSurface, check_coherence};
 
 use crate::release::package::{self, PackagedOutput};
 use crate::release::plan::{ReleasePlan, ReleaseScope, load_release_plan};
-use crate::workspace::{
-    OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
-};
+use crate::workspace::{ASSETS_SCOPE, OfficialArtifact, Workspace, require_nonempty_artifacts};
 
 const DEFAULT_CATALOG_OUT: &str = "target/xtask/catalog/catalog.json";
 const DEFAULT_PACKAGE_DIR: &str = "target/xtask/release";
@@ -378,8 +376,8 @@ fn merge_artifacts(
 /// Whether `artifact`'s *current* version has facts on disk this run: in
 /// `MetadataOnly` mode every artifact always does (the entry is schema-only);
 /// in `PackageOutputs` mode, whether at least one packaged tarball
-/// (binary target or, for a [`ArtifactKind::Component`], the target-independent
-/// asset bundle) is present in `--package-dir`.
+/// (binary target or, for a [`ArtifactKind::Component`], the asset bundle) is
+/// present in `--package-dir`.
 fn artifact_has_new_facts(artifact: &OfficialArtifact, options: &GenerateOptions) -> Result<bool> {
     match options.mode {
         InputMode::MetadataOnly => Ok(true),
@@ -396,14 +394,14 @@ fn packaged_tarball_path(artifact: &OfficialArtifact, package_dir: &Path, triple
 }
 
 /// `artifact`'s binary target triples this run - every [`OfficialArtifact::supported_target_triples`]
-/// entry except [`TARGET_INDEPENDENT_SCOPE`] (a [`ArtifactKind::Component`]'s
+/// entry except [`ASSETS_SCOPE`] (a [`ArtifactKind::Component`]'s
 /// asset-bundle output is never a binary and has no `#[derive(phoxal::Api)]`
 /// section to extract).
 fn binary_target_triples(artifact: &OfficialArtifact) -> Vec<String> {
     artifact
         .supported_target_triples()
         .into_iter()
-        .filter(|triple| triple != TARGET_INDEPENDENT_SCOPE)
+        .filter(|triple| triple != ASSETS_SCOPE)
         .collect()
 }
 
@@ -418,7 +416,7 @@ fn build_entry(artifact: &OfficialArtifact, options: &GenerateOptions) -> Result
             }
             let output = package::read_packaged_output(artifact, &options.package_dir, &triple)?;
             let blob = blob_from_output(options, &output);
-            if triple == TARGET_INDEPENDENT_SCOPE {
+            if triple == ASSETS_SCOPE {
                 assets = Some(blob);
             } else {
                 targets.insert(triple, blob);
@@ -500,7 +498,7 @@ mod tests {
     fn cold_start_assembles_from_facts_alone() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let assets = component_artifact("ddsm115", "0.1.0");
-        write_packaged_fixture(temp.path(), &assets, TARGET_INDEPENDENT_SCOPE)?;
+        write_packaged_fixture(temp.path(), &assets, ASSETS_SCOPE)?;
 
         let options = base_options(temp.path());
         let merged = merge_artifacts(std::slice::from_ref(&assets), &options)?;
@@ -523,7 +521,7 @@ mod tests {
     fn merge_appends_new_versions_without_dropping_old_ones() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let assets_v2 = component_artifact("ddsm115", "0.2.0");
-        write_packaged_fixture(temp.path(), &assets_v2, TARGET_INDEPENDENT_SCOPE)?;
+        write_packaged_fixture(temp.path(), &assets_v2, ASSETS_SCOPE)?;
 
         let previous = Catalog::new(
             fixture_build(),
@@ -560,7 +558,7 @@ mod tests {
     fn merge_refreshes_a_rebuilt_unchanged_version() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let assets = component_artifact("ddsm115", "0.1.0");
-        write_packaged_fixture(temp.path(), &assets, TARGET_INDEPENDENT_SCOPE)?;
+        write_packaged_fixture(temp.path(), &assets, ASSETS_SCOPE)?;
         let previous = Catalog::new(
             fixture_build(),
             vec![CatalogArtifact {
@@ -598,7 +596,7 @@ mod tests {
     fn regenerating_from_the_same_facts_is_idempotent() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let assets = component_artifact("ddsm115", "0.1.0");
-        write_packaged_fixture(temp.path(), &assets, TARGET_INDEPENDENT_SCOPE)?;
+        write_packaged_fixture(temp.path(), &assets, ASSETS_SCOPE)?;
 
         let options = base_options(temp.path());
         let first = merge_artifacts(std::slice::from_ref(&assets), &options)?;
@@ -619,7 +617,7 @@ mod tests {
                 version: assets.version.clone(),
                 tag: assets.release_tag(),
                 kind: ArtifactKind::Component,
-                target_triples: vec![TARGET_INDEPENDENT_SCOPE.to_string()],
+                target_triples: vec![ASSETS_SCOPE.to_string()],
             }],
             matrix: crate::release::plan::ReleaseMatrix {
                 include: Vec::new(),

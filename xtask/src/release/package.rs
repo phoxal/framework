@@ -7,9 +7,7 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
 use crate::release::metadata::{self, ParticipantMeta};
-use crate::workspace::{
-    OfficialArtifact, TARGET_INDEPENDENT_SCOPE, Workspace, require_nonempty_artifacts,
-};
+use crate::workspace::{ASSETS_SCOPE, OfficialArtifact, Workspace, require_nonempty_artifacts};
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
@@ -62,11 +60,11 @@ pub fn run(args: Args) -> Result<()> {
     let host_triple = host_triple(workspace.root())?;
     let target_triple = args.target.clone().unwrap_or_else(|| host_triple.clone());
 
-    if target_triple == TARGET_INDEPENDENT_SCOPE {
+    if target_triple == ASSETS_SCOPE {
         bail!(
-            "'{TARGET_INDEPENDENT_SCOPE}' is not a valid --target for `release package` \
+            "'{ASSETS_SCOPE}' is not a valid --target for `release package` \
              (it packages binaries only); use `release assets` for a component's \
-             target-independent asset bundle"
+             asset bundle"
         );
     }
     for artifact in &selected {
@@ -172,19 +170,19 @@ pub(crate) fn package_artifact(
     Ok(PackagedArtifact { tarball, checksum })
 }
 
-/// The bundle files a [`ArtifactKind::Component`] crate's target-independent
-/// asset output includes, relative to `artifact.crate_dir` (the flattened
-/// `component/<id>/` crate directory, design doc §9): `component.yaml`,
-/// `simulation.yaml`, `structure.urdf` when present, and the full `meshes/`
-/// tree. This is an explicit allowlist, so the crate's own files (`Cargo.toml`,
-/// `src/`, `CHANGELOG.md`) are naturally excluded without special-casing them.
+/// The bundle files a [`ArtifactKind::Component`] crate's asset output includes,
+/// relative to `artifact.crate_dir` (the flattened `component/<id>/` crate
+/// directory, design doc §9): `component.yaml`, `simulation.yaml`,
+/// `structure.urdf` when present, and the full `meshes/` tree. This is an
+/// explicit allowlist, so the crate's own files (`Cargo.toml`, `src/`,
+/// `CHANGELOG.md`) are naturally excluded without special-casing them.
 const COMPONENT_ASSETS_TOP_LEVEL_FILES: [&str; 3] =
     ["component.yaml", "simulation.yaml", "structure.urdf"];
 const COMPONENT_ASSETS_TREE_DIRS: [&str; 1] = ["meshes"];
 
-/// Packages a component crate's target-independent asset bundle: no cargo
-/// build, no binary, no `emit-apis` sidecar - just a deterministic tarball of
-/// the component's asset files plus a checksum (docs #21, design doc §9).
+/// Packages a component crate's asset bundle: no cargo build, no binary, no
+/// `emit-apis` sidecar - just a deterministic tarball of the component's asset
+/// files plus a checksum (docs #21, design doc §9).
 /// The `release assets` verb's implementation; `artifact` must be a
 /// [`ArtifactKind::Component`] that [`ArtifactKind::ships_assets`].
 pub(crate) fn package_component_asset_bundle(
@@ -193,13 +191,13 @@ pub(crate) fn package_component_asset_bundle(
 ) -> Result<PackagedArtifact> {
     if !artifact.kind.ships_assets() {
         bail!(
-            "{} is a {} package; only a Component package ships a target-independent asset bundle",
+            "{} is a {} package; only a Component package ships an asset bundle",
             artifact.package,
             artifact.kind
         );
     }
 
-    let stem = asset_stem(artifact, TARGET_INDEPENDENT_SCOPE);
+    let stem = asset_stem(artifact, ASSETS_SCOPE);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
     let checksum = out_dir.join(format!("{stem}.tar.zst.sha256"));
 
@@ -596,8 +594,8 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
 
 /// The release asset filename stem: a filesystem-safe projection of the
 /// provider-qualified `package` (docs #21), not the Cargo crate name. A
-/// target-independent asset bundle ([`TARGET_INDEPENDENT_SCOPE`]) carries no
-/// trailing scope token - it is the one release output for its
+/// asset bundle ([`ASSETS_SCOPE`]) carries no trailing scope token - it is the
+/// one release output for its
 /// `(package, version)` with no sibling to disambiguate from by filename, and
 /// the packaged-output reader ([`crate::catalog::generate`]) classifies by
 /// the release plan's `target_triples`, never the filename. A real target
@@ -606,7 +604,7 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
 pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
     let package = crate::workspace::filesystem_safe_package(&artifact.package);
     let version = &artifact.version;
-    if host_triple == TARGET_INDEPENDENT_SCOPE {
+    if host_triple == ASSETS_SCOPE {
         format!("{package}-v{version}")
     } else {
         format!("{package}-v{version}-{host_triple}")
@@ -792,7 +790,7 @@ mod tests {
     }
 
     #[test]
-    fn asset_stem_drops_the_triple_suffix_for_the_target_independent_scope() {
+    fn asset_stem_drops_the_triple_suffix_for_the_assets_scope() {
         let artifact = OfficialArtifact {
             package: "phoxal/component-ddsm115".to_string(),
             package_name: Some("phoxal-component-ddsm115".to_string()),
@@ -805,7 +803,7 @@ mod tests {
         };
 
         assert_eq!(
-            asset_stem(&artifact, TARGET_INDEPENDENT_SCOPE),
+            asset_stem(&artifact, ASSETS_SCOPE),
             "phoxal-component-ddsm115-v0.1.0"
         );
     }
