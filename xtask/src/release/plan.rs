@@ -526,4 +526,47 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn real_workspace_plans_webots_only_for_available_platforms() -> Result<()> {
+        let workspace = Workspace::discover()?;
+        let plan = build_release_plan(
+            &workspace,
+            &releases(Vec::new())?,
+            ReleaseScope::AllArtifacts,
+        )?;
+        let expected_webots_targets = vec![
+            "aarch64-apple-darwin".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+
+        for package in [
+            "phoxal/simulator-webots-controller",
+            "phoxal/simulator-webots-supervisor",
+        ] {
+            let artifact = plan
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.package == package)
+                .with_context(|| format!("release plan is missing {package}"))?;
+            assert_eq!(artifact.target_triples, expected_webots_targets);
+        }
+
+        let normal_service = plan
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.package == "phoxal/service-drive")
+            .context("release plan is missing phoxal/service-drive")?;
+        assert_eq!(
+            normal_service.target_triples,
+            vec![
+                "aarch64-apple-darwin",
+                "aarch64-unknown-linux-gnu",
+                "aarch64-unknown-linux-musl",
+                "x86_64-unknown-linux-gnu",
+                "x86_64-unknown-linux-musl",
+            ]
+        );
+        Ok(())
+    }
 }

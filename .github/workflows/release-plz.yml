@@ -247,6 +247,8 @@ jobs:
     needs: release
     if: needs.release.outputs.released == 'true'
     runs-on: ${{ matrix.runner }}
+    env:
+      WEBOTS_VERSION: R2025a
     permissions:
       contents: read
     strategy:
@@ -283,6 +285,38 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Install Webots on macOS
+        if: matrix.target == 'aarch64-apple-darwin' && contains(toJson(matrix.packages), 'simulator-webots')
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/webots-${WEBOTS_VERSION}.dmg"
+          mount_point="$RUNNER_TEMP/webots-volume"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/cyberbotics/webots/releases/download/${WEBOTS_VERSION}/webots-${WEBOTS_VERSION}.dmg"
+          mkdir -p "$mount_point"
+          hdiutil attach "$archive" -nobrowse -readonly -mountpoint "$mount_point"
+          trap 'hdiutil detach "$mount_point" >/dev/null' EXIT
+          sudo ditto "$mount_point/Webots.app" /Applications/Webots.app
+          test -d /Applications/Webots.app/Contents/lib/controller
+          echo "WEBOTS_HOME=/Applications/Webots.app" >> "$GITHUB_ENV"
+
+      - name: Install Webots on Linux x86_64
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && contains(toJson(matrix.packages), 'simulator-webots')
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgcc-s1 libstdc++6
+          archive="$RUNNER_TEMP/webots-${WEBOTS_VERSION}-x86-64.tar.bz2"
+          install_root="$RUNNER_TEMP/webots-${WEBOTS_VERSION}"
+          curl --fail --location --retry 3 \
+            --output "$archive" \
+            "https://github.com/cyberbotics/webots/releases/download/${WEBOTS_VERSION}/webots-${WEBOTS_VERSION}-x86-64.tar.bz2"
+          mkdir -p "$install_root"
+          tar -xjf "$archive" -C "$install_root"
+          test -d "$install_root/webots/lib/controller"
+          echo "WEBOTS_HOME=$install_root/webots" >> "$GITHUB_ENV"
 
       # One `release package` call for the whole row: it issues a single
       # `cargo auditable build -p A -p B ...` (Cargo compiles the row's crates
