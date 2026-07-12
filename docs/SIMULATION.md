@@ -67,6 +67,25 @@ Observed over a bus probe of the live session:
   battery.
 - SIGINT shut the session down cleanly with no orphaned processes.
 
+Observed-readiness and failure propagation (added after the initial record, now
+part of the tested path):
+
+- Readiness is OBSERVED, not assumed: every participant reaches `Ready` only when
+  its own `presence/heartbeat` is seen going Ready. A 60s startup barrier requires
+  all expected participants Ready plus a strictly-advancing `simulation/clock`
+  sample (a present-but-frozen clock does not pass). All 39 participants reached
+  Ready this way.
+- Simulation-managed failure is detected and propagated: killing the Webots
+  controller mid-run marked it `Failed` within ~6s (heartbeat staleness), the
+  session tore down automatically, and `simulate` exited non-zero with
+  `graph ended unhealthy; failed participants: …` - no operator intervention. A
+  crashed-then-restarted service that recovers does not trip this.
+
+The same single-robot graph also runs on the plain `phoxal-cli simulate default`
+path (vendored artifacts, no `--env dev`): the Webots simulator binaries are built
+against Webots in release CI, so the downloaded controllers are runtime-linked;
+39/39 reached Ready in ~12s with a clean shutdown.
+
 The framework participant suite and the CLI suite were green at the time of this
 record.
 
