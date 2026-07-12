@@ -80,6 +80,7 @@ use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, ParticipantLaunch};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
+use crate::participant::process_metrics::{self, ProcessMetricsPublisher};
 use crate::participant::scheduler::{
     AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
     StepScheduler, duration_to_nanos_saturating,
@@ -316,6 +317,10 @@ where
 
     let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), launch.participant_id.clone());
     heartbeat.publish(effective_clock.now());
+    // Separate from the heartbeat publisher above on purpose (D-telemetry):
+    // its own timer, its own publisher, so a slow `sysinfo` sample can never
+    // delay the liveness beacon.
+    let mut process_metrics = ProcessMetricsPublisher::attach(bus.clone());
 
     let result = run_lifecycle_inner::<R, C, S>(
         bus,
@@ -325,6 +330,7 @@ where
         schedule,
         shutdown,
         &mut heartbeat,
+        &mut process_metrics,
     )
     .await;
     if result.is_err() {
@@ -360,6 +366,7 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_lifecycle_inner<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
@@ -368,6 +375,7 @@ async fn run_lifecycle_inner<R, C, S>(
     schedule: Option<StepSchedule>,
     shutdown: S,
     heartbeat: &mut HeartbeatPublisher,
+    process_metrics: &mut ProcessMetricsPublisher,
 ) -> crate::Result<()>
 where
     R: ParticipantLifecycle,
@@ -485,6 +493,7 @@ where
         &mut excl_rx,
         shutdown,
         heartbeat,
+        process_metrics,
         &watchdog,
         &mut managed_tasks,
     )
@@ -574,6 +583,7 @@ async fn main_loop<R, C, S>(
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
     heartbeat: &mut HeartbeatPublisher,
+    process_metrics: &mut ProcessMetricsPublisher,
     watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
@@ -592,13 +602,18 @@ where
         advance_logical_deadline(now, period, 0)
     });
     let mut next_heartbeat = tokio::time::Instant::now();
+    // Own timer, deliberately separate from `next_heartbeat`: process-metrics
+    // sampling must never be able to delay the heartbeat tick above (D-telemetry).
+    let mut next_process_metrics = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
             // Order matters: shutdown first, then a managed-task fault (both are
             // "stop the loop" events and should preempt routine work), then the
-            // framework health tick, then a *due* step, then server queries.
-            // Health is cheap and must not be starved by an overloaded
+            // framework health tick, then a *due* step, then server queries, then
+            // the lowest-priority background process-metrics sample last (best-
+            // effort diagnostic telemetry - never allowed to preempt anything
+            // above it). Health is cheap and must not be starved by an overloaded
             // participant; due steps still take priority over a steady query
             // backlog. `Some(..)` disables the query branch if the channel ever
             // closes, so it never busy-loops.
@@ -661,6 +676,10 @@ where
                 }
                 watchdog.feed();
             }
+            _ = process_metrics_tick(next_process_metrics) => {
+                process_metrics.sample_and_publish(clock.now());
+                advance_deadline(&mut next_process_metrics, process_metrics::PROCESS_METRICS_INTERVAL);
+            }
         }
     }
 }
@@ -681,6 +700,14 @@ pub(crate) fn advance_logical_deadline(
 }
 
 pub(crate) async fn heartbeat_tick(next: tokio::time::Instant) {
+    tokio::time::sleep_until(next).await;
+}
+
+/// Same shape as [`heartbeat_tick`], on its own deadline (D-telemetry): kept
+/// as a distinct function/timer pair rather than reusing `heartbeat_tick` so
+/// the two cadences can never be accidentally coupled by sharing one deadline
+/// variable.
+pub(crate) async fn process_metrics_tick(next: tokio::time::Instant) {
     tokio::time::sleep_until(next).await;
 }
 
