@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.3](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.2...phoxal-api-v0.20.3) - 2026-07-13
+
+### Added
+
+- *(cli-ux)* y2026_9 contracts + telemetry/joypad/router tools (framework half) ([#252](https://github.com/phoxal/framework/pull/252))
+
 ## [0.20.2](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.1...phoxal-api-v0.20.2) - 2026-07-12
 
 ### Added
