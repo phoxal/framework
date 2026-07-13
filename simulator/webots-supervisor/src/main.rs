@@ -428,9 +428,13 @@ impl NativeBackend {
 
     fn read_contact(&self) -> Result<api::simulation::Contact> {
         let node = self.supervisor.get_self().map_err(|error| anyhow!(error))?;
+        // Webots deprecated `wb_supervisor_node_get_number_of_contact_points`
+        // in favor of the single call that returns the points and their
+        // count. `webots-rs::Node::contact_points` wraps that replacement API.
         let count = node
-            .number_of_contact_points(true)
-            .map_err(|error| anyhow!(error))?;
+            .contact_points(true)
+            .map_err(|error| anyhow!(error))?
+            .len();
         Ok(api::simulation::Contact {
             in_contact: count > 0,
             detail: (count > 0).then(|| format!("{count} contact point(s)")),
