@@ -66,6 +66,10 @@ struct PadEntry {
     gilrs_id: Option<GamepadId>,
     name: String,
     connected: bool,
+    /// Whether gilrs has a standardized mapping for the controls this tool
+    /// reads. An enumerated but unmapped pad must never look usable while
+    /// silently producing zero commands.
+    mapped: bool,
 }
 
 /// All pads the tool has observed, plus which one is selected for the
@@ -164,6 +168,19 @@ async fn run_joypad(
     }
 }
 
+fn has_compatible_mapping(gamepad: &Gamepad<'_>) -> bool {
+    mapping_supports_manual_controls([
+        gamepad.button_code(Button::LeftTrigger).is_some(),
+        gamepad.button_code(Button::LeftTrigger2).is_some(),
+        gamepad.button_code(Button::RightTrigger).is_some(),
+        gamepad.button_code(Button::RightTrigger2).is_some(),
+    ])
+}
+
+fn mapping_supports_manual_controls(controls: [bool; 4]) -> bool {
+    controls.into_iter().all(std::convert::identity)
+}
+
 fn selected_gilrs_id(registry: &Registry) -> Option<GamepadId> {
     let selected = registry.selected.as_ref()?;
     registry.entries.get(selected)?.gilrs_id
@@ -201,7 +218,11 @@ fn apply_event(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId, event: &Ev
     match event {
         EventType::Connected => {
             let stable_id = observe(gilrs, registry, id);
-            if registry.selected.is_none() {
+            let mapped = registry
+                .entries
+                .get(&stable_id)
+                .is_some_and(|entry| entry.mapped);
+            if registry.selected.is_none() && mapped {
                 registry.selected = Some(stable_id);
                 registry.last_error = None;
             }
@@ -217,9 +238,15 @@ fn apply_event(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId, event: &Ev
 /// republishes `Devices` (that republish IS the ack).
 fn handle_connect(registry: &mut Registry, id: &str) {
     match registry.entries.get(id) {
-        Some(entry) if entry.connected => {
+        Some(entry) if entry.connected && entry.mapped => {
             registry.selected = Some(id.to_string());
             registry.last_error = None;
+        }
+        Some(entry) if entry.connected => {
+            registry.last_error = Some(format!(
+                "device '{}' has no compatible control mapping",
+                entry.name
+            ));
         }
         Some(_) => {
             registry.last_error = Some(format!("device '{id}' is not connected"));
@@ -260,7 +287,7 @@ fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) {
         .selected
         .as_ref()
         .and_then(|id| registry.entries.get(id))
-        .map(|entry| entry.connected)
+        .map(|entry| entry.connected && entry.mapped)
         .unwrap_or(false);
     if !selected_connected {
         if let Some(selected) = registry.selected.take() {
@@ -268,7 +295,10 @@ fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) {
         }
     }
     if registry.selected.is_none() {
-        if let Some((first_id, _)) = gilrs.gamepads().next() {
+        if let Some((first_id, _)) = gilrs
+            .gamepads()
+            .find(|(_, gamepad)| has_compatible_mapping(gamepad))
+        {
             if let Some((stable_id, _)) = registry
                 .entries
                 .iter()
@@ -284,17 +314,28 @@ fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) {
 /// stable id for the same physical pad (matched by [`base_device_id`]) when
 /// one exists, and return that stable id.
 fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
-    if let Some((stable_id, _)) = registry
+    let gamepad = gilrs.gamepad(id);
+    let name = gamepad.name().to_string();
+    let mapped = has_compatible_mapping(&gamepad);
+
+    if let Some((stable_id, entry)) = registry
         .entries
-        .iter()
+        .iter_mut()
         .find(|(_, entry)| entry.gilrs_id == Some(id))
     {
+        entry.name = name;
+        entry.connected = true;
+        entry.mapped = mapped;
+        if !mapped {
+            registry.last_error = Some(format!(
+                "device '{}' has no compatible control mapping",
+                entry.name
+            ));
+        }
         return stable_id.clone();
     }
 
-    let gamepad = gilrs.gamepad(id);
     let base = base_device_id(gamepad.uuid(), gamepad.name());
-    let name = gamepad.name().to_string();
 
     if let Some((stable_id, entry)) = registry
         .entries
@@ -303,7 +344,14 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
     {
         entry.gilrs_id = Some(id);
         entry.connected = true;
+        entry.mapped = mapped;
         entry.name = name;
+        if !mapped {
+            registry.last_error = Some(format!(
+                "device '{}' has no compatible control mapping",
+                entry.name
+            ));
+        }
         return stable_id.clone();
     }
 
@@ -315,8 +363,13 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
             gilrs_id: Some(id),
             name,
             connected: true,
+            mapped,
         },
     );
+    if !mapped {
+        let name = &registry.entries[&stable_id].name;
+        registry.last_error = Some(format!("device '{name}' has no compatible control mapping"));
+    }
     stable_id
 }
 
@@ -532,6 +585,7 @@ mod tests {
                 gilrs_id: None,
                 name: "Pad".to_string(),
                 connected: true,
+                mapped: true,
             },
         );
         assert_eq!(assign_stable_id(&entries, "abc123"), "abc123#2");
@@ -543,8 +597,38 @@ mod tests {
                 gilrs_id: None,
                 name: "Pad".to_string(),
                 connected: true,
+                mapped: true,
             },
         );
         assert_eq!(assign_stable_id(&entries, "abc123"), "abc123#3");
+    }
+
+    #[test]
+    fn an_unmapped_device_cannot_be_selected_silently() {
+        let mut registry = Registry::default();
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Unknown Pad".to_string(),
+                connected: true,
+                mapped: false,
+            },
+        );
+
+        handle_connect(&mut registry, "pad");
+
+        assert!(registry.selected.is_none());
+        assert_eq!(
+            registry.last_error.as_deref(),
+            Some("device 'Unknown Pad' has no compatible control mapping")
+        );
+    }
+
+    #[test]
+    fn all_manual_controls_are_required_for_compatibility() {
+        assert!(!mapping_supports_manual_controls([true, true, true, false]));
+        assert!(mapping_supports_manual_controls([true; 4]));
     }
 }
