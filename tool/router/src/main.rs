@@ -15,11 +15,25 @@ const SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC: &str = "serial_listen_transport_unavai
 /// The mirror-subscription measurement window: per-topic counts are rolled up
 /// and republished on this cadence.
 const METRICS_WINDOW: Duration = Duration::from_secs(1);
-/// Scopes the mirror subscription to phoxal's generation-qualified application
-/// traffic (`y2026_*/...`, wherever it falls under a namespace/robot key
-/// root) and away from Zenoh's own admin/liveliness keys - bounding what the
-/// router pays to mirror-inspect.
-const MIRROR_KEY_EXPR: &str = "**/y2026_*/**";
+/// The mirror subscription key. Zenoh rejects partial-chunk wildcards
+/// (`y2026_*` is invalid: `*` may only be a whole chunk), so we subscribe to
+/// EVERYTHING with the valid `**` and scope to phoxal's generation-qualified
+/// application traffic in code via [`is_generation_topic`], which also drops
+/// Zenoh's own admin/liveliness keys (`@/...`).
+const MIRROR_KEY_EXPR: &str = "**";
+
+/// A mirrored key counts toward `Metrics` only if it is generation-qualified
+/// phoxal traffic - some chunk is `y2026_<n>` (e.g. `y2026_1/drive/state`, or
+/// `<ns>/<robot>/y2026_1/...`). This is the in-code replacement for the scoping
+/// the (invalid) `y2026_*` key chunk was meant to do, and it excludes Zenoh
+/// admin keys (`@/...`) and any non-phoxal traffic.
+fn is_generation_topic(key: &str) -> bool {
+    key.split('/').any(|chunk| {
+        chunk
+            .strip_prefix("y2026_")
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
 
 /// Launch-time router configuration carried in `PHOXAL_CONFIG`.
 #[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
@@ -190,6 +204,11 @@ async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Sessi
         async move {
             while let Ok(sample) = mirror_subscriber.recv_async().await {
                 let topic = sample.key_expr().to_string();
+                // `**` mirrors every key; keep only generation-qualified phoxal
+                // traffic (drops Zenoh admin/liveliness keys and anything else).
+                if !is_generation_topic(&topic) {
+                    continue;
+                }
                 let from_participant = participant_from_attachment(&sample);
                 record_sample(&ingest_counters, topic, from_participant);
             }
@@ -445,6 +464,27 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mirror_key_expr_is_a_valid_zenoh_key_expr() {
+        // Regression: `**/y2026_*/**` was REJECTED by zenoh at runtime
+        // (partial-chunk wildcard), crashing the router on startup. The key
+        // must parse as a valid `KeyExpr` so `declare_subscriber` succeeds.
+        zenoh::key_expr::KeyExpr::try_from(MIRROR_KEY_EXPR)
+            .expect("MIRROR_KEY_EXPR must be a valid zenoh key expression");
+    }
+
+    #[test]
+    fn is_generation_topic_scopes_to_phoxal_generations() {
+        assert!(is_generation_topic("y2026_1/drive/state"));
+        assert!(is_generation_topic("ns/rover-01/y2026_9/router/metrics"));
+        assert!(is_generation_topic("y2026_12/telemetry/host"));
+        // Not generation-qualified / admin / malformed:
+        assert!(!is_generation_topic("@/router/admin"));
+        assert!(!is_generation_topic("some/other/topic"));
+        assert!(!is_generation_topic("y2026_/x")); // no digits after prefix
+        assert!(!is_generation_topic("y2026_1x/x")); // non-digit tail
+    }
 
     #[test]
     fn default_listen_is_always_present() {
