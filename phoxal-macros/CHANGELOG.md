@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.2](https://github.com/phoxal/framework/compare/phoxal-macros-v0.21.1...phoxal-macros-v0.21.2) - 2026-07-13
+
+### Added
+
+- *(cli-ux)* y2026_9 contracts + telemetry/joypad/router tools (framework half) ([#252](https://github.com/phoxal/framework/pull/252))
+
 ## [0.21.1](https://github.com/phoxal/framework/compare/phoxal-macros-v0.21.0...phoxal-macros-v0.21.1) - 2026-07-12
 
 ### Added
