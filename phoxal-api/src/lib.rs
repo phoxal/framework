@@ -1251,6 +1251,21 @@ phoxal_api_tree! {
             topic rescan: command Rescan;
         }
     }
+
+    // The fifth standalone sparse generation. y2026_9 has shipped and is
+    // frozen, so the clock shape without an explicit pause flag is minted
+    // here. Publication itself means the world advanced; silence means it did
+    // not.
+    version y2026_10 {
+        simulation {
+            struct Clock {
+                now_ns: u64,
+                step: u64,
+            }
+
+            topic clock: state Clock;
+        }
+    }
 }
 
 #[cfg(test)]

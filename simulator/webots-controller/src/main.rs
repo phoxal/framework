@@ -19,7 +19,7 @@ use phoxal::model::simulation::v0::Simulation as SimulationSpec;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_9;
+use phoxal_api::y2026_10;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +60,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
-    simulation_clock: Subscriber<y2026_9::simulation::Clock>,
+    simulation_clock: Subscriber<y2026_10::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
     encoders: Vec<Publisher<api::component::encoder::Sample>>,
     imus: Vec<Publisher<api::component::imu::Sample>>,
@@ -94,7 +94,7 @@ impl WebotsControllerSimulator {
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let simulation_clock = ctx
-            .subscriber(y2026_9::topic::new().simulation().clock(), 4)
+            .subscriber(y2026_10::topic::new().simulation().clock(), 4)
             .await?;
 
         let mut motor_commands = Vec::new();
@@ -899,7 +899,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<y2026_9::simulation::Clock>(ContractRole::Subscribe),
+        mapping::<y2026_10::simulation::Clock>(ContractRole::Subscribe),
         mapping::<api::component::motor::Command>(ContractRole::Subscribe),
         mapping::<api::component::encoder::Sample>(ContractRole::Publish),
         mapping::<api::component::imu::Sample>(ContractRole::Publish),
@@ -966,7 +966,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.topic.contains("/simulation/"))
                 .all(|c| {
-                    c.topic == y2026_9::simulation::Clock::TOPIC
+                    c.topic == y2026_10::simulation::Clock::TOPIC
                         && c.role == phoxal::participant::ContractRole::Subscribe
                 }),
             "controller may only subscribe to simulation/clock: {contracts:?}"

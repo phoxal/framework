@@ -35,7 +35,7 @@ use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::ContractBody;
 use phoxal_api::y2026_1 as api;
 use phoxal_api::y2026_7;
-use phoxal_api::y2026_9;
+use phoxal_api::y2026_10;
 
 static STEPS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -920,8 +920,8 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 /// 2. each clock advance releases exactly one more step, in step with the
 ///    published `now_ns` (not wall time - this test's clock samples are
 ///    spaced far apart in real time to make that unambiguous);
-/// 3. a sample with `running == false` pauses release even though logical
-///    time in that same sample's envelope did advance.
+/// 3. publishing no new sample leaves the participant stopped at its last
+///    logical step.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     SIM_CLOCK_STEPS.store(0, Ordering::Relaxed);
@@ -938,9 +938,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // same `simulation().clock()` builder `simulator/webots-supervisor`
     // uses, so this test proves the runner subscribes the identical wire key
     // a real supervisor publishes (not a look-alike topic).
-    let clock_publisher = Publisher::<y2026_9::simulation::Clock>::new(
+    let clock_publisher = Publisher::<y2026_10::simulation::Clock>::new(
         bus.clone(),
-        &y2026_9::topic::internal::new(OwnerCap::__mint())
+        &y2026_10::topic::internal::new(OwnerCap::__mint())
             .simulation()
             .clock(),
     )
@@ -984,10 +984,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             clock_publisher
                 .publish_at(
                     at,
-                    y2026_9::simulation::Clock {
+                    y2026_10::simulation::Clock {
                         now_ns: step * period_ns,
                         step,
-                        running: true,
                     },
                 )
                 .await
@@ -1014,39 +1013,20 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             assert_eq!(published.metadata.produced_at_ns, at.time_ns());
         }
 
-        // Pause: even though the next sample's envelope logical time DOES
-        // advance, `running == false` must withhold release.
-        let paused_at = LogicalTime::new(0, 6 * period_ns);
-        clock_publisher
-            .publish_at(
-                paused_at,
-                y2026_9::simulation::Clock {
-                    now_ns: 6 * period_ns,
-                    step: 6,
-                    running: false,
-                },
-            )
-            .await
-            .expect("paused clock sample should publish");
+        // No publication means no world advance and therefore no service
+        // step.
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(
             SIM_CLOCK_STEPS.load(Ordering::Relaxed),
             5,
-            "a paused (running=false) sample must not release a step even though logical time advanced"
+            "the service must not advance without a new simulation/clock sample"
         );
 
         // Reset to a new epoch at time zero. The old epoch's pending target
         // must be discarded without releasing a step or spinning the loop.
         let reset_at = LogicalTime::new(1, 0);
         clock_publisher
-            .publish_at(
-                reset_at,
-                y2026_9::simulation::Clock {
-                    now_ns: 0,
-                    step: 0,
-                    running: true,
-                },
-            )
+            .publish_at(reset_at, y2026_10::simulation::Clock { now_ns: 0, step: 0 })
             .await
             .expect("reset clock sample should publish");
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1060,10 +1040,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         clock_publisher
             .publish_at(
                 first_after_reset,
-                y2026_9::simulation::Clock {
+                y2026_10::simulation::Clock {
                     now_ns: period_ns,
                     step: 1,
-                    running: true,
                 },
             )
             .await
