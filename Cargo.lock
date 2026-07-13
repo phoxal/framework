@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-router"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "phoxal",
