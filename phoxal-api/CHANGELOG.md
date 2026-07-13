@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.4](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.3...phoxal-api-v0.20.4) - 2026-07-13
+
+### Added
+
+- *(simulation)* mint advancing clock as y2026_10 ([#256](https://github.com/phoxal/framework/pull/256))
+
 ## [0.20.3](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.2...phoxal-api-v0.20.3) - 2026-07-13
 
 ### Added
