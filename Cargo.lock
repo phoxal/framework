@@ -2648,7 +2648,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-supervisor"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2663,7 +2663,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "gilrs",
  "phoxal",
