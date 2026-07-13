@@ -88,6 +88,7 @@ use crate::participant::scheduler::{
 use crate::participant::spec::StepSchedule;
 use phoxal_api::y2026_1 as api;
 use phoxal_api::y2026_9;
+use phoxal_api::y2026_10;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
@@ -172,7 +173,7 @@ pub(crate) fn step_scheduler_for(
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
 /// the other server tasks, aborted at shutdown): this subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
-/// observes (`y2026_9::topic::new().simulation().clock()`, the CLIENT side of
+/// observes (`y2026_10::topic::new().simulation().clock()`, the CLIENT side of
 /// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
@@ -182,8 +183,10 @@ pub(crate) fn step_scheduler_for(
 ///   (epoch bump, `now_ns` back to 0) is conveyed correctly: `LogicalTime`'s
 ///   derived `Ord` is lexicographic on `(epoch, time_ns)`, so a bumped epoch
 ///   always advances even though `time_ns` drops back to 0.
-/// - pauses the scheduler on `running == false`, resumes it on
-///   `running == true` (idempotent either way).
+///
+/// Every received sample represents one completed world advance. If the
+/// simulator stops publishing, logical time simply stops advancing; no
+/// separate pause flag is needed.
 ///
 /// The task owns `handle` for its whole lifetime and runs until the
 /// subscriber's underlying bus session closes; the caller aborts it
@@ -200,8 +203,8 @@ pub(crate) fn spawn_simulation_clock_feed(
 ) -> crate::Result<JoinHandle<()>> {
     let bus = bus.clone();
     Ok(tokio::spawn(async move {
-        let topic = y2026_9::topic::new().simulation().clock();
-        let subscriber = match Subscriber::<y2026_9::simulation::Clock>::new(&bus, &topic, 1).await
+        let topic = y2026_10::topic::new().simulation().clock();
+        let subscriber = match Subscriber::<y2026_10::simulation::Clock>::new(&bus, &topic, 1).await
         {
             Ok(subscriber) => subscriber,
             Err(error) => {
@@ -221,11 +224,6 @@ pub(crate) fn spawn_simulation_clock_feed(
         while let Ok(received) = subscriber.recv().await {
             let at = LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns);
             handle.advance(at);
-            if received.body.running {
-                handle.resume();
-            } else {
-                handle.pause();
-            }
         }
     }))
 }
@@ -974,18 +972,17 @@ mod tests {
     ///
     /// Publishes synthetic `simulation::Clock` samples directly onto an
     /// in-process bus (standing in for the Webots supervisor) and asserts:
-    /// the scheduler releases a tick per advance, in the published epoch's
+    /// the scheduler releases a tick per sample, in the published epoch's
     /// domain (a reset - epoch bump - is observed even though `now_ns` drops
-    /// back to 0), and a `running = false` sample withholds release until a
-    /// later `running = true` sample resumes it.
+    /// back to 0), and no further tick releases while no sample is published.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn simulation_clock_feed_drives_the_scheduler_from_published_samples() {
         let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
         let bus = Bus::open(bus_config).await.expect("bus should open");
 
-        let clock_publisher = crate::bus::Publisher::<y2026_9::simulation::Clock>::new(
+        let clock_publisher = crate::bus::Publisher::<y2026_10::simulation::Clock>::new(
             bus.clone(),
-            &y2026_9::topic::internal::new(crate::bus::OwnerCap::__mint())
+            &y2026_10::topic::internal::new(crate::bus::OwnerCap::__mint())
                 .simulation()
                 .clock(),
         )
@@ -1021,10 +1018,9 @@ mod tests {
         clock_publisher
             .publish_at(
                 first_target,
-                y2026_9::simulation::Clock {
+                y2026_10::simulation::Clock {
                     now_ns: period_ns,
                     step: 1,
-                    running: true,
                 },
             )
             .await
@@ -1034,20 +1030,9 @@ mod tests {
             .expect("scheduler should release once the feed advances past the target");
         assert_eq!(tick.fired_at, first_target);
 
-        // Publish a paused sample whose envelope logical time is past the next
-        // target: release must still be withheld.
+        // No new sample means no world advance and therefore no scheduler
+        // release.
         let second_target = LogicalTime::new(0, 2 * period_ns);
-        clock_publisher
-            .publish_at(
-                second_target,
-                y2026_9::simulation::Clock {
-                    now_ns: 2 * period_ns,
-                    step: 2,
-                    running: false,
-                },
-            )
-            .await
-            .expect("paused clock sample should publish");
         let still_pending = tokio::time::timeout(
             Duration::from_millis(200),
             scheduler.wait_until(second_target),
@@ -1055,25 +1040,23 @@ mod tests {
         .await;
         assert!(
             still_pending.is_err(),
-            "running=false must withhold release even though logical time already reached the target"
+            "the scheduler must remain still while no new clock sample arrives"
         );
 
-        // Resume (still at the same logical time, `running` flips back true):
-        // the withheld tick should now release.
+        // The next published world step releases the withheld tick.
         clock_publisher
             .publish_at(
                 second_target,
-                y2026_9::simulation::Clock {
+                y2026_10::simulation::Clock {
                     now_ns: 2 * period_ns,
                     step: 2,
-                    running: true,
                 },
             )
             .await
-            .expect("resume clock sample should publish");
+            .expect("second clock sample should publish");
         let tick = tokio::time::timeout(release_guard, scheduler.wait_until(second_target))
             .await
-            .expect("scheduler should release once resumed");
+            .expect("scheduler should release on the next clock sample");
         assert_eq!(tick.fired_at, second_target);
 
         feed_task.abort();

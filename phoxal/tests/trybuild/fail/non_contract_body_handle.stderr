@@ -10,6 +10,7 @@ help: the trait `ContractBody` is not implemented for `NotABody`
  4 | struct NotABody;
    | ^^^^^^^^^^^^^^^
    = help: the following other types implement trait `ContractBody`:
+             phoxal_api::y2026_10::simulation::Clock
              phoxal_api::y2026_1::asset::GetRequest
              phoxal_api::y2026_1::asset::GetResponse
              phoxal_api::y2026_1::bus::uplink::State
@@ -17,5 +18,4 @@ help: the trait `ContractBody` is not implemented for `NotABody`
              phoxal_api::y2026_1::component::camera::Frame
              phoxal_api::y2026_1::component::depth::Frame
              phoxal_api::y2026_1::component::emergency_stop::State
-             phoxal_api::y2026_1::component::encoder::Sample
            and $N others

@@ -15,7 +15,7 @@ use anyhow::{Result, anyhow, bail};
 use phoxal::prelude::*;
 use phoxal_api::y2026_1 as api;
 use phoxal_api::y2026_8 as open_api;
-use phoxal_api::y2026_9;
+use phoxal_api::y2026_10;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
@@ -40,7 +40,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
-    clock: Publisher<y2026_9::simulation::Clock>,
+    clock: Publisher<y2026_10::simulation::Clock>,
     control: Subscriber<api::simulation::Control>,
     robot_pose: Publisher<api::simulation::RobotPose>,
     contact: Publisher<api::simulation::Contact>,
@@ -71,7 +71,7 @@ impl WebotsSupervisorSimulator {
         let cap = ctx.owner_capability();
 
         let clock = ctx
-            .publisher(y2026_9::topic::internal::new(cap).simulation().clock())
+            .publisher(y2026_10::topic::internal::new(cap).simulation().clock())
             .await?;
         let control = ctx
             .subscriber(api::topic::internal::new(cap).simulation().control(), 32)
@@ -126,20 +126,22 @@ impl WebotsSupervisorSimulator {
             self.step_index = self.step_index.saturating_add(1);
             let at = LogicalTime::new(self.epoch, self.time_ns);
             self.publish_outputs(api, at, outputs).await?;
+
+            // Publishing is the advancement signal. When the world is paused
+            // there is no new clock sample; consumers simply remain at their
+            // last logical time until the next completed Webots step.
+            api.clock
+                .publish_at(
+                    at,
+                    y2026_10::simulation::Clock {
+                        now_ns: self.time_ns,
+                        step: self.step_index,
+                    },
+                )
+                .await?;
         } else {
             self.dt_ns = self.dt_ns.max(step.dt_ns());
         }
-
-        api.clock
-            .publish_at(
-                LogicalTime::new(self.epoch, self.time_ns),
-                y2026_9::simulation::Clock {
-                    now_ns: self.time_ns,
-                    step: self.step_index,
-                    running: self.running,
-                },
-            )
-            .await?;
 
         if !self.running {
             tracing::trace!(target: "simulator_webots_supervisor", time_ns = self.time_ns, "simulation paused");
@@ -498,7 +500,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<y2026_9::simulation::Clock>(ContractRole::Publish),
+        mapping::<y2026_10::simulation::Clock>(ContractRole::Publish),
         mapping::<api::simulation::Control>(ContractRole::Subscribe),
         mapping::<api::simulation::RobotPose>(ContractRole::Publish),
         mapping::<api::simulation::Contact>(ContractRole::Publish),

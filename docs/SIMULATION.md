@@ -1,7 +1,7 @@
 # Simulation
 
-`phoxal-cli simulate <world>` runs a robot's graph host-natively against a live
-Webots session.
+`phoxal-cli simulation run <world>` runs a robot's graph host-natively against
+a live Webots session.
 Everything is a native process; there is no container runtime.
 
 ## How it works
@@ -34,19 +34,21 @@ They self-drive through `wb_robot_step` (both spawn `synchronization TRUE`, so
 Webots does not advance until each has stepped) and therefore run on the real
 step scheduler (`ClockMode::Real`).
 The supervisor derives logical simulation time from Webots and publishes it on
-`simulation/clock`.
+the `y2026_10/simulation/clock` contract after each completed world step. The
+payload is `{ now_ns, step }`: publication itself is the advancement signal,
+and silence means Webots has not advanced. There is no separate pause flag.
 
 Every other participant (services, and in a live robot the component drivers)
 runs on `ClockMode::Simulation`: its `#[step]` is released by the
 `simulation/clock` feed and its `produced_at_ns` is stamped from the same
-simulation-time source (`SimulationClock`), so cross-participant staleness checks
+simulation-time source, so cross-participant staleness checks
 compare timestamps in one domain.
 A pure-bus participant seeds its simulation scheduler at logical zero, because the
 feed publishes 0-based simulation time and logical time only advances forward.
 
 ## Acceptance record - single robot (2026-07-12)
 
-Command: `phoxal-cli simulate default --env dev` in the `robot-v1` reference
+Command: `phoxal-cli simulation run default --env dev` in the `robot-v1` reference
 project, host-native against Webots R2025a on macOS.
 
 Observed over a bus probe of the live session:
@@ -71,20 +73,20 @@ Observed-readiness and failure propagation (added after the initial record, now
 part of the tested path):
 
 - Readiness is OBSERVED, not assumed: every participant reaches `Ready` only when
-  its own `presence/heartbeat` is seen going Ready. A 60s startup barrier requires
-  all expected participants Ready plus a strictly-advancing `simulation/clock`
-  sample (a present-but-frozen clock does not pass). All 39 participants reached
-  Ready this way.
+  its own `presence/heartbeat` is seen going Ready. Startup requires all expected
+  participants Ready; clock telemetry is observational and never gates session
+  readiness. All 39 participants reached Ready this way.
 - Simulation-managed failure is detected and propagated: killing the Webots
   controller mid-run marked it `Failed` within ~6s (heartbeat staleness), the
-  session tore down automatically, and `simulate` exited non-zero with
+  session tore down automatically, and `simulation run` exited non-zero with
   `graph ended unhealthy; failed participants: …` - no operator intervention. A
   crashed-then-restarted service that recovers does not trip this.
 
-The same single-robot graph also runs on the plain `phoxal-cli simulate default`
-path (vendored artifacts, no `--env dev`): the Webots simulator binaries are built
-against Webots in release CI, so the downloaded controllers are runtime-linked;
-39/39 reached Ready in ~12s with a clean shutdown.
+The same single-robot graph also runs on the plain
+`phoxal-cli simulation run default` path (vendored artifacts, no `--env dev`):
+the Webots simulator binaries are built against Webots in release CI, so the
+downloaded controllers are runtime-linked; 39/39 reached Ready in ~12s with a
+clean shutdown.
 
 The framework participant suite and the CLI suite were green at the time of this
 record.

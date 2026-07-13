@@ -4,7 +4,7 @@
 
 use crate::y2026_1 as api;
 use crate::{ApiVersion, ContractBody};
-use crate::{y2026_7, y2026_8, y2026_9};
+use crate::{y2026_7, y2026_8, y2026_9, y2026_10};
 use phoxal_bus::TopicRole;
 
 #[test]
@@ -157,6 +157,20 @@ fn y2026_9_is_a_standalone_generation_for_clock_router_telemetry_and_joypad() {
 }
 
 #[test]
+fn y2026_10_is_a_standalone_generation_for_advancing_clock_samples() {
+    const { assert!(!<y2026_10::Api as ApiVersion>::IS_PREVIEW) };
+    assert_eq!(<y2026_10::Api as ApiVersion>::ID, "y2026_10");
+    assert_eq!(
+        <y2026_10::simulation::Clock as ContractBody>::TOPIC,
+        "y2026_10/simulation/clock"
+    );
+    assert_eq!(
+        y2026_10::topic::new().simulation().clock().key(),
+        "y2026_10/simulation/clock"
+    );
+}
+
+#[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     let generation = crate::API_CONTRACT_MANIFEST
         .iter()
@@ -221,6 +235,18 @@ fn generated_contract_manifest_lists_contract_shapes() {
             "{family} should be in the y2026_9 manifest entry"
         );
     }
+
+    let y2026_10_generation = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|generation| generation.name == "y2026_10")
+        .expect("y2026_10 should be in the generated manifest");
+    assert!(!y2026_10_generation.is_preview);
+    assert!(
+        y2026_10_generation
+            .contracts
+            .iter()
+            .any(|contract| contract.family == "y2026_10::simulation::Clock")
+    );
 }
 
 #[test]
@@ -238,6 +264,7 @@ fn generated_role_const_matches_each_topic_role() {
     assert_eq!(api::drive::State::ROLE, TopicRole::State);
     assert_eq!(y2026_7::battery::State::ROLE, TopicRole::State);
     assert_eq!(y2026_9::simulation::Clock::ROLE, TopicRole::State);
+    assert_eq!(y2026_10::simulation::Clock::ROLE, TopicRole::State);
     assert_eq!(y2026_9::router::Metrics::ROLE, TopicRole::State);
     assert_eq!(y2026_9::telemetry::Host::ROLE, TopicRole::State);
     assert_eq!(y2026_9::telemetry::Process::ROLE, TopicRole::State);
@@ -488,6 +515,14 @@ fn y2026_9_bodies_round_trip_through_messagepack() {
 }
 
 #[test]
+fn y2026_10_clock_round_trips_through_messagepack() {
+    round_trip(&y2026_10::simulation::Clock {
+        now_ns: 1_000_000,
+        step: 100,
+    });
+}
+
+#[test]
 fn y2026_9_telemetry_process_rejects_malformed_payloads() {
     // `round_trip` only proves encode+decode are self-consistent - both drift
     // together and it still passes. This asserts the decode side actually
@@ -634,6 +669,10 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         y2026_9::topic::new().simulation().clock().key(),
         "y2026_9/simulation/clock"
+    );
+    assert_eq!(
+        y2026_10::topic::new().simulation().clock().key(),
+        "y2026_10/simulation/clock"
     );
     assert_eq!(
         y2026_9::topic::new().router().metrics().key(),

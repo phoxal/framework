@@ -81,11 +81,10 @@ the only source of keys, and the wire body never appears in the key
   `RealClock` reads the host-wide UNIX-epoch domain (so cross-process staleness
   checks are comparable) and latches monotonically; `TestClock` is an injectable
   fake for tests.
-- The simulation clock source (subscribing the supervisor's authoritative
-  `simulation/clock`) is **not yet implemented**: requesting `ClockMode::Simulation`
-  is rejected today and lands with the Webots port.
-  Next-step (`S` -> `S+1`) simulation visibility is part of that future work, not a
-  current behavior.
+- In `ClockMode::Simulation`, the runner subscribes to the supervisor's
+  authoritative `y2026_10/simulation/clock`. Each received sample advances the
+  scheduler to the envelope's logical time. If Webots does not step, the
+  supervisor publishes nothing and participant scheduling remains still.
 
 ## Participant authoring
 
