@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-tool-joypad"
-version = "0.1.7"
+version = "0.1.8"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
