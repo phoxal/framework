@@ -32,6 +32,7 @@
 //! Before the first release, callers omit `--baseline-sha` and this gracefully
 //! no-ops rather than failing a crate that has no registry baseline.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -120,9 +121,64 @@ fn frozen_generation_violations(
     let current_spans = parse_generation_spans(current_source)
         .context("failed to parse the current phoxal_api_tree! invocation")?;
 
+    // One-time namespace migration: the legacy dated releases predate the
+    // stable-vN/preview-vN lifecycle. Accept their removal only when the
+    // candidate contains a byte-equivalent stable `v1`, an explicit preview
+    // `v2`, and no remaining dated module. Once a `vN` release is the registry
+    // baseline this branch is unreachable and the normal frozen-span rule below
+    // applies unchanged.
+    let legacy_namespace_transition = baseline_spans
+        .iter()
+        .any(|span| span.name == "y2026_1" && !span.is_preview)
+        && current_spans
+            .iter()
+            .any(|span| span.name == "v1" && !span.is_preview)
+        && current_spans
+            .iter()
+            .any(|span| span.name == "v2" && span.is_preview)
+        && current_spans
+            .iter()
+            .all(|span| !span.name.starts_with("y2026_"));
+
     let mut violations = Vec::new();
+    if legacy_namespace_transition {
+        let expected_v2 = baseline_spans
+            .iter()
+            .filter(|span| span.name.starts_with("y2026_") && span.name != "y2026_1")
+            .fold(BTreeMap::new(), |mut contracts, span| {
+                // Later dated versions replace an earlier declaration of the
+                // same contract path (notably simulation::Clock).
+                contracts.extend(contract_surface(&span.tokens));
+                contracts
+            });
+        let current_v2 = current_spans
+            .iter()
+            .find(|span| span.name == "v2")
+            .expect("legacy migration predicate requires v2");
+        if contract_surface(&current_v2.tokens) != expected_v2 {
+            violations.push(
+                "  - preview 'v2' must preserve the complete latest contract surface from the post-y2026_1 dated versions"
+                    .to_string(),
+            );
+        }
+    }
+
     for baseline in baseline_spans.iter().filter(|span| !span.is_preview) {
         match current_spans.iter().find(|span| span.name == baseline.name) {
+            None if legacy_namespace_transition && baseline.name == "y2026_1" => {
+                let current_v1 = current_spans
+                    .iter()
+                    .find(|span| span.name == "v1")
+                    .expect("legacy migration predicate requires v1");
+                let migrated_v1 = baseline.text.replacen("version y2026_1", "version v1", 1);
+                if current_v1.text != migrated_v1 {
+                    violations.push(
+                        "  - legacy generation 'y2026_1' must move to stable 'v1' without changing its frozen contract tree"
+                            .to_string(),
+                    );
+                }
+            }
+            None if legacy_namespace_transition && baseline.name.starts_with("y2026_") => {}
             None => violations.push(format!(
                 "  - generation '{}' was released (frozen) at {baseline_desc} but is missing now",
                 baseline.name
@@ -172,6 +228,129 @@ struct GenerationSpan {
     name: String,
     is_preview: bool,
     text: String,
+    tokens: TokenStream,
+}
+
+/// Canonical contract/type declarations in one version, keyed by node path.
+/// Comments and formatting are intentionally ignored; body fields, enum
+/// variants, and topic role/type declarations remain in the token strings.
+fn contract_surface(tokens: &TokenStream) -> BTreeMap<String, String> {
+    fn collect(
+        tokens: TokenStream,
+        path: &mut Vec<String>,
+        contracts: &mut BTreeMap<String, String>,
+    ) {
+        let trees: Vec<TokenTree> = tokens.into_iter().collect();
+        let mut index = 0;
+        let mut attributes = Vec::new();
+        while index < trees.len() {
+            if matches!(trees.get(index), Some(TokenTree::Punct(punct)) if punct.as_char() == '#')
+                && let Some(TokenTree::Group(attribute)) = trees.get(index + 1)
+                && attribute.delimiter() == Delimiter::Bracket
+            {
+                let attribute_tokens = attribute.stream().to_string();
+                if !attribute_tokens.starts_with("doc =") {
+                    attributes.push(format!("#[{attribute_tokens}]"));
+                }
+                index += 2;
+                continue;
+            }
+
+            let TokenTree::Ident(ident) = &trees[index] else {
+                attributes.clear();
+                index += 1;
+                continue;
+            };
+            let word = ident.to_string();
+
+            if word == "struct" || word == "enum" {
+                let Some(TokenTree::Ident(name)) = trees.get(index + 1) else {
+                    index += 1;
+                    continue;
+                };
+                let Some((end, group)) =
+                    trees[index + 2..]
+                        .iter()
+                        .enumerate()
+                        .find_map(|(offset, tree)| match tree {
+                            TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+                                Some((index + 2 + offset, group))
+                            }
+                            _ => None,
+                        })
+                else {
+                    index += 1;
+                    continue;
+                };
+                let mut key_parts = path.clone();
+                key_parts.push(name.to_string());
+                let key = key_parts.join("::");
+                contracts.insert(
+                    key,
+                    format!(
+                        "{} {word} {name} {{ {} }}",
+                        attributes.join(" "),
+                        group.stream()
+                    ),
+                );
+                attributes.clear();
+                index = end + 1;
+                continue;
+            }
+
+            if word == "topic" {
+                let Some(leaf) = trees.get(index + 1) else {
+                    index += 1;
+                    continue;
+                };
+                let end = trees[index..]
+                    .iter()
+                    .position(
+                        |tree| matches!(tree, TokenTree::Punct(punct) if punct.as_char() == ';'),
+                    )
+                    .map_or(trees.len() - 1, |offset| index + offset);
+                let declaration = trees[index..=end]
+                    .iter()
+                    .cloned()
+                    .collect::<TokenStream>()
+                    .to_string();
+                contracts.insert(format!("{}::topic::{leaf}", path.join("::")), declaration);
+                attributes.clear();
+                index = end + 1;
+                continue;
+            }
+
+            let mut body_index = index + 1;
+            let mut path_segment = word.clone();
+            if matches!(trees.get(body_index), Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Parenthesis)
+            {
+                let TokenTree::Group(parameters) = &trees[body_index] else {
+                    unreachable!("the matches! above requires a group");
+                };
+                path_segment.push('(');
+                path_segment.push_str(&parameters.stream().to_string());
+                path_segment.push(')');
+                body_index += 1;
+            }
+            if let Some(TokenTree::Group(group)) = trees.get(body_index)
+                && group.delimiter() == Delimiter::Brace
+            {
+                path.push(path_segment);
+                collect(group.stream(), path, contracts);
+                path.pop();
+                attributes.clear();
+                index = body_index + 1;
+                continue;
+            }
+
+            attributes.clear();
+            index += 1;
+        }
+    }
+
+    let mut contracts = BTreeMap::new();
+    collect(tokens.clone(), &mut Vec::new(), &mut contracts);
+    contracts
 }
 
 fn parse_generation_spans(source: &str) -> Result<Vec<GenerationSpan>> {
@@ -254,6 +433,7 @@ fn scan_generation_spans(source: &str, tokens: TokenStream) -> Result<Vec<Genera
             name,
             is_preview,
             text,
+            tokens: group.stream(),
         });
         index += 1;
     }
@@ -381,6 +561,138 @@ mod tests {
         let violations =
             frozen_generation_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_dated_generations_migrate_to_stable_v1_and_preview_v2() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_rejects_changes_to_the_v1_contract_tree() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f64 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("without changing"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_rejects_an_incomplete_v2_contract_surface() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {}",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("complete latest contract surface"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_uses_the_latest_shape_for_a_re_minted_contract() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_9 {\n        simulation { struct Clock { now_ns: u64, step: u64, running: bool } topic clock: state Clock; }\n    }\n    version y2026_10 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_rejects_an_obsolete_shape_for_a_re_minted_contract() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_9 {\n        simulation { struct Clock { now_ns: u64, step: u64, running: bool } topic clock: state Clock; }\n    }\n    version y2026_10 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        simulation { struct Clock { now_ns: u64, step: u64, running: bool } topic clock: state Clock; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("complete latest contract surface"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_rejects_changed_wire_attributes_in_v2() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { #[serde(rename_all = \"snake_case\")] enum State { Charging, Empty } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { #[serde(rename_all = \"camelCase\")] enum State { Charging, Empty } topic state: state State; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("complete latest contract surface"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_ignores_changed_contract_docs_in_v2() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { /// Old dated wording.\n        struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { /// New preview wording.\n        struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_rejects_changed_node_dynamics_in_v2() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery(instance) { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("complete latest contract surface"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_migration_requires_preview_v2() -> Result<()> {
+        let baseline = wrap(
+            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+        );
+        let violations =
+            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        assert_eq!(violations.len(), 1);
+        assert!(violations[0].contains("missing"));
         Ok(())
     }
 
