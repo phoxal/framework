@@ -20,7 +20,7 @@ mod tracker;
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 use crate::detector::{DetectorHead, DetectorInput, PlaceholderDetector, detect_with};
 use crate::frames::{
@@ -318,11 +318,13 @@ mod tests {
 
         assert_eq!(cameras.len(), 3);
         assert_eq!(depths.len(), 1);
-        assert!(cameras.iter().any(|camera| camera.camera_topic().key()
-            == "y2026_1/component/front_camera/camera/rgb/frame"));
+        assert!(
+            cameras.iter().any(|camera| camera.camera_topic().key()
+                == "v1/component/front_camera/camera/rgb/frame")
+        );
         assert_eq!(
             depths[0].depth_topic().key(),
-            "y2026_1/component/front_camera/depth/depth/frame"
+            "v1/component/front_camera/depth/depth/frame"
         );
     }
 

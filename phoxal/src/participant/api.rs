@@ -4,12 +4,12 @@
 //! the traits here.
 //!
 //! `Api` names a participant-authored struct of bus handles, and a participant
-//! may mix contract generations freely across its `Api` fields - there is no
+//! may mix contract versions freely across its `Api` fields - there is no
 //! per-participant API version ceiling.
 //!
 //! The runner's own system contracts (heartbeat/presence/simulation clock) do
 //! not resolve a version through this trait hierarchy either:
-//! `participant::runner` hardcodes `use phoxal_api::y2026_1 as api;`,
+//! `participant::runner` hardcodes `use phoxal_api::v1 as api;`,
 //! independent of any participant's chosen `Api`.
 //!
 //! # What this slice defers
@@ -58,11 +58,11 @@ use phoxal_bus::Bus;
 /// uses to build a **resolved, version-qualified** contract fragment that the
 /// participant attribute embeds in its linker-section metadata static.
 ///
-/// The problem this solves: a participant may alias a generation module, so a
+/// The problem this solves: a participant may alias a version module, so a
 /// macro-time string literal of a field's body type as written
-/// (`api::drive::Target`) can have the generation erased and cannot distinguish
-/// a `y2026_1` contract from a same-named `y2026_7` one.
-/// The generation-qualified identity *is* available, but only as
+/// (`api::drive::Target`) can have the version erased and cannot distinguish
+/// a `v1` contract from a same-named `v2` one.
+/// The version-qualified identity *is* available, but only as
 /// `<Body as ContractBody>::NAME` (`phoxal-bus/src/contract.rs`), an
 /// associated const on a foreign type the proc-macro cannot evaluate at
 /// expansion time - only `rustc`, during the downstream participant crate's
@@ -176,12 +176,12 @@ pub enum ContractRole {
     Ask,
 }
 
-/// One contract a `Api` struct field uses: its generation-qualified wire key
+/// One contract a `Api` struct field uses: its version-qualified wire key
 /// (D1) plus the role that field plays. Built by `#[derive(phoxal::Api)]` from
 /// each field's `<Body as ContractBody>::TOPIC`.
 #[derive(Clone, Copy, Debug)]
 pub struct ApiContractUse {
-    /// The generation-qualified wire key.
+    /// The version-qualified wire key.
     pub topic: &'static str,
     /// The role this field plays for that contract.
     pub role: ContractRole,
@@ -366,10 +366,10 @@ pub trait ParticipantLifecycle: Participant {
     /// Whether the participant provides a committed snapshot (`#[snapshot]`).
     const HAS_SNAPSHOT: bool;
 
-    /// The versionless topic keys of exclusive `#[server]` handlers.
+    /// The version-qualified topic keys of exclusive `#[server]` handlers.
     fn __exclusive_server_topics() -> &'static [&'static str];
 
-    /// The versionless topic keys of concurrent `#[server_snapshot]`
+    /// The version-qualified topic keys of concurrent `#[server_snapshot]`
     /// handlers.
     fn __snapshot_server_topics() -> &'static [&'static str];
 
@@ -465,7 +465,7 @@ impl<Req, Resp> Copy for Server<Req, Resp> {}
 /// itself. Bring it into scope with `use phoxal::prelude::*;`.
 #[allow(async_fn_in_trait)]
 pub trait SetupContextApiExt<R: Participant> {
-    /// Build a publisher for `B` (any generation - no per-participant API
+    /// Build a publisher for `B` (any version - no per-participant API
     /// version ceiling). `R::Api: DeclaresPublish<B>` (D44): building a
     /// publisher for a contract the `Api` struct did not declare as a
     /// `Publisher<B>` field is a compile error.

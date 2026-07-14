@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use phoxal::model::structure::{Joint as UrdfJoint, JointType, Pose, Structure};
 use phoxal::model::v0::Robot;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 #[derive(Clone)]
 pub(crate) struct FrameConfig {

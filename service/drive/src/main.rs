@@ -18,7 +18,7 @@ use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::robot::v0::KinematicConfig;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const MAX_LINEAR_MPS: f64 = 0.6;
 const MAX_ANGULAR_RADPS: f64 = 2.0;
@@ -303,7 +303,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     use super::{DifferentialDrive, Drive, DriveConfig, resolve_target};
     use std::path::PathBuf;
@@ -334,7 +334,7 @@ mod tests {
         assert!(config.kinematics.wheel_radius_m > 0.0);
         // Each binding resolves to a concrete dynamic motor topic.
         let topic = config.left[0].topic();
-        assert!(topic.key().starts_with("y2026_1/component/"));
+        assert!(topic.key().starts_with("v1/component/"));
         assert!(topic.key().ends_with("/command"));
     }
 
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn api_declares_the_y2026_1_drive_contracts() {
+    fn api_declares_the_v1_drive_contracts() {
         assert_eq!(<Drive as Participant>::ID, "drive");
 
         let contracts = <<Drive as Participant>::Api as ParticipantApi>::CONTRACTS;

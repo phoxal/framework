@@ -40,7 +40,7 @@ All notable changes documented here. The format follows
 
 - **(model) BREAKING:** `robot.yaml` now opens with `schema: v0` (manifest grammar,
   replacing the old `version: v1` discriminator) and a required root `api_version`
-  (the graph-wide Phoxal contract API, e.g. `y2026_1`). `api_version` is selection
+  (the graph-wide Phoxal contract API, e.g. stable `v1`). `api_version` is selection
   intent — the model checks it is non-empty; `phoxal-cli check` validates it against
   each artifact's `emit-apis` (D59/D63). Old `version: v1` manifests no longer parse
   (pre-1.0, no shim). Scope is `robot.yaml` only — `component.yaml`/`simulation.yaml`
@@ -61,7 +61,7 @@ API contract tree, with the official runtime set rebuilt on top of it.
   `Publisher`/`Subscriber`/`Latest`/`Querier`, the runner (`run`/`tokio::run`/
   `run_with`/`run_with_bus`), `SetupContext` (model/bundle/component wiring), the
   clock + scheduler, and the build-time `emit-apis` document.
-- Two API versions — `y2026_1` and `y2026_2` (inherits `y2026_1`, overrides
+- Two API versions — stable `v1` and preview `v2` (the preview replaces changed
   `drive::Target`, adds `battery` + `safety`).
 - Official runtime crates forming a closed-loop nav stack: `asset`, `drive`,
   `driver-ddsm115`, `odometry`, `localize`, `map`, `mission`, `battery`, `safety`.
@@ -277,4 +277,3 @@ API contract tree, with the official runtime set rebuilt on top of it.
 
 - *(fixture)* Plan_robot.yaml uses tag: main for real catalog repos
 - *(safety)* Replace ignored robot-v1 test with fixture-driven coverage
-

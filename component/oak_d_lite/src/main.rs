@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use phoxal::model::component::v0::capability::{CameraMode, Capability};
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const STEP_HZ: f64 = 100.0;
 
@@ -404,7 +404,7 @@ mod tests {
     use phoxal::model::component::v0::capability::CameraMode;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     #[test]
     fn camera_encoding_and_frame_size_follow_mode() {

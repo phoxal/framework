@@ -2,8 +2,8 @@
 //!
 //! The wire body is the plain MessagePack payload (D62); provenance +
 //! logical time ride here, in the Zenoh attachment. Identity (which contract,
-//! which generation) is no longer carried in the envelope at all - it lives in
-//! the Zenoh key itself (the generation is folded into
+//! which version) is no longer carried in the envelope at all - it lives in
+//! the Zenoh key itself (the version is folded into
 //! `<Body as ContractBody>::TOPIC`, D1), so a receiver's per-key subscription is
 //! the whole fast-reject. `produced_at_ns`/`epoch`/`source` give logical-time +
 //! causality.

@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const STEP_HZ: f64 = 100.0;
 
@@ -219,7 +219,7 @@ mod tests {
     use super::{Bno085, divisor_for_rate, is_due};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     #[test]
     fn divisor_rounds_to_fixed_step_clock() {

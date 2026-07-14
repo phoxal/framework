@@ -4,7 +4,7 @@
 //! Zenoh's native `ReplyError`, carrying a [`QueryFailure`] (MessagePack-encoded).
 //! Both are golden-tested. The caller sees a [`QueryError`]; there is no
 //! `Version` variant - a query only ever reaches a handler on its own
-//! generation-qualified topic key (D1), so a version disagreement never reaches
+//! version-qualified topic key (D1), so a version disagreement never reaches
 //! the reply path (#16).
 
 use serde::{Deserialize, Serialize};
@@ -90,7 +90,7 @@ impl QueryFailure {
 }
 
 /// What a `Querier` returns to the caller (D31). No `Version` variant - a query
-/// only ever reaches a handler on its own generation-qualified topic key (D1),
+/// only ever reaches a handler on its own version-qualified topic key (D1),
 /// so a version disagreement never reaches the reply path.
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {

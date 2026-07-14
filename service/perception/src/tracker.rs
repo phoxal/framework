@@ -2,7 +2,7 @@
 //! same-class association within a time/distance window, pruning tracks that
 //! have not been seen within that window.
 
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 #[derive(Clone, Copy)]
 pub(crate) struct TrackerConfig {

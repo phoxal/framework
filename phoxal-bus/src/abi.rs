@@ -3,9 +3,9 @@
 //! Identity used to live in a separately-maintained `bus_abi` (a `family` /
 //! `api_version` / `schema_id` triple carried in the encoding string and mirrored
 //! in [`BusMetadata`](crate::metadata::BusMetadata)). That axis is gone: the
-//! generation is now folded into the Zenoh key itself
-//! (`<Body as ContractBody>::TOPIC` is generation-qualified, e.g.
-//! `y2026_1/drive/target`), so different versioned contracts physically cannot
+//! version is now folded into the Zenoh key itself
+//! (`<Body as ContractBody>::TOPIC` is version-qualified, e.g.
+//! `v1/drive/target`), so different versioned contracts physically cannot
 //! collide on one key, and a receiver only ever sees samples on keys it
 //! subscribed to. There is nothing left to fast-reject on except the codec, so
 //! the encoding string and [`BusMetadata`] both shrink to that.

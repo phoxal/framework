@@ -10,7 +10,7 @@
 //
 // The SOLE error is the side-brand mismatch on the public accessor - exactly the
 // L1 guarantee.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

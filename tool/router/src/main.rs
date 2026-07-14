@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusMetadata, LogicalTime, OwnerCap, Publisher};
-use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_9 as api9;
+use phoxal_api::v1 as api;
+use phoxal_api::v2 as preview_api;
 
 const DEFAULT_LISTEN: &str = "tcp/localhost:7447";
 const DEFAULT_RETRY_INITIAL_MS: u64 = 1_000;
@@ -16,22 +16,36 @@ const SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC: &str = "serial_listen_transport_unavai
 /// and republished on this cadence.
 const METRICS_WINDOW: Duration = Duration::from_secs(1);
 /// The mirror subscription key. Zenoh rejects partial-chunk wildcards
-/// (`y2026_*` is invalid: `*` may only be a whole chunk), so we subscribe to
-/// EVERYTHING with the valid `**` and scope to phoxal's generation-qualified
-/// application traffic in code via [`is_generation_topic`], which also drops
+/// (`v*` is invalid: `*` may only be a whole chunk), so we subscribe to
+/// EVERYTHING with the valid `**` and scope to phoxal's version-qualified
+/// application traffic in code via [`is_version_topic`], which also drops
 /// Zenoh's own admin/liveliness keys (`@/...`).
 const MIRROR_KEY_EXPR: &str = "**";
 
-/// A mirrored key counts toward `Metrics` only if it is generation-qualified
-/// phoxal traffic - some chunk is `y2026_<n>` (e.g. `y2026_1/drive/state`, or
-/// `<ns>/<robot>/y2026_1/...`). This is the in-code replacement for the scoping
-/// the (invalid) `y2026_*` key chunk was meant to do, and it excludes Zenoh
-/// admin keys (`@/...`) and any non-phoxal traffic.
-fn is_generation_topic(key: &str) -> bool {
-    key.split('/').any(|chunk| {
-        chunk
-            .strip_prefix("y2026_")
+/// A mirrored key counts toward `Metrics` only if it has a Phoxal bus shape:
+/// either a raw version-qualified contract key (`v1/drive/state`) or a rooted
+/// key (`<namespace>/robots/<robot-id>/v1/drive/state`). Merely containing a
+/// `v<n>` chunk is not enough: generic paths such as `http/v1/users` must not
+/// be reported as Phoxal traffic.
+fn is_version_topic(key: &str) -> bool {
+    fn is_version_segment(segment: &str) -> bool {
+        segment
+            .strip_prefix('v')
             .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    let segments: Vec<_> = key.split('/').collect();
+    if segments.len() >= 2 && is_version_segment(segments[0]) {
+        return true;
+    }
+
+    segments.windows(5).enumerate().any(|(index, window)| {
+        index > 0
+            && window[0] == "robots"
+            && !window[1].is_empty()
+            && is_version_segment(window[2])
+            && !window[3].is_empty()
+            && !window[4].is_empty()
     })
 }
 
@@ -204,9 +218,9 @@ async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Sessi
         async move {
             while let Ok(sample) = mirror_subscriber.recv_async().await {
                 let topic = sample.key_expr().to_string();
-                // `**` mirrors every key; keep only generation-qualified phoxal
+                // `**` mirrors every key; keep only version-qualified phoxal
                 // traffic (drops Zenoh admin/liveliness keys and anything else).
-                if !is_generation_topic(&topic) {
+                if !is_version_topic(&topic) {
                     continue;
                 }
                 let from_participant = participant_from_attachment(&sample);
@@ -218,7 +232,7 @@ async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Sessi
     let cap = ctx.owner_capability();
     let metrics_publisher = Publisher::new(
         ctx.raw_bus(),
-        &api9::topic::internal::new(cap).router().metrics(),
+        &preview_api::topic::internal::new(cap).router().metrics(),
     )?;
     let publish_counters = Arc::clone(&counters);
     ctx.spawn_managed_with(
@@ -296,7 +310,7 @@ fn drain_window(counters: &IngressCounters) -> Vec<TopicWindowSample> {
 /// `ingress_rate_hz` is each topic's window count over the window length in
 /// seconds; `throughput_msg_s` sums those rates; `count` is the cumulative
 /// (all-time) total, unaffected by the window reset.
-fn build_metrics(samples: &[TopicWindowSample], window: Duration) -> api9::router::Metrics {
+fn build_metrics(samples: &[TopicWindowSample], window: Duration) -> preview_api::router::Metrics {
     let window_secs = window.as_secs_f32();
     let mut topics = Vec::with_capacity(samples.len());
     let mut throughput_msg_s = 0.0f32;
@@ -307,7 +321,7 @@ fn build_metrics(samples: &[TopicWindowSample], window: Duration) -> api9::route
             0.0
         };
         throughput_msg_s += ingress_rate_hz;
-        topics.push(api9::router::TopicMetric {
+        topics.push(preview_api::router::TopicMetric {
             topic: sample.topic.clone(),
             from_participant: sample.from_participant.clone(),
             ingress_rate_hz,
@@ -315,7 +329,7 @@ fn build_metrics(samples: &[TopicWindowSample], window: Duration) -> api9::route
         });
     }
     topics.sort_by(|left, right| left.topic.cmp(&right.topic));
-    api9::router::Metrics {
+    preview_api::router::Metrics {
         topics,
         throughput_msg_s,
         window_ns: u64::try_from(window.as_nanos()).unwrap_or(u64::MAX),
@@ -467,7 +481,7 @@ mod tests {
 
     #[test]
     fn mirror_key_expr_is_a_valid_zenoh_key_expr() {
-        // Regression: `**/y2026_*/**` was REJECTED by zenoh at runtime
+        // Regression: a partial version-chunk wildcard was rejected by Zenoh
         // (partial-chunk wildcard), crashing the router on startup. The key
         // must parse as a valid `KeyExpr` so `declare_subscriber` succeeds.
         zenoh::key_expr::KeyExpr::try_from(MIRROR_KEY_EXPR)
@@ -475,15 +489,21 @@ mod tests {
     }
 
     #[test]
-    fn is_generation_topic_scopes_to_phoxal_generations() {
-        assert!(is_generation_topic("y2026_1/drive/state"));
-        assert!(is_generation_topic("ns/rover-01/y2026_9/router/metrics"));
-        assert!(is_generation_topic("y2026_12/telemetry/host"));
-        // Not generation-qualified / admin / malformed:
-        assert!(!is_generation_topic("@/router/admin"));
-        assert!(!is_generation_topic("some/other/topic"));
-        assert!(!is_generation_topic("y2026_/x")); // no digits after prefix
-        assert!(!is_generation_topic("y2026_1x/x")); // non-digit tail
+    fn is_version_topic_scopes_to_phoxal_versions() {
+        assert!(is_version_topic("v1/drive/state"));
+        assert!(is_version_topic("ns/robots/rover-01/v2/router/metrics"));
+        assert!(is_version_topic(
+            "tenant/site/robots/rover-01/v2/router/metrics"
+        ));
+        assert!(is_version_topic("v2/telemetry/host"));
+        // Not version-qualified / admin / malformed:
+        assert!(!is_version_topic("@/router/admin"));
+        assert!(!is_version_topic("some/other/topic"));
+        assert!(!is_version_topic("http/v1/users"));
+        assert!(!is_version_topic("ns/rover-01/v2/router/metrics"));
+        assert!(!is_version_topic("ns/robots/rover-01/v2"));
+        assert!(!is_version_topic("v/x")); // no digits after prefix
+        assert!(!is_version_topic("v1x/x")); // non-digit tail
     }
 
     #[test]
@@ -551,7 +571,7 @@ mod tests {
     #[test]
     fn build_metrics_computes_rate_from_window_count() {
         let samples = vec![TopicWindowSample {
-            topic: "dev/robots/robot/y2026_9/joypad/devices".to_string(),
+            topic: "dev/robots/robot/v2/joypad/devices".to_string(),
             from_participant: "joypad".to_string(),
             window_count: 10,
             cumulative_count: 1_000,
@@ -568,7 +588,7 @@ mod tests {
     #[test]
     fn build_metrics_halves_the_rate_for_a_two_second_window() {
         let samples = vec![TopicWindowSample {
-            topic: "dev/robots/robot/y2026_9/router/metrics".to_string(),
+            topic: "dev/robots/robot/v2/router/metrics".to_string(),
             from_participant: String::new(),
             window_count: 10,
             cumulative_count: 10,

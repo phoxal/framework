@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const WAYPOINT_SPACING_M: f64 = 0.25;
 
@@ -208,7 +208,7 @@ mod tests {
 
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     use super::{Plan, PlanDecision, WAYPOINT_SPACING_M, empty_path, straight_line_path};
 

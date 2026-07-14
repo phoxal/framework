@@ -9,7 +9,7 @@ note: the unit struct `Root` is defined here
    |
    |   phoxal_api_tree! {
    |  _-^^^^^^^^^^^^^^^
-   | |     version y2026_1 {
+   | |     version v1 {
    | |         drive {
    | |             /// Why actuation authority is in its current state.
 ...  |

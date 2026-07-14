@@ -1,7 +1,7 @@
 // Two fields naming the same contract in the same role must agree on
 // #[phoxal(external)] (coherence-gate design §1) - the derive rejects a
 // marked/unmarked mix rather than guessing which field's intent wins.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

@@ -21,14 +21,14 @@ workspace is converging to, not all wired up yet.
    Identical inputs produce identical facts.
    There is no generated per-service config file, deploy descriptor, or Phoxal
    lockfile in this workspace. Runtime compatibility is checked by construction:
-   each contract's generation is folded into its Zenoh key, so two participants
+   each contract's version is folded into its Zenoh key, so two participants
    interoperate on a contract iff they use the exact same version-qualified name
    - there is no wire-shape hash to agree on.
 3. **Contract.** The api tree carries golden + drift tests
    ([`phoxal-api/src/tests.rs`](../phoxal-api/src/tests.rs), see
    [CONTRACTS.md](./CONTRACTS.md)): the **plain** MessagePack body bytes are pinned
    (no `{"v":…,"data":…}` wrapper - the body is just the struct's fields), each
-   body's `ContractBody` consts (`NAME`/`GENERATION`/`CONTRACT`/`TOPIC`) and its
+   body's `ContractBody` consts (`NAME`/`VERSION`/`CONTRACT`/`TOPIC`) and its
    `Api::ID` are asserted, topic keys are pinned, the encoding string +
    `BusMetadata` shape is pinned, query responses are typed bodies/enums, reasons
    are closed-set typed enums, and bodies carry no generic produce-time field.

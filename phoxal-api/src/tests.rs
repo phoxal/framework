@@ -2,251 +2,193 @@
 //! payload, no `{"v":…}` wrapper — D62), the `ContractBody` consts, the
 //! `ApiVersion` id, and the topic keys produced by the api-local builders.
 
-use crate::y2026_1 as api;
+use crate::v1 as api;
+#[cfg(feature = "preview-v2")]
+use crate::v2;
 use crate::{ApiVersion, ContractBody};
-use crate::{y2026_7, y2026_8, y2026_9, y2026_10};
 use phoxal_bus::TopicRole;
 
 #[test]
-fn api_version_id_is_the_dated_module_name() {
-    assert_eq!(<api::Api as ApiVersion>::ID, "y2026_1");
+fn v1_is_the_stable_api_version() {
+    assert_eq!(<api::Api as ApiVersion>::ID, "v1");
     const { assert!(!<api::Api as ApiVersion>::IS_PREVIEW) };
 }
 
 #[test]
-fn contract_body_topic_is_generation_qualified() {
-    // D1: the generation is folded into the wire key, so two participants using
+fn contract_body_topic_is_version_qualified() {
+    // D1: the API version is folded into the wire key, so two participants using
     // the same version-qualified contract share a key that cannot collide with
-    // any other generation's contract of the same leaf name.
-    assert_eq!(
-        <api::drive::State as ContractBody>::TOPIC,
-        "y2026_1/drive/state"
-    );
+    // any other version's contract of the same leaf name.
+    assert_eq!(<api::drive::State as ContractBody>::TOPIC, "v1/drive/state");
     assert_eq!(
         <api::drive::Target as ContractBody>::TOPIC,
-        "y2026_1/drive/target"
+        "v1/drive/target"
     );
     assert_eq!(
         <api::safety::Status as ContractBody>::TOPIC,
-        "y2026_1/safety/state"
+        "v1/safety/state"
     );
     assert_eq!(
         <api::safety::SafetyAuthorization as ContractBody>::TOPIC,
-        "y2026_1/safety/authorization"
+        "v1/safety/authorization"
     );
     assert_eq!(
         <api::mission::State as ContractBody>::TOPIC,
-        "y2026_1/mission/state"
+        "v1/mission/state"
     );
     assert_eq!(
         <api::joint::JointState as ContractBody>::TOPIC,
-        "y2026_1/joint/{joint}/state"
+        "v1/joint/{joint}/state"
     );
     assert_eq!(
         <api::video::stream::StreamState as ContractBody>::TOPIC,
-        "y2026_1/video/stream/{stream}/state"
+        "v1/video/stream/{stream}/state"
     );
     assert_eq!(
         <api::localize::LocalizationState as ContractBody>::TOPIC,
-        "y2026_1/localize/state"
+        "v1/localize/state"
     );
     assert_eq!(
         <api::logs::Event as ContractBody>::TOPIC,
-        "y2026_1/logs/{participant_id}"
+        "v1/logs/{participant_id}"
     );
     assert_eq!(
         <api::bus::uplink::State as ContractBody>::TOPIC,
-        "y2026_1/bus/uplink/state"
+        "v1/bus/uplink/state"
     );
 }
 
 #[test]
-fn y2026_7_is_a_standalone_second_generation_carrying_only_the_moved_battery_contract() {
-    // The ground-breaker: `battery::State` moved OUT of y2026_1 and into its
-    // own, sparse y2026_7 generation (D1 - no `extends`, no copy of y2026_1).
-    const { assert!(!<y2026_7::Api as ApiVersion>::IS_PREVIEW) };
-    assert_eq!(<y2026_7::Api as ApiVersion>::ID, "y2026_7");
-    assert_eq!(
-        <y2026_7::battery::State as ContractBody>::TOPIC,
-        "y2026_7/battery/state"
-    );
-    assert_eq!(
-        y2026_7::topic::new().battery().state().key(),
-        "y2026_7/battery/state"
-    );
-}
-
-#[test]
-fn y2026_8_is_a_standalone_generation_for_simulation_spawn() {
-    const { assert!(!<y2026_8::Api as ApiVersion>::IS_PREVIEW) };
-    assert_eq!(<y2026_8::Api as ApiVersion>::ID, "y2026_8");
-    assert_eq!(
-        <y2026_8::simulation::SpawnRequest as ContractBody>::TOPIC,
-        "y2026_8/simulation/spawn"
-    );
-    assert_eq!(
-        y2026_8::topic::new().simulation().spawn().key(),
-        "y2026_8/simulation/spawn"
-    );
-}
-
-#[test]
-fn y2026_9_is_a_standalone_generation_for_clock_router_telemetry_and_joypad() {
-    const { assert!(!<y2026_9::Api as ApiVersion>::IS_PREVIEW) };
-    assert_eq!(<y2026_9::Api as ApiVersion>::ID, "y2026_9");
+#[cfg(feature = "preview-v2")]
+fn v2_is_one_preview_api_for_post_v1_contracts() {
+    const { assert!(<v2::Api as ApiVersion>::IS_PREVIEW) };
+    assert_eq!(<v2::Api as ApiVersion>::ID, "v2");
 
     assert_eq!(
-        <y2026_9::simulation::Clock as ContractBody>::TOPIC,
-        "y2026_9/simulation/clock"
+        <v2::battery::State as ContractBody>::TOPIC,
+        "v2/battery/state"
+    );
+    assert_eq!(v2::topic::new().battery().state().key(), "v2/battery/state");
+    assert_eq!(
+        <v2::simulation::SpawnRequest as ContractBody>::TOPIC,
+        "v2/simulation/spawn"
     );
     assert_eq!(
-        y2026_9::topic::new().simulation().clock().key(),
-        "y2026_9/simulation/clock"
+        v2::topic::new().simulation().spawn().key(),
+        "v2/simulation/spawn"
+    );
+    assert_eq!(
+        <v2::simulation::Clock as ContractBody>::TOPIC,
+        "v2/simulation/clock"
+    );
+    assert_eq!(
+        v2::topic::new().simulation().clock().key(),
+        "v2/simulation/clock"
     );
 
     assert_eq!(
-        <y2026_9::router::Metrics as ContractBody>::TOPIC,
-        "y2026_9/router/metrics"
+        <v2::router::Metrics as ContractBody>::TOPIC,
+        "v2/router/metrics"
     );
     assert_eq!(
-        y2026_9::topic::new().router().metrics().key(),
-        "y2026_9/router/metrics"
+        v2::topic::new().router().metrics().key(),
+        "v2/router/metrics"
     );
 
     assert_eq!(
-        <y2026_9::telemetry::Host as ContractBody>::TOPIC,
-        "y2026_9/telemetry/host"
+        <v2::telemetry::Host as ContractBody>::TOPIC,
+        "v2/telemetry/host"
     );
     assert_eq!(
-        y2026_9::topic::new().telemetry().host().key(),
-        "y2026_9/telemetry/host"
+        v2::topic::new().telemetry().host().key(),
+        "v2/telemetry/host"
     );
     assert_eq!(
-        <y2026_9::telemetry::Process as ContractBody>::TOPIC,
-        "y2026_9/telemetry/process"
+        <v2::telemetry::Process as ContractBody>::TOPIC,
+        "v2/telemetry/process"
     );
     assert_eq!(
-        y2026_9::topic::new().telemetry().process().key(),
-        "y2026_9/telemetry/process"
+        v2::topic::new().telemetry().process().key(),
+        "v2/telemetry/process"
     );
 
     assert_eq!(
-        <y2026_9::joypad::Devices as ContractBody>::TOPIC,
-        "y2026_9/joypad/devices"
+        <v2::joypad::Devices as ContractBody>::TOPIC,
+        "v2/joypad/devices"
     );
     assert_eq!(
-        y2026_9::topic::new().joypad().devices().key(),
-        "y2026_9/joypad/devices"
+        v2::topic::new().joypad().devices().key(),
+        "v2/joypad/devices"
     );
     assert_eq!(
-        <y2026_9::joypad::Connect as ContractBody>::TOPIC,
-        "y2026_9/joypad/connect"
+        <v2::joypad::Connect as ContractBody>::TOPIC,
+        "v2/joypad/connect"
     );
     assert_eq!(
-        y2026_9::topic::new().joypad().connect().key(),
-        "y2026_9/joypad/connect"
+        v2::topic::new().joypad().connect().key(),
+        "v2/joypad/connect"
     );
     assert_eq!(
-        <y2026_9::joypad::Rescan as ContractBody>::TOPIC,
-        "y2026_9/joypad/rescan"
+        <v2::joypad::Rescan as ContractBody>::TOPIC,
+        "v2/joypad/rescan"
     );
-    assert_eq!(
-        y2026_9::topic::new().joypad().rescan().key(),
-        "y2026_9/joypad/rescan"
-    );
-}
-
-#[test]
-fn y2026_10_is_a_standalone_generation_for_advancing_clock_samples() {
-    const { assert!(!<y2026_10::Api as ApiVersion>::IS_PREVIEW) };
-    assert_eq!(<y2026_10::Api as ApiVersion>::ID, "y2026_10");
-    assert_eq!(
-        <y2026_10::simulation::Clock as ContractBody>::TOPIC,
-        "y2026_10/simulation/clock"
-    );
-    assert_eq!(
-        y2026_10::topic::new().simulation().clock().key(),
-        "y2026_10/simulation/clock"
-    );
+    assert_eq!(v2::topic::new().joypad().rescan().key(), "v2/joypad/rescan");
 }
 
 #[test]
 fn generated_contract_manifest_lists_contract_shapes() {
-    let generation = crate::API_CONTRACT_MANIFEST
+    let version = crate::API_CONTRACT_MANIFEST
         .iter()
-        .find(|generation| generation.name == "y2026_1")
-        .expect("y2026_1 should be in the generated manifest");
-    assert!(!generation.is_preview);
+        .find(|version| version.name == "v1")
+        .expect("v1 should be in the generated manifest");
+    assert!(!version.is_preview);
 
-    let drive_state = generation
+    let drive_state = version
         .contracts
         .iter()
-        .find(|contract| contract.family == "y2026_1::drive::State")
+        .find(|contract| contract.family == "v1::drive::State")
         .expect("drive::State should be in the generated manifest");
-    assert_eq!(drive_state.topic, "y2026_1/drive/state");
+    assert_eq!(drive_state.topic, "v1/drive/state");
 
-    // The manifest also carries the second, standalone generation, mixed-in
-    // alongside y2026_1 - the multi-generation catalog proof (task step 5).
-    let y2026_7_generation = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .find(|generation| generation.name == "y2026_7")
-        .expect("y2026_7 should be in the generated manifest");
-    assert!(!y2026_7_generation.is_preview);
-    let battery_state = y2026_7_generation
-        .contracts
-        .iter()
-        .find(|contract| contract.family == "y2026_7::battery::State")
-        .expect("battery::State should be in the y2026_7 manifest entry");
-    assert_eq!(battery_state.topic, "y2026_7/battery/state");
+    #[cfg(feature = "preview-v2")]
+    {
+        let preview = crate::API_CONTRACT_MANIFEST
+            .iter()
+            .find(|version| version.name == "v2")
+            .expect("v2 should be in the generated manifest");
+        assert!(preview.is_preview);
 
-    let y2026_8_generation = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .find(|generation| generation.name == "y2026_8")
-        .expect("y2026_8 should be in the generated manifest");
-    assert!(!y2026_8_generation.is_preview);
-    assert!(
-        y2026_8_generation
+        let battery_state = preview
             .contracts
             .iter()
-            .any(|contract| contract.family == "y2026_8::simulation::SpawnRequest")
-    );
-
-    // The fourth generation - clock re-mint plus the new router/telemetry/
-    // joypad contracts (task step 1).
-    let y2026_9_generation = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .find(|generation| generation.name == "y2026_9")
-        .expect("y2026_9 should be in the generated manifest");
-    assert!(!y2026_9_generation.is_preview);
-    for family in [
-        "y2026_9::simulation::Clock",
-        "y2026_9::router::Metrics",
-        "y2026_9::telemetry::Host",
-        "y2026_9::telemetry::Process",
-        "y2026_9::joypad::Devices",
-        "y2026_9::joypad::Connect",
-        "y2026_9::joypad::Rescan",
-    ] {
+            .find(|contract| contract.family == "v2::battery::State")
+            .expect("battery::State should be in the v2 manifest entry");
+        assert_eq!(battery_state.topic, "v2/battery/state");
         assert!(
-            y2026_9_generation
+            preview
                 .contracts
                 .iter()
-                .any(|contract| contract.family == family),
-            "{family} should be in the y2026_9 manifest entry"
+                .any(|contract| contract.family == "v2::simulation::SpawnRequest")
         );
-    }
 
-    let y2026_10_generation = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .find(|generation| generation.name == "y2026_10")
-        .expect("y2026_10 should be in the generated manifest");
-    assert!(!y2026_10_generation.is_preview);
-    assert!(
-        y2026_10_generation
-            .contracts
-            .iter()
-            .any(|contract| contract.family == "y2026_10::simulation::Clock")
-    );
+        for family in [
+            "v2::simulation::Clock",
+            "v2::router::Metrics",
+            "v2::telemetry::Host",
+            "v2::telemetry::Process",
+            "v2::joypad::Devices",
+            "v2::joypad::Connect",
+            "v2::joypad::Rescan",
+        ] {
+            assert!(
+                preview
+                    .contracts
+                    .iter()
+                    .any(|contract| contract.family == family),
+                "{family} should be in the v2 manifest entry"
+            );
+        }
+    }
 }
 
 #[test]
@@ -262,24 +204,27 @@ fn generated_role_const_matches_each_topic_role() {
 
     // State: telemetry the owning service publishes.
     assert_eq!(api::drive::State::ROLE, TopicRole::State);
-    assert_eq!(y2026_7::battery::State::ROLE, TopicRole::State);
-    assert_eq!(y2026_9::simulation::Clock::ROLE, TopicRole::State);
-    assert_eq!(y2026_10::simulation::Clock::ROLE, TopicRole::State);
-    assert_eq!(y2026_9::router::Metrics::ROLE, TopicRole::State);
-    assert_eq!(y2026_9::telemetry::Host::ROLE, TopicRole::State);
-    assert_eq!(y2026_9::telemetry::Process::ROLE, TopicRole::State);
-    assert_eq!(y2026_9::joypad::Devices::ROLE, TopicRole::State);
-
-    // Command: the new y2026_9 joypad commands the tool subscribes.
-    assert_eq!(y2026_9::joypad::Connect::ROLE, TopicRole::Command);
-    assert_eq!(y2026_9::joypad::Rescan::ROLE, TopicRole::Command);
-
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
     assert_eq!(api::frame::LookupRequest::ROLE, TopicRole::Query);
     assert_eq!(api::frame::LookupResponse::ROLE, TopicRole::Query);
     assert_eq!(api::map::SubmapRequest::ROLE, TopicRole::Query);
     assert_eq!(api::map::SubmapResponse::ROLE, TopicRole::Query);
+}
+
+#[test]
+#[cfg(feature = "preview-v2")]
+fn v2_role_consts_match_each_topic_role() {
+    assert_eq!(v2::battery::State::ROLE, TopicRole::State);
+    assert_eq!(v2::simulation::Clock::ROLE, TopicRole::State);
+    assert_eq!(v2::router::Metrics::ROLE, TopicRole::State);
+    assert_eq!(v2::telemetry::Host::ROLE, TopicRole::State);
+    assert_eq!(v2::telemetry::Process::ROLE, TopicRole::State);
+    assert_eq!(v2::joypad::Devices::ROLE, TopicRole::State);
+    assert_eq!(v2::joypad::Connect::ROLE, TopicRole::Command);
+    assert_eq!(v2::joypad::Rescan::ROLE, TopicRole::Command);
+    assert_eq!(v2::simulation::SpawnRequest::ROLE, TopicRole::Query);
+    assert_eq!(v2::simulation::SpawnSet::ROLE, TopicRole::Query);
 }
 
 #[test]
@@ -322,7 +267,7 @@ fn body_round_trips_through_messagepack() {
 }
 
 #[test]
-fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
+fn v1_domain_bodies_round_trip_through_messagepack() {
     let authorization = api::safety::SafetyAuthorization {
         decision: api::safety::SafetyDecision::Slow,
         approved_motion: api::safety::MotionConstraint {
@@ -447,34 +392,34 @@ fn new_y2026_1_family_bodies_round_trip_through_messagepack() {
         y_m: 2.0,
         yaw_rad: 0.3,
     });
-    round_trip(&y2026_8::simulation::SpawnRequest {
+}
+
+#[test]
+#[cfg(feature = "preview-v2")]
+fn v2_bodies_round_trip_through_messagepack() {
+    round_trip(&v2::simulation::SpawnRequest {
         known_revision: Some(4),
     });
-    round_trip(&y2026_8::simulation::SpawnSet {
+    round_trip(&v2::simulation::SpawnSet {
         revision: 5,
-        robots: vec![y2026_8::simulation::RobotSpawn {
+        robots: vec![v2::simulation::RobotSpawn {
             robot_id: "rover".to_string(),
             node_string: "Rover { name \"rover\" }".to_string(),
         }],
     });
-}
-
-#[test]
-fn y2026_9_bodies_round_trip_through_messagepack() {
-    round_trip(&y2026_9::simulation::Clock {
+    round_trip(&v2::simulation::Clock {
         now_ns: 1_000_000,
         step: 100,
-        running: true,
     });
-    round_trip(&y2026_9::router::TopicMetric {
-        topic: "y2026_1/drive/state".to_string(),
+    round_trip(&v2::router::TopicMetric {
+        topic: "v1/drive/state".to_string(),
         from_participant: "drive".to_string(),
         ingress_rate_hz: 10.0,
         count: 42,
     });
-    round_trip(&y2026_9::router::Metrics {
-        topics: vec![y2026_9::router::TopicMetric {
-            topic: "y2026_1/drive/state".to_string(),
+    round_trip(&v2::router::Metrics {
+        topics: vec![v2::router::TopicMetric {
+            topic: "v1/drive/state".to_string(),
             from_participant: "drive".to_string(),
             ingress_rate_hz: 10.0,
             count: 42,
@@ -482,25 +427,25 @@ fn y2026_9_bodies_round_trip_through_messagepack() {
         throughput_msg_s: 12.5,
         window_ns: 1_000_000_000,
     });
-    round_trip(&y2026_9::telemetry::Host {
+    round_trip(&v2::telemetry::Host {
         cpu_pct: 12.5,
         ram_used_bytes: 1_073_741_824,
         ram_total_bytes: 17_179_869_184,
         load_1m: 0.75,
         window_ns: 1_000_000_000,
     });
-    round_trip(&y2026_9::telemetry::Process {
+    round_trip(&v2::telemetry::Process {
         cpu_pct: 3.5,
         rss_bytes: 41_943_040,
         window_ns: 1_000_000_000,
     });
-    round_trip(&y2026_9::joypad::Device {
+    round_trip(&v2::joypad::Device {
         id: "xbox-controller-0".to_string(),
         name: "Xbox Wireless Controller".to_string(),
         connected: true,
     });
-    round_trip(&y2026_9::joypad::Devices {
-        available: vec![y2026_9::joypad::Device {
+    round_trip(&v2::joypad::Devices {
+        available: vec![v2::joypad::Device {
             id: "xbox-controller-0".to_string(),
             name: "Xbox Wireless Controller".to_string(),
             connected: true,
@@ -508,46 +453,39 @@ fn y2026_9_bodies_round_trip_through_messagepack() {
         selected: Some("xbox-controller-0".to_string()),
         last_error: None,
     });
-    round_trip(&y2026_9::joypad::Connect {
+    round_trip(&v2::joypad::Connect {
         id: "xbox-controller-0".to_string(),
     });
-    round_trip(&y2026_9::joypad::Rescan {});
+    round_trip(&v2::joypad::Rescan {});
 }
 
 #[test]
-fn y2026_10_clock_round_trips_through_messagepack() {
-    round_trip(&y2026_10::simulation::Clock {
-        now_ns: 1_000_000,
-        step: 100,
-    });
-}
-
-#[test]
-fn y2026_9_telemetry_process_rejects_malformed_payloads() {
+#[cfg(feature = "preview-v2")]
+fn v2_telemetry_process_rejects_malformed_payloads() {
     // `round_trip` only proves encode+decode are self-consistent - both drift
     // together and it still passes. This asserts the decode side actually
     // validates the wire bytes, so a corrupt/wrong-shape payload is surfaced as
     // an error rather than silently accepted (the same guarantee the bus
     // subscription path relies on; see the engine-side
-    // `y2026_9_process_subscription_counts_decode_errors` for the counted,
+    // `v2_process_subscription_counts_decode_errors` for the counted,
     // through-a-subscription version).
 
     // Corrupt MessagePack: 0xc1 is the format's never-used marker byte.
     let corrupt = [0xc1u8, 0xc1, 0xc1];
     assert!(
-        rmp_serde::from_slice::<y2026_9::telemetry::Process>(&corrupt).is_err(),
+        rmp_serde::from_slice::<v2::telemetry::Process>(&corrupt).is_err(),
         "corrupt MessagePack must not decode as telemetry::Process"
     );
 
-    // Valid MessagePack of the WRONG shape: a sibling y2026_9 body whose named
+    // Valid MessagePack of the WRONG shape: a sibling v2 body whose named
     // fields do not satisfy `Process { cpu_pct, rss_bytes, window_ns }`. It must
     // be rejected, not coerced.
-    let wrong_shape = rmp_serde::to_vec_named(&y2026_9::joypad::Connect {
+    let wrong_shape = rmp_serde::to_vec_named(&v2::joypad::Connect {
         id: "not-a-process-sample".to_string(),
     })
     .unwrap();
     assert!(
-        rmp_serde::from_slice::<y2026_9::telemetry::Process>(&wrong_shape).is_err(),
+        rmp_serde::from_slice::<v2::telemetry::Process>(&wrong_shape).is_err(),
         "a differently-shaped body must not decode as telemetry::Process"
     );
 }
@@ -604,119 +542,102 @@ fn component_capability_bodies_round_trip_through_messagepack() {
 
 #[test]
 fn topic_builder_keys_match_contract_topics() {
-    assert_eq!(
-        api::topic::new().drive().state().key(),
-        "y2026_1/drive/state"
-    );
-    assert_eq!(
-        api::topic::new().drive().target().key(),
-        "y2026_1/drive/target"
-    );
-    assert_eq!(
-        api::topic::new().safety().state().key(),
-        "y2026_1/safety/state"
-    );
+    assert_eq!(api::topic::new().drive().state().key(), "v1/drive/state");
+    assert_eq!(api::topic::new().drive().target().key(), "v1/drive/target");
+    assert_eq!(api::topic::new().safety().state().key(), "v1/safety/state");
     assert_eq!(
         api::topic::new().safety().authorization().key(),
-        "y2026_1/safety/authorization"
+        "v1/safety/authorization"
     );
     assert_eq!(
         api::topic::new().mission().state().key(),
-        "y2026_1/mission/state"
+        "v1/mission/state"
     );
-    assert_eq!(api::topic::new().frame().tree().key(), "y2026_1/frame/tree");
+    assert_eq!(api::topic::new().frame().tree().key(), "v1/frame/tree");
     assert_eq!(
         api::topic::new().frame().static_transforms().key(),
-        "y2026_1/frame/static_transforms"
+        "v1/frame/static_transforms"
     );
     assert_eq!(
         api::topic::new().power().command().key(),
-        "y2026_1/power/command"
+        "v1/power/command"
     );
     assert_eq!(
         api::topic::new().motion().manual().key(),
-        "y2026_1/motion/manual"
+        "v1/motion/manual"
     );
     assert_eq!(
         api::topic::new().logs("drive").topic().key(),
-        "y2026_1/logs/drive"
+        "v1/logs/drive"
     );
     assert_eq!(
         api::topic::new().bus().uplink().state().key(),
-        "y2026_1/bus/uplink/state"
+        "v1/bus/uplink/state"
     );
-    assert_eq!(api::topic::new().plan().path().key(), "y2026_1/plan/path");
-    assert_eq!(
-        api::topic::new().follow().state().key(),
-        "y2026_1/follow/state"
-    );
+    assert_eq!(api::topic::new().plan().path().key(), "v1/plan/path");
+    assert_eq!(api::topic::new().follow().state().key(), "v1/follow/state");
     assert_eq!(
         api::topic::new().explore().frontiers().key(),
-        "y2026_1/explore/frontiers"
+        "v1/explore/frontiers"
     );
     assert_eq!(
         api::topic::new().perception().detections().key(),
-        "y2026_1/perception/detections"
+        "v1/perception/detections"
     );
     assert_eq!(
         api::topic::new().simulation().robot_pose().key(),
-        "y2026_1/simulation/robot_pose"
+        "v1/simulation/robot_pose"
     );
-    assert_eq!(
-        y2026_8::topic::new().simulation().spawn().key(),
-        "y2026_8/simulation/spawn"
-    );
-    assert_eq!(
-        y2026_9::topic::new().simulation().clock().key(),
-        "y2026_9/simulation/clock"
-    );
-    assert_eq!(
-        y2026_10::topic::new().simulation().clock().key(),
-        "y2026_10/simulation/clock"
-    );
-    assert_eq!(
-        y2026_9::topic::new().router().metrics().key(),
-        "y2026_9/router/metrics"
-    );
-    assert_eq!(
-        y2026_9::topic::new().telemetry().host().key(),
-        "y2026_9/telemetry/host"
-    );
-    assert_eq!(
-        y2026_9::topic::new().telemetry().process().key(),
-        "y2026_9/telemetry/process"
-    );
-    assert_eq!(
-        y2026_9::topic::new().joypad().devices().key(),
-        "y2026_9/joypad/devices"
-    );
-    assert_eq!(
-        y2026_9::topic::new().joypad().connect().key(),
-        "y2026_9/joypad/connect"
-    );
-    assert_eq!(
-        y2026_9::topic::new().joypad().rescan().key(),
-        "y2026_9/joypad/rescan"
-    );
-    assert_eq!(api::topic::new().video().open().key(), "y2026_1/video/open");
+    assert_eq!(api::topic::new().video().open().key(), "v1/video/open");
     assert_eq!(
         api::topic::new().presence().heartbeat().key(),
-        "y2026_1/presence/heartbeat"
+        "v1/presence/heartbeat"
     );
-    assert_eq!(
-        api::topic::new().map().revision().key(),
-        "y2026_1/map/revision"
-    );
-    assert_eq!(api::topic::new().map().submap().key(), "y2026_1/map/submap");
-    assert_eq!(api::topic::new().asset().get().key(), "y2026_1/asset/get");
+    assert_eq!(api::topic::new().map().revision().key(), "v1/map/revision");
+    assert_eq!(api::topic::new().map().submap().key(), "v1/map/submap");
+    assert_eq!(api::topic::new().asset().get().key(), "v1/asset/get");
     assert_eq!(
         api::topic::new().odometry().state().key(),
-        "y2026_1/odometry/state"
+        "v1/odometry/state"
     );
     assert_eq!(
         api::topic::new().localize().state().key(),
-        "y2026_1/localize/state"
+        "v1/localize/state"
     );
+}
+
+#[test]
+#[cfg(feature = "preview-v2")]
+fn v2_topic_builder_keys_match_contract_topics() {
+    assert_eq!(
+        v2::topic::new().simulation().spawn().key(),
+        "v2/simulation/spawn"
+    );
+    assert_eq!(
+        v2::topic::new().simulation().clock().key(),
+        "v2/simulation/clock"
+    );
+    assert_eq!(
+        v2::topic::new().router().metrics().key(),
+        "v2/router/metrics"
+    );
+    assert_eq!(
+        v2::topic::new().telemetry().host().key(),
+        "v2/telemetry/host"
+    );
+    assert_eq!(
+        v2::topic::new().telemetry().process().key(),
+        "v2/telemetry/process"
+    );
+    assert_eq!(
+        v2::topic::new().joypad().devices().key(),
+        "v2/joypad/devices"
+    );
+    assert_eq!(
+        v2::topic::new().joypad().connect().key(),
+        "v2/joypad/connect"
+    );
+    assert_eq!(v2::topic::new().joypad().rescan().key(), "v2/joypad/rescan");
 }
 
 #[test]
@@ -731,28 +652,28 @@ fn internal_owner_builder_produces_identical_keys() {
     let cap = ::phoxal_bus::OwnerCap::__mint();
     assert_eq!(
         api::topic::internal::new(cap).drive().state().key(),
-        "y2026_1/drive/state"
+        "v1/drive/state"
     );
     assert_eq!(
         api::topic::internal::new(cap).drive().target().key(),
-        "y2026_1/drive/target"
+        "v1/drive/target"
     );
     assert_eq!(
         api::topic::internal::new(cap).map().submap().key(),
-        "y2026_1/map/submap"
+        "v1/map/submap"
     );
     assert_eq!(
         api::topic::internal::new(cap).video().open().key(),
-        "y2026_1/video/open"
+        "v1/video/open"
     );
     assert_eq!(
         api::topic::internal::new(cap).logs("drive").topic().key(),
-        "y2026_1/logs/drive"
+        "v1/logs/drive"
     );
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(
         api::topic::internal::new(cap).joint("elbow").state().key(),
-        "y2026_1/joint/elbow/state"
+        "v1/joint/elbow/state"
     );
     assert_eq!(
         api::topic::internal::new(cap)
@@ -760,7 +681,7 @@ fn internal_owner_builder_produces_identical_keys() {
             .stream("front")
             .state()
             .key(),
-        "y2026_1/video/stream/front/state"
+        "v1/video/stream/front/state"
     );
 }
 
@@ -770,11 +691,11 @@ fn internal_owner_builder_produces_identical_keys() {
 fn dynamic_topic_builder_fills_the_key_from_node_vars() {
     assert_eq!(
         api::topic::new().joint("elbow").state().key(),
-        "y2026_1/joint/elbow/state"
+        "v1/joint/elbow/state"
     );
     assert_eq!(
         api::topic::new().video().stream("front").state().key(),
-        "y2026_1/video/stream/front/state"
+        "v1/video/stream/front/state"
     );
 
     let topic = api::topic::new()
@@ -783,7 +704,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         .command();
     assert_eq!(
         topic.key(),
-        "y2026_1/component/front_left_drive/motor/motor/command"
+        "v1/component/front_left_drive/motor/motor/command"
     );
     let enc = api::topic::new()
         .component("front_left_drive")
@@ -791,7 +712,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         .sample();
     assert_eq!(
         enc.key(),
-        "y2026_1/component/front_left_drive/encoder/encoder/sample"
+        "v1/component/front_left_drive/encoder/encoder/sample"
     );
 }
 
@@ -803,7 +724,7 @@ fn component_capability_topic_builders_fill_keys() {
             .accelerometer("accel")
             .sample()
             .key(),
-        "y2026_1/component/imu0/accelerometer/accel/sample"
+        "v1/component/imu0/accelerometer/accel/sample"
     );
     assert_eq!(
         api::topic::new()
@@ -811,7 +732,7 @@ fn component_capability_topic_builders_fill_keys() {
             .gyroscope("gyro")
             .sample()
             .key(),
-        "y2026_1/component/imu0/gyroscope/gyro/sample"
+        "v1/component/imu0/gyroscope/gyro/sample"
     );
     assert_eq!(
         api::topic::new()
@@ -819,7 +740,7 @@ fn component_capability_topic_builders_fill_keys() {
             .magnetometer("mag")
             .sample()
             .key(),
-        "y2026_1/component/imu0/magnetometer/mag/sample"
+        "v1/component/imu0/magnetometer/mag/sample"
     );
     assert_eq!(
         api::topic::new()
@@ -827,7 +748,7 @@ fn component_capability_topic_builders_fill_keys() {
             .imu("imu")
             .sample()
             .key(),
-        "y2026_1/component/imu0/imu/imu/sample"
+        "v1/component/imu0/imu/imu/sample"
     );
     assert_eq!(
         api::topic::new()
@@ -835,7 +756,7 @@ fn component_capability_topic_builders_fill_keys() {
             .range("front_tof")
             .sample()
             .key(),
-        "y2026_1/component/base/range/front_tof/sample"
+        "v1/component/base/range/front_tof/sample"
     );
     assert_eq!(
         api::topic::new()
@@ -843,7 +764,7 @@ fn component_capability_topic_builders_fill_keys() {
             .gnss("gnss")
             .sample()
             .key(),
-        "y2026_1/component/gps/gnss/gnss/sample"
+        "v1/component/gps/gnss/gnss/sample"
     );
     assert_eq!(
         api::topic::new()
@@ -851,7 +772,7 @@ fn component_capability_topic_builders_fill_keys() {
             .camera("front")
             .frame()
             .key(),
-        "y2026_1/component/head/camera/front/frame"
+        "v1/component/head/camera/front/frame"
     );
     assert_eq!(
         api::topic::new()
@@ -859,7 +780,7 @@ fn component_capability_topic_builders_fill_keys() {
             .depth("front_depth")
             .frame()
             .key(),
-        "y2026_1/component/head/depth/front_depth/frame"
+        "v1/component/head/depth/front_depth/frame"
     );
     assert_eq!(
         api::topic::new()
@@ -867,7 +788,7 @@ fn component_capability_topic_builders_fill_keys() {
             .lidar("scan")
             .scan()
             .key(),
-        "y2026_1/component/front_lidar/lidar/scan/scan"
+        "v1/component/front_lidar/lidar/scan/scan"
     );
     assert_eq!(
         api::topic::new()
@@ -875,7 +796,7 @@ fn component_capability_topic_builders_fill_keys() {
             .mmwave("mmwave")
             .scan()
             .key(),
-        "y2026_1/component/radar/mmwave/mmwave/scan"
+        "v1/component/radar/mmwave/mmwave/scan"
     );
     assert_eq!(
         api::topic::new()
@@ -883,7 +804,7 @@ fn component_capability_topic_builders_fill_keys() {
             .microphone("mic")
             .frame()
             .key(),
-        "y2026_1/component/head/microphone/mic/frame"
+        "v1/component/head/microphone/mic/frame"
     );
     assert_eq!(
         api::topic::new()
@@ -891,7 +812,7 @@ fn component_capability_topic_builders_fill_keys() {
             .led("status")
             .command()
             .key(),
-        "y2026_1/component/status_panel/led/status/command"
+        "v1/component/status_panel/led/status/command"
     );
     assert_eq!(
         api::topic::new()
@@ -899,7 +820,7 @@ fn component_capability_topic_builders_fill_keys() {
             .emergency_stop("estop")
             .state()
             .key(),
-        "y2026_1/component/safety_panel/emergency_stop/estop/state"
+        "v1/component/safety_panel/emergency_stop/estop/state"
     );
 }
 
@@ -907,19 +828,19 @@ fn component_capability_topic_builders_fill_keys() {
 fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
     assert_eq!(
         <api::component::motor::Command as ContractBody>::TOPIC,
-        "y2026_1/component/{instance}/motor/{capability}/command"
+        "v1/component/{instance}/motor/{capability}/command"
     );
     assert_eq!(
         <api::component::imu::Sample as ContractBody>::TOPIC,
-        "y2026_1/component/{instance}/imu/{capability}/sample"
+        "v1/component/{instance}/imu/{capability}/sample"
     );
     assert_eq!(
         <api::component::camera::Frame as ContractBody>::TOPIC,
-        "y2026_1/component/{instance}/camera/{capability}/frame"
+        "v1/component/{instance}/camera/{capability}/frame"
     );
     assert_eq!(
         <api::component::encoder::Sample as ContractBody>::TOPIC,
-        "y2026_1/component/{instance}/encoder/{capability}/sample"
+        "v1/component/{instance}/encoder/{capability}/sample"
     );
 }
 
@@ -929,7 +850,7 @@ fn dynamic_topic_wildcard_is_subscribe_only() {
     assert!(concrete.publish_key().is_ok());
 
     let wildcard = api::topic::new().component("*").motor("motor").command();
-    assert_eq!(wildcard.key(), "y2026_1/component/*/motor/motor/command");
+    assert_eq!(wildcard.key(), "v1/component/*/motor/motor/command");
     assert!(wildcard.publish_key().is_err());
 }
 
@@ -949,7 +870,7 @@ where
 // key).
 mod reused_var_name {
     crate::phoxal_api_tree! {
-        version rv {
+        version v1 {
             outer(id) {
                 inner(id) {
                     struct Body { x: u8 }
@@ -961,28 +882,26 @@ mod reused_var_name {
 
     #[test]
     fn nested_reused_var_carries_each_level_independently() {
-        let topic = rv::topic::new().outer("a").inner("b").event();
-        assert_eq!(topic.key(), "rv/outer/a/inner/b/event");
+        let topic = v1::topic::new().outer("a").inner("b").event();
+        assert_eq!(topic.key(), "v1/outer/a/inner/b/event");
     }
 }
 
-// A standalone second generation with no parent (there is no `extends`, D1):
-// a sparse batch that mints its own contract, fully independent of y2026_1.
+// A standalone stable API version used to exercise the macro independently.
 //
 // This does NOT use `preview` here: a `preview` version is feature-gated
-// (`preview-y2026_N`), and that feature must be registered in this crate's
-// `@generated` `[features]` block in `Cargo.toml` (written by
-// `xtask api sync-features`, out of scope for this slice) before a preview
-// module actually compiles in. The `preview` marker itself - standalone, with
+// (`preview-vN`), and that feature must be registered in this crate's
+// `[features]` block in `Cargo.toml` before a preview module actually compiles
+// in. The `preview` marker itself - standalone, with
 // no `extends` - is exercised at the token level in
 // `phoxal-macros/src/api_tree.rs`'s
 // `standalone_preview_version_emits_final_path_feature_gate_and_lifecycle_const`
 // test, which does not need the feature wired.
-mod standalone_second_generation {
+mod standalone_version {
     use crate::{ApiVersion, ContractBody};
 
     crate::phoxal_api_tree! {
-        version y2026_2 {
+        version v1 {
             sample {
                 struct Body { value: u8, note: Option<String> }
                 topic body: state Body;
@@ -991,24 +910,18 @@ mod standalone_second_generation {
     }
 
     #[test]
-    fn standalone_generation_expands_and_round_trips() {
-        const { assert!(!<y2026_2::Api as ApiVersion>::IS_PREVIEW) };
-        assert_eq!(<y2026_2::Api as ApiVersion>::ID, "y2026_2");
-        assert_eq!(
-            <y2026_2::sample::Body as ContractBody>::TOPIC,
-            "y2026_2/sample/body"
-        );
-        assert_eq!(
-            y2026_2::topic::new().sample().body().key(),
-            "y2026_2/sample/body"
-        );
+    fn standalone_version_expands_and_round_trips() {
+        const { assert!(!<v1::Api as ApiVersion>::IS_PREVIEW) };
+        assert_eq!(<v1::Api as ApiVersion>::ID, "v1");
+        assert_eq!(<v1::sample::Body as ContractBody>::TOPIC, "v1/sample/body");
+        assert_eq!(v1::topic::new().sample().body().key(), "v1/sample/body");
 
-        let body = y2026_2::sample::Body {
+        let body = v1::sample::Body {
             value: 7,
             note: Some("standalone".to_string()),
         };
         let bytes = rmp_serde::to_vec_named(&body).unwrap();
-        let decoded: y2026_2::sample::Body = rmp_serde::from_slice(&bytes).unwrap();
+        let decoded: v1::sample::Body = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(body, decoded);
     }
 }

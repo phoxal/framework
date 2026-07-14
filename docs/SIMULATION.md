@@ -34,7 +34,7 @@ They self-drive through `wb_robot_step` (both spawn `synchronization TRUE`, so
 Webots does not advance until each has stepped) and therefore run on the real
 step scheduler (`ClockMode::Real`).
 The supervisor derives logical simulation time from Webots and publishes it on
-the `y2026_10/simulation/clock` contract after each completed world step. The
+the `v2/simulation/clock` contract after each completed world step. The
 payload is `{ now_ns, step }`: publication itself is the advancement signal,
 and silence means Webots has not advanced. There is no separate pause flag.
 

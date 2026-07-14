@@ -4,8 +4,8 @@
 
 use std::f64::consts::PI;
 
-use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_7;
+use phoxal_api::v1 as api;
+use phoxal_api::v2;
 
 use crate::robot_config::RequiredSources;
 
@@ -22,10 +22,10 @@ pub(crate) struct Timed<T> {
 
 pub(crate) struct SafetyInputs<'a> {
     pub(crate) required: RequiredSources,
-    // `battery/state` (y2026_7, moved from y2026_1) and `drive/state` (y2026_1)
-    // are two different contract generations feeding the same participant - the
+    // `battery/state` (v2, moved from v1) and `drive/state` (v1)
+    // are two different contract versions feeding the same participant - the
     // per-contract-versioning mix this participant exists to prove (D1).
-    pub(crate) battery: Option<&'a Timed<y2026_7::battery::State>>,
+    pub(crate) battery: Option<&'a Timed<v2::battery::State>>,
     pub(crate) drive: Option<&'a Timed<api::drive::State>>,
     pub(crate) emergency_stop_engaged: bool,
 }

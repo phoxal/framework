@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(cli-ux)* y2026_9 contracts + telemetry/joypad/router tools (framework half) ([#252](https://github.com/phoxal/framework/pull/252))
+- *(cli-ux)* preview v2 contracts + telemetry/joypad/router tools (framework half) ([#252](https://github.com/phoxal/framework/pull/252))
 
 ## [0.21.1](https://github.com/phoxal/framework/compare/phoxal-macros-v0.21.0...phoxal-macros-v0.21.1) - 2026-07-12
 
@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - *(api)* split generation/contract metadata fields + #[phoxal(external)] marker ([#200](https://github.com/phoxal/framework/pull/200))
-- phoxal-api refactor — finish batch (nested-nodes, Declares/server gating, y2026_7 mixing) ([#195](https://github.com/phoxal/framework/pull/195))
+- phoxal-api refactor — finish batch (nested nodes, Declares/server gating, mixed API versions) ([#195](https://github.com/phoxal/framework/pull/195))
 - delete old authoring model + emit-apis; run_v2 -> run (Cleanup)
 - *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
 

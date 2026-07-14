@@ -11,13 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(simulation)* mint advancing clock as y2026_10 ([#256](https://github.com/phoxal/framework/pull/256))
+- *(simulation)* update the advancing clock contract ([#256](https://github.com/phoxal/framework/pull/256))
 
 ## [0.20.3](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.2...phoxal-api-v0.20.3) - 2026-07-13
 
 ### Added
 
-- *(cli-ux)* y2026_9 contracts + telemetry/joypad/router tools (framework half) ([#252](https://github.com/phoxal/framework/pull/252))
+- *(cli-ux)* preview v2 contracts + telemetry/joypad/router tools (framework half) ([#252](https://github.com/phoxal/framework/pull/252))
 
 ## [0.20.2](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.1...phoxal-api-v0.20.2) - 2026-07-12
 
@@ -36,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- phoxal-api refactor — finish batch (nested-nodes, Declares/server gating, y2026_7 mixing) ([#195](https://github.com/phoxal/framework/pull/195))
+- phoxal-api refactor — finish batch (nested nodes, Declares/server gating, mixed API versions) ([#195](https://github.com/phoxal/framework/pull/195))
 - *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
 
 ## [0.19.5](https://github.com/phoxal/framework/compare/phoxal-api-v0.19.4...phoxal-api-v0.19.5) - 2026-07-08

@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- phoxal-api refactor — finish batch (nested-nodes, Declares/server gating, y2026_7 mixing) ([#195](https://github.com/phoxal/framework/pull/195))
+- phoxal-api refactor — finish batch (nested nodes, Declares/server gating, mixed API versions) ([#195](https://github.com/phoxal/framework/pull/195))
 - delete old authoring model + emit-apis; run_v2 -> run (Cleanup)
 - convert remaining 24 participants to new authoring model (P-convert)
 - *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)

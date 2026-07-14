@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, LogicalTime, OwnerCap, Publisher};
-use phoxal_api::y2026_9 as api;
+use phoxal_api::v2 as api;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
 /// Host sampling cadence: frequent enough for a live CLI dashboard to feel

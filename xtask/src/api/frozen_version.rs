@@ -1,7 +1,7 @@
-//! The frozen-generation release-PR guard (phoxal-api-refactor companion doc,
+//! The frozen-version release-PR guard (phoxal-api-refactor companion doc,
 //! "Frozen-contract enforcement").
 //!
-//! A released (non-`preview`) `version y2026_N { … }` span in
+//! A released (non-`preview`) `version vN { … }` span in
 //! `phoxal-api/src/lib.rs` is immutable. The published crate's
 //! `.cargo_vcs_info.json` identifies the exact registry baseline commit; this
 //! check diffs every `version` span at that commit against the candidate
@@ -24,7 +24,7 @@
 //! Deliberately not a full `syn`-AST diff (RECONCILIATION correction #14):
 //! `syn::parse_file` locates the one production `phoxal_api_tree!` invocation
 //! and hands back its token stream with real source spans (`proc-macro2`'s
-//! `span-locations` feature), which is enough to slice each generation's exact
+//! `span-locations` feature), which is enough to slice each version's exact
 //! source text out of both file revisions and string-compare it - no
 //! semantic/whitespace-insensitive comparison, no promotion policy beyond
 //! "frozen means byte-identical".
@@ -66,7 +66,7 @@ pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
 
     let Some(baseline_sha) = args.baseline_sha else {
-        println!("frozen-generation check: no registry baseline; nothing to check");
+        println!("frozen-version check: no registry baseline; nothing to check");
         return Ok(());
     };
 
@@ -88,115 +88,190 @@ pub fn run(args: Args) -> Result<()> {
     };
 
     let baseline_desc = format!("registry commit {baseline_sha}");
-    let violations =
-        frozen_generation_violations(&baseline_desc, &baseline_source, &current_source)
-            .with_context(|| {
-                format!(
-                    "failed to compare {} at {baseline_desc} against {candidate_desc}",
-                    args.lib_path.display()
-                )
-            })?;
+    let violations = frozen_version_violations(&baseline_desc, &baseline_source, &current_source)
+        .with_context(|| {
+        format!(
+            "failed to compare {} at {baseline_desc} against {candidate_desc}",
+            args.lib_path.display()
+        )
+    })?;
 
     if !violations.is_empty() {
         bail!(
-            "frozen-generation check failed ({} generation(s) changed since {baseline_desc}):\n{}",
+            "frozen-version check failed ({} version(s) changed since {baseline_desc}):\n{}",
             violations.len(),
             violations.join("\n")
         );
     }
 
-    println!(
-        "frozen-generation check passed: no released generation changed since {baseline_desc}"
-    );
+    println!("frozen-version check passed: no released version changed since {baseline_desc}");
     Ok(())
 }
 
-fn frozen_generation_violations(
+fn frozen_version_violations(
     baseline_desc: &str,
     baseline_source: &str,
     current_source: &str,
 ) -> Result<Vec<String>> {
-    let baseline_spans = parse_generation_spans(baseline_source)
+    let baseline_spans = parse_version_spans(baseline_source)
         .context("failed to parse the baseline revision's phoxal_api_tree! invocation")?;
-    let current_spans = parse_generation_spans(current_source)
+    let current_spans = parse_version_spans(current_source)
         .context("failed to parse the current phoxal_api_tree! invocation")?;
 
-    // One-time namespace migration: the legacy dated releases predate the
-    // stable-vN/preview-vN lifecycle. Accept their removal only when the
-    // candidate contains a byte-equivalent stable `v1`, an explicit preview
-    // `v2`, and no remaining dated module. Once a `vN` release is the registry
-    // baseline this branch is unreachable and the normal frozen-span rule below
-    // applies unchanged.
-    let legacy_namespace_transition = baseline_spans
+    // One-time namespace migration: releases from before the conventional
+    // stable-vN/preview-vN lifecycle may use non-vN names. Accept their removal
+    // only when the candidate contains a byte-equivalent stable `v1`, an
+    // explicit preview `v2`, and no remaining non-conventional version name.
+    // Once a `vN` release is the registry baseline this branch is unreachable
+    // and the normal frozen-span rule below applies unchanged.
+    let legacy_stable = baseline_spans
         .iter()
-        .any(|span| span.name == "y2026_1" && !span.is_preview)
-        && current_spans
-            .iter()
-            .any(|span| span.name == "v1" && !span.is_preview)
-        && current_spans
-            .iter()
-            .any(|span| span.name == "v2" && span.is_preview)
-        && current_spans
-            .iter()
-            .all(|span| !span.name.starts_with("y2026_"));
+        .find(|span| !span.is_preview && !is_conventional_version(&span.name));
+    let legacy_namespace_migration = legacy_stable.is_some()
+        && current_spans.len() == 2
+        && current_spans[0].name == "v1"
+        && !current_spans[0].is_preview
+        && current_spans[1].name == "v2"
+        && current_spans[1].is_preview;
 
     let mut violations = Vec::new();
-    if legacy_namespace_transition {
+    if let Some(legacy_stable) = legacy_stable.filter(|_| legacy_namespace_migration) {
         let expected_v2 = baseline_spans
             .iter()
-            .filter(|span| span.name.starts_with("y2026_") && span.name != "y2026_1")
+            .filter(|span| span.name != legacy_stable.name)
             .fold(BTreeMap::new(), |mut contracts, span| {
-                // Later dated versions replace an earlier declaration of the
-                // same contract path (notably simulation::Clock).
+                // Later versions replace an earlier declaration of the same
+                // contract path (notably simulation::Clock).
                 contracts.extend(contract_surface(&span.tokens));
                 contracts
             });
         let current_v2 = current_spans
             .iter()
             .find(|span| span.name == "v2")
-            .expect("legacy migration predicate requires v2");
+            .expect("migration predicate requires v2");
         if contract_surface(&current_v2.tokens) != expected_v2 {
             violations.push(
-                "  - preview 'v2' must preserve the complete latest contract surface from the post-y2026_1 dated versions"
+                "  - preview 'v2' must preserve the complete latest contract surface from the pre-vN versions"
                     .to_string(),
             );
         }
     }
 
+    let current_previews: Vec<_> = current_spans
+        .iter()
+        .filter(|span| span.is_preview)
+        .collect();
+    if current_previews.len() > 1 {
+        violations.push(
+            "  - only one API version may be preview at a time; evolve the active preview in place"
+                .to_string(),
+        );
+    }
+    if let Some(preview) = current_previews.first() {
+        let max_stable = current_spans
+            .iter()
+            .filter(|span| !span.is_preview)
+            .filter_map(|span| version_number(&span.name))
+            .max();
+        if current_spans
+            .last()
+            .is_some_and(|span| span.name != preview.name)
+        {
+            violations.push(format!(
+                "  - preview version '{}' must be the final version block",
+                preview.name
+            ));
+        }
+        if let Some(expected_preview) = max_stable.and_then(|number| number.checked_add(1))
+            && version_number(&preview.name) != Some(expected_preview)
+        {
+            violations.push(format!(
+                "  - preview version '{}' must remain the next version 'v{expected_preview}' after the latest stable version",
+                preview.name
+            ));
+        }
+    }
+
+    if !legacy_namespace_migration {
+        for baseline_preview in baseline_spans.iter().filter(|span| span.is_preview) {
+            if !current_spans
+                .iter()
+                .any(|span| span.name == baseline_preview.name)
+            {
+                violations.push(format!(
+                    "  - preview version '{}' existed at {baseline_desc}; evolve it in place or promote that same version before starting another preview",
+                    baseline_preview.name
+                ));
+            }
+        }
+        for current_stable in current_spans.iter().filter(|span| !span.is_preview) {
+            if !baseline_spans
+                .iter()
+                .any(|span| span.name == current_stable.name)
+            {
+                violations.push(format!(
+                    "  - stable version '{}' did not exist at {baseline_desc}; a new version must enter preview before promotion",
+                    current_stable.name
+                ));
+            }
+        }
+    }
+
     for baseline in baseline_spans.iter().filter(|span| !span.is_preview) {
         match current_spans.iter().find(|span| span.name == baseline.name) {
-            None if legacy_namespace_transition && baseline.name == "y2026_1" => {
+            None if legacy_namespace_migration
+                && legacy_stable.is_some_and(|stable| stable.name == baseline.name) =>
+            {
                 let current_v1 = current_spans
                     .iter()
                     .find(|span| span.name == "v1")
-                    .expect("legacy migration predicate requires v1");
-                let migrated_v1 = baseline.text.replacen("version y2026_1", "version v1", 1);
+                    .expect("migration predicate requires v1");
+                let migrated_v1 =
+                    baseline
+                        .text
+                        .replacen(&format!("version {}", baseline.name), "version v1", 1);
                 if current_v1.text != migrated_v1 {
                     violations.push(
-                        "  - legacy generation 'y2026_1' must move to stable 'v1' without changing its frozen contract tree"
+                        "  - the first pre-vN stable version must move to stable 'v1' without changing its frozen contract tree"
                             .to_string(),
                     );
                 }
             }
-            None if legacy_namespace_transition && baseline.name.starts_with("y2026_") => {}
+            None if legacy_namespace_migration && !is_conventional_version(&baseline.name) => {}
             None => violations.push(format!(
-                "  - generation '{}' was released (frozen) at {baseline_desc} but is missing now",
+                "  - version '{}' was released (frozen) at {baseline_desc} but is missing now",
                 baseline.name
             )),
             Some(current) if current.is_preview => violations.push(format!(
-                "  - generation '{}' was released (frozen) at {baseline_desc} but is now marked \
+                "  - version '{}' was released (frozen) at {baseline_desc} but is now marked \
                  `preview`",
                 baseline.name
             )),
             Some(current) if current.text != baseline.text => violations.push(format!(
-                "  - generation '{}' was released (frozen) at {baseline_desc} and must not \
-                 change; mint a new generation instead",
+                "  - version '{}' was released (frozen) at {baseline_desc} and must not \
+                 change; make the change in the active preview version instead",
                 baseline.name
             )),
             Some(_) => {}
         }
     }
     Ok(violations)
+}
+
+fn is_conventional_version(name: &str) -> bool {
+    version_number(name).is_some()
+}
+
+fn version_number(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix('v')?;
+    if digits.is_empty()
+        || digits == "0"
+        || digits.starts_with('0')
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// Reads one file's content at a given commit-ish as text (`git show
@@ -224,7 +299,7 @@ fn git_show_commit(root: &Path, rev: &str, relative_path: &Path) -> Result<Strin
 /// (including the leading `preview` keyword when present, so a frozen->preview
 /// demotion shows up as a text diff too, belt-and-suspenders alongside the
 /// explicit `is_preview` check).
-struct GenerationSpan {
+struct VersionSpan {
     name: String,
     is_preview: bool,
     text: String,
@@ -353,10 +428,10 @@ fn contract_surface(tokens: &TokenStream) -> BTreeMap<String, String> {
     contracts
 }
 
-fn parse_generation_spans(source: &str) -> Result<Vec<GenerationSpan>> {
+fn parse_version_spans(source: &str) -> Result<Vec<VersionSpan>> {
     let file = syn::parse_file(source).context("not valid Rust source")?;
     let tokens = find_tree_invocation_tokens(&file)?;
-    scan_generation_spans(source, tokens)
+    scan_version_spans(source, tokens)
 }
 
 fn find_tree_invocation_tokens(file: &syn::File) -> Result<TokenStream> {
@@ -377,7 +452,7 @@ fn find_tree_invocation_tokens(file: &syn::File) -> Result<TokenStream> {
     }
 }
 
-fn scan_generation_spans(source: &str, tokens: TokenStream) -> Result<Vec<GenerationSpan>> {
+fn scan_version_spans(source: &str, tokens: TokenStream) -> Result<Vec<VersionSpan>> {
     let trees: Vec<TokenTree> = tokens.into_iter().collect();
     let mut spans = Vec::new();
     let mut index = 0;
@@ -405,31 +480,31 @@ fn scan_generation_spans(source: &str, tokens: TokenStream) -> Result<Vec<Genera
 
         let name_tt = trees
             .get(index)
-            .context("expected a generation name after `version`")?;
+            .context("expected a version name after `version`")?;
         let TokenTree::Ident(name_ident) = name_tt else {
-            bail!("expected a generation name identifier after `version`, found `{name_tt}`");
+            bail!("expected a version name identifier after `version`, found `{name_tt}`");
         };
         let name = name_ident.to_string();
         index += 1;
 
         let group_tt = trees
             .get(index)
-            .with_context(|| format!("expected a `{{ ... }}` body for generation '{name}'"))?;
+            .with_context(|| format!("expected a `{{ ... }}` body for version '{name}'"))?;
         let TokenTree::Group(group) = group_tt else {
-            bail!("expected a brace-delimited body for generation '{name}', found `{group_tt}`");
+            bail!("expected a brace-delimited body for version '{name}', found `{group_tt}`");
         };
         if group.delimiter() != Delimiter::Brace {
-            bail!("expected a brace-delimited body for generation '{name}'");
+            bail!("expected a brace-delimited body for version '{name}'");
         }
 
         let start_byte = line_col_to_byte(source, trees[start_index].span().start())?;
         let end_byte = line_col_to_byte(source, group.span_close().end())?;
         let text = source
             .get(start_byte..end_byte)
-            .with_context(|| format!("computed span for generation '{name}' was out of bounds"))?
+            .with_context(|| format!("computed span for version '{name}' was out of bounds"))?
             .to_string();
 
-        spans.push(GenerationSpan {
+        spans.push(VersionSpan {
             name,
             is_preview,
             text,
@@ -479,249 +554,311 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_single_stable_generation() -> Result<()> {
+    fn parses_a_single_stable_version() -> Result<()> {
         let source = wrap(
-            "    version y2026_1 {\n        drive {\n            /// docs with a { brace } too\n            struct Target { x: f32 }\n            topic target: command Target;\n        }\n    }",
+            "    version v1 {\n        drive {\n            /// docs with a { brace } too\n            struct Target { x: f32 }\n            topic target: command Target;\n        }\n    }",
         );
-        let spans = parse_generation_spans(&source)?;
+        let spans = parse_version_spans(&source)?;
         assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].name, "y2026_1");
+        assert_eq!(spans[0].name, "v1");
         assert!(!spans[0].is_preview);
-        assert!(spans[0].text.starts_with("version y2026_1"));
+        assert!(spans[0].text.starts_with("version v1"));
         assert!(spans[0].text.trim_end().ends_with('}'));
         Ok(())
     }
 
     #[test]
-    fn parses_a_stable_and_a_preview_generation() -> Result<()> {
+    fn parses_a_stable_and_a_preview_version() -> Result<()> {
         let source = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version y2026_2 {\n        drive { struct Target { x: f32, y: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        drive { struct Target { x: f32, y: f32 } topic target: command Target; }\n    }",
         );
-        let spans = parse_generation_spans(&source)?;
+        let spans = parse_version_spans(&source)?;
         assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].name, "y2026_1");
+        assert_eq!(spans[0].name, "v1");
         assert!(!spans[0].is_preview);
-        assert_eq!(spans[1].name, "y2026_2");
+        assert_eq!(spans[1].name, "v2");
         assert!(spans[1].is_preview);
-        assert!(spans[1].text.starts_with("preview version y2026_2"));
+        assert!(spans[1].text.starts_with("preview version v2"));
         Ok(())
     }
 
     #[test]
-    fn unchanged_frozen_generation_passes() -> Result<()> {
+    fn unchanged_frozen_version_passes() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
         let current = baseline.clone();
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
 
     #[test]
-    fn editing_a_frozen_generation_fails() -> Result<()> {
+    fn editing_a_frozen_version_fails() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
         let current = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f64 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f64 } topic target: command Target; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("y2026_1"));
+        assert!(violations[0].contains("v1"));
         assert!(violations[0].contains("must not change"));
         Ok(())
     }
 
     #[test]
-    fn demoting_a_frozen_generation_to_preview_fails() -> Result<()> {
+    fn demoting_a_frozen_version_to_preview_fails() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
         let current = wrap(
-            "    preview version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    preview version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("preview"));
         Ok(())
     }
 
     #[test]
-    fn adding_a_new_generation_does_not_fail() -> Result<()> {
+    fn adding_a_new_version_does_not_fail() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
         let current = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version y2026_2 {\n        drive { struct Target { x: f32, y: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        drive { struct Target { x: f32, y: f32 } topic target: command Target; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
 
     #[test]
-    fn legacy_dated_generations_migrate_to_stable_v1_and_preview_v2() -> Result<()> {
+    fn pre_vn_versions_migrate_to_stable_v1_and_preview_v2() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_rejects_changes_to_the_v1_contract_tree() -> Result<()> {
+    fn pre_vn_migration_rejects_changes_to_the_v1_contract_tree() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f64 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("without changing"));
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_rejects_an_incomplete_v2_contract_surface() -> Result<()> {
+    fn pre_vn_migration_rejects_an_incomplete_v2_contract_surface() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {}",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("complete latest contract surface"));
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_uses_the_latest_shape_for_a_re_minted_contract() -> Result<()> {
+    fn pre_vn_migration_uses_the_latest_shape_for_a_redeclared_contract() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_9 {\n        simulation { struct Clock { now_ns: u64, step: u64, running: bool } topic clock: state Clock; }\n    }\n    version y2026_10 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_9 {\n        simulation { struct Clock { now_ns: u64, running: bool } topic clock: state Clock; }\n    }\n    version release_10 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_rejects_an_obsolete_shape_for_a_re_minted_contract() -> Result<()> {
+    fn pre_vn_migration_rejects_an_obsolete_redeclared_contract_shape() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_9 {\n        simulation { struct Clock { now_ns: u64, step: u64, running: bool } topic clock: state Clock; }\n    }\n    version y2026_10 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_9 {\n        simulation { struct Clock { now_ns: u64, running: bool } topic clock: state Clock; }\n    }\n    version release_10 {\n        simulation { struct Clock { now_ns: u64, step: u64 } topic clock: state Clock; }\n    }",
         );
         let current = wrap(
-            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        simulation { struct Clock { now_ns: u64, step: u64, running: bool } topic clock: state Clock; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        simulation { struct Clock { now_ns: u64, running: bool } topic clock: state Clock; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("complete latest contract surface"));
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_rejects_changed_wire_attributes_in_v2() -> Result<()> {
+    fn pre_vn_migration_rejects_changed_wire_attributes_in_v2() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { #[serde(rename_all = \"snake_case\")] enum State { Charging, Empty } topic state: state State; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { #[serde(rename_all = \"snake_case\")] enum State { Charging, Empty } topic state: state State; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { #[serde(rename_all = \"camelCase\")] enum State { Charging, Empty } topic state: state State; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("complete latest contract surface"));
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_ignores_changed_contract_docs_in_v2() -> Result<()> {
+    fn pre_vn_migration_ignores_changed_contract_docs_in_v2() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { /// Old dated wording.\n        struct State { charge: f32 } topic state: state State; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { /// Old wording.\n        struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { /// New preview wording.\n        struct State { charge: f32 } topic state: state State; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_rejects_changed_node_dynamics_in_v2() -> Result<()> {
+    fn pre_vn_migration_rejects_changed_node_dynamics_in_v2() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery(instance) { struct State { charge: f32 } topic state: state State; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
         assert!(violations[0].contains("complete latest contract surface"));
         Ok(())
     }
 
     #[test]
-    fn legacy_migration_requires_preview_v2() -> Result<()> {
+    fn pre_vn_migration_requires_preview_v2() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
         let current = wrap(
             "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
-        assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("missing"));
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("missing"))
+        );
         Ok(())
     }
 
     #[test]
-    fn promoting_a_generation_that_was_already_preview_at_baseline_does_not_fail() -> Result<()> {
+    fn pre_vn_migration_rejects_an_extra_version() -> Result<()> {
         let baseline = wrap(
-            "    preview version y2026_2 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version release_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version release_7 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
-            "    version y2026_2 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }\n    preview version v3 {}",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
+        assert!(!violations.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn published_preview_must_evolve_under_the_same_name() -> Result<()> {
+        let baseline = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v3 {\n        battery { struct State { charge: f64 } topic state: state State; }\n    }",
+        );
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
+        assert!(violations.iter().any(|violation| violation.contains("v2")));
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("next version 'v2'"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn published_preview_may_change_in_place() -> Result<()> {
+        let baseline = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f64, voltage: f32 } topic state: state State; }\n    }",
+        );
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert!(violations.is_empty(), "{violations:?}");
         Ok(())
     }
 
     #[test]
-    fn removing_a_frozen_generation_fails() -> Result<()> {
+    fn promoted_preview_allows_the_next_preview() -> Result<()> {
         let baseline = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version y2026_2 {\n        drive { struct Other { x: f32 } topic other: command Other; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    preview version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
         );
         let current = wrap(
-            "    version y2026_1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version v2 {\n        battery { struct State { charge: f64 } topic state: state State; }\n    }\n    preview version v3 {\n        battery { struct State { charge: f64, voltage: f32 } topic state: state State; }\n    }",
         );
-        let violations =
-            frozen_generation_violations("registry commit abc123", &baseline, &current)?;
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
+        assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn new_stable_version_must_have_existed_as_preview() -> Result<()> {
+        let baseline = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version v2 {\n        battery { struct State { charge: f32 } topic state: state State; }\n    }",
+        );
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
+        assert!(
+            violations
+                .iter()
+                .any(|violation| violation.contains("must enter preview"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn promoting_a_version_that_was_already_preview_at_baseline_does_not_fail() -> Result<()> {
+        let baseline = wrap(
+            "    preview version v2 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+        );
+        let current = wrap(
+            "    version v2 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+        );
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
+        assert!(violations.is_empty(), "{violations:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn removing_a_frozen_version_fails() -> Result<()> {
+        let baseline = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }\n    version v2 {\n        drive { struct Other { x: f32 } topic other: command Other; }\n    }",
+        );
+        let current = wrap(
+            "    version v1 {\n        drive { struct Target { x: f32 } topic target: command Target; }\n    }",
+        );
+        let violations = frozen_version_violations("registry commit abc123", &baseline, &current)?;
         assert_eq!(violations.len(), 1);
-        assert!(violations[0].contains("y2026_2"));
+        assert!(violations[0].contains("v2"));
         assert!(violations[0].contains("missing"));
         Ok(())
     }

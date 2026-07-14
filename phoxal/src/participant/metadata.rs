@@ -4,8 +4,8 @@
 //! A participant attribute (`phoxal-macros/src/authoring.rs`) embeds one JSON
 //! manifest per participant binary in a dedicated linker section - see
 //! `phoxal::participant::api::__meta` for the const-eval mechanism that
-//! resolves it. The entry shape is `{"role","generation","contract","external"}`:
-//! generation and contract are recorded as SEPARATE fields (never a joined
+//! resolves it. The entry shape is `{"role","version","contract","external"}`:
+//! version and contract are recorded as SEPARATE fields (never a joined
 //! name a reader would have to parse). The shape is strict: this pre-1.0
 //! writer/parser cut has no compatibility fallback.
 //!
@@ -22,7 +22,7 @@
 
 use serde::Deserialize;
 
-/// One `{"role","generation","contract","external"}` entry from the embedded
+/// One `{"role","version","contract","external"}` entry from the embedded
 /// manifest: one participant `Api` struct field's role for one contract (a
 /// `Server<Req, Resp>`/`Querier<Req, Resp>` field contributes two entries -
 /// one per side). Deduplicated per `(role, contract)` by the derive
@@ -35,15 +35,15 @@ pub struct ParticipantMetaContract {
     /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
     /// (`phoxal::participant::ContractRole`, snake_case).
     pub role: String,
-    /// The contract's generation, e.g. `"y2026_1"`
-    /// (`<Body as phoxal_bus::ContractBody>::GENERATION`).
-    pub generation: String,
-    /// The contract's path within its generation, e.g. `"drive::Target"`
+    /// The contract's version, e.g. `"v1"`
+    /// (`<Body as phoxal_bus::ContractBody>::VERSION`).
+    pub version: String,
+    /// The contract's path within its version, e.g. `"drive::Target"`
     /// (`<Body as phoxal_bus::ContractBody>::CONTRACT`). The **logical
     /// contract** for coherence purposes is this field alone - two entries
-    /// with the same `contract` but different `generation` name the same
-    /// logical contract at different generations; the version-qualified
-    /// identity is the `generation`/`contract` join.
+    /// with the same `contract` but different `version` name the same
+    /// logical contract at different versions; the version-qualified
+    /// identity is the `version`/`contract` join.
     pub contract: String,
     /// Whether this edge is excused from the coherence check
     /// (`#[phoxal(external)]`, coherence-gate design doc §1): the counterpart
@@ -80,8 +80,8 @@ mod tests {
     #[test]
     fn parses_the_current_section_shape() {
         let json = br#"{"participant_api":"Api","contracts":[
-            {"role":"subscribe","generation":"y2026_1","contract":"drive::Target","external":false},
-            {"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}
+            {"role":"subscribe","version":"v1","contract":"drive::Target","external":false},
+            {"role":"publish","version":"v1","contract":"drive::State","external":false}
         ],"config_schema":{"type":"object","properties":{"speed":{"type":"number"}}}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
         assert_eq!(meta.participant_api, "Api");
@@ -91,13 +91,13 @@ mod tests {
             vec![
                 ParticipantMetaContract {
                     role: "subscribe".to_string(),
-                    generation: "y2026_1".to_string(),
+                    version: "v1".to_string(),
                     contract: "drive::Target".to_string(),
                     external: false,
                 },
                 ParticipantMetaContract {
                     role: "publish".to_string(),
-                    generation: "y2026_1".to_string(),
+                    version: "v1".to_string(),
                     contract: "drive::State".to_string(),
                     external: false,
                 },
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn external_true_is_recorded() {
         let json = br#"{"participant_api":"Api","contracts":[
-            {"role":"subscribe","generation":"y2026_1","contract":"drive::Target","external":true}
+            {"role":"subscribe","version":"v1","contract":"drive::Target","external":true}
         ],"config_schema":{"type":"null"}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
         assert!(meta.contracts[0].external);
@@ -117,7 +117,7 @@ mod tests {
     #[test]
     fn missing_external_key_is_rejected() {
         let json = br#"{"participant_api":"Api","contracts":[
-            {"role":"publish","generation":"y2026_1","contract":"drive::State"}
+            {"role":"publish","version":"v1","contract":"drive::State"}
         ],"config_schema":{"type":"null"}}"#;
         let err = parse_participant_metadata(json).unwrap_err();
         assert!(err.to_string().contains("external"));

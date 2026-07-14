@@ -1,8 +1,8 @@
 {
   "schema": "phoxal.promoted-api-shapes/v0",
-  "generations": [
+  "versions": [
     {
-      "name": "y2026_1",
+      "name": "v1",
       "contracts": [
         {
           "family": "asset::GetRequest",

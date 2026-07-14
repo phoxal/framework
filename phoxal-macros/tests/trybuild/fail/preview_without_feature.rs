@@ -3,14 +3,14 @@
 use phoxal_macros::phoxal_api_tree;
 
 phoxal_api_tree! {
-    version y2026_1 {
+    version v1 {
         sample {
             struct Body { value: u8 }
             topic body: state Body;
         }
     }
 
-    preview version y2026_2 {
+    preview version v2 {
         sample {
             struct Body { value: u8 }
             topic body: state Body;
@@ -19,5 +19,5 @@ phoxal_api_tree! {
 }
 
 fn main() {
-    let _ = y2026_2::topic::new();
+    let _ = v2::topic::new();
 }

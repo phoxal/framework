@@ -14,7 +14,7 @@
 //!
 //! These public types carry untyped payload bytes; the generated server dispatch
 //! does the typed encode/decode around them. Identity is no longer validated
-//! here (D1): a query only ever reaches the handler for its own generation-
+//! here (D1): a query only ever reaches the handler for its own version-
 //! qualified topic key, so there is nothing left to check beyond the codec.
 
 use zenoh::handlers::FifoChannelHandler;
@@ -47,7 +47,7 @@ impl ServerQueryable {
         })
     }
 
-    /// The versionless topic key this queryable serves.
+    /// The version-qualified topic key this queryable serves.
     pub fn topic_key(&self) -> &str {
         &self.topic_key
     }
@@ -60,7 +60,7 @@ pub struct IncomingQuery {
 }
 
 impl IncomingQuery {
-    /// The versionless topic key.
+    /// The version-qualified topic key.
     pub fn topic_key(&self) -> &str {
         &self.topic_key
     }
@@ -76,7 +76,7 @@ impl IncomingQuery {
 
     /// The request's bus metadata (codec + provenance), decoded from the Zenoh
     /// attachment. Identity is no longer carried here (D1): this queryable only
-    /// ever receives requests on its own generation-qualified topic key.
+    /// ever receives requests on its own version-qualified topic key.
     pub fn request_metadata(&self) -> Result<BusMetadata> {
         let encoding = self.query.encoding().ok_or_else(|| BusError::Metadata {
             topic: self.topic_key.clone(),

@@ -1,10 +1,10 @@
-name: Frozen API generation guard
+name: Frozen API version guard
 
 # Blocks a PR (in particular release-plz's `chore(release)` PR) if a released
-# (non-`preview`) `version y2026_N { … }` span in `phoxal-api/src/lib.rs`
+# (non-`preview`) `version vN { … }` span in `phoxal-api/src/lib.rs`
 # changed since the commit recorded in crates.io's published phoxal-api crate.
 # A released contract type is immutable; a changed contract is minted fresh in
-# the current generation instead.
+# the active preview version instead.
 #
 # SECURITY - why this is not a "Pwn Request":
 # `pull_request_target` runs with the BASE repo's workflow + the elevated
@@ -28,7 +28,7 @@ permissions:
   contents: read
 
 jobs:
-  frozen-generation-check:
+  frozen-version-check:
     runs-on: ubuntu-latest
     steps:
       # Default checkout: the trusted BASE ref (NOT the PR head). Full history
@@ -51,7 +51,7 @@ jobs:
       - name: Fetch PR head commit (read-only)
         run: git fetch --no-tags origin ${{ github.event.pull_request.head.sha }}
 
-      - name: Check frozen API generations are unchanged
+      - name: Check frozen API versions are unchanged
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -64,6 +64,6 @@ jobs:
               | tar -xzOf - "phoxal-api-${version}/.cargo_vcs_info.json" \
               | jq -er '.git.sha1'
           )"
-          cargo xtask api frozen-generation-check \
+          cargo xtask api frozen-version-check \
             --baseline-sha "$baseline_sha" \
             --head-sha "$HEAD_SHA"

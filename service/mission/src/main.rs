@@ -12,7 +12,7 @@
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 #[derive(Clone, Debug, PartialEq)]
 struct MissionLifecycle {
@@ -155,7 +155,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     use super::{Mission, MissionLifecycle};
 

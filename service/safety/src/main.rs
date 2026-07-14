@@ -1,14 +1,14 @@
 //! `safety` - the official battery + drive safety monitor.
 //!
-//! This official participant MIXES two API generations (D1's
+//! This official participant MIXES two API versions (D1's
 //! per-contract-versioning ground-breaker): it consumes required
-//! `y2026_7/battery/state` (the moved contract) and `y2026_1/drive/state`
+//! `v2/battery/state` (the moved contract) and `v1/drive/state`
 //! inputs plus emergency-stop sources (the software `safety/estop` request and
-//! per-component emergency-stop states, both `y2026_1`), and publishes the
+//! per-component emergency-stop states, both `v1`), and publishes the
 //! robot's aggregate `safety/state` posture plus the current
-//! `safety/authorization` motion envelope (also `y2026_1`). There is no
+//! `safety/authorization` motion envelope (also `v1`). There is no
 //! per-participant API version ceiling - a participant's `Api` struct declares
-//! whichever generation-qualified contract each field needs.
+//! whichever version-qualified contract each field needs.
 //!
 //! The monitor is fail-closed. A missing or stale required source forces `Stop`,
 //! and any engaged emergency stop forces `EmergencyStop`. Otherwise it takes the
@@ -24,21 +24,21 @@ mod assessment;
 mod robot_config;
 
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_7;
+use phoxal_api::v1 as api;
+use phoxal_api::v2;
 
 use crate::assessment::{SafetyInputs, Timed, assess, authorize, emergency_stop_engaged};
 use crate::robot_config::{RequiredSources, emergency_stop_bindings, required_sources};
 
-// `Api` deliberately mixes two contract generations: `battery` targets the
-// standalone `y2026_7` generation (moved out of `y2026_1`, D1's
+// `Api` deliberately mixes two contract versions: `battery` targets the
+// standalone `v2` version (moved out of `v1`, D1's
 // per-contract-versioning ground-breaker), while every other field stays on
-// `y2026_1`. A participant has no per-participant API version ceiling
+// `v1`. A participant has no per-participant API version ceiling
 // (`phoxal::participant::api`'s module docs) - this is the real, end-to-end
 // proof of that.
 #[derive(phoxal::Api)]
 struct Api {
-    battery: Subscriber<y2026_7::battery::State>,
+    battery: Subscriber<v2::battery::State>,
     drive: Subscriber<api::drive::State>,
     software_estop: Subscriber<api::safety::EmergencyStopRequest>,
     component_estops: Vec<Subscriber<api::component::emergency_stop::State>>,
@@ -50,7 +50,7 @@ struct Api {
 struct Safety {
     // Runtime-private typed state (not handles).
     required: RequiredSources,
-    last_battery: Option<Timed<y2026_7::battery::State>>,
+    last_battery: Option<Timed<v2::battery::State>>,
     last_drive: Option<Timed<api::drive::State>>,
     software_estop_engaged: bool,
     component_estop_engaged: Vec<bool>,
@@ -68,7 +68,7 @@ impl Safety {
         let emergency_stop_bindings = emergency_stop_bindings(robot);
 
         let battery = ctx
-            .subscriber(y2026_7::topic::new().battery().state(), 32)
+            .subscriber(v2::topic::new().battery().state(), 32)
             .await?;
         let drive = ctx
             .subscriber(api::topic::new().drive().state(), 32)
@@ -171,7 +171,7 @@ mod tests {
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
-    use super::{RequiredSources, Safety, SafetyInputs, Timed, api, assess, authorize, y2026_7};
+    use super::{RequiredSources, Safety, SafetyInputs, Timed, api, assess, authorize, v2};
     use crate::assessment::SOURCE_FRESH_NS;
 
     const NOW_NS: u64 = 1_000_000_000;
@@ -370,18 +370,18 @@ mod tests {
     }
 
     #[test]
-    fn api_reports_mixed_generation_contracts() {
+    fn api_reports_mixed_version_contracts() {
         assert_eq!(<Safety as Participant>::ID, "safety");
 
-        // The moved contract's generation-qualified wire key (D1): battery
-        // subscribes on y2026_7, everything else stays on y2026_1.
+        // The moved contract's version-qualified wire key (D1): battery
+        // subscribes on v2, everything else stays on v1.
         assert_eq!(
-            <y2026_7::battery::State as ContractBody>::TOPIC,
-            "y2026_7/battery/state"
+            <v2::battery::State as ContractBody>::TOPIC,
+            "v2/battery/state"
         );
 
         let contracts = <<Safety as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<y2026_7::battery::State>(contracts, ContractRole::Subscribe);
+        assert_contract::<v2::battery::State>(contracts, ContractRole::Subscribe);
         assert_contract::<api::drive::State>(contracts, ContractRole::Subscribe);
         assert_contract::<api::safety::EmergencyStopRequest>(contracts, ContractRole::Subscribe);
         assert_contract::<api::component::emergency_stop::State>(
@@ -407,7 +407,7 @@ mod tests {
 
     fn inputs<'a>(
         required: RequiredSources,
-        battery: Option<&'a Timed<y2026_7::battery::State>>,
+        battery: Option<&'a Timed<v2::battery::State>>,
         drive: Option<&'a Timed<api::drive::State>>,
         emergency_stop_engaged: bool,
     ) -> SafetyInputs<'a> {
@@ -426,8 +426,8 @@ mod tests {
         }
     }
 
-    fn battery(charge_ratio: f32) -> y2026_7::battery::State {
-        y2026_7::battery::State {
+    fn battery(charge_ratio: f32) -> v2::battery::State {
+        v2::battery::State {
             voltage_v: 15.0,
             current_a: 1.0,
             charge_ratio,

@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal_bus::{Bus, LogicalTime, Publisher};
 
 /// Runner heartbeat cadence.

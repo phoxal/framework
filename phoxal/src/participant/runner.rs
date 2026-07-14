@@ -86,9 +86,8 @@ use crate::participant::scheduler::{
     StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::StepSchedule;
-use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_9;
-use phoxal_api::y2026_10;
+use phoxal_api::v1 as api;
+use phoxal_api::v2;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
@@ -173,7 +172,7 @@ pub(crate) fn step_scheduler_for(
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
 /// the other server tasks, aborted at shutdown): this subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
-/// observes (`y2026_10::topic::new().simulation().clock()`, the CLIENT side of
+/// observes (`v2::topic::new().simulation().clock()`, the CLIENT side of
 /// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
@@ -203,9 +202,8 @@ pub(crate) fn spawn_simulation_clock_feed(
 ) -> crate::Result<JoinHandle<()>> {
     let bus = bus.clone();
     Ok(tokio::spawn(async move {
-        let topic = y2026_10::topic::new().simulation().clock();
-        let subscriber = match Subscriber::<y2026_10::simulation::Clock>::new(&bus, &topic, 1).await
-        {
+        let topic = v2::topic::new().simulation().clock();
+        let subscriber = match Subscriber::<v2::simulation::Clock>::new(&bus, &topic, 1).await {
             Ok(subscriber) => subscriber,
             Err(error) => {
                 tracing::error!(
@@ -587,7 +585,7 @@ async fn main_loop<R, C, S>(
     mut shutdown: std::pin::Pin<&mut S>,
     heartbeat: &mut HeartbeatPublisher,
     process_metrics: &ProcessMetricsPublisher,
-    process_metrics_rx: &mut watch::Receiver<Option<y2026_9::telemetry::Process>>,
+    process_metrics_rx: &mut watch::Receiver<Option<v2::telemetry::Process>>,
     watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
@@ -980,9 +978,9 @@ mod tests {
         let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
         let bus = Bus::open(bus_config).await.expect("bus should open");
 
-        let clock_publisher = crate::bus::Publisher::<y2026_10::simulation::Clock>::new(
+        let clock_publisher = crate::bus::Publisher::<v2::simulation::Clock>::new(
             bus.clone(),
-            &y2026_10::topic::internal::new(crate::bus::OwnerCap::__mint())
+            &v2::topic::internal::new(crate::bus::OwnerCap::__mint())
                 .simulation()
                 .clock(),
         )
@@ -1018,7 +1016,7 @@ mod tests {
         clock_publisher
             .publish_at(
                 first_target,
-                y2026_10::simulation::Clock {
+                v2::simulation::Clock {
                     now_ns: period_ns,
                     step: 1,
                 },
@@ -1047,7 +1045,7 @@ mod tests {
         clock_publisher
             .publish_at(
                 second_target,
-                y2026_10::simulation::Clock {
+                v2::simulation::Clock {
                     now_ns: 2 * period_ns,
                     step: 2,
                 },

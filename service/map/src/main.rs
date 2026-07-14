@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 #[derive(phoxal::Api)]
 struct Api {
@@ -167,7 +167,7 @@ mod tests {
     use super::{Grid, Map, mark_free};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     #[test]
     fn submap_returns_full_grid_window() {
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn api_declares_the_y2026_1_map_contracts() {
+    fn api_declares_the_v1_map_contracts() {
         assert_eq!(<Map as Participant>::ID, "map");
 
         let contracts = <<Map as Participant>::Api as ParticipantApi>::CONTRACTS;

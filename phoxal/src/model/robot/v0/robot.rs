@@ -89,7 +89,7 @@ pub struct Artifacts {
     /// Release channel used when resolving official framework packages.
     #[serde(default)]
     pub channel: Channel,
-    /// Optional API generation ceiling or pin for official package
+    /// Deprecated API version ceiling or pin for official package
     /// resolution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
@@ -802,7 +802,7 @@ robot:
         encoder: { kind: encoder, direction_sign: 1 }
 artifacts:
   channel: stable
-  generation: y2026_2
+  generation: v2
   pins:
     phoxal/service-drive: v0.8.4
 services:
@@ -819,7 +819,7 @@ bus:
         assert_eq!(robot.robot.namespace, "dev");
         assert_eq!(robot.robot.structure, PathBuf::from("structure.urdf"));
         assert_eq!(robot.artifacts.channel, Channel::Stable);
-        assert_eq!(robot.artifacts.generation.as_deref(), Some("y2026_2"));
+        assert_eq!(robot.artifacts.generation.as_deref(), Some("v2"));
         assert_eq!(
             robot.artifacts.pins.get("phoxal/service-drive"),
             Some(&ArtifactPin::Version(VersionPin("v0.8.4".to_string())))
@@ -1460,11 +1460,11 @@ robot:
     fn artifacts_parses_preview_channel_and_generation_pin() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  channel: preview
-  generation: y2026_2"#,
+  generation: v2"#,
         ))?;
 
         assert_eq!(robot.artifacts.channel, Channel::Preview);
-        assert_eq!(robot.artifacts.generation.as_deref(), Some("y2026_2"));
+        assert_eq!(robot.artifacts.generation.as_deref(), Some("v2"));
 
         Ok(())
     }

@@ -3,7 +3,8 @@
 //! A production-oriented framework for autonomous robots.
 //!
 //! Phoxal gives a robot a small, strongly-typed core: a contract bus over
-//! [Zenoh](https://zenoh.io), a single dated API version per robot graph, and a
+//! [Zenoh](https://zenoh.io), stable `v1` plus evolving preview `v2` contracts,
+//! and a
 //! participant authoring model where one struct plus a couple of attribute
 //! macros is a complete service, driver, tool, or simulator. The framework owns the
 //! awkward parts - argument parsing, bus connection, scheduling, query serving,
@@ -13,15 +14,15 @@
 //! Three ideas hold it together:
 //!
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
-//!   generation-qualified contract name. Handles are body-typed
+//!   version-qualified contract name. Handles are body-typed
 //!   ([`Publisher<T>`](bus::Publisher), [`Subscriber<T>`](bus::Subscriber),
 //!   [`Latest<T>`](bus::Latest), [`Querier<Req, Resp>`](bus::Querier)), so the
 //!   compiler - not a late check - rejects sending the wrong type on a topic.
-//! - **No per-participant API version ceiling.** API versions are dated modules
-//!   (`phoxal_api::y2026_1`, …), not semver crates. A participant's `Api` handle
-//!   struct may mix bodies from different generations freely across its fields -
+//! - **No per-participant API version ceiling.** API versions are conventional vN modules
+//!   (`phoxal_api::v1`, …), not semver crates. A participant's `Api` handle
+//!   struct may mix bodies from different versions freely across its fields -
 //!   compatibility is per-contract name identity, realized on the wire by the
-//!   generation-qualified key (D1); there is no `schema_id`.
+//!   version-qualified key (D1); there is no `schema_id`.
 //! - **Participants are authored, not wired.** You write a `Config` struct, an
 //!   `Api` handle struct, a state struct, and an `impl`;
 //!   [`#[derive(Config)]`](derive@Config) / [`#[derive(Api)]`](derive@Api) plus
@@ -39,7 +40,7 @@
 //! getting-started surface:
 //!
 //! ```ignore
-//! use phoxal_api::y2026_1;
+//! use phoxal_api::v1;
 //! use phoxal::prelude::*;
 //!
 //! #[derive(serde::Deserialize, phoxal::Config)]
@@ -47,8 +48,8 @@
 //!
 //! #[derive(phoxal::Api)]
 //! struct Api {
-//!     state:  Latest<y2026_1::drive::State>,    // keep-last view of the drive state
-//!     target: Publisher<y2026_1::drive::Target>, // commanded drive target
+//!     state:  Latest<v1::drive::State>,    // keep-last view of the drive state
+//!     target: Publisher<v1::drive::Target>, // commanded drive target
 //! }
 //!
 //! #[phoxal::service(id = "avoid-obstacles")]
@@ -59,15 +60,15 @@
 //!     #[setup]
 //!     async fn setup(ctx: &mut SetupContext<Self>, _config: Self::Config) -> Result<(Self, Self::Api)> {
 //!         Ok((Self, Self::Api {
-//!             state:  ctx.latest(y2026_1::topic::new().drive().state()).await?,
-//!             target: ctx.publisher(y2026_1::topic::new().drive().target()).await?,
+//!             state:  ctx.latest(v1::topic::new().drive().state()).await?,
+//!             target: ctx.publisher(v1::topic::new().drive().target()).await?,
 //!         }))
 //!     }
 //!
 //!     #[step(hz = 50)]
 //!     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
 //!         let now = step.time();
-//!         api.target.publish_at(now, y2026_1::drive::Target {
+//!         api.target.publish_at(now, v1::drive::Target {
 //!             linear_x_mps: 0.2,
 //!             angular_z_radps: 0.0,
 //!             curvature_limit_radpm: None,
@@ -81,9 +82,9 @@
 //!
 //! What each piece does:
 //!
-//! - `use phoxal_api::y2026_1;` brings the dated api-version module into scope;
-//!   `Api` struct fields name version-qualified bodies (`y2026_1::drive::Target`)
-//!   directly, so a participant may mix generations across fields with no
+//! - `use phoxal_api::v1;` brings the versioned API module into scope;
+//!   `Api` struct fields name version-qualified bodies (`v1::drive::Target`)
+//!   directly, so a participant may mix versions across fields with no
 //!   version-ceiling attribute to keep in sync.
 //! - `#[derive(phoxal::Api)]` derives the bus-facing contract surface from the
 //!   `Api` struct's handle fields ([`Publisher<T>`](bus::Publisher),
@@ -92,7 +93,7 @@
 //! - `#[phoxal::service(id = "…")]` links the participant state struct to its
 //!   `Config`/`Api` types and records its identity.
 //! - All handles are built in `#[setup]` from api-local topic builders
-//!   (`y2026_1::topic::new().drive().state()`) and returned as the `Api` value
+//!   (`v1::topic::new().drive().state()`) and returned as the `Api` value
 //!   alongside the participant state.
 //! - `#[step(hz = ...)]` is the scheduled control loop; the runner owns timing and
 //!   delivers logical time via [`StepContext`](participant::StepContext), and
@@ -123,11 +124,11 @@
 //!
 //! ## Where to look next
 //!
-//! - The `phoxal-api` crate (`phoxal_api::y2026_1`, …) - the dated API-version
+//! - The `phoxal-api` crate (`phoxal_api::v1`, …) - the versioned API
 //!   modules: version-local wire bodies, the [`ApiVersion`](bus::ApiVersion) /
 //!   [`ContractBody`](bus::ContractBody) traits, and the api-local topic builders,
 //!   all generated by [`phoxal_api_tree!`](macro@phoxal_macros::phoxal_api_tree).
-//!   A participant imports it directly with `use phoxal_api::y2026_1 as api;`.
+//!   A participant imports it directly with `use phoxal_api::v1 as api;`.
 //!   The runner also links it for framework-owned out-of-band infrastructure
 //!   contracts such as bus logs.
 //! - [`prelude`] - everything a participant author imports with

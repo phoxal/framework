@@ -2,7 +2,7 @@
 // the `Latest<drive::State>` field on `Api` satisfies `Self::Api:
 // DeclaresSubscribe<drive::State>`, so the identical `ctx.latest(...)` call
 // compiles.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

@@ -12,7 +12,7 @@
 //! anchoring; map-frame and odometry-frame are assumed identical.
 
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const LOCALIZE_STALE_NS: u64 = 1_000_000_000; // 1 s
 
@@ -95,7 +95,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     use super::{LOCALIZE_STALE_NS, Localize, confidence_for, localization_from};
 

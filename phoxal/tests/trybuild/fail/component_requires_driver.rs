@@ -2,7 +2,7 @@
 // participants. A service is an ordinary participant and cannot read a bound
 // `components.instances` entry.
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {}

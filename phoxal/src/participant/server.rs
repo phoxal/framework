@@ -46,7 +46,7 @@ impl<S> Deref for Snapshot<S> {
 
 /// A successful server reply: the encoded plain `Resp` body (D62/D1). Identity
 /// no longer rides the reply - the request already arrived on `Resp`'s own
-/// generation-qualified topic key, so the reply needs no separate stamp.
+/// version-qualified topic key, so the reply needs no separate stamp.
 #[derive(Debug)]
 pub struct ServerReply {
     /// MessagePack-encoded `Resp` body.
