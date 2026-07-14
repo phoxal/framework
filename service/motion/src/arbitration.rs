@@ -2,7 +2,7 @@
 //! under the current safety envelope, and clamps the winner to the
 //! authorized min/max per axis.
 
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const MANUAL_STALE_NS: u64 = 500_000_000;
 pub(crate) const FOLLOW_STALE_NS: u64 = 500_000_000;

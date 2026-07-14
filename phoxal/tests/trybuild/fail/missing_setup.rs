@@ -1,5 +1,5 @@
 // A participant impl with no #[setup] (D22).
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

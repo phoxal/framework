@@ -17,7 +17,7 @@ semver_check = false
 # no version_group (it reintroduces a shared version axis)
 
 # Libraries are crates.io-only. crates.io and `.cargo_vcs_info.json` are their
-# version/frozen-generation baseline; no library git tag or GitHub release.
+# version/frozen-version baseline; no library git tag or GitHub release.
 
 [[package]]
 name = "phoxal"

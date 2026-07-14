@@ -13,9 +13,9 @@
 
 use anyhow::{Result, anyhow, bail};
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_8 as open_api;
-use phoxal_api::y2026_10;
+use phoxal_api::v1 as api;
+use phoxal_api::v2 as open_api;
+use phoxal_api::v2;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
@@ -40,7 +40,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
-    clock: Publisher<y2026_10::simulation::Clock>,
+    clock: Publisher<v2::simulation::Clock>,
     control: Subscriber<api::simulation::Control>,
     robot_pose: Publisher<api::simulation::RobotPose>,
     contact: Publisher<api::simulation::Contact>,
@@ -71,7 +71,7 @@ impl WebotsSupervisorSimulator {
         let cap = ctx.owner_capability();
 
         let clock = ctx
-            .publisher(y2026_10::topic::internal::new(cap).simulation().clock())
+            .publisher(v2::topic::internal::new(cap).simulation().clock())
             .await?;
         let control = ctx
             .subscriber(api::topic::internal::new(cap).simulation().control(), 32)
@@ -133,7 +133,7 @@ impl WebotsSupervisorSimulator {
             api.clock
                 .publish_at(
                     at,
-                    y2026_10::simulation::Clock {
+                    v2::simulation::Clock {
                         now_ns: self.time_ns,
                         step: self.step_index,
                     },
@@ -504,7 +504,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<y2026_10::simulation::Clock>(ContractRole::Publish),
+        mapping::<v2::simulation::Clock>(ContractRole::Publish),
         mapping::<api::simulation::Control>(ContractRole::Subscribe),
         mapping::<api::simulation::RobotPose>(ContractRole::Publish),
         mapping::<api::simulation::Contact>(ContractRole::Publish),
@@ -566,7 +566,7 @@ mod tests {
         }
         assert!(
             <Api as ParticipantApi>::__CONTRACTS_JSON.contains(
-                r#""generation":"y2026_8","contract":"simulation::SpawnRequest","external":true"#
+                r#""version":"v2","contract":"simulation::SpawnRequest","external":true"#
             ),
             "spawn ask must be marked external because phoxal-cli serves it outside the checked participant graph; got {}",
             <Api as ParticipantApi>::__CONTRACTS_JSON

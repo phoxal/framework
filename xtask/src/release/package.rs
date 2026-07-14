@@ -393,12 +393,12 @@ fn exe_suffix_for_target(target_triple: &str) -> &'static str {
 }
 
 /// Fail-fast schema check on extracted metadata: every embedded contract entry
-/// must carry a non-empty generation, contract, and role.
+/// must carry a non-empty version, contract, and role.
 fn validate_metadata(meta: &ParticipantMeta, artifact: &OfficialArtifact) -> Result<()> {
     for contract in &meta.contracts {
-        if contract.generation.trim().is_empty() {
+        if contract.version.trim().is_empty() {
             bail!(
-                "{} has a contract entry with an empty generation",
+                "{} has a contract entry with an empty version",
                 artifact.package
             );
         }
@@ -848,7 +848,7 @@ mod tests {
         let meta = extract_metadata_from_packaged(&artifact, dir.path(), &triples)?;
         assert_eq!(meta.contracts.len(), 1);
         assert_eq!(meta.contracts[0].role, "publish");
-        assert_eq!(meta.contracts[0].generation, "y2026_7");
+        assert_eq!(meta.contracts[0].version, "v2");
         assert_eq!(meta.contracts[0].contract, "battery::State");
         assert!(!meta.contracts[0].external);
         Ok(())
@@ -874,7 +874,7 @@ mod tests {
             ),
             (
                 "aarch64-unknown-linux-gnu",
-                br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"battery::State","external":false}],"config_schema":{"type":"null"}}"#
+                br#"{"participant_api":"Api","contracts":[{"role":"publish","version":"v1","contract":"battery::State","external":false}],"config_schema":{"type":"null"}}"#
                     .as_slice(),
             ),
         ];

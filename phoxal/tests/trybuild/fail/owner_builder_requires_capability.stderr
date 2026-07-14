@@ -8,7 +8,7 @@ note: function defined here
   --> $WORKSPACE/phoxal-api/src/lib.rs
    |
    | / phoxal_api_tree! {
-   | |     version y2026_1 {
+   | |     version v1 {
    | |         drive {
    | |             /// Why actuation authority is in its current state.
 ...  |

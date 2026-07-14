@@ -18,7 +18,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
   Service, driver, tool, and simulator code connect through the runner-owned bus
   (they do not open Zenoh themselves) and name topics through the api modules.
 - The wire body is the **plain MessagePack payload** of a version-local body type.
-  Compatibility keys on exact name identity (D1): the generation is folded into
+  Compatibility keys on exact name identity (D1): the version is folded into
   the Zenoh key itself, so two participants interoperate on a contract iff they
   use the exact same version-qualified name. There is no `schema_id`/`family`
   hash. Only the codec and the produce-time stamp ride bus metadata, never the
@@ -33,22 +33,23 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 ## Topic naming
 
-Topic keys are **versionless** and api-local; the api tree's `topic` builders are
+Topic keys are **version-qualified** and api-local; the api tree's `topic` builders are
 the only source of keys, and the wire body never appears in the key
 ([`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs),
 [`phoxal-bus/src/topic.rs`](../phoxal-bus/src/topic.rs)).
 
-- Domain streams: `<domain>/<stream>` (e.g. `drive/state`, `drive/target`,
-  `safety/authorization`, `mission/state`), built as `api::topic::new().drive().state()`.
-- Domain queries: a single `<domain>/<query>` key carrying request + response
-  bodies (e.g. `frame/lookup`, `map/submap`, `asset/get`).
+- Domain streams: `<vN>/<domain>/<stream>` (e.g. `v1/drive/state`, `v1/drive/target`,
+  `v1/safety/authorization`, `v1/mission/state`), built as `api::topic::new().drive().state()`.
+- Domain queries: a single `<vN>/<domain>/<query>` key carrying request + response
+  bodies (e.g. `v1/frame/lookup`, `v1/map/submap`, `v1/asset/get`).
 - Per-instance component capabilities:
-  `component/<instance>/<kind>/<capability>/<stream>` (e.g.
-  `component/front_left_drive/motor/motor/command`), built as
+  `<vN>/component/<instance>/<kind>/<capability>/<stream>` (e.g.
+  `v1/component/front_left_drive/motor/motor/command`), built as
   `api::topic::new().component(instance).motor(capability).command()`.
   These are dynamic keys resolved from the robot model in `#[setup]`.
 - The runner applies the multi-robot root `<namespace>/robots/<robot-id>/` to every
-  key at the transport layer; service code only ever names the versionless key.
+  version-qualified key at the transport layer; service code obtains that key
+  only through its selected API version's typed builder.
 - `publish_key()` rejects a wildcard key before transport; wildcard subscription
   stays allowed for discovery/driver use.
 
@@ -82,7 +83,7 @@ the only source of keys, and the wire body never appears in the key
   checks are comparable) and latches monotonically; `TestClock` is an injectable
   fake for tests.
 - In `ClockMode::Simulation`, the runner subscribes to the supervisor's
-  authoritative `y2026_10/simulation/clock`. Each received sample advances the
+  authoritative `v2/simulation/clock`. Each received sample advances the
   scheduler to the envelope's logical time. If Webots does not step, the
   supervisor publishes nothing and participant scheduling remains still.
 
@@ -119,7 +120,7 @@ the only source of keys, and the wire body never appears in the key
   `Latest<B>`, `Querier<Req, Resp>`, or a `Vec`/`BTreeMap` of one for per-instance
   IO.
   Every body must implement `ContractBody`, and the derived `Api` records each
-  field's own generation-qualified contract identity.
+  field's own version-qualified contract identity.
   A field using the wrong contract type or a setup handle not declared by the
   `Api` struct is a compile error
   ([`phoxal/src/participant/context.rs`](../phoxal/src/participant/context.rs)).

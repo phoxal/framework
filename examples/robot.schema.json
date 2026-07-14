@@ -107,7 +107,7 @@
           "default": "stable"
         },
         "generation": {
-          "description": "Optional API generation ceiling or pin for official package\nresolution.",
+          "description": "Deprecated API version ceiling or pin for official package\nresolution.",
           "type": [
             "string",
             "null"

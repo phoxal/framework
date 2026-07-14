@@ -13,7 +13,7 @@
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 /// The motor / encoder capability names on a ddsm115 component instance
 /// (matching `component.yaml`).
@@ -136,7 +136,7 @@ mod tests {
     use super::{Ddsm115, integrate, velocity_from};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     #[test]
     fn command_maps_to_velocity() {

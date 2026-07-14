@@ -168,7 +168,7 @@ impl Bus {
         &self.inner.session
     }
 
-    /// Compose a full bus key from a generation-qualified topic key.
+    /// Compose a full bus key from a version-qualified topic key.
     pub fn full_key(&self, topic_key: &str) -> String {
         format!("{}/{}", self.inner.root, topic_key)
     }

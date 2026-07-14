@@ -1,4 +1,4 @@
-//! A malformed `y2026_9::telemetry::Process` payload, pushed through a live bus
+//! A malformed `v2::telemetry::Process` payload, pushed through a live bus
 //! subscription, must be surfaced as a decode error (counted, not silently
 //! accepted) - and a well-formed one on the same key must still decode.
 //!
@@ -7,7 +7,7 @@
 //! subscriber decode path (`spawn_subscription` -> `decode_sample` ->
 //! `health().decode_errors`) with a hand-injected bad payload, the guarantee the
 //! CLI telemetry consumer relies on. `phoxal-bus` cannot host this test: it must
-//! not depend on `phoxal-api` (that would be circular), so the y2026_9 body is
+//! not depend on `phoxal-api` (that would be circular), so the v2 body is
 //! only nameable from the engine crate up.
 
 use std::sync::atomic::Ordering;
@@ -17,32 +17,32 @@ use phoxal::raw::{
     Bus, BusConfig, BusMetadata, Codec, LogicalTime, MessagePack, OwnerCap, Publisher, Source,
     Subscriber, encoding_string,
 };
-use phoxal_api::y2026_9;
+use phoxal_api::v2;
 use serial_test::serial;
 use zenoh::bytes::{Encoding, ZBytes};
 
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn y2026_9_process_subscription_counts_a_malformed_payload_as_a_decode_error() {
+async fn v2_process_subscription_counts_a_malformed_payload_as_a_decode_error() {
     let bus = Bus::open(BusConfig::in_process("test/telemetry-decode", "robot"))
         .await
         .expect("bus should open");
 
     // Client-side (subscribe) topic, exactly as the CLI telemetry consumer builds it.
-    let sub_topic = y2026_9::topic::new().telemetry().process();
-    let subscriber = Subscriber::<y2026_9::telemetry::Process>::new(&bus, &sub_topic, 8)
+    let sub_topic = v2::topic::new().telemetry().process();
+    let subscriber = Subscriber::<v2::telemetry::Process>::new(&bus, &sub_topic, 8)
         .await
         .expect("subscription should declare");
 
     // A well-formed sample on the same key must decode and be delivered - proves
     // the subscription is live, so the decode-error assertion below can't be a
     // false pass from a dead subscription.
-    let owner_topic = y2026_9::topic::internal::new(OwnerCap::__mint())
+    let owner_topic = v2::topic::internal::new(OwnerCap::__mint())
         .telemetry()
         .process();
-    let publisher = Publisher::<y2026_9::telemetry::Process>::new(bus.clone(), &owner_topic)
+    let publisher = Publisher::<v2::telemetry::Process>::new(bus.clone(), &owner_topic)
         .expect("owner publisher should attach");
-    let good = y2026_9::telemetry::Process {
+    let good = v2::telemetry::Process {
         cpu_pct: 4.25,
         rss_bytes: 33_554_432,
         window_ns: 3_000_000_000,

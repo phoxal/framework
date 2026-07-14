@@ -1,12 +1,12 @@
 //! Pure-bus-mechanic tests: the wire-envelope slots (encoding string, metadata,
-//! codec id), the `<namespace>/robots/<robot-id>/<generation-qualified-key>`
+//! codec id), the `<namespace>/robots/<robot-id>/<version-qualified-key>`
 //! root + namespace validation (D38/D43b), the codec fast-reject in
 //! `decode_sample`, and a live in-process Publisher → Latest round-trip.
 //!
 //! These exercise the bus client against hand-written [`ContractBody`]s (no
 //! `phoxal_api_tree!`, which lives in the `phoxal-api` crate): phoxal-bus is
-//! the ABI floor and must be testable without the concrete dated API versions.
-//! The golden tests that bind the bus to the real `y2026_1` tree live in the
+//! the ABI floor and must be testable without the concrete API versions.
+//! The golden tests that bind the bus to the real `v1` tree live in the
 //! `phoxal` crate (`phoxal/tests/bus_api.rs`).
 
 use std::time::Duration;
@@ -30,7 +30,7 @@ use crate::{
 };
 
 // A hand-written API version + contract body, standing in for the macro-generated
-// `y2026_1` tree (which lives in `phoxal`). The bus client is generic over these
+// `v1` tree (which lives in `phoxal`). The bus client is generic over these
 // traits; that is all it needs to be exercised end to end.
 enum TestApi {}
 impl ApiVersion for TestApi {
@@ -46,7 +46,7 @@ struct Target {
 impl ContractBody for Target {
     type Api = TestApi;
     const NAME: &'static str = "yTEST::drive::Target";
-    const GENERATION: &'static str = "yTEST";
+    const VERSION: &'static str = "yTEST";
     const CONTRACT: &'static str = "drive::Target";
     const TOPIC: &'static str = "yTEST/drive/target";
 }
@@ -58,7 +58,7 @@ struct GetRequest {
 impl ContractBody for GetRequest {
     type Api = TestApi;
     const NAME: &'static str = "yTEST::asset::GetRequest";
-    const GENERATION: &'static str = "yTEST";
+    const VERSION: &'static str = "yTEST";
     const CONTRACT: &'static str = "asset::GetRequest";
     const TOPIC: &'static str = "yTEST/asset/get";
 }
@@ -71,7 +71,7 @@ enum GetResponse {
 impl ContractBody for GetResponse {
     type Api = TestApi;
     const NAME: &'static str = "yTEST::asset::GetResponse";
-    const GENERATION: &'static str = "yTEST";
+    const VERSION: &'static str = "yTEST";
     const CONTRACT: &'static str = "asset::GetResponse";
     const TOPIC: &'static str = "yTEST/asset/get";
 }

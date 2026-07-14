@@ -18,7 +18,7 @@
 //!
 //! This module owns only the object-file section-BYTES extraction (an
 //! `object`-crate walk over an ELF/Mach-O binary or tarball); the JSON shape
-//! itself - `{"role","generation","contract","external"}` - is deserialized
+//! itself - `{"role","version","contract","external"}` - is deserialized
 //! via the shared [`phoxal::participant::metadata`] type, per the
 //! coherence-gate design doc §5 ("move the parser alongside the rule into
 //! `phoxal`"), so this crate and `phoxal-cli` read exactly the same shape
@@ -116,9 +116,9 @@ mod tests {
     /// participant, extract its section from the actual built artifact on
     /// disk, and assert the parsed contracts match what `service/battery/src/main.rs`
     /// declares (`Api { state: Publisher<api::battery::State> }`), recorded
-    /// as the RESOLVED, SPLIT `generation`/`contract` (`"y2026_7"` /
-    /// `"battery::State"` - `battery::State` lives on the standalone `y2026_7`
-    /// generation, D1's ground-breaker), not the source-written
+    /// as the RESOLVED, SPLIT `version`/`contract` (`"v2"` /
+    /// `"battery::State"` - `battery::State` lives on the standalone `v2`
+    /// version, D1's ground-breaker), not the source-written
     /// `api::battery::State` (F2-names), and not a joined name (coherence-gate
     /// design doc §2).
     #[test]
@@ -149,7 +149,7 @@ mod tests {
             meta.contracts,
             vec![ParticipantMetaContract {
                 role: "publish".to_string(),
-                generation: "y2026_7".to_string(),
+                version: "v2".to_string(),
                 contract: "battery::State".to_string(),
                 external: false,
             }]
@@ -230,10 +230,10 @@ mod tests {
     /// aarch64 (ELF) and Apple (Mach-O) release binaries.
     #[test]
     fn extracts_metadata_from_foreign_format_and_arch_object_files() -> Result<()> {
-        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","generation":"y2026_1","contract":"drive::State","external":false}],"config_schema":{"type":"null"}}"#;
+        let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","version":"v1","contract":"drive::State","external":false}],"config_schema":{"type":"null"}}"#;
         let expected = vec![ParticipantMetaContract {
             role: "publish".to_string(),
-            generation: "y2026_1".to_string(),
+            version: "v1".to_string(),
             contract: "drive::State".to_string(),
             external: false,
         }];

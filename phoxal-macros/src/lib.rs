@@ -2,8 +2,8 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`phoxal_api_tree!`] - declares the dated API-version modules
-//!   (`phoxal_api::y2026_1`, …), their version-local body types, the
+//! - [`phoxal_api_tree!`] - declares the `vN` API-version modules
+//!   (`phoxal_api::v1`, …), their version-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
 //! - [`derive@Api`] / [`derive@Config`] - read an `Api` handle struct's typed
 //!   fields (`Publisher<T>` / `Subscriber<T>` / `Latest<T>` / `Querier<Req,
@@ -38,17 +38,17 @@ mod util;
 
 use proc_macro::TokenStream;
 
-/// Declare a dated API-version tree of version-local wire bodies + topics.
+/// Declare a versioned API tree of version-local wire bodies + topics.
 ///
-/// One invocation owns one or more `version y2026_N { … }` blocks; each becomes a
-/// `pub mod y2026_N` under wherever the macro is invoked. A generation may be
-/// authored as `preview version y2026_N`; it is still emitted at `y2026_N`, but
-/// behind the per-generation Cargo feature `preview-y2026_N` and with
+/// One invocation owns one or more `version vN { … }` blocks; each becomes a
+/// `pub mod vN` under wherever the macro is invoked. A version may be authored
+/// as `preview version vN`; it is still emitted at `vN`, but behind the
+/// per-version Cargo feature `preview-vN` and with
 /// `ApiVersion::IS_PREVIEW = true`. In this workspace it is invoked in the
 /// `phoxal-api` crate (the canonical import is
-/// `use phoxal_api::y2026_1 as api;`), and the generated tree references the bus
-/// ABI floor as `::phoxal_bus`. There is no `extends`: each generation is a
-/// standalone, sparse batch (D1) - see the `api_tree` module docs.
+/// `use phoxal_api::v1 as api;`), and the generated tree references the bus
+/// ABI floor as `::phoxal_bus`. There is no `extends`; the active preview
+/// version evolves in place until it is promoted and frozen.
 ///
 /// # Node grammar
 ///
@@ -75,14 +75,14 @@ use proc_macro::TokenStream;
 /// A topic carries no per-topic params; its identity is derived from the path of
 /// nodes enclosing it:
 ///
-/// - **`TOPIC`** (the wire key) - the generation, then the `/`-joined node
+/// - **`TOPIC`** (the wire key) - the version, then the `/`-joined node
 ///   segments plus the leaf, where a static node contributes `name` and a
 ///   dynamic node contributes `name/{var}` (e.g.
-///   `y2026_N/component/{instance}/motor/{capability}/command`). Folding the
-///   generation into the key (D1) is what makes two differently-versioned
+///   `v2/component/{instance}/motor/{capability}/command`). Folding the
+///   version into the key (D1) is what makes two differently-versioned
 ///   contracts physically distinct Zenoh keys - there is no separate
 ///   `FAMILY`/`SCHEMA_ID` axis.
-/// - **body type path** - `phoxal_api::y2026_N::<node>::…::<Body>`; variables never
+/// - **body type path** - `phoxal_api::vN::<node>::…::<Body>`; variables never
 ///   appear in the module path.
 ///
 /// A topic is dynamic when its node path contains at least one `(var)` node, and
@@ -143,7 +143,7 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// For `#[server]`/`#[server_snapshot]` the `api = field` names the `Api` struct's
 /// `Server<Req, Resp>` field being implemented; both request and response bodies
 /// must be `ContractBody` (checked at compile time; a query only ever reaches the
-/// handler on its own generation-qualified topic key, D1, so there is no
+/// handler on its own version-qualified topic key, D1, so there is no
 /// separate decode-time identity check left).
 ///
 /// # A `tool` is a thin runner
@@ -171,7 +171,7 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// connection, declared for `#[phoxal::behavior]`'s `#[server(api = …)]` /
 /// `#[server_snapshot(api = …)]` to implement. A `Vec`/`BTreeMap`/`HashMap` of a
 /// handle carries the inner handle's declaration. There is no participant-level
-/// API version: fields may name contracts from different generations. Also
+/// API version: fields may name contracts from different versions. Also
 /// emits the const contract JSON fragment that the participant attribute puts
 /// in the linker section alongside its config schema.
 ///

@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use gilrs::{Button, EventType, Gamepad, GamepadId, Gilrs};
 use phoxal::prelude::*;
 use phoxal::raw::{Publisher, Subscriber};
-use phoxal_api::y2026_1 as motion_api;
-use phoxal_api::y2026_9 as api;
+use phoxal_api::v1 as motion_api;
+use phoxal_api::v2 as api;
 
 const LINEAR_SCALE_MPS: f64 = 0.6;
 const ANGULAR_SCALE_RADPS: f64 = 1.5;

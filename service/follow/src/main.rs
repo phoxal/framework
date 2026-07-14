@@ -16,7 +16,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const DEFAULT_FRAME_ID: &str = "map";
 const GOAL_TOLERANCE_M: f64 = 0.15;
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[test]
-    fn api_declares_the_y2026_1_follow_contracts() {
+    fn api_declares_the_v1_follow_contracts() {
         assert_eq!(<Follow as Participant>::ID, "follow");
 
         let contracts = <<Follow as Participant>::Api as ParticipantApi>::CONTRACTS;

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const UNKNOWN: u8 = 255;
 const FREE_MAX: u8 = 20;

@@ -1,7 +1,7 @@
 //! Runner-owned per-participant process resource self-sampling.
 //!
 //! Every participant that runs through this runner publishes its own
-//! `y2026_9::telemetry::Process` sample (cpu%, RSS) - like presence
+//! `v2::telemetry::Process` sample (cpu%, RSS) - like presence
 //! heartbeats, this is runner infrastructure, not part of the
 //! participant-authored `emit-apis` contract surface.
 //!
@@ -28,7 +28,7 @@
 
 use std::time::Duration;
 
-use phoxal_api::y2026_9 as api;
+use phoxal_api::v2 as api;
 use phoxal_bus::{Bus, LogicalTime, OwnerCap, Publisher};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 use tokio::sync::watch;

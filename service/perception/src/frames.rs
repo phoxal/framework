@@ -3,7 +3,7 @@
 //! to wire-`Detection` conversion (including the local-to-map frame
 //! transform when localization is fresh and confident).
 
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 use crate::detector::RawDetection;
 use crate::sensors::SensorBinding;

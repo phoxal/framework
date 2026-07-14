@@ -5,7 +5,7 @@
 // the coherence-gate design doc's own worked example: a teleop-only robot
 // where the operator app, off-robot, is the only publisher of drive targets,
 // so the `drive` owner's `target` subscription is marked external.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

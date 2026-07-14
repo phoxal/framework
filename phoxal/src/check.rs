@@ -8,11 +8,11 @@
 //! binaries).
 //!
 //! **There is no interop gate on contract identity (D1).** Contract identity is
-//! the generation-qualified `family` name alone (e.g. `"y2026_1::drive::Target"`);
+//! the version-qualified `family` name alone (e.g. `"v1::drive::Target"`);
 //! there is no `schema_id` hash to agree on, because two participants naming the
-//! same generation-qualified contract are compatible by construction (same name
+//! same version-qualified contract are compatible by construction (same name
 //! ⇒ same frozen shape, enforced by the type system and made physically real by
-//! the generation-qualified wire key). Two participants naming *different*
+//! the version-qualified wire key). Two participants naming *different*
 //! contracts are simply different topics, never a collision. `check_plan`/
 //! `check_graph` below therefore carry only [`Problem::InvalidConfig`], the one
 //! thing that *is* still a real runtime hazard on that axis: a user runtime's
@@ -30,14 +30,14 @@
 //! stance stays.**
 //!
 //! What the open-world stance does not cover is a contract that is
-//! demonstrably produced/served in-set at one generation while a participant
-//! consumes/asks a *different, disjoint* generation of that same logical
+//! demonstrably produced/served in-set at one version while a participant
+//! consumes/asks a *different, disjoint* version of that same logical
 //! contract - clear evidence of a botched migration, not an external
 //! counterpart. [`check_coherence`] is that one contract-axis check: a pure,
 //! mismatch-only pass over each participant's `#[derive(phoxal::Api)]`
-//! contract surface (the `generation`/`contract`/`role`/`external` entries of
+//! contract surface (the `version`/`contract`/`role`/`external` entries of
 //! [`crate::participant::metadata::ParticipantMetaContract`]). It blocks only
-//! on generation disjointness where a counterpart is provably in-set, never on
+//! on version disjointness where a counterpart is provably in-set, never on
 //! absence alone - see its own docs and the coherence-gate design doc §3 for
 //! the exact rule and worked examples.
 //!
@@ -157,8 +157,8 @@ pub enum ParticipantScope {
     ComponentInstance(String),
 }
 
-/// One contract use from an `emit-apis` report: its generation-qualified name
-/// (e.g. `"y2026_1::drive::Target"`, D1). There is no `schema_id` - the name
+/// One contract use from an `emit-apis` report: its version-qualified name
+/// (e.g. `"v1::drive::Target"`, D1). There is no `schema_id` - the name
 /// itself is the whole identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Contract {
@@ -216,13 +216,13 @@ pub fn check_plan(input: CheckInput<'_>) -> Report {
 // ---------------------------------------------------------------------------
 
 /// One participant's contract surface for [`check_coherence`]: its identity
-/// plus every `{role, generation, contract, external}` entry recorded by its
+/// plus every `{role, version, contract, external}` entry recorded by its
 /// `#[derive(phoxal::Api)]` metadata section (design doc §2).
 ///
 /// Deliberately separate from [`ParticipantApis`] above: that type identifies
-/// a contract by a single generation-qualified `family` string with no role
+/// a contract by a single version-qualified `family` string with no role
 /// axis (it feeds the topology/config checker, `check_plan`), while the
-/// coherence pass needs `generation` and `contract` as separate fields plus
+/// coherence pass needs `version` and `contract` as separate fields plus
 /// the `role`/`external` facts to group by logical contract and apply the
 /// role-asymmetric rule (design doc §2 "the check never parses a name").
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -236,40 +236,40 @@ pub struct ParticipantContractSurface {
 /// One coherence mismatch found by [`check_coherence`] (design doc §3).
 ///
 /// Both variants block only on **positive disjointness evidence** - a
-/// counterpart that is demonstrably present in-set at generations that share
+/// counterpart that is demonstrably present in-set at versions that share
 /// nothing with this participant's own. Absence alone (an empty `Pub(L)` or
 /// `Serve(L)`) is never a mismatch; that is exactly the open-world stance the
 /// module docs describe, which this pass narrows only where evidence exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoherenceMismatch {
-    /// A participant's non-`external` `subscribe` generations for a logical
-    /// contract share no generation with any in-set publisher of that
+    /// A participant's non-`external` `subscribe` versions for a logical
+    /// contract share no version with any in-set publisher of that
     /// contract, even though the contract *is* published in-set (design doc
     /// §3, "pub/sub - per-participant overlap"). Checked per subscribing
     /// participant, never pooled: one up-to-date subscriber elsewhere does
     /// not excuse another participant's stranded hard cutover.
     PubSubDisjoint {
         participant_id: String,
-        /// The logical contract (the `contract` field alone; generation-independent).
+        /// The logical contract (the `contract` field alone; version-independent).
         contract: String,
-        /// This participant's non-`external` `subscribe` generations for `contract`.
+        /// This participant's non-`external` `subscribe` versions for `contract`.
         subscribed: BTreeSet<String>,
-        /// Every generation published in-set for `contract`.
+        /// Every version published in-set for `contract`.
         published: BTreeSet<String>,
     },
-    /// A participant's non-`external` `ask` generation for a logical contract
-    /// has no same-generation `serve` in-set: a permanently dead query
+    /// A participant's non-`external` `ask` version for a logical contract
+    /// has no same-version `serve` in-set: a permanently dead query
     /// (design doc §3, "serve/ask - every ask matched"; `QueryError::Timeout`,
     /// D31). The one closed-world rule in the design - checked per ask
-    /// generation, since a server superset elsewhere in the same contract
-    /// does not answer a different, unserved generation.
+    /// version, since a server superset elsewhere in the same contract
+    /// does not answer a different, unserved version.
     UnservedAsk {
         participant_id: String,
-        /// The logical contract (the `contract` field alone; generation-independent).
+        /// The logical contract (the `contract` field alone; version-independent).
         contract: String,
-        /// The ask generation with no matching in-set server.
-        generation: String,
-        /// Every generation served in-set for `contract` (may be empty).
+        /// The ask version with no matching in-set server.
+        version: String,
+        /// Every version served in-set for `contract` (may be empty).
         served: BTreeSet<String>,
     },
 }
@@ -292,17 +292,17 @@ impl CoherenceReport {
 ///
 /// Pure and total: no I/O, no building, no binary parsing - callers hand it
 /// already-parsed contract surfaces. Groups every entry by its **logical
-/// contract** (the `contract` field alone, generation-independent) and
+/// contract** (the `contract` field alone, version-independent) and
 /// applies the role-asymmetric rule:
 ///
 /// - **Pub/sub** blocks a subscribing participant only when the contract *is*
 ///   published in-set (`Pub(L)` non-empty) and this participant's own
-///   non-`external` subscribe generations share nothing with it. Checked
+///   non-`external` subscribe versions share nothing with it. Checked
 ///   per-participant, not pooled, so one dual-subscribing participant never
 ///   masks another's stranded hard cutover.
-/// - **Serve/ask** blocks every non-`external` ask generation that has no
-///   same-generation server in-set, regardless of whether the contract is
-///   served at *other* generations - the one closed-world rule in the design,
+/// - **Serve/ask** blocks every non-`external` ask version that has no
+///   same-version server in-set, regardless of whether the contract is
+///   served at *other* versions - the one closed-world rule in the design,
 ///   because an unmatched ask never resolves to a useful intermediate state
 ///   (it times out on every call, D31), unlike an unmatched subscribe.
 ///
@@ -324,13 +324,13 @@ pub fn check_coherence(participants: &[ParticipantContractSurface]) -> Coherence
                     published
                         .entry(c.contract.as_str())
                         .or_default()
-                        .insert(c.generation.as_str());
+                        .insert(c.version.as_str());
                 }
                 "serve" => {
                     served
                         .entry(c.contract.as_str())
                         .or_default()
-                        .insert(c.generation.as_str());
+                        .insert(c.version.as_str());
                 }
                 _ => {}
             }
@@ -347,7 +347,7 @@ pub fn check_coherence(participants: &[ParticipantContractSurface]) -> Coherence
                 sub_by_contract
                     .entry(c.contract.as_str())
                     .or_default()
-                    .insert(c.generation.as_str());
+                    .insert(c.version.as_str());
             }
         }
         for (contract, subscribed) in sub_by_contract {
@@ -364,19 +364,18 @@ pub fn check_coherence(participants: &[ParticipantContractSurface]) -> Coherence
             }
         }
 
-        // Serve/ask: every non-external ask generation needs a same-generation server.
+        // Serve/ask: every non-external ask version needs a same-version server.
         for c in &p.contracts {
             if c.role != "ask" || c.external {
                 continue;
             }
             let contract_served = served.get(c.contract.as_str());
-            let has_server =
-                contract_served.is_some_and(|gens| gens.contains(c.generation.as_str()));
+            let has_server = contract_served.is_some_and(|gens| gens.contains(c.version.as_str()));
             if !has_server {
                 mismatches.push(CoherenceMismatch::UnservedAsk {
                     participant_id: p.participant_id.clone(),
                     contract: c.contract.clone(),
-                    generation: c.generation.clone(),
+                    version: c.version.clone(),
                     served: contract_served
                         .map(|gens| gens.iter().map(|s| (*s).to_string()).collect())
                         .unwrap_or_default(),
@@ -455,12 +454,8 @@ mod tests {
     fn healthy_pubsub_graph_has_no_problems() {
         // producer publishes drive/target; consumer subscribes it.
         let graph = vec![
-            participant(
-                "mission",
-                "y2026_1",
-                vec![contract("y2026_1::drive::Target")],
-            ),
-            participant("drive", "y2026_1", vec![contract("y2026_1::drive::Target")]),
+            participant("mission", "v1", vec![contract("v1::drive::Target")]),
+            participant("drive", "v1", vec![contract("v1::drive::Target")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
@@ -469,32 +464,20 @@ mod tests {
     fn healthy_query_graph_has_no_problems() {
         // a server serves asset/get; a client queries it.
         let graph = vec![
-            participant(
-                "asset",
-                "y2026_1",
-                vec![contract("y2026_1::asset::GetRequest")],
-            ),
-            participant(
-                "client",
-                "y2026_1",
-                vec![contract("y2026_1::asset::GetRequest")],
-            ),
+            participant("asset", "v1", vec![contract("v1::asset::GetRequest")]),
+            participant("client", "v1", vec![contract("v1::asset::GetRequest")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
 
     #[test]
-    fn mixed_generations_on_the_same_contract_family_are_simply_different_contracts() {
-        // D1: with no schema_id, a `y2026_1::drive::Target` user and a
-        // `y2026_2::drive::Target` user are unrelated contracts, not a
+    fn mixed_versions_on_the_same_contract_family_are_simply_different_contracts() {
+        // D1: with no schema_id, a `v1::drive::Target` user and a
+        // `v2::drive::Target` user are unrelated contracts, not a
         // mismatch - there is nothing to report.
         let graph = vec![
-            participant(
-                "mission",
-                "y2026_1",
-                vec![contract("y2026_1::drive::Target")],
-            ),
-            participant("drive", "y2026_2", vec![contract("y2026_2::drive::Target")]),
+            participant("mission", "v1", vec![contract("v1::drive::Target")]),
+            participant("drive", "v2", vec![contract("v2::drive::Target")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
@@ -502,17 +485,9 @@ mod tests {
     #[test]
     fn tool_kind_participant_contracts_do_not_gate_the_graph() {
         let graph = vec![
-            participant(
-                "mission",
-                "y2026_1",
-                vec![contract("y2026_1::drive::Target")],
-            ),
-            participant("drive", "y2026_1", vec![contract("y2026_1::drive::Target")]),
-            privileged_participant(
-                "inspector",
-                "y2026_1",
-                vec![contract("y2026_1::drive::Target")],
-            ),
+            participant("mission", "v1", vec![contract("v1::drive::Target")]),
+            participant("drive", "v1", vec![contract("v1::drive::Target")]),
+            privileged_participant("inspector", "v1", vec![contract("v1::drive::Target")]),
         ];
 
         assert!(check_graph(&graph).is_ok());
@@ -521,17 +496,9 @@ mod tests {
     #[test]
     fn a_publisher_anywhere_satisfies_all_subscribers() {
         let graph = vec![
-            participant(
-                "odometry",
-                "y2026_1",
-                vec![contract("y2026_1::odometry::State")],
-            ),
-            participant(
-                "localize",
-                "y2026_1",
-                vec![contract("y2026_1::odometry::State")],
-            ),
-            participant("map", "y2026_1", vec![contract("y2026_1::odometry::State")]),
+            participant("odometry", "v1", vec![contract("v1::odometry::State")]),
+            participant("localize", "v1", vec![contract("v1::odometry::State")]),
+            participant("map", "v1", vec![contract("v1::odometry::State")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
@@ -544,17 +511,9 @@ mod tests {
         // is a problem or warning; the bus tolerates both at runtime.
         let participants = vec![
             // Consumes a command nobody in the graph produces.
-            participant(
-                "mission",
-                "y2026_1",
-                vec![contract("y2026_1::mission::Command")],
-            ),
+            participant("mission", "v1", vec![contract("v1::mission::Command")]),
             // Offers a query endpoint with no client in the graph.
-            participant(
-                "asset",
-                "y2026_1",
-                vec![contract("y2026_1::asset::GetRequest")],
-            ),
+            participant("asset", "v1", vec![contract("v1::asset::GetRequest")]),
         ];
 
         let report = check_graph(&participants);
@@ -573,13 +532,13 @@ mod tests {
 
     fn meta_contract(
         role: &str,
-        generation: &str,
+        version: &str,
         contract: &str,
         external: bool,
     ) -> ParticipantMetaContract {
         ParticipantMetaContract {
             role: role.to_string(),
-            generation: generation.to_string(),
+            version: version.to_string(),
             contract: contract.to_string(),
             external,
         }
@@ -601,23 +560,18 @@ mod tests {
         assert!(check_coherence(&[]).is_ok());
     }
 
-    /// §3 worked example 1: "pub `y2026_1`, sub `y2026_7`, nothing else ->
+    /// §3 worked example 1: "pub `v1`, sub `v2`, nothing else ->
     /// disjoint -> block".
     #[test]
-    fn coherence_pub_sub_disjoint_generations_block() {
+    fn coherence_pub_sub_disjoint_versions_block() {
         let participants = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "mission",
-                vec![meta_contract(
-                    "subscribe",
-                    "y2026_7",
-                    "drive::Target",
-                    false,
-                )],
+                vec![meta_contract("subscribe", "v2", "drive::Target", false)],
             ),
         ];
 
@@ -628,27 +582,27 @@ mod tests {
             vec![CoherenceMismatch::PubSubDisjoint {
                 participant_id: "mission".to_string(),
                 contract: "drive::Target".to_string(),
-                subscribed: gens(&["y2026_7"]),
-                published: gens(&["y2026_1"]),
+                subscribed: gens(&["v2"]),
+                published: gens(&["v1"]),
             }]
         );
     }
 
-    /// §3 worked example 2: "pub `y2026_1`; one service subscribes both
-    /// `y2026_1` and `y2026_7` -> valid" (the dual-subscribe spans a
+    /// §3 worked example 2: "pub `v1`; one service subscribes both
+    /// `v1` and `v2` -> valid" (the dual-subscribe spans a
     /// migration).
     #[test]
     fn coherence_dual_subscribe_spans_migration_is_valid() {
         let participants = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "mission",
                 vec![
-                    meta_contract("subscribe", "y2026_1", "drive::Target", false),
-                    meta_contract("subscribe", "y2026_7", "drive::Target", false),
+                    meta_contract("subscribe", "v1", "drive::Target", false),
+                    meta_contract("subscribe", "v2", "drive::Target", false),
                 ],
             ),
         ];
@@ -656,23 +610,18 @@ mod tests {
         assert!(check_coherence(&participants).is_ok());
     }
 
-    /// §3 worked example 3: the same service then drops its `y2026_1` sub ->
+    /// §3 worked example 3: the same service then drops its `v1` sub ->
     /// `SubP={7}` vs `Pub={1}` -> disjoint -> block.
     #[test]
     fn coherence_dropping_old_sub_after_dual_subscribe_blocks() {
         let participants = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "mission",
-                vec![meta_contract(
-                    "subscribe",
-                    "y2026_7",
-                    "drive::Target",
-                    false,
-                )],
+                vec![meta_contract("subscribe", "v2", "drive::Target", false)],
             ),
         ];
 
@@ -683,13 +632,13 @@ mod tests {
             vec![CoherenceMismatch::PubSubDisjoint {
                 participant_id: "mission".to_string(),
                 contract: "drive::Target".to_string(),
-                subscribed: gens(&["y2026_7"]),
-                published: gens(&["y2026_1"]),
+                subscribed: gens(&["v2"]),
+                published: gens(&["v1"]),
             }]
         );
     }
 
-    /// §3 worked example 4 (the pooled-rule trap): "pub `y2026_1`; service A
+    /// §3 worked example 4 (the pooled-rule trap): "pub `v1`; service A
     /// subs `{1}`; service B subs `{7}` only -> A passes, B blocks". A pooled
     /// `Pub(L) ∩ Sub(L)` over the union would wrongly pass this via A's
     /// overlap; the per-participant rule must flag B specifically.
@@ -698,25 +647,15 @@ mod tests {
         let participants = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "service_a",
-                vec![meta_contract(
-                    "subscribe",
-                    "y2026_1",
-                    "drive::Target",
-                    false,
-                )],
+                vec![meta_contract("subscribe", "v1", "drive::Target", false)],
             ),
             surface(
                 "service_b",
-                vec![meta_contract(
-                    "subscribe",
-                    "y2026_7",
-                    "drive::Target",
-                    false,
-                )],
+                vec![meta_contract("subscribe", "v2", "drive::Target", false)],
             ),
         ];
 
@@ -727,8 +666,8 @@ mod tests {
             vec![CoherenceMismatch::PubSubDisjoint {
                 participant_id: "service_b".to_string(),
                 contract: "drive::Target".to_string(),
-                subscribed: gens(&["y2026_7"]),
-                published: gens(&["y2026_1"]),
+                subscribed: gens(&["v2"]),
+                published: gens(&["v1"]),
             }]
         );
     }
@@ -741,13 +680,13 @@ mod tests {
             surface(
                 "asset",
                 vec![
-                    meta_contract("serve", "y2026_1", "asset::Get", false),
-                    meta_contract("serve", "y2026_7", "asset::Get", false),
+                    meta_contract("serve", "v1", "asset::Get", false),
+                    meta_contract("serve", "v2", "asset::Get", false),
                 ],
             ),
             surface(
                 "client",
-                vec![meta_contract("ask", "y2026_7", "asset::Get", false)],
+                vec![meta_contract("ask", "v2", "asset::Get", false)],
             ),
         ];
 
@@ -756,15 +695,15 @@ mod tests {
 
     /// §3 ask worked example 2: "server `{L}`, ask `{L+1}` -> block".
     #[test]
-    fn coherence_ask_with_no_matching_server_generation_blocks() {
+    fn coherence_ask_with_no_matching_server_version_blocks() {
         let participants = vec![
             surface(
                 "asset",
-                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+                vec![meta_contract("serve", "v1", "asset::Get", false)],
             ),
             surface(
                 "client",
-                vec![meta_contract("ask", "y2026_7", "asset::Get", false)],
+                vec![meta_contract("ask", "v2", "asset::Get", false)],
             ),
         ];
 
@@ -775,8 +714,8 @@ mod tests {
             vec![CoherenceMismatch::UnservedAsk {
                 participant_id: "client".to_string(),
                 contract: "asset::Get".to_string(),
-                generation: "y2026_7".to_string(),
-                served: gens(&["y2026_1"]),
+                version: "v2".to_string(),
+                served: gens(&["v1"]),
             }]
         );
     }
@@ -784,17 +723,17 @@ mod tests {
     /// §3 ask worked example 3: "server `{L}`, ask `{L, L+1}` -> ask@L is
     /// answered, but ask@L+1 has no server -> block" - only the L+1 ask.
     #[test]
-    fn coherence_partial_ask_coverage_blocks_only_the_unserved_generation() {
+    fn coherence_partial_ask_coverage_blocks_only_the_unserved_version() {
         let participants = vec![
             surface(
                 "asset",
-                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+                vec![meta_contract("serve", "v1", "asset::Get", false)],
             ),
             surface(
                 "client",
                 vec![
-                    meta_contract("ask", "y2026_1", "asset::Get", false),
-                    meta_contract("ask", "y2026_7", "asset::Get", false),
+                    meta_contract("ask", "v1", "asset::Get", false),
+                    meta_contract("ask", "v2", "asset::Get", false),
                 ],
             ),
         ];
@@ -806,25 +745,25 @@ mod tests {
             vec![CoherenceMismatch::UnservedAsk {
                 participant_id: "client".to_string(),
                 contract: "asset::Get".to_string(),
-                generation: "y2026_7".to_string(),
-                served: gens(&["y2026_1"]),
+                version: "v2".to_string(),
+                served: gens(&["v1"]),
             }]
         );
     }
 
     /// §1: `#[phoxal(external)]` on a subscribe edge skips that edge's
-    /// pub/sub requirement entirely, even though the generations are
+    /// pub/sub requirement entirely, even though the versions are
     /// otherwise disjoint from the in-set publisher.
     #[test]
     fn coherence_external_marker_excuses_a_subscribe_mismatch() {
         let participants = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "teleop",
-                vec![meta_contract("subscribe", "y2026_7", "drive::Target", true)],
+                vec![meta_contract("subscribe", "v2", "drive::Target", true)],
             ),
         ];
 
@@ -833,17 +772,17 @@ mod tests {
 
     /// §1: `#[phoxal(external)]` on an ask edge skips that edge's
     /// serve/ask requirement entirely, even though no in-set server answers
-    /// that generation.
+    /// that version.
     #[test]
     fn coherence_external_marker_excuses_an_ask_mismatch() {
         let participants = vec![
             surface(
                 "asset",
-                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+                vec![meta_contract("serve", "v1", "asset::Get", false)],
             ),
             surface(
                 "client",
-                vec![meta_contract("ask", "y2026_7", "asset::Get", true)],
+                vec![meta_contract("ask", "v2", "asset::Get", true)],
             ),
         ];
 
@@ -856,12 +795,7 @@ mod tests {
     fn coherence_open_world_ok_when_nothing_publishes_in_set() {
         let participants = vec![surface(
             "mission",
-            vec![meta_contract(
-                "subscribe",
-                "y2026_1",
-                "mission::Command",
-                false,
-            )],
+            vec![meta_contract("subscribe", "v1", "mission::Command", false)],
         )];
 
         assert!(check_coherence(&participants).is_ok());
@@ -873,7 +807,7 @@ mod tests {
     fn coherence_server_with_no_asker_is_harmless() {
         let participants = vec![surface(
             "asset",
-            vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+            vec![meta_contract("serve", "v1", "asset::Get", false)],
         )];
 
         assert!(check_coherence(&participants).is_ok());

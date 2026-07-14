@@ -1,11 +1,11 @@
 //! Typed topics - the api-local builder output (D61), side-branded for L1 (plan #00).
 //!
-//! A [`Topic`] is a generation-qualified topic key plus a phantom [`TopicKind`]
+//! A [`Topic`] is a version-qualified topic key plus a phantom [`TopicKind`]
 //! that ties the key to its body type(s) **and to the side** the holder may
 //! take. The api tree's `topic` builders return these; the `SetupContext` handle
 //! builders consume them. The wire body never appears in the key, but the
-//! generation does - the key is `y2026_1/drive/state`, not `drive/state` (D62/D1):
-//! folding the generation into the key is what makes different versioned names
+//! version does - the key is `v1/drive/state`, not `drive/state` (D62/D1):
+//! folding the version into the key is what makes different versioned names
 //! physically distinct Zenoh keys.
 //!
 //! # Side branding (L1)
@@ -65,7 +65,7 @@ impl<Req, Resp> TopicKind for AskQuery<Req, Resp> {}
 impl<Req, Resp> sealed::Sealed for ServeQuery<Req, Resp> {}
 impl<Req, Resp> TopicKind for ServeQuery<Req, Resp> {}
 
-/// A typed topic: a generation-qualified key bound to its body type(s) via `Kind`.
+/// A typed topic: a version-qualified key bound to its body type(s) via `Kind`.
 pub struct Topic<Kind> {
     key: Cow<'static, str>,
     _kind: PhantomData<Kind>,
@@ -77,7 +77,7 @@ impl<Kind> Topic<Kind> {
     /// `#[doc(hidden)] pub` raw constructor - an unsupported escape hatch, NOT
     /// part of the authored surface. It is `pub` only because it must be callable
     /// across the `phoxal-api` / `phoxal-bus` crate split: the `phoxal_api_tree!`
-    /// macro (invoked in the `phoxal-api` crate, where the dated API versions live)
+    /// macro (invoked in the `phoxal-api` crate, where the versioned APIs live)
     /// calls it over each contract's canonical key, and a `pub(crate)` constructor
     /// cannot cross that boundary. Author correctness does not come from hiding
     /// this: it comes from the typed handles and the api-tree builders
@@ -118,7 +118,7 @@ impl<Kind> Topic<Kind> {
         }
     }
 
-    /// The generation-qualified topic key (e.g. `y2026_1/drive/state`).
+    /// The version-qualified topic key (e.g. `v1/drive/state`).
     pub fn key(&self) -> &str {
         &self.key
     }

@@ -9,7 +9,7 @@
 //! and a `#[phoxal::service]` + `#[phoxal::behavior]` pair wiring them
 //! together. It subscribes the official `safety/authorization` contract and
 //! publishes the official `drive/target` contract, both from
-//! `phoxal_api::y2026_1` - a user service authors against official contracts,
+//! `phoxal_api::v1` - a user service authors against official contracts,
 //! it never mints its own.
 //!
 //! See `framework/docs/GETTING_STARTED.md` for the full walkthrough this
@@ -17,7 +17,7 @@
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {
@@ -101,7 +101,7 @@ mod tests {
     use super::{Cruise, commanded_speed};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     #[test]
     fn no_authorization_yet_holds_still() {

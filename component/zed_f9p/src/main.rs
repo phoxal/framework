@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 const STEP_HZ: f64 = 10.0;
 
@@ -125,7 +125,7 @@ mod tests {
     use super::{ZedF9p, divisor_for_rate, gnss_sample};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     #[test]
     fn divisor_and_stub_sample_are_stable() {

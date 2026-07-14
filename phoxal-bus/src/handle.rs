@@ -1,4 +1,4 @@
-//! Body-typed handles over the generation-qualified bus boundary (D35).
+//! Body-typed handles over the version-qualified bus boundary (D35).
 //!
 //! - [`Publisher<B>`] - MessagePack-encodes the plain body and enqueues it on the
 //!   non-blocking outbound queue (a publish never blocks the step loop).
@@ -26,7 +26,7 @@
 //!   the ring fill. Choose `Latest` when only current state matters and
 //!   `Subscriber` when a bounded history is useful.
 //!
-//! Identity now lives entirely in the Zenoh key (D1: the generation is folded
+//! Identity now lives entirely in the Zenoh key (D1: the version is folded
 //! into `<Body as ContractBody>::TOPIC`), so a receiver's per-key subscription
 //! is the fast-reject; the decode path only still validates the codec before
 //! touching the payload. A decode failure is counted (`decode_errors`) + logged
@@ -58,7 +58,7 @@ use crate::topic::{AskQuery, Publish, Subscribe, Topic};
 /// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Publishes plain bodies of `B` on `B`'s generation-qualified key (D1); the
+/// Publishes plain bodies of `B` on `B`'s version-qualified key (D1); the
 /// [`BusMetadata`] attachment carries only provenance (source + logical time)
 /// and the codec, never identity (D62). A publish is a non-blocking enqueue, so
 /// it is safe to call from the step loop (D35/D43e).
@@ -529,10 +529,10 @@ where
 }
 
 /// Decode one Zenoh sample into a body of `B`, validating the codec before
-/// touching the payload. Identity (which contract, which generation) is no
+/// touching the payload. Identity (which contract, which version) is no
 /// longer checked here - it is guaranteed by the Zenoh key itself (D1): this
 /// function is only ever invoked for samples received on a subscription already
-/// scoped to `B`'s generation-qualified topic.
+/// scoped to `B`'s version-qualified topic.
 pub(crate) fn decode_sample<B: ContractBody>(
     sample: &Sample,
     topic: &str,

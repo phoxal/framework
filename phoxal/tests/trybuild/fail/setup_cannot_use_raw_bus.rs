@@ -2,7 +2,7 @@
 // surface. `SetupContext::bus()` is `pub(crate)`, so a participant's `#[setup]` cannot
 // reach around the typed handle builders to the raw `Bus`. Calling `ctx.bus()` from
 // a downstream participant must fail to compile as a privacy error.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

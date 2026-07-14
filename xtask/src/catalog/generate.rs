@@ -649,10 +649,10 @@ mod tests {
         }
     }
 
-    fn meta_contract(role: &str, generation: &str, contract: &str) -> ParticipantMetaContract {
+    fn meta_contract(role: &str, version: &str, contract: &str) -> ParticipantMetaContract {
         ParticipantMetaContract {
             role: role.to_string(),
-            generation: generation.to_string(),
+            version: version.to_string(),
             contract: contract.to_string(),
             external: false,
         }
@@ -673,11 +673,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "phoxal/service-drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target")],
+                vec![meta_contract("publish", "v1", "drive::Target")],
             ),
             surface(
                 "phoxal/service-mission",
-                vec![meta_contract("subscribe", "y2026_1", "drive::Target")],
+                vec![meta_contract("subscribe", "v1", "drive::Target")],
             ),
         ];
         let options = base_options(Path::new("/unused"));
@@ -693,11 +693,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "phoxal/service-drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target")],
+                vec![meta_contract("publish", "v1", "drive::Target")],
             ),
             surface(
                 "phoxal/service-mission",
-                vec![meta_contract("subscribe", "y2026_7", "drive::Target")],
+                vec![meta_contract("subscribe", "v2", "drive::Target")],
             ),
         ];
         let mut options = base_options(Path::new("/unused"));
@@ -721,11 +721,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "phoxal/service-drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target")],
+                vec![meta_contract("publish", "v1", "drive::Target")],
             ),
             surface(
                 "phoxal/service-mission",
-                vec![meta_contract("subscribe", "y2026_7", "drive::Target")],
+                vec![meta_contract("subscribe", "v2", "drive::Target")],
             ),
         ];
         let options = base_options(Path::new("/unused"));

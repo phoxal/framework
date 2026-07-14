@@ -33,9 +33,8 @@ use phoxal::participant::{ClockMode, ParticipantLaunch, RealClock, TestClock};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::ContractBody;
-use phoxal_api::y2026_1 as api;
-use phoxal_api::y2026_7;
-use phoxal_api::y2026_10;
+use phoxal_api::v1 as api;
+use phoxal_api::v2;
 
 static STEPS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -283,11 +282,11 @@ async fn new_model_participant_runs_through_a_real_bus() {
 // `recv`s the `Subscriber`, so it steals nothing. This is the field-kind
 // coverage the D3 proof above is missing.
 //
-// It is ALSO the ground-breaker proof for per-contract generation mixing
-// (D1): `DrainApi` below holds a `y2026_1` command field (`incoming`) right
-// next to a `y2026_7` state field (`battery`, the contract moved out of
-// `y2026_1` in `phoxal-api/src/lib.rs`) - one participant, one live in-process
-// bus, two API generations round-tripping real bytes at once.
+// It is ALSO the ground-breaker proof for per-contract version mixing
+// (D1): `DrainApi` below holds a `v1` command field (`incoming`) right
+// next to a `v2` state field (`battery`, the contract moved out of
+// `v1` in `phoxal-api/src/lib.rs`) - one participant, one live in-process
+// bus, two API versions round-tripping real bytes at once.
 
 static DRAIN_RECEIVED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static DRAIN_LAST_VOLTAGE_BITS: AtomicU64 = AtomicU64::new(0);
@@ -305,11 +304,11 @@ struct DrainApi {
     // destructive shared-queue field: it is cloned into the snapshot `Arc`,
     // but only `#[step]` (below) ever `recv`s it.
     incoming: Subscriber<api::drive::Target>,
-    // Client-side keep-last-1 of the `y2026_7/battery/state` STATE (owner
+    // Client-side keep-last-1 of the `v2/battery/state` STATE (owner
     // publishes, client subscribes) - the moved contract, on its own
-    // generation, mixed into the same `Api` as the y2026_1 field above. The
+    // version, mixed into the same `Api` as the v1 field above. The
     // non-destructive inbound field.
-    battery: Latest<y2026_7::battery::State>,
+    battery: Latest<v2::battery::State>,
     // The concurrent snapshot server, deliberately reading committed state
     // only.
     query: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
@@ -345,7 +344,7 @@ impl Drainer {
                 incoming: ctx
                     .subscriber(api::topic::internal::new(cap).drive().target(), 32)
                     .await?,
-                battery: ctx.latest(y2026_7::topic::new().battery().state()).await?,
+                battery: ctx.latest(v2::topic::new().battery().state()).await?,
                 query: ctx.server(api::topic::new().map().submap()).await?,
             },
         ))
@@ -405,25 +404,25 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     .await
     .expect("open shared bus");
 
-    // Companion "client" handles on the same bus. `drive/target` (y2026_1) is a
-    // command (client publishes), `battery/state` (y2026_7 - the moved
+    // Companion "client" handles on the same bus. `drive/target` (v1) is a
+    // command (client publishes), `battery/state` (v2 - the moved
     // contract) is a state (owner publishes), so the companion takes the
     // client side of the former and the owner side of the latter - the mirror
-    // of what `Drainer` subscribes. Two contract generations, one bus, one
+    // of what `Drainer` subscribes. Two contract versions, one bus, one
     // participant: this IS the ground-breaker round-trip.
     let target_pub =
         Publisher::<api::drive::Target>::new(bus.clone(), &api::topic::new().drive().target())
             .expect("build target publisher");
-    let battery_topic = y2026_7::topic::internal::new(OwnerCap::__mint())
+    let battery_topic = v2::topic::internal::new(OwnerCap::__mint())
         .battery()
         .state();
     assert_eq!(
-        <y2026_7::battery::State as ContractBody>::TOPIC,
-        "y2026_7/battery/state",
-        "the moved contract's generation-qualified wire key (D1)"
+        <v2::battery::State as ContractBody>::TOPIC,
+        "v2/battery/state",
+        "the moved contract's version-qualified wire key (D1)"
     );
-    assert_eq!(battery_topic.key(), "y2026_7/battery/state");
-    let battery_pub = Publisher::<y2026_7::battery::State>::new(bus.clone(), &battery_topic)
+    assert_eq!(battery_topic.key(), "v2/battery/state");
+    let battery_pub = Publisher::<v2::battery::State>::new(bus.clone(), &battery_topic)
         .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
@@ -442,11 +441,11 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         // no sample is emitted before the drainer is listening.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // One battery state (y2026_7) for the `Latest` field.
+        // One battery state (v2) for the `Latest` field.
         battery_pub
             .publish_at(
                 LogicalTime::new(0, 1),
-                y2026_7::battery::State {
+                v2::battery::State {
                     voltage_v: DRAIN_VOLTAGE_V,
                     current_a: 1.0,
                     charge_ratio: 0.9,
@@ -510,14 +509,14 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     );
 
     // The `Latest` field read the current value through the same owned `api` -
-    // the ground-breaker proof itself: a real `y2026_7/battery/state` publish
+    // the ground-breaker proof itself: a real `v2/battery/state` publish
     // was delivered over the live bus and observed correctly, WHILE the
-    // sibling `y2026_1/drive/target` command round-tripped on the same
+    // sibling `v1/drive/target` command round-tripped on the same
     // participant/bus at the same time (asserted above).
     assert_eq!(
         f32::from_bits(DRAIN_LAST_VOLTAGE_BITS.load(Ordering::Relaxed) as u32),
         DRAIN_VOLTAGE_V,
-        "the step loop should read the published y2026_7 battery voltage through its Latest field"
+        "the step loop should read the published v2 battery voltage through its Latest field"
     );
 }
 
@@ -938,9 +937,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // same `simulation().clock()` builder `simulator/webots-supervisor`
     // uses, so this test proves the runner subscribes the identical wire key
     // a real supervisor publishes (not a look-alike topic).
-    let clock_publisher = Publisher::<y2026_10::simulation::Clock>::new(
+    let clock_publisher = Publisher::<v2::simulation::Clock>::new(
         bus.clone(),
-        &y2026_10::topic::internal::new(OwnerCap::__mint())
+        &v2::topic::internal::new(OwnerCap::__mint())
             .simulation()
             .clock(),
     )
@@ -984,7 +983,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             clock_publisher
                 .publish_at(
                     at,
-                    y2026_10::simulation::Clock {
+                    v2::simulation::Clock {
                         now_ns: step * period_ns,
                         step,
                     },
@@ -1026,7 +1025,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         // must be discarded without releasing a step or spinning the loop.
         let reset_at = LogicalTime::new(1, 0);
         clock_publisher
-            .publish_at(reset_at, y2026_10::simulation::Clock { now_ns: 0, step: 0 })
+            .publish_at(reset_at, v2::simulation::Clock { now_ns: 0, step: 0 })
             .await
             .expect("reset clock sample should publish");
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1040,7 +1039,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         clock_publisher
             .publish_at(
                 first_after_reset,
-                y2026_10::simulation::Clock {
+                v2::simulation::Clock {
                     now_ns: period_ns,
                     step: 1,
                 },

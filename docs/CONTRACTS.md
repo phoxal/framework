@@ -15,33 +15,31 @@ These rules are the target contract discipline the workspace is converging to
 Where a runtime's current implementation lags, the rule is the direction, not a
 claim that every handler already enforces it.
 
-## Per-field contract generations and per-contract identity
+## Per-field API versions and per-contract identity
 
 There is no version-tagged wire enum and no `{"v":…,"data":…}` body wrapper.
 A participant's `#[derive(phoxal::Api)]` handle struct may mix contract types
-from multiple dated generations field by field.
-There is no participant-wide or graph-wide generation pin.
-The graph is compatible **per contract** by exact generation-qualified name
+from `v1` and preview `v2` field by field.
+There is no participant-wide or graph-wide version pin.
+The graph is compatible **per contract** by exact version-qualified name
 identity (D1), not by a wire-shape hash.
 
-- API versions are **dated modules** in the `phoxal-api` crate -
-  `phoxal_api::y2026_1`, `phoxal_api::y2026_2` - each with a zero-variant marker
+- API versions are conventional **`vN` modules** in the `phoxal-api` crate -
+  stable `phoxal_api::v1` and preview `phoxal_api::v2` - each with a zero-variant marker
   `enum Api {}` implementing `ApiVersion { const ID }` (the canonical version
-  string, `"y2026_1"`).
+  string, `"v1"`).
 - Contract bodies are **version-local plain serde structs/enums**
   (`api::drive::State`, `api::drive::Target`), each with a generated `ContractBody`
-  impl that fixes its `Api`, `NAME`, `GENERATION`, `CONTRACT`, and `TOPIC`. There
-  is no `SCHEMA_ID`/`FAMILY`: the generation is folded into `TOPIC` itself, so two
+  impl that fixes its `Api`, `NAME`, `VERSION`, `CONTRACT`, and `TOPIC`. There
+  is no `SCHEMA_ID`/`FAMILY`: the version is folded into `TOPIC` itself, so two
   differently-versioned contracts are physically distinct Zenoh keys and cannot
   collide.
 - One macro - **`phoxal_api_tree!`** (in `phoxal-macros`) - owns the whole tree:
-  the dated version modules, the bodies, the topic keys, the pub/sub vs query
+  the version modules, the bodies, the topic keys, the pub/sub vs query
   kind, and the api-local `topic` builders.
-- Each generation is a standalone, sparse batch: there is no `extends`. An
-  unchanged contract simply keeps its existing name as the one live identity; a
-  changed contract is minted fresh under the new generation. Only the
-  participants using a contract whose name changed must move to it - it is not a
-  per-contract body bump on the same bus, and not a whole-graph move either.
+- There is no `extends` or inheritance between versions. `v1` is frozen. `v2`
+  is the one evolving preview surface and accumulates new or changed contracts
+  in place until the version is ready to freeze.
 
 ## Wire body and metadata placement
 
@@ -49,10 +47,10 @@ The wire body is the **plain MessagePack payload** of the version-local type - t
 struct's fields, nothing more.
 There is no envelope struct, no generic in-body produce timestamp, and no
 separate version tag in the body or metadata.
-The generation is part of the contract's topic key.
+The version is part of the contract's topic key.
 
 - The codec rides the Zenoh encoding string and the `BusMetadata` attachment.
-  Contract generation and identity do not ride metadata because they are already
+  Contract version and identity do not ride metadata because they are already
   fixed by the subscribed topic key.
 - Production time rides metadata too: `BusMetadata` carries
   `produced_at_ns` + `epoch` + `source { participant, incarnation, sequence }`
@@ -73,7 +71,7 @@ the codec id are a separate, orthogonal framework-owned wire ABI; see
 [CONVENTIONS.md](./CONVENTIONS.md) and
 [`phoxal-bus/src/abi.rs`](../phoxal-bus/src/abi.rs). Identity used to live in a
 separately-maintained triple carried in the encoding string; that axis is gone
-now that the generation is folded into the Zenoh key itself, so `BusMetadata`
+now that the version is folded into the Zenoh key itself, so `BusMetadata`
 carries only provenance (codec, produce time, source) - never schema/family/
 version.
 
@@ -139,20 +137,18 @@ publisher profile, never inflating a control-state topic.
 
 ## API evolution
 
-Additive changes within a dated version edit that version's `phoxal_api_tree!`
-block in place.
-A breaking change mints a **new dated version** (`preview version y2026_2 { … }`,
-promoted once stable). There is no `extends`: an unchanged contract simply keeps
-its existing name as the one live identity across generations - the macro does
-not regenerate a copy of it - while a changed contract is minted fresh in the
-new generation under a new name.
-Only the participants that use a contract whose name actually changed must move
-to the new generation; participants on unchanged-name contracts keep
-interoperating across generations by construction, because they never stopped
-naming the same contract. There are no per-service independent semver tracks
-for contracts, and there is no mixed-version *decoding* on one topic: a shared
-topic's key is generation-qualified, so producers and consumers on it are
-already using the exact same name.
+Stable versions are immutable; `v1` is the current frozen surface. All work for
+the next API goes into `preview version v2 { … }`. Additive and breaking changes
+both edit `v2` in place while it is preview, so ordinary development does not
+mint `v3`, `v4`, and so on. Once the complete `v2` surface is accepted it is
+promoted and frozen; only then does later breaking work begin in preview `v3`.
+
+There is no `extends`: a contract is declared in the version that owns its wire
+identity. Participants may mix `v1` and `v2` contracts field by field during the
+migration. There are no per-service independent semver tracks for contracts and
+no mixed-version *decoding* on one topic: a shared topic's key is
+version-qualified, so producers and consumers on it already use the exact same
+name.
 
 A subscriber fails loud on a body it cannot decode: the sample is counted
 (`decode_errors`) and logged as a health signal, never silently accepted

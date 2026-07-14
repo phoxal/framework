@@ -83,8 +83,8 @@ pub(crate) fn evaluate(surfaces: &[ParticipantContractSurface]) -> (CoherenceRep
 }
 
 /// One human-readable diagnostic line for a single mismatch: participant, the
-/// `generation::contract` join, the role/kind of mismatch, and the
-/// disjoint/served generation sets (coherence-gate design doc §3).
+/// `version::contract` join, the role/kind of mismatch, and the
+/// disjoint/served version sets (coherence-gate design doc §3).
 fn format_mismatch(mismatch: &CoherenceMismatch) -> String {
     match mismatch {
         CoherenceMismatch::PubSubDisjoint {
@@ -94,29 +94,29 @@ fn format_mismatch(mismatch: &CoherenceMismatch) -> String {
             published,
         } => format!(
             "MISMATCH pub/sub: participant '{participant_id}' subscribes '{contract}' at \
-             generation(s) {{{}}}, but the in-set publisher(s) of '{contract}' only publish \
-             generation(s) {{{}}} - disjoint, so this participant cannot hear any in-set producer \
+             version(s) {{{}}}, but the in-set publisher(s) of '{contract}' only publish \
+             version(s) {{{}}} - disjoint, so this participant cannot hear any in-set producer \
              of a contract that is demonstrably produced in-set",
-            join_generations(subscribed),
-            join_generations(published),
+            join_versions(subscribed),
+            join_versions(published),
         ),
         CoherenceMismatch::UnservedAsk {
             participant_id,
             contract,
-            generation,
+            version,
             served,
         } => format!(
-            "MISMATCH ask/serve: participant '{participant_id}' asks '{contract}' at generation \
-             '{generation}', but no in-set server answers that generation (in-set served \
-             generation(s): {{{}}}) - every call on this ask permanently fails with \
+            "MISMATCH ask/serve: participant '{participant_id}' asks '{contract}' at version \
+             '{version}', but no in-set server answers that version (in-set served \
+             version(s): {{{}}}) - every call on this ask permanently fails with \
              QueryError::Timeout",
-            join_generations(served),
+            join_versions(served),
         ),
     }
 }
 
-fn join_generations(generations: &BTreeSet<String>) -> String {
-    generations.iter().cloned().collect::<Vec<_>>().join(", ")
+fn join_versions(versions: &BTreeSet<String>) -> String {
+    versions.iter().cloned().collect::<Vec<_>>().join(", ")
 }
 
 #[cfg(test)]
@@ -126,13 +126,13 @@ mod tests {
 
     fn meta_contract(
         role: &str,
-        generation: &str,
+        version: &str,
         contract: &str,
         external: bool,
     ) -> ParticipantMetaContract {
         ParticipantMetaContract {
             role: role.to_string(),
-            generation: generation.to_string(),
+            version: version.to_string(),
             contract: contract.to_string(),
             external,
         }
@@ -150,16 +150,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "mission",
-                vec![meta_contract(
-                    "subscribe",
-                    "y2026_1",
-                    "drive::Target",
-                    false,
-                )],
+                vec![meta_contract("subscribe", "v1", "drive::Target", false)],
             ),
         ];
 
@@ -176,16 +171,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "mission",
-                vec![meta_contract(
-                    "subscribe",
-                    "y2026_7",
-                    "drive::Target",
-                    false,
-                )],
+                vec![meta_contract("subscribe", "v2", "drive::Target", false)],
             ),
         ];
 
@@ -197,8 +187,8 @@ mod tests {
         assert!(line.contains("MISMATCH pub/sub"));
         assert!(line.contains("'mission'"));
         assert!(line.contains("'drive::Target'"));
-        assert!(line.contains("y2026_7"));
-        assert!(line.contains("y2026_1"));
+        assert!(line.contains("v2"));
+        assert!(line.contains("v1"));
     }
 
     #[test]
@@ -206,11 +196,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "asset",
-                vec![meta_contract("serve", "y2026_1", "asset::Get", false)],
+                vec![meta_contract("serve", "v1", "asset::Get", false)],
             ),
             surface(
                 "client",
-                vec![meta_contract("ask", "y2026_7", "asset::Get", false)],
+                vec![meta_contract("ask", "v2", "asset::Get", false)],
             ),
         ];
 
@@ -221,8 +211,8 @@ mod tests {
         assert!(line.contains("MISMATCH ask/serve"));
         assert!(line.contains("'client'"));
         assert!(line.contains("'asset::Get'"));
-        assert!(line.contains("y2026_7"));
-        assert!(line.contains("y2026_1"));
+        assert!(line.contains("v2"));
+        assert!(line.contains("v1"));
     }
 
     #[test]
@@ -230,11 +220,11 @@ mod tests {
         let surfaces = vec![
             surface(
                 "drive",
-                vec![meta_contract("publish", "y2026_1", "drive::Target", false)],
+                vec![meta_contract("publish", "v1", "drive::Target", false)],
             ),
             surface(
                 "teleop",
-                vec![meta_contract("subscribe", "y2026_7", "drive::Target", true)],
+                vec![meta_contract("subscribe", "v2", "drive::Target", true)],
             ),
         ];
 

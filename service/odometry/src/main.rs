@@ -18,7 +18,7 @@ use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::robot::v0::KinematicConfig;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 /// A wheel whose last encoder sample is older than this is dropped from the twist
 /// estimate, so a dead encoder publisher stops contributing motion (and the pose
@@ -293,7 +293,7 @@ mod tests {
 
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     use super::{
         ENCODER_STALE_NS, Odometry, OdometryConfig, average_side, forward, integrate_pose,
@@ -371,7 +371,7 @@ mod tests {
 
         for binding in config.left.iter().chain(&config.right) {
             let topic = binding.topic();
-            assert!(topic.key().starts_with("y2026_1/component/"));
+            assert!(topic.key().starts_with("v1/component/"));
             assert!(topic.key().ends_with("/sample"));
         }
     }

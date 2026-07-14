@@ -2,7 +2,7 @@
 //! default backend emits no detections, so future detector heads can plug in
 //! behind `DetectorHead` without changing the participant IO surface.
 
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 pub(crate) struct DetectorInput<'a> {
     pub(crate) camera: &'a api::component::camera::Frame,

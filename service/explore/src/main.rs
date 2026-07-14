@@ -18,7 +18,7 @@ mod scoring;
 
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 use crate::frontiers::{OccupancyGrid, detect_frontiers};
 use crate::scoring::score_frontiers;
@@ -167,7 +167,7 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
-    use phoxal_api::y2026_1 as api;
+    use phoxal_api::v1 as api;
 
     use super::{Explore, evaluate_frontiers, submap_request};
 

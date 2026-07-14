@@ -3,7 +3,7 @@
 // path would otherwise bypass the `internal::new(cap)` owner-capability gate (a
 // bare `Root` reaches `.node().leaf()` with no `OwnerCap`). The ONLY entry to the
 // owner builder is `api::topic::internal::new(cap)`.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 fn main() {
     // ERROR: `Root` is `#[non_exhaustive]` and cannot be constructed outside its

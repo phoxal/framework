@@ -13,7 +13,7 @@ use std::time::Duration;
 use phoxal::participant::{ParticipantLaunch, RealClock};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use serial_test::serial;
 
 static RECEIVED: AtomicU64 = AtomicU64::new(0);

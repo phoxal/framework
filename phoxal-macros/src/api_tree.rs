@@ -19,18 +19,17 @@
 //! appending a leaf segment, for framework infrastructure topics such as
 //! `logs/{participant_id}`.
 //! A version may be prefixed with `preview`; that emits the module at its final
-//! path behind the per-generation `preview-y2026_N` Cargo feature and records
+//! path behind the per-version `preview-vN` Cargo feature and records
 //! `ApiVersion::IS_PREVIEW = true` without changing the wire shape. `preview` is
-//! the only per-version lifecycle marker: there is no `extends` (removed, D1) - a
-//! generation is a standalone, sparse batch (target model #3), never a copy or an
-//! override of an earlier one.
+//! the only per-version lifecycle marker. A preview version evolves in place
+//! until promotion; there is no `extends` and no new version per contract edit.
 //!
 //! ```text
 //! phoxal_api_tree! {
-//!     version y2026_1 {
+//!     version v1 {
 //!         drive {                                  // static node
 //!             struct Target { linear_x_mps: f32, angular_z_radps: f32 }
-//!             topic target: command Target;        // key y2026_1/drive/target
+//!             topic target: command Target;        // key v1/drive/target
 //!             struct State { /* … */ }
 //!             topic state: state State;            // owner-published telemetry
 //!         }
@@ -38,35 +37,33 @@
 //!             motor(capability) {                  // literal "motor" + var {capability}
 //!                 enum Command { Velocity(f32), Torque(f32), Stop }
 //!                 topic command: command Command;
-//!                 // path   api::y2026_1::component::motor::Command
-//!                 // key    y2026_1/component/{instance}/motor/{capability}/command
+//!                 // path   api::v1::component::motor::Command
+//!                 // key    v1/component/{instance}/motor/{capability}/command
 //!             }
 //!         }
 //!     }
-//!     preview version y2026_2 {
-//!         // a standalone, sparse batch: only what is minted in this generation,
-//!         // never a copy of y2026_1.
+//!     preview version v2 {
+//!         // the single evolving preview surface until v2 is frozen
 //!         battery { struct State { soc: f32 } topic state: state State; }
 //!     }
 //! }
 //! ```
 //!
-//! Each `version` becomes a `pub mod y2026_N` carrying a marker `enum Api {}`
+//! Each `version` becomes a `pub mod vN` carrying a marker `enum Api {}`
 //! (`ApiVersion`), a nested `pub mod` per node holding that node's version-local
 //! bodies (plain serde types, no `{"v":…}` wrapper — D62) and their
 //! `ContractBody` impls, plus an api-local `topic` builder module.
 //!
-//! **Wire identity is the generation-qualified key, not a transitive-shape hash
-//! (D1).** The generation is folded into `ContractBody::TOPIC`: a contract's
-//! identity is its version-qualified name (`y2026_1::drive::Target`), and that
+//! **Wire identity is the version-qualified key, not a transitive-shape hash
+//! (D1).** The version is folded into `ContractBody::TOPIC`: a contract's
+//! identity is its version-qualified name (`v1::drive::Target`), and that
 //! name is real on the wire because the key carries it too
-//! (`y2026_1/drive/target`). Two participants interoperate on a contract iff
+//! (`v1/drive/target`). Two participants interoperate on a contract iff
 //! they use the exact same version-qualified name - enforced by the type system
 //! (the `Api` bound) and realized on the wire by the key, which makes two
 //! differently-versioned contracts physically incapable of colliding. There is
-//! no `SCHEMA_ID`/`FAMILY` and no cross-generation `extends`: a released
-//! contract type is immutable, and changing it means minting a new name in the
-//! current (or a new) generation, never overlaying the old one.
+//! no `SCHEMA_ID`/`FAMILY` and no cross-version `extends`. Stable versions are
+//! immutable; the active preview version may change in place until promotion.
 //!
 //! # Self-contained absolute paths (no depth-counted `super::`)
 //!
@@ -78,7 +75,7 @@
 //! `phoxal_api_tree!` itself was invoked (crate root for the one production call
 //! in `phoxal-api/src/lib.rs`; nested inside a `#[cfg(test)] mod tests` submodule
 //! for the fixtures in `phoxal-api/src/tests.rs`) - a proc-macro has no reliable
-//! way to learn its own module path, so a hardcoded `::phoxal_api::y2026_N::…`
+//! way to learn its own module path, so a hardcoded `::phoxal_api::vN::…`
 //! prefix is wrong the moment the invocation is not at the crate root, and simply
 //! is not an option here.
 //!
@@ -105,7 +102,7 @@
 //!
 //! The result: no reference anywhere in the generated tree depends on a computed
 //! nesting depth, so lifting a node deeper (or invoking `phoxal_api_tree!` from a
-//! more deeply nested module, as the `reused_var_name` / `standalone_second_generation`
+//! more deeply nested module, as the `reused_var_name` / `standalone_version`
 //! fixtures in `phoxal-api/src/tests.rs` do) cannot desynchronize a path. The
 //! builder's OWN parent-chaining (`super::Root` / `super::Builder` in
 //! [`expand_builder_module`]) is intentionally left as a direct `super::`: it
@@ -122,7 +119,7 @@
 //! deliberately not implemented:
 //!
 //! - A released (non-`preview`) `version` span is immutable by policy, enforced by
-//!   the release-PR frozen-generation check (`xtask/src/api/frozen_generation.rs`):
+//!   the release-PR frozen-version check (`xtask/src/api/frozen_version.rs`):
 //!   it diffs the exact DSL source text against the last release tag and fails the
 //!   PR if a single byte of a frozen span moved. Renaming an identifier inside a
 //!   frozen span is exactly the kind of edit that check exists to block - a
@@ -134,14 +131,14 @@
 //!   would need to diverge.
 //! - The whole point of D1's move away from `schema_id`/`FAMILY` is that identity
 //!   collapses onto ONE axis - the version-qualified Rust path IS the wire key
-//!   (`y2026_1::drive::Target` <-> `y2026_1/drive/target`). A `rename` attribute
+//!   (`v1::drive::Target` <-> `v1/drive/target`). A `rename` attribute
 //!   would reopen a second axis (Rust name vs. wire name) for exactly the
 //!   contracts where the model guarantees they can never need to diverge.
 //!
-//! If a future generation needs a differently-worded wire segment than its Rust
-//! name reads naturally, the sparse-generation model already provides the answer:
-//! mint it under the wire name that reads well from the start, in the current (or
-//! a new) generation - there is no cost to choosing the wire-facing name up front.
+//! If a future version needs a differently-worded wire segment than its Rust
+//! name reads naturally, choose that wire-facing name while the active version
+//! is still preview. After promotion, the next breaking change begins in the
+//! next preview version.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -171,6 +168,7 @@ struct ApiTree {
 struct Version {
     is_preview: bool,
     name: Ident,
+    number: u64,
     nodes: Vec<Node>,
 }
 
@@ -250,17 +248,17 @@ enum TopicKind {
     Query { request: Ident, response: Ident },
 }
 
-struct ManifestGeneration {
+struct ManifestVersion {
     name: String,
     is_preview: bool,
     contracts: Vec<ManifestContract>,
 }
 
 struct ManifestContract {
-    /// Version-qualified contract identity, e.g. `"y2026_1::drive::Target"`
-    /// (D1: the generation is part of the name, not a separate axis).
+    /// Version-qualified contract identity, e.g. `"v1::drive::Target"`
+    /// (D1: the version is part of the name, not a separate axis).
     family: String,
-    /// Generation-qualified wire key, e.g. `"y2026_1/drive/target"`.
+    /// Version-qualified wire key, e.g. `"v1/drive/target"`.
     topic: String,
 }
 
@@ -287,6 +285,28 @@ impl Parse for Version {
         };
         input.parse::<kw::version>()?;
         let name: Ident = input.parse()?;
+        let name_text = name.to_string();
+        let Some(number) = name_text.strip_prefix('v') else {
+            return Err(syn::Error::new(
+                name.span(),
+                "API versions use conventional `vN` names such as `v1` or `v2`",
+            ));
+        };
+        if number.is_empty()
+            || number.starts_with('0')
+            || !number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(syn::Error::new(
+                name.span(),
+                "API versions use conventional positive `vN` names such as `v1` or `v2`",
+            ));
+        }
+        let number = number.parse::<u64>().map_err(|_| {
+            syn::Error::new(
+                name.span(),
+                "API version number is too large; use a conventional positive `vN` name",
+            )
+        })?;
         let body;
         syn::braced!(body in input);
         let mut nodes = Vec::new();
@@ -296,6 +316,7 @@ impl Parse for Version {
         Ok(Version {
             is_preview,
             name,
+            number,
             nodes,
         })
     }
@@ -417,13 +438,25 @@ impl Parse for TopicDef {
 impl ApiTree {
     fn expand(&self) -> syn::Result<TokenStream> {
         let mut out = TokenStream::new();
-        let mut manifest_generations = Vec::new();
+        let mut manifest_versions = Vec::new();
         let mut seen_names = std::collections::HashSet::new();
+        let mut preview: Option<&Version> = None;
+        let mut max_stable_number = None;
+        if let Some(extra_preview) = self
+            .versions
+            .iter()
+            .filter(|version| version.is_preview)
+            .nth(1)
+        {
+            return Err(syn::Error::new_spanned(
+                &extra_preview.name,
+                "only one API version may be preview at a time; evolve the active preview in place",
+            ));
+        }
 
-        // Each version is a standalone, sparse batch (D1/target model #3): no
-        // `extends`, no cross-generation node overlay. A generation contains only
-        // the contracts minted in that batch.
-        for version in &self.versions {
+        // Versions never inherit or overlay one another. Preview versions may
+        // be edited in place until promotion; stable spans are frozen.
+        for (index, version) in self.versions.iter().enumerate() {
             if !seen_names.insert(version.name.to_string()) {
                 return Err(syn::Error::new_spanned(
                     &version.name,
@@ -433,14 +466,44 @@ impl ApiTree {
                     ),
                 ));
             }
-            manifest_generations.push(ManifestGeneration {
+            if version.is_preview {
+                if index + 1 != self.versions.len() {
+                    return Err(syn::Error::new_spanned(
+                        &version.name,
+                        "the preview API version must be the final version block",
+                    ));
+                }
+                preview = Some(version);
+            } else {
+                max_stable_number = Some(
+                    max_stable_number
+                        .map_or(version.number, |number: u64| number.max(version.number)),
+                );
+            }
+            manifest_versions.push(ManifestVersion {
                 name: version.name.to_string(),
                 is_preview: version.is_preview,
                 contracts: contract_manifest_entries(&version.name.to_string(), &version.nodes)?,
             });
             out.extend(expand_version(version)?);
         }
-        let manifest = expand_contract_manifest(&manifest_generations);
+        if let (Some(preview), Some(max_stable_number)) = (preview, max_stable_number) {
+            let expected_preview = max_stable_number.checked_add(1).ok_or_else(|| {
+                syn::Error::new_spanned(
+                    &preview.name,
+                    "latest stable API version is too large to create a next preview version",
+                )
+            })?;
+            if preview.number != expected_preview {
+                return Err(syn::Error::new_spanned(
+                    &preview.name,
+                    format!(
+                        "preview API version must be the next version `v{expected_preview}` after the latest stable version; evolve the active preview in place"
+                    ),
+                ));
+            }
+        }
+        let manifest = expand_contract_manifest(&manifest_versions);
         Ok(quote! {
             #manifest
             #out
@@ -448,11 +511,11 @@ impl ApiTree {
     }
 }
 
-fn expand_contract_manifest(generations: &[ManifestGeneration]) -> TokenStream {
-    let generation_entries = generations.iter().map(|generation| {
-        let name = &generation.name;
-        let is_preview = generation.is_preview;
-        let contracts = generation.contracts.iter().map(|contract| {
+fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
+    let version_entries = versions.iter().map(|version| {
+        let name = &version.name;
+        let is_preview = version.is_preview;
+        let contracts = version.contracts.iter().map(|contract| {
             let family = &contract.family;
             let topic = &contract.topic;
             quote! {
@@ -463,7 +526,7 @@ fn expand_contract_manifest(generations: &[ManifestGeneration]) -> TokenStream {
             }
         });
         quote! {
-            ApiContractManifestGeneration {
+            ApiContractManifestVersion {
                 name: #name,
                 is_preview: #is_preview,
                 contracts: &[#(#contracts),*],
@@ -472,10 +535,10 @@ fn expand_contract_manifest(generations: &[ManifestGeneration]) -> TokenStream {
     });
 
     quote! {
-        /// One generated API generation in the contract manifest.
+        /// One generated API version in the contract manifest.
         #[doc(hidden)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-        pub struct ApiContractManifestGeneration {
+        pub struct ApiContractManifestVersion {
             pub name: &'static str,
             pub is_preview: bool,
             pub contracts: &'static [ApiContractManifestContract],
@@ -483,7 +546,7 @@ fn expand_contract_manifest(generations: &[ManifestGeneration]) -> TokenStream {
 
         /// One generated contract in the contract manifest. `family` is the
         /// version-qualified contract identity (D1); `topic` is its
-        /// generation-qualified wire key. There is no `schema_id`: the name
+        /// version-qualified wire key. There is no `schema_id`: the name
         /// itself is the whole identity (D1).
         #[doc(hidden)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -494,7 +557,7 @@ fn expand_contract_manifest(generations: &[ManifestGeneration]) -> TokenStream {
 
         /// Generated contract manifest for xtask lifecycle checks.
         #[doc(hidden)]
-        pub const API_CONTRACT_MANIFEST: &[ApiContractManifestGeneration] = &[#(#generation_entries),*];
+        pub const API_CONTRACT_MANIFEST: &[ApiContractManifestVersion] = &[#(#version_entries),*];
     }
 }
 
@@ -567,8 +630,8 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
     // Node modules (types + ContractBody impls), recursive. The family prefix
     // (`::`-joined node names) and the key prefix (`/`-joined `name` or
     // `name/{var}` segments) are threaded down the walk. `id` (the version name)
-    // is threaded down too so every emitted `TOPIC` is generation-qualified (D1):
-    // the generation is folded into the wire key, so different versioned
+    // is threaded down too so every emitted `TOPIC` is version-qualified (D1):
+    // the version is folded into the wire key, so different versioned
     // contracts can never collide.
     let mut node_mods = TokenStream::new();
     for node in nodes {
@@ -586,10 +649,10 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
     };
     let module_doc = if is_preview {
         format!(
-            "Preview dated API version `{id}`. This final-path module is available only with the `{feature_name}` Cargo feature."
+            "Preview API version `{id}`. This final-path module is available only with the `{feature_name}` Cargo feature."
         )
     } else {
-        format!("Dated API version `{id}` - version-local wire bodies + topics.")
+        format!("Stable API version `{id}` - version-local wire bodies + topics.")
     };
 
     Ok(quote! {
@@ -625,8 +688,8 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
 /// node's types, the `ContractBody` impls for its topics, and — recursively —
 /// its child node modules. Variables never appear in the module path (D61).
 ///
-/// `version` is the generation name (e.g. `"y2026_1"`), threaded down so every
-/// emitted `TOPIC` is generation-qualified (D1). `family_prefix` is the
+/// `version` is the version name (e.g. `"v1"`), threaded down so every
+/// emitted `TOPIC` is version-qualified (D1). `family_prefix` is the
 /// `::`-joined ancestor node names (empty at the root); `key_prefix` is the
 /// `/`-joined ancestor key segments (`name` or `name/{var}`, empty at the root).
 /// The node appends its own contribution to each.
@@ -664,21 +727,21 @@ fn expand_node_module(
 
     let mut impls = TokenStream::new();
     for topic in &node.topics {
-        // The generation-qualified wire key (D1): folding the version in here is
+        // The version-qualified wire key (D1): folding the version in here is
         // what makes different versioned names physically distinct Zenoh keys.
         let key = format!("{version}/{}", topic_key(&node_key_prefix, &topic.leaf));
         let role = topic.role.bus_variant();
-        // The version-qualified type-path name (D1): the generation, then the
+        // The version-qualified type-path name (D1): the version, then the
         // `::`-joined node path (vars excluded - they are topic params, not
         // type-path segments), then the body's own PascalCase leaf. This is the
         // exact same identity `contract_manifest_entries`' `family` computes for
         // the xtask manifest, kept in lockstep by construction (both derive it
-        // from `family_path`/`version`). `GENERATION`/`CONTRACT` are the split
-        // form of the same identity (coherence-gate design doc §2): `GENERATION`
+        // from `family_path`/`version`). `VERSION`/`CONTRACT` are the split
+        // form of the same identity (coherence-gate design doc §2): `VERSION`
         // is just `version` (already a plain literal at this point, not spliced
-        // per-body), `CONTRACT` is `family_path::body` with the generation
-        // dropped - `NAME == GENERATION + "::" + CONTRACT` by construction.
-        let generation = version.to_string();
+        // per-body), `CONTRACT` is `family_path::body` with the version
+        // dropped - `NAME == VERSION + "::" + CONTRACT` by construction.
+        let version = version.to_string();
         let name_for = |body: &Ident| format!("{version}::{family_path}::{body}");
         let contract_for = |body: &Ident| format!("{family_path}::{body}");
         match &topic.kind {
@@ -694,7 +757,7 @@ fn expand_node_module(
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #name;
-                        const GENERATION: &'static str = #generation;
+                        const VERSION: &'static str = #version;
                         const CONTRACT: &'static str = #contract;
                         const TOPIC: &'static str = #key;
                     }
@@ -714,14 +777,14 @@ fn expand_node_module(
                     impl ::phoxal_bus::ContractBody for #request {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #request_name;
-                        const GENERATION: &'static str = #generation;
+                        const VERSION: &'static str = #version;
                         const CONTRACT: &'static str = #request_contract;
                         const TOPIC: &'static str = #key;
                     }
                     impl ::phoxal_bus::ContractBody for #response {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #response_name;
-                        const GENERATION: &'static str = #generation;
+                        const VERSION: &'static str = #version;
                         const CONTRACT: &'static str = #response_contract;
                         const TOPIC: &'static str = #key;
                     }
@@ -1175,7 +1238,7 @@ fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], side: Side) -> TokenStr
     }
 }
 
-/// Build a leaf's key in two forms: the `format!` template (the generation as a
+/// Build a leaf's key in two forms: the `format!` template (the version as a
 /// literal leading segment, then literal node-name segments, `{}` for each
 /// dynamic var, optionally then `/leaf`) and the human-readable
 /// `{var}`-placeholder doc key. Both are derived from the node path so the
@@ -1235,10 +1298,10 @@ mod tests {
     }
 
     #[test]
-    fn topic_and_family_are_generation_qualified() {
+    fn topic_and_family_are_version_qualified() {
         let expanded = compact_tokens(
             expand(quote! {
-                version y2026_1 {
+                version v1 {
                     drive {
                         struct Target { linear_x_mps: f32 }
                         topic target: command Target;
@@ -1248,21 +1311,21 @@ mod tests {
             .expect("tree expands"),
         );
         assert!(
-            expanded.contains("const TOPIC : & 'static str = \"y2026_1/drive/target\""),
-            "TOPIC must fold the generation into the wire key (D1): {expanded}"
+            expanded.contains("const TOPIC : & 'static str = \"v1/drive/target\""),
+            "TOPIC must fold the version into the wire key (D1): {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"y2026_1::drive::Target\""),
+            expanded.contains("const NAME : & 'static str = \"v1::drive::Target\""),
             "NAME must be the version-qualified type path (D1): {expanded}"
         );
         assert!(
-            expanded.contains("const GENERATION : & 'static str = \"y2026_1\""),
-            "GENERATION must be the bare generation, split from CONTRACT (coherence-gate \
+            expanded.contains("const VERSION : & 'static str = \"v1\""),
+            "VERSION must be the bare version, split from CONTRACT (coherence-gate \
              design §2): {expanded}"
         );
         assert!(
             expanded.contains("const CONTRACT : & 'static str = \"drive::Target\""),
-            "CONTRACT must be the type path within its generation, with no generation \
+            "CONTRACT must be the type path within its version, with no version \
              prefix: {expanded}"
         );
         assert!(
@@ -1276,10 +1339,10 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_node_topic_is_generation_and_var_qualified() {
+    fn dynamic_node_topic_is_version_and_var_qualified() {
         let expanded = compact_tokens(
             expand(quote! {
-                version y2026_1 {
+                version v1 {
                     component(instance) {
                         motor(capability) {
                             enum Command { Stop }
@@ -1292,13 +1355,12 @@ mod tests {
         );
         assert!(
             expanded.contains(
-                "const TOPIC : & 'static str = \"y2026_1/component/{instance}/motor/{capability}/command\""
+                "const TOPIC : & 'static str = \"v1/component/{instance}/motor/{capability}/command\""
             ),
-            "dynamic-node TOPIC must carry both the generation and the {{var}} placeholders: {expanded}"
+            "dynamic-node TOPIC must carry both the version and the {{var}} placeholders: {expanded}"
         );
         assert!(
-            expanded
-                .contains("const NAME : & 'static str = \"y2026_1::component::motor::Command\""),
+            expanded.contains("const NAME : & 'static str = \"v1::component::motor::Command\""),
             "dynamic-node NAME must be the clean type path with no {{var}} placeholders - \
              dynamic-node vars are topic params, never type-path segments: {expanded}"
         );
@@ -1309,10 +1371,10 @@ mod tests {
     }
 
     #[test]
-    fn topic_builder_keys_are_generation_qualified() {
+    fn topic_builder_keys_are_version_qualified() {
         let expanded = compact_tokens(
             expand(quote! {
-                version y2026_1 {
+                version v1 {
                     drive {
                         struct Target { linear_x_mps: f32 }
                         topic target: command Target;
@@ -1322,8 +1384,8 @@ mod tests {
             .expect("tree expands"),
         );
         assert!(
-            expanded.contains("Topic :: new_static (\"y2026_1/drive/target\")"),
-            "the api-local topic builder must build the same generation-qualified key as \
+            expanded.contains("Topic :: new_static (\"v1/drive/target\")"),
+            "the api-local topic builder must build the same version-qualified key as \
              ContractBody::TOPIC: {expanded}"
         );
     }
@@ -1331,8 +1393,8 @@ mod tests {
     #[test]
     fn duplicate_version_names_in_one_invocation_are_rejected() {
         let err = expand(quote! {
-            version y2026_1 { sample { struct Body { value: u8 } topic body: state Body; } }
-            version y2026_1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
         })
         .expect_err("a duplicate version name must be rejected");
         assert!(
@@ -1341,14 +1403,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn multiple_preview_versions_are_rejected() {
+        let err = expand(quote! {
+            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            preview version v2 { sample { struct Body { value: u8 } topic body: state Body; } }
+            preview version v3 { sample { struct Body { value: u8 } topic body: state Body; } }
+        })
+        .expect_err("the active preview must evolve in place");
+        assert!(
+            err.to_string()
+                .contains("only one API version may be preview"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn preview_must_be_the_next_version_after_the_latest_stable() {
+        let err = expand(quote! {
+            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            preview version v3 { sample { struct Body { value: u8 } topic body: state Body; } }
+        })
+        .expect_err("v2 must remain the active preview after v1");
+        assert!(
+            err.to_string().contains("next version `v2`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn preview_must_be_the_final_version_block() {
+        let err = expand(quote! {
+            preview version v2 { sample { struct Body { value: u8 } topic body: state Body; } }
+            version v3 { sample { struct Body { value: u8 } topic body: state Body; } }
+        })
+        .expect_err("a stable version cannot follow the active preview");
+        assert!(
+            err.to_string().contains("final version block"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn nonstandard_version_names_are_rejected() {
+        for name in ["release_1", "preview2", "v0", "v01", "v1_beta"] {
+            let source = format!(
+                "version {name} {{ sample {{ struct Body {{ value: u8 }} topic value: state Body; }} }}"
+            );
+            let tokens: TokenStream = source.parse().expect("test source tokenizes");
+            let error = expand(tokens).expect_err("nonstandard API version must fail");
+            assert!(
+                error.to_string().contains("conventional"),
+                "unexpected error for {name}: {error}"
+            );
+        }
+    }
+
     /// `preview` is independent of `extends` (which no longer exists, D1/target
     /// model #3): a standalone preview version with no parent must still emit
-    /// the final-path module behind its per-generation feature gate.
+    /// the final-path module behind its per-version feature gate.
     #[test]
     fn standalone_preview_version_emits_final_path_feature_gate_and_lifecycle_const() {
         let expanded = compact_tokens(
             expand(quote! {
-                preview version y2026_2 {
+                preview version v2 {
                     sample {
                         struct Body { value: u8 }
                         topic body: state Body;
@@ -1359,28 +1477,28 @@ mod tests {
         );
 
         assert!(
-            expanded.contains("pub mod y2026_2"),
-            "preview generation must be emitted at its final path: {expanded}"
+            expanded.contains("pub mod v2"),
+            "preview version must be emitted at its final path: {expanded}"
         );
         assert!(
             !expanded.contains("pub mod preview"),
-            "preview generation must not be nested under a preview module: {expanded}"
+            "preview version must not be nested under a preview module: {expanded}"
         );
         assert!(
-            expanded.contains("# [cfg (feature = \"preview-y2026_2\")]"),
-            "preview generation must be gated by its per-generation feature: {expanded}"
+            expanded.contains("# [cfg (feature = \"preview-v2\")]"),
+            "preview version must be gated by its per-version feature: {expanded}"
         );
         assert!(
-            expanded.contains("Preview dated API version `y2026_2`"),
-            "preview generation should carry a discoverable doc note: {expanded}"
+            expanded.contains("Preview API version `v2`"),
+            "preview version should carry a discoverable doc note: {expanded}"
         );
         assert!(
             expanded.contains("const IS_PREVIEW : bool = true ;"),
             "preview ApiVersion must record IS_PREVIEW = true: {expanded}"
         );
         assert!(
-            expanded.contains("const TOPIC : & 'static str = \"y2026_2/sample/body\""),
-            "a preview generation's wire key is generation-qualified exactly like a \
+            expanded.contains("const TOPIC : & 'static str = \"v2/sample/body\""),
+            "a preview version's wire key is version-qualified exactly like a \
              released one: {expanded}"
         );
     }
@@ -1388,7 +1506,7 @@ mod tests {
     #[test]
     fn preview_lifecycle_is_wire_neutral_for_contract_identity() {
         let preview = quote! {
-            preview version y2026_2 {
+            preview version v2 {
                 sample {
                     struct Body { value: u8, label: Option<String> }
                     topic body: state Body;
@@ -1396,7 +1514,7 @@ mod tests {
             }
         };
         let promoted = quote! {
-            version y2026_2 {
+            version v2 {
                 sample {
                     struct Body { value: u8, label: Option<String> }
                     topic body: state Body;
@@ -1408,23 +1526,23 @@ mod tests {
         let promoted_expanded = compact_tokens(expand(promoted).expect("promoted tree expands"));
 
         // Preview lifecycle has no wire effect (D1): with no schema_id left to
-        // compare, the generation-qualified TOPIC itself is the identity, and it
-        // must be identical whether or not the generation is still in preview.
-        assert!(preview_expanded.contains("\"y2026_2/sample/body\""));
-        assert!(promoted_expanded.contains("\"y2026_2/sample/body\""));
+        // compare, the version-qualified TOPIC itself is the identity, and it
+        // must be identical whether or not the version is still in preview.
+        assert!(preview_expanded.contains("\"v2/sample/body\""));
+        assert!(promoted_expanded.contains("\"v2/sample/body\""));
     }
 
     #[test]
     fn expansion_emits_root_contract_manifest_for_xtask() {
         let expanded = compact_tokens(
             expand(quote! {
-                version y2026_1 {
+                version v1 {
                     sample {
                         struct Body { value: u8 }
                         topic body: state Body;
                     }
                 }
-                preview version y2026_2 {
+                preview version v2 {
                     sample {
                         struct Body { value: u8 }
                         topic body: state Body;
@@ -1439,28 +1557,28 @@ mod tests {
             "root manifest const should be emitted: {expanded}"
         );
         assert!(
-            expanded.contains("name : \"y2026_2\""),
-            "preview generation should be represented in the manifest: {expanded}"
+            expanded.contains("name : \"v2\""),
+            "preview version should be represented in the manifest: {expanded}"
         );
         assert!(
             expanded.contains("is_preview : true"),
             "manifest should carry preview lifecycle: {expanded}"
         );
         assert!(
-            expanded.contains("family : \"y2026_1::sample::Body\""),
+            expanded.contains("family : \"v1::sample::Body\""),
             "manifest family is the version-qualified contract identity (D1): {expanded}"
         );
         assert!(
-            expanded.contains("topic : \"y2026_1/sample/body\""),
-            "manifest topic is the generation-qualified wire key (D1): {expanded}"
+            expanded.contains("topic : \"v1/sample/body\""),
+            "manifest topic is the version-qualified wire key (D1): {expanded}"
         );
         assert!(
-            expanded.contains("family : \"y2026_2::sample::Body\""),
-            "each generation's contracts get their own version-qualified name: {expanded}"
+            expanded.contains("family : \"v2::sample::Body\""),
+            "each version's contracts get their own version-qualified name: {expanded}"
         );
         assert!(
-            expanded.contains("topic : \"y2026_2/sample/body\""),
-            "each generation's contracts get their own generation-qualified key: {expanded}"
+            expanded.contains("topic : \"v2/sample/body\""),
+            "each version's contracts get their own version-qualified key: {expanded}"
         );
         assert!(
             !expanded.contains("schema_id :"),
@@ -1473,10 +1591,10 @@ mod tests {
     }
 
     #[test]
-    fn query_request_and_response_share_one_generation_qualified_topic() {
+    fn query_request_and_response_share_one_version_qualified_topic() {
         let expanded = compact_tokens(
             expand(quote! {
-                version y2026_1 {
+                version v1 {
                     asset {
                         struct GetRequest { path: String }
                         enum GetResponse { Missing }
@@ -1488,24 +1606,24 @@ mod tests {
         );
         assert_eq!(
             expanded
-                .matches("const TOPIC : & 'static str = \"y2026_1/asset/get\"")
+                .matches("const TOPIC : & 'static str = \"v1/asset/get\"")
                 .count(),
             2,
             "both the request and response bodies of a query topic share its \
-             generation-qualified key: {expanded}"
+             version-qualified key: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"y2026_1::asset::GetRequest\""),
+            expanded.contains("const NAME : & 'static str = \"v1::asset::GetRequest\""),
             "the request body gets its own type-path NAME: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"y2026_1::asset::GetResponse\""),
+            expanded.contains("const NAME : & 'static str = \"v1::asset::GetResponse\""),
             "the response body gets its own type-path NAME, distinct from the \
              request's even though they share one TOPIC: {expanded}"
         );
         assert!(
             expanded.contains("const CONTRACT : & 'static str = \"asset::GetRequest\""),
-            "the request body's CONTRACT is its own type path, generation excluded: {expanded}"
+            "the request body's CONTRACT is its own type path, version excluded: {expanded}"
         );
         assert!(
             expanded.contains("const CONTRACT : & 'static str = \"asset::GetResponse\""),
@@ -1525,7 +1643,7 @@ mod tests {
     fn deeply_nested_dynamic_tree_never_emits_a_multi_hop_super_chain() {
         let expanded = compact_tokens(
             expand(quote! {
-                version y2026_1 {
+                version v1 {
                     a(x) {
                         b(y) {
                             c(z) {
@@ -1545,17 +1663,17 @@ mod tests {
              either the type-tree or the builder-tree side: {expanded}"
         );
         assert!(
-            expanded.contains("const TOPIC : & 'static str = \"y2026_1/a/{x}/b/{y}/c/{z}/leaf\""),
-            "the three-level dynamic path must still be fully generation- and \
+            expanded.contains("const TOPIC : & 'static str = \"v1/a/{x}/b/{y}/c/{z}/leaf\""),
+            "the three-level dynamic path must still be fully version- and \
              var-qualified: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"y2026_1::a::b::c::Body\""),
+            expanded.contains("const NAME : & 'static str = \"v1::a::b::c::Body\""),
             "NAME excludes every dynamic var from the type path, unlike TOPIC: {expanded}"
         );
         assert!(
             expanded.contains("const CONTRACT : & 'static str = \"a::b::c::Body\""),
-            "CONTRACT excludes both the generation and every dynamic var: {expanded}"
+            "CONTRACT excludes both the version and every dynamic var: {expanded}"
         );
         assert!(
             expanded.contains("type Api = self :: __PhoxalApiMarker ;"),

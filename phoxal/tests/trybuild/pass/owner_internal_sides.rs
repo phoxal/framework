@@ -8,7 +8,7 @@
 // `state` telemetry, both via the owner builder. `Client` is a `drive` consumer: it
 // publishes the `command` (sends a target) and subscribes the `state`, both via the
 // public builder. Either side reaching for the other's brand would fail to compile.
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

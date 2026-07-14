@@ -3,25 +3,25 @@ name: Coherence gate
 # Deployment coherence gate for the release PR (coherence-gate design doc §4/§5,
 # `organization` `tmp/coherence-gate/readme.md`). Blocks release-plz's
 # `chore(release)` PR when the would-be-released whole official set is
-# incoherent: a contract bumped to a new generation on one side while its
+# incoherent: a contract moved to a new API version on one side while its
 # counterpart was not (§3, "pub/sub - per-participant overlap" and
 # "serve/ask - every ask matched").
 #
 # TRIGGER - why plain `pull_request`, not `pull_request_target` (design §5):
 # this gate must BUILD PR-head code (proc-macros, build scripts) to extract
 # each changed crate's `#[derive(phoxal::Api)]` metadata section - exactly what
-# `frozen-api-generation.yml`'s own security comment forbids under
+# `frozen-api-version.yml`'s own security comment forbids under
 # `pull_request_target` (that trigger runs with the elevated base-repo
 # `GITHUB_TOKEN` next to untrusted head code). Plain `pull_request` carries no
 # such elevated token, so building head code here is safe. It DOES fire on
 # release-plz's bot PR: that PR is created with the phoxal GitHub App's token
 # (`release-plz.yml`, `release-pr` step), which is verified sufficient to
-# trigger `pull_request` workflows - the existing `frozen-api-generation` and
+# trigger `pull_request` workflows - the existing `frozen-api-version` and
 # `pr-title-check` checks already fire on those app-authored PRs today.
 #
 # SCOPE - enforced only on the release PR (design §1/§4): the gate protects the
 # RELEASE, not every feature branch. A feature PR may be temporarily
-# incoherent mid-migration (a rolling contract-generation move spans several
+# incoherent mid-migration (a rolling contract-version move spans several
 # PRs), so only a PR whose title starts with `chore(release)` (release-plz's
 # fixed `pr_name`, `release-plz.toml`) pays the cost of a full workspace host
 # build; every other PR exits 0 immediately without building anything.

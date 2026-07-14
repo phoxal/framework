@@ -4,7 +4,7 @@
 //! `quaternion_wxyz_from_rpy` helper (main.rs:1520-1533).
 
 use anyhow::{Result, anyhow};
-use phoxal_api::y2026_1 as api;
+use phoxal_api::v1 as api;
 
 use super::{SampledSpec, is_due};
 
