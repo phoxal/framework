@@ -299,7 +299,7 @@ impl BehaviorService {
             execution.status = api::behavior::ExecutionStatus::Abandoned;
             execution.failure = Some(failure(
                 api::behavior::FailureReason::ExecutionAbandoned,
-                "behavior executive stopped; v0 never resumes an in-flight execution",
+                "behavior service stopped; v0 never resumes an in-flight execution",
                 None,
                 None,
             ));

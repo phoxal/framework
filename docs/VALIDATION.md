@@ -86,7 +86,7 @@ required tier; passing a category in isolation is not enough.
 | P2 | spatial core (keystone) | localization, mapping, traversability, revision-convergence | 2 |
 | P3 | degraded autonomy | e-stop, stale-input stop, failure-recovery | 2 |
 | P4 | directed navigation | request lifecycle, planning, following | 2 |
-| P5 | full autonomy | behavior executive and perception (when the profile requires it) | 3 |
+| P5 | full autonomy | behavior service and perception (when the profile requires it) | 3 |
 
 P2 is the keystone: P3-P5 depend on revision-linked map/localize state, so they
 cannot be meaningfully validated until P2 passes as a group.
