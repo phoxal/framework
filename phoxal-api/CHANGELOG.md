@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.5...phoxal-api-v0.21.0) - 2026-07-15
+
+### Added
+
+- [**breaking**] simplify service topology and restore manual motion ([#264](https://github.com/phoxal/framework/pull/264))
+
 ## [0.20.5](https://github.com/phoxal/framework/compare/phoxal-api-v0.20.4...phoxal-api-v0.20.5) - 2026-07-14
 
 ### Other

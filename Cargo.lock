@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.32.6"
+version = "0.33.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.20.5"
+version = "0.21.0"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.21.3"
+version = "0.22.0"
 dependencies = [
  "heck",
  "phoxal-bus",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-localize"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-map"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2516,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-power"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2585,7 +2585,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-video"
-version = "0.19.8"
+version = "0.19.9"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2624,7 +2624,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "gilrs",
  "phoxal",
