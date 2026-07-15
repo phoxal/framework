@@ -3,6 +3,9 @@ robot:
   id: rgbd-imu-gnss-outdoor
   namespace: dev
   structure: structure.urdf
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: differential
     left_actuators:
@@ -79,7 +82,6 @@ robot:
       mount_link: front_center_tof_mount
       roles:
         range:
-        - safety
         - mapping
         - traversability
     gnss:

@@ -85,8 +85,8 @@ jobs:
 
       # `cache-shared-key: xtask` - this job's cargo work is the xtask binary
       # (`release plan`); share its cache with the assets/catalog jobs below
-      # and the frozen-version guard instead of each job rebuilding xtask's
-      # dependency tree under its own per-job cache key.
+      # instead of each job rebuilding xtask's dependency tree under its own
+      # per-job cache key.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           cache-shared-key: xtask

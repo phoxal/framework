@@ -3,7 +3,7 @@
 //! A production-oriented framework for autonomous robots.
 //!
 //! Phoxal gives a robot a small, strongly-typed core: a contract bus over
-//! [Zenoh](https://zenoh.io), stable `v1` plus evolving preview `v2` contracts,
+//! [Zenoh](https://zenoh.io), current production `v1` plus evolving preview `v2` contracts,
 //! and a
 //! participant authoring model where one struct plus a couple of attribute
 //! macros is a complete service, driver, tool, or simulator. The framework owns the
@@ -160,6 +160,7 @@
 #[cfg(test)]
 extern crate self as phoxal;
 
+pub mod behavior;
 pub mod catalog;
 pub mod check;
 pub mod model;

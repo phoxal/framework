@@ -1,81 +1,160 @@
-//! `motion` - the official body-twist arbiter.
+//! `motion` - the sole body-twist arbiter and emergency-stop authority.
 //!
-//! This participant is the single authority that writes `drive/target`. It subscribes
-//! to `motion/manual`, `follow/target`, and `safety/authorization`, chooses
-//! between the manual and follow candidates under the current safety envelope, and
-//! publishes both the final `drive/target` and a `motion/state` arbitration
-//! record.
-//!
-//! Safety is applied first and conservatively. A missing, stale, or expired
-//! authorization forces a zero target, and an `EmergencyStop` decision overrides
-//! every candidate. A fresh manual command wins over follow and is clamped to the
-//! approved-motion envelope - including the limited escape envelope under a
-//! protective `Stop`, where follow is otherwise blocked. The selected twist is
-//! always clamped to the authorized min/max per axis, and a malformed envelope
-//! (non-finite or inverted bounds) clamps that axis to zero.
+//! Manual and autonomous candidates are freshness checked, finite-value checked,
+//! and clamped to the robot-authored motion limits. With the legacy safety
+//! runtime removed, motion also aggregates the software emergency stop and every
+//! per-component emergency-stop state before publishing `drive/target`. The
+//! redesigned safety service contributes typed world-aware constraints.
+//! Autonomous candidates require fresh constraints; direct manual control may
+//! recover without that experimental provider, while still obeying e-stop,
+//! freshness, finite-value, and robot-limit gates.
 
 mod arbitration;
 
 use anyhow::Result;
+use phoxal::model::component::v0::capability::Capability;
+use phoxal::model::robot::v0::MotionLimits;
+use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::v1 as api;
 
-use crate::arbitration::{Timed, arbitrate};
+use crate::arbitration::{Timed, arbitrate, candidate_age_ns, safety_is_usable};
+
+const COMPONENT_ESTOP_STALE_NS: u64 = 1_000_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EmergencyStopBinding {
+    component_id: String,
+    capability_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EmergencyStopLatch {
+    software_engaged: Option<bool>,
+    component_state: Vec<Option<(bool, LogicalTime)>>,
+    engage_seen_this_cycle: bool,
+}
+
+impl EmergencyStopLatch {
+    fn new(component_count: usize) -> Self {
+        Self {
+            // Software e-stop is a live command latch, not a startup permit.
+            // Starting clear keeps direct joypad teleoperation usable without
+            // a separate behavior/operator command. Any configured physical
+            // component e-stop still fails closed until it publishes fresh
+            // state, and an engaged software request still wins immediately.
+            software_engaged: Some(false),
+            component_state: vec![None; component_count],
+            engage_seen_this_cycle: false,
+        }
+    }
+
+    fn set_software(&mut self, engaged: bool) {
+        self.engage_seen_this_cycle |= engaged;
+        self.software_engaged = Some(engaged);
+    }
+
+    fn set_component(&mut self, index: usize, engaged: bool, at: LogicalTime) {
+        self.engage_seen_this_cycle |= engaged;
+        if let Some(current) = self.component_state.get_mut(index) {
+            *current = Some((engaged, at));
+        }
+    }
+
+    fn software_blocked(&self) -> bool {
+        self.engage_seen_this_cycle || self.software_engaged != Some(false)
+    }
+
+    fn components_blocked(&self, now: LogicalTime) -> bool {
+        self.component_state.iter().any(|sample| {
+            let Some((engaged, at)) = sample else {
+                return true;
+            };
+            *engaged
+                || at.epoch() != now.epoch()
+                || at.time_ns() > now.time_ns()
+                || now.time_ns().saturating_sub(at.time_ns()) > COMPONENT_ESTOP_STALE_NS
+        })
+    }
+
+    fn engaged(&self, now: LogicalTime) -> bool {
+        self.software_blocked() || self.components_blocked(now)
+    }
+
+    fn finish_cycle(&mut self) {
+        self.engage_seen_this_cycle = false;
+    }
+}
 
 #[derive(phoxal::Api)]
 struct Api {
     manual: Subscriber<api::motion::ManualCommand>,
-    follow: Subscriber<api::follow::Target>,
-    safety: Subscriber<api::safety::SafetyAuthorization>,
+    autonomous: Subscriber<api::navigation::Candidate>,
+    software_estop: Subscriber<api::motion::EmergencyStopRequest>,
+    component_estops: Vec<Subscriber<api::component::emergency_stop::State>>,
+    safety_constraints: Subscriber<api::safety::MotionConstraints>,
     drive: Publisher<api::drive::Target>,
     state: Publisher<api::motion::State>,
 }
 
 #[phoxal::service(id = "motion", config = ())]
 struct Motion {
-    // Runtime-private typed state.
+    limits: MotionLimits,
     last_manual: Option<Timed<api::motion::ManualCommand>>,
-    last_follow: Option<Timed<api::follow::Target>>,
-    last_safety: Option<Timed<api::safety::SafetyAuthorization>>,
+    last_autonomous: Option<Timed<api::navigation::Candidate>>,
+    estop: EmergencyStopLatch,
+    last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
 }
 
 #[phoxal::behavior]
 impl Motion {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        // Motion OWNS the `motion` node (its manual input + its state telemetry) ->
-        // owner (`internal`) builder. It CONSUMES `follow/target` and
-        // `safety/authorization` and CLIENT-publishes `drive/target` (a command it
-        // sends to the drive owner) -> public builder.
-        let manual = ctx
-            .subscriber(api::topic::internal::new(cap).motion().manual(), 32)
-            .await?;
-        let follow = ctx
-            .subscriber(api::topic::new().follow().target(), 32)
-            .await?;
-        let safety = ctx
-            .subscriber(api::topic::new().safety().authorization(), 32)
-            .await?;
-        let drive = ctx.publisher(api::topic::new().drive().target()).await?;
-        let state = ctx
-            .publisher(api::topic::internal::new(cap).motion().state())
-            .await?;
+        let robot = ctx.robot()?;
+        let limits = robot.manifest.robot.motion_limits.validate()?;
+        let estop_bindings = emergency_stop_bindings(robot);
+
+        let mut component_estops = Vec::with_capacity(estop_bindings.len());
+        for binding in &estop_bindings {
+            component_estops.push(
+                ctx.subscriber(
+                    api::topic::new()
+                        .component(&binding.component_id)
+                        .emergency_stop(&binding.capability_id)
+                        .state(),
+                    32,
+                )
+                .await?,
+            );
+        }
 
         Ok((
             Self {
+                limits,
                 last_manual: None,
-                last_follow: None,
-                last_safety: None,
+                last_autonomous: None,
+                estop: EmergencyStopLatch::new(estop_bindings.len()),
+                last_safety_constraints: None,
             },
             Self::Api {
-                manual,
-                follow,
-                safety,
-                drive,
-                state,
+                manual: ctx
+                    .subscriber(api::topic::internal::new(cap).motion().manual(), 32)
+                    .await?,
+                autonomous: ctx
+                    .subscriber(api::topic::new().navigation().candidate(), 32)
+                    .await?,
+                software_estop: ctx
+                    .subscriber(api::topic::internal::new(cap).motion().estop(), 32)
+                    .await?,
+                component_estops,
+                safety_constraints: ctx
+                    .subscriber(api::topic::new().safety().constraints(), 32)
+                    .await?,
+                drive: ctx.publisher(api::topic::new().drive().target()).await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).motion().state())
+                    .await?,
             },
         ))
     }
@@ -85,37 +164,88 @@ impl Motion {
         while let Some(received) = api.manual.try_recv() {
             self.last_manual = Some(Timed {
                 body: received.body,
-                produced_at_ns: received.metadata.produced_at_ns,
+                at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
             });
         }
-        while let Some(received) = api.follow.try_recv() {
-            self.last_follow = Some(Timed {
+        while let Some(received) = api.autonomous.try_recv() {
+            self.last_autonomous = Some(Timed {
                 body: received.body,
-                produced_at_ns: received.metadata.produced_at_ns,
+                at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
             });
         }
-        while let Some(received) = api.safety.try_recv() {
-            self.last_safety = Some(Timed {
+        while let Some(received) = api.software_estop.try_recv() {
+            self.estop.set_software(received.body.engaged);
+        }
+        for (index, subscriber) in api.component_estops.iter().enumerate() {
+            while let Some(received) = subscriber.try_recv() {
+                self.estop.set_component(
+                    index,
+                    received.body.engaged,
+                    LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
+                );
+            }
+        }
+        while let Some(received) = api.safety_constraints.try_recv() {
+            self.last_safety_constraints = Some(Timed {
                 body: received.body,
-                produced_at_ns: received.metadata.produced_at_ns,
+                at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
             });
         }
 
+        let safety_runtime = if self
+            .last_safety_constraints
+            .as_ref()
+            .is_some_and(|constraints| safety_is_usable(constraints, step.time()))
+        {
+            api::motion::SafetyRuntime::Present
+        } else {
+            api::motion::SafetyRuntime::Absent
+        };
         let arbitration = arbitrate(
             self.last_manual.as_ref(),
-            self.last_follow.as_ref(),
-            self.last_safety.as_ref(),
-            step.time().time_ns(),
+            self.last_autonomous.as_ref(),
+            self.estop.engaged(step.time()),
+            self.last_safety_constraints.as_ref(),
+            self.limits,
+            step.time(),
         );
-        let drive_target = drive_target_from(arbitration.selected.clone());
-        api.drive.publish_at(step.time(), drive_target).await?;
+        self.estop.finish_cycle();
+
+        api.drive
+            .publish_at(step.time(), arbitration.selected.clone())
+            .await?;
         api.state
             .publish_at(
                 step.time(),
                 api::motion::State {
-                    active_source: arbitration.active_source,
-                    selected: Some(arbitration.selected),
-                    reason: arbitration.reason,
+                    manual_candidate_age_ns: candidate_age_ns(
+                        self.last_manual.as_ref(),
+                        step.time(),
+                    ),
+                    autonomous_candidate_age_ns: candidate_age_ns(
+                        self.last_autonomous.as_ref(),
+                        step.time(),
+                    ),
+                    safety_constraints_age_ns: candidate_age_ns(
+                        self.last_safety_constraints.as_ref(),
+                        step.time(),
+                    ),
+                    selected_source: arbitration.source,
+                    final_target: state_target(&arbitration.selected),
+                    zero_reason: arbitration.zero_reason,
+                    safety_runtime,
+                    software_estop_engaged: self.estop.software_blocked(),
+                    component_estop_blocked: self.estop.components_blocked(step.time()),
+                    active_safety_constraints: self.last_safety_constraints.as_ref().map_or_else(
+                        Vec::new,
+                        |constraints| {
+                            if safety_is_usable(constraints, step.time()) {
+                                constraints.body.constraints.clone()
+                            } else {
+                                Vec::new()
+                            }
+                        },
+                    ),
                 },
             )
             .await?;
@@ -123,12 +253,42 @@ impl Motion {
     }
 }
 
-fn drive_target_from(target: api::motion::Target) -> api::drive::Target {
-    api::drive::Target {
+fn state_target(target: &api::drive::Target) -> api::motion::Target {
+    api::motion::Target {
         linear_x_mps: target.linear_x_mps,
         angular_z_radps: target.angular_z_radps,
         curvature_limit_radpm: target.curvature_limit_radpm,
     }
+}
+
+fn emergency_stop_bindings(robot: &Robot) -> Vec<EmergencyStopBinding> {
+    let mut bindings = robot
+        .manifest
+        .components()
+        .iter()
+        .filter_map(|(component_id, instance)| {
+            robot
+                .components
+                .get(&instance.component)
+                .map(|component| (component_id, component))
+        })
+        .flat_map(|(component_id, component)| {
+            component
+                .capabilities
+                .iter()
+                .filter(|(_, capability)| matches!(capability, Capability::EmergencyStop(_)))
+                .map(|(capability_id, _)| EmergencyStopBinding {
+                    component_id: component_id.clone(),
+                    capability_id: capability_id.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by(|left, right| {
+        left.component_id
+            .cmp(&right.component_id)
+            .then_with(|| left.capability_id.cmp(&right.capability_id))
+    });
+    bindings
 }
 
 fn main() -> phoxal::Result<()> {
@@ -140,250 +300,22 @@ mod tests {
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
 
-    use super::{Motion, api, drive_target_from};
-    use crate::arbitration::{
-        FOLLOW_STALE_NS, SAFETY_STALE_NS, Timed, arbitrate, clamp_to_constraint, zero_motion_target,
-    };
-
-    const NOW_NS: u64 = 1_000_000_000;
+    use super::*;
 
     #[test]
-    fn missing_safety_authorization_forces_stop() {
-        let arbitration = arbitrate(None, None, None, NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::MissionStop)
-        );
-        assert_eq!(arbitration.selected, zero_motion_target());
-        assert_eq!(
-            arbitration.reason,
-            Some(api::motion::MotionReason::SafetyAuthorizationUnavailable)
-        );
-    }
-
-    #[test]
-    fn expired_or_stale_safety_authorization_forces_stop() {
-        let expired = timed(
-            NOW_NS,
-            safety_authorization_with_expiry(api::safety::SafetyDecision::Allow, Some(NOW_NS - 1)),
-        );
-        let stale = timed(
-            NOW_NS - SAFETY_STALE_NS - 1,
-            safety_authorization(api::safety::SafetyDecision::Allow),
-        );
-
-        assert_eq!(
-            arbitrate(None, None, Some(&expired), NOW_NS).reason,
-            Some(api::motion::MotionReason::SafetyAuthorizationUnavailable)
-        );
-        assert_eq!(
-            arbitrate(None, None, Some(&stale), NOW_NS).reason,
-            Some(api::motion::MotionReason::SafetyAuthorizationUnavailable)
-        );
-    }
-
-    #[test]
-    fn emergency_stop_overrides_every_candidate() {
-        let manual = timed(NOW_NS, manual_command(-0.2, 0.4));
-        let follow = timed(NOW_NS, follow_target(0.5, 0.0));
-        let safety = timed(
-            NOW_NS,
-            safety_authorization(api::safety::SafetyDecision::EmergencyStop),
-        );
-
-        let arbitration = arbitrate(Some(&manual), Some(&follow), Some(&safety), NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::EmergencyStop)
-        );
-        assert_eq!(arbitration.selected, zero_motion_target());
-        assert_eq!(
-            arbitration.reason,
-            Some(api::motion::MotionReason::SafetyEmergencyStop)
-        );
-    }
-
-    #[test]
-    fn fresh_manual_overrides_follow_and_is_clamped() {
-        let manual = timed(NOW_NS, manual_command(5.0, -5.0));
-        let follow = timed(NOW_NS, follow_target(0.5, 0.2));
-        let safety = timed(
-            NOW_NS,
-            safety_authorization_with_limits(api::safety::SafetyDecision::Slow, 0.10, 0.30),
-        );
-
-        let arbitration = arbitrate(Some(&manual), Some(&follow), Some(&safety), NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::Manual)
-        );
-        assert_eq!(arbitration.selected.linear_x_mps, 0.10);
-        assert_eq!(arbitration.selected.angular_z_radps, -0.30);
-        assert_eq!(
-            arbitration.reason,
-            Some(api::motion::MotionReason::SafetyConstrained(
-                api::motion::SafetyDecision::Slow
-            ))
-        );
-    }
-
-    #[test]
-    fn stale_manual_is_ignored_for_fresh_follow() {
-        let manual = timed(NOW_NS - 1_000_000_000, manual_command(0.1, 0.0));
-        let follow = timed(NOW_NS, follow_target(0.5, 0.2));
-        let safety = timed(
-            NOW_NS,
-            safety_authorization(api::safety::SafetyDecision::Allow),
-        );
-
-        let arbitration = arbitrate(Some(&manual), Some(&follow), Some(&safety), NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::Follow)
-        );
-        assert_eq!(arbitration.selected.linear_x_mps, 0.5);
-        assert_eq!(arbitration.selected.angular_z_radps, 0.2);
-        assert_eq!(arbitration.reason, None);
-    }
-
-    #[test]
-    fn stale_or_missing_follow_stops_when_no_manual_candidate() {
-        let safety = timed(
-            NOW_NS,
-            safety_authorization(api::safety::SafetyDecision::Allow),
-        );
-        let stale_follow = timed(NOW_NS - FOLLOW_STALE_NS - 1, follow_target(0.5, 0.2));
-
-        let stale = arbitrate(None, Some(&stale_follow), Some(&safety), NOW_NS);
-        assert_eq!(stale.active_source, None);
-        assert_eq!(stale.selected, zero_motion_target());
-        assert_eq!(
-            stale.reason,
-            Some(api::motion::MotionReason::FollowTargetStale)
-        );
-
-        let missing = arbitrate(None, None, Some(&safety), NOW_NS);
-        assert_eq!(missing.active_source, None);
-        assert_eq!(missing.selected, zero_motion_target());
-        assert_eq!(
-            missing.reason,
-            Some(api::motion::MotionReason::NoFollowTarget)
-        );
-    }
-
-    #[test]
-    fn protective_stop_allows_manual_escape_envelope() {
-        let manual = timed(NOW_NS, manual_command(-0.30, 1.5));
-        let safety = timed(
-            NOW_NS,
-            safety_authorization_with_escape(api::safety::SafetyDecision::Stop, 0.15, 0.60),
-        );
-
-        let arbitration = arbitrate(Some(&manual), None, Some(&safety), NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::Manual)
-        );
-        assert_eq!(arbitration.selected.linear_x_mps, -0.15);
-        assert_eq!(arbitration.selected.angular_z_radps, 0.60);
-        assert_eq!(
-            arbitration.reason,
-            Some(api::motion::MotionReason::ManualEscapeUnderStop)
-        );
-    }
-
-    #[test]
-    fn protective_stop_blocks_follow() {
-        let follow = timed(NOW_NS, follow_target(0.50, 0.20));
-        let safety = timed(
-            NOW_NS,
-            safety_authorization_with_escape(api::safety::SafetyDecision::Stop, 0.15, 0.60),
-        );
-
-        let arbitration = arbitrate(None, Some(&follow), Some(&safety), NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::MissionStop)
-        );
-        assert_eq!(arbitration.selected, zero_motion_target());
-        assert_eq!(
-            arbitration.reason,
-            Some(api::motion::MotionReason::SafetyConstrained(
-                api::motion::SafetyDecision::Stop
-            ))
-        );
-    }
-
-    #[test]
-    fn drive_target_preserves_selected_motion_target() {
-        let motion = api::motion::Target {
-            linear_x_mps: 0.2,
-            angular_z_radps: -0.3,
-            curvature_limit_radpm: Some(2.0),
-        };
-
-        let drive = drive_target_from(motion);
-
-        assert_eq!(drive.linear_x_mps, 0.2);
-        assert_eq!(drive.angular_z_radps, -0.3);
-        assert_eq!(drive.curvature_limit_radpm, Some(2.0));
-    }
-
-    #[test]
-    fn clamp_handles_invalid_constraints_conservatively() {
-        assert_eq!(
-            clamp_to_constraint(
-                1.0,
-                &api::safety::Constraint {
-                    min: 2.0,
-                    max: -1.0
-                }
-            ),
-            0.0
-        );
-        assert_eq!(
-            clamp_to_constraint(
-                f64::NAN,
-                &api::safety::Constraint {
-                    min: -1.0,
-                    max: 1.0
-                }
-            ),
-            0.0
-        );
-    }
-
-    #[test]
-    fn malformed_safety_envelope_zeros_both_axes() {
-        let follow = timed(NOW_NS, follow_target(0.5, 0.2));
-        let safety = timed(NOW_NS, malformed_safety_authorization());
-
-        let arbitration = arbitrate(None, Some(&follow), Some(&safety), NOW_NS);
-
-        assert_eq!(
-            arbitration.active_source,
-            Some(api::motion::MotionSource::Follow)
-        );
-        assert_eq!(arbitration.selected.linear_x_mps, 0.0);
-        assert_eq!(arbitration.selected.angular_z_radps, 0.0);
-    }
-
-    #[test]
-    fn api_reports_motion_contracts() {
+    fn api_owns_estop_and_state_and_consumes_component_estops() {
         assert_eq!(<Motion as Participant>::ID, "motion");
-
         let contracts = <<Motion as Participant>::Api as ParticipantApi>::CONTRACTS;
         assert_contract::<api::motion::ManualCommand>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::follow::Target>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::safety::SafetyAuthorization>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::navigation::Candidate>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::motion::EmergencyStopRequest>(contracts, ContractRole::Subscribe);
+        assert_contract::<api::component::emergency_stop::State>(
+            contracts,
+            ContractRole::Subscribe,
+        );
         assert_contract::<api::drive::Target>(contracts, ContractRole::Publish);
         assert_contract::<api::motion::State>(contracts, ContractRole::Publish);
+        assert_contract::<api::safety::MotionConstraints>(contracts, ContractRole::Subscribe);
     }
 
     fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
@@ -393,120 +325,99 @@ mod tests {
         assert!(
             contracts
                 .iter()
-                .any(|c| c.topic == B::TOPIC && c.role == role)
+                .any(|contract| contract.topic == B::TOPIC && contract.role == role)
         );
     }
 
-    fn manual_command(linear_x_mps: f64, angular_z_radps: f64) -> api::motion::ManualCommand {
-        api::motion::ManualCommand {
-            linear_x_mps,
-            angular_z_radps,
-        }
+    #[test]
+    fn state_target_preserves_the_drive_command() {
+        let drive = api::drive::Target {
+            linear_x_mps: 0.3,
+            angular_z_radps: -0.4,
+            curvature_limit_radpm: Some(1.0),
+        };
+        let state = state_target(&drive);
+        assert_eq!(state.linear_x_mps, drive.linear_x_mps);
+        assert_eq!(state.angular_z_radps, drive.angular_z_radps);
+        assert_eq!(state.curvature_limit_radpm, drive.curvature_limit_radpm);
     }
 
-    fn follow_target(linear_x_mps: f64, angular_z_radps: f64) -> api::follow::Target {
-        api::follow::Target {
-            map_revision: Some(1),
-            built_from_localize_revision: None,
-            frame_id: "map".to_string(),
-            linear_x_mps,
-            angular_z_radps,
-        }
+    #[test]
+    fn software_and_component_estops_latch_independently() {
+        let mut latch = EmergencyStopLatch::new(2);
+        let now = LogicalTime::new(0, 100);
+        assert!(
+            latch.engaged(now),
+            "configured component e-stops must publish before motion"
+        );
+        latch.set_component(0, false, now);
+        latch.set_component(1, false, now);
+        latch.finish_cycle();
+        assert!(!latch.engaged(now));
+
+        latch.set_software(true);
+        assert!(latch.engaged(now));
+        latch.set_component(1, true, now);
+        latch.finish_cycle();
+        latch.set_software(false);
+        assert!(
+            latch.engaged(now),
+            "software reset must not clear a component stop"
+        );
+
+        latch.set_component(1, false, now);
+        latch.finish_cycle();
+        assert!(!latch.engaged(now));
     }
 
-    fn safety_authorization(
-        decision: api::safety::SafetyDecision,
-    ) -> api::safety::SafetyAuthorization {
-        safety_authorization_with_limits(decision, 1.0, 1.0)
+    #[test]
+    fn releasing_one_component_does_not_clear_another() {
+        let mut latch = EmergencyStopLatch::new(2);
+        let now = LogicalTime::new(0, 100);
+        latch.set_software(false);
+        latch.set_component(0, true, now);
+        latch.set_component(1, true, now);
+        latch.finish_cycle();
+        latch.set_component(0, false, now);
+        assert!(latch.engaged(now));
+        latch.set_component(1, false, now);
+        latch.finish_cycle();
+        assert!(!latch.engaged(now));
     }
 
-    fn safety_authorization_with_expiry(
-        decision: api::safety::SafetyDecision,
-        expires_at_ns: Option<u64>,
-    ) -> api::safety::SafetyAuthorization {
-        let mut authorization = safety_authorization_with_limits(decision, 1.0, 1.0);
-        authorization.expires_at_ns = expires_at_ns;
-        authorization
+    #[test]
+    fn engage_then_release_in_one_cycle_still_forces_a_stop_cycle() {
+        let mut latch = EmergencyStopLatch::new(1);
+        let now = LogicalTime::new(0, 100);
+        latch.set_component(0, false, now);
+        latch.set_software(true);
+        latch.set_software(false);
+        assert!(latch.engaged(now));
+        latch.finish_cycle();
+        assert!(!latch.engaged(now));
     }
 
-    fn safety_authorization_with_escape(
-        decision: api::safety::SafetyDecision,
-        reverse_mps: f64,
-        angular_radps: f64,
-    ) -> api::safety::SafetyAuthorization {
-        api::safety::SafetyAuthorization {
-            decision,
-            approved_motion: api::safety::MotionConstraint {
-                linear_x_mps: api::safety::Constraint {
-                    min: -reverse_mps,
-                    max: 0.0,
-                },
-                angular_z_radps: api::safety::Constraint {
-                    min: -angular_radps,
-                    max: angular_radps,
-                },
-            },
-            reasons: Vec::new(),
-            source_revision: api::safety::SafetySourceRevision {
-                localization: None,
-                map: None,
-            },
-            expires_at_ns: Some(NOW_NS + 1_000_000_000),
-        }
+    #[test]
+    fn a_robot_without_component_estops_starts_ready_for_manual_control() {
+        let latch = EmergencyStopLatch::new(0);
+        assert!(!latch.engaged(LogicalTime::new(0, 100)));
     }
 
-    fn safety_authorization_with_limits(
-        decision: api::safety::SafetyDecision,
-        linear_x_mps: f64,
-        angular_radps: f64,
-    ) -> api::safety::SafetyAuthorization {
-        api::safety::SafetyAuthorization {
-            decision,
-            approved_motion: api::safety::MotionConstraint {
-                linear_x_mps: api::safety::Constraint {
-                    min: -linear_x_mps,
-                    max: linear_x_mps,
-                },
-                angular_z_radps: api::safety::Constraint {
-                    min: -angular_radps,
-                    max: angular_radps,
-                },
-            },
-            reasons: Vec::new(),
-            source_revision: api::safety::SafetySourceRevision {
-                localization: None,
-                map: None,
-            },
-            expires_at_ns: Some(NOW_NS + 1_000_000_000),
-        }
-    }
+    #[test]
+    fn missing_stale_future_and_prior_epoch_component_estops_fail_closed() {
+        let mut latch = EmergencyStopLatch::new(1);
+        latch.set_software(false);
+        let now = LogicalTime::new(2, COMPONENT_ESTOP_STALE_NS + 10);
+        assert!(latch.components_blocked(now));
 
-    fn malformed_safety_authorization() -> api::safety::SafetyAuthorization {
-        api::safety::SafetyAuthorization {
-            decision: api::safety::SafetyDecision::Allow,
-            approved_motion: api::safety::MotionConstraint {
-                linear_x_mps: api::safety::Constraint {
-                    min: 1.0,
-                    max: -1.0,
-                },
-                angular_z_radps: api::safety::Constraint {
-                    min: 0.5,
-                    max: -0.5,
-                },
-            },
-            reasons: Vec::new(),
-            source_revision: api::safety::SafetySourceRevision {
-                localization: None,
-                map: None,
-            },
-            expires_at_ns: Some(NOW_NS + 1_000_000_000),
-        }
-    }
-
-    fn timed<T>(produced_at_ns: u64, body: T) -> Timed<T> {
-        Timed {
-            body,
-            produced_at_ns,
-        }
+        latch.set_component(0, false, LogicalTime::new(2, 9));
+        assert!(latch.components_blocked(now));
+        latch.set_component(0, false, LogicalTime::new(2, now.time_ns() + 1));
+        assert!(latch.components_blocked(now));
+        latch.set_component(0, false, LogicalTime::new(1, now.time_ns()));
+        assert!(latch.components_blocked(now));
+        latch.set_component(0, false, now);
+        latch.finish_cycle();
+        assert!(!latch.components_blocked(now));
     }
 }

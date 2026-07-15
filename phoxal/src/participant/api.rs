@@ -666,10 +666,17 @@ pub trait SetupContextToolExt {
     /// already open from the launch contract, so a tool does not reparse launch
     /// env or open an unrelated session.
     fn raw_bus(&self) -> Bus;
+
+    /// Clone the logical clock owned by the participant runner.
+    fn clock(&self) -> std::sync::Arc<dyn crate::participant::clock::ClockSource>;
 }
 
 impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
     fn raw_bus(&self) -> Bus {
         self.bus().clone()
+    }
+
+    fn clock(&self) -> std::sync::Arc<dyn crate::participant::clock::ClockSource> {
+        self.clock_source()
     }
 }

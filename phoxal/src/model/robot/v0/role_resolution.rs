@@ -116,7 +116,6 @@ pub fn resolve_roles(
         Role::Localization,
         Role::Mapping,
         Role::Traversability,
-        Role::Safety,
         Role::Odometry,
     ] {
         if role_to_explicit_capabilities.contains_key(&role) {
@@ -170,7 +169,7 @@ fn role_matches_capability(role: Role, capability: &Capability) -> bool {
                 | Capability::Gnss(_)
                 | Capability::Imu(_)
         ),
-        Role::Mapping | Role::Traversability | Role::Safety => matches!(
+        Role::Mapping | Role::Traversability => matches!(
             capability,
             Capability::Range(_) | Capability::Depth(_) | Capability::Lidar(_)
         ),

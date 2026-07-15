@@ -39,7 +39,7 @@ the only source of keys, and the wire body never appears in the key
 [`phoxal-bus/src/topic.rs`](../phoxal-bus/src/topic.rs)).
 
 - Domain streams: `<vN>/<domain>/<stream>` (e.g. `v1/drive/state`, `v1/drive/target`,
-  `v1/safety/authorization`, `v1/mission/state`), built as `api::topic::new().drive().state()`.
+  `v1/motion/state`, `v1/navigation/state`), built as `api::topic::new().drive().state()`.
 - Domain queries: a single `<vN>/<domain>/<query>` key carrying request + response
   bodies (e.g. `v1/frame/lookup`, `v1/map/submap`, `v1/asset/get`).
 - Per-instance component capabilities:

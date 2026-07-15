@@ -1,8 +1,8 @@
 # Contract Discipline
 
 The cross-cutting rules every contract in the `phoxal_api` tree follows.
-The per-domain contracts (the actual payload/query bodies for drive, safety, map,
-mission, perception, localize, sensor capabilities, …) are all declared in one
+The per-domain contracts (the actual payload/query bodies for drive, motion,
+navigation, map, perception, localize, sensor capabilities, …) are all declared in one
 `phoxal_api_tree!` invocation in [`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs);
 this file is the shared discipline they obey.
 
@@ -25,7 +25,7 @@ The graph is compatible **per contract** by exact version-qualified name
 identity (D1), not by a wire-shape hash.
 
 - API versions are conventional **`vN` modules** in the `phoxal-api` crate -
-  stable `phoxal_api::v1` and preview `phoxal_api::v2` - each with a zero-variant marker
+  current production `phoxal_api::v1` and preview `phoxal_api::v2` - each with a zero-variant marker
   `enum Api {}` implementing `ApiVersion { const ID }` (the canonical version
   string, `"v1"`).
 - Contract bodies are **version-local plain serde structs/enums**
@@ -37,9 +37,9 @@ identity (D1), not by a wire-shape hash.
 - One macro - **`phoxal_api_tree!`** (in `phoxal-macros`) - owns the whole tree:
   the version modules, the bodies, the topic keys, the pub/sub vs query
   kind, and the api-local `topic` builders.
-- There is no `extends` or inheritance between versions. `v1` is frozen. `v2`
-  is the one evolving preview surface and accumulates new or changed contracts
-  in place until the version is ready to freeze.
+- There is no `extends` or inheritance between versions. `v1` is the current
+  production identity and changes directly during pre-stability simplification.
+  `v2` is the one evolving preview surface.
 
 ## Wire body and metadata placement
 
@@ -61,8 +61,7 @@ The version is part of the contract's topic key.
 - A body **may** carry an additional, explicitly named time field only when it
   denotes a different instant than produce time - `measured_at_ns` (sensor sample),
   `expires_at_ns` (when something lapses).
-  Several capability `Sample` bodies and `safety::SafetyAuthorization` already do
-  this.
+  Several capability `Sample` bodies already do this.
 - Query request/response bodies carry no produce-time field; a query response that
   needs a time names it explicitly.
 
@@ -80,14 +79,13 @@ version.
 State variants and failure reasons are typed enums, not strings.
 
 - A "why" field (`reason`, `stop_reason`, a reason `code`) is a closed-set enum the
-  framework owns, as with `drive::StopReason`, `safety::SafetyReasonCode`, and
-  `plan::Refusal`.
+  framework owns, as with `drive::StopReason` and `navigation::RefusalReason`.
   A bare `String` is not an acceptable reason for a degraded, stopped, refused, or
   error state.
 - A reason field is present only when consumers branch on it.
   If the variant alone drives behavior, no reason is added.
 - Human-readable explanatory text lives in an `Option<String> detail` alongside the
-  typed reason (as in `safety::SafetyReason`, `mission::State`, `power::State`),
+  typed reason (as in `navigation::Outcome` and `power::State`),
   never as the primary contract.
 
 ## Query contracts
@@ -119,9 +117,8 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
 
 Stateful products that depend on an upstream map/localization state carry the
 **upstream revision** they were produced under rather than minting their own id.
-Today this is a plain `Option<u64>` field - `plan::Path.map_revision`,
-`follow::Target { map_revision, built_from_localize_revision }`,
-`explore::Frontiers.map_revision`, `map::Revision.revision` - so a consumer can
+Today this is a plain `Option<u64>` field on `navigation::Path` and
+`navigation::Frontier`, linked to `map::Revision.revision`, so a consumer can
 reject or re-query when the linkage does not match the state it holds.
 A richer epoch-scoped revision id is a future contract change, not a current type.
 
@@ -137,11 +134,10 @@ publisher profile, never inflating a control-state topic.
 
 ## API evolution
 
-Stable versions are immutable; `v1` is the current frozen surface. All work for
-the next API goes into `preview version v2 { … }`. Additive and breaking changes
-both edit `v2` in place while it is preview, so ordinary development does not
-mint `v3`, `v4`, and so on. Once the complete `v2` surface is accepted it is
-promoted and frozen; only then does later breaking work begin in preview `v3`.
+Until the public compatibility boundary is declared, `v1` is version identity,
+not an immutability promise. Breaking changes require coordinated owner-first
+releases and consumer migration. `v2` remains the single preview channel; do not
+mint additional preview generations while it is still evolving.
 
 There is no `extends`: a contract is declared in the version that owns its wire
 identity. Participants may mix `v1` and `v2` contracts field by field during the

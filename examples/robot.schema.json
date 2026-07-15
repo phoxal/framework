@@ -11,6 +11,17 @@
           "description": "Framework-resolved packages: channel, generation ceiling, and the\nunified provider-qualified pins map. Optional; a day-0 robot may omit\nthis section entirely.",
           "$ref": "#/$defs/Artifacts"
         },
+        "behavior": {
+          "description": "Authoritative behavior root selected for this robot. Behavior\ndefinitions themselves live under `behaviors/` in the robot root.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BehaviorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "bus": {
           "description": "Bus wiring - listen endpoints and the optional uplink. Never robot\nmodel; participants never parse bus facts from `robot.yaml`.",
           "$ref": "#/$defs/Bus"
@@ -122,6 +133,22 @@
         }
       },
       "additionalProperties": false
+    },
+    "BehaviorConfig": {
+      "type": "object",
+      "properties": {
+        "autostart": {
+          "type": "boolean",
+          "default": false
+        },
+        "root": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "root"
+      ]
     },
     "Bus": {
       "type": "object",
@@ -683,6 +710,25 @@
         }
       ]
     },
+    "MotionLimits": {
+      "description": "Robot-wide planar motion limits enforced independently by `motion` and\n`drive`. These are authored facts, not per-runtime configuration.",
+      "type": "object",
+      "properties": {
+        "max_angular_speed_radps": {
+          "type": "number",
+          "format": "double"
+        },
+        "max_linear_speed_mps": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "max_linear_speed_mps",
+        "max_angular_speed_radps"
+      ]
+    },
     "Parameters": {
       "oneOf": [
         {
@@ -941,6 +987,10 @@
           "description": "The kinematic model (was `motion.kinematic`; the `motion:` wrapper is\ngone - `kinematic` is a direct field of `robot:`).",
           "$ref": "#/$defs/KinematicConfig"
         },
+        "motion_limits": {
+          "description": "Robot-wide planar speed limits. Both `motion` and `drive` enforce these\nindependently so an arbitration defect cannot bypass the actuator\nbackstop.",
+          "$ref": "#/$defs/MotionLimits"
+        },
         "namespace": {
           "description": "The bus namespace (was `identity.namespace`).",
           "type": "string"
@@ -955,7 +1005,8 @@
       "required": [
         "id",
         "namespace",
-        "kinematic"
+        "kinematic",
+        "motion_limits"
       ]
     },
     "Role": {
@@ -964,7 +1015,6 @@
         "localization",
         "mapping",
         "traversability",
-        "safety",
         "odometry",
         "perception"
       ]

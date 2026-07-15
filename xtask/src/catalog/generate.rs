@@ -676,7 +676,7 @@ mod tests {
                 vec![meta_contract("publish", "v1", "drive::Target")],
             ),
             surface(
-                "phoxal/service-mission",
+                "phoxal/service-motion",
                 vec![meta_contract("subscribe", "v1", "drive::Target")],
             ),
         ];
@@ -696,7 +696,7 @@ mod tests {
                 vec![meta_contract("publish", "v1", "drive::Target")],
             ),
             surface(
-                "phoxal/service-mission",
+                "phoxal/service-motion",
                 vec![meta_contract("subscribe", "v2", "drive::Target")],
             ),
         ];
@@ -724,7 +724,7 @@ mod tests {
                 vec![meta_contract("publish", "v1", "drive::Target")],
             ),
             surface(
-                "phoxal/service-mission",
+                "phoxal/service-motion",
                 vec![meta_contract("subscribe", "v2", "drive::Target")],
             ),
         ];

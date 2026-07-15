@@ -6,10 +6,9 @@
 //! SUBSCRIBE side of dynamic per-component topics on the new participant surface.
 //!
 //! Encoder bindings come from the robot model's differential kinematic config
-//! (per-side encoder lists, wheel radius, wheel base); a non-differential model
-//! or non-positive geometry is rejected at setup. Each side's body twist averages
-//! only the wheels with a fresh sample, so a silent encoder reads as stationary
-//! rather than integrating a frozen velocity (see [`ENCODER_STALE_NS`]).
+//! (per-side encoder lists, wheel radius, wheel base). A non-differential model
+//! is explicitly inactive; invalid required differential bindings still fail
+//! setup. Missing or stale samples produce waiting state and no invented pose.
 
 use std::f64::consts::PI;
 
@@ -69,6 +68,7 @@ struct OdometryConfig {
     wheel_base_m: f64,
     left: Vec<EncoderBinding>,
     right: Vec<EncoderBinding>,
+    active: bool,
 }
 
 impl OdometryConfig {
@@ -81,10 +81,13 @@ impl OdometryConfig {
             ..
         } = &robot.manifest.robot.kinematic
         else {
-            bail!(
-                "odometry supports differential kinematics, found {}",
-                robot.manifest.robot.kinematic.variant_label()
-            );
+            return Ok(Self {
+                wheel_radius_m: 0.0,
+                wheel_base_m: 0.0,
+                left: Vec::new(),
+                right: Vec::new(),
+                active: false,
+            });
         };
         if !(wheel_radius_m.is_finite() && *wheel_radius_m > 0.0) {
             bail!("wheel_radius_m must be finite and > 0");
@@ -97,6 +100,7 @@ impl OdometryConfig {
             wheel_base_m: *wheel_base_m,
             left: EncoderBinding::resolve(robot, left_encoders, "left_encoders")?,
             right: EncoderBinding::resolve(robot, right_encoders, "right_encoders")?,
+            active: true,
         })
     }
 }
@@ -117,9 +121,8 @@ struct Odometry {
     yaw_rad: f64,
     left_velocity_radps: Vec<f64>,
     right_velocity_radps: Vec<f64>,
-    // Production time (ns) of each wheel's last encoder sample; 0 = never seen.
-    left_sample_ns: Vec<u64>,
-    right_sample_ns: Vec<u64>,
+    left_sample_at: Vec<Option<LogicalTime>>,
+    right_sample_at: Vec<Option<LogicalTime>>,
 }
 
 #[phoxal::behavior]
@@ -147,8 +150,8 @@ impl Odometry {
             Self {
                 left_velocity_radps: vec![0.0; config.left.len()],
                 right_velocity_radps: vec![0.0; config.right.len()],
-                left_sample_ns: vec![0; config.left.len()],
-                right_sample_ns: vec![0; config.right.len()],
+                left_sample_at: vec![None; config.left.len()],
+                right_sample_at: vec![None; config.right.len()],
                 config,
                 x_m: 0.0,
                 y_m: 0.0,
@@ -164,22 +167,28 @@ impl Odometry {
 
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+        if !self.config.active {
+            return Ok(());
+        }
         drain_encoders(
             &mut api.left_encoders,
             &self.config.left,
             &mut self.left_velocity_radps,
-            &mut self.left_sample_ns,
+            &mut self.left_sample_at,
         );
         drain_encoders(
             &mut api.right_encoders,
             &self.config.right,
             &mut self.right_velocity_radps,
-            &mut self.right_sample_ns,
+            &mut self.right_sample_at,
         );
 
-        let now_ns = step.time().time_ns();
-        let left_radps = average_side(&self.left_velocity_radps, &self.left_sample_ns, now_ns);
-        let right_radps = average_side(&self.right_velocity_radps, &self.right_sample_ns, now_ns);
+        let now = step.time();
+        let left_radps = average_side(&self.left_velocity_radps, &self.left_sample_at, now);
+        let right_radps = average_side(&self.right_velocity_radps, &self.right_sample_at, now);
+        let (Some(left_radps), Some(right_radps)) = (left_radps, right_radps) else {
+            return Ok(());
+        };
         let (linear_x_mps, angular_z_radps) = forward(
             left_radps,
             right_radps,
@@ -219,17 +228,20 @@ fn drain_encoders(
     subscribers: &mut [Subscriber<api::component::encoder::Sample>],
     bindings: &[EncoderBinding],
     velocities: &mut [f64],
-    sample_ns: &mut [u64],
+    sample_at: &mut [Option<LogicalTime>],
 ) {
-    for (((subscriber, binding), velocity), seen_ns) in subscribers
+    for (((subscriber, binding), velocity), seen_at) in subscribers
         .iter_mut()
         .zip(bindings)
         .zip(velocities.iter_mut())
-        .zip(sample_ns.iter_mut())
+        .zip(sample_at.iter_mut())
     {
         while let Some(sample) = subscriber.try_recv() {
             *velocity = f64::from(sample.body.velocity_radps) * f64::from(binding.direction_sign);
-            *seen_ns = sample.metadata.produced_at_ns;
+            *seen_at = Some(LogicalTime::new(
+                sample.metadata.epoch,
+                sample.metadata.produced_at_ns,
+            ));
         }
     }
 }
@@ -238,19 +250,28 @@ fn drain_encoders(
 /// fresh sample (seen at least once and not older than [`ENCODER_STALE_NS`]). A
 /// side with no fresh wheel reads as stationary, so a dead encoder cannot keep
 /// the pose drifting on a frozen velocity.
-fn average_side(velocities: &[f64], sample_ns: &[u64], now_ns: u64) -> f64 {
+fn average_side(
+    velocities: &[f64],
+    sample_at: &[Option<LogicalTime>],
+    now: LogicalTime,
+) -> Option<f64> {
     let mut sum = 0.0;
     let mut fresh = 0u32;
-    for (velocity, seen_ns) in velocities.iter().zip(sample_ns) {
-        if *seen_ns != 0 && now_ns.saturating_sub(*seen_ns) <= ENCODER_STALE_NS {
+    for (velocity, seen_at) in velocities.iter().zip(sample_at) {
+        if seen_at.is_some_and(|at| {
+            at.epoch() == now.epoch()
+                && at.time_ns() <= now.time_ns()
+                && now.time_ns().saturating_sub(at.time_ns()) <= ENCODER_STALE_NS
+        }) && velocity.is_finite()
+        {
             sum += *velocity;
             fresh += 1;
         }
     }
     if fresh == 0 {
-        0.0
+        None
     } else {
-        sum / f64::from(fresh)
+        Some(sum / f64::from(fresh))
     }
 }
 
@@ -291,6 +312,7 @@ mod tests {
     use std::f64::consts::PI;
     use std::path::PathBuf;
 
+    use phoxal::bus::LogicalTime;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::v1 as api;
@@ -348,16 +370,40 @@ mod tests {
     #[test]
     fn average_side_counts_only_fresh_wheels() {
         let now_ns = 10 * ENCODER_STALE_NS;
+        let now = LogicalTime::new(2, now_ns);
         // No wheel ever sampled → stationary.
-        assert_close(average_side(&[3.0, 5.0], &[0, 0], now_ns), 0.0);
+        assert_eq!(average_side(&[3.0, 5.0], &[None, None], now), None);
         // Both fresh → plain mean.
-        let fresh = now_ns - 1;
-        assert_close(average_side(&[3.0, 5.0], &[fresh, fresh], now_ns), 4.0);
+        let fresh = Some(LogicalTime::new(2, now_ns - 1));
+        assert_close(
+            average_side(&[3.0, 5.0], &[fresh, fresh], now).unwrap(),
+            4.0,
+        );
         // One wheel went silent (stale) → average over the fresh wheel only.
-        let stale = now_ns - ENCODER_STALE_NS - 1;
-        assert_close(average_side(&[3.0, 5.0], &[fresh, stale], now_ns), 3.0);
+        let stale = Some(LogicalTime::new(2, now_ns - ENCODER_STALE_NS - 1));
+        assert_close(
+            average_side(&[3.0, 5.0], &[fresh, stale], now).unwrap(),
+            3.0,
+        );
         // Both stale → treated as stationary (no drift on a dead encoder).
-        assert_close(average_side(&[3.0, 5.0], &[stale, stale], now_ns), 0.0);
+        assert_eq!(average_side(&[3.0, 5.0], &[stale, stale], now), None);
+        assert_eq!(
+            average_side(&[f64::NAN, 5.0], &[fresh, fresh], now),
+            Some(5.0)
+        );
+        assert_eq!(average_side(&[f64::INFINITY], &[fresh], now), None);
+        // Future and old-epoch samples must not resurrect after a reset.
+        assert_eq!(
+            average_side(
+                &[3.0, 5.0],
+                &[
+                    Some(LogicalTime::new(2, now_ns + 1)),
+                    Some(LogicalTime::new(1, now_ns)),
+                ],
+                now,
+            ),
+            None
+        );
     }
 
     #[test]

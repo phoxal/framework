@@ -1,17 +1,17 @@
 [package]
-name = "phoxal-service-follow"
-version = "0.19.8"
+name = "phoxal-service-navigation"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official service: follow - pure-pursuit path follower."
+description = "Phoxal official service: lifecycle-aware planning, following, and exploration."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-service-follow"
+name = "phoxal-service-navigation"
 path = "src/main.rs"
 
 [dependencies]
@@ -20,7 +20,7 @@ phoxal-api = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

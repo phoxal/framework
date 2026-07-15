@@ -38,18 +38,27 @@ use capabilities::range::{NativeRange, RangeSpec};
 const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
+const BATTERY_PUBLISH_NS: u64 = 1_000_000_000;
+const FULL_VOLTAGE_V: f64 = 16.8;
+const EMPTY_VOLTAGE_V: f64 = 12.0;
+const DRAW_CURRENT_A: f64 = 2.0;
+const CAPACITY_AH: f64 = 10.0;
 
 #[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 struct WebotsControllerConfig {
     #[serde(default = "default_require_native")]
     require_native: bool,
+    /// Deterministic test/simulation input for every bound component e-stop.
+    #[serde(default)]
+    emergency_stop_engaged: bool,
 }
 
 impl Default for WebotsControllerConfig {
     fn default() -> Self {
         Self {
             require_native: default_require_native(),
+            emergency_stop_engaged: false,
         }
     }
 }
@@ -70,6 +79,8 @@ struct Api {
     cameras: Vec<Publisher<api::component::camera::Frame>>,
     depths: Vec<Publisher<api::component::depth::Frame>>,
     gnss: Vec<Publisher<api::component::gnss::Sample>>,
+    emergency_stops: Vec<Publisher<api::component::emergency_stop::State>>,
+    battery: Publisher<v2::battery::State>,
 }
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
@@ -79,6 +90,10 @@ struct WebotsControllerSimulator {
     step_index: u64,
     backend: Backend,
     motor_specs: Vec<MotorSpec>,
+    emergency_stop_states: Vec<bool>,
+    battery_charge_ratio: f64,
+    last_battery_update: Option<LogicalTime>,
+    last_battery_publish: Option<LogicalTime>,
 }
 
 #[phoxal::behavior]
@@ -95,6 +110,9 @@ impl WebotsControllerSimulator {
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let simulation_clock = ctx
             .subscriber(v2::topic::new().simulation().clock(), 4)
+            .await?;
+        let battery = ctx
+            .publisher(v2::topic::internal::new(cap).battery().state())
             .await?;
 
         let mut motor_commands = Vec::new();
@@ -215,7 +233,25 @@ impl WebotsControllerSimulator {
             );
         }
 
+        let mut emergency_stops = Vec::new();
+        for spec in &catalog.emergency_stops {
+            emergency_stops.push(
+                ctx.publisher(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .emergency_stop(&spec.reference.capability_id)
+                        .state(),
+                )
+                .await?,
+            );
+        }
+
         let backend = Backend::open(&config, &catalog)?;
+        let emergency_stop_states = catalog
+            .emergency_stops
+            .iter()
+            .map(|spec| config.emergency_stop_engaged || spec.engaged)
+            .collect();
         tracing::info!(
             target: "simulator_webots_controller",
             webots_runtime_linked = webots_rs::WEBOTS_RUNTIME_LINKED,
@@ -238,6 +274,10 @@ impl WebotsControllerSimulator {
                 step_index: 0,
                 backend,
                 motor_specs: catalog.motors,
+                emergency_stop_states,
+                battery_charge_ratio: 1.0,
+                last_battery_update: None,
+                last_battery_publish: None,
             },
             Self::Api {
                 simulation_clock,
@@ -250,6 +290,8 @@ impl WebotsControllerSimulator {
                 cameras,
                 depths,
                 gnss,
+                emergency_stops,
+                battery,
             },
         ))
     }
@@ -317,7 +359,7 @@ impl WebotsControllerSimulator {
     }
 
     async fn publish_outputs(
-        &self,
+        &mut self,
         api: &Api,
         at: LogicalTime,
         outputs: BackendOutput,
@@ -362,8 +404,71 @@ impl WebotsControllerSimulator {
                 publisher.publish_at(at, sample).await?;
             }
         }
+        for (publisher, engaged) in api.emergency_stops.iter().zip(&self.emergency_stop_states) {
+            publisher
+                .publish_at(
+                    at,
+                    api::component::emergency_stop::State { engaged: *engaged },
+                )
+                .await?;
+        }
+        if let Some(state) = self.battery_state(at) {
+            api.battery.publish_at(at, state).await?;
+        }
         Ok(())
     }
+
+    fn battery_state(&mut self, at: LogicalTime) -> Option<v2::battery::State> {
+        if self
+            .last_battery_update
+            .is_some_and(|previous| previous.epoch() != at.epoch())
+        {
+            self.battery_charge_ratio = 1.0;
+            self.last_battery_publish = None;
+        }
+        if let Some(previous) = self.last_battery_update
+            && at >= previous
+            && at.epoch() == previous.epoch()
+        {
+            self.battery_charge_ratio = discharge(
+                self.battery_charge_ratio,
+                DRAW_CURRENT_A,
+                (at.time_ns() - previous.time_ns()) as f64 / 1_000_000_000.0,
+                CAPACITY_AH,
+            );
+        }
+        self.last_battery_update = Some(at);
+
+        let due = self.last_battery_publish.is_none_or(|previous| {
+            previous.epoch() != at.epoch()
+                || at.time_ns().saturating_sub(previous.time_ns()) >= BATTERY_PUBLISH_NS
+        });
+        if !due {
+            return None;
+        }
+        self.last_battery_publish = Some(at);
+        Some(v2::battery::State {
+            voltage_v: voltage_for(self.battery_charge_ratio, EMPTY_VOLTAGE_V, FULL_VOLTAGE_V)
+                as f32,
+            current_a: if self.battery_charge_ratio > 0.0 {
+                DRAW_CURRENT_A as f32
+            } else {
+                0.0
+            },
+            charge_ratio: self.battery_charge_ratio as f32,
+        })
+    }
+}
+
+fn discharge(ratio: f64, current_a: f64, dt_s: f64, capacity_ah: f64) -> f64 {
+    if ratio <= 0.0 || current_a <= 0.0 || dt_s <= 0.0 || capacity_ah <= 0.0 {
+        return ratio.clamp(0.0, 1.0);
+    }
+    (ratio.clamp(0.0, 1.0) - current_a * (dt_s / 3_600.0) / capacity_ah).clamp(0.0, 1.0)
+}
+
+fn voltage_for(ratio: f64, empty_v: f64, full_v: f64) -> f64 {
+    empty_v + (full_v - empty_v) * ratio.clamp(0.0, 1.0)
 }
 
 fn advance_authoritative_time(current: &mut Option<LogicalTime>, candidate: LogicalTime) -> bool {
@@ -396,6 +501,13 @@ struct CapabilityCatalog {
     cameras: Vec<CameraSpec>,
     depths: Vec<DepthSpec>,
     gnss: Vec<GnssSpec>,
+    emergency_stops: Vec<EmergencyStopSpec>,
+}
+
+#[derive(Clone, Debug)]
+struct EmergencyStopSpec {
+    reference: CapabilityRef,
+    engaged: bool,
 }
 
 impl CapabilityCatalog {
@@ -497,14 +609,26 @@ impl CapabilityCatalog {
                     | Capability::Microphone(_)
                     | Capability::Speaker(_)
                     | Capability::Battery(_)
-                    | Capability::Led(_)
-                    | Capability::EmergencyStop(_) => {
+                    | Capability::Led(_) => {
                         tracing::debug!(
                             target: "simulator_webots_controller",
                             capability = %reference,
                             kind = capability.kind_name(),
                             "capability is intentionally left for a later Webots port slice"
                         );
+                    }
+                    Capability::EmergencyStop(_) => {
+                        let engaged = match simulation_capability {
+                            Some(
+                                phoxal::model::simulation::capability::Capability::EmergencyStop(
+                                    config,
+                                ),
+                            ) => config.engaged,
+                            _ => false,
+                        };
+                        catalog
+                            .emergency_stops
+                            .push(EmergencyStopSpec { reference, engaged });
                     }
                 }
             }
@@ -547,6 +671,7 @@ fn simulation_sampling_rate(
         SimCapability::Mmwave(config) => Some(config.sampling_period_hz),
         SimCapability::Microphone(config) => Some(config.sampling_period_hz),
         SimCapability::Motor(_)
+        | SimCapability::EmergencyStop(_)
         | SimCapability::Speaker
         | SimCapability::Battery
         | SimCapability::Led => None,
@@ -909,6 +1034,8 @@ fn contract_mappings() -> Vec<ContractMapping> {
         mapping::<api::component::camera::Frame>(ContractRole::Publish),
         mapping::<api::component::depth::Frame>(ContractRole::Publish),
         mapping::<api::component::gnss::Sample>(ContractRole::Publish),
+        mapping::<api::component::emergency_stop::State>(ContractRole::Publish),
+        mapping::<v2::battery::State>(ContractRole::Publish),
     ]
 }
 
@@ -926,7 +1053,7 @@ mod tests {
     use phoxal::participant::{Participant, ParticipantApi};
 
     #[test]
-    fn api_declares_the_clock_input_and_nine_component_contracts() {
+    fn api_declares_clock_component_and_battery_contracts() {
         assert_eq!(
             <WebotsControllerSimulator as Participant>::ID,
             "webots-controller"
@@ -947,7 +1074,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             expected.len(),
-            "controller must declare one clock input and 9 component contracts, got {contracts:?}"
+            "controller must declare one clock input, 9 component contracts, and battery state, got {contracts:?}"
         );
         for mapping in &expected {
             assert!(
@@ -1019,5 +1146,14 @@ mod tests {
             LogicalTime::new(1, 0)
         ));
         assert_eq!(current, Some(LogicalTime::new(1, 0)));
+    }
+
+    #[test]
+    fn battery_model_discharges_and_clamps() {
+        assert_eq!(discharge(0.5, 2.0, 0.0, 10.0), 0.5);
+        assert!(discharge(1.0, 2.0, 3_600.0, 10.0) < 1.0);
+        assert_eq!(discharge(0.01, 100.0, 3_600.0, 1.0), 0.0);
+        assert_eq!(voltage_for(0.0, 12.0, 16.8), 12.0);
+        assert_eq!(voltage_for(1.0, 12.0, 16.8), 16.8);
     }
 }

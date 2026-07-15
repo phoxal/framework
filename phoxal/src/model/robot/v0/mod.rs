@@ -17,12 +17,13 @@ pub use driver::{ConnectionConfig, DriverConfig, GpioDirection, GpioPinConfig};
 pub use localize_backend::{
     LocalizeBackendKind, ResolvedLocalizeBackend, resolve_localize_backend,
 };
-pub use motion::KinematicConfig;
+pub use motion::{KinematicConfig, MotionLimits};
 pub use profile::{AutonomyProfileId, AutonomyProfileSpec, autonomy_profile};
 pub use resolver::{ResolvedCapabilityRole, ResolvedFacts, SourceBundle, resolve_source_bundle};
 pub use robot::{
-    ArtifactGitPin, ArtifactPathPin, ArtifactPin, Artifacts, Channel, Robot, RobotSection,
-    Sha256Pin, UserService, ValidationError, VersionPin, is_provider_qualified_pin_key,
+    ArtifactGitPin, ArtifactPathPin, ArtifactPin, Artifacts, BehaviorConfig, Channel, Robot,
+    RobotSection, Sha256Pin, UserService, ValidationError, VersionPin,
+    is_provider_qualified_pin_key,
 };
 pub use role::Role;
 pub use role_resolution::{RoleAssignment, RoleResolution};

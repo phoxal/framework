@@ -114,22 +114,16 @@ mod tests {
 
     /// End-to-end proof (X-tools slice acceptance criteria): build a real
     /// participant, extract its section from the actual built artifact on
-    /// disk, and assert the parsed contracts match what `service/battery/src/main.rs`
-    /// declares (`Api { state: Publisher<api::battery::State> }`), recorded
-    /// as the RESOLVED, SPLIT `version`/`contract` (`"v2"` /
-    /// `"battery::State"` - `battery::State` lives on the standalone `v2`
-    /// version, D1's ground-breaker), not the source-written
-    /// `api::battery::State` (F2-names), and not a joined name (coherence-gate
-    /// design doc §2).
+    /// disk, and assert the simulator-owned battery publisher is present.
     #[test]
-    fn extracts_real_battery_binary_metadata() -> Result<()> {
+    fn extracts_real_webots_controller_battery_metadata() -> Result<()> {
         let workspace = Workspace::discover()?;
-        let package_name = "phoxal-service-battery";
+        let package_name = "phoxal-simulator-webots-controller";
         let status = Command::new("cargo")
             .args(["build", "--quiet", "-p", package_name])
             .current_dir(workspace.root())
             .status()
-            .context("failed to spawn cargo build for phoxal-service-battery")?;
+            .context("failed to spawn cargo build for webots controller")?;
         assert!(status.success(), "cargo build -p {package_name} failed");
 
         let binary_path = workspace
@@ -144,16 +138,12 @@ mod tests {
 
         let meta = extract_participant_metadata(&binary_path)?;
         assert_eq!(meta.participant_api, "Api");
-        assert_eq!(meta.config_schema["type"], "null");
-        assert_eq!(
-            meta.contracts,
-            vec![ParticipantMetaContract {
-                role: "publish".to_string(),
-                version: "v2".to_string(),
-                contract: "battery::State".to_string(),
-                external: false,
-            }]
-        );
+        assert!(meta.contracts.contains(&ParticipantMetaContract {
+            role: "publish".to_string(),
+            version: "v2".to_string(),
+            contract: "battery::State".to_string(),
+            external: false,
+        }));
         Ok(())
     }
 

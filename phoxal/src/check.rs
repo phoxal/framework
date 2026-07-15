@@ -511,7 +511,11 @@ mod tests {
         // is a problem or warning; the bus tolerates both at runtime.
         let participants = vec![
             // Consumes a command nobody in the graph produces.
-            participant("mission", "v1", vec![contract("v1::mission::Command")]),
+            participant(
+                "navigation",
+                "v1",
+                vec![contract("v1::navigation::Request")],
+            ),
             // Offers a query endpoint with no client in the graph.
             participant("asset", "v1", vec![contract("v1::asset::GetRequest")]),
         ];
@@ -795,7 +799,12 @@ mod tests {
     fn coherence_open_world_ok_when_nothing_publishes_in_set() {
         let participants = vec![surface(
             "mission",
-            vec![meta_contract("subscribe", "v1", "mission::Command", false)],
+            vec![meta_contract(
+                "subscribe",
+                "v1",
+                "navigation::Request",
+                false,
+            )],
         )];
 
         assert!(check_coherence(&participants).is_ok());

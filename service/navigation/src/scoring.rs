@@ -3,10 +3,10 @@ use phoxal_api::v1 as api;
 use crate::frontiers::{OccupancyGrid, is_free};
 
 pub(crate) fn score_frontiers(
-    frontiers: Vec<api::explore::Frontier>,
+    frontiers: Vec<api::navigation::Frontier>,
     grid: &OccupancyGrid,
     robot_xy_m: (f64, f64),
-) -> Vec<api::explore::Frontier> {
+) -> Vec<api::navigation::Frontier> {
     let mut scored = frontiers
         .into_iter()
         .filter_map(|mut frontier| {
@@ -74,8 +74,8 @@ mod tests {
         assert!(scored.is_empty());
     }
 
-    fn frontier(x_m: f64, y_m: f64, size: u32) -> api::explore::Frontier {
-        api::explore::Frontier {
+    fn frontier(x_m: f64, y_m: f64, size: u32) -> api::navigation::Frontier {
+        api::navigation::Frontier {
             x_m,
             y_m,
             size,

@@ -72,7 +72,7 @@ Two surfaces, never sharing scenario definitions:
 |---|---|---|
 | 0 | schema, resolution, unit tests | fast contract validation (in `cargo test`) |
 | 1 | headless contract scenarios | service contracts, basic system behavior |
-| 2 | autonomy smoke scenarios | localization/map/plan/follow/safety flow |
+| 2 | autonomy smoke scenarios | localization/map/navigation/motion flow |
 | 3 | full autonomy + deploy preflight | release/deployment confidence |
 | 4 | hardware, log replay, sim-to-real | real-world validation and regression |
 
@@ -84,9 +84,9 @@ required tier; passing a category in isolation is not enough.
 | P0 | infra | boot-contract, readiness-bootstrap, resource-budget | 1 |
 | P1 | proprioception | frame-calibration, odometry | 1 |
 | P2 | spatial core (keystone) | localization, mapping, traversability, revision-convergence | 2 |
-| P3 | safe degraded autonomy | safety (every localization mode), failure-recovery | 2 |
-| P4 | directed navigation | planning, following | 2 |
-| P5 | full autonomy | mission, exploration, perception (when the profile requires it) | 3 |
+| P3 | degraded autonomy | e-stop, stale-input stop, failure-recovery | 2 |
+| P4 | directed navigation | request lifecycle, planning, following | 2 |
+| P5 | full autonomy | behavior service and perception (when the profile requires it) | 3 |
 
 P2 is the keystone: P3-P5 depend on revision-linked map/localize state, so they
 cannot be meaningfully validated until P2 passes as a group.
@@ -94,15 +94,15 @@ cannot be meaningfully validated until P2 passes as a group.
 ## Success-criteria philosophy
 
 A scenario is complete only when it validates several independent facts.
-A navigation scenario, for example, checks that mission accepted the command,
-localization was in an allowed mode, the planner produced a revision-consistent
-path, the follower consumed it, safety authorization stayed valid, drive published
-bounded commands, simulator pose reached tolerance with no disallowed contact, and
+A navigation scenario, for example, checks that navigation accepted the request,
+localization was fresh, the planner produced a revision-consistent path,
+motion selected the candidate, drive published bounded commands, simulator pose
+reached tolerance with no disallowed contact, and
 the products could explain the behavior.
 Moving the robot is not enough.
 
 Scenario failures report the failed service/topic/query, relevant revision ids,
-localization mode, mission state, safety decision, planner/follower state, and
+localization state, navigation outcome, motion arbitration state, and
 simulator truth - actionable without reading raw logs first.
 
 ## Sim-to-real

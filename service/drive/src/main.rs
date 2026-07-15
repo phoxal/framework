@@ -8,20 +8,18 @@
 //! It also publishes `drive/state` (the raw requested target, the limited target,
 //! the actuator authority, and any stop reason).
 //! The per-side motor bindings and wheel geometry are built from the robot model
-//! (D33) and must be differential kinematics, or setup fails.
+//! (D33). Unsupported kinematics make the service explicitly inactive rather
+//! than failing static startup.
 //! With no target, or a target older than the staleness window, it stops the
 //! wheels rather than carrying the last command. On shutdown it makes a
 //! best-effort pass to park every wheel before the bus closes.
 
 use anyhow::{Result, bail};
 use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::robot::v0::KinematicConfig;
+use phoxal::model::robot::v0::{KinematicConfig, MotionLimits};
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::v1 as api;
-
-const MAX_LINEAR_MPS: f64 = 0.6;
-const MAX_ANGULAR_RADPS: f64 = 2.0;
 const TARGET_STALE_NS: u64 = 500_000_000; // 0.5 s
 
 /// Differential-drive inverse kinematics: body twist → wheel angular speeds.
@@ -79,13 +77,15 @@ impl MotorBinding {
 
 /// Typed drive config built from the robot model (D33).
 struct DriveConfig {
-    kinematics: DifferentialDrive,
+    kinematics: Option<DifferentialDrive>,
     left: Vec<MotorBinding>,
     right: Vec<MotorBinding>,
+    limits: MotionLimits,
 }
 
 impl DriveConfig {
     fn from_robot(robot: &Robot) -> Result<Self> {
+        let limits = robot.manifest.robot.motion_limits.validate()?;
         let KinematicConfig::Differential {
             left_actuators,
             right_actuators,
@@ -94,10 +94,12 @@ impl DriveConfig {
             ..
         } = &robot.manifest.robot.kinematic
         else {
-            bail!(
-                "drive supports differential kinematics, found {}",
-                robot.manifest.robot.kinematic.variant_label()
-            );
+            return Ok(Self {
+                kinematics: None,
+                left: Vec::new(),
+                right: Vec::new(),
+                limits,
+            });
         };
         if !(wheel_radius_m.is_finite() && *wheel_radius_m > 0.0) {
             bail!("wheel_radius_m must be finite and > 0");
@@ -106,12 +108,13 @@ impl DriveConfig {
             bail!("wheel_base_m must be finite and > 0");
         }
         Ok(DriveConfig {
-            kinematics: DifferentialDrive {
+            kinematics: Some(DifferentialDrive {
                 wheel_radius_m: *wheel_radius_m,
                 wheel_base_m: *wheel_base_m,
-            },
+            }),
             left: MotorBinding::resolve(robot, left_actuators, "left_actuators")?,
             right: MotorBinding::resolve(robot, right_actuators, "right_actuators")?,
+            limits,
         })
     }
 }
@@ -128,7 +131,7 @@ struct Api {
 struct Drive {
     // Runtime-private typed state (not handles).
     config: DriveConfig,
-    last_target: Option<(api::drive::Target, u64)>,
+    last_target: Option<(api::drive::Target, LogicalTime)>,
 }
 
 #[phoxal::behavior]
@@ -178,14 +181,24 @@ impl Drive {
 
         // Drain inbound targets, keeping the latest + its production time.
         while let Some(received) = api.target.try_recv() {
-            self.last_target = Some((received.body, received.metadata.produced_at_ns));
+            self.last_target = Some((
+                received.body,
+                LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
+            ));
         }
 
-        let (target, limited_target, authority, stop_reason) = self.resolve(now.time_ns());
-        let (left, right) = self.config.kinematics.invert(
-            f64::from(limited_target.linear_x_mps),
-            f64::from(limited_target.angular_z_radps),
-        );
+        let (target, mut limited_target, mut authority, mut stop_reason, target_age_ns) =
+            self.resolve(now);
+        let wheel_targets = self
+            .config
+            .kinematics
+            .and_then(|kinematics| wheel_targets(kinematics, &limited_target));
+        let (left, right) = wheel_targets.unwrap_or((0.0, 0.0));
+        if self.config.kinematics.is_some() && wheel_targets.is_none() {
+            limited_target = stopped_target();
+            authority = api::drive::ActuatorAuthority::Stopped;
+            stop_reason = Some(api::drive::StopReason::ActuatorCommandNotFinite);
+        }
 
         for (publisher, binding) in api.left_motors.iter().zip(&self.config.left) {
             publisher
@@ -205,7 +218,8 @@ impl Drive {
                     target,
                     limited_target,
                     actuator_authority: authority,
-                    stop_reason,
+                    stop_reason: stop_reason.clone(),
+                    target_age_ns,
                 },
             )
             .await?;
@@ -229,46 +243,94 @@ impl Drive {
     /// Resolve the effective (limited) target, stopping on no/stale command.
     fn resolve(
         &self,
-        now_ns: u64,
+        now: LogicalTime,
     ) -> (
         api::drive::Target,
         api::drive::Target,
         api::drive::ActuatorAuthority,
         Option<api::drive::StopReason>,
+        Option<u64>,
     ) {
-        resolve_target(self.last_target.as_ref(), now_ns)
+        if self.config.kinematics.is_none() {
+            let stopped = stopped_target();
+            return (
+                stopped.clone(),
+                stopped,
+                api::drive::ActuatorAuthority::Stopped,
+                Some(api::drive::StopReason::Inactive),
+                self.last_target.as_ref().and_then(|(_, at)| {
+                    (at.epoch() == now.epoch()).then(|| now.time_ns().saturating_sub(at.time_ns()))
+                }),
+            );
+        }
+        resolve_target(self.last_target.as_ref(), self.config.limits, now)
     }
 }
 
 fn resolve_target(
-    last_target: Option<&(api::drive::Target, u64)>,
-    now_ns: u64,
+    last_target: Option<&(api::drive::Target, LogicalTime)>,
+    limits: MotionLimits,
+    now: LogicalTime,
 ) -> (
     api::drive::Target,
     api::drive::Target,
     api::drive::ActuatorAuthority,
     Option<api::drive::StopReason>,
+    Option<u64>,
 ) {
     let stopped = stopped_target();
-    let Some((target, produced_at_ns)) = last_target else {
+    let Some((target, at)) = last_target else {
         return (
             stopped.clone(),
             stopped,
             api::drive::ActuatorAuthority::Stopped,
             Some(api::drive::StopReason::NoTarget),
+            None,
         );
     };
-    if now_ns.saturating_sub(*produced_at_ns) > TARGET_STALE_NS {
+    if at.epoch() != now.epoch() {
+        return (
+            target.clone(),
+            stopped,
+            api::drive::ActuatorAuthority::Stopped,
+            Some(api::drive::StopReason::TargetStale),
+            None,
+        );
+    }
+    if at.time_ns() > now.time_ns() {
+        return (
+            target.clone(),
+            stopped,
+            api::drive::ActuatorAuthority::Stopped,
+            Some(api::drive::StopReason::TargetFromFuture),
+            None,
+        );
+    }
+    let target_age_ns = now.time_ns().saturating_sub(at.time_ns());
+    if target_age_ns > TARGET_STALE_NS {
         return (
             stopped.clone(),
             stopped,
             api::drive::ActuatorAuthority::Stopped,
-            Some(api::drive::StopReason::Fault),
+            Some(api::drive::StopReason::TargetStale),
+            Some(target_age_ns),
+        );
+    }
+    if !(target.linear_x_mps.is_finite()
+        && target.angular_z_radps.is_finite()
+        && target.curvature_limit_radpm.is_none_or(f32::is_finite))
+    {
+        return (
+            target.clone(),
+            stopped,
+            api::drive::ActuatorAuthority::Stopped,
+            Some(api::drive::StopReason::TargetNotFinite),
+            Some(target_age_ns),
         );
     }
     let limited = api::drive::Target {
-        linear_x_mps: clamp_f32(target.linear_x_mps, MAX_LINEAR_MPS),
-        angular_z_radps: clamp_f32(target.angular_z_radps, MAX_ANGULAR_RADPS),
+        linear_x_mps: clamp_f32(target.linear_x_mps, limits.max_linear_speed_mps),
+        angular_z_radps: clamp_f32(target.angular_z_radps, limits.max_angular_speed_radps),
         curvature_limit_radpm: target.curvature_limit_radpm,
     };
     (
@@ -276,6 +338,7 @@ fn resolve_target(
         limited,
         api::drive::ActuatorAuthority::Active,
         None,
+        Some(target_age_ns),
     )
 }
 
@@ -291,6 +354,18 @@ fn command(wheel_radps: f64, direction_sign: i8) -> api::component::motor::Comma
     api::component::motor::Command::Velocity((wheel_radps * f64::from(direction_sign)) as f32)
 }
 
+fn wheel_targets(kinematics: DifferentialDrive, target: &api::drive::Target) -> Option<(f64, f64)> {
+    let (left, right) = kinematics.invert(
+        f64::from(target.linear_x_mps),
+        f64::from(target.angular_z_radps),
+    );
+    (left.is_finite()
+        && right.is_finite()
+        && left.abs() <= f64::from(f32::MAX)
+        && right.abs() <= f64::from(f32::MAX))
+    .then_some((left, right))
+}
+
 fn clamp_f32(value: f32, limit: f64) -> f32 {
     value.clamp(-limit as f32, limit as f32)
 }
@@ -301,11 +376,12 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use phoxal::bus::LogicalTime;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::v1 as api;
 
-    use super::{DifferentialDrive, Drive, DriveConfig, resolve_target};
+    use super::{DifferentialDrive, Drive, DriveConfig, MotionLimits, resolve_target};
     use std::path::PathBuf;
 
     fn fixture() -> PathBuf {
@@ -325,13 +401,27 @@ mod tests {
     }
 
     #[test]
+    fn wheel_command_overflow_fails_closed() {
+        let kinematics = DifferentialDrive {
+            wheel_radius_m: f64::MIN_POSITIVE,
+            wheel_base_m: 0.4,
+        };
+        let target = api::drive::Target {
+            linear_x_mps: 0.6,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        };
+        assert!(super::wheel_targets(kinematics, &target).is_none());
+    }
+
+    #[test]
     fn config_from_robot_resolves_per_side_motors() {
         let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
         let config = DriveConfig::from_robot(&robot).unwrap();
         // The fixture is a 4-wheel differential: 2 motors per side.
         assert_eq!(config.left.len(), 2);
         assert_eq!(config.right.len(), 2);
-        assert!(config.kinematics.wheel_radius_m > 0.0);
+        assert!(config.kinematics.unwrap().wheel_radius_m > 0.0);
         // Each binding resolves to a concrete dynamic motor topic.
         let topic = config.left[0].topic();
         assert!(topic.key().starts_with("v1/component/"));
@@ -346,8 +436,14 @@ mod tests {
             curvature_limit_radpm: Some(0.4),
         };
 
-        let (target, limited_target, authority, stop_reason) =
-            resolve_target(Some(&(requested.clone(), 1_000)), 1_000);
+        let (target, limited_target, authority, stop_reason, _) = resolve_target(
+            Some(&(requested.clone(), LogicalTime::new(0, 1_000))),
+            MotionLimits {
+                max_linear_speed_mps: 0.6,
+                max_angular_speed_radps: 2.0,
+            },
+            LogicalTime::new(0, 1_000),
+        );
 
         assert_eq!(target, requested);
         assert_eq!(limited_target.linear_x_mps, 0.6);

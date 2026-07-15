@@ -2,6 +2,38 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::component::v0::CapabilityRef;
 
+/// Robot-wide planar motion limits enforced independently by `motion` and
+/// `drive`. These are authored facts, not per-runtime configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MotionLimits {
+    pub max_linear_speed_mps: f64,
+    pub max_angular_speed_radps: f64,
+}
+
+impl MotionLimits {
+    pub fn validate(self) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.max_linear_speed_mps.is_finite() && self.max_linear_speed_mps > 0.0,
+            "robot.motion_limits.max_linear_speed_mps must be finite and > 0"
+        );
+        anyhow::ensure!(
+            self.max_linear_speed_mps <= f64::from(f32::MAX),
+            "robot.motion_limits.max_linear_speed_mps must fit in f32"
+        );
+        anyhow::ensure!(
+            self.max_angular_speed_radps.is_finite() && self.max_angular_speed_radps > 0.0,
+            "robot.motion_limits.max_angular_speed_radps must be finite and > 0"
+        );
+        anyhow::ensure!(
+            self.max_angular_speed_radps <= f64::from(f32::MAX),
+            "robot.motion_limits.max_angular_speed_radps must fit in f32"
+        );
+        Ok(self)
+    }
+}
+
 /// The robot's kinematic model - a direct field of `robot:` (was
 /// `motion.kinematic`; the `motion:` wrapper is gone).
 ///

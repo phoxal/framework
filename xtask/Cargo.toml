@@ -18,16 +18,10 @@ object = "0.36"
 # type, not a local re-definition - this crate only owns the object-file
 # section-BYTES extraction (`xtask/src/release/metadata.rs`).
 phoxal = { workspace = true }
-# span-locations: the frozen-version check (xtask/src/api/frozen_version.rs)
-# needs real Span::start()/end() line/column info to slice exact source text
-# for each `phoxal_api_tree!` version block out of two file revisions; off
-# by default in proc-macro2's non-macro ("fallback") mode.
-proc-macro2 = { workspace = true, features = ["span-locations"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 semver = "1"
 sha2 = { workspace = true }
-syn = { workspace = true }
 tar = "0.4.46"
 toml_edit = "0.25.12"
 zstd = "0.13.3"

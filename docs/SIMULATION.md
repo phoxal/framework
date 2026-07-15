@@ -64,9 +64,9 @@ Observed over a bus probe of the live session:
   `odometry/state`; the full sensor set (imu, encoder, camera rgb/depth/mono,
   every ToF range, gnss) published.
 - The complete autonomy graph produced derived state with no unhealthy
-  participants: odometry, frame, joint, localize, perception, plan, motion, drive,
-  follow, mission, map, safety (state + authorization), explore, power, presence,
-  battery.
+  participants: asset, drive, frame, joint, localize, map, motion, navigation,
+  odometry, perception, power, presence, and video. Battery telemetry is owned
+  by the simulator controller rather than a platform service.
 - SIGINT shut the session down cleanly with no orphaned processes.
 
 Observed-readiness and failure propagation (added after the initial record, now

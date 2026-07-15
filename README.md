@@ -2,7 +2,7 @@
 
 The Phoxal robot framework as one coherent workspace: the published `phoxal-bus`
 ABI crate (the typed bus client + contract/addressing primitives), the published
-`phoxal-api` crate (stable `v1` plus evolving preview `v2` contract modules with
+`phoxal-api` crate (current production `v1` plus evolving preview `v2` contract modules with
 version-local wire bodies and topic builders), the published `phoxal` library crate (engine + model)
 and its `phoxal-macros` companion, plus a growing set of unpublished platform
 service binaries (`phoxal-service-<name>`) that ship as deployables.

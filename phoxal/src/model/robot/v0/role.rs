@@ -7,7 +7,6 @@ pub enum Role {
     Localization,
     Mapping,
     Traversability,
-    Safety,
     Odometry,
     Perception,
 }
@@ -19,7 +18,6 @@ impl Role {
             Self::Localization => "localization",
             Self::Mapping => "mapping",
             Self::Traversability => "traversability",
-            Self::Safety => "safety",
             Self::Odometry => "odometry",
             Self::Perception => "perception",
         }
@@ -29,11 +27,7 @@ impl Role {
     pub const fn allows_multiple_capabilities(self) -> bool {
         matches!(
             self,
-            Self::Localization
-                | Self::Mapping
-                | Self::Traversability
-                | Self::Safety
-                | Self::Perception
+            Self::Localization | Self::Mapping | Self::Traversability | Self::Perception
         )
     }
 }
@@ -54,7 +48,6 @@ mod tests {
         assert!(Role::Localization.allows_multiple_capabilities());
         assert!(Role::Mapping.allows_multiple_capabilities());
         assert!(Role::Traversability.allows_multiple_capabilities());
-        assert!(Role::Safety.allows_multiple_capabilities());
         assert!(Role::Perception.allows_multiple_capabilities());
 
         // Single-input roles: one canonical capability per robot.

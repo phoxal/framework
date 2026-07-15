@@ -134,6 +134,30 @@ capabilities:
     }
 
     #[test]
+    fn simulation_parses_emergency_stop_input() -> anyhow::Result<()> {
+        let simulation = Simulation::read_from_string(
+            r#"
+schema: simulation/v0
+capabilities:
+  emergency_stop:
+    kind: emergency_stop
+    engaged: true
+"#,
+        )?;
+
+        assert!(matches!(
+            simulation
+                .as_v0()
+                .expect("supported version")
+                .capabilities
+                .get("emergency_stop"),
+            Some(crate::model::simulation::capability::Capability::EmergencyStop(config))
+                if config.engaged
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn simulation_rejects_invalid_capability_id() {
         let error = Simulation::read_from_string(
             r#"

@@ -48,7 +48,7 @@ use proc_macro::TokenStream;
 /// `phoxal-api` crate (the canonical import is
 /// `use phoxal_api::v1 as api;`), and the generated tree references the bus
 /// ABI floor as `::phoxal_bus`. There is no `extends`; the active preview
-/// version evolves in place until it is promoted and frozen.
+/// version evolves in place until it is promoted.
 ///
 /// # Node grammar
 ///

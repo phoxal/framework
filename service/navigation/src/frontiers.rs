@@ -68,7 +68,7 @@ impl OccupancyGrid {
     }
 }
 
-pub(crate) fn detect_frontiers(grid: &OccupancyGrid) -> Vec<api::explore::Frontier> {
+pub(crate) fn detect_frontiers(grid: &OccupancyGrid) -> Vec<api::navigation::Frontier> {
     let Some(cell_count) = cell_count(grid.width, grid.height) else {
         return Vec::new();
     };
@@ -150,7 +150,7 @@ fn collect_component(
     points
 }
 
-fn frontier_from_points(points: Vec<(f64, f64)>) -> Option<api::explore::Frontier> {
+fn frontier_from_points(points: Vec<(f64, f64)>) -> Option<api::navigation::Frontier> {
     if points.is_empty() {
         return None;
     }
@@ -163,7 +163,7 @@ fn frontier_from_points(points: Vec<(f64, f64)>) -> Option<api::explore::Frontie
     }
     let size = points.len() as u32;
     let count = f64::from(size);
-    Some(api::explore::Frontier {
+    Some(api::navigation::Frontier {
         x_m: sum_x / count,
         y_m: sum_y / count,
         size,

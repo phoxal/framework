@@ -17,7 +17,7 @@ use phoxal::raw::{
     Bus, BusConfig, BusMetadata, Codec, LogicalTime, MessagePack, OwnerCap, Publisher, Source,
     Subscriber, encoding_string,
 };
-use phoxal_api::v2;
+use phoxal_api::{v1, v2};
 use serial_test::serial;
 use zenoh::bytes::{Encoding, ZBytes};
 
@@ -106,5 +106,76 @@ async fn v2_process_subscription_counts_a_malformed_payload_as_a_decode_error() 
         "a payload that fails to decode must never be delivered to the subscriber"
     );
 
+    bus.close().await.expect("bus should close");
+}
+
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v1_behavior_event_subscription_counts_a_malformed_payload() {
+    let bus = Bus::open(BusConfig::in_process("test/behavior-decode", "robot"))
+        .await
+        .expect("bus should open");
+    let topic = v1::topic::new().behavior().event();
+    let subscriber = Subscriber::<v1::behavior::Event>::new(&bus, &topic, 8)
+        .await
+        .expect("subscription should declare");
+    let owner = v1::topic::internal::new(OwnerCap::__mint())
+        .behavior()
+        .event();
+    let publisher = Publisher::<v1::behavior::Event>::new(bus.clone(), &owner)
+        .expect("owner publisher should attach");
+    let good = v1::behavior::Event {
+        sequence: 1,
+        execution_id: Some("execution-1".to_string()),
+        request_id: Some(v1::behavior::RequestId {
+            value: "request-1".to_string(),
+        }),
+        behavior_id: Some("system.root".to_string()),
+        content_hash: Some("sha256:test".to_string()),
+        node_path: None,
+        kind: v1::behavior::EventKind::RequestAccepted,
+        failure: None,
+        participant_id: "behavior".to_string(),
+        logical_time_ns: 1,
+    };
+    publisher
+        .publish_at(LogicalTime::new(0, 1), good.clone())
+        .await
+        .expect("good sample should publish");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), subscriber.recv())
+            .await
+            .expect("good sample timeout")
+            .expect("good sample receive")
+            .body,
+        good
+    );
+
+    let full_key = bus.full_key(topic.key());
+    let metadata = BusMetadata {
+        codec: MessagePack::ID.as_u8(),
+        produced_at_ns: 2,
+        epoch: 0,
+        source: Source {
+            participant: "malformed-injector".to_string(),
+            incarnation: 0,
+            sequence: 0,
+        },
+    };
+    bus.session()
+        .put(full_key.as_str(), ZBytes::from(vec![0xc1u8, 0xc1, 0xc1]))
+        .encoding(Encoding::from(encoding_string(MessagePack::ID)))
+        .attachment(metadata.encode())
+        .await
+        .expect("raw malformed put should enqueue");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while bus.health().decode_errors.load(Ordering::Relaxed) == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "malformed behavior event was not counted before the deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(subscriber.try_recv().is_none());
     bus.close().await.expect("bus should close");
 }

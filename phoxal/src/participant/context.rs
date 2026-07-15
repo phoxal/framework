@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::bus::{LogicalTime, OwnerCap};
 use crate::model::v0::Robot;
+use crate::participant::clock::ClockSource;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::Bus;
 
@@ -17,6 +18,7 @@ use phoxal_bus::Bus;
 /// enforces.
 pub struct SetupContext<R> {
     bus: Bus,
+    clock: Arc<dyn ClockSource>,
     owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
     robot_root: Option<PathBuf>,
@@ -32,6 +34,7 @@ pub struct SetupContext<R> {
 impl<R> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
+        clock: Arc<dyn ClockSource>,
         owner_cap: OwnerCap,
         robot: Option<Arc<Robot>>,
         robot_root: Option<PathBuf>,
@@ -39,6 +42,7 @@ impl<R> SetupContext<R> {
     ) -> Self {
         SetupContext {
             bus,
+            clock,
             owner_cap,
             robot,
             robot_root,
@@ -108,6 +112,12 @@ impl<R> SetupContext<R> {
     /// tool-only [`Self::raw_bus`] accessor.
     pub(crate) fn bus(&self) -> &Bus {
         &self.bus
+    }
+
+    /// Clone the runner-owned logical clock so privileged raw-bus tools can
+    /// stamp messages in the active real or simulation time domain.
+    pub(crate) fn clock_source(&self) -> Arc<dyn ClockSource> {
+        Arc::clone(&self.clock)
     }
 
     /// The runner-minted owner capability (plan #00 L2). In-crate accessor the

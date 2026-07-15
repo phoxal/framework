@@ -3,6 +3,7 @@
 //! to wire-`Detection` conversion (including the local-to-map frame
 //! transform when localization is fresh and confident).
 
+use phoxal::bus::LogicalTime;
 use phoxal_api::v1 as api;
 
 use crate::detector::RawDetection;
@@ -11,7 +12,7 @@ use crate::sensors::SensorBinding;
 #[derive(Clone)]
 pub(crate) struct FrameSample<B> {
     pub(crate) body: B,
-    pub(crate) produced_at_ns: u64,
+    pub(crate) at: LogicalTime,
 }
 
 #[derive(Default)]
@@ -35,15 +36,15 @@ impl HealthState {
 
 pub(crate) fn latest_fresh_camera_index<B>(
     samples: &[Option<FrameSample<B>>],
-    now_ns: u64,
+    now: LogicalTime,
     stale_ns: u64,
 ) -> Option<usize> {
     samples
         .iter()
         .enumerate()
         .filter_map(|(index, sample)| sample.as_ref().map(|sample| (index, sample)))
-        .filter(|(_, sample)| now_ns.saturating_sub(sample.produced_at_ns) <= stale_ns)
-        .max_by_key(|(_, sample)| sample.produced_at_ns)
+        .filter(|(_, sample)| sample_is_fresh(sample, now, stale_ns))
+        .max_by_key(|(_, sample)| sample.at.time_ns())
         .map(|(index, _)| index)
 }
 
@@ -51,7 +52,7 @@ pub(crate) fn latest_matching_depth(
     depth_sources: &[SensorBinding],
     samples: &[Option<FrameSample<api::component::depth::Frame>>],
     component_id: &str,
-    now_ns: u64,
+    now: LogicalTime,
     depth_stale_ns: u64,
 ) -> Option<FrameSample<api::component::depth::Frame>> {
     depth_sources
@@ -59,22 +60,28 @@ pub(crate) fn latest_matching_depth(
         .zip(samples)
         .filter(|(source, _)| source.component_id == component_id)
         .filter_map(|(_, sample)| sample.as_ref())
-        .filter(|sample| now_ns.saturating_sub(sample.produced_at_ns) <= depth_stale_ns)
-        .max_by_key(|sample| sample.produced_at_ns)
+        .filter(|sample| sample_is_fresh(sample, now, depth_stale_ns))
+        .max_by_key(|sample| sample.at.time_ns())
         .cloned()
 }
 
 pub(crate) fn fresh_localization(
     sample: &Option<FrameSample<api::localize::LocalizationState>>,
-    now_ns: u64,
+    now: LogicalTime,
     localization_stale_ns: u64,
     min_localization_confidence: f32,
 ) -> Option<&api::localize::LocalizationState> {
     let sample = sample.as_ref()?;
-    if now_ns.saturating_sub(sample.produced_at_ns) > localization_stale_ns {
+    if !sample_is_fresh(sample, now, localization_stale_ns) {
         return None;
     }
     (sample.body.confidence >= min_localization_confidence).then_some(&sample.body)
+}
+
+fn sample_is_fresh<B>(sample: &FrameSample<B>, now: LogicalTime, stale_ns: u64) -> bool {
+    sample.at.epoch() == now.epoch()
+        && sample.at.time_ns() <= now.time_ns()
+        && now.time_ns().saturating_sub(sample.at.time_ns()) <= stale_ns
 }
 
 pub(crate) fn detection_from_raw(

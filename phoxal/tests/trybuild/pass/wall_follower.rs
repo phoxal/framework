@@ -91,6 +91,7 @@ impl WallFollower {
                     limited_target: odometry.target,
                     actuator_authority: v1::drive::ActuatorAuthority::Active,
                     stop_reason: None,
+                    target_age_ns: Some(0),
                 },
             )
             .await?;

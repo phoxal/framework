@@ -301,10 +301,10 @@ where
 {
     let schedule = R::__step_schedule();
     let (scheduler, clock_handle) = step_scheduler_for(launch.clock, schedule, clock.now());
-    let effective_clock = match &scheduler {
+    let effective_clock = Arc::new(match &scheduler {
         AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
         AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
-    };
+    });
     // Subscribe before setup so every lifecycle heartbeat uses the effective
     // clock domain and the simulation clock can advance while setup runs.
     let clock_feed = clock_handle
@@ -317,7 +317,7 @@ where
     let result = run_lifecycle_inner::<R, C, S>(
         bus,
         launch,
-        &effective_clock,
+        Arc::clone(&effective_clock),
         scheduler,
         schedule,
         shutdown,
@@ -361,7 +361,7 @@ impl<C: ClockSource> ClockSource for RunnerClock<C> {
 async fn run_lifecycle_inner<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
-    clock: &RunnerClock<C>,
+    clock: Arc<RunnerClock<C>>,
     scheduler: AnyStepScheduler,
     schedule: Option<StepSchedule>,
     shutdown: S,
@@ -391,6 +391,7 @@ where
     // `api::topic::internal::new(cap)`). The runner is the only minter.
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
+        Arc::clone(&clock) as Arc<dyn ClockSource>,
         ::phoxal_bus::OwnerCap::__mint(),
         robot,
         launch.robot_root.clone(),
@@ -486,7 +487,7 @@ where
         &mut participant,
         &mut api,
         bus,
-        clock,
+        clock.as_ref(),
         &scheduler,
         schedule,
         &committed,
