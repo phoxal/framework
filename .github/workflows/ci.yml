@@ -75,18 +75,15 @@ jobs:
   # bounds). That end-to-end check belongs in an integration context once the
   # framework is published and the CLI consumes released versions; see the
   # schema/validation plan under `organization/tmp`. `ci`/`rust-ci.yml` above
-  # already builds/tests/lints `hello-rover-cruise` as an ordinary workspace
-  # default-member.
+  # covers the framework workspace. The hello-rover manifest remains the
+  # schema-drift fixture after removal of its obsolete cruise service.
   examples:
-    name: hello-rover example (schema guard + user service)
+    name: hello-rover example (schema guard)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Compile the hello-rover example user service
-        run: cargo build -p hello-rover-cruise
 
       - name: Run the robot.yaml schema drift guard
         run: cargo test -p phoxal --lib schema_guard
