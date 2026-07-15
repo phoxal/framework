@@ -223,6 +223,18 @@ impl Robot {
     }
 
     pub(crate) fn validate_numerics(&self, validation_errors: &mut Vec<ValidationError>) {
+        if !is_valid_motion_limit(self.robot.motion_limits.max_linear_speed_mps) {
+            validation_errors.push(ValidationError::InvalidMotionLimit {
+                field: "max_linear_speed_mps".to_string(),
+                message: "must be finite and > 0".to_string(),
+            });
+        }
+        if !is_valid_motion_limit(self.robot.motion_limits.max_angular_speed_radps) {
+            validation_errors.push(ValidationError::InvalidMotionLimit {
+                field: "max_angular_speed_radps".to_string(),
+                message: "must be finite and > 0".to_string(),
+            });
+        }
         for (component_id, component) in &self.robot.components {
             for (capability_id, parameters) in &component.parameters {
                 match parameters {
@@ -287,6 +299,10 @@ fn validate_capability_ref_list(
 
 fn is_valid_positive_f64(value: f64) -> bool {
     value.is_finite() && value > f64::EPSILON
+}
+
+fn is_valid_motion_limit(value: f64) -> bool {
+    is_valid_positive_f64(value) && value <= f64::from(f32::MAX)
 }
 
 fn invalid_kinematic(field: &str, message: &str) -> ValidationError {

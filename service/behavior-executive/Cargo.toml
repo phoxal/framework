@@ -1,26 +1,27 @@
 [package]
-name = "phoxal-service-battery"
-version = "0.19.8"
+name = "phoxal-service-behavior-executive"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official service: battery - simulated battery-state monitor (preview v2)."
+description = "Phoxal official service: deterministic robot behavior execution."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-service-battery"
+name = "phoxal-service-behavior-executive"
 path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true }
 phoxal-api = { workspace = true }
 anyhow = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

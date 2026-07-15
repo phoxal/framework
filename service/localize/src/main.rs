@@ -25,7 +25,7 @@ struct Api {
 #[phoxal::service(id = "localize", config = ())]
 struct Localize {
     // Runtime-private typed state (not handles).
-    last_odometry: Option<(api::odometry::State, u64)>,
+    last_odometry: Option<(api::odometry::State, LogicalTime)>,
 }
 
 #[phoxal::behavior]
@@ -53,21 +53,58 @@ impl Localize {
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         while let Some(received) = api.odometry.try_recv() {
-            self.last_odometry = Some((received.body, received.metadata.produced_at_ns));
+            self.last_odometry = Some((
+                received.body,
+                LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
+            ));
         }
 
-        // Until the first odometry fix, publish nothing so downstream runtimes do
-        // not mistake a fabricated origin pose for a valid localization estimate.
-        let Some((odometry, produced_at_ns)) = &self.last_odometry else {
+        let now = step.time();
+        if !odometry_is_usable(self.last_odometry.as_ref(), now)? {
             return Ok(());
-        };
+        }
 
-        let confidence = confidence_for(step.time().time_ns().saturating_sub(*produced_at_ns));
+        // The input gate proves a real, finite, fresh odometry sample exists;
+        // publish nothing otherwise so consumers never see a fabricated origin.
+        let (odometry, produced_at) = self
+            .last_odometry
+            .as_ref()
+            .expect("usable odometry requires a sample");
+
+        let confidence = confidence_for(now.time_ns().saturating_sub(produced_at.time_ns()));
         api.state
             .publish_at(step.time(), localization_from(odometry, confidence))
             .await?;
         Ok(())
     }
+}
+
+fn odometry_is_usable(
+    sample: Option<&(api::odometry::State, LogicalTime)>,
+    now: LogicalTime,
+) -> Result<bool> {
+    match sample {
+        None => Ok(false),
+        Some((_, produced_at)) if produced_at.epoch() != now.epoch() => Ok(false),
+        Some((_, produced_at)) if produced_at.time_ns() > now.time_ns() => Ok(false),
+        Some((_, produced_at))
+            if now.time_ns().saturating_sub(produced_at.time_ns()) > LOCALIZE_STALE_NS =>
+        {
+            Ok(false)
+        }
+        Some((odometry, _)) if !odometry_is_finite(odometry) => {
+            anyhow::bail!("odometry sample contains a non-finite value")
+        }
+        Some(_) => Ok(true),
+    }
+}
+
+fn odometry_is_finite(state: &api::odometry::State) -> bool {
+    state.x_m.is_finite()
+        && state.y_m.is_finite()
+        && state.yaw_rad.is_finite()
+        && state.linear_x_mps.is_finite()
+        && state.angular_z_radps.is_finite()
 }
 
 fn confidence_for(age_ns: u64) -> f32 {
@@ -93,11 +130,14 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use phoxal::bus::LogicalTime;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::v1 as api;
 
-    use super::{LOCALIZE_STALE_NS, Localize, confidence_for, localization_from};
+    use super::{
+        LOCALIZE_STALE_NS, Localize, confidence_for, localization_from, odometry_is_usable,
+    };
 
     #[test]
     fn confidence_decays_with_age() {
@@ -123,6 +163,39 @@ mod tests {
         assert_eq!(localization.y_m, odometry.y_m);
         assert_eq!(localization.yaw_rad, odometry.yaw_rad);
         assert_eq!(localization.confidence, 0.42);
+    }
+
+    #[test]
+    fn odometry_gate_rejects_unavailable_stale_future_and_invalid_samples() {
+        let state = |x_m| api::odometry::State {
+            x_m,
+            y_m: 0.0,
+            yaw_rad: 0.0,
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+        };
+        let now = LogicalTime::new(2, LOCALIZE_STALE_NS + 10);
+        assert!(!odometry_is_usable(None, now).unwrap());
+        assert!(odometry_is_usable(Some(&(state(0.0), LogicalTime::new(2, 10))), now).unwrap());
+        assert!(!odometry_is_usable(Some(&(state(0.0), LogicalTime::new(2, 9))), now).unwrap());
+        assert!(
+            !odometry_is_usable(
+                Some(&(state(0.0), LogicalTime::new(2, now.time_ns() + 1))),
+                now
+            )
+            .unwrap()
+        );
+        assert!(
+            !odometry_is_usable(Some(&(state(0.0), LogicalTime::new(1, now.time_ns()))), now)
+                .unwrap()
+        );
+        assert!(
+            odometry_is_usable(
+                Some(&(state(f64::NAN), LogicalTime::new(2, now.time_ns()))),
+                now
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -118,13 +118,10 @@
 //! key. Under the CURRENT model that capability is redundant, so it is
 //! deliberately not implemented:
 //!
-//! - A released (non-`preview`) `version` span is immutable by policy, enforced by
-//!   the release-PR frozen-version check (`xtask/src/api/frozen_version.rs`):
-//!   it diffs the exact DSL source text against the last release tag and fails the
-//!   PR if a single byte of a frozen span moved. Renaming an identifier inside a
-//!   frozen span is exactly the kind of edit that check exists to block - a
-//!   `rename` attribute could not legally be added there anyway, so it buys
-//!   nothing for released contracts.
+//! - A production `version` span has an explicit wire identity. During the
+//!   pre-stability simplification it can change directly through coordinated
+//!   owner-first releases and consumer migration; a `rename` attribute would
+//!   hide that contract change rather than simplify it.
 //! - A `preview` span carries no immutability promise at all: every identifier in
 //!   it, including node/leaf names, can be edited freely with no external
 //!   consumer to break, so there is no window where a Rust name and a wire name
@@ -455,7 +452,7 @@ impl ApiTree {
         }
 
         // Versions never inherit or overlay one another. Preview versions may
-        // be edited in place until promotion; stable spans are frozen.
+        // be edited in place until promotion; production spans stay explicit.
         for (index, version) in self.versions.iter().enumerate() {
             if !seen_names.insert(version.name.to_string()) {
                 return Err(syn::Error::new_spanned(
@@ -652,7 +649,7 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
             "Preview API version `{id}`. This final-path module is available only with the `{feature_name}` Cargo feature."
         )
     } else {
-        format!("Stable API version `{id}` - version-local wire bodies + topics.")
+        format!("Production API version `{id}` - version-local wire bodies + topics.")
     };
 
     Ok(quote! {

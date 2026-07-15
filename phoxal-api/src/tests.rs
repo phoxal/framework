@@ -9,7 +9,7 @@ use crate::{ApiVersion, ContractBody};
 use phoxal_bus::TopicRole;
 
 #[test]
-fn v1_is_the_stable_api_version() {
+fn v1_is_the_current_production_api_version() {
     assert_eq!(<api::Api as ApiVersion>::ID, "v1");
     const { assert!(!<api::Api as ApiVersion>::IS_PREVIEW) };
 }
@@ -25,16 +25,8 @@ fn contract_body_topic_is_version_qualified() {
         "v1/drive/target"
     );
     assert_eq!(
-        <api::safety::Status as ContractBody>::TOPIC,
-        "v1/safety/state"
-    );
-    assert_eq!(
-        <api::safety::SafetyAuthorization as ContractBody>::TOPIC,
-        "v1/safety/authorization"
-    );
-    assert_eq!(
-        <api::mission::State as ContractBody>::TOPIC,
-        "v1/mission/state"
+        <api::navigation::State as ContractBody>::TOPIC,
+        "v1/navigation/state"
     );
     assert_eq!(
         <api::joint::JointState as ContractBody>::TOPIC,
@@ -260,6 +252,7 @@ fn body_round_trips_through_messagepack() {
         },
         actuator_authority: api::drive::ActuatorAuthority::Active,
         stop_reason: None,
+        target_age_ns: Some(10),
     };
     let bytes = rmp_serde::to_vec_named(&state).unwrap();
     let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
@@ -267,40 +260,88 @@ fn body_round_trips_through_messagepack() {
 }
 
 #[test]
-fn v1_domain_bodies_round_trip_through_messagepack() {
-    let authorization = api::safety::SafetyAuthorization {
-        decision: api::safety::SafetyDecision::Slow,
-        approved_motion: api::safety::MotionConstraint {
-            linear_x_mps: api::safety::Constraint {
-                min: -0.1,
-                max: 0.1,
-            },
-            angular_z_radps: api::safety::Constraint {
-                min: -0.5,
-                max: 0.5,
-            },
+fn behavior_navigation_and_safety_v1_wire_shapes_are_golden() {
+    let request = api::behavior::Request {
+        request_id: api::behavior::RequestId {
+            value: "req-7".to_string(),
         },
-        reasons: vec![api::safety::SafetyReason {
-            code: api::safety::SafetyReasonCode::BatteryLow,
-            detail: Some("pack below low threshold".to_string()),
-        }],
-        source_revision: api::safety::SafetySourceRevision {
-            localization: Some(7),
-            map: Some(9),
-        },
-        expires_at_ns: Some(42),
+        behavior_id: "navigation.return_to_dock".to_string(),
+        args: std::collections::BTreeMap::new(),
+        priority: 9,
+        conflict_policy: api::behavior::ConflictPolicy::Queue,
     };
-    round_trip(&authorization);
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({
+            "request_id": {"value": "req-7"},
+            "behavior_id": "navigation.return_to_dock",
+            "args": {},
+            "priority": 9,
+            "conflict_policy": "queue"
+        })
+    );
+    round_trip(&request);
 
-    round_trip(&api::mission::State {
-        phase: api::mission::Phase::Active,
-        goal: Some(api::mission::Goal {
-            x_m: 1.0,
-            y_m: 2.0,
-            yaw_rad: Some(0.25),
-        }),
-        detail: None,
-    });
+    let navigation = api::navigation::Result {
+        request_id: api::navigation::RequestId {
+            value: "nav-1".to_string(),
+        },
+        outcome: api::navigation::Outcome::Failed(api::navigation::FailureReason::Blocked),
+    };
+    assert_eq!(
+        serde_json::to_value(&navigation).unwrap(),
+        serde_json::json!({
+            "request_id": {"value": "nav-1"},
+            "outcome": {"Failed": "blocked"}
+        })
+    );
+    round_trip(&navigation);
+
+    let constraint = api::safety::Constraint {
+        reason: api::safety::ConstraintReason::ObstacleProximity,
+        source: api::safety::ConstraintSource {
+            kind: api::safety::ConstraintSourceKind::Range,
+            participant_id: "safety".to_string(),
+            component_id: Some("front".to_string()),
+            capability_id: Some("range".to_string()),
+        },
+        stop: true,
+        max_linear_speed_mps: None,
+        max_angular_speed_radps: None,
+        observed_value: Some(0.1),
+        valid_from_ns: 100,
+        expires_at_ns: 400,
+    };
+    let safety = api::safety::MotionConstraints {
+        sequence: 3,
+        stop: true,
+        max_linear_speed_mps: None,
+        max_angular_speed_radps: None,
+        constraints: vec![constraint],
+        expires_at_ns: 400,
+    };
+    let safety_json = serde_json::to_value(&safety).unwrap();
+    assert_eq!(
+        safety_json["constraints"][0]["reason"],
+        "obstacle_proximity"
+    );
+    assert_eq!(safety_json["constraints"][0]["source"]["kind"], "range");
+    round_trip(&safety);
+}
+
+#[test]
+fn behavior_navigation_and_safety_v1_reject_malformed_payloads() {
+    let corrupt = [0xc1u8, 0xc1, 0xc1];
+    assert!(rmp_serde::from_slice::<api::behavior::Event>(&corrupt).is_err());
+    let wrong =
+        rmp_serde::to_vec_named(&api::motion::EmergencyStopRequest { engaged: true }).unwrap();
+    assert!(rmp_serde::from_slice::<api::behavior::Snapshot>(&wrong).is_err());
+    assert!(rmp_serde::from_slice::<api::navigation::Request>(&wrong).is_err());
+    assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&wrong).is_err());
+}
+
+#[test]
+fn v1_domain_bodies_round_trip_through_messagepack() {
     round_trip(&api::joint::JointState {
         position_rad: 1.0,
         velocity_radps: 0.2,
@@ -320,13 +361,42 @@ fn v1_domain_bodies_round_trip_through_messagepack() {
         detail: None,
     });
     round_trip(&api::motion::State {
-        active_source: Some(api::motion::MotionSource::Manual),
-        selected: Some(api::motion::Target {
+        manual_candidate_age_ns: Some(10),
+        autonomous_candidate_age_ns: None,
+        safety_constraints_age_ns: Some(5),
+        selected_source: Some(api::motion::Source::Manual),
+        final_target: api::motion::Target {
             linear_x_mps: 0.1,
             angular_z_radps: 0.2,
             curvature_limit_radpm: None,
-        }),
-        reason: None,
+        },
+        zero_reason: None,
+        safety_runtime: api::motion::SafetyRuntime::Present,
+        software_estop_engaged: false,
+        component_estop_blocked: false,
+        active_safety_constraints: Vec::new(),
+    });
+    round_trip(&api::safety::MotionConstraints {
+        sequence: 1,
+        stop: true,
+        max_linear_speed_mps: Some(0.0),
+        max_angular_speed_radps: Some(0.0),
+        constraints: vec![api::safety::Constraint {
+            reason: api::safety::ConstraintReason::ObstacleProximity,
+            source: api::safety::ConstraintSource {
+                kind: api::safety::ConstraintSourceKind::Range,
+                participant_id: "front-range".to_string(),
+                component_id: Some("front-range".to_string()),
+                capability_id: Some("range".to_string()),
+            },
+            stop: true,
+            max_linear_speed_mps: Some(0.0),
+            max_angular_speed_radps: Some(0.0),
+            observed_value: Some(0.1),
+            valid_from_ns: 10,
+            expires_at_ns: 310,
+        }],
+        expires_at_ns: 310,
     });
     round_trip(&api::logs::Event {
         seq: 7,
@@ -351,28 +421,19 @@ fn v1_domain_bodies_round_trip_through_messagepack() {
         retry_attempt: 3,
         detail: Some("connect failed".to_string()),
     });
-    round_trip(&api::plan::Path {
-        poses: vec![api::plan::PathPose {
+    round_trip(&api::navigation::Path {
+        poses: vec![api::navigation::Pose {
             x_m: 1.0,
             y_m: 2.0,
             yaw_rad: None,
         }],
         map_revision: Some(3),
     });
-    round_trip(&api::follow::State {
-        active: true,
-        target_index: Some(4),
-        finished: false,
-    });
-    round_trip(&api::explore::Frontiers {
-        frontiers: vec![api::explore::Frontier {
-            x_m: 1.0,
-            y_m: 2.0,
-            size: 12,
-            score: 0.75,
-        }],
-        map_revision: Some(5),
-    });
+    round_trip(&api::navigation::State::Running(
+        api::navigation::RequestId {
+            value: "request-1".to_string(),
+        },
+    ));
     round_trip(&api::perception::Detections {
         detections: vec![api::perception::Detection {
             class_id: "crate".to_string(),
@@ -544,15 +605,31 @@ fn component_capability_bodies_round_trip_through_messagepack() {
 fn topic_builder_keys_match_contract_topics() {
     assert_eq!(api::topic::new().drive().state().key(), "v1/drive/state");
     assert_eq!(api::topic::new().drive().target().key(), "v1/drive/target");
+    assert_eq!(
+        api::topic::new().navigation().state().key(),
+        "v1/navigation/state"
+    );
+    assert_eq!(
+        api::topic::new().navigation().request().key(),
+        "v1/navigation/request"
+    );
+    assert_eq!(
+        api::topic::new().navigation().result().key(),
+        "v1/navigation/result"
+    );
+    assert_eq!(
+        api::topic::new().behavior().request().key(),
+        "v1/behavior/request"
+    );
+    assert_eq!(
+        api::topic::new().behavior().event().key(),
+        "v1/behavior/event"
+    );
+    assert_eq!(
+        api::topic::new().safety().constraints().key(),
+        "v1/safety/constraints"
+    );
     assert_eq!(api::topic::new().safety().state().key(), "v1/safety/state");
-    assert_eq!(
-        api::topic::new().safety().authorization().key(),
-        "v1/safety/authorization"
-    );
-    assert_eq!(
-        api::topic::new().mission().state().key(),
-        "v1/mission/state"
-    );
     assert_eq!(api::topic::new().frame().tree().key(), "v1/frame/tree");
     assert_eq!(
         api::topic::new().frame().static_transforms().key(),
@@ -573,12 +650,6 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         api::topic::new().bus().uplink().state().key(),
         "v1/bus/uplink/state"
-    );
-    assert_eq!(api::topic::new().plan().path().key(), "v1/plan/path");
-    assert_eq!(api::topic::new().follow().state().key(), "v1/follow/state");
-    assert_eq!(
-        api::topic::new().explore().frontiers().key(),
-        "v1/explore/frontiers"
     );
     assert_eq!(
         api::topic::new().perception().detections().key(),

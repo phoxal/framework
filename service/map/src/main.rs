@@ -16,12 +16,15 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
 use phoxal_api::v1 as api;
 
+const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
+
 #[derive(phoxal::Api)]
 struct Api {
-    localize: Latest<api::localize::LocalizationState>,
+    localize: Subscriber<api::localize::LocalizationState>,
     revision: Publisher<api::map::Revision>,
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
@@ -30,6 +33,8 @@ struct Api {
 struct Map {
     grid: Arc<Grid>,
     rev: u64,
+    has_localization: bool,
+    last_localization: Option<(api::localize::LocalizationState, LogicalTime)>,
 }
 
 #[derive(Clone)]
@@ -63,6 +68,7 @@ impl Grid {
 // The committed snapshot type: cheap to clone (an `Arc` over the grid).
 struct MapState {
     grid: Arc<Grid>,
+    ready: bool,
 }
 
 #[phoxal::behavior]
@@ -76,9 +82,13 @@ impl Map {
             Self {
                 grid: Arc::new(Grid::empty(64, 64, 0.05)),
                 rev: 0,
+                has_localization: false,
+                last_localization: None,
             },
             Self::Api {
-                localize: ctx.latest(api::topic::new().localize().state()).await?,
+                localize: ctx
+                    .subscriber(api::topic::new().localize().state(), 32)
+                    .await?,
                 // Map OWNS the `map` node (its revision telemetry and the
                 // `map/submap` query it serves below) -> owner (`internal`)
                 // builder; `localize/state` is CONSUMED via the public builder.
@@ -92,7 +102,20 @@ impl Map {
 
     #[step(hz = 5)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        if let Some(loc) = api.localize.latest() {
+        while let Some(received) = api.localize.try_recv() {
+            self.last_localization = Some((
+                received.body,
+                LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
+            ));
+        }
+
+        if !localization_is_usable(self.last_localization.as_ref(), step.time())? {
+            self.has_localization = false;
+            return Ok(());
+        }
+
+        if let Some((loc, _)) = &self.last_localization {
+            self.has_localization = true;
             // Copy-on-write before mutating, so committed snapshots stay stable.
             let grid = Arc::make_mut(&mut self.grid);
             if mark_free(grid, loc.x_m, loc.y_m) {
@@ -123,6 +146,11 @@ impl Map {
         request: api::map::SubmapRequest,
     ) -> ServerResult<api::map::SubmapResponse> {
         let _ = api;
+        if !state.ready {
+            return Err(QueryFailure::unavailable(
+                "map has no localization-backed revision yet",
+            ));
+        }
         Ok(state.grid.submap(&request))
     }
 
@@ -130,7 +158,31 @@ impl Map {
     fn snapshot(&self) -> MapState {
         MapState {
             grid: Arc::clone(&self.grid),
+            ready: self.has_localization,
         }
+    }
+}
+
+fn localization_is_usable(
+    sample: Option<&(api::localize::LocalizationState, LogicalTime)>,
+    now: LogicalTime,
+) -> Result<bool> {
+    match sample {
+        None => Ok(false),
+        Some((_, at)) if at.epoch() != now.epoch() => Ok(false),
+        Some((_, at)) if at.time_ns() > now.time_ns() => Ok(false),
+        Some((_, at)) if now.time_ns().saturating_sub(at.time_ns()) > LOCALIZATION_STALE_NS => {
+            Ok(false)
+        }
+        Some((loc, _))
+            if !loc.x_m.is_finite()
+                || !loc.y_m.is_finite()
+                || !loc.yaw_rad.is_finite()
+                || !loc.confidence.is_finite() =>
+        {
+            anyhow::bail!("localization sample contains a non-finite value")
+        }
+        Some(_) => Ok(true),
     }
 }
 
@@ -164,7 +216,8 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grid, Map, mark_free};
+    use super::{Grid, LOCALIZATION_STALE_NS, Map, localization_is_usable, mark_free};
+    use phoxal::bus::LogicalTime;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
     use phoxal_api::ContractBody;
     use phoxal_api::v1 as api;
@@ -205,6 +258,28 @@ mod tests {
         assert!(!mark_free(&mut grid, -0.01, 0.0));
         assert!(!mark_free(&mut grid, 0.0, -0.01));
         assert_eq!(grid.cells, after_first_mark);
+    }
+
+    #[test]
+    fn localization_gate_rejects_unavailable_stale_future_epoch_and_invalid_samples() {
+        let sample = |x_m, epoch, at| {
+            (
+                api::localize::LocalizationState {
+                    x_m,
+                    y_m: 0.0,
+                    yaw_rad: 0.0,
+                    confidence: 1.0,
+                },
+                LogicalTime::new(epoch, at),
+            )
+        };
+        let now = LogicalTime::new(2, LOCALIZATION_STALE_NS + 10);
+        assert!(!localization_is_usable(None, now).unwrap());
+        assert!(localization_is_usable(Some(&sample(0.0, 2, 10)), now).unwrap());
+        assert!(!localization_is_usable(Some(&sample(0.0, 1, now.time_ns())), now).unwrap());
+        assert!(!localization_is_usable(Some(&sample(0.0, 2, now.time_ns() + 1)), now).unwrap());
+        assert!(!localization_is_usable(Some(&sample(0.0, 2, 9)), now).unwrap());
+        assert!(localization_is_usable(Some(&sample(f64::NAN, 2, now.time_ns())), now).is_err());
     }
 
     #[test]

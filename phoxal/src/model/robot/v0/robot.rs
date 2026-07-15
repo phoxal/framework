@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use super::{Component, KinematicConfig, Role, capability};
+use super::{Component, KinematicConfig, MotionLimits, Role, capability};
 
 const ROBOT_FILE: &str = "robot.yaml";
 
@@ -15,6 +15,10 @@ const ROBOT_FILE: &str = "robot.yaml";
 #[serde(deny_unknown_fields)]
 pub struct Robot {
     pub robot: RobotSection,
+    /// Authoritative behavior root selected for this robot. Behavior
+    /// definitions themselves live under `behaviors/` in the robot root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior: Option<BehaviorConfig>,
     /// Framework-resolved packages: channel, generation ceiling, and the
     /// unified provider-qualified pins map. Optional; a day-0 robot may omit
     /// this section entirely.
@@ -28,6 +32,15 @@ pub struct Robot {
     /// model; participants never parse bus facts from `robot.yaml`.
     #[serde(default, skip_serializing_if = "Bus::is_empty")]
     pub bus: Bus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorConfig {
+    pub root: String,
+    #[serde(default)]
+    pub autostart: bool,
 }
 
 /// `robot:` - the robot model: identity, structure, kinematic, and
@@ -46,6 +59,10 @@ pub struct RobotSection {
     /// The kinematic model (was `motion.kinematic`; the `motion:` wrapper is
     /// gone - `kinematic` is a direct field of `robot:`).
     pub kinematic: KinematicConfig,
+    /// Robot-wide planar speed limits. Both `motion` and `drive` enforce these
+    /// independently so an arbitration defect cannot bypass the actuator
+    /// backstop.
+    pub motion_limits: MotionLimits,
     /// Component instance map: instance-id -> instance (was
     /// `components.instances`; `components.sources` no longer exists -
     /// official components resolve from the catalog, forks are
@@ -410,6 +427,10 @@ pub enum ValidationError {
         field: String,
         message: String,
     },
+    InvalidMotionLimit {
+        field: String,
+        message: String,
+    },
     InvalidDirectionSign {
         instance: String,
         capability: String,
@@ -653,6 +674,9 @@ impl fmt::Display for ValidationError {
             Self::InvalidKinematicField { field, message } => {
                 write!(formatter, "robot.kinematic.{field} {message}")
             }
+            Self::InvalidMotionLimit { field, message } => {
+                write!(formatter, "robot.motion_limits.{field} {message}")
+            }
             Self::InvalidDirectionSign {
                 instance,
                 capability,
@@ -748,6 +772,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: [drive.motor]
@@ -764,6 +791,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -783,6 +813,9 @@ robot:
   id: rover
   namespace: dev
   structure: structure.urdf
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: differential
     left_actuators: [left_drive.motor]
@@ -864,6 +897,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1014,6 +1050,9 @@ robot:
   identity:
     id: test-bot
     namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1063,6 +1102,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1088,6 +1130,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1112,6 +1157,9 @@ version: legacy
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1132,6 +1180,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1158,6 +1209,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1184,6 +1238,9 @@ schema: robot/v0
 robot:
   id: test-bot
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []
@@ -1490,6 +1547,9 @@ schema: robot/v0
 robot:
   id: ""
   namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: omnidirectional
     actuators: []

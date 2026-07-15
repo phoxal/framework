@@ -19,13 +19,13 @@
 //!   serde structs/enums and their [`ContractBody`] impls;
 //! - an api-local `topic` builder rooted at `topic::new()`.
 //!
-//! `v1` is frozen. `v2` is the single evolving preview surface: new and changed
-//! contracts are edited in that module until the complete API is ready to
-//! freeze. Preview work does not mint a new public version for each change.
+//! `v1` is the current production surface and may change in place while the
+//! pre-stability topology is simplified. `v2` is the single preview surface for
+//! contracts that have not entered production. Preview work does not mint a new
+//! public version for each change.
 //! `v2` is authored as `preview version v2 { … }` and is available when the
 //! `preview-v2` Cargo feature is enabled. [`ApiVersion::IS_PREVIEW`] records the
-//! lifecycle without changing topics or wire bytes. Once `v2` is promoted it
-//! becomes immutable; later breaking work starts in a new preview `v3`.
+//! lifecycle without changing topics or wire bytes.
 //!
 //! [`Api`]: v1::Api
 //!
@@ -125,6 +125,11 @@ phoxal_api_tree! {
             /// Why actuation authority is in its current state.
             enum StopReason {
                 NoTarget,
+                TargetStale,
+                TargetFromFuture,
+                TargetNotFinite,
+                ActuatorCommandNotFinite,
+                Inactive,
                 EmergencyStop,
                 Fault,
             }
@@ -148,122 +153,10 @@ phoxal_api_tree! {
                 limited_target: Target,
                 actuator_authority: ActuatorAuthority,
                 stop_reason: Option<StopReason>,
+                target_age_ns: Option<u64>,
             }
 
             topic target: command Target;
-            topic state: state State;
-        }
-
-        safety {
-            /// Safety participant decision for a candidate motion command.
-            #[derive(Copy, Eq)]
-            enum SafetyDecision {
-                Allow,
-                Slow,
-                Stop,
-                EmergencyStop,
-                UnknownConservative,
-            }
-
-            /// An inclusive `[min, max]` bound on a scalar control axis.
-            struct Constraint {
-                min: f64,
-                max: f64,
-            }
-
-            /// Per-axis velocity bounds the safety participant will allow.
-            struct MotionConstraint {
-                linear_x_mps: Constraint,
-                angular_z_radps: Constraint,
-            }
-
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum SafetyReasonCode {
-                ObstacleDetected,
-                BatteryLow,
-                BatteryCritical,
-                DriveFault,
-                LocalizationLost,
-                SourceStale,
-                EmergencyStopEngaged,
-                Unknown,
-            }
-
-            /// A coded reason behind a safety decision, with optional detail text.
-            struct SafetyReason {
-                code: SafetyReasonCode,
-                detail: Option<String>,
-            }
-
-            /// Revisions of the inputs a safety decision was computed against.
-            struct SafetySourceRevision {
-                localization: Option<u64>,
-                map: Option<u64>,
-            }
-
-            /// The safety participant's authorization for downstream motion: the
-            /// decision, the motion it approves, why, and when it expires.
-            struct SafetyAuthorization {
-                decision: SafetyDecision,
-                approved_motion: MotionConstraint,
-                reasons: Vec<SafetyReason>,
-                source_revision: SafetySourceRevision,
-                expires_at_ns: Option<u64>,
-            }
-
-            /// The safety participant's published status: current decision + reasons.
-            struct Status {
-                decision: SafetyDecision,
-                active_reasons: Vec<SafetyReason>,
-            }
-
-            /// A request to engage or release the emergency stop.
-            #[derive(Eq)]
-            struct EmergencyStopRequest {
-                engaged: bool,
-            }
-
-            topic authorization: state SafetyAuthorization;
-            topic state: state Status;
-            topic estop: command EmergencyStopRequest;
-        }
-
-        mission {
-            /// A target pose in the map frame (yaw optional).
-            struct Goal {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: Option<f64>,
-            }
-
-            /// A command driving the mission lifecycle.
-            enum Command {
-                Start(Goal),
-                Pause,
-                Resume,
-                Cancel,
-            }
-
-            /// Where the mission is in its lifecycle.
-            #[derive(Copy, Eq)]
-            enum Phase {
-                Idle,
-                Active,
-                Paused,
-                Succeeded,
-                Failed,
-            }
-
-            /// The mission participant's published state.
-            struct State {
-                phase: Phase,
-                goal: Option<Goal>,
-                detail: Option<String>,
-            }
-
-            topic command: command Command;
-            topic goal: state Goal;
             topic state: state State;
         }
 
@@ -337,15 +230,15 @@ phoxal_api_tree! {
             #[derive(Copy, Eq)]
             #[serde(rename_all = "snake_case")]
             enum RejectedReason {
-                SupervisorUnavailable,
-                SupervisorReturnedHttp,
+                HostIntegrationUnavailable,
+                CommandRejected,
             }
 
             /// Why an accepted power command later failed.
             #[derive(Copy, Eq)]
             #[serde(rename_all = "snake_case")]
             enum FailedReason {
-                SupervisorTransport,
+                HostCommandFailed,
             }
 
             /// The power participant's published state.
@@ -359,62 +252,392 @@ phoxal_api_tree! {
         }
 
         motion {
-            /// A planar velocity the motion arbiter may select.
             struct Target {
                 linear_x_mps: f32,
                 angular_z_radps: f32,
                 curvature_limit_radpm: Option<f32>,
             }
 
-            /// The motion arbiter's local view of the active safety decision.
             #[derive(Copy, Eq)]
             #[serde(rename_all = "snake_case")]
-            enum SafetyDecision {
-                Allow,
-                Slow,
-                Stop,
-                EmergencyStop,
-                UnknownConservative,
-            }
-
-            /// Which input the motion arbiter is currently following.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum MotionSource {
+            enum Source {
                 Manual,
-                Follow,
-                MissionStop,
-                Recovery,
+                Navigation,
                 EmergencyStop,
             }
 
-            /// Why the motion arbiter chose its current source/target.
             #[derive(Copy, Eq)]
             #[serde(rename_all = "snake_case")]
-            enum MotionReason {
-                SafetyEmergencyStop,
-                ManualEscapeUnderStop,
-                SafetyConstrained(SafetyDecision),
-                NoFollowTarget,
-                FollowTargetStale,
-                SafetyAuthorizationUnavailable,
+            enum ZeroReason {
+                NoCandidate,
+                ManualCandidateStale,
+                NavigationCandidateStale,
+                ManualCandidateFromFuture,
+                NavigationCandidateFromFuture,
+                ManualCandidateNotFinite,
+                NavigationCandidateNotFinite,
+                EmergencyStopEngaged,
+                SafetyConstraintsUnavailable,
+                SafetyProtectiveStop,
             }
 
-            /// A direct teleop velocity command.
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum SafetyRuntime {
+                Absent,
+                Present,
+            }
+
             struct ManualCommand {
                 linear_x_mps: f64,
                 angular_z_radps: f64,
             }
 
-            /// The motion arbiter's published state.
+            #[derive(Eq)]
+            struct EmergencyStopRequest {
+                engaged: bool,
+            }
+
             struct State {
-                active_source: Option<MotionSource>,
-                selected: Option<Target>,
-                reason: Option<MotionReason>,
+                manual_candidate_age_ns: Option<u64>,
+                autonomous_candidate_age_ns: Option<u64>,
+                safety_constraints_age_ns: Option<u64>,
+                selected_source: Option<Source>,
+                final_target: Target,
+                zero_reason: Option<ZeroReason>,
+                safety_runtime: SafetyRuntime,
+                software_estop_engaged: bool,
+                component_estop_blocked: bool,
+                active_safety_constraints: Vec<super::safety::Constraint>,
             }
 
             topic manual: command ManualCommand;
+            topic estop: command EmergencyStopRequest;
             topic state: state State;
+        }
+
+        safety {
+            /// Why safety is stopping or limiting body motion.
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum ConstraintReason {
+                WorldUnavailable,
+                MapUnavailable,
+                DrivableSpaceUnavailable,
+                LocalizationUnavailable,
+                LocalizationUncertain,
+                ObstacleProximity,
+                RangeSensorFault,
+                DriveFault,
+                BatteryLow,
+                BatteryCritical,
+                SpeedZone,
+                OperatorPolicy,
+            }
+
+            /// Typed origin of one constraint, suitable for operator diagnosis.
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum ConstraintSourceKind {
+                WorldModel,
+                Map,
+                Localization,
+                Range,
+                Drive,
+                Battery,
+                Operator,
+            }
+
+            struct ConstraintSource {
+                kind: ConstraintSourceKind,
+                participant_id: String,
+                component_id: Option<String>,
+                capability_id: Option<String>,
+            }
+
+            struct Constraint {
+                reason: ConstraintReason,
+                source: ConstraintSource,
+                stop: bool,
+                max_linear_speed_mps: Option<f32>,
+                max_angular_speed_radps: Option<f32>,
+                observed_value: Option<f32>,
+                valid_from_ns: u64,
+                expires_at_ns: u64,
+            }
+
+            /// The sole safety-to-motion control product. Motion accepts it only
+            /// in the same epoch and before `expires_at_ns`.
+            struct MotionConstraints {
+                sequence: u64,
+                stop: bool,
+                max_linear_speed_mps: Option<f32>,
+                max_angular_speed_radps: Option<f32>,
+                constraints: Vec<Constraint>,
+                expires_at_ns: u64,
+            }
+
+            /// Operator-facing state mirrors the exact product consumed by motion.
+            struct State {
+                clear: bool,
+                motion: MotionConstraints,
+            }
+
+            topic constraints: state MotionConstraints;
+            topic state: state State;
+        }
+
+        navigation {
+            #[derive(Eq)]
+            struct RequestId {
+                value: String,
+            }
+
+            struct Pose {
+                x_m: f64,
+                y_m: f64,
+                yaw_rad: Option<f64>,
+            }
+
+            struct Path {
+                poses: Vec<Pose>,
+                map_revision: Option<u64>,
+            }
+
+            enum RequestKind {
+                GotoPose(Pose),
+                FollowPath(Path),
+                Cancel(RequestId),
+            }
+
+            struct Request {
+                request_id: RequestId,
+                kind: RequestKind,
+            }
+
+            enum State {
+                Idle,
+                Accepted(RequestId),
+                Running(RequestId),
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum FailureReason {
+                LocalizationUnavailable,
+                MapUnavailable,
+                MapChanged,
+                NoPath,
+                Blocked,
+                Internal,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum RefusalReason {
+                Busy,
+                InvalidRequest,
+                Unsupported,
+            }
+
+            enum Outcome {
+                Succeeded,
+                Failed(FailureReason),
+                Refused(RefusalReason),
+                Cancelled,
+                TimedOut,
+            }
+
+            struct Progress {
+                request_id: RequestId,
+                distance_remaining_m: f64,
+                path_index: u32,
+            }
+
+            struct Result {
+                request_id: RequestId,
+                outcome: Outcome,
+            }
+
+            struct Candidate {
+                request_id: RequestId,
+                linear_x_mps: f32,
+                angular_z_radps: f32,
+            }
+
+            struct FrontierRequest {
+                map_revision: Option<u64>,
+            }
+
+            struct Frontier {
+                x_m: f64,
+                y_m: f64,
+                score: f32,
+                size: u32,
+            }
+
+            struct FrontierResponse {
+                frontier: Option<Frontier>,
+                map_revision: Option<u64>,
+            }
+
+            topic request: command Request;
+            topic state: state State;
+            topic progress: state Progress;
+            topic result: state Result;
+            topic candidate: state Candidate;
+            topic next_frontier: query FrontierRequest => FrontierResponse;
+        }
+
+        behavior {
+            #[derive(Eq)]
+            struct RequestId {
+                value: String,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum ConflictPolicy {
+                Reject,
+                Queue,
+                Interrupt,
+            }
+
+            enum Value {
+                Bool(bool),
+                Integer(i64),
+                Number(f64),
+                String(String),
+                Pose(super::navigation::Pose),
+            }
+
+            struct Request {
+                request_id: RequestId,
+                behavior_id: String,
+                args: ::std::collections::BTreeMap<String, Value>,
+                priority: u8,
+                conflict_policy: ConflictPolicy,
+            }
+
+            enum Command {
+                Pause,
+                Resume,
+                Cancel,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum ExecutionStatus {
+                Idle,
+                Running,
+                Paused,
+                Succeeded,
+                Failed,
+                Cancelled,
+                Abandoned,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum NodeStatus {
+                Idle,
+                Running,
+                Succeeded,
+                Failed,
+                Skipped,
+                Waiting,
+                Cancelling,
+            }
+
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum FailureReason {
+                MissingCapability,
+                ActionRefused,
+                ActionFailed,
+                ActionTimedOut,
+                ActionCancelled,
+                ConditionFailed,
+                SafetyStopped,
+                EmergencyStopped,
+                ResourceConflict,
+                InvalidArgument,
+                InvalidBlackboardValue,
+                SubtreeFailed,
+                ExecutionAbandoned,
+                InternalError,
+            }
+
+            struct Failure {
+                reason: FailureReason,
+                detail: Option<String>,
+                node_path: Option<String>,
+                action_id: Option<String>,
+            }
+
+            struct DefinitionRef {
+                id: String,
+                version: String,
+                content_hash: String,
+            }
+
+            struct State {
+                execution_id: Option<String>,
+                root_behavior_id: Option<String>,
+                active_request_id: Option<RequestId>,
+                active_behavior_id: Option<String>,
+                status: ExecutionStatus,
+                active_node_path: Option<String>,
+                failure: Option<Failure>,
+            }
+
+            struct Snapshot {
+                execution_id: Option<String>,
+                root: Option<DefinitionRef>,
+                definition_stack: Vec<DefinitionRef>,
+                active_request_id: Option<RequestId>,
+                active_behavior_id: Option<String>,
+                status: ExecutionStatus,
+                node_statuses: ::std::collections::BTreeMap<String, NodeStatus>,
+                active_node_path: Option<String>,
+                blackboard: ::std::collections::BTreeMap<String, Value>,
+                args: ::std::collections::BTreeMap<String, Value>,
+                started_at_ns: Option<u64>,
+                updated_at_ns: u64,
+                failure: Option<Failure>,
+            }
+
+            enum EventKind {
+                ExecutionStarted,
+                ExecutionPaused,
+                ExecutionResumed,
+                ExecutionCompleted,
+                ExecutionCancelled,
+                ExecutionAbandoned,
+                NodeTransition(NodeStatus),
+                RequestAccepted,
+                RequestCompleted(ExecutionStatus),
+                RequestRejected(FailureReason),
+            }
+
+            struct Event {
+                sequence: u64,
+                execution_id: Option<String>,
+                request_id: Option<RequestId>,
+                behavior_id: Option<String>,
+                content_hash: Option<String>,
+                node_path: Option<String>,
+                kind: EventKind,
+                failure: Option<Failure>,
+                participant_id: String,
+                logical_time_ns: u64,
+            }
+
+            topic command: command Command;
+            topic request: command Request;
+            topic state: state State;
+            topic snapshot: state Snapshot;
+            topic event: state Event;
         }
 
         logs(participant_id) {
@@ -483,95 +706,8 @@ phoxal_api_tree! {
             }
         }
 
-        plan {
-            /// One pose along a planned path.
-            struct PathPose {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: Option<f64>,
-            }
 
-            /// A planned path, tagged with the map revision it was built on.
-            struct Path {
-                poses: Vec<PathPose>,
-                map_revision: Option<u64>,
-            }
 
-            /// Why the planner declined to produce a path.
-            #[derive(Copy, Eq)]
-            #[serde(rename_all = "snake_case")]
-            enum Refusal {
-                MissionInactive,
-                NoGoal,
-                NoMap,
-                NoLocalization,
-                Unreachable,
-                NonPlanarGoalUnsupported,
-                LocalizationInitializing,
-                LocalizationLost,
-                LocalizationRelocalizing,
-                UnsupportedLocalizationMode,
-                NoLocalizationPose,
-                NoLocalizationRevision,
-                GoalMapRevisionMismatch,
-                MapLocalizeRevisionMismatch,
-            }
-
-            /// The planner's published state.
-            struct State {
-                has_path: bool,
-                refusal: Option<Refusal>,
-            }
-
-            topic path: state Path;
-            topic state: state State;
-        }
-
-        follow {
-            /// The velocity the path follower wants next, with provenance.
-            struct Target {
-                map_revision: Option<u64>,
-                built_from_localize_revision: Option<u64>,
-                frame_id: String,
-                linear_x_mps: f64,
-                angular_z_radps: f64,
-            }
-
-            /// The path follower's published state.
-            struct State {
-                active: bool,
-                target_index: Option<u32>,
-                finished: bool,
-            }
-
-            topic target: state Target;
-            topic state: state State;
-        }
-
-        explore {
-            /// A candidate frontier to explore, with a size and a ranking score.
-            struct Frontier {
-                x_m: f64,
-                y_m: f64,
-                size: u32,
-                score: f32,
-            }
-
-            /// The current frontier set, tagged with its map revision.
-            struct Frontiers {
-                frontiers: Vec<Frontier>,
-                map_revision: Option<u64>,
-            }
-
-            /// The exploration participant's published state.
-            struct State {
-                exploring: bool,
-                selected: Option<Frontier>,
-            }
-
-            topic frontiers: state Frontiers;
-            topic state: state State;
-        }
 
         perception {
             /// A single detected object: class, confidence, and pose in a frame.
@@ -1111,7 +1247,7 @@ phoxal_api_tree! {
     // does not mint another public API namespace for each implementation batch.
     preview version v2 {
         battery {
-            /// Battery state introduced after the v1 surface was frozen.
+            /// Battery state remains preview while hardware ownership evolves.
             struct State {
                 voltage_v: f32,
                 current_a: f32,

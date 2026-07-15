@@ -3,6 +3,9 @@ robot:
   id: hello-rover
   namespace: dev
   structure: structure.urdf
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
   kinematic:
     kind: differential
     left_actuators: [left_drive.motor]
@@ -18,8 +21,3 @@ robot:
     right_drive:
       component: wheel_drive
       mount_link: right_wheel_mount
-services:
-  cruise:
-    path: services/cruise
-    config:
-      cruise_speed_mps: 0.2

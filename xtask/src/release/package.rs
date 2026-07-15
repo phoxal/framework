@@ -814,12 +814,12 @@ mod tests {
     #[test]
     fn extract_metadata_from_packaged_reads_the_tarball_binary() -> Result<()> {
         let workspace = Workspace::discover()?;
-        let bin_name = "phoxal-service-battery";
+        let bin_name = "phoxal-simulator-webots-controller";
         let status = Command::new("cargo")
             .args(["build", "--quiet", "-p", bin_name])
             .current_dir(workspace.root())
             .status()
-            .context("failed to spawn cargo build for phoxal-service-battery")?;
+            .context("failed to spawn cargo build for webots controller")?;
         assert!(status.success(), "cargo build -p {bin_name} failed");
         let binary = workspace
             .target_dir()
@@ -827,13 +827,13 @@ mod tests {
             .join(format!("{bin_name}{}", std::env::consts::EXE_SUFFIX));
 
         let artifact = OfficialArtifact {
-            package: "phoxal/service-battery".to_string(),
+            package: "phoxal/simulator-webots-controller".to_string(),
             package_name: Some(bin_name.to_string()),
-            kind: ArtifactKind::Service,
+            kind: ArtifactKind::Simulator,
             version: "0.1.0".to_string(),
-            crate_dir: PathBuf::from("service/battery"),
+            crate_dir: PathBuf::from("simulator/webots-controller"),
             bin_name: Some(bin_name.to_string()),
-            id: "battery".to_string(),
+            id: "webots-controller".to_string(),
             metadata: Default::default(),
         };
 
@@ -846,24 +846,25 @@ mod tests {
         }
 
         let meta = extract_metadata_from_packaged(&artifact, dir.path(), &triples)?;
-        assert_eq!(meta.contracts.len(), 1);
-        assert_eq!(meta.contracts[0].role, "publish");
-        assert_eq!(meta.contracts[0].version, "v2");
-        assert_eq!(meta.contracts[0].contract, "battery::State");
-        assert!(!meta.contracts[0].external);
+        assert!(meta.contracts.iter().any(|contract| {
+            contract.role == "publish"
+                && contract.version == "v2"
+                && contract.contract == "battery::State"
+                && !contract.external
+        }));
         Ok(())
     }
 
     #[test]
     fn cross_target_metadata_mismatch_names_package_version_and_targets() -> Result<()> {
         let artifact = OfficialArtifact {
-            package: "phoxal/service-battery".to_string(),
-            package_name: Some("phoxal-service-battery".to_string()),
-            kind: ArtifactKind::Service,
+            package: "phoxal/simulator-webots-controller".to_string(),
+            package_name: Some("phoxal-simulator-webots-controller".to_string()),
+            kind: ArtifactKind::Simulator,
             version: "0.19.7".to_string(),
-            crate_dir: PathBuf::from("service/battery"),
-            bin_name: Some("phoxal-service-battery".to_string()),
-            id: "battery".to_string(),
+            crate_dir: PathBuf::from("simulator/webots-controller"),
+            bin_name: Some("phoxal-simulator-webots-controller".to_string()),
+            id: "webots-controller".to_string(),
             metadata: Default::default(),
         };
         let dir = tempfile::tempdir()?;
@@ -895,7 +896,7 @@ mod tests {
             let tarball = dir
                 .path()
                 .join(format!("{}.tar.zst", asset_stem(&artifact, target)));
-            write_tar_zst(&tarball, &binary, "phoxal-service-battery")?;
+            write_tar_zst(&tarball, &binary, "phoxal-simulator-webots-controller")?;
         }
 
         let err = extract_metadata_from_packaged(
@@ -908,7 +909,7 @@ mod tests {
         )
         .unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("phoxal/service-battery v0.19.7"));
+        assert!(message.contains("phoxal/simulator-webots-controller v0.19.7"));
         assert!(message.contains("x86_64-unknown-linux-gnu"));
         assert!(message.contains("aarch64-unknown-linux-gnu"));
         Ok(())
@@ -917,13 +918,13 @@ mod tests {
     #[test]
     fn extract_metadata_from_packaged_fails_when_no_tarball_present() -> Result<()> {
         let artifact = OfficialArtifact {
-            package: "phoxal/service-battery".to_string(),
-            package_name: Some("phoxal-service-battery".to_string()),
-            kind: ArtifactKind::Service,
+            package: "phoxal/simulator-webots-controller".to_string(),
+            package_name: Some("phoxal-simulator-webots-controller".to_string()),
+            kind: ArtifactKind::Simulator,
             version: "0.1.0".to_string(),
-            crate_dir: PathBuf::from("service/battery"),
-            bin_name: Some("phoxal-service-battery".to_string()),
-            id: "battery".to_string(),
+            crate_dir: PathBuf::from("simulator/webots-controller"),
+            bin_name: Some("phoxal-simulator-webots-controller".to_string()),
+            id: "webots-controller".to_string(),
             metadata: Default::default(),
         };
         let dir = tempfile::tempdir().context("create tempdir")?;

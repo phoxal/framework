@@ -68,7 +68,6 @@ pub struct AutonomyProfileSpec {
     pub required_roles: BTreeSet<Role>,
     pub goal_pose_support: GoalPoseSupport,
     pub required_sensing: Vec<String>,
-    pub safety_envelope: String,
     pub localization_capability: String,
     pub world_model_capability: String,
     pub scenario_coverage: Vec<String>,
@@ -85,7 +84,6 @@ pub fn autonomy_profile(id: AutonomyProfileId) -> AutonomyProfileSpec {
                 Role::Localization,
                 Role::Mapping,
                 Role::Traversability,
-                Role::Safety,
                 Role::Odometry,
             ]
             .into_iter()
@@ -97,7 +95,6 @@ pub fn autonomy_profile(id: AutonomyProfileId) -> AutonomyProfileSpec {
                 "near_field_range_depth_or_lidar".to_string(),
                 "wheel_or_drive_feedback".to_string(),
             ],
-            safety_envelope: "profile_policy_defaults".to_string(),
             localization_capability: "localization".to_string(),
             world_model_capability: "map_owned_traversability".to_string(),
             scenario_coverage: vec![
@@ -107,12 +104,10 @@ pub fn autonomy_profile(id: AutonomyProfileId) -> AutonomyProfileSpec {
                 "localization".to_string(),
                 "mapping".to_string(),
                 "traversability".to_string(),
-                "safety".to_string(),
             ],
             policy_defaults: vec![
                 "localization_policy".to_string(),
                 "map_revision_retention".to_string(),
-                "safety_profile".to_string(),
                 "runtime_timing".to_string(),
             ],
         },

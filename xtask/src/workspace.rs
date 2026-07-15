@@ -588,7 +588,15 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 28);
+        assert_eq!(workspace.official_artifacts().len(), 25);
+
+        let discovered = workspace
+            .official_artifacts()
+            .iter()
+            .filter(|artifact| artifact.kind == ArtifactKind::Service)
+            .map(|artifact| (artifact.id.as_str(), artifact.package.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(discovered, phoxal::catalog::OFFICIAL_SERVICES);
         Ok(())
     }
 

@@ -21,6 +21,8 @@ use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::v1 as api;
 
+const CAMERA_STALE_NS: u64 = 1_000_000_000;
+
 #[derive(Clone)]
 struct VideoSource {
     capability: CapabilityRef,
@@ -85,6 +87,7 @@ struct Video {
     active: Vec<bool>,
     phase: Vec<StreamPhase>,
     frames_seen: Vec<u64>,
+    last_frame: Vec<Option<LogicalTime>>,
     last_time: LogicalTime,
 }
 
@@ -131,6 +134,7 @@ impl Video {
                 active: vec![false; sources.len()],
                 phase: vec![StreamPhase::Stopped; sources.len()],
                 frames_seen: vec![0; sources.len()],
+                last_frame: vec![None; sources.len()],
                 last_time: LogicalTime::new(0, 0),
                 sources,
             },
@@ -145,18 +149,6 @@ impl Video {
     #[step(hz = 30)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.last_time = step.time();
-
-        // Bring newly-opened streams up: a still-`Stopped` active stream goes
-        // `Starting` then `Active`, publishing a snapshot at each transition.
-        for index in 0..self.sources.len() {
-            if self.active[index] && self.phase[index] == StreamPhase::Stopped {
-                self.phase[index] = StreamPhase::Starting;
-                self.publish_state(api, index, step.time()).await?;
-                self.phase[index] = StreamPhase::Active;
-                self.publish_state(api, index, step.time()).await?;
-            }
-        }
-
         for index in 0..api.cameras.len() {
             let mut saw_frame = false;
             while let Some(received) = api.cameras[index].try_recv() {
@@ -167,13 +159,35 @@ impl Video {
                     received.body.measured_at_ns,
                 );
                 if !self.active[index] {
+                    self.last_frame[index] = Some(LogicalTime::new(
+                        received.metadata.epoch,
+                        received.metadata.produced_at_ns,
+                    ));
                     continue;
                 }
                 self.frames_seen[index] = self.frames_seen[index].saturating_add(1);
+                self.last_frame[index] = Some(LogicalTime::new(
+                    received.metadata.epoch,
+                    received.metadata.produced_at_ns,
+                ));
                 saw_frame = true;
             }
             if saw_frame {
                 self.publish_state(api, index, step.time()).await?;
+            }
+        }
+
+        for index in 0..self.sources.len() {
+            if self.active[index] {
+                let next = if frame_is_fresh(self.last_frame[index], step.time()) {
+                    StreamPhase::Active
+                } else {
+                    StreamPhase::Starting
+                };
+                if self.phase[index] != next {
+                    self.phase[index] = next;
+                    self.publish_state(api, index, step.time()).await?;
+                }
             }
         }
 
@@ -207,6 +221,14 @@ impl Video {
         }
         Ok(())
     }
+}
+
+fn frame_is_fresh(at: Option<LogicalTime>, now: LogicalTime) -> bool {
+    at.is_some_and(|at| {
+        at.epoch() == now.epoch()
+            && at.time_ns() <= now.time_ns()
+            && now.time_ns().saturating_sub(at.time_ns()) <= CAMERA_STALE_NS
+    })
 }
 
 fn build_video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {

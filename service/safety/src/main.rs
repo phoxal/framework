@@ -1,165 +1,502 @@
-//! `safety` - the official battery + drive safety monitor.
+//! `safety` - world-input assessment into typed, expiring motion constraints.
 //!
-//! This official participant MIXES two API versions (D1's
-//! per-contract-versioning ground-breaker): it consumes required
-//! `v2/battery/state` (the moved contract) and `v1/drive/state`
-//! inputs plus emergency-stop sources (the software `safety/estop` request and
-//! per-component emergency-stop states, both `v1`), and publishes the
-//! robot's aggregate `safety/state` posture plus the current
-//! `safety/authorization` motion envelope (also `v1`). There is no
-//! per-participant API version ceiling - a participant's `Api` struct declares
-//! whichever version-qualified contract each field needs.
-//!
-//! The monitor is fail-closed. A missing or stale required source forces `Stop`,
-//! and any engaged emergency stop forces `EmergencyStop`. Otherwise it takes the
-//! worst decision across battery charge (`Slow` when low, `Stop` when critical)
-//! and drive stop-reason (`Stop` on fault, `EmergencyStop` on drive e-stop). The
-//! authorization carries the approved-motion constraint for that decision
-//! (`Stop`/`EmergencyStop` authorize zero motion) and a short TTL, so a stalled
-//! `safety` participant lets the authorization expire downstream rather than leaving
-//! a stale envelope in force. Battery is required only when the robot model
-//! declares a battery capability; `drive/state` is always required.
+//! This is intentionally not the deleted authorization-envelope runtime.
+//! Emergency stop remains owned by `motion`; safety consumes localization, map,
+//! proximity, drive, and optional battery state and emits one diagnosable
+//! constraint product. Autonomous motion treats a missing, stale, future-dated,
+//! or prior-epoch product as a stop. Manual recovery can operate without that
+//! product, while any valid protective stop or limit still applies.
 
-mod assessment;
-mod robot_config;
-
+use anyhow::{Context, Result, bail};
+use phoxal::model::component::v0::capability::Capability;
+use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
-use phoxal_api::v2;
+use phoxal_api::{v1 as api, v2 as preview};
 
-use crate::assessment::{SafetyInputs, Timed, assess, authorize, emergency_stop_engaged};
-use crate::robot_config::{RequiredSources, emergency_stop_bindings, required_sources};
+const INPUT_STALE_NS: u64 = 1_000_000_000;
+const MAP_STALE_NS: u64 = 600_000_000;
+const CONSTRAINT_TTL_NS: u64 = 300_000_000;
+const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
+const PROTECTIVE_STOP_DISTANCE_M: f32 = 0.25;
+const PROXIMITY_LIMIT_DISTANCE_M: f32 = 0.60;
+const PROXIMITY_LINEAR_LIMIT_MPS: f32 = 0.15;
 
-// `Api` deliberately mixes two contract versions: `battery` targets the
-// standalone `v2` version (moved out of `v1`, D1's
-// per-contract-versioning ground-breaker), while every other field stays on
-// `v1`. A participant has no per-participant API version ceiling
-// (`phoxal::participant::api`'s module docs) - this is the real, end-to-end
-// proof of that.
+#[derive(Clone)]
+struct Timed<T> {
+    body: T,
+    at: LogicalTime,
+}
+
+#[derive(Clone)]
+struct RangeBinding {
+    component_id: String,
+    capability_id: String,
+}
+
+struct WorldInputs {
+    localization: Option<Timed<api::localize::LocalizationState>>,
+    map: Option<Timed<api::map::Revision>>,
+    drivable_space: Option<Timed<bool>>,
+    drive: Option<Timed<api::drive::State>>,
+    battery: Option<Timed<preview::battery::State>>,
+    ranges: Vec<Option<Timed<api::component::range::Sample>>>,
+}
+
+impl WorldInputs {
+    fn new(range_count: usize) -> Self {
+        Self {
+            localization: None,
+            map: None,
+            drivable_space: None,
+            drive: None,
+            battery: None,
+            ranges: vec![None; range_count],
+        }
+    }
+}
+
 #[derive(phoxal::Api)]
 struct Api {
-    battery: Subscriber<v2::battery::State>,
+    localization: Subscriber<api::localize::LocalizationState>,
+    map: Subscriber<api::map::Revision>,
+    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
     drive: Subscriber<api::drive::State>,
-    software_estop: Subscriber<api::safety::EmergencyStopRequest>,
-    component_estops: Vec<Subscriber<api::component::emergency_stop::State>>,
-    authorization: Publisher<api::safety::SafetyAuthorization>,
-    state: Publisher<api::safety::Status>,
+    battery: Subscriber<preview::battery::State>,
+    ranges: Vec<Subscriber<api::component::range::Sample>>,
+    constraints: Publisher<api::safety::MotionConstraints>,
+    state: Publisher<api::safety::State>,
 }
 
 #[phoxal::service(id = "safety", config = ())]
 struct Safety {
-    // Runtime-private typed state (not handles).
-    required: RequiredSources,
-    last_battery: Option<Timed<v2::battery::State>>,
-    last_drive: Option<Timed<api::drive::State>>,
-    software_estop_engaged: bool,
-    component_estop_engaged: Vec<bool>,
+    bindings: Vec<RangeBinding>,
+    inputs: WorldInputs,
+    sequence: u64,
 }
 
 #[phoxal::behavior]
 impl Safety {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
         let cap = ctx.owner_capability();
-        let robot = ctx.robot()?;
-        let required = required_sources(robot);
-        let emergency_stop_bindings = emergency_stop_bindings(robot);
-
-        let battery = ctx
-            .subscriber(v2::topic::new().battery().state(), 32)
-            .await?;
-        let drive = ctx
-            .subscriber(api::topic::new().drive().state(), 32)
-            .await?;
-        // Safety OWNS the `safety` node: it reads its e-stop command input here, and
-        // publishes `authorization`/`state` below, all through the owner
-        // (`internal`) builder. `battery/state`, `drive/state` and the component
-        // e-stop states are CONSUMED via the public builder.
-        let software_estop = ctx
-            .subscriber(api::topic::internal::new(cap).safety().estop(), 32)
-            .await?;
-        let mut component_estops = Vec::with_capacity(emergency_stop_bindings.len());
-        for binding in &emergency_stop_bindings {
-            component_estops.push(
+        let bindings = range_bindings(ctx.robot()?);
+        let mut ranges = Vec::with_capacity(bindings.len());
+        for binding in &bindings {
+            ranges.push(
                 ctx.subscriber(
                     api::topic::new()
                         .component(&binding.component_id)
-                        .emergency_stop(&binding.capability_id)
-                        .state(),
+                        .range(&binding.capability_id)
+                        .sample(),
                     32,
                 )
                 .await?,
             );
         }
-        let authorization = ctx
-            .publisher(api::topic::internal::new(cap).safety().authorization())
-            .await?;
-        let state = ctx
-            .publisher(api::topic::internal::new(cap).safety().state())
-            .await?;
-
         Ok((
             Self {
-                required,
-                last_battery: None,
-                last_drive: None,
-                software_estop_engaged: false,
-                component_estop_engaged: vec![false; emergency_stop_bindings.len()],
+                inputs: WorldInputs::new(bindings.len()),
+                bindings,
+                sequence: 0,
             },
             Self::Api {
-                battery,
-                drive,
-                software_estop,
-                component_estops,
-                authorization,
-                state,
+                localization: ctx
+                    .subscriber(api::topic::new().localize().state(), 32)
+                    .await?,
+                map: ctx
+                    .subscriber(api::topic::new().map().revision(), 32)
+                    .await?,
+                map_submap: ctx.querier(api::topic::new().map().submap()).await?,
+                drive: ctx
+                    .subscriber(api::topic::new().drive().state(), 32)
+                    .await?,
+                battery: ctx
+                    .subscriber(preview::topic::new().battery().state(), 32)
+                    .await?,
+                ranges,
+                constraints: ctx
+                    .publisher(api::topic::internal::new(cap).safety().constraints())
+                    .await?,
+                state: ctx
+                    .publisher(api::topic::internal::new(cap).safety().state())
+                    .await?,
             },
         ))
     }
 
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        while let Some(received) = api.battery.try_recv() {
-            self.last_battery = Some(Timed {
-                body: received.body,
-                produced_at_ns: received.metadata.produced_at_ns,
-            });
-        }
-        while let Some(received) = api.drive.try_recv() {
-            self.last_drive = Some(Timed {
-                body: received.body,
-                produced_at_ns: received.metadata.produced_at_ns,
-            });
-        }
-        while let Some(received) = api.software_estop.try_recv() {
-            self.software_estop_engaged = received.body.engaged;
-        }
-        for (index, subscriber) in api.component_estops.iter_mut().enumerate() {
-            while let Some(received) = subscriber.try_recv() {
-                self.component_estop_engaged[index] = received.body.engaged;
-            }
+        drain_latest(&mut self.inputs.localization, &api.localization);
+        drain_latest(&mut self.inputs.map, &api.map);
+        drain_latest(&mut self.inputs.drive, &api.drive);
+        drain_latest(&mut self.inputs.battery, &api.battery);
+        for (slot, subscriber) in self.inputs.ranges.iter_mut().zip(&api.ranges) {
+            drain_latest(slot, subscriber);
         }
 
-        let now_ns = step.time().time_ns();
-        let inputs = SafetyInputs {
-            required: self.required,
-            battery: self.last_battery.as_ref(),
-            drive: self.last_drive.as_ref(),
-            emergency_stop_engaged: emergency_stop_engaged(
-                self.software_estop_engaged,
-                &self.component_estop_engaged,
-            ),
+        self.inputs.drivable_space = if let Some(localization) = usable(
+            self.inputs.localization.as_ref(),
+            step.time(),
+            INPUT_STALE_NS,
+        ) {
+            let radius = 0.20;
+            let response = api
+                .map_submap
+                .query(api::map::SubmapRequest {
+                    min_x_m: localization.x_m - radius,
+                    min_y_m: localization.y_m - radius,
+                    max_x_m: localization.x_m + radius,
+                    max_y_m: localization.y_m + radius,
+                })
+                .await;
+            match response {
+                Ok(response) => Some(Timed {
+                    body: submap_has_drivable_space(&response)?,
+                    at: step.time(),
+                }),
+                Err(_) => None,
+            }
+        } else {
+            None
         };
-        let status = assess(&inputs, now_ns);
-        let authorization = authorize(&status, &inputs, now_ns);
-        api.authorization
-            .publish_at(step.time(), authorization)
+
+        self.sequence = self.sequence.saturating_add(1);
+        let motion = assess(&self.inputs, &self.bindings, self.sequence, step.time())?;
+        api.constraints
+            .publish_at(step.time(), motion.clone())
             .await?;
-        api.state.publish_at(step.time(), status).await?;
+        api.state
+            .publish_at(
+                step.time(),
+                api::safety::State {
+                    clear: !motion.stop && motion.constraints.is_empty(),
+                    motion,
+                },
+            )
+            .await?;
         Ok(())
     }
+}
+
+fn drain_latest<T: phoxal::bus::ContractBody + Clone>(
+    slot: &mut Option<Timed<T>>,
+    subscriber: &Subscriber<T>,
+) {
+    while let Some(received) = subscriber.try_recv() {
+        *slot = Some(Timed {
+            body: received.body,
+            at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
+        });
+    }
+}
+
+fn assess(
+    world: &WorldInputs,
+    bindings: &[RangeBinding],
+    sequence: u64,
+    now: LogicalTime,
+) -> Result<api::safety::MotionConstraints> {
+    let expires_at_ns = now.time_ns().saturating_add(CONSTRAINT_TTL_NS);
+    let mut constraints = Vec::new();
+
+    match usable(world.localization.as_ref(), now, INPUT_STALE_NS) {
+        None => constraints.push(stop_constraint(
+            api::safety::ConstraintReason::LocalizationUnavailable,
+            source(api::safety::ConstraintSourceKind::Localization, None),
+            None,
+            now,
+            expires_at_ns,
+        )),
+        Some(localization) => {
+            if !(localization.x_m.is_finite()
+                && localization.y_m.is_finite()
+                && localization.yaw_rad.is_finite()
+                && localization.confidence.is_finite())
+            {
+                bail!("localization world input contains a non-finite value");
+            }
+            if localization.confidence < MIN_LOCALIZATION_CONFIDENCE {
+                constraints.push(stop_constraint(
+                    api::safety::ConstraintReason::LocalizationUncertain,
+                    source(api::safety::ConstraintSourceKind::Localization, None),
+                    Some(localization.confidence),
+                    now,
+                    expires_at_ns,
+                ));
+            }
+        }
+    }
+
+    if usable(world.map.as_ref(), now, MAP_STALE_NS).is_none() {
+        constraints.push(stop_constraint(
+            api::safety::ConstraintReason::MapUnavailable,
+            source(api::safety::ConstraintSourceKind::Map, None),
+            None,
+            now,
+            expires_at_ns,
+        ));
+    }
+
+    match usable(world.drivable_space.as_ref(), now, MAP_STALE_NS) {
+        None => constraints.push(stop_constraint(
+            api::safety::ConstraintReason::WorldUnavailable,
+            source(api::safety::ConstraintSourceKind::WorldModel, None),
+            None,
+            now,
+            expires_at_ns,
+        )),
+        Some(false) => constraints.push(stop_constraint(
+            api::safety::ConstraintReason::DrivableSpaceUnavailable,
+            source(api::safety::ConstraintSourceKind::WorldModel, None),
+            None,
+            now,
+            expires_at_ns,
+        )),
+        Some(true) => {}
+    }
+
+    let mut nearest_range = None::<(f32, &RangeBinding)>;
+    for (binding, sample) in bindings.iter().zip(&world.ranges) {
+        let Some(sample) = usable(sample.as_ref(), now, INPUT_STALE_NS) else {
+            constraints.push(stop_constraint(
+                api::safety::ConstraintReason::WorldUnavailable,
+                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
+                None,
+                now,
+                expires_at_ns,
+            ));
+            continue;
+        };
+        if !sample.distance_m.is_finite()
+            || matches!(sample.health, api::component::range::SensorHealth::Fault)
+            || sample
+                .quality
+                .as_ref()
+                .is_some_and(|quality| !quality.valid)
+        {
+            constraints.push(stop_constraint(
+                api::safety::ConstraintReason::RangeSensorFault,
+                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
+                Some(sample.distance_m),
+                now,
+                expires_at_ns,
+            ));
+            continue;
+        }
+        if nearest_range.is_none_or(|(distance, _)| sample.distance_m < distance) {
+            nearest_range = Some((sample.distance_m, binding));
+        }
+    }
+
+    if let Some((distance, binding)) = nearest_range {
+        if distance <= PROTECTIVE_STOP_DISTANCE_M {
+            constraints.push(stop_constraint(
+                api::safety::ConstraintReason::ObstacleProximity,
+                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
+                Some(distance),
+                now,
+                expires_at_ns,
+            ));
+        } else if distance <= PROXIMITY_LIMIT_DISTANCE_M {
+            constraints.push(limit_constraint(
+                api::safety::ConstraintReason::ObstacleProximity,
+                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
+                PROXIMITY_LINEAR_LIMIT_MPS,
+                Some(distance),
+                now,
+                expires_at_ns,
+            ));
+        }
+    }
+
+    if let Some(drive) = usable(world.drive.as_ref(), now, INPUT_STALE_NS)
+        && matches!(
+            drive.stop_reason,
+            Some(api::drive::StopReason::Fault | api::drive::StopReason::ActuatorCommandNotFinite)
+        )
+    {
+        constraints.push(stop_constraint(
+            api::safety::ConstraintReason::DriveFault,
+            source(api::safety::ConstraintSourceKind::Drive, None),
+            None,
+            now,
+            expires_at_ns,
+        ));
+    }
+
+    if let Some(battery) = usable(world.battery.as_ref(), now, INPUT_STALE_NS) {
+        if !battery.charge_ratio.is_finite() {
+            bail!("battery world input contains a non-finite charge ratio");
+        }
+        if battery.charge_ratio <= 0.05 {
+            constraints.push(stop_constraint(
+                api::safety::ConstraintReason::BatteryCritical,
+                source(api::safety::ConstraintSourceKind::Battery, None),
+                Some(battery.charge_ratio),
+                now,
+                expires_at_ns,
+            ));
+        } else if battery.charge_ratio <= 0.15 {
+            constraints.push(limit_constraint(
+                api::safety::ConstraintReason::BatteryLow,
+                source(api::safety::ConstraintSourceKind::Battery, None),
+                PROXIMITY_LINEAR_LIMIT_MPS,
+                Some(battery.charge_ratio),
+                now,
+                expires_at_ns,
+            ));
+        }
+    }
+
+    let stop = constraints.iter().any(|constraint| constraint.stop);
+    let max_linear_speed_mps = constraints
+        .iter()
+        .filter_map(|constraint| constraint.max_linear_speed_mps)
+        .reduce(f32::min);
+    let max_angular_speed_radps = constraints
+        .iter()
+        .filter_map(|constraint| constraint.max_angular_speed_radps)
+        .reduce(f32::min);
+    Ok(api::safety::MotionConstraints {
+        sequence,
+        stop,
+        max_linear_speed_mps,
+        max_angular_speed_radps,
+        constraints,
+        expires_at_ns,
+    })
+}
+
+fn usable<T>(sample: Option<&Timed<T>>, now: LogicalTime, stale_ns: u64) -> Option<&T> {
+    sample
+        .filter(|sample| {
+            sample.at.epoch() == now.epoch()
+                && sample.at.time_ns() <= now.time_ns()
+                && now.time_ns().saturating_sub(sample.at.time_ns()) <= stale_ns
+        })
+        .map(|sample| &sample.body)
+}
+
+fn submap_has_drivable_space(response: &api::map::SubmapResponse) -> Result<bool> {
+    let expected = usize::try_from(response.width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(response.height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .context("map dimensions overflow")?;
+    if expected == 0 || response.cells.len() != expected {
+        bail!(
+            "map submap shape mismatch: {}x{} requires {expected} cells, got {}",
+            response.width,
+            response.height,
+            response.cells.len()
+        );
+    }
+    if !response.resolution_m.is_finite() || response.resolution_m <= 0.0 {
+        bail!("map submap resolution must be finite and positive");
+    }
+    if response
+        .cells
+        .iter()
+        .any(|cell| *cell > 100 && *cell != 255)
+    {
+        bail!("map submap contains an invalid occupancy value");
+    }
+    Ok(response.cells.contains(&0))
+}
+
+fn stop_constraint(
+    reason: api::safety::ConstraintReason,
+    source: api::safety::ConstraintSource,
+    observed_value: Option<f32>,
+    now: LogicalTime,
+    expires_at_ns: u64,
+) -> api::safety::Constraint {
+    api::safety::Constraint {
+        reason,
+        source,
+        stop: true,
+        max_linear_speed_mps: Some(0.0),
+        max_angular_speed_radps: Some(0.0),
+        observed_value,
+        valid_from_ns: now.time_ns(),
+        expires_at_ns,
+    }
+}
+
+fn limit_constraint(
+    reason: api::safety::ConstraintReason,
+    source: api::safety::ConstraintSource,
+    max_linear_speed_mps: f32,
+    observed_value: Option<f32>,
+    now: LogicalTime,
+    expires_at_ns: u64,
+) -> api::safety::Constraint {
+    api::safety::Constraint {
+        reason,
+        source,
+        stop: false,
+        max_linear_speed_mps: Some(max_linear_speed_mps),
+        max_angular_speed_radps: None,
+        observed_value,
+        valid_from_ns: now.time_ns(),
+        expires_at_ns,
+    }
+}
+
+fn source(
+    kind: api::safety::ConstraintSourceKind,
+    binding: Option<&RangeBinding>,
+) -> api::safety::ConstraintSource {
+    let participant_id = match kind {
+        api::safety::ConstraintSourceKind::Map => "map",
+        api::safety::ConstraintSourceKind::Localization => "localize",
+        api::safety::ConstraintSourceKind::Drive => "drive",
+        api::safety::ConstraintSourceKind::Battery => "battery-provider",
+        api::safety::ConstraintSourceKind::Range => binding
+            .map(|binding| binding.component_id.as_str())
+            .unwrap_or("range-provider"),
+        api::safety::ConstraintSourceKind::WorldModel => "safety",
+        api::safety::ConstraintSourceKind::Operator => "operator",
+    };
+    api::safety::ConstraintSource {
+        kind,
+        participant_id: participant_id.to_string(),
+        component_id: binding.map(|binding| binding.component_id.clone()),
+        capability_id: binding.map(|binding| binding.capability_id.clone()),
+    }
+}
+
+fn range_bindings(robot: &Robot) -> Vec<RangeBinding> {
+    let mut bindings = robot
+        .manifest
+        .components()
+        .iter()
+        .filter_map(|(component_id, instance)| {
+            robot
+                .components
+                .get(&instance.component)
+                .map(|component| (component_id, component))
+        })
+        .flat_map(|(component_id, component)| {
+            component
+                .capabilities
+                .iter()
+                .filter(|(_, capability)| matches!(capability, Capability::Range(_)))
+                .map(|(capability_id, _)| RangeBinding {
+                    component_id: component_id.clone(),
+                    capability_id: capability_id.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by(|left, right| {
+        left.component_id
+            .cmp(&right.component_id)
+            .then_with(|| left.capability_id.cmp(&right.capability_id))
+    });
+    bindings
 }
 
 fn main() -> phoxal::Result<()> {
@@ -168,291 +505,136 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
+    use super::*;
 
-    use super::{RequiredSources, Safety, SafetyInputs, Timed, api, assess, authorize, v2};
-    use crate::assessment::SOURCE_FRESH_NS;
-
-    const NOW_NS: u64 = 1_000_000_000;
-    const REQUIRED: RequiredSources = RequiredSources {
-        battery: true,
-        drive: true,
-    };
-
-    #[test]
-    fn nominal_when_all_healthy() {
-        let battery = timed(NOW_NS, battery(0.9));
-        let drive = timed(NOW_NS, drive(None));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Allow);
-        assert!(status.active_reasons.is_empty());
+    fn now() -> LogicalTime {
+        LogicalTime::new(3, 2_000_000_000)
     }
 
-    #[test]
-    fn battery_low_slows() {
-        let battery = timed(NOW_NS, battery(0.2));
-        let drive = timed(NOW_NS, drive(None));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Slow);
-        assert_eq!(
-            status.active_reasons[0].code,
-            api::safety::SafetyReasonCode::BatteryLow
-        );
-    }
-
-    #[test]
-    fn battery_critical_stops() {
-        let battery = timed(NOW_NS, battery(0.05));
-        let drive = timed(NOW_NS, drive(None));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Stop);
-        assert_eq!(
-            status.active_reasons[0].code,
-            api::safety::SafetyReasonCode::BatteryCritical
-        );
-    }
-
-    #[test]
-    fn drive_fault_stops() {
-        let battery = timed(NOW_NS, battery(0.9));
-        let drive = timed(NOW_NS, drive(Some(api::drive::StopReason::Fault)));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Stop);
-        assert!(
-            status
-                .active_reasons
-                .iter()
-                .any(|r| r.code == api::safety::SafetyReasonCode::DriveFault)
-        );
-    }
-
-    #[test]
-    fn drive_emergency_stop_engages_emergency_stop() {
-        let battery = timed(NOW_NS, battery(0.9));
-        let drive = timed(NOW_NS, drive(Some(api::drive::StopReason::EmergencyStop)));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::EmergencyStop);
-        assert!(
-            status
-                .active_reasons
-                .iter()
-                .any(|r| r.code == api::safety::SafetyReasonCode::EmergencyStopEngaged)
-        );
-        assert_zero_motion(&authorize(&status, &inputs, NOW_NS).approved_motion);
-    }
-
-    #[test]
-    fn worst_decision_wins() {
-        let battery = timed(NOW_NS, battery(0.2));
-        let drive = timed(NOW_NS, drive(Some(api::drive::StopReason::Fault)));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Stop);
-        assert!(
-            status
-                .active_reasons
-                .iter()
-                .any(|r| r.code == api::safety::SafetyReasonCode::BatteryLow)
-        );
-        assert!(
-            status
-                .active_reasons
-                .iter()
-                .any(|r| r.code == api::safety::SafetyReasonCode::DriveFault)
-        );
-    }
-
-    #[test]
-    fn emergency_stop_input_wins_and_authorizes_zero() {
-        let battery = timed(NOW_NS, battery(0.2));
-        let drive = timed(NOW_NS, drive(Some(api::drive::StopReason::Fault)));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), true);
-        let status = assess(&inputs, NOW_NS);
-        let authorization = authorize(&status, &inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::EmergencyStop);
-        assert_eq!(status.active_reasons.len(), 1);
-        assert_eq!(
-            status.active_reasons[0].code,
-            api::safety::SafetyReasonCode::EmergencyStopEngaged
-        );
-        assert_eq!(
-            authorization.decision,
-            api::safety::SafetyDecision::EmergencyStop
-        );
-        assert_zero_motion(&authorization.approved_motion);
-    }
-
-    #[test]
-    fn emergency_stop_latch_composes_software_and_component_sources() {
-        assert!(super::emergency_stop_engaged(true, &[false, false]));
-        assert!(super::emergency_stop_engaged(false, &[false, true]));
-        assert!(!super::emergency_stop_engaged(false, &[false, false]));
-    }
-
-    #[test]
-    fn missing_required_inputs_fail_closed() {
-        let inputs = inputs(REQUIRED, None, None, false);
-        let status = assess(&inputs, NOW_NS);
-        let authorization = authorize(&status, &inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Stop);
-        assert!(
-            status
-                .active_reasons
-                .iter()
-                .any(|r| r.code == api::safety::SafetyReasonCode::SourceStale)
-        );
-        assert_zero_motion(&authorization.approved_motion);
-    }
-
-    #[test]
-    fn stale_required_source_fails_closed() {
-        let now_ns = SOURCE_FRESH_NS + 1;
-        let battery = timed(0, battery(0.9));
-        let drive = timed(now_ns, drive(None));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, now_ns);
-        let authorization = authorize(&status, &inputs, now_ns);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Stop);
-        assert!(
-            status
-                .active_reasons
-                .iter()
-                .any(|r| r.code == api::safety::SafetyReasonCode::SourceStale)
-        );
-        assert_zero_motion(&authorization.approved_motion);
-    }
-
-    #[test]
-    fn optional_missing_battery_does_not_block_nominal_drive() {
-        let drive = timed(NOW_NS, drive(None));
-        let inputs = inputs(
-            RequiredSources {
-                battery: false,
-                drive: true,
-            },
-            None,
-            Some(&drive),
-            false,
-        );
-        let status = assess(&inputs, NOW_NS);
-
-        assert_eq!(status.decision, api::safety::SafetyDecision::Allow);
-        assert!(status.active_reasons.is_empty());
-    }
-
-    #[test]
-    fn authorization_matches_status() {
-        let battery = timed(1_000, battery(0.2));
-        let drive = timed(1_000, drive(None));
-        let inputs = inputs(REQUIRED, Some(&battery), Some(&drive), false);
-        let status = assess(&inputs, 1_000);
-        let authorization = authorize(&status, &inputs, 1_000);
-
-        assert_eq!(authorization.decision, api::safety::SafetyDecision::Slow);
-        assert_eq!(authorization.expires_at_ns, Some(100_001_000));
-        assert_eq!(authorization.reasons, status.active_reasons);
-        assert_eq!(authorization.approved_motion.linear_x_mps.max, 0.1);
-    }
-
-    #[test]
-    fn api_reports_mixed_version_contracts() {
-        assert_eq!(<Safety as Participant>::ID, "safety");
-
-        // The moved contract's version-qualified wire key (D1): battery
-        // subscribes on v2, everything else stays on v1.
-        assert_eq!(
-            <v2::battery::State as ContractBody>::TOPIC,
-            "v2/battery/state"
-        );
-
-        let contracts = <<Safety as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<v2::battery::State>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::drive::State>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::safety::EmergencyStopRequest>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::component::emergency_stop::State>(
-            contracts,
-            ContractRole::Subscribe,
-        );
-        assert_contract::<api::safety::SafetyAuthorization>(contracts, ContractRole::Publish);
-        assert_contract::<api::safety::Status>(contracts, ContractRole::Publish);
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == B::TOPIC && c.role == role),
-            "expected a {role:?} contract for {} in {contracts:?}",
-            B::TOPIC
-        );
-    }
-
-    fn inputs<'a>(
-        required: RequiredSources,
-        battery: Option<&'a Timed<v2::battery::State>>,
-        drive: Option<&'a Timed<api::drive::State>>,
-        emergency_stop_engaged: bool,
-    ) -> SafetyInputs<'a> {
-        SafetyInputs {
-            required,
-            battery,
-            drive,
-            emergency_stop_engaged,
-        }
-    }
-
-    fn timed<T>(produced_at_ns: u64, body: T) -> Timed<T> {
-        Timed {
-            body,
-            produced_at_ns,
-        }
-    }
-
-    fn battery(charge_ratio: f32) -> v2::battery::State {
-        v2::battery::State {
-            voltage_v: 15.0,
-            current_a: 1.0,
-            charge_ratio,
-        }
-    }
-
-    fn drive(stop_reason: Option<api::drive::StopReason>) -> api::drive::State {
-        let target = api::drive::Target {
-            linear_x_mps: 0.0,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
+    fn nominal_world() -> (Vec<RangeBinding>, WorldInputs) {
+        let binding = RangeBinding {
+            component_id: "front".to_string(),
+            capability_id: "range".to_string(),
         };
-
-        api::drive::State {
-            target: target.clone(),
-            limited_target: target,
-            actuator_authority: api::drive::ActuatorAuthority::Active,
-            stop_reason,
-        }
+        let at = now();
+        let mut world = WorldInputs::new(1);
+        world.localization = Some(Timed {
+            body: api::localize::LocalizationState {
+                x_m: 0.0,
+                y_m: 0.0,
+                yaw_rad: 0.0,
+                confidence: 1.0,
+            },
+            at,
+        });
+        world.map = Some(Timed {
+            body: api::map::Revision {
+                revision: 1,
+                resolution_m: 0.05,
+            },
+            at,
+        });
+        world.drivable_space = Some(Timed { body: true, at });
+        world.ranges[0] = Some(Timed {
+            body: api::component::range::Sample {
+                distance_m: 2.0,
+                limits: None,
+                measured_at_ns: Some(at.time_ns()),
+                quality: None,
+                health: api::component::range::SensorHealth::Nominal,
+            },
+            at,
+        });
+        (vec![binding], world)
     }
 
-    fn assert_zero_motion(approved_motion: &api::safety::MotionConstraint) {
-        assert_eq!(approved_motion.linear_x_mps.min, 0.0);
-        assert_eq!(approved_motion.linear_x_mps.max, 0.0);
-        assert_eq!(approved_motion.angular_z_radps.min, 0.0);
-        assert_eq!(approved_motion.angular_z_radps.max, 0.0);
+    #[test]
+    fn nominal_world_is_clear_and_expires_after_three_periods() {
+        let (bindings, world) = nominal_world();
+        let result = assess(&world, &bindings, 7, now()).unwrap();
+        assert!(!result.stop);
+        assert!(result.constraints.is_empty());
+        assert_eq!(result.sequence, 7);
+        assert_eq!(result.expires_at_ns - now().time_ns(), CONSTRAINT_TTL_NS);
+    }
+
+    #[test]
+    fn missing_world_inputs_fail_closed_with_typed_reasons() {
+        let bindings = vec![RangeBinding {
+            component_id: "front".to_string(),
+            capability_id: "range".to_string(),
+        }];
+        let result = assess(&WorldInputs::new(1), &bindings, 1, now()).unwrap();
+        assert!(result.stop);
+        assert!(result.constraints.iter().any(|constraint| {
+            constraint.reason == api::safety::ConstraintReason::LocalizationUnavailable
+        }));
+        assert!(result.constraints.iter().any(|constraint| {
+            constraint.reason == api::safety::ConstraintReason::MapUnavailable
+        }));
+        assert!(result.constraints.iter().any(|constraint| {
+            constraint.reason == api::safety::ConstraintReason::WorldUnavailable
+                && constraint.source.component_id.as_deref() == Some("front")
+        }));
+    }
+
+    #[test]
+    fn proximity_stops_or_limits_with_provenance() {
+        let (bindings, mut world) = nominal_world();
+        world.ranges[0].as_mut().unwrap().body.distance_m = 0.2;
+        let stopped = assess(&world, &bindings, 1, now()).unwrap();
+        assert!(stopped.stop);
+        assert_eq!(
+            stopped.constraints[0].reason,
+            api::safety::ConstraintReason::ObstacleProximity
+        );
+        assert_eq!(
+            stopped.constraints[0].source.component_id.as_deref(),
+            Some("front")
+        );
+
+        world.ranges[0].as_mut().unwrap().body.distance_m = 0.5;
+        let limited = assess(&world, &bindings, 2, now()).unwrap();
+        assert!(!limited.stop);
+        assert_eq!(
+            limited.max_linear_speed_mps,
+            Some(PROXIMITY_LINEAR_LIMIT_MPS)
+        );
+    }
+
+    #[test]
+    fn prior_epoch_samples_never_authorize_motion() {
+        let (bindings, mut world) = nominal_world();
+        world.localization.as_mut().unwrap().at = LogicalTime::new(2, now().time_ns());
+        let result = assess(&world, &bindings, 1, now()).unwrap();
+        assert!(result.stop);
+        assert!(result.constraints.iter().any(|constraint| {
+            constraint.reason == api::safety::ConstraintReason::LocalizationUnavailable
+        }));
+    }
+
+    #[test]
+    fn submap_content_is_validated_and_requires_known_free_space() {
+        let response = api::map::SubmapResponse {
+            width: 2,
+            height: 1,
+            resolution_m: 0.05,
+            cells: vec![255, 0],
+        };
+        assert!(submap_has_drivable_space(&response).unwrap());
+        assert!(
+            !submap_has_drivable_space(&api::map::SubmapResponse {
+                cells: vec![255, 100],
+                ..response.clone()
+            })
+            .unwrap()
+        );
+        assert!(
+            submap_has_drivable_space(&api::map::SubmapResponse {
+                cells: vec![0],
+                ..response
+            })
+            .is_err()
+        );
     }
 }

@@ -29,6 +29,7 @@ impl ToolJoypad {
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
         let bus = ctx.raw_bus();
+        let clock = ctx.clock();
 
         let manual_publisher =
             Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())?;
@@ -47,6 +48,7 @@ impl ToolJoypad {
                 devices_publisher,
                 connect_subscriber,
                 rescan_subscriber,
+                clock,
             )
             .await
         });
@@ -91,6 +93,7 @@ async fn run_joypad(
     devices_publisher: Publisher<api::joypad::Devices>,
     connect_subscriber: Subscriber<api::joypad::Connect>,
     rescan_subscriber: Subscriber<api::joypad::Rescan>,
+    clock: std::sync::Arc<dyn phoxal::participant::ClockSource>,
 ) {
     let mut gilrs = match Gilrs::new() {
         Ok(gilrs) => Some(gilrs),
@@ -106,7 +109,7 @@ async fn run_joypad(
     } else {
         registry.last_error = Some("gamepad backend unavailable".to_string());
     }
-    publish_devices(&devices_publisher, &registry).await;
+    publish_devices(&devices_publisher, &registry, clock.now()).await;
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs_f64(1.0 / POLL_HZ));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -122,13 +125,13 @@ async fn run_joypad(
                     }
                 }
                 if changed {
-                    publish_devices(&devices_publisher, &registry).await;
+                    publish_devices(&devices_publisher, &registry, clock.now()).await;
                 }
 
                 let Some(gilrs) = gilrs.as_ref() else { continue };
                 let Some(selected_id) = selected_gilrs_id(&registry) else { continue };
                 let command = command_from_gamepad(&gilrs.gamepad(selected_id));
-                if let Err(error) = manual_publisher.publish_at(now(), command).await {
+                if let Err(error) = manual_publisher.publish_at(clock.now(), command).await {
                     tracing::warn!(target: "tool_joypad", error = %error, "publish failed");
                 }
             }
@@ -140,7 +143,7 @@ async fn run_joypad(
                         } else {
                             registry.last_error = Some("gamepad backend unavailable".to_string());
                         }
-                        publish_devices(&devices_publisher, &registry).await;
+                        publish_devices(&devices_publisher, &registry, clock.now()).await;
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "connect subscription failed");
@@ -156,7 +159,7 @@ async fn run_joypad(
                         } else {
                             registry.last_error = Some("gamepad backend unavailable".to_string());
                         }
-                        publish_devices(&devices_publisher, &registry).await;
+                        publish_devices(&devices_publisher, &registry, clock.now()).await;
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "rescan subscription failed");
@@ -186,9 +189,13 @@ fn selected_gilrs_id(registry: &Registry) -> Option<GamepadId> {
     registry.entries.get(selected)?.gilrs_id
 }
 
-async fn publish_devices(publisher: &Publisher<api::joypad::Devices>, registry: &Registry) {
+async fn publish_devices(
+    publisher: &Publisher<api::joypad::Devices>,
+    registry: &Registry,
+    at: LogicalTime,
+) {
     let devices = devices_snapshot(registry);
-    if let Err(error) = publisher.publish_at(now(), devices).await {
+    if let Err(error) = publisher.publish_at(at, devices).await {
         tracing::warn!(target: "tool_joypad", error = %error, "devices publish failed");
     }
 }
@@ -430,13 +437,6 @@ fn assign_stable_id(entries: &HashMap<String, PadEntry>, base: &str) -> String {
         }
         suffix += 1;
     }
-}
-
-fn now() -> LogicalTime {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    LogicalTime::new(0, u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 /// Read the four shoulder inputs and mix them into a differential-drive

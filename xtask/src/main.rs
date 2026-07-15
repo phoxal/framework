@@ -1,7 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod api;
 mod catalog;
 mod coherence;
 mod release;
@@ -16,10 +15,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    Api {
-        #[command(subcommand)]
-        command: api::Command,
-    },
     Release {
         #[command(subcommand)]
         command: release::Command,
@@ -40,7 +35,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Api { command } => api::run(command),
         Command::Release { command } => release::run(command),
         Command::Catalog { command } => catalog::run(command),
         Command::CoherenceCheck(args) => coherence::run(args),

@@ -26,15 +26,12 @@ examples/hello-rover/
   components/wheel_drive/          # one robot-local component definition
     component.yaml
     structure.urdf
-  services/cruise/                 # one user service crate
-    Cargo.toml
-    src/main.rs
 ```
 
 `hello-rover` is a two-wheel differential-drive rover.
-Both wheels are instances of the same `wheel_drive` component type, and one
-user service (`cruise`) commands a constant forward speed while the official
-`safety` participant authorizes it.
+Both wheels are instances of the same `wheel_drive` component type. Motion is
+commanded through the official manual or navigation candidate contracts; the
+example intentionally carries no always-moving cruise service.
 It is deliberately small: no sensors beyond what the kinematic model needs,
 no simulation world, and no hardware driver.
 Use it as the shape to copy from, not as a real robot.
@@ -179,7 +176,8 @@ workspace's `phoxal`/`phoxal-api` crates, plus:
   `#[phoxal::behavior]` block with `#[setup]` (builds the `Api` from
   `SetupContext`) and `#[step(hz = N)]` (the control loop).
 
-`hello-rover`'s `services/cruise/src/main.rs` in full:
+The smallest motion-producing user service publishes a manual candidate; the
+official `motion` service owns arbitration, freshness, limits, and e-stop:
 
 ```rust
 use anyhow::Result;
@@ -192,10 +190,7 @@ struct Config {
 }
 
 #[derive(phoxal::Api)]
-struct Api {
-    authorization: Latest<api::safety::SafetyAuthorization>,
-    target: Publisher<api::drive::Target>,
-}
+struct Api { manual: Publisher<api::motion::ManualCommand> }
 
 #[phoxal::service(id = "cruise")]
 struct Cruise {
@@ -212,16 +207,17 @@ impl Cruise {
         Ok((
             Self { cruise_speed_mps: config.cruise_speed_mps },
             Self::Api {
-                authorization: ctx.latest(api::topic::new().safety().authorization()).await?,
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                manual: ctx.publisher(api::topic::new().motion().manual()).await?,
             },
         ))
     }
 
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        // ... clamp self.cruise_speed_mps to api.authorization.latest(),
-        // publish api::drive::Target ...
+        api.manual.publish_at(step.time(), api::motion::ManualCommand {
+            linear_x_mps: f64::from(self.cruise_speed_mps),
+            angular_z_radps: 0.0,
+        }).await?;
         Ok(())
     }
 }

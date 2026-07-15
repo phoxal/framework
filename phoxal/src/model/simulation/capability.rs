@@ -21,6 +21,7 @@ pub enum Capability {
     Speaker,
     Battery,
     Led,
+    EmergencyStop(EmergencyStop),
 }
 
 impl Capability {
@@ -43,6 +44,7 @@ impl Capability {
             Self::Speaker => "speaker",
             Self::Battery => "battery",
             Self::Led => "led",
+            Self::EmergencyStop(_) => "emergency_stop",
         }
     }
 
@@ -177,9 +179,17 @@ impl Capability {
                 validate_sampling(config.sampling_period_hz, field, errors);
                 validate_optional_finite(config.aperture, field, "aperture", errors);
             }
-            Self::Speaker | Self::Battery | Self::Led => {}
+            Self::Speaker | Self::Battery | Self::Led | Self::EmergencyStop(_) => {}
         }
     }
+}
+
+/// Deterministic emergency-stop input for a simulated component.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct EmergencyStop {
+    #[serde(default)]
+    pub engaged: bool,
 }
 
 fn validate_sampling(value: f64, field: &str, errors: &mut Vec<String>) {

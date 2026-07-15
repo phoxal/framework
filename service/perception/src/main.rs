@@ -115,10 +115,15 @@ impl Perception {
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.drain_inputs(api);
 
-        let now_ns = step.time().time_ns();
-        let detections = self.detect(now_ns);
+        let now = step.time();
+        if self.camera_sources.is_empty()
+            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE_NS).is_none()
+        {
+            return Ok(());
+        }
+        let detections = self.detect(now);
         let healthy = !detections.is_empty()
-            || latest_fresh_camera_index(&self.latest_cameras, now_ns, CAMERA_STALE_NS).is_some();
+            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE_NS).is_some();
         if healthy {
             self.health.observe_healthy();
         } else {
@@ -130,7 +135,7 @@ impl Perception {
                 step.time(),
                 api::perception::Detections {
                     detections,
-                    stamp_ns: Some(now_ns),
+                    stamp_ns: Some(now.time_ns()),
                 },
             )
             .await?;
@@ -153,7 +158,7 @@ impl Perception {
             while let Some(received) = subscriber.try_recv() {
                 *slot = Some(FrameSample {
                     body: received.body,
-                    produced_at_ns: received.metadata.produced_at_ns,
+                    at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
                 });
             }
         }
@@ -161,21 +166,21 @@ impl Perception {
             while let Some(received) = subscriber.try_recv() {
                 *slot = Some(FrameSample {
                     body: received.body,
-                    produced_at_ns: received.metadata.produced_at_ns,
+                    at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
                 });
             }
         }
         while let Some(received) = api.localization.try_recv() {
             self.latest_localization = Some(FrameSample {
                 body: received.body,
-                produced_at_ns: received.metadata.produced_at_ns,
+                at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
             });
         }
     }
 
-    fn detect(&mut self, now_ns: u64) -> Vec<api::perception::Detection> {
+    fn detect(&mut self, now: LogicalTime) -> Vec<api::perception::Detection> {
         let Some(camera_index) =
-            latest_fresh_camera_index(&self.latest_cameras, now_ns, CAMERA_STALE_NS)
+            latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE_NS)
         else {
             return Vec::new();
         };
@@ -188,17 +193,17 @@ impl Perception {
             &self.depth_sources,
             &self.latest_depths,
             &source.component_id,
-            now_ns,
+            now,
             DEPTH_STALE_NS,
         );
         let localization = fresh_localization(
             &self.latest_localization,
-            now_ns,
+            now,
             LOCALIZATION_STALE_NS,
             MIN_LOCALIZATION_CONFIDENCE,
         )
         .cloned();
-        let stamp_ns = camera.body.measured_at_ns.unwrap_or(camera.produced_at_ns);
+        let stamp_ns = camera.body.measured_at_ns.unwrap_or(camera.at.time_ns());
 
         let raw = detect_with(
             &mut self.detector,

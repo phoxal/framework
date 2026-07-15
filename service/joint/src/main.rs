@@ -3,7 +3,7 @@
 //! A scheduled participant that bridges component-level encoders to joint-level state.
 //! At setup it enumerates every joint-targeted encoder capability in the robot
 //! model (D33), rejecting any with a non-positive gear ratio or zero counts per
-//! revolution, and fails if the robot exposes no such encoder.
+//! revolution. A robot with no joint-targeted encoder reports `Inactive`.
 //! It subscribes to the per-capability `component/<id>/encoder/<cap>/sample` topic
 //! for each binding, and publishes the per-joint `joint/<id>/state` topic.
 //! Each step it takes the latest encoder sample per joint, scales position and
@@ -18,6 +18,8 @@ use phoxal::model::component::v0::capability::{Capability, StructuralTarget};
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::v1 as api;
+
+const ENCODER_STALE_NS: u64 = 200_000_000;
 
 #[derive(Clone, Debug)]
 struct EncoderBinding {
@@ -84,10 +86,6 @@ impl JointConfig {
             }
         }
 
-        if encoders.is_empty() {
-            bail!("joint participant requires at least one joint-targeted encoder capability");
-        }
-
         Ok(Self { encoders })
     }
 }
@@ -95,6 +93,7 @@ impl JointConfig {
 #[phoxal::service(id = "joint", config = ())]
 struct Joint {
     config: JointConfig,
+    sample_at: Vec<Option<LogicalTime>>,
 }
 
 #[phoxal::behavior]
@@ -127,20 +126,48 @@ impl Joint {
             );
         }
 
-        Ok((Self { config }, Self::Api { encoders, states }))
+        Ok((
+            Self {
+                sample_at: vec![None; config.encoders.len()],
+                config,
+            },
+            Self::Api { encoders, states },
+        ))
     }
 
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let mut latest_by_joint = BTreeMap::new();
-        for (subscriber, binding) in api.encoders.iter_mut().zip(&self.config.encoders) {
+        let now = step.time();
+        for ((subscriber, binding), sample_at) in api
+            .encoders
+            .iter_mut()
+            .zip(&self.config.encoders)
+            .zip(&mut self.sample_at)
+        {
             let mut latest = None;
             while let Some(received) = subscriber.try_recv() {
+                *sample_at = Some(LogicalTime::new(
+                    received.metadata.epoch,
+                    received.metadata.produced_at_ns,
+                ));
                 latest = Some(received.body);
             }
 
-            if let Some(sample) = latest {
-                latest_by_joint.insert(binding.joint_id.clone(), joint_state(&sample, binding));
+            if let Some(sample) = latest
+                && sample_at.is_some_and(|at| {
+                    at.epoch() == now.epoch()
+                        && at.time_ns() <= now.time_ns()
+                        && now.time_ns().saturating_sub(at.time_ns()) <= ENCODER_STALE_NS
+                })
+            {
+                let state = joint_state(&sample, binding).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "encoder '{}' published a non-finite sample",
+                        binding.joint_id
+                    )
+                })?;
+                latest_by_joint.insert(binding.joint_id.clone(), state);
             }
         }
 
@@ -156,13 +183,16 @@ impl Joint {
 fn joint_state(
     sample: &api::component::encoder::Sample,
     binding: &EncoderBinding,
-) -> api::joint::JointState {
+) -> Option<api::joint::JointState> {
+    if !(sample.position_rad.is_finite() && sample.velocity_radps.is_finite()) {
+        return None;
+    }
     let scale = f64::from(binding.direction_sign) / binding.gear_ratio;
-    api::joint::JointState {
+    Some(api::joint::JointState {
         position_rad: sample.position_rad * scale,
         velocity_radps: f64::from(sample.velocity_radps) * scale,
         effort_nm: None,
-    }
+    })
 }
 
 fn main() -> phoxal::Result<()> {
@@ -208,7 +238,8 @@ mod tests {
                 velocity_radps: 6.0,
             },
             &binding(1, 2.0),
-        );
+        )
+        .unwrap();
 
         assert_close(state.position_rad, 2.0);
         assert_close(state.velocity_radps, 3.0);
@@ -223,10 +254,35 @@ mod tests {
                 velocity_radps: 2.5,
             },
             &binding(-1, 1.0),
-        );
+        )
+        .unwrap();
 
         assert_close(state.position_rad, -1.25);
         assert_close(state.velocity_radps, -2.5);
+    }
+
+    #[test]
+    fn non_finite_encoder_samples_are_rejected() {
+        assert!(
+            joint_state(
+                &api::component::encoder::Sample {
+                    position_rad: f64::NAN,
+                    velocity_radps: 1.0,
+                },
+                &binding(1, 1.0),
+            )
+            .is_none()
+        );
+        assert!(
+            joint_state(
+                &api::component::encoder::Sample {
+                    position_rad: 1.0,
+                    velocity_radps: f32::INFINITY,
+                },
+                &binding(1, 1.0),
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -247,6 +303,21 @@ mod tests {
                 .iter()
                 .any(|binding| binding.direction_sign == -1)
         );
+    }
+
+    #[test]
+    fn no_joint_encoders_is_a_valid_inactive_configuration() {
+        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
+        let mut robot = robot;
+        robot.components.values_mut().for_each(|component| {
+            component.capabilities.retain(|_, capability| {
+                !matches!(
+                    capability,
+                    phoxal::model::component::v0::capability::Capability::Encoder(_)
+                )
+            });
+        });
+        assert!(JointConfig::from_robot(&robot).unwrap().encoders.is_empty());
     }
 
     #[test]

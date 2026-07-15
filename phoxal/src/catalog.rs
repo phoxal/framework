@@ -26,6 +26,26 @@ use serde::{Deserialize, Serialize};
 /// pointing a reader at an unrelated JSON file.
 pub const SCHEMA: &str = "phoxal.catalog/v0";
 
+/// Canonical statically launched platform-service inventory. The CLI consumes
+/// this constant directly; xtask verifies it against workspace artifacts.
+pub const OFFICIAL_SERVICES: &[(&str, &str)] = &[
+    ("asset", "phoxal/service-asset"),
+    ("behavior-executive", "phoxal/service-behavior-executive"),
+    ("drive", "phoxal/service-drive"),
+    ("frame", "phoxal/service-frame"),
+    ("joint", "phoxal/service-joint"),
+    ("localize", "phoxal/service-localize"),
+    ("map", "phoxal/service-map"),
+    ("motion", "phoxal/service-motion"),
+    ("navigation", "phoxal/service-navigation"),
+    ("odometry", "phoxal/service-odometry"),
+    ("perception", "phoxal/service-perception"),
+    ("power", "phoxal/service-power"),
+    ("presence", "phoxal/service-presence"),
+    ("safety", "phoxal/service-safety"),
+    ("video", "phoxal/service-video"),
+];
+
 /// The full artifact index for one `build-*` release stream: the previous
 /// catalog's complete `artifacts[]` with this run's rebuilt `(package, version)`
 /// pairs upserted.
