@@ -68,8 +68,8 @@ enum Effect {
     },
 }
 
-#[phoxal::service(id = "behavior-executive", config = ())]
-struct BehaviorExecutive {
+#[phoxal::service(id = "behavior", config = ())]
+struct BehaviorService {
     catalog: BehaviorCatalog,
     execution: Option<Execution>,
     queued: VecDeque<api::behavior::Request>,
@@ -81,7 +81,7 @@ struct BehaviorExecutive {
 }
 
 #[phoxal::behavior]
-impl BehaviorExecutive {
+impl BehaviorService {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
@@ -318,7 +318,7 @@ impl BehaviorExecutive {
     }
 }
 
-impl BehaviorExecutive {
+impl BehaviorService {
     async fn handle_command(
         &mut self,
         api: &Api,
@@ -673,7 +673,7 @@ impl BehaviorExecutive {
                     node_path,
                     kind,
                     failure,
-                    participant_id: "behavior-executive".to_string(),
+                    participant_id: "behavior".to_string(),
                     logical_time_ns: at.time_ns(),
                 },
             )
@@ -751,7 +751,7 @@ impl BehaviorExecutive {
                     node_path: None,
                     kind,
                     failure,
-                    participant_id: "behavior-executive".to_string(),
+                    participant_id: "behavior".to_string(),
                     logical_time_ns: at.time_ns(),
                 },
             )
@@ -1311,7 +1311,7 @@ fn sanitize(value: &str) -> String {
 }
 
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<BehaviorExecutive>()
+    phoxal::run::<BehaviorService>()
 }
 
 #[cfg(test)]

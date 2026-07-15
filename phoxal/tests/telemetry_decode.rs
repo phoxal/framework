@@ -135,7 +135,7 @@ async fn v1_behavior_event_subscription_counts_a_malformed_payload() {
         node_path: None,
         kind: v1::behavior::EventKind::RequestAccepted,
         failure: None,
-        participant_id: "behavior-executive".to_string(),
+        participant_id: "behavior".to_string(),
         logical_time_ns: 1,
     };
     publisher

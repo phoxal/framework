@@ -30,7 +30,7 @@ pub const SCHEMA: &str = "phoxal.catalog/v0";
 /// this constant directly; xtask verifies it against workspace artifacts.
 pub const OFFICIAL_SERVICES: &[(&str, &str)] = &[
     ("asset", "phoxal/service-asset"),
-    ("behavior-executive", "phoxal/service-behavior-executive"),
+    ("behavior", "phoxal/service-behavior"),
     ("drive", "phoxal/service-drive"),
     ("frame", "phoxal/service-frame"),
     ("joint", "phoxal/service-joint"),
