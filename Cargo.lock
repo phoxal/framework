@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.1.0"
+version = "0.19.9"
 dependencies = [
  "anyhow",
  "phoxal",
