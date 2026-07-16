@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
 use phoxal::catalog::{Artifact as CatalogArtifact, Blob, BuildProvenance, Catalog, Heads};
 use phoxal::check::{ParticipantContractSurface, check_coherence};
+use semver::Version;
 
 use crate::release::package::{self, PackagedOutput};
 use crate::release::plan::{ReleasePlan, ReleaseScope, load_release_plan};
@@ -352,6 +353,8 @@ fn merge_artifacts(
     artifacts: &[OfficialArtifact],
     options: &GenerateOptions,
 ) -> Result<Vec<CatalogArtifact>> {
+    validate_monotonic_versions(artifacts, options.previous_catalog.as_ref())?;
+
     let mut merged: BTreeMap<(String, String), CatalogArtifact> = BTreeMap::new();
     if let Some(previous) = &options.previous_catalog {
         for entry in &previous.artifacts {
@@ -371,6 +374,59 @@ fn merge_artifacts(
     }
 
     Ok(merged.into_values().collect())
+}
+
+/// A package identity has one monotonic version history. The full catalog keeps
+/// old versions addressable for exact pins, so resetting an existing package to
+/// a lower SemVer would otherwise leave unpinned consumers on the older,
+/// numerically greater artifact forever.
+fn validate_monotonic_versions(
+    artifacts: &[OfficialArtifact],
+    previous_catalog: Option<&Catalog>,
+) -> Result<()> {
+    let Some(previous) = previous_catalog else {
+        return Ok(());
+    };
+
+    for artifact in artifacts {
+        let current = Version::parse(&artifact.version).with_context(|| {
+            format!(
+                "official artifact {} has invalid SemVer {}",
+                artifact.package, artifact.version
+            )
+        })?;
+        let highest = previous
+            .artifacts
+            .iter()
+            .filter(|entry| entry.package == artifact.package)
+            .map(|entry| {
+                Version::parse(&entry.version)
+                    .with_context(|| {
+                        format!(
+                            "catalog artifact {} has invalid SemVer {}",
+                            entry.package, entry.version
+                        )
+                    })
+                    .map(|version| (entry.version.as_str(), version))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max_by(|left, right| left.1.cmp(&right.1));
+
+        if let Some((highest_text, highest)) = highest
+            && current < highest
+        {
+            bail!(
+                "official artifact {} version {} is lower than catalog version {}; versions for \
+                 the same package identity must be monotonic",
+                artifact.package,
+                artifact.version,
+                highest_text
+            );
+        }
+    }
+
+    Ok(())
 }
 
 /// Whether `artifact`'s *current* version has facts on disk this run: in
@@ -467,6 +523,19 @@ mod tests {
         }
     }
 
+    fn service_artifact(id: &str, version: &str) -> OfficialArtifact {
+        OfficialArtifact {
+            package: crate::workspace::package_identity(ArtifactKind::Service, id),
+            package_name: Some(format!("phoxal-service-{id}")),
+            kind: ArtifactKind::Service,
+            version: version.to_string(),
+            crate_dir: PathBuf::new(),
+            bin_name: Some(format!("phoxal-service-{id}")),
+            id: id.to_string(),
+            metadata: Default::default(),
+        }
+    }
+
     fn write_packaged_fixture(dir: &Path, artifact: &OfficialArtifact, triple: &str) -> Result<()> {
         fs::create_dir_all(dir)?;
         let stem = package::asset_stem(artifact, triple);
@@ -550,6 +619,44 @@ mod tests {
         assert_eq!(
             merged[0].assets.as_ref().unwrap().url,
             "https://github.com/phoxal/framework/releases/download/build-old/a.tar.zst"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn merge_rejects_a_same_package_version_regression() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let reset = service_artifact("safety", "0.1.0");
+        let target = reset.supported_target_triples()[0].clone();
+        write_packaged_fixture(temp.path(), &reset, &target)?;
+        let previous = Catalog::new(
+            fixture_build(),
+            vec![CatalogArtifact {
+                package: reset.package.clone(),
+                version: "0.19.9".to_string(),
+                targets: BTreeMap::from([(
+                    target,
+                    Blob {
+                        url: "https://github.com/phoxal/framework/releases/download/build-old/a.tar.zst"
+                            .to_string(),
+                        sha256: "b".repeat(64),
+                        size: 7,
+                    },
+                )]),
+                assets: None,
+            }],
+            Heads::empty(),
+        );
+
+        let mut options = base_options(temp.path());
+        options.previous_catalog = Some(previous);
+        let error = merge_artifacts(std::slice::from_ref(&reset), &options)
+            .expect_err("a package version reset must be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "phoxal/service-safety version 0.1.0 is lower than catalog version 0.19.9"
+            )
         );
         Ok(())
     }

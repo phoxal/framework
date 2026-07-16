@@ -50,6 +50,8 @@ fn select_artifacts(
     args: &Args,
     git: &dyn GitQuery,
 ) -> Result<Vec<OfficialArtifact>> {
+    validate_monotonic_versions(workspace, git)?;
+
     if args.changed {
         return changed_artifacts(workspace, git);
     }
@@ -61,9 +63,10 @@ fn select_artifacts(
     Ok(vec![workspace.official_artifact(package)?.clone()])
 }
 
-/// Minimal seam over the two git queries used by `--changed`.
+/// Minimal seam over the git queries used by release selection and notes.
 trait GitQuery {
     fn tag_exists(&self, tag: &str) -> Result<bool>;
+    fn released_versions(&self, artifact: &OfficialArtifact) -> Result<Vec<String>>;
     fn changed_since(&self, tag: &str, path: &Path) -> Result<bool>;
     fn commit_subjects_since(&self, tag: &str, path: &Path) -> Result<Vec<String>>;
 }
@@ -80,6 +83,30 @@ impl GitQuery for CliGitQuery {
             .status()
             .with_context(|| format!("failed to spawn git rev-parse for tag {tag}"))?;
         Ok(status.success())
+    }
+
+    fn released_versions(&self, artifact: &OfficialArtifact) -> Result<Vec<String>> {
+        let prefix = release_tag_version_prefix(artifact)?;
+        let output = Command::new("git")
+            .args(["tag", "--list", &format!("{prefix}*")])
+            .output()
+            .with_context(|| format!("failed to list release tags for {}", artifact.package))?;
+        if !output.status.success() {
+            bail!(
+                "git tag --list for {} failed with {}",
+                artifact.package,
+                output.status
+            );
+        }
+        String::from_utf8(output.stdout)
+            .context("git tag emitted non-UTF-8 tag names")?
+            .lines()
+            .map(|tag| {
+                tag.strip_prefix(&prefix)
+                    .with_context(|| format!("release tag {tag} does not start with {prefix}"))
+                    .map(str::to_owned)
+            })
+            .collect()
     }
 
     fn changed_since(&self, tag: &str, path: &Path) -> Result<bool> {
@@ -117,6 +144,64 @@ impl GitQuery for CliGitQuery {
             .context("git log emitted non-UTF-8 commit subjects")
             .map(|text| text.lines().map(str::to_owned).collect())
     }
+}
+
+fn release_tag_version_prefix(artifact: &OfficialArtifact) -> Result<String> {
+    let current_tag = artifact.release_tag();
+    current_tag
+        .strip_suffix(&artifact.version)
+        .map(str::to_owned)
+        .with_context(|| {
+            format!(
+                "release tag {current_tag} does not end with artifact version {}",
+                artifact.version
+            )
+        })
+}
+
+/// Release tags are immutable and are created before the catalog build. Reject
+/// a package version reset while preparing the release PR, before a lower tag
+/// can be merged and pushed.
+fn validate_monotonic_versions(workspace: &Workspace, git: &dyn GitQuery) -> Result<()> {
+    for artifact in workspace.official_artifacts() {
+        let current = Version::parse(&artifact.version).with_context(|| {
+            format!(
+                "official artifact {} has invalid SemVer {}",
+                artifact.package, artifact.version
+            )
+        })?;
+        let highest = git
+            .released_versions(artifact)
+            .with_context(|| format!("failed to read release history for {}", artifact.package))?
+            .into_iter()
+            .map(|version| {
+                Version::parse(&version)
+                    .with_context(|| {
+                        format!(
+                            "release tag for {} has invalid SemVer {version}",
+                            artifact.package
+                        )
+                    })
+                    .map(|parsed| (version, parsed))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .max_by(|left, right| left.1.cmp(&right.1));
+
+        if let Some((highest_text, highest)) = highest
+            && current < highest
+        {
+            bail!(
+                "official artifact {} version {} is lower than released version {}; versions for \
+                 the same package identity must be monotonic",
+                artifact.package,
+                artifact.version,
+                highest_text
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<OfficialArtifact>> {
@@ -430,6 +515,16 @@ mod tests {
             Ok(*self.tags.get(tag).unwrap_or(&false))
         }
 
+        fn released_versions(&self, artifact: &OfficialArtifact) -> Result<Vec<String>> {
+            let prefix = release_tag_version_prefix(artifact)?;
+            Ok(self
+                .tags
+                .iter()
+                .filter(|(_, exists)| **exists)
+                .filter_map(|(tag, _)| tag.strip_prefix(&prefix).map(str::to_owned))
+                .collect())
+        }
+
         fn changed_since(&self, tag: &str, _path: &Path) -> Result<bool> {
             Ok(*self.diffs.get(tag).unwrap_or(&false))
         }
@@ -500,6 +595,69 @@ mod tests {
             },
         )?;
         assert!(selected.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn release_selection_rejects_a_version_lower_than_a_published_tag() -> Result<()> {
+        let reset = artifact(Path::new("/repo/service"), "safety");
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![reset.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([
+                (reset.release_tag(), true),
+                (reset.release_tag_for_version("0.19.9"), true),
+            ]),
+            diffs: HashMap::new(),
+            subjects: HashMap::new(),
+        };
+        let args = Args {
+            package: None,
+            changed: true,
+            notes_out: None,
+        };
+
+        let error = select_artifacts(&workspace, &args, &git)
+            .expect_err("a package version reset must fail before release selection");
+
+        assert!(
+            error.to_string().contains(
+                "phoxal/service-safety version 0.1.0 is lower than released version 0.19.9"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn release_selection_accepts_the_highest_published_version() -> Result<()> {
+        let mut safety = artifact(Path::new("/repo/service"), "safety");
+        safety.version = "0.19.9".to_owned();
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![safety.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([
+                (safety.release_tag_for_version("0.1.0"), true),
+                (safety.release_tag(), true),
+            ]),
+            diffs: HashMap::from([(safety.release_tag(), true)]),
+            subjects: HashMap::new(),
+        };
+        let args = Args {
+            package: None,
+            changed: true,
+            notes_out: None,
+        };
+
+        let selected = select_artifacts(&workspace, &args, &git)?;
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].package, "phoxal/service-safety");
         Ok(())
     }
 
