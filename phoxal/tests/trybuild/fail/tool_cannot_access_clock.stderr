@@ -1,0 +1,5 @@
+error[E0599]: no method named `clock` found for mutable reference `&mut phoxal::participant::SetupContext<ClockedTool>` in the current scope
+  --> tests/trybuild/fail/tool_cannot_access_clock.rs:10:26
+   |
+10 |         let _clock = ctx.clock();
+   |                          ^^^^^ method not found in `&mut phoxal::participant::SetupContext<ClockedTool>`

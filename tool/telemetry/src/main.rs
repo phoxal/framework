@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, LogicalTime, OwnerCap, Publisher};
+use phoxal::raw::{Bus, OwnerCap, Publisher, host_time};
 use phoxal_api::v2 as api;
 use sysinfo::{CpuRefreshKind, MemoryRefreshKind, RefreshKind, System};
 
@@ -51,6 +51,7 @@ async fn sample_host_forever(publisher: Publisher<api::telemetry::Host>) {
             .with_memory(MemoryRefreshKind::nothing().with_ram()),
     );
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // `sysinfo`'s CPU usage is a delta against the PREVIOUS refresh, so the
     // very first refresh has nothing to diff against and reads inaccurately
@@ -64,7 +65,7 @@ async fn sample_host_forever(publisher: Publisher<api::telemetry::Host>) {
     loop {
         interval.tick().await;
         let sample = sample_host(&mut system);
-        if let Err(error) = publisher.publish_at(now(), sample).await {
+        if let Err(error) = publisher.publish_at(host_time(), sample).await {
             tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry publish failed");
         }
     }
@@ -84,13 +85,6 @@ fn sample_host(system: &mut System) -> api::telemetry::Host {
         load_1m: System::load_average().one as f32,
         window_ns: u64::try_from(SAMPLE_INTERVAL.as_nanos()).unwrap_or(u64::MAX),
     }
-}
-
-fn now() -> LogicalTime {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    LogicalTime::new(0, u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn main() -> phoxal::Result<()> {

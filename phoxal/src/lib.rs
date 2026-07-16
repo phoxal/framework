@@ -195,6 +195,19 @@ pub mod bus {
 pub mod raw {
     pub use crate::participant::runner::run_with_bus;
     pub use phoxal_bus::*;
+
+    /// Current host wall time for privileged tools and bridges that need an
+    /// envelope timestamp without joining a robot's logical clock.
+    ///
+    /// This is metadata time only. Scheduling periodic work should use a host
+    /// monotonic timer such as [`std::time::Instant`] or
+    /// [`tokio::time::interval`].
+    pub fn host_time() -> LogicalTime {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        LogicalTime::new(0, u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
+    }
 }
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare

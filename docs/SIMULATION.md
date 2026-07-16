@@ -46,6 +46,12 @@ compare timestamps in one domain.
 A pure-bus participant seeds its simulation scheduler at logical zero, because the
 feed publishes 0-based simulation time and logical time only advances forward.
 
+Official tools are the deliberate exception: they remain host/event driven in
+simulation exactly as in Run and Deploy. They do not subscribe to
+`simulation/clock`, join the Webots step barrier, or derive external-input
+freshness from logical time. Services retain and sample their latest tool input
+at their own logical step boundary.
+
 ## Acceptance record - single robot (2026-07-12)
 
 Command: `phoxal-cli simulation run default --env dev` in the `robot-v1` reference

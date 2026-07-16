@@ -1,11 +1,19 @@
 //! Body-twist arbitration for manual and navigation candidates.
 
+use std::time::{Duration, Instant};
+
 use phoxal::bus::LogicalTime;
 use phoxal::model::robot::v0::MotionLimits;
 use phoxal_api::v1 as api;
 
-pub(crate) const MANUAL_STALE_NS: u64 = 500_000_000;
+pub(crate) const MANUAL_STALE: Duration = Duration::from_millis(150);
 pub(crate) const AUTONOMOUS_STALE_NS: u64 = 500_000_000;
+
+#[derive(Clone)]
+pub(crate) struct ManualCandidate {
+    pub(crate) body: api::motion::ManualCommand,
+    pub(crate) received_at: Instant,
+}
 
 #[derive(Clone)]
 pub(crate) struct Timed<T> {
@@ -21,12 +29,13 @@ pub(crate) struct Arbitration {
 }
 
 pub(crate) fn arbitrate(
-    manual: Option<&Timed<api::motion::ManualCommand>>,
+    manual: Option<&ManualCandidate>,
     autonomous: Option<&Timed<api::navigation::Candidate>>,
     emergency_stop_engaged: bool,
     safety: Option<&Timed<api::safety::MotionConstraints>>,
     limits: MotionLimits,
     now: LogicalTime,
+    host_now: Instant,
 ) -> Arbitration {
     if emergency_stop_engaged {
         return zero(
@@ -35,16 +44,16 @@ pub(crate) fn arbitrate(
         );
     }
 
-    if manual.is_some_and(|candidate| {
-        candidate.at.epoch() == now.epoch() && candidate.at.time_ns() > now.time_ns()
-    }) {
+    if manual.is_some_and(|candidate| candidate.received_at > host_now) {
         return zero(
             Some(api::motion::Source::Manual),
             api::motion::ZeroReason::ManualCandidateFromFuture,
         );
     }
 
-    if let Some(manual) = manual.filter(|candidate| is_fresh(candidate.at, now, MANUAL_STALE_NS)) {
+    if let Some(manual) =
+        manual.filter(|candidate| host_now.duration_since(candidate.received_at) <= MANUAL_STALE)
+    {
         // Manual teleoperation is the recovery/commissioning path and must not
         // depend on the still-experimental world-safety provider being ready.
         // A valid protective stop still wins, and every manual command remains
@@ -166,6 +175,16 @@ pub(crate) fn candidate_age_ns<T>(candidate: Option<&Timed<T>>, now: LogicalTime
     })
 }
 
+pub(crate) fn manual_candidate_age_ns(
+    candidate: Option<&ManualCandidate>,
+    now: Instant,
+) -> Option<u64> {
+    candidate.and_then(|candidate| {
+        now.checked_duration_since(candidate.received_at)
+            .map(|age| u64::try_from(age.as_nanos()).unwrap_or(u64::MAX))
+    })
+}
+
 fn select(
     source: api::motion::Source,
     linear_x_mps: f64,
@@ -235,6 +254,20 @@ mod tests {
         LogicalTime::new(0, NOW_NS)
     }
 
+    fn host_now() -> Instant {
+        Instant::now()
+    }
+
+    fn manual(linear_x_mps: f64, angular_z_radps: f64, received_at: Instant) -> ManualCandidate {
+        ManualCandidate {
+            body: api::motion::ManualCommand {
+                linear_x_mps,
+                angular_z_radps,
+            },
+            received_at,
+        }
+    }
+
     fn safety() -> Timed<api::safety::MotionConstraints> {
         Timed {
             body: api::safety::MotionConstraints {
@@ -285,7 +318,15 @@ mod tests {
         let mut safety = safety();
         safety.body.constraints.push(safety_constraint(true));
         let autonomous = autonomous();
-        let result = arbitrate(None, Some(&autonomous), false, Some(&safety), LIMITS, now());
+        let result = arbitrate(
+            None,
+            Some(&autonomous),
+            false,
+            Some(&safety),
+            LIMITS,
+            now(),
+            host_now(),
+        );
         assert_eq!(
             result.zero_reason,
             Some(api::motion::ZeroReason::SafetyConstraintsUnavailable)
@@ -310,7 +351,15 @@ mod tests {
             mutate(&mut constraint);
             safety.body.constraints.push(constraint);
             let autonomous = autonomous();
-            let result = arbitrate(None, Some(&autonomous), false, Some(&safety), LIMITS, now());
+            let result = arbitrate(
+                None,
+                Some(&autonomous),
+                false,
+                Some(&safety),
+                LIMITS,
+                now(),
+                host_now(),
+            );
             assert_eq!(
                 result.zero_reason,
                 Some(api::motion::ZeroReason::SafetyConstraintsUnavailable)
@@ -320,7 +369,15 @@ mod tests {
 
     #[test]
     fn missing_candidates_are_explained() {
-        let result = arbitrate(None, None, false, Some(&safety()), LIMITS, now());
+        let result = arbitrate(
+            None,
+            None,
+            false,
+            Some(&safety()),
+            LIMITS,
+            now(),
+            host_now(),
+        );
         assert_eq!(result.source, None);
         assert_eq!(
             result.zero_reason,
@@ -330,14 +387,17 @@ mod tests {
 
     #[test]
     fn stale_manual_is_distinct_from_missing_manual() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 0.2,
-                angular_z_radps: 0.1,
-            },
-            at: LogicalTime::new(0, NOW_NS - MANUAL_STALE_NS - 1),
-        };
-        let result = arbitrate(Some(&manual), None, false, Some(&safety()), LIMITS, now());
+        let host_now = host_now();
+        let manual = manual(0.2, 0.1, host_now - MANUAL_STALE - Duration::from_nanos(1));
+        let result = arbitrate(
+            Some(&manual),
+            None,
+            false,
+            Some(&safety()),
+            LIMITS,
+            now(),
+            host_now,
+        );
         assert_eq!(
             result.zero_reason,
             Some(api::motion::ZeroReason::ManualCandidateStale)
@@ -346,14 +406,8 @@ mod tests {
 
     #[test]
     fn emergency_stop_overrides_manual_and_navigation() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 0.2,
-                angular_z_radps: 0.1,
-            },
-            at: LogicalTime::new(0, NOW_NS),
-        };
-        let result = arbitrate(Some(&manual), None, true, None, LIMITS, now());
+        let manual = manual(0.2, 0.1, host_now());
+        let result = arbitrate(Some(&manual), None, true, None, LIMITS, now(), host_now());
         assert_eq!(result.selected, zero_target());
         assert_eq!(
             result.zero_reason,
@@ -363,14 +417,16 @@ mod tests {
 
     #[test]
     fn manual_wins_and_is_clamped_to_robot_limits() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 9.0,
-                angular_z_radps: -9.0,
-            },
-            at: LogicalTime::new(0, NOW_NS),
-        };
-        let result = arbitrate(Some(&manual), None, false, Some(&safety()), LIMITS, now());
+        let manual = manual(9.0, -9.0, host_now());
+        let result = arbitrate(
+            Some(&manual),
+            None,
+            false,
+            Some(&safety()),
+            LIMITS,
+            now(),
+            host_now(),
+        );
         assert_eq!(result.source, Some(api::motion::Source::Manual));
         assert_eq!(result.selected.linear_x_mps, 0.6);
         assert_eq!(result.selected.angular_z_radps, -2.0);
@@ -378,14 +434,16 @@ mod tests {
 
     #[test]
     fn non_finite_candidate_stops() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: f64::NAN,
-                angular_z_radps: 0.0,
-            },
-            at: LogicalTime::new(0, NOW_NS),
-        };
-        let result = arbitrate(Some(&manual), None, false, Some(&safety()), LIMITS, now());
+        let manual = manual(f64::NAN, 0.0, host_now());
+        let result = arbitrate(
+            Some(&manual),
+            None,
+            false,
+            Some(&safety()),
+            LIMITS,
+            now(),
+            host_now(),
+        );
         assert_eq!(result.selected, zero_target());
         assert_eq!(
             result.zero_reason,
@@ -395,14 +453,17 @@ mod tests {
 
     #[test]
     fn future_dated_manual_candidate_stops() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 0.2,
-                angular_z_radps: 0.0,
-            },
-            at: LogicalTime::new(0, NOW_NS + 1),
-        };
-        let result = arbitrate(Some(&manual), None, false, Some(&safety()), LIMITS, now());
+        let host_now = host_now();
+        let manual = manual(0.2, 0.0, host_now + Duration::from_nanos(1));
+        let result = arbitrate(
+            Some(&manual),
+            None,
+            false,
+            Some(&safety()),
+            LIMITS,
+            now(),
+            host_now,
+        );
         assert_eq!(
             result.zero_reason,
             Some(api::motion::ZeroReason::ManualCandidateFromFuture)
@@ -411,37 +472,33 @@ mod tests {
 
     #[test]
     fn large_finite_candidate_stays_finite_after_f32_conversion() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 1.0e300,
-                angular_z_radps: -1.0e300,
-            },
-            at: LogicalTime::new(0, NOW_NS),
-        };
+        let manual = manual(1.0e300, -1.0e300, host_now());
         let limits = MotionLimits {
             max_linear_speed_mps: f64::from(f32::MAX),
             max_angular_speed_radps: f64::from(f32::MAX),
         };
-        let result = arbitrate(Some(&manual), None, false, Some(&safety()), limits, now());
+        let result = arbitrate(
+            Some(&manual),
+            None,
+            false,
+            Some(&safety()),
+            limits,
+            now(),
+            host_now(),
+        );
         assert!(result.selected.linear_x_mps.is_finite());
         assert!(result.selected.angular_z_radps.is_finite());
     }
 
     #[test]
-    fn prior_epoch_candidate_cannot_resurrect_after_clock_reset() {
+    fn logical_epoch_reset_does_not_expire_fresh_manual_input() {
         let limits = MotionLimits {
             max_linear_speed_mps: 0.6,
             max_angular_speed_radps: 2.0,
         };
-        let prior_epoch = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 0.4,
-                angular_z_radps: 0.2,
-            },
-            at: LogicalTime::new(1, NOW_NS),
-        };
+        let manual = manual(0.4, 0.2, host_now());
         let result = arbitrate(
-            Some(&prior_epoch),
+            Some(&manual),
             None,
             false,
             Some(&Timed {
@@ -450,24 +507,16 @@ mod tests {
             }),
             limits,
             LogicalTime::new(2, NOW_NS),
+            host_now(),
         );
-        assert_eq!(
-            result.zero_reason,
-            Some(api::motion::ZeroReason::ManualCandidateStale)
-        );
-        assert_eq!(result.selected, zero_target());
+        assert_eq!(result.source, Some(api::motion::Source::Manual));
+        assert_eq!(result.selected.linear_x_mps, 0.4);
     }
 
     #[test]
     fn manual_works_without_safety_and_uses_valid_constraints_when_available() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 0.5,
-                angular_z_radps: 0.4,
-            },
-            at: now(),
-        };
-        let missing = arbitrate(Some(&manual), None, false, None, LIMITS, now());
+        let manual = manual(0.5, 0.4, host_now());
+        let missing = arbitrate(Some(&manual), None, false, None, LIMITS, now(), host_now());
         assert_eq!(missing.source, Some(api::motion::Source::Manual));
         assert_eq!(missing.selected.linear_x_mps, 0.5);
 
@@ -483,6 +532,7 @@ mod tests {
             Some(&constrained),
             LIMITS,
             now(),
+            host_now(),
         );
         assert_eq!(result.selected.linear_x_mps, 0.1);
         assert_eq!(result.selected.angular_z_radps, 0.4);
@@ -491,7 +541,15 @@ mod tests {
     #[test]
     fn autonomous_still_requires_safety_constraints() {
         let autonomous = autonomous();
-        let missing = arbitrate(None, Some(&autonomous), false, None, LIMITS, now());
+        let missing = arbitrate(
+            None,
+            Some(&autonomous),
+            false,
+            None,
+            LIMITS,
+            now(),
+            host_now(),
+        );
         assert_eq!(
             missing.zero_reason,
             Some(api::motion::ZeroReason::SafetyConstraintsUnavailable)
@@ -500,17 +558,19 @@ mod tests {
 
     #[test]
     fn valid_safety_protective_stop_still_blocks_manual() {
-        let manual = Timed {
-            body: api::motion::ManualCommand {
-                linear_x_mps: 0.5,
-                angular_z_radps: 0.4,
-            },
-            at: now(),
-        };
+        let manual = manual(0.5, 0.4, host_now());
         let mut stopped = safety();
         stopped.body.stop = true;
         stopped.body.constraints.push(safety_constraint(true));
-        let result = arbitrate(Some(&manual), None, false, Some(&stopped), LIMITS, now());
+        let result = arbitrate(
+            Some(&manual),
+            None,
+            false,
+            Some(&stopped),
+            LIMITS,
+            now(),
+            host_now(),
+        );
         assert_eq!(result.selected, zero_target());
         assert_eq!(
             result.zero_reason,

@@ -567,6 +567,8 @@ pub fn require_nonempty_artifacts(artifacts: &[OfficialArtifact]) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use serde_json::json;
 
     use super::*;
@@ -577,6 +579,89 @@ mod tests {
 
     fn classify(relative: &str) -> Result<ManifestClassification> {
         classify_manifest_path(&root(), &root().join(relative))
+    }
+
+    fn visit_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in fs::read_dir(directory)
+            .with_context(|| format!("failed to read {}", directory.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                visit_rust_sources(&path, sources)?;
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn official_tools_do_not_import_logical_clock_surfaces() -> Result<()> {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("xtask manifest directory has no workspace parent")?;
+        let mut sources = Vec::new();
+        visit_rust_sources(&workspace_root.join("tool"), &mut sources)?;
+        let forbidden = [
+            "ClockMode",
+            "ClockSource",
+            "SimulationClock",
+            "StepContext",
+            "simulation().clock()",
+            ".clock()",
+        ];
+
+        let mut violations = Vec::new();
+        for source in sources {
+            let body = fs::read_to_string(&source)?;
+            for token in forbidden {
+                if body.contains(token) {
+                    violations.push(format!("{} imports or calls {token}", source.display()));
+                }
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "tools must remain host/event driven:\n{}",
+            violations.join("\n")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn official_periodic_tools_skip_missed_ticks() -> Result<()> {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("xtask manifest directory has no workspace parent")?;
+        for tool in ["joypad", "router", "telemetry"] {
+            let source = workspace_root.join("tool").join(tool).join("src/main.rs");
+            let body = fs::read_to_string(&source)?;
+            assert!(
+                body.contains("set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip)"),
+                "periodic tool {tool} must skip missed ticks instead of catching up"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hello_rover_contains_the_minimal_tool_boundary_world() -> Result<()> {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("xtask manifest directory has no workspace parent")?;
+        let world = fs::read_to_string(
+            workspace_root.join("examples/hello-rover/worlds/tool-boundary.wbt"),
+        )?;
+        assert!(world.starts_with("#VRML_SIM R2025a utf8"));
+        assert!(world.contains("WorldInfo {"));
+        assert!(world.contains("basicTimeStep 16"));
+        assert!(world.contains("RectangleArena {"));
+        assert!(
+            !world.contains("controller "),
+            "the CLI must inject robot controllers; the boundary world stays neutral"
+        );
+        Ok(())
     }
 
     #[test]

@@ -300,10 +300,19 @@ where
     S: Future<Output = ()>,
 {
     let schedule = R::__step_schedule();
-    let (scheduler, clock_handle) = step_scheduler_for(launch.clock, schedule, clock.now());
-    let effective_clock = Arc::new(match &scheduler {
-        AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
-        AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
+    let clock_mode = effective_clock_mode(R::KIND, launch.clock);
+    let tool_clock = (R::KIND == "tool").then(RealClock::new);
+    let scheduler_now = tool_clock
+        .as_ref()
+        .map_or_else(|| clock.now(), ClockSource::now);
+    let (scheduler, clock_handle) = step_scheduler_for(clock_mode, schedule, scheduler_now);
+    let effective_clock = Arc::new(if let Some(tool_clock) = tool_clock {
+        RunnerClock::Host(tool_clock)
+    } else {
+        match &scheduler {
+            AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
+            AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
+        }
     });
     // Subscribe before setup so every lifecycle heartbeat uses the effective
     // clock domain and the simulation clock can advance while setup runs.
@@ -334,16 +343,31 @@ where
     result
 }
 
+/// Tools are host/event driven in every launch mode. A generic orchestrator
+/// may still pass `PHOXAL_CLOCK=simulation`, but the runner structurally
+/// prevents a tool from creating a simulation scheduler, subscribing to the
+/// simulation clock, or stamping lifecycle state in that domain.
+fn effective_clock_mode(participant_kind: &str, requested: ClockMode) -> ClockMode {
+    if participant_kind == "tool" {
+        ClockMode::Real
+    } else {
+        requested
+    }
+}
+
 /// The runner's effective timestamp clock, chosen once the scheduler is built.
 ///
-/// In real mode it simply delegates to the caller-provided [`ClockSource`] (the
-/// host [`RealClock`], or a [`TestClock`](crate::participant::clock::TestClock)
-/// under the test harness). In simulation mode it is the
+/// Tools always use an internally owned host [`RealClock`], even if an embedding
+/// caller injects a different source. For other participants, real mode delegates
+/// to the caller-provided [`ClockSource`] (the host [`RealClock`], or a
+/// [`TestClock`](crate::participant::clock::TestClock) under the test harness).
+/// In simulation mode it is the
 /// [`SimulationClock`](crate::participant::clock::SimulationClock) that shares
 /// the `SimulationScheduler`'s live `simulation/clock` feed, so stamped time and
 /// step-release time stay in the one simulation domain (see the `SimulationClock`
 /// docs for why wall-stamping a simulated participant is wrong).
 enum RunnerClock<C: ClockSource> {
+    Host(RealClock),
     Delegated(C),
     Simulation(crate::participant::clock::SimulationClock),
 }
@@ -351,6 +375,7 @@ enum RunnerClock<C: ClockSource> {
 impl<C: ClockSource> ClockSource for RunnerClock<C> {
     fn now(&self) -> LogicalTime {
         match self {
+            RunnerClock::Host(clock) => clock.now(),
             RunnerClock::Delegated(clock) => clock.now(),
             RunnerClock::Simulation(clock) => clock.now(),
         }
@@ -391,7 +416,6 @@ where
     // `api::topic::internal::new(cap)`). The runner is the only minter.
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
-        Arc::clone(&clock) as Arc<dyn ClockSource>,
         ::phoxal_bus::OwnerCap::__mint(),
         robot,
         launch.robot_root.clone(),
@@ -905,6 +929,22 @@ mod tests {
         assert!(
             simulation_handle.is_some(),
             "simulation mode must hand back the driving handle so the caller can wire the live feed"
+        );
+    }
+
+    #[test]
+    fn tools_always_use_real_clock_mode() {
+        assert_eq!(
+            effective_clock_mode("tool", ClockMode::Simulation),
+            ClockMode::Real
+        );
+        assert_eq!(
+            effective_clock_mode("tool", ClockMode::Real),
+            ClockMode::Real
+        );
+        assert_eq!(
+            effective_clock_mode("service", ClockMode::Simulation),
+            ClockMode::Simulation
         );
     }
 
