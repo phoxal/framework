@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.22.1](https://github.com/phoxal/framework/compare/phoxal-macros-v0.22.0...phoxal-macros-v0.22.1) - 2026-07-16
+## [0.23.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.22.0...phoxal-macros-v0.23.0) - 2026-07-16
 
-### Other
+### Changed
 
-- *(runtime)* make tool launches clockless ([#268](https://github.com/phoxal/framework/pull/268))
+- [**breaking**] *(runtime)* make tool launches clockless ([#268](https://github.com/phoxal/framework/pull/268))
 
 ## [0.22.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.21.3...phoxal-macros-v0.22.0) - 2026-07-15
 
