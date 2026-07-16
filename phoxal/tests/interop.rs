@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::participant::{ParticipantLaunch, RealClock};
+use phoxal::participant::ParticipantLaunch;
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::v1 as api;
@@ -108,16 +108,14 @@ async fn two_runtimes_exchange_a_contract_on_one_bus() {
 
     // Run both runtimes concurrently on the shared bus; each stops after a short
     // wall-clock window (enough for the 50 Hz producer to emit many samples).
-    let producer = run_with_bus::<Producer, _, _>(
+    let producer = run_with_bus::<Producer, _>(
         &bus,
         ParticipantLaunch::local("producer-1", "robot"),
-        RealClock::new(),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
-    let consumer = run_with_bus::<Consumer, _, _>(
+    let consumer = run_with_bus::<Consumer, _>(
         &bus,
         ParticipantLaunch::local("consumer-1", "robot"),
-        RealClock::new(),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
 

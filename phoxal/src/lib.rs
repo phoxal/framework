@@ -193,7 +193,7 @@ pub mod bus {
 /// graph checker still includes their contracts, but never lets their raw
 /// access satisfy checked topology.
 pub mod raw {
-    pub use crate::participant::runner::run_with_bus;
+    pub use crate::participant::runner::{run_with_bus, run_with_bus_clock};
     pub use phoxal_bus::*;
 
     /// Current host wall time for privileged tools and bridges that need an

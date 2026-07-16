@@ -23,7 +23,7 @@ examples/hello-rover/
   robot.yaml                       # the manifest
   robot.dev.yaml                   # dev-only overlay: local path pins
   structure.urdf                   # the robot's own URDF (chassis + mounts)
-  worlds/tool-boundary.wbt         # minimal framework-owned Webots world
+  worlds/default.wbt               # minimal Webots world
   components/wheel_drive/          # one robot-local component definition
     component.yaml
     structure.urdf
@@ -289,17 +289,15 @@ phoxal-cli validate --report --allow-user-service-drift   # lower-level structur
 `check` resolves every official participant (services, tools, and any
 catalog-sourced component drivers) plus every user service and prints
 `ok: N participants validated` once the whole graph is coherent.
-`hello-rover` includes the minimal `tool-boundary` Webots world used to verify
-that official tools remain host/event driven while robot services follow
-logical simulation time:
+`hello-rover` includes a minimal Webots world:
 
 ```sh
-phoxal-cli simulation run tool-boundary --env dev
+phoxal-cli simulation run default --env dev
 ```
 
 The CLI stages the authored world and injects the generated rover and Webots
-controllers. Keep additional example worlds equally small and owned by the
-behavior they validate; do not use a private robot as the framework harness.
+controllers. Keep additional example worlds equally small; do not use a private
+robot as the framework harness.
 
 ## Where to go from here
 

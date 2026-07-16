@@ -84,12 +84,13 @@ The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the sched
 host/event loops, host-monotonic timers for cadence and freshness, and
 `phoxal::raw::host_time()` only when a generic bus envelope timestamp is
 required. The macro rejects `#[step]`, the setup context exposes no clock, and
-the runner never enrolls a tool in simulation scheduling or a logical-step
-barrier. Official tool sources are additionally checked against importing or
-subscribing to simulation-clock surfaces; user-authored tools must preserve the
-same boundary when using the privileged raw bus. A service that consumes
-asynchronous tool input keeps a bounded latest value with consumer-local
-monotonic arrival time and samples it at its own logical step.
+the tool process launch has no clock option. The normal embedding API likewise
+accepts no clock argument; deterministic clock injection is restricted to typed
+graph participants. Official tool sources are additionally checked against
+importing or subscribing to simulation-clock surfaces; user-authored tools must
+preserve the same boundary when using the privileged raw bus. A service that
+consumes asynchronous tool input keeps a bounded latest value with
+consumer-local monotonic arrival time and samples it at its own logical step.
 
 ## Modules
 

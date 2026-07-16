@@ -336,6 +336,10 @@ pub trait Participant: Sized + Send + 'static {
     const PARTICIPANT_CLASS: &'static str;
     /// The participant id (`id = "…"`, default kebab of the type name).
     const ID: &'static str;
+    /// The process launch contract. Tools use a clockless policy; checked graph
+    /// participants use the configurable robot-clock policy.
+    #[doc(hidden)]
+    type LaunchPolicy: crate::participant::launch::ParticipantLaunchPolicy;
     /// The participant's typed config (`robot.yaml` input).
     type Config: ParticipantConfig;
     /// The participant's bus-facing contract surface (`()` for a raw-bus

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use phoxal::participant::{ParticipantLaunch, RealClock, run_with};
+use phoxal::participant::{ParticipantLaunch, run_with};
 use phoxal::prelude::*;
 use serial_test::serial;
 
@@ -40,7 +40,7 @@ async fn setup_reads_robot_model_from_the_root() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
 
-    run_with::<ReadsRobot, _, _>(launch, RealClock::new(), shutdown)
+    run_with::<ReadsRobot, _>(launch, shutdown)
         .await
         .expect("runner should complete with a robot root");
 
@@ -58,7 +58,7 @@ async fn robot_is_absent_without_a_root() {
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    let result = run_with::<ReadsRobot, _, _>(launch, RealClock::new(), shutdown).await;
+    let result = run_with::<ReadsRobot, _>(launch, shutdown).await;
     assert!(
         result.is_err(),
         "setup should fail when no robot model is bound"

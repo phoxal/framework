@@ -78,7 +78,7 @@ use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::heartbeat::{self, HeartbeatPublisher};
-use crate::participant::launch::{ClockMode, ParticipantLaunch};
+use crate::participant::launch::{ClockMode, ParticipantLaunch, ParticipantLaunchPolicy};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::process_metrics::{self, ProcessMetricsPublisher};
 use crate::participant::scheduler::{
@@ -104,27 +104,16 @@ pub fn run<R: ParticipantLifecycle>() -> crate::Result<()> {
 /// Async host runner for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
 pub async fn run_async<R: ParticipantLifecycle>() -> crate::Result<()> {
-    let launch = ParticipantLaunch::from_cli(R::ID, "robot")?;
+    let launch = R::LaunchPolicy::from_cli(R::ID, "robot")?;
 
     init_tracing();
 
-    let clock = launch_clock(&launch)?;
-    run_with::<R, _, _>(launch, clock, shutdown_signal()).await
-}
-
-/// The caller-provided clock for a launch. Real mode uses it directly for
-/// timestamps and scheduler anchoring. Simulation mode replaces it with the
-/// clock derived from its [`SimulationScheduler`] so step release and every
-/// lifecycle timestamp share the authoritative `simulation/clock` domain.
-pub(crate) fn launch_clock(launch: &ParticipantLaunch) -> crate::Result<RealClock> {
-    match launch.clock {
-        ClockMode::Real | ClockMode::Simulation => Ok(RealClock::new()),
-    }
+    run_with::<R, _>(launch, shutdown_signal()).await
 }
 
 /// Select the step scheduler for `clock_mode` (D34/#09): the seam that
 /// answers "when should the next `#[step]` tick fire", separate from the
-/// [`ClockSource`] used for timestamps (see [`launch_clock`]).
+/// [`ClockSource`] used for timestamps.
 ///
 /// [`ClockMode::Real`] preserves the runner's pre-#09 wall-clock cadence
 /// exactly, returning no driving handle (`None`). [`ClockMode::Simulation`]
@@ -226,16 +215,12 @@ pub(crate) fn spawn_simulation_clock_feed(
     }))
 }
 
-/// Run a participant against an explicit launch, clock, and shutdown trigger. The
-/// seam the test harness + integration tests drive (D41).
-pub async fn run_with<R, C, S>(
-    launch: ParticipantLaunch,
-    clock: C,
-    shutdown: S,
-) -> crate::Result<()>
+/// Run a participant against an explicit launch and shutdown trigger. The
+/// runner owns the host clock; tools therefore have no clock parameter to
+/// receive or override.
+pub async fn run_with<R, S>(launch: ParticipantLaunch, shutdown: S) -> crate::Result<()>
 where
     R: ParticipantLifecycle,
-    C: ClockSource,
     S: Future<Output = ()>,
 {
     init_tracing();
@@ -249,7 +234,7 @@ where
     })
     .await?;
 
-    let result = run_with_bus::<R, C, S>(&bus, launch, clock, shutdown).await;
+    let result = run_with_bus::<R, S>(&bus, launch, shutdown).await;
 
     if let Err(e) = bus.close().await {
         tracing::warn!(target: "phoxal.runtime", error = %e, "bus close failed");
@@ -257,7 +242,7 @@ where
     result
 }
 
-/// Run a participant on a **caller-owned** bus, against an explicit launch, clock, and
+/// Run a participant on a **caller-owned** bus, against an explicit launch and
 /// shutdown trigger. Unlike [`run_with`], this does not open or close the bus - the
 /// caller controls its lifecycle.
 ///
@@ -268,7 +253,39 @@ where
 /// sharing one [`Bus`] publish under that bus's participant id, so distinct
 /// per-participant source attribution still requires a bus per participant. The
 /// `launch` here drives config, robot-model, and component-instance resolution.
-pub async fn run_with_bus<R, C, S>(
+pub async fn run_with_bus<R, S>(
+    bus: &Bus,
+    launch: ParticipantLaunch,
+    shutdown: S,
+) -> crate::Result<()>
+where
+    R: ParticipantLifecycle,
+    S: Future<Output = ()>,
+{
+    run_with_bus_inner::<R, RealClock, S>(bus, launch, RealClock::new(), shutdown).await
+}
+
+/// Deterministic clock-injection seam for checked graph participants. A tool's
+/// fixed [`ToolParticipantLaunch`](crate::participant::launch::ToolParticipantLaunch)
+/// policy excludes it even if user code manually adds the public
+/// [`TypedGraphSurface`](crate::participant::TypedGraphSurface) marker.
+#[doc(hidden)]
+pub async fn run_with_bus_clock<R, C, S>(
+    bus: &Bus,
+    launch: ParticipantLaunch,
+    clock: C,
+    shutdown: S,
+) -> crate::Result<()>
+where
+    R: ParticipantLifecycle<LaunchPolicy = crate::participant::launch::ClockedParticipantLaunch>
+        + crate::participant::TypedGraphSurface,
+    C: ClockSource,
+    S: Future<Output = ()>,
+{
+    run_with_bus_inner::<R, C, S>(bus, launch, clock, shutdown).await
+}
+
+async fn run_with_bus_inner<R, C, S>(
     bus: &Bus,
     launch: ParticipantLaunch,
     clock: C,
@@ -300,19 +317,11 @@ where
     S: Future<Output = ()>,
 {
     let schedule = R::__step_schedule();
-    let clock_mode = effective_clock_mode(R::KIND, launch.clock);
-    let tool_clock = (R::KIND == "tool").then(RealClock::new);
-    let scheduler_now = tool_clock
-        .as_ref()
-        .map_or_else(|| clock.now(), ClockSource::now);
-    let (scheduler, clock_handle) = step_scheduler_for(clock_mode, schedule, scheduler_now);
-    let effective_clock = Arc::new(if let Some(tool_clock) = tool_clock {
-        RunnerClock::Host(tool_clock)
-    } else {
-        match &scheduler {
-            AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
-            AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
-        }
+    let clock_mode = R::LaunchPolicy::clock_mode(&launch);
+    let (scheduler, clock_handle) = step_scheduler_for(clock_mode, schedule, clock.now());
+    let effective_clock = Arc::new(match &scheduler {
+        AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
+        AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
     });
     // Subscribe before setup so every lifecycle heartbeat uses the effective
     // clock domain and the simulation clock can advance while setup runs.
@@ -343,31 +352,16 @@ where
     result
 }
 
-/// Tools are host/event driven in every launch mode. A generic orchestrator
-/// may still pass `PHOXAL_CLOCK=simulation`, but the runner structurally
-/// prevents a tool from creating a simulation scheduler, subscribing to the
-/// simulation clock, or stamping lifecycle state in that domain.
-fn effective_clock_mode(participant_kind: &str, requested: ClockMode) -> ClockMode {
-    if participant_kind == "tool" {
-        ClockMode::Real
-    } else {
-        requested
-    }
-}
-
 /// The runner's effective timestamp clock, chosen once the scheduler is built.
 ///
-/// Tools always use an internally owned host [`RealClock`], even if an embedding
-/// caller injects a different source. For other participants, real mode delegates
-/// to the caller-provided [`ClockSource`] (the host [`RealClock`], or a
-/// [`TestClock`](crate::participant::clock::TestClock) under the test harness).
-/// In simulation mode it is the
+/// In real mode it delegates to the runner-owned host [`RealClock`] (or a
+/// [`TestClock`](crate::participant::clock::TestClock) through the checked-graph
+/// test seam). In simulation mode it is the
 /// [`SimulationClock`](crate::participant::clock::SimulationClock) that shares
 /// the `SimulationScheduler`'s live `simulation/clock` feed, so stamped time and
 /// step-release time stay in the one simulation domain (see the `SimulationClock`
 /// docs for why wall-stamping a simulated participant is wrong).
 enum RunnerClock<C: ClockSource> {
-    Host(RealClock),
     Delegated(C),
     Simulation(crate::participant::clock::SimulationClock),
 }
@@ -375,7 +369,6 @@ enum RunnerClock<C: ClockSource> {
 impl<C: ClockSource> ClockSource for RunnerClock<C> {
     fn now(&self) -> LogicalTime {
         match self {
-            RunnerClock::Host(clock) => clock.now(),
             RunnerClock::Delegated(clock) => clock.now(),
             RunnerClock::Simulation(clock) => clock.now(),
         }
@@ -901,17 +894,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn simulation_clock_launch_is_accepted() {
-        // #09: PHOXAL_CLOCK=simulation is no longer rejected - the runner
-        // selects a `SimulationScheduler` for it (see `step_scheduler_for`)
-        // instead of bailing before the bus even opens.
-        let mut launch = ParticipantLaunch::local("participant", "robot");
-        launch.clock = ClockMode::Simulation;
-
-        launch_clock(&launch).expect("simulation clock launch should be accepted");
-    }
-
-    #[test]
     fn step_scheduler_for_selects_real_or_simulation_by_clock_mode() {
         let now = LogicalTime::new(0, 0);
         let schedule = Some(StepSchedule::hz(100.0));
@@ -929,22 +911,6 @@ mod tests {
         assert!(
             simulation_handle.is_some(),
             "simulation mode must hand back the driving handle so the caller can wire the live feed"
-        );
-    }
-
-    #[test]
-    fn tools_always_use_real_clock_mode() {
-        assert_eq!(
-            effective_clock_mode("tool", ClockMode::Simulation),
-            ClockMode::Real
-        );
-        assert_eq!(
-            effective_clock_mode("tool", ClockMode::Real),
-            ClockMode::Real
-        );
-        assert_eq!(
-            effective_clock_mode("service", ClockMode::Simulation),
-            ClockMode::Simulation
         );
     }
 

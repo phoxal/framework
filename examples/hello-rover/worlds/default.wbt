@@ -17,5 +17,5 @@ TexturedBackgroundLight {
 }
 RectangleArena {
   floorSize 4 4
-  wallHeight 0.25
+  wallHeight 1
 }

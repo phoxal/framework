@@ -646,25 +646,6 @@ mod tests {
     }
 
     #[test]
-    fn hello_rover_contains_the_minimal_tool_boundary_world() -> Result<()> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("xtask manifest directory has no workspace parent")?;
-        let world = fs::read_to_string(
-            workspace_root.join("examples/hello-rover/worlds/tool-boundary.wbt"),
-        )?;
-        assert!(world.starts_with("#VRML_SIM R2025a utf8"));
-        assert!(world.contains("WorldInfo {"));
-        assert!(world.contains("basicTimeStep 16"));
-        assert!(world.contains("RectangleArena {"));
-        assert!(
-            !world.contains("controller "),
-            "the CLI must inject robot controllers; the boundary world stays neutral"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn real_workspace_release_scope_is_valid() -> Result<()> {
         let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
