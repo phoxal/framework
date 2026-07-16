@@ -2516,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "gilrs",
  "phoxal",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-router"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-telemetry"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "phoxal",
  "phoxal-api",
