@@ -72,9 +72,8 @@ the only source of keys, and the wire body never appears in the key
 
 ## Logical time
 
-- Robot services, drivers, and simulators track state-transition time,
-  watchdogs, and synchronous-input staleness with **logical time** - never wall
-  time directly.
+- Robot services and drivers track state-transition time, watchdogs, and
+  synchronous-input staleness with **logical time** - never wall time directly.
   The runner owns one `ClockSource` and stamps every `StepContext` and every
   `produced_at_ns` from it, so participants in the robot clock share one domain
   ([`phoxal/src/participant/clock.rs`](../phoxal/src/participant/clock.rs)).
@@ -86,6 +85,11 @@ the only source of keys, and the wire body never appears in the key
   sources are checked against simulation-clock imports; privileged user-authored
   raw-bus tools must uphold the same rule and never decide freshness from robot
   logical time.
+- Simulators are also not clock-selectable participants. Their process launch
+  contract exposes no `--clock` or `PHOXAL_CLOCK`; Webots drives their execution.
+  This does not remove the semantic simulation-time contract: the simulator
+  supervisor publishes `simulation/clock`, controllers may observe it for
+  coherent device timestamps, and clocked robot participants consume it.
 - A logical-time consumer of asynchronous external input owns retention and
   freshness. Keep only the latest bounded value, record its consumer-local
   monotonic arrival instant, and sample that value at the logical step. A
