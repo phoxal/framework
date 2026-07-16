@@ -707,7 +707,10 @@ impl ParticipantKind {
             ParticipantKind::Tool => {
                 quote!(#phoxal::participant::launch::ToolParticipantLaunch)
             }
-            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Simulator => {
+            ParticipantKind::Simulator => {
+                quote!(#phoxal::participant::launch::SimulatorParticipantLaunch)
+            }
+            ParticipantKind::Service | ParticipantKind::Driver => {
                 quote!(#phoxal::participant::launch::ClockedParticipantLaunch)
             }
         }

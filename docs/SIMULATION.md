@@ -29,17 +29,18 @@ Everything is a native process; there is no container runtime.
 ### Clock domain
 
 The two Webots-linked simulators (supervisor and controllers) are the Webots-side
-clock authority.
-They self-drive through `wb_robot_step` (both spawn `synchronization TRUE`, so
-Webots does not advance until each has stepped) and therefore run on the real
-step scheduler (`ClockMode::Real`).
+clock authority. Their launch contract is structurally clockless: simulator
+binaries expose neither `--clock` nor `PHOXAL_CLOCK`, and callers cannot select
+their runner clock. They self-drive through `wb_robot_step` (both spawn
+`synchronization TRUE`, so Webots does not advance until each has stepped) on the
+fixed host scheduler.
 The supervisor derives logical simulation time from Webots and publishes it on
 the `v2/simulation/clock` contract after each completed world step. The
 payload is `{ now_ns, step }`: publication itself is the advancement signal,
 and silence means Webots has not advanced. There is no separate pause flag.
 
-Every other participant (services, and in a live robot the component drivers)
-runs on `ClockMode::Simulation`: its `#[step]` is released by the
+Clock-selectable robot participants (services, and in a live robot the component
+drivers) run on `ClockMode::Simulation`: their `#[step]` is released by the
 `simulation/clock` feed and its `produced_at_ns` is stamped from the same
 simulation-time source, so cross-participant staleness checks
 compare timestamps in one domain.

@@ -1,11 +1,11 @@
 //! `ParticipantLaunch` - the clap/env process launch contract.
 //!
 //! Participant binaries share one common `--flag` set with matching `PHOXAL_*`
-//! env fallbacks. Clocked graph participants additionally accept `--clock` /
-//! `PHOXAL_CLOCK`; tools do not expose either input. Supervisors and systemd
-//! units use env, while humans can use flags for bench runs. Flags win over env
-//! through clap's native precedence, and `--help` is the user-facing contract
-//! documentation.
+//! env fallbacks. Clocked services and drivers additionally accept `--clock` /
+//! `PHOXAL_CLOCK`; tools and simulators do not expose either input. Supervisors
+//! and systemd units use env, while humans can use flags for bench runs. Flags
+//! win over env through clap's native precedence, and `--help` is the
+//! user-facing contract documentation.
 
 use std::path::PathBuf;
 
@@ -32,7 +32,7 @@ pub mod env {
     pub const CONNECT: &str = "PHOXAL_CONNECT";
     /// Inline JSON participant config block.
     pub const CONFIG: &str = "PHOXAL_CONFIG";
-    /// Clock mode for services, drivers, and simulators: real or simulation.
+    /// Clock mode for services and drivers: real or simulation.
     pub const CLOCK: &str = "PHOXAL_CLOCK";
 
     /// All env names in contract order.
@@ -60,7 +60,8 @@ pub struct ParticipantLaunch {
     /// The resolved bus profile.
     #[serde(default)]
     pub bus: BusProfile,
-    /// The robot clock mode. Tool launch policies never read this field.
+    /// The robot clock mode. Tool and simulator launch policies never read this
+    /// field; their scheduling is structurally host-driven.
     #[serde(default)]
     pub clock: ClockMode,
     /// The participant's typed config block (`services.<id>.config`), if any.
@@ -179,7 +180,7 @@ struct CommonLaunchCli {
     config: Option<String>,
 }
 
-/// Launch contract for services, drivers, and simulators.
+/// Launch contract for clock-selectable services and drivers.
 #[derive(Debug, clap::Parser)]
 #[command(
     name = "phoxal-participant",
@@ -210,6 +211,20 @@ struct ClockedLaunchCli {
     long_about = None
 )]
 struct ToolLaunchCli {
+    #[command(flatten)]
+    common: CommonLaunchCli,
+}
+
+/// Launch contract for host/Webots-driven simulators. It intentionally has no
+/// clock flag or environment binding: a simulator produces or observes the
+/// semantic simulation clock, but never schedules itself from that feed.
+#[derive(Debug, clap::Parser)]
+#[command(
+    name = "phoxal-simulator",
+    about = "Run a Phoxal simulator.",
+    long_about = None
+)]
+struct SimulatorLaunchCli {
     #[command(flatten)]
     common: CommonLaunchCli,
 }
@@ -268,7 +283,7 @@ pub trait ParticipantLaunchPolicy: Send + Sync + 'static {
     fn clock_mode(launch: &ParticipantLaunch) -> ClockMode;
 }
 
-/// Launch policy for services, drivers, and simulators.
+/// Clock-selectable launch policy for services and drivers.
 #[doc(hidden)]
 pub struct ClockedParticipantLaunch;
 
@@ -304,6 +319,27 @@ impl ParticipantLaunchPolicy for ToolParticipantLaunch {
         let matches =
             command_for::<ToolLaunchCli>(default_participant_id, default_robot_id).get_matches();
         let cli = ToolLaunchCli::from_arg_matches(&matches)?;
+        cli.common
+            .into_launch(default_participant_id, default_robot_id)
+    }
+
+    fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
+        ClockMode::Real
+    }
+}
+
+/// Clockless launch policy for host/Webots-driven simulators.
+#[doc(hidden)]
+pub struct SimulatorParticipantLaunch;
+
+impl ParticipantLaunchPolicy for SimulatorParticipantLaunch {
+    fn from_cli(
+        default_participant_id: &'static str,
+        default_robot_id: &'static str,
+    ) -> crate::Result<ParticipantLaunch> {
+        let matches = command_for::<SimulatorLaunchCli>(default_participant_id, default_robot_id)
+            .get_matches();
+        let cli = SimulatorLaunchCli::from_arg_matches(&matches)?;
         cli.common
             .into_launch(default_participant_id, default_robot_id)
     }
@@ -381,6 +417,14 @@ mod tests {
             .try_get_matches_from(args)
             .map_err(anyhow::Error::from)?;
         let cli = ToolLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
+        cli.common.into_launch("default-id", "robot")
+    }
+
+    fn parse_simulator_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
+        let matches = command_for::<SimulatorLaunchCli>("default-id", "robot")
+            .try_get_matches_from(args)
+            .map_err(anyhow::Error::from)?;
+        let cli = SimulatorLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
         cli.common.into_launch("default-id", "robot")
     }
 
@@ -565,6 +609,48 @@ mod tests {
         programmatic.clock = ClockMode::Simulation;
         assert_eq!(
             ToolParticipantLaunch::clock_mode(&programmatic),
+            ClockMode::Real
+        );
+        assert_eq!(
+            ClockedParticipantLaunch::clock_mode(&programmatic),
+            ClockMode::Simulation
+        );
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn simulator_cli_has_no_clock_input() {
+        clear_env();
+        // A generic orchestrator setting is invisible to the simulator launch
+        // parser. Simulators are always host/Webots driven.
+        // SAFETY: serialized test; see clear_env.
+        unsafe { std::env::set_var(env::CLOCK, "simulation") };
+        let launch = parse_simulator_from(&["simulator-bin"]).unwrap();
+        assert_eq!(launch.clock, ClockMode::Real);
+
+        let mut help = Vec::new();
+        command_for::<SimulatorLaunchCli>("default-id", "robot")
+            .write_long_help(&mut help)
+            .unwrap();
+        let help = String::from_utf8(help).unwrap();
+        assert!(!help.contains("--clock"));
+        assert!(!help.contains(env::CLOCK));
+
+        for arguments in [
+            vec!["simulator-bin", "--clock", "simulation"],
+            vec!["simulator-bin", "--simulation"],
+        ] {
+            let error = command_for::<SimulatorLaunchCli>("default-id", "robot")
+                .try_get_matches_from(arguments)
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+        }
+
+        let mut programmatic = ParticipantLaunch::local("simulator", "robot");
+        programmatic.clock = ClockMode::Simulation;
+        assert_eq!(
+            SimulatorParticipantLaunch::clock_mode(&programmatic),
             ClockMode::Real
         );
         assert_eq!(

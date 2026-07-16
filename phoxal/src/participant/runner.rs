@@ -92,7 +92,9 @@ use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
-/// The default binary entrypoint:
+/// The participant macro's launch policy decides whether clock selection exists
+/// at all: services/drivers are selectable, while tools and simulators are
+/// structurally host-driven. The default binary entrypoint is
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub fn run<R: ParticipantLifecycle>() -> crate::Result<()> {
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -265,9 +267,9 @@ where
     run_with_bus_inner::<R, RealClock, S>(bus, launch, RealClock::new(), shutdown).await
 }
 
-/// Deterministic clock-injection seam for checked graph participants. A tool's
-/// fixed [`ToolParticipantLaunch`](crate::participant::launch::ToolParticipantLaunch)
-/// policy excludes it even if user code manually adds the public
+/// Deterministic clock-injection seam for clock-selectable checked graph
+/// participants. Fixed tool and simulator launch policies exclude them even if
+/// user code manually adds the public
 /// [`TypedGraphSurface`](crate::participant::TypedGraphSurface) marker.
 #[doc(hidden)]
 pub async fn run_with_bus_clock<R, C, S>(
