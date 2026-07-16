@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, BusMetadata, LogicalTime, OwnerCap, Publisher};
+use phoxal::raw::{Bus, BusMetadata, OwnerCap, Publisher, host_time};
 use phoxal_api::v1 as api;
 use phoxal_api::v2 as preview_api;
 
@@ -240,7 +240,7 @@ async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Sessi
         ManagedTaskPolicy::FaultOnExit,
         async move {
             let mut ticker = tokio::time::interval(METRICS_WINDOW);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             // Tokio intervals yield their first tick immediately. Consume that
             // bootstrap tick so the first published snapshot covers a real
             // window instead of reporting a near-zero interval as one second.
@@ -252,7 +252,7 @@ async fn spawn_metrics(ctx: &mut SetupContext<ToolRouter>, router: &zenoh::Sessi
                 let samples = drain_window(&publish_counters);
                 let metrics = build_metrics(&samples, window_ended.duration_since(window_started));
                 window_started = window_ended;
-                if let Err(error) = metrics_publisher.publish_at(now(), metrics).await {
+                if let Err(error) = metrics_publisher.publish_at(host_time(), metrics).await {
                     tracing::warn!(target: "tool_router", error = %error, "router metrics publish failed");
                 }
             }
@@ -460,15 +460,8 @@ async fn publish_uplink_state(
     publisher: &Publisher<api::bus::uplink::State>,
     state: api::bus::uplink::State,
 ) -> Result<()> {
-    publisher.publish_at(now(), state).await?;
+    publisher.publish_at(host_time(), state).await?;
     Ok(())
-}
-
-fn now() -> LogicalTime {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    LogicalTime::new(0, u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
 }
 
 fn main() -> phoxal::Result<()> {

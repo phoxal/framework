@@ -23,6 +23,7 @@ examples/hello-rover/
   robot.yaml                       # the manifest
   robot.dev.yaml                   # dev-only overlay: local path pins
   structure.urdf                   # the robot's own URDF (chassis + mounts)
+  worlds/default.wbt               # minimal Webots world
   components/wheel_drive/          # one robot-local component definition
     component.yaml
     structure.urdf
@@ -33,7 +34,7 @@ Both wheels are instances of the same `wheel_drive` component type. Motion is
 commanded through the official manual or navigation candidate contracts; the
 example intentionally carries no always-moving cruise service.
 It is deliberately small: no sensors beyond what the kinematic model needs,
-no simulation world, and no hardware driver.
+one minimal simulation world, and no hardware driver.
 Use it as the shape to copy from, not as a real robot.
 
 ## `robot.yaml` anatomy
@@ -288,10 +289,15 @@ phoxal-cli validate --report --allow-user-service-drift   # lower-level structur
 `check` resolves every official participant (services, tools, and any
 catalog-sourced component drivers) plus every user service and prints
 `ok: N participants validated` once the whole graph is coherent.
-`hello-rover` has no Webots world checked in (its component uses primitive
-URDF geometry, not meshes, so there is nothing to render yet); a project that
-wants `phoxal-cli simulate <world>` needs a `worlds/<world>.wbt` file, the
-same way [`robot-v1`](https://github.com/phoxal/robot-v1) does.
+`hello-rover` includes a minimal Webots world:
+
+```sh
+phoxal-cli simulation run default --env dev
+```
+
+The CLI stages the authored world and injects the generated rover and Webots
+controllers. Keep additional example worlds equally small; do not use a private
+robot as the framework harness.
 
 ## Where to go from here
 

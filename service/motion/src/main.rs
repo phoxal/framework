@@ -11,6 +11,9 @@
 
 mod arbitration;
 
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use anyhow::Result;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::robot::v0::MotionLimits;
@@ -18,7 +21,9 @@ use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use phoxal_api::v1 as api;
 
-use crate::arbitration::{Timed, arbitrate, candidate_age_ns, safety_is_usable};
+use crate::arbitration::{
+    ManualCandidate, Timed, arbitrate, candidate_age_ns, manual_candidate_age_ns, safety_is_usable,
+};
 
 const COMPONENT_ESTOP_STALE_NS: u64 = 1_000_000_000;
 
@@ -88,6 +93,9 @@ impl EmergencyStopLatch {
 
 #[derive(phoxal::Api)]
 struct Api {
+    // Declares the typed graph subscription. The managed receiver owns the
+    // only draining clone so logical-step pauses cannot accumulate a replay
+    // backlog in this handle.
     manual: Subscriber<api::motion::ManualCommand>,
     autonomous: Subscriber<api::navigation::Candidate>,
     software_estop: Subscriber<api::motion::EmergencyStopRequest>,
@@ -100,7 +108,7 @@ struct Api {
 #[phoxal::service(id = "motion", config = ())]
 struct Motion {
     limits: MotionLimits,
-    last_manual: Option<Timed<api::motion::ManualCommand>>,
+    latest_manual: Arc<Mutex<Option<ManualCandidate>>>,
     last_autonomous: Option<Timed<api::navigation::Candidate>>,
     estop: EmergencyStopLatch,
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
@@ -114,6 +122,15 @@ impl Motion {
         let robot = ctx.robot()?;
         let limits = robot.manifest.robot.motion_limits.validate()?;
         let estop_bindings = emergency_stop_bindings(robot);
+        let manual_subscriber = ctx
+            .subscriber(api::topic::internal::new(cap).motion().manual(), 32)
+            .await?;
+        let latest_manual = Arc::new(Mutex::new(None));
+        let manual_slot = Arc::clone(&latest_manual);
+        let manual_receiver = manual_subscriber.clone();
+        ctx.spawn_managed("manual-receiver", async move {
+            receive_manual_forever(manual_receiver, manual_slot).await;
+        });
 
         let mut component_estops = Vec::with_capacity(estop_bindings.len());
         for binding in &estop_bindings {
@@ -132,15 +149,13 @@ impl Motion {
         Ok((
             Self {
                 limits,
-                last_manual: None,
+                latest_manual,
                 last_autonomous: None,
                 estop: EmergencyStopLatch::new(estop_bindings.len()),
                 last_safety_constraints: None,
             },
             Self::Api {
-                manual: ctx
-                    .subscriber(api::topic::internal::new(cap).motion().manual(), 32)
-                    .await?,
+                manual: manual_subscriber,
                 autonomous: ctx
                     .subscriber(api::topic::new().navigation().candidate(), 32)
                     .await?,
@@ -161,12 +176,8 @@ impl Motion {
 
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        while let Some(received) = api.manual.try_recv() {
-            self.last_manual = Some(Timed {
-                body: received.body,
-                at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
-            });
-        }
+        let manual = latest_manual(&self.latest_manual);
+        let host_now = Instant::now();
         while let Some(received) = api.autonomous.try_recv() {
             self.last_autonomous = Some(Timed {
                 body: received.body,
@@ -202,12 +213,13 @@ impl Motion {
             api::motion::SafetyRuntime::Absent
         };
         let arbitration = arbitrate(
-            self.last_manual.as_ref(),
+            manual.as_ref(),
             self.last_autonomous.as_ref(),
             self.estop.engaged(step.time()),
             self.last_safety_constraints.as_ref(),
             self.limits,
             step.time(),
+            host_now,
         );
         self.estop.finish_cycle();
 
@@ -218,10 +230,7 @@ impl Motion {
             .publish_at(
                 step.time(),
                 api::motion::State {
-                    manual_candidate_age_ns: candidate_age_ns(
-                        self.last_manual.as_ref(),
-                        step.time(),
-                    ),
+                    manual_candidate_age_ns: manual_candidate_age_ns(manual.as_ref(), host_now),
                     autonomous_candidate_age_ns: candidate_age_ns(
                         self.last_autonomous.as_ref(),
                         step.time(),
@@ -251,6 +260,36 @@ impl Motion {
             .await?;
         Ok(())
     }
+}
+
+async fn receive_manual_forever(
+    subscriber: Subscriber<api::motion::ManualCommand>,
+    latest: Arc<Mutex<Option<ManualCandidate>>>,
+) {
+    loop {
+        match subscriber.recv().await {
+            Ok(received) => store_manual(&latest, received.body, Instant::now()),
+            Err(_) => return,
+        }
+    }
+}
+
+fn store_manual(
+    latest: &Mutex<Option<ManualCandidate>>,
+    body: api::motion::ManualCommand,
+    received_at: Instant,
+) {
+    *latest
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(ManualCandidate { body, received_at });
+}
+
+fn latest_manual(latest: &Mutex<Option<ManualCandidate>>) -> Option<ManualCandidate> {
+    latest
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 fn state_target(target: &api::drive::Target) -> api::motion::Target {
@@ -340,6 +379,92 @@ mod tests {
         assert_eq!(state.linear_x_mps, drive.linear_x_mps);
         assert_eq!(state.angular_z_radps, drive.angular_z_radps);
         assert_eq!(state.curvature_limit_radpm, drive.curvature_limit_radpm);
+    }
+
+    #[test]
+    fn manual_receiver_slot_is_bounded_and_newest_wins() {
+        let latest = Mutex::new(None);
+        let first_at = Instant::now();
+        store_manual(
+            &latest,
+            api::motion::ManualCommand {
+                linear_x_mps: 0.1,
+                angular_z_radps: 0.2,
+            },
+            first_at,
+        );
+        let second_at = first_at + std::time::Duration::from_millis(10);
+        store_manual(
+            &latest,
+            api::motion::ManualCommand {
+                linear_x_mps: 0.3,
+                angular_z_radps: 0.4,
+            },
+            second_at,
+        );
+
+        let manual = latest_manual(&latest).expect("latest command should be retained");
+        assert_eq!(manual.body.linear_x_mps, 0.3);
+        assert_eq!(manual.body.angular_z_radps, 0.4);
+        assert_eq!(manual.received_at, second_at);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn manual_receiver_runs_without_logical_steps_and_keeps_newest() {
+        let namespace = format!(
+            "test/motion-manual-receiver/{}-{}",
+            std::process::id(),
+            phoxal::raw::host_time().time_ns()
+        );
+        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig::in_process(namespace, "robot"))
+            .await
+            .expect("bus should open");
+        let publisher =
+            phoxal::raw::Publisher::new(bus.clone(), &api::topic::new().motion().manual())
+                .expect("manual publisher should attach");
+        let subscriber = Subscriber::new(
+            &bus,
+            &api::topic::internal::new(phoxal::raw::OwnerCap::__mint())
+                .motion()
+                .manual(),
+            32,
+        )
+        .await
+        .expect("manual subscriber should attach");
+        let latest = Arc::new(Mutex::new(None));
+        let receiver_slot = Arc::clone(&latest);
+        let receiver = tokio::spawn(async move {
+            receive_manual_forever(subscriber, receiver_slot).await;
+        });
+
+        for linear_x_mps in [0.1, 0.2, 0.3] {
+            publisher
+                .publish_at(
+                    phoxal::raw::host_time(),
+                    api::motion::ManualCommand {
+                        linear_x_mps,
+                        angular_z_radps: 0.0,
+                    },
+                )
+                .await
+                .expect("manual command should publish");
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if latest_manual(&latest).is_some_and(|manual| manual.body.linear_x_mps == 0.3) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("receiver should advance independently of logical steps");
+
+        let manual = latest_manual(&latest).expect("latest manual command should be retained");
+        assert_eq!(manual.body.linear_x_mps, 0.3);
+        receiver.abort();
+        bus.close().await.expect("bus should close");
     }
 
     #[test]

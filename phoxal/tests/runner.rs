@@ -29,9 +29,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use phoxal::bus::{DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publisher, Querier};
-use phoxal::participant::{ClockMode, ParticipantLaunch, RealClock, TestClock};
+use phoxal::participant::{ClockMode, ParticipantLaunch, TestClock};
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, BusConfig, run_with_bus};
+use phoxal::raw::{Bus, BusConfig, run_with_bus, run_with_bus_clock};
 use phoxal_api::ContractBody;
 use phoxal_api::v1 as api;
 use phoxal_api::v2;
@@ -42,6 +42,8 @@ static COUNTER_STEPS: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 static SIM_CLOCK_STEPS: AtomicU64 = AtomicU64::new(0);
+static HOST_TOOL_TICKS: AtomicU64 = AtomicU64::new(0);
+static HOST_TOOL_MESSAGES: AtomicU64 = AtomicU64::new(0);
 static SIM_CLOCK_CONTEXTS: Mutex<Vec<(LogicalTime, u64)>> = Mutex::new(Vec::new());
 
 /// A fresh in-process namespace per test invocation, so concurrently-run
@@ -190,7 +192,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
     .expect("build submap querier");
 
     let launch = ParticipantLaunch::local("wall-follower-v2-1", "robot");
-    let runner = run_with_bus::<WallFollower, _, _>(&bus, launch, RealClock::new(), async {
+    let runner = run_with_bus::<WallFollower, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(600)).await
     });
 
@@ -432,7 +434,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     .expect("build submap querier");
 
     let launch = ParticipantLaunch::local("drain-proof-v2-1", "robot");
-    let runner = run_with_bus::<Drainer, _, _>(&bus, launch, RealClock::new(), async {
+    let runner = run_with_bus::<Drainer, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(800)).await
     });
 
@@ -695,6 +697,39 @@ impl RobotInspector {
     }
 }
 
+#[phoxal::tool(id = "host-driven-tool")]
+struct HostDrivenTool;
+
+#[phoxal::behavior]
+impl HostDrivenTool {
+    #[setup]
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        let bus = ctx.raw_bus();
+        let manual = phoxal::raw::Subscriber::<api::motion::ManualCommand>::new(
+            &bus,
+            &api::topic::internal::new(ctx.owner_capability())
+                .motion()
+                .manual(),
+            8,
+        )
+        .await?;
+        ctx.spawn_managed("host-ticker", async {
+            let mut interval = tokio::time::interval(Duration::from_millis(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                HOST_TOOL_TICKS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        ctx.spawn_managed("raw-subscriber", async move {
+            while manual.recv().await.is_ok() {
+                HOST_TOOL_MESSAGES.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        Ok((Self, ()))
+    }
+}
+
 #[derive(serde::Deserialize, phoxal::Config)]
 struct ConfiguredInspectorConfig {
     label: String,
@@ -718,22 +753,81 @@ impl ConfiguredInspector {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configless_tool_accepts_absent_config_but_configured_tool_rejects_it() {
     let configless = ParticipantLaunch::local("robot-inspector", "robot");
-    phoxal::participant::run_with::<RobotInspector, _, _>(configless, RealClock::new(), async {})
+    phoxal::participant::run_with::<RobotInspector, _>(configless, async {})
         .await
         .expect("a tool with omitted config type should accept absent PHOXAL_CONFIG");
 
     let configured = ParticipantLaunch::local("configured-inspector", "robot");
-    let error = phoxal::participant::run_with::<ConfiguredInspector, _, _>(
-        configured,
-        RealClock::new(),
-        async {},
-    )
-    .await
-    .expect_err("a tool with an explicit non-optional config should require PHOXAL_CONFIG");
+    let error = phoxal::participant::run_with::<ConfiguredInspector, _>(configured, async {})
+        .await
+        .expect_err("a tool with an explicit non-optional config should require PHOXAL_CONFIG");
     assert!(
         error.to_string().contains("invalid type: null"),
         "unexpected absent-config error: {error:#}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
+    HOST_TOOL_TICKS.store(0, Ordering::Relaxed);
+    HOST_TOOL_MESSAGES.store(0, Ordering::Relaxed);
+    let participant_id = "host-driven-tool-1";
+    let namespace = unique_namespace("host-driven-tool");
+    let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
+    bus_config.participant = participant_id.to_string();
+    let bus = Bus::open(bus_config).await.expect("bus should open");
+    let heartbeat_topic = api::topic::internal::new(OwnerCap::__mint())
+        .presence()
+        .heartbeat();
+    let heartbeats = Subscriber::<api::presence::Heartbeat>::new(&bus, &heartbeat_topic, 8)
+        .await
+        .expect("heartbeat subscriber should attach");
+    let manual = phoxal::raw::Publisher::new(bus.clone(), &api::topic::new().motion().manual())
+        .expect("manual publisher should attach");
+
+    let mut launch = ParticipantLaunch::local(participant_id, "robot");
+    launch.namespace = namespace;
+    run_with_bus::<HostDrivenTool, _>(&bus, launch, async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        manual
+            .publish_at(
+                LogicalTime::new(7, 42),
+                api::motion::ManualCommand {
+                    linear_x_mps: 0.2,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .await
+            .expect("raw tool input should publish");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+    })
+    .await
+    .expect("tool should run without a logical clock input");
+
+    assert!(
+        HOST_TOOL_TICKS.load(Ordering::Relaxed) >= 2,
+        "host ticker must run without a logical clock"
+    );
+    assert_eq!(
+        HOST_TOOL_MESSAGES.load(Ordering::Relaxed),
+        1,
+        "raw tool subscriptions must run without a logical clock"
+    );
+    let mut produced_at = Vec::new();
+    while let Some(received) = heartbeats.try_recv() {
+        if received.body.participant == participant_id {
+            produced_at.push(received.metadata.produced_at_ns);
+        }
+    }
+    assert!(
+        !produced_at.is_empty(),
+        "tool heartbeats should be observed"
+    );
+    assert!(
+        produced_at.iter().all(|at| *at > 1_000_000_000_000_000_000),
+        "tool lifecycle timestamps must stay in host time, got {produced_at:?}"
+    );
+    bus.close().await.expect("bus should close");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -743,7 +837,7 @@ async fn runner_runs_steps_then_shuts_down_cleanly() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
 
-    phoxal::participant::run_with::<Counter, _, _>(launch, RealClock::new(), shutdown)
+    phoxal::participant::run_with::<Counter, _>(launch, shutdown)
         .await
         .expect("runner should complete cleanly");
 
@@ -774,7 +868,7 @@ async fn runner_publishes_presence_heartbeats_from_idle_loop() {
 
     let mut launch = ParticipantLaunch::local(participant_id, "robot");
     launch.namespace = namespace;
-    let runner = run_with_bus::<IdlePresence, _, _>(&bus, launch, RealClock::new(), async {
+    let runner = run_with_bus::<IdlePresence, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(2200)).await;
     });
     let collector = async {
@@ -846,7 +940,7 @@ async fn simulation_setup_failure_heartbeats_use_simulation_time() {
     let injected_clock = TestClock::new();
     injected_clock.advance(Duration::from_secs(123));
 
-    let error = run_with_bus::<SetupFailure, _, _>(&bus, launch, injected_clock, async {})
+    let error = run_with_bus_clock::<SetupFailure, _, _>(&bus, launch, injected_clock, async {})
         .await
         .expect_err("setup should fail");
     assert!(error.to_string().contains("intentional setup failure"));
@@ -886,7 +980,7 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
     let started = std::time::Instant::now();
     tokio::time::timeout(
         Duration::from_secs(10),
-        phoxal::participant::run_with::<SlowShutdown, _, _>(launch, RealClock::new(), shutdown),
+        phoxal::participant::run_with::<SlowShutdown, _>(launch, shutdown),
     )
     .await
     .expect("runner must not hang on a slow shutdown hook")
@@ -963,7 +1057,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // mode must ignore it for StepContext and publication timestamps.
     let injected_clock = TestClock::new();
     injected_clock.advance(Duration::from_secs(123));
-    let runner = run_with_bus::<SimClockStepper, _, _>(&bus, launch, injected_clock, async {
+    let runner = run_with_bus_clock::<SimClockStepper, _, _>(&bus, launch, injected_clock, async {
         // No steps should have released yet: the feed has not published a
         // single sample, so the scheduler's logical time has never left
         // `start`.
@@ -1090,7 +1184,7 @@ async fn driver_reads_its_bound_component_instance() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
 
-    phoxal::participant::run_with::<ComponentDriver, _, _>(launch, RealClock::new(), shutdown)
+    phoxal::participant::run_with::<ComponentDriver, _>(launch, shutdown)
         .await
         .expect("driver should read its bound component instance and run cleanly");
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use gilrs::{Button, EventType, Gamepad, GamepadId, Gilrs};
 use phoxal::prelude::*;
-use phoxal::raw::{Publisher, Subscriber};
+use phoxal::raw::{Publisher, Subscriber, host_time};
 use phoxal_api::v1 as motion_api;
 use phoxal_api::v2 as api;
 
@@ -29,7 +29,6 @@ impl ToolJoypad {
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
         let bus = ctx.raw_bus();
-        let clock = ctx.clock();
 
         let manual_publisher =
             Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())?;
@@ -48,7 +47,6 @@ impl ToolJoypad {
                 devices_publisher,
                 connect_subscriber,
                 rescan_subscriber,
-                clock,
             )
             .await
         });
@@ -93,7 +91,6 @@ async fn run_joypad(
     devices_publisher: Publisher<api::joypad::Devices>,
     connect_subscriber: Subscriber<api::joypad::Connect>,
     rescan_subscriber: Subscriber<api::joypad::Rescan>,
-    clock: std::sync::Arc<dyn phoxal::participant::ClockSource>,
 ) {
     let mut gilrs = match Gilrs::new() {
         Ok(gilrs) => Some(gilrs),
@@ -109,29 +106,35 @@ async fn run_joypad(
     } else {
         registry.last_error = Some("gamepad backend unavailable".to_string());
     }
-    publish_devices(&devices_publisher, &registry, clock.now()).await;
+    publish_devices(&devices_publisher, &registry, host_time()).await;
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs_f64(1.0 / POLL_HZ));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {
                 let mut changed = false;
+                let mut selected_disconnected = false;
                 if let Some(gilrs) = gilrs.as_mut() {
                     while let Some(event) = gilrs.next_event() {
                         gilrs.update(&event);
-                        changed |= apply_event(gilrs, &mut registry, event.id, &event.event);
+                        let outcome = apply_event(gilrs, &mut registry, event.id, &event.event);
+                        changed |= outcome.changed;
+                        selected_disconnected |= outcome.selected_disconnected;
                     }
                 }
+                if selected_disconnected {
+                    publish_zero(&manual_publisher).await;
+                }
                 if changed {
-                    publish_devices(&devices_publisher, &registry, clock.now()).await;
+                    publish_devices(&devices_publisher, &registry, host_time()).await;
                 }
 
                 let Some(gilrs) = gilrs.as_ref() else { continue };
                 let Some(selected_id) = selected_gilrs_id(&registry) else { continue };
                 let command = command_from_gamepad(&gilrs.gamepad(selected_id));
-                if let Err(error) = manual_publisher.publish_at(clock.now(), command).await {
+                if let Err(error) = manual_publisher.publish_at(host_time(), command).await {
                     tracing::warn!(target: "tool_joypad", error = %error, "publish failed");
                 }
             }
@@ -143,7 +146,7 @@ async fn run_joypad(
                         } else {
                             registry.last_error = Some("gamepad backend unavailable".to_string());
                         }
-                        publish_devices(&devices_publisher, &registry, clock.now()).await;
+                        publish_devices(&devices_publisher, &registry, host_time()).await;
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "connect subscription failed");
@@ -155,11 +158,13 @@ async fn run_joypad(
                 match received {
                     Ok(_received) => {
                         if let Some(gilrs) = gilrs.as_ref() {
-                            rescan(gilrs, &mut registry);
+                            if rescan(gilrs, &mut registry) {
+                                publish_zero(&manual_publisher).await;
+                            }
                         } else {
                             registry.last_error = Some("gamepad backend unavailable".to_string());
                         }
-                        publish_devices(&devices_publisher, &registry, clock.now()).await;
+                        publish_devices(&devices_publisher, &registry, host_time()).await;
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "rescan subscription failed");
@@ -168,6 +173,16 @@ async fn run_joypad(
                 }
             }
         }
+    }
+}
+
+async fn publish_zero(publisher: &Publisher<motion_api::motion::ManualCommand>) {
+    let zero = motion_api::motion::ManualCommand {
+        linear_x_mps: 0.0,
+        angular_z_radps: 0.0,
+    };
+    if let Err(error) = publisher.publish_at(host_time(), zero).await {
+        tracing::warn!(target: "tool_joypad", error = %error, "disconnect zero publish failed");
     }
 }
 
@@ -221,7 +236,18 @@ fn devices_snapshot(registry: &Registry) -> api::joypad::Devices {
 /// Handle a decoded gilrs hotplug event, mutating `registry` in place.
 /// Returns `true` if the device set or selection changed (Devices should be
 /// republished).
-fn apply_event(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId, event: &EventType) -> bool {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RegistryChange {
+    changed: bool,
+    selected_disconnected: bool,
+}
+
+fn apply_event(
+    gilrs: &Gilrs,
+    registry: &mut Registry,
+    id: GamepadId,
+    event: &EventType,
+) -> RegistryChange {
     match event {
         EventType::Connected => {
             let stable_id = observe(gilrs, registry, id);
@@ -233,10 +259,13 @@ fn apply_event(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId, event: &Ev
                 registry.selected = Some(stable_id);
                 registry.last_error = None;
             }
-            true
+            RegistryChange {
+                changed: true,
+                selected_disconnected: false,
+            }
         }
         EventType::Disconnected => on_disconnected(registry, id),
-        _ => false,
+        _ => RegistryChange::default(),
     }
 }
 
@@ -268,7 +297,8 @@ fn handle_connect(registry: &mut Registry, id: &str) {
 /// previously known set so a still-connected pad keeps its stable id, a
 /// newly seen pad is assigned one, and a pad no longer present is marked
 /// disconnected (not removed - it may reconnect later).
-fn rescan(gilrs: &Gilrs, registry: &mut Registry) {
+fn rescan(gilrs: &Gilrs, registry: &mut Registry) -> bool {
+    let selected_before = registry.selected.clone();
     let mut seen: HashSet<GamepadId> = HashSet::new();
     for (id, _gamepad) in gilrs.gamepads() {
         seen.insert(id);
@@ -283,6 +313,12 @@ fn rescan(gilrs: &Gilrs, registry: &mut Registry) {
         }
     }
     reconcile_selection(gilrs, registry);
+    selected_before.is_some_and(|selected| {
+        registry
+            .entries
+            .get(&selected)
+            .is_some_and(|entry| !entry.connected)
+    })
 }
 
 /// If the current selection is no longer connected, clear it (reporting why)
@@ -380,24 +416,32 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
     stable_id
 }
 
-fn on_disconnected(registry: &mut Registry, id: GamepadId) -> bool {
-    let mut disconnected: Option<String> = None;
-    for (stable_id, entry) in registry.entries.iter_mut() {
-        if entry.gilrs_id == Some(id) {
-            entry.gilrs_id = None;
-            entry.connected = false;
-            disconnected = Some(stable_id.clone());
-            break;
-        }
-    }
-    let Some(stable_id) = disconnected else {
-        return false;
+fn on_disconnected(registry: &mut Registry, id: GamepadId) -> RegistryChange {
+    let stable_id = registry
+        .entries
+        .iter()
+        .find_map(|(stable_id, entry)| (entry.gilrs_id == Some(id)).then(|| stable_id.clone()));
+    let Some(stable_id) = stable_id else {
+        return RegistryChange::default();
     };
-    if registry.selected.as_deref() == Some(stable_id.as_str()) {
+    disconnect_stable_id(registry, &stable_id)
+}
+
+fn disconnect_stable_id(registry: &mut Registry, stable_id: &str) -> RegistryChange {
+    let Some(entry) = registry.entries.get_mut(stable_id) else {
+        return RegistryChange::default();
+    };
+    entry.gilrs_id = None;
+    entry.connected = false;
+    let selected_disconnected = registry.selected.as_deref() == Some(stable_id);
+    if selected_disconnected {
         registry.selected = None;
         registry.last_error = Some(format!("selected device '{stable_id}' disconnected"));
     }
-    true
+    RegistryChange {
+        changed: true,
+        selected_disconnected,
+    }
 }
 
 /// Derive a STABLE wire id for a pad from its identity - NOT the
@@ -624,6 +668,67 @@ mod tests {
             registry.last_error.as_deref(),
             Some("device 'Unknown Pad' has no compatible control mapping")
         );
+    }
+
+    #[test]
+    fn selected_device_disconnect_requests_an_immediate_zero() {
+        let mut registry = Registry {
+            selected: Some("pad".to_string()),
+            ..Registry::default()
+        };
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Pad".to_string(),
+                connected: true,
+                mapped: true,
+            },
+        );
+
+        let outcome = disconnect_stable_id(&mut registry, "pad");
+
+        assert_eq!(
+            outcome,
+            RegistryChange {
+                changed: true,
+                selected_disconnected: true,
+            }
+        );
+        assert!(registry.selected.is_none());
+        assert!(!registry.entries["pad"].connected);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnect_zero_is_published_on_the_manual_contract() {
+        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig::in_process(
+            format!("test/joypad-disconnect/{}", std::process::id()),
+            "robot",
+        ))
+        .await
+        .expect("bus should open");
+        let publisher = Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())
+            .expect("manual publisher should attach");
+        let subscriber = Subscriber::new(
+            &bus,
+            &motion_api::topic::internal::new(phoxal::raw::OwnerCap::__mint())
+                .motion()
+                .manual(),
+            1,
+        )
+        .await
+        .expect("manual subscriber should attach");
+
+        publish_zero(&publisher).await;
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), subscriber.recv())
+            .await
+            .expect("zero command should arrive")
+            .expect("zero command should decode");
+
+        assert_eq!(received.body.linear_x_mps, 0.0);
+        assert_eq!(received.body.angular_z_radps, 0.0);
+        bus.close().await.expect("bus should close");
     }
 
     #[test]

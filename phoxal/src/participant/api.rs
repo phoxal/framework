@@ -336,6 +336,10 @@ pub trait Participant: Sized + Send + 'static {
     const PARTICIPANT_CLASS: &'static str;
     /// The participant id (`id = "…"`, default kebab of the type name).
     const ID: &'static str;
+    /// The process launch contract. Tools use a clockless policy; checked graph
+    /// participants use the configurable robot-clock policy.
+    #[doc(hidden)]
+    type LaunchPolicy: crate::participant::launch::ParticipantLaunchPolicy;
     /// The participant's typed config (`robot.yaml` input).
     type Config: ParticipantConfig;
     /// The participant's bus-facing contract surface (`()` for a raw-bus
@@ -660,23 +664,18 @@ impl<R: Participant + IsSimulator> SetupContextSimulatorExt for SetupContext<R> 
 }
 
 /// Tool-only `SetupContext` accessor (`R: Participant + IsTool`). Tools stay
-/// raw-bus only (decided 2026-07-09), so this is their sole IO seam.
+/// raw-bus only (decided 2026-07-09), so this is their sole IO seam. Tools do
+/// not receive the runner clock: host timers and [`crate::raw::host_time`] keep
+/// them outside robot logical/simulation time.
 pub trait SetupContextToolExt {
     /// Clone the runner-owned raw bus for privileged tool internals. The bus is
     /// already open from the launch contract, so a tool does not reparse launch
     /// env or open an unrelated session.
     fn raw_bus(&self) -> Bus;
-
-    /// Clone the logical clock owned by the participant runner.
-    fn clock(&self) -> std::sync::Arc<dyn crate::participant::clock::ClockSource>;
 }
 
 impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
     fn raw_bus(&self) -> Bus {
         self.bus().clone()
-    }
-
-    fn clock(&self) -> std::sync::Arc<dyn crate::participant::clock::ClockSource> {
-        self.clock_source()
     }
 }

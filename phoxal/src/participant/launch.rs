@@ -1,9 +1,11 @@
 //! `ParticipantLaunch` - the clap/env process launch contract.
 //!
-//! Every participant binary accepts the same documented `--flag` set with
-//! matching `PHOXAL_*` env fallbacks. Supervisors and systemd units use env,
-//! while humans can use flags for bench runs. Flags win over env through clap's
-//! native precedence, and `--help` is the user-facing contract documentation.
+//! Participant binaries share one common `--flag` set with matching `PHOXAL_*`
+//! env fallbacks. Clocked graph participants additionally accept `--clock` /
+//! `PHOXAL_CLOCK`; tools do not expose either input. Supervisors and systemd
+//! units use env, while humans can use flags for bench runs. Flags win over env
+//! through clap's native precedence, and `--help` is the user-facing contract
+//! documentation.
 
 use std::path::PathBuf;
 
@@ -30,7 +32,7 @@ pub mod env {
     pub const CONNECT: &str = "PHOXAL_CONNECT";
     /// Inline JSON participant config block.
     pub const CONFIG: &str = "PHOXAL_CONFIG";
-    /// Clock mode: real or simulation.
+    /// Clock mode for services, drivers, and simulators: real or simulation.
     pub const CLOCK: &str = "PHOXAL_CLOCK";
 
     /// All env names in contract order.
@@ -58,7 +60,7 @@ pub struct ParticipantLaunch {
     /// The resolved bus profile.
     #[serde(default)]
     pub bus: BusProfile,
-    /// The clock mode.
+    /// The robot clock mode. Tool launch policies never read this field.
     #[serde(default)]
     pub clock: ClockMode,
     /// The participant's typed config block (`services.<id>.config`), if any.
@@ -101,16 +103,6 @@ impl ParticipantLaunch {
         }
     }
 
-    pub(crate) fn from_cli(
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> crate::Result<ParticipantLaunch> {
-        let matches =
-            LaunchCli::command_for(default_participant_id, default_robot_id).get_matches();
-        let cli = LaunchCli::from_arg_matches(&matches)?;
-        cli.into_launch(default_participant_id, default_robot_id)
-    }
-
     /// Set the robot model root for this launch.
     pub fn with_robot_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.robot_root = Some(root.into());
@@ -124,14 +116,9 @@ impl ParticipantLaunch {
     }
 }
 
-/// The clap-derived launch contract for participant binaries.
-#[derive(Debug, clap::Parser)]
-#[command(
-    name = "phoxal-participant",
-    about = "Run a Phoxal participant.",
-    long_about = None
-)]
-struct LaunchCli {
+/// The clap-derived launch fields shared by every participant binary.
+#[derive(Debug, clap::Args)]
+struct CommonLaunchCli {
     /// Bus-unique participant id. Defaults to the compiled participant artifact id.
     #[arg(
         long,
@@ -190,8 +177,20 @@ struct LaunchCli {
         value_name = "JSON"
     )]
     config: Option<String>,
+}
 
-    /// Clock mode for the runner.
+/// Launch contract for services, drivers, and simulators.
+#[derive(Debug, clap::Parser)]
+#[command(
+    name = "phoxal-participant",
+    about = "Run a Phoxal participant.",
+    long_about = None
+)]
+struct ClockedLaunchCli {
+    #[command(flatten)]
+    common: CommonLaunchCli,
+
+    /// Clock mode for robot-state execution.
     #[arg(
         long,
         env = env::CLOCK,
@@ -202,18 +201,20 @@ struct LaunchCli {
     clock: ClockMode,
 }
 
-impl LaunchCli {
-    fn command_for(
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> clap::Command {
-        Self::command()
-            .mut_arg("participant_id", |arg| {
-                arg.default_value(default_participant_id)
-            })
-            .mut_arg("robot_id", |arg| arg.default_value(default_robot_id))
-    }
+/// Launch contract for host/event-driven tools. It intentionally has no clock
+/// flag or environment binding.
+#[derive(Debug, clap::Parser)]
+#[command(
+    name = "phoxal-tool",
+    about = "Run a Phoxal tool.",
+    long_about = None
+)]
+struct ToolLaunchCli {
+    #[command(flatten)]
+    common: CommonLaunchCli,
+}
 
+impl CommonLaunchCli {
     fn into_launch(
         self,
         default_participant_id: &'static str,
@@ -241,8 +242,74 @@ impl LaunchCli {
                     .context("PHOXAL_CONFIG must be valid JSON for the participant config")?,
             );
         }
-        launch.clock = self.clock;
         Ok(launch)
+    }
+}
+
+fn command_for<C: CommandFactory>(
+    default_participant_id: &'static str,
+    default_robot_id: &'static str,
+) -> clap::Command {
+    C::command()
+        .mut_arg("participant_id", |arg| {
+            arg.default_value(default_participant_id)
+        })
+        .mut_arg("robot_id", |arg| arg.default_value(default_robot_id))
+}
+
+/// Type-level launch contract emitted by the participant macros.
+#[doc(hidden)]
+pub trait ParticipantLaunchPolicy: Send + Sync + 'static {
+    fn from_cli(
+        default_participant_id: &'static str,
+        default_robot_id: &'static str,
+    ) -> crate::Result<ParticipantLaunch>;
+
+    fn clock_mode(launch: &ParticipantLaunch) -> ClockMode;
+}
+
+/// Launch policy for services, drivers, and simulators.
+#[doc(hidden)]
+pub struct ClockedParticipantLaunch;
+
+impl ParticipantLaunchPolicy for ClockedParticipantLaunch {
+    fn from_cli(
+        default_participant_id: &'static str,
+        default_robot_id: &'static str,
+    ) -> crate::Result<ParticipantLaunch> {
+        let matches =
+            command_for::<ClockedLaunchCli>(default_participant_id, default_robot_id).get_matches();
+        let cli = ClockedLaunchCli::from_arg_matches(&matches)?;
+        let mut launch = cli
+            .common
+            .into_launch(default_participant_id, default_robot_id)?;
+        launch.clock = cli.clock;
+        Ok(launch)
+    }
+
+    fn clock_mode(launch: &ParticipantLaunch) -> ClockMode {
+        launch.clock
+    }
+}
+
+/// Clockless launch policy for tools.
+#[doc(hidden)]
+pub struct ToolParticipantLaunch;
+
+impl ParticipantLaunchPolicy for ToolParticipantLaunch {
+    fn from_cli(
+        default_participant_id: &'static str,
+        default_robot_id: &'static str,
+    ) -> crate::Result<ParticipantLaunch> {
+        let matches =
+            command_for::<ToolLaunchCli>(default_participant_id, default_robot_id).get_matches();
+        let cli = ToolLaunchCli::from_arg_matches(&matches)?;
+        cli.common
+            .into_launch(default_participant_id, default_robot_id)
+    }
+
+    fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
+        ClockMode::Real
     }
 }
 
@@ -299,19 +366,29 @@ mod tests {
         }
     }
 
-    fn parse_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
-        let matches = LaunchCli::command_for("default-id", "robot")
+    fn parse_clocked_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
+        let matches = command_for::<ClockedLaunchCli>("default-id", "robot")
             .try_get_matches_from(args)
             .map_err(anyhow::Error::from)?;
-        let cli = LaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        cli.into_launch("default-id", "robot")
+        let cli = ClockedLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
+        let mut launch = cli.common.into_launch("default-id", "robot")?;
+        launch.clock = cli.clock;
+        Ok(launch)
+    }
+
+    fn parse_tool_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
+        let matches = command_for::<ToolLaunchCli>("default-id", "robot")
+            .try_get_matches_from(args)
+            .map_err(anyhow::Error::from)?;
+        let cli = ToolLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
+        cli.common.into_launch("default-id", "robot")
     }
 
     #[test]
     #[serial]
     fn cli_with_nothing_set_matches_local_defaults() {
         clear_env();
-        let launch = parse_from(&["participant-bin"]).unwrap();
+        let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "default-id");
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
@@ -336,7 +413,7 @@ mod tests {
             std::env::set_var(env::CONFIG, r#"{"rate_hz":10}"#);
             std::env::set_var(env::CLOCK, "simulation");
         }
-        let launch = parse_from(&["participant-bin"]).unwrap();
+        let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "tof-3");
         assert_eq!(launch.robot_id, "robot-a");
         assert_eq!(launch.namespace, "lab");
@@ -373,7 +450,7 @@ mod tests {
             std::env::set_var(env::CLOCK, "simulation");
         }
 
-        let launch = parse_from(&[
+        let launch = parse_clocked_from(&[
             "participant-bin",
             "--participant-id",
             "flag-participant",
@@ -414,12 +491,12 @@ mod tests {
         clear_env();
         // SAFETY: serialized test; see clear_env.
         unsafe { std::env::set_var(env::CONFIG, "not json") };
-        assert!(parse_from(&["participant-bin"]).is_err());
+        assert!(parse_clocked_from(&["participant-bin"]).is_err());
         unsafe {
             std::env::remove_var(env::CONFIG);
             std::env::set_var(env::CLOCK, "wallclock");
         }
-        let err = LaunchCli::command_for("default-id", "robot")
+        let err = command_for::<ClockedLaunchCli>("default-id", "robot")
             .try_get_matches_from(["participant-bin"])
             .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidValue);
@@ -434,7 +511,7 @@ mod tests {
         unsafe { std::env::set_var(env::CONFIG, r#"{"secret":"do-not-print"}"#) };
 
         let mut help = Vec::new();
-        LaunchCli::command_for("default-id", "robot")
+        command_for::<ClockedLaunchCli>("default-id", "robot")
             .write_long_help(&mut help)
             .unwrap();
         let help = String::from_utf8(help).unwrap();
@@ -453,6 +530,47 @@ mod tests {
             assert!(help.contains(env_name), "help should list {env_name}");
         }
         assert!(!help.contains("do-not-print"));
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn tool_cli_has_no_clock_input() {
+        clear_env();
+        // A generic supervisor setting is invisible to the tool launch parser.
+        // SAFETY: serialized test; see clear_env.
+        unsafe { std::env::set_var(env::CLOCK, "simulation") };
+        let launch = parse_tool_from(&["tool-bin"]).unwrap();
+        assert_eq!(launch.clock, ClockMode::Real);
+
+        let mut help = Vec::new();
+        command_for::<ToolLaunchCli>("default-id", "robot")
+            .write_long_help(&mut help)
+            .unwrap();
+        let help = String::from_utf8(help).unwrap();
+        assert!(!help.contains("--clock"));
+        assert!(!help.contains(env::CLOCK));
+
+        for arguments in [
+            vec!["tool-bin", "--clock", "simulation"],
+            vec!["tool-bin", "--simulation"],
+        ] {
+            let error = command_for::<ToolLaunchCli>("default-id", "robot")
+                .try_get_matches_from(arguments)
+                .unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+        }
+
+        let mut programmatic = ParticipantLaunch::local("tool", "robot");
+        programmatic.clock = ClockMode::Simulation;
+        assert_eq!(
+            ToolParticipantLaunch::clock_mode(&programmatic),
+            ClockMode::Real
+        );
+        assert_eq!(
+            ClockedParticipantLaunch::clock_mode(&programmatic),
+            ClockMode::Simulation
+        );
         clear_env();
     }
 }

@@ -15,7 +15,7 @@ impl DefaultRawBusOpen {
     async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let _config = phoxal::bus::BusConfig::in_process("dev", "robot");
         let _open = phoxal::bus::Bus::open;
-        let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
+        let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _>;
         Ok((Self, ()))
     }
 }

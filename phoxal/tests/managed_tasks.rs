@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::participant::{ManagedTaskPolicy, ParticipantLaunch, RealClock, run_with};
+use phoxal::participant::{ManagedTaskPolicy, ParticipantLaunch, run_with};
 use phoxal::prelude::*;
 
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -49,7 +49,7 @@ async fn managed_task_panic_faults_the_runtime() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        run_with::<ManagedPanic, _, _>(launch, RealClock::new(), shutdown),
+        run_with::<ManagedPanic, _>(launch, shutdown),
     )
     .await
     .expect("runner must not hang after a managed task panics");
@@ -92,7 +92,7 @@ async fn managed_task_early_return_faults_by_default() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        run_with::<ManagedEarlyReturnFault, _, _>(launch, RealClock::new(), shutdown),
+        run_with::<ManagedEarlyReturnFault, _>(launch, shutdown),
     )
     .await
     .expect("runner must not hang after a managed task returns early");
@@ -138,8 +138,7 @@ async fn managed_task_early_return_under_allow_exit_does_not_fault() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
 
-    let result =
-        run_with::<ManagedEarlyReturnAllowed, _, _>(launch, RealClock::new(), shutdown).await;
+    let result = run_with::<ManagedEarlyReturnAllowed, _>(launch, shutdown).await;
 
     assert!(EARLY_RETURN_ALLOWED_TASK_RAN.load(Ordering::Relaxed));
     result.expect("an AllowExit managed task returning early must not fault the runtime");
@@ -183,7 +182,7 @@ async fn managed_task_panic_under_allow_exit_does_not_fault() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
 
-    let result = run_with::<ManagedPanicAllowed, _, _>(launch, RealClock::new(), shutdown).await;
+    let result = run_with::<ManagedPanicAllowed, _>(launch, shutdown).await;
 
     assert!(ALLOWED_PANIC_TASK_RAN.load(Ordering::Relaxed));
     result.expect("an AllowExit managed task panicking must not fault the runtime");
@@ -233,7 +232,7 @@ async fn clean_shutdown_cancels_and_joins_managed_tasks() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        run_with::<ManagedCleanShutdown, _, _>(launch, RealClock::new(), shutdown),
+        run_with::<ManagedCleanShutdown, _>(launch, shutdown),
     )
     .await
     .expect("runner must not hang joining a cooperative managed task");
@@ -279,7 +278,7 @@ async fn setup_failure_cancels_spawned_managed_tasks() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        run_with::<ManagedSetupFailure, _, _>(launch, RealClock::new(), shutdown),
+        run_with::<ManagedSetupFailure, _>(launch, shutdown),
     )
     .await
     .expect("runner must not hang cleaning up a managed task after setup fails");
@@ -342,7 +341,7 @@ async fn shutdown_reports_unjoined_managed_tasks_after_grace_elapses() {
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(
         Duration::from_secs(10),
-        run_with::<ManagedStuckShutdown, _, _>(launch, RealClock::new(), shutdown),
+        run_with::<ManagedStuckShutdown, _>(launch, shutdown),
     )
     .await
     .expect("runner must not hang past its own timeout budget waiting on a stuck task");

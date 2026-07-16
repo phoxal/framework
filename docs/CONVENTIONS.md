@@ -72,11 +72,24 @@ the only source of keys, and the wire body never appears in the key
 
 ## Logical time
 
-- Participants track time, watchdogs, and staleness with **logical time**
-  only - never wall time directly.
+- Robot services, drivers, and simulators track state-transition time,
+  watchdogs, and synchronous-input staleness with **logical time** - never wall
+  time directly.
   The runner owns one `ClockSource` and stamps every `StepContext` and every
-  `produced_at_ns` from it, so all participants share one time domain
+  `produced_at_ns` from it, so participants in the robot clock share one domain
   ([`phoxal/src/participant/clock.rs`](../phoxal/src/participant/clock.rs)).
+- Tools are outside that clock. Their process launch contract has no `--clock`
+  flag or `PHOXAL_CLOCK` binding, and the normal embedding API accepts no clock
+  argument. They run from external events and host-monotonic timers in every
+  mode. Tool envelope metadata uses `phoxal::raw::host_time()`; the runner never
+  gives tools `StepContext` or enrolls them in logical scheduling. Official tool
+  sources are checked against simulation-clock imports; privileged user-authored
+  raw-bus tools must uphold the same rule and never decide freshness from robot
+  logical time.
+- A logical-time consumer of asynchronous external input owns retention and
+  freshness. Keep only the latest bounded value, record its consumer-local
+  monotonic arrival instant, and sample that value at the logical step. A
+  logical pause must not accumulate a replay backlog.
 - `LogicalTime` is `{ epoch, time_ns }`.
   Within an epoch `time_ns` strictly increases; an epoch bump signals a reset.
   `RealClock` reads the host-wide UNIX-epoch domain (so cross-process staleness
@@ -104,7 +117,8 @@ the only source of keys, and the wire body never appears in the key
   `#[phoxal::driver]` for per-component-instance participants that can call
   `ctx.component()`;
   `#[phoxal::tool]` for host-side utilities that inspect `ctx.robot()` (`Api`
-  defaults to `()` - tools stay raw-bus only);
+  defaults to `()` - tools stay raw-bus only and host/event driven, with no
+  logical clock accessor or scheduled step);
   `#[phoxal::simulator]` for simulation-only participants.
   Each kind embeds its own JSON metadata (id, kind, contract surface) as a
   static in a dedicated linker section on the compiled binary

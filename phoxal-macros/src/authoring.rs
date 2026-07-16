@@ -702,6 +702,17 @@ impl ParticipantKind {
         }
     }
 
+    fn launch_policy(self, phoxal: &TokenStream) -> TokenStream {
+        match self {
+            ParticipantKind::Tool => {
+                quote!(#phoxal::participant::launch::ToolParticipantLaunch)
+            }
+            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Simulator => {
+                quote!(#phoxal::participant::launch::ClockedParticipantLaunch)
+            }
+        }
+    }
+
     /// Default `Api` type when `api = …` is not given: tools stay raw-bus
     /// only (decided 2026-07-09 - no typed tool `Api` until a real need
     /// appears), every other kind defaults to the local `Api` struct.
@@ -810,6 +821,7 @@ pub fn expand_participant(
     let phoxal = phoxal();
     let artifact_kind = kind.artifact_kind();
     let participant_class = kind.participant_class();
+    let launch_policy = kind.launch_policy(&phoxal);
     let marker = kind.marker_impl(&phoxal, struct_name);
     let metadata_const_ident = Ident::new(
         &format!(
@@ -841,6 +853,7 @@ pub fn expand_participant(
             const KIND: &'static str = #artifact_kind;
             const PARTICIPANT_CLASS: &'static str = #participant_class;
             const ID: &'static str = #id;
+            type LaunchPolicy = #launch_policy;
             type Config = #config_ty;
             type Api = #api_ty;
         }

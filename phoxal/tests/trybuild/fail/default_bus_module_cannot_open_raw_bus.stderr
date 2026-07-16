@@ -13,22 +13,19 @@ error[E0433]: cannot find `Bus` in `bus`
 error[E0425]: cannot find value `run_with_bus` in module `phoxal::participant`
   --> tests/trybuild/fail/default_bus_module_cannot_open_raw_bus.rs:18:50
    |
-18 |           let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
+18 |           let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _>;
    |                                                    ^^^^^^^^^^^^
    |
   ::: src/participant/runner.rs
    |
-   | / pub async fn run_with<R, C, S>(
-   | |     launch: ParticipantLaunch,
-   | |     clock: C,
-   | |     shutdown: S,
-...  |
-   | |     C: ClockSource,
+   | / pub async fn run_with<R, S>(launch: ParticipantLaunch, shutdown: S) -> crate::Result<()>
+   | | where
+   | |     R: ParticipantLifecycle,
    | |     S: Future<Output = ()>,
    | |___________________________- similarly named function `run_with` defined here
    |
 help: a function with a similar name exists
    |
-18 -         let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _, _>;
-18 +         let _run_with_bus = phoxal::participant::run_with::<DefaultRawBusOpen, _, _>;
+18 -         let _run_with_bus = phoxal::participant::run_with_bus::<DefaultRawBusOpen, _>;
+18 +         let _run_with_bus = phoxal::participant::run_with::<DefaultRawBusOpen, _>;
    |

@@ -12,7 +12,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
-use phoxal::participant::{ParticipantLaunch, RealClock};
+use phoxal::participant::ParticipantLaunch;
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
 use phoxal_api::v1 as api;
@@ -118,16 +118,14 @@ async fn two_runtimes_exchange_a_dynamic_topic_on_one_bus() {
         .await
         .expect("open shared bus");
 
-    let producer = run_with_bus::<EncoderProducer, _, _>(
+    let producer = run_with_bus::<EncoderProducer, _>(
         &bus,
         ParticipantLaunch::local("encoder-producer-1", "robot"),
-        RealClock::new(),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
-    let consumer = run_with_bus::<EncoderConsumer, _, _>(
+    let consumer = run_with_bus::<EncoderConsumer, _>(
         &bus,
         ParticipantLaunch::local("encoder-consumer-1", "robot"),
-        RealClock::new(),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
 

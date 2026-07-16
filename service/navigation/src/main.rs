@@ -570,7 +570,7 @@ mod tests {
     use phoxal::participant::{
         ClockSource, ContractRole, Participant, ParticipantApi, ParticipantLaunch, TestClock,
     };
-    use phoxal::raw::{Bus, BusConfig, OwnerCap, Publisher, Subscriber, run_with_bus};
+    use phoxal::raw::{Bus, BusConfig, OwnerCap, Publisher, Subscriber, run_with_bus_clock};
     use phoxal_api::ContractBody;
 
     use super::*;
@@ -706,7 +706,7 @@ mod tests {
 
         let clock = TestClock::new();
         let runner_clock = clock.clone();
-        let runner = run_with_bus::<Navigation, _, _>(
+        let runner = run_with_bus_clock::<Navigation, _, _>(
             &bus,
             ParticipantLaunch::local("navigation-1", "robot"),
             runner_clock,
