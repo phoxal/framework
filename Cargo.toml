@@ -107,12 +107,12 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 serial_test = "3"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
-# `system` only: this is the minimal feature that gates System/Process/CPU/
-# memory sampling (host + per-participant self-sampling). Default features
-# additionally pull disk/network/component bindings this workspace never
-# reads. Pinned to 0.36 (not the newest 0.39.x) because newer releases raise
-# their MSRV past this workspace's `rust-version = "1.85"`.
-sysinfo = { version = "0.36", default-features = false, features = ["system"] }
+# `system` and `disk` are the minimal features for host/process CPU and memory
+# sampling plus mounted-filesystem capacity. Default features additionally pull
+# network/component/user bindings this workspace never reads. Pinned to 0.36
+# (not the newest 0.39.x) because newer releases raise their MSRV past this
+# workspace's `rust-version = "1.85"`.
+sysinfo = { version = "0.36", default-features = false, features = ["disk", "system"] }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs", "process"] }
