@@ -1,0 +1,12 @@
+schema: simulation/v0
+capabilities:
+  motor:
+    kind: motor
+    actuator_type: velocity
+  encoder:
+    kind: encoder
+    sampling_period_hz: 50.0
+    resolution: 0.003067962
+links:
+  wheel:
+    contact_material: rubber_wheel
