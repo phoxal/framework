@@ -6,8 +6,6 @@ use phoxal::raw::{Publisher, Subscriber, host_time};
 use phoxal_api::v1 as motion_api;
 use phoxal_api::v2 as api;
 
-const LINEAR_SCALE_MPS: f64 = 0.6;
-const ANGULAR_SCALE_RADPS: f64 = 1.5;
 const TRIGGER_DEADZONE: f32 = 0.08;
 
 // Plan #15: a tool is a thin raw-bus runner - no `#[step]`. The 50 Hz poll loop
@@ -27,6 +25,17 @@ struct ToolJoypad;
 impl ToolJoypad {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        let (manual_drive, unavailable_reason) = match ctx
+            .robot()
+            .map_err(|error| error.to_string())
+            .and_then(ManualDrive::from_robot)
+        {
+            Ok(drive) => (Some(drive), None),
+            Err(error) => {
+                tracing::warn!(target: "tool_joypad", error, "manual input unavailable for this robot model");
+                (None, Some(error))
+            }
+        };
         let cap = ctx.owner_capability();
         let bus = ctx.raw_bus();
 
@@ -36,8 +45,14 @@ impl ToolJoypad {
             bus.clone(),
             &api::topic::internal::new(cap).joypad().devices(),
         )?;
-        let connect_subscriber =
-            Subscriber::new(&bus, &api::topic::internal::new(cap).joypad().connect(), 32).await?;
+        let select_subscriber =
+            Subscriber::new(&bus, &api::topic::internal::new(cap).joypad().select(), 32).await?;
+        let set_enabled_subscriber = Subscriber::new(
+            &bus,
+            &api::topic::internal::new(cap).joypad().set_enabled(),
+            32,
+        )
+        .await?;
         let rescan_subscriber =
             Subscriber::new(&bus, &api::topic::internal::new(cap).joypad().rescan(), 32).await?;
 
@@ -45,8 +60,11 @@ impl ToolJoypad {
             run_joypad(
                 manual_publisher,
                 devices_publisher,
-                connect_subscriber,
+                select_subscriber,
+                set_enabled_subscriber,
                 rescan_subscriber,
+                manual_drive,
+                unavailable_reason,
             )
             .await
         });
@@ -72,39 +90,93 @@ struct PadEntry {
     mapped: bool,
 }
 
-/// All pads the tool has observed, plus which one is selected for the
-/// `ManualCommand` poll loop and the last device-management error (if any).
+/// Authoritative controller inventory, selection and manual authority, plus
+/// structural unavailability and the last explicit request error (if any).
 #[derive(Default)]
 struct Registry {
     entries: HashMap<String, PadEntry>,
     selected: Option<String>,
+    enabled: bool,
     last_error: Option<String>,
+    unavailable_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ManualDrive {
+    wheel_base_m: f64,
+    side_speed_mps: f64,
+}
+
+impl ManualDrive {
+    fn from_robot(robot: &phoxal::model::v0::Robot) -> std::result::Result<Self, String> {
+        let limits = robot
+            .manifest
+            .robot
+            .motion_limits
+            .validate()
+            .map_err(|error| error.to_string())?;
+        let phoxal::model::robot::v0::KinematicConfig::Differential { wheel_base_m, .. } =
+            &robot.manifest.robot.kinematic
+        else {
+            return Err("manual input requires differential robot kinematics".to_string());
+        };
+        Self::from_parameters(limits, *wheel_base_m)
+    }
+
+    fn from_parameters(
+        limits: phoxal::model::robot::v0::MotionLimits,
+        wheel_base_m: f64,
+    ) -> std::result::Result<Self, String> {
+        if !(wheel_base_m.is_finite() && wheel_base_m > 0.0) {
+            return Err("robot.kinematic.wheel_base_m must be finite and > 0".to_string());
+        }
+        let side_speed_mps = limits
+            .max_linear_speed_mps
+            .min(limits.max_angular_speed_radps * wheel_base_m / 2.0);
+        Ok(Self {
+            wheel_base_m,
+            side_speed_mps,
+        })
+    }
+}
+
+fn combine_unavailable_reasons(robot: Option<String>, backend: Option<String>) -> Option<String> {
+    match (robot, backend) {
+        (Some(robot), Some(backend)) => Some(format!("{robot}; {backend}")),
+        (Some(reason), _) | (_, Some(reason)) => Some(reason),
+        (None, None) => None,
+    }
 }
 
 /// Owns the gamepad handle and bus handles for the lifetime of the tool.
 /// Polls the selected pad at [`POLL_HZ`] publishing `ManualCommand`, and
-/// services the `joypad::Connect`/`joypad::Rescan` commands, publishing
+/// services the `joypad::Select`/`joypad::SetEnabled`/`joypad::Rescan`
+/// commands, publishing
 /// `joypad::Devices` on every device-set or selection change. Runs until the
 /// runner cancels it during managed shutdown.
 async fn run_joypad(
     manual_publisher: Publisher<motion_api::motion::ManualCommand>,
     devices_publisher: Publisher<api::joypad::Devices>,
-    connect_subscriber: Subscriber<api::joypad::Connect>,
+    select_subscriber: Subscriber<api::joypad::Select>,
+    set_enabled_subscriber: Subscriber<api::joypad::SetEnabled>,
     rescan_subscriber: Subscriber<api::joypad::Rescan>,
+    manual_drive: Option<ManualDrive>,
+    robot_unavailable: Option<String>,
 ) {
-    let mut gilrs = match Gilrs::new() {
-        Ok(gilrs) => Some(gilrs),
+    let (mut gilrs, backend_unavailable) = match Gilrs::new() {
+        Ok(gilrs) => (Some(gilrs), None),
         Err(error) => {
             tracing::warn!(target: "tool_joypad", error = %error, "gamepad backend unavailable; staying idle");
-            None
+            (None, Some(format!("gamepad backend unavailable: {error}")))
         }
     };
 
-    let mut registry = Registry::default();
+    let mut registry = Registry {
+        unavailable_reason: combine_unavailable_reasons(robot_unavailable, backend_unavailable),
+        ..Registry::default()
+    };
     if let Some(gilrs) = gilrs.as_ref() {
         rescan(gilrs, &mut registry);
-    } else {
-        registry.last_error = Some("gamepad backend unavailable".to_string());
     }
     publish_devices(&devices_publisher, &registry, host_time()).await;
 
@@ -115,41 +187,60 @@ async fn run_joypad(
         tokio::select! {
             _ = ticker.tick() => {
                 let mut changed = false;
-                let mut selected_disconnected = false;
+                let mut zero_required = false;
                 if let Some(gilrs) = gilrs.as_mut() {
                     while let Some(event) = gilrs.next_event() {
                         gilrs.update(&event);
                         let outcome = apply_event(gilrs, &mut registry, event.id, &event.event);
                         changed |= outcome.changed;
-                        selected_disconnected |= outcome.selected_disconnected;
+                        zero_required |= outcome.zero_required;
                     }
                 }
-                if selected_disconnected {
+                if zero_required {
                     publish_zero(&manual_publisher).await;
                 }
                 if changed {
                     publish_devices(&devices_publisher, &registry, host_time()).await;
                 }
 
+                let Some(manual_drive) = manual_drive else { continue };
                 let Some(gilrs) = gilrs.as_ref() else { continue };
                 let Some(selected_id) = selected_gilrs_id(&registry) else { continue };
-                let command = command_from_gamepad(&gilrs.gamepad(selected_id));
+                let Some(command) = command_from_gamepad(
+                    &gilrs.gamepad(selected_id),
+                    registry.enabled,
+                    manual_drive,
+                ) else { continue };
                 if let Err(error) = manual_publisher.publish_at(host_time(), command).await {
                     tracing::warn!(target: "tool_joypad", error = %error, "publish failed");
                 }
             }
-            received = connect_subscriber.recv() => {
+            received = select_subscriber.recv() => {
                 match received {
                     Ok(received) => {
-                        if gilrs.is_some() {
-                            handle_connect(&mut registry, &received.body.id);
-                        } else {
-                            registry.last_error = Some("gamepad backend unavailable".to_string());
+                        if gilrs.is_some()
+                            && handle_select(&mut registry, &received.body.id)
+                        {
+                            publish_zero(&manual_publisher).await;
                         }
                         publish_devices(&devices_publisher, &registry, host_time()).await;
                     }
                     Err(error) => {
-                        tracing::warn!(target: "tool_joypad", error = %error, "connect subscription failed");
+                        tracing::warn!(target: "tool_joypad", error = %error, "select subscription failed");
+                        return;
+                    }
+                }
+            }
+            received = set_enabled_subscriber.recv() => {
+                match received {
+                    Ok(received) => {
+                        if handle_set_enabled(&mut registry, received.body.enabled) {
+                            publish_zero(&manual_publisher).await;
+                        }
+                        publish_devices(&devices_publisher, &registry, host_time()).await;
+                    }
+                    Err(error) => {
+                        tracing::warn!(target: "tool_joypad", error = %error, "set-enabled subscription failed");
                         return;
                     }
                 }
@@ -161,8 +252,6 @@ async fn run_joypad(
                             if rescan(gilrs, &mut registry) {
                                 publish_zero(&manual_publisher).await;
                             }
-                        } else {
-                            registry.last_error = Some("gamepad backend unavailable".to_string());
                         }
                         publish_devices(&devices_publisher, &registry, host_time()).await;
                     }
@@ -222,26 +311,33 @@ fn devices_snapshot(registry: &Registry) -> api::joypad::Devices {
         .map(|(id, entry)| api::joypad::Device {
             id: id.clone(),
             name: entry.name.clone(),
-            connected: entry.connected,
+            status: if !entry.connected {
+                api::joypad::DeviceStatus::Disconnected
+            } else if entry.mapped {
+                api::joypad::DeviceStatus::Ready
+            } else {
+                api::joypad::DeviceStatus::Unsupported
+            },
         })
         .collect();
     available.sort_by(|a, b| a.id.cmp(&b.id));
     api::joypad::Devices {
         available,
         selected: registry.selected.clone(),
+        enabled: registry.enabled,
+        unavailable_reason: registry.unavailable_reason.clone(),
         last_error: registry.last_error.clone(),
     }
 }
 
-/// Handle a decoded gilrs hotplug event, mutating `registry` in place.
-/// Returns `true` if the device set or selection changed (Devices should be
-/// republished).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RegistryChange {
     changed: bool,
-    selected_disconnected: bool,
+    zero_required: bool,
 }
 
+/// Handle a decoded gilrs hotplug event, returning whether Devices changed and
+/// whether the caller must publish an immediate zero command.
 fn apply_event(
     gilrs: &Gilrs,
     registry: &mut Registry,
@@ -251,46 +347,88 @@ fn apply_event(
     match event {
         EventType::Connected => {
             let stable_id = observe(gilrs, registry, id);
-            let mapped = registry
-                .entries
-                .get(&stable_id)
-                .is_some_and(|entry| entry.mapped);
-            if registry.selected.is_none() && mapped {
-                registry.selected = Some(stable_id);
-                registry.last_error = None;
-            }
-            RegistryChange {
-                changed: true,
-                selected_disconnected: false,
-            }
+            reconcile_connected_device(registry, stable_id)
         }
         EventType::Disconnected => on_disconnected(registry, id),
         _ => RegistryChange::default(),
     }
 }
 
-/// Client asked to select a device by its stable wire id (`joypad::Connect`).
+fn reconcile_connected_device(registry: &mut Registry, stable_id: String) -> RegistryChange {
+    let zero_required = invalidate_unready_selection(registry);
+    let mapped = registry
+        .entries
+        .get(&stable_id)
+        .is_some_and(|entry| entry.mapped);
+    if registry.selected.is_none() && mapped {
+        registry.selected = Some(stable_id);
+        registry.enabled = false;
+    }
+    RegistryChange {
+        changed: true,
+        zero_required,
+    }
+}
+
+/// Client asked to select a device by its stable wire id (`joypad::Select`).
 /// Unknown/unavailable ids populate `last_error`; either way the caller
 /// republishes `Devices` (that republish IS the ack).
-fn handle_connect(registry: &mut Registry, id: &str) {
-    match registry.entries.get(id) {
+fn handle_select(registry: &mut Registry, id: &str) -> bool {
+    let selection_changes = registry.selected.as_deref() != Some(id);
+    let failure = match registry.entries.get(id) {
         Some(entry) if entry.connected && entry.mapped => {
+            let zero_required = registry.enabled && selection_changes;
             registry.selected = Some(id.to_string());
+            if selection_changes {
+                registry.enabled = false;
+            }
             registry.last_error = None;
+            return zero_required;
         }
         Some(entry) if entry.connected => {
-            registry.last_error = Some(format!(
-                "device '{}' has no compatible control mapping",
-                entry.name
-            ));
+            format!("device '{}' has no compatible control mapping", entry.name)
         }
-        Some(_) => {
-            registry.last_error = Some(format!("device '{id}' is not connected"));
-        }
-        None => {
-            registry.last_error = Some(format!("unknown device id '{id}'"));
-        }
+        Some(_) => format!("device '{id}' is not connected"),
+        None => format!("unknown device id '{id}'"),
+    };
+    let zero_required = !selection_changes && invalidate_selection(registry);
+    registry.last_error = Some(failure);
+    zero_required
+}
+
+/// Apply an authoritative enable/disable request. The published Devices state
+/// is the acknowledgement; disabling always requests a zero command before
+/// movement publication stops.
+fn handle_set_enabled(registry: &mut Registry, enabled: bool) -> bool {
+    if !enabled {
+        let was_enabled = registry.enabled;
+        registry.enabled = false;
+        registry.last_error = None;
+        return was_enabled;
     }
+    if let Some(reason) = registry.unavailable_reason.as_ref() {
+        registry.enabled = false;
+        registry.last_error = None;
+        tracing::debug!(target: "tool_joypad", reason, "manual input enable rejected");
+        return false;
+    }
+    let Some(selected) = registry.selected.as_ref() else {
+        registry.enabled = false;
+        registry.last_error = Some("no controller is selected".to_string());
+        return false;
+    };
+    let ready = registry
+        .entries
+        .get(selected)
+        .is_some_and(|entry| entry.connected && entry.mapped);
+    if ready {
+        registry.enabled = true;
+        registry.last_error = None;
+    } else {
+        registry.enabled = false;
+        registry.last_error = Some(format!("selected device '{selected}' is not ready"));
+    }
+    false
 }
 
 /// Re-enumerate every currently connected pad, reconciling against the
@@ -298,45 +436,38 @@ fn handle_connect(registry: &mut Registry, id: &str) {
 /// newly seen pad is assigned one, and a pad no longer present is marked
 /// disconnected (not removed - it may reconnect later).
 fn rescan(gilrs: &Gilrs, registry: &mut Registry) -> bool {
-    let selected_before = registry.selected.clone();
-    let mut seen: HashSet<GamepadId> = HashSet::new();
+    let mut seen = HashSet::new();
     for (id, _gamepad) in gilrs.gamepads() {
-        seen.insert(id);
-        observe(gilrs, registry, id);
+        seen.insert(observe(gilrs, registry, id));
     }
-    for entry in registry.entries.values_mut() {
-        if let Some(gilrs_id) = entry.gilrs_id {
-            if !seen.contains(&gilrs_id) {
-                entry.gilrs_id = None;
-                entry.connected = false;
-            }
-        }
-    }
-    reconcile_selection(gilrs, registry);
-    selected_before.is_some_and(|selected| {
-        registry
-            .entries
-            .get(&selected)
-            .is_some_and(|entry| !entry.connected)
-    })
+    let zero_required = mark_missing_devices(registry, &seen);
+    let reconciliation_zero = reconcile_selection(gilrs, registry);
+    let zero_required = zero_required || reconciliation_zero;
+    registry.last_error = None;
+    zero_required
 }
 
-/// If the current selection is no longer connected, clear it (reporting why)
-/// and, if nothing is selected, default to the first connected pad (native
-/// gilrs enumeration order), mirroring the tool's original default-selection
-/// behavior.
-fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) {
-    let selected_connected = registry
-        .selected
-        .as_ref()
-        .and_then(|id| registry.entries.get(id))
-        .map(|entry| entry.connected && entry.mapped)
-        .unwrap_or(false);
-    if !selected_connected {
-        if let Some(selected) = registry.selected.take() {
-            registry.last_error = Some(format!("selected device '{selected}' disconnected"));
+fn mark_missing_devices(registry: &mut Registry, seen: &HashSet<String>) -> bool {
+    for (stable_id, entry) in &mut registry.entries {
+        if !seen.contains(stable_id) {
+            entry.gilrs_id = None;
+            entry.connected = false;
         }
     }
+    let selected_disconnected = registry.selected.as_ref().is_some_and(|selected| {
+        registry
+            .entries
+            .get(selected.as_str())
+            .is_some_and(|entry| !entry.connected)
+    });
+    selected_disconnected && invalidate_selection(registry)
+}
+
+/// If the current selection is no longer ready, clear it, disable manual
+/// authority, and require an immediate zero. If nothing is selected, default
+/// to the first compatible pad while leaving authority disabled.
+fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) -> bool {
+    let zero_required = invalidate_unready_selection(registry);
     if registry.selected.is_none() {
         if let Some((first_id, _)) = gilrs
             .gamepads()
@@ -348,9 +479,29 @@ fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) {
                 .find(|(_, entry)| entry.gilrs_id == Some(first_id))
             {
                 registry.selected = Some(stable_id.clone());
+                registry.enabled = false;
             }
         }
     }
+    zero_required
+}
+
+fn invalidate_unready_selection(registry: &mut Registry) -> bool {
+    let selection_is_ready = registry
+        .selected
+        .as_ref()
+        .and_then(|id| registry.entries.get(id))
+        .is_some_and(|entry| entry.connected && entry.mapped);
+    registry.selected.is_some() && !selection_is_ready && invalidate_selection(registry)
+}
+
+fn invalidate_selection(registry: &mut Registry) -> bool {
+    if registry.selected.take().is_none() {
+        return false;
+    }
+    let was_enabled = registry.enabled;
+    registry.enabled = false;
+    was_enabled
 }
 
 /// Ensure `id` is represented in `registry`, reusing a previously known
@@ -369,12 +520,6 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
         entry.name = name;
         entry.connected = true;
         entry.mapped = mapped;
-        if !mapped {
-            registry.last_error = Some(format!(
-                "device '{}' has no compatible control mapping",
-                entry.name
-            ));
-        }
         return stable_id.clone();
     }
 
@@ -389,12 +534,6 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
         entry.connected = true;
         entry.mapped = mapped;
         entry.name = name;
-        if !mapped {
-            registry.last_error = Some(format!(
-                "device '{}' has no compatible control mapping",
-                entry.name
-            ));
-        }
         return stable_id.clone();
     }
 
@@ -409,10 +548,6 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
             mapped,
         },
     );
-    if !mapped {
-        let name = &registry.entries[&stable_id].name;
-        registry.last_error = Some(format!("device '{name}' has no compatible control mapping"));
-    }
     stable_id
 }
 
@@ -434,13 +569,10 @@ fn disconnect_stable_id(registry: &mut Registry, stable_id: &str) -> RegistryCha
     entry.gilrs_id = None;
     entry.connected = false;
     let selected_disconnected = registry.selected.as_deref() == Some(stable_id);
-    if selected_disconnected {
-        registry.selected = None;
-        registry.last_error = Some(format!("selected device '{stable_id}' disconnected"));
-    }
+    let zero_required = selected_disconnected && invalidate_selection(registry);
     RegistryChange {
         changed: true,
-        selected_disconnected,
+        zero_required,
     }
 }
 
@@ -484,13 +616,19 @@ fn assign_stable_id(entries: &HashMap<String, PadEntry>, base: &str) -> String {
 }
 
 /// Read the four shoulder inputs and mix them into a differential-drive
-/// `ManualCommand`. See [`command_from_triggers`] for the mixing convention.
-fn command_from_gamepad(gamepad: &Gamepad<'_>) -> motion_api::motion::ManualCommand {
-    command_from_triggers(
+/// `ManualCommand`. See [`command_from_shoulders`] for the mixing convention.
+fn command_from_gamepad(
+    gamepad: &Gamepad<'_>,
+    enabled: bool,
+    drive: ManualDrive,
+) -> Option<motion_api::motion::ManualCommand> {
+    command_from_shoulders(
+        enabled,
         button_value(gamepad, Button::LeftTrigger),
         button_value(gamepad, Button::LeftTrigger2),
         button_value(gamepad, Button::RightTrigger),
         button_value(gamepad, Button::RightTrigger2),
+        drive,
     )
 }
 
@@ -501,32 +639,36 @@ fn button_value(gamepad: &Gamepad<'_>, button: Button) -> f32 {
         .unwrap_or(0.0)
 }
 
-/// Trigger/tank differential mixing: L1/R1 (`Button::LeftTrigger`/
-/// `RightTrigger`, the shoulder bumpers) drive the left/right side FORWARD;
-/// L2/R2 (`LeftTrigger2`/`RightTrigger2`, the analog triggers) drive them
-/// BACKWARD. Both read as an analog value in `[0, 1]` (a digital bumper
-/// reads 0 or 1; an analog trigger reads the full range), combined per side
-/// into a signed value in roughly `[-1, 1]`: `side = forward - backward`.
-///
-/// `linear_x_mps` is the average of the two sides. `angular_z_radps` follows
-/// the contract's implicit REP-103-style convention (z-up; positive =
-/// counter-clockwise = turn LEFT): easing the LEFT side (reducing its power
-/// relative to the right) should curve the robot toward the weaker side, so
-/// `angular = (right - left) / 2` - releasing L1/pressing L2 alone turns
-/// left (positive), the intuitive tank-drive result.
-fn command_from_triggers(
+/// Differential shoulder preset: L2/R2 are the left/right forward triggers;
+/// L1/R1 reverse only their matching trigger. A modifier alone is zero. The
+/// body twist is derived from the authored wheel base and motion limits, so a
+/// normalized side value is a physical differential-side speed rather than a
+/// tool-owned robot speed constant.
+fn command_from_shoulders(
+    enabled: bool,
+    reverse_left: f32,
     forward_left: f32,
-    backward_left: f32,
+    reverse_right: f32,
     forward_right: f32,
-    backward_right: f32,
-) -> motion_api::motion::ManualCommand {
-    let left = (trigger(forward_left) - trigger(backward_left)) as f64;
-    let right = (trigger(forward_right) - trigger(backward_right)) as f64;
-    let linear = (left + right) / 2.0;
-    let angular = (right - left) / 2.0;
-    motion_api::motion::ManualCommand {
-        linear_x_mps: linear * LINEAR_SCALE_MPS,
-        angular_z_radps: angular * ANGULAR_SCALE_RADPS,
+    drive: ManualDrive,
+) -> Option<motion_api::motion::ManualCommand> {
+    if !enabled {
+        return None;
+    }
+    let left = side_input(reverse_left, forward_left) * drive.side_speed_mps;
+    let right = side_input(reverse_right, forward_right) * drive.side_speed_mps;
+    Some(motion_api::motion::ManualCommand {
+        linear_x_mps: (left + right) / 2.0,
+        angular_z_radps: (right - left) / drive.wheel_base_m,
+    })
+}
+
+fn side_input(reverse_modifier: f32, forward_trigger: f32) -> f64 {
+    let magnitude = f64::from(trigger(forward_trigger));
+    if reverse_modifier >= 0.5 {
+        -magnitude
+    } else {
+        magnitude
     }
 }
 
@@ -559,44 +701,105 @@ mod tests {
     }
 
     #[test]
-    fn straight_ahead_is_both_bumpers_full_no_turn() {
-        let command = command_from_triggers(1.0, 0.0, 1.0, 0.0);
-        assert_eq!(command.linear_x_mps, LINEAR_SCALE_MPS);
+    fn l2_r2_drive_both_differential_sides_forward() {
+        let command = command_from_shoulders(true, 0.0, 1.0, 0.0, 1.0, drive()).unwrap();
+        assert_eq!(command.linear_x_mps, drive().side_speed_mps);
         assert_eq!(command.angular_z_radps, 0.0);
     }
 
     #[test]
-    fn reverse_is_both_triggers_full_no_turn() {
-        let command = command_from_triggers(0.0, 1.0, 0.0, 1.0);
-        assert_eq!(command.linear_x_mps, -LINEAR_SCALE_MPS);
+    fn l1_r1_reverse_only_their_matching_triggers() {
+        let command = command_from_shoulders(true, 1.0, 1.0, 1.0, 1.0, drive()).unwrap();
+        assert_eq!(command.linear_x_mps, -drive().side_speed_mps);
         assert_eq!(command.angular_z_radps, 0.0);
     }
 
     #[test]
-    fn easing_the_left_bumper_turns_left_positive_angular() {
-        // Right side full forward, left eased to half: the robot should
-        // curve toward the weaker (left) side, i.e. turn left (positive
-        // angular_z_radps per the REP-103-style convention documented on
-        // `command_from_triggers`).
-        let command = command_from_triggers(0.5, 0.0, 1.0, 0.0);
-        assert_eq!(command.linear_x_mps, 0.75 * LINEAR_SCALE_MPS);
-        assert_eq!(command.angular_z_radps, 0.25 * ANGULAR_SCALE_RADPS);
+    fn reverse_modifiers_alone_are_zero() {
+        let command = command_from_shoulders(true, 1.0, 0.0, 1.0, 0.0, drive()).unwrap();
+        assert_eq!(command.linear_x_mps, 0.0);
+        assert_eq!(command.angular_z_radps, 0.0);
+    }
+
+    #[test]
+    fn left_and_right_trigger_inputs_are_independent() {
+        let command = command_from_shoulders(true, 0.0, 1.0, 0.0, 0.0, drive()).unwrap();
+        assert_eq!(command.linear_x_mps, drive().side_speed_mps / 2.0);
+        assert!(command.angular_z_radps < 0.0);
+        let command = command_from_shoulders(true, 0.0, 0.0, 0.0, 1.0, drive()).unwrap();
+        assert_eq!(command.linear_x_mps, drive().side_speed_mps / 2.0);
         assert!(command.angular_z_radps > 0.0);
     }
 
     #[test]
-    fn easing_the_right_bumper_turns_right_negative_angular() {
-        let command = command_from_triggers(1.0, 0.0, 0.5, 0.0);
-        assert!(command.angular_z_radps < 0.0);
+    fn disabled_manual_input_produces_no_command() {
+        assert!(command_from_shoulders(false, 0.0, 1.0, 0.0, 1.0, drive()).is_none());
     }
 
     #[test]
-    fn pivot_turn_is_one_side_forward_the_other_backward() {
-        // Left full forward, right full backward: pure rotation, no net
-        // translation.
-        let command = command_from_triggers(1.0, 0.0, 0.0, 1.0);
-        assert_eq!(command.linear_x_mps, 0.0);
-        assert!(command.angular_z_radps < 0.0);
+    fn side_speed_respects_authored_linear_and_angular_limits() {
+        let angular_limited = ManualDrive::from_parameters(
+            phoxal::model::robot::v0::MotionLimits {
+                max_linear_speed_mps: 0.6,
+                max_angular_speed_radps: 2.0,
+            },
+            0.3,
+        )
+        .unwrap();
+        assert_eq!(angular_limited.side_speed_mps, 0.3);
+
+        let pivot = command_from_shoulders(true, 0.0, 1.0, 1.0, 1.0, angular_limited).unwrap();
+        assert_eq!(pivot.linear_x_mps, 0.0);
+        assert_eq!(pivot.angular_z_radps, -2.0);
+
+        let linear_limited = ManualDrive::from_parameters(
+            phoxal::model::robot::v0::MotionLimits {
+                max_linear_speed_mps: 0.2,
+                max_angular_speed_radps: 10.0,
+            },
+            0.3,
+        )
+        .unwrap();
+        assert_eq!(linear_limited.side_speed_mps, 0.2);
+        let straight = command_from_shoulders(true, 0.0, 1.0, 0.0, 1.0, linear_limited).unwrap();
+        assert_eq!(straight.linear_x_mps, 0.2);
+        assert_eq!(straight.angular_z_radps, 0.0);
+    }
+
+    #[test]
+    fn manual_drive_rejects_invalid_wheel_base() {
+        let limits = phoxal::model::robot::v0::MotionLimits {
+            max_linear_speed_mps: 0.6,
+            max_angular_speed_radps: 2.0,
+        };
+        for wheel_base_m in [0.0, f64::NAN, f64::INFINITY] {
+            let error = ManualDrive::from_parameters(limits, wheel_base_m).unwrap_err();
+            assert!(error.contains("wheel_base_m must be finite and > 0"));
+        }
+    }
+
+    #[test]
+    fn manual_drive_rejects_non_differential_robot_model() {
+        let mut robot = phoxal::model::v0::Robot::read_from_dir(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixture/robot/rgbd-imu-diff-drive"
+        ))
+        .expect("fixture robot should load");
+        robot.manifest.robot.kinematic =
+            phoxal::model::robot::v0::KinematicConfig::Omnidirectional {
+                actuators: Vec::new(),
+                encoders: Vec::new(),
+            };
+
+        let error = ManualDrive::from_robot(&robot).unwrap_err();
+        assert_eq!(error, "manual input requires differential robot kinematics");
+    }
+
+    fn drive() -> ManualDrive {
+        ManualDrive {
+            wheel_base_m: 0.3,
+            side_speed_mps: 0.3,
+        }
     }
 
     #[test]
@@ -661,7 +864,7 @@ mod tests {
             },
         );
 
-        handle_connect(&mut registry, "pad");
+        handle_select(&mut registry, "pad");
 
         assert!(registry.selected.is_none());
         assert_eq!(
@@ -674,6 +877,7 @@ mod tests {
     fn selected_device_disconnect_requests_an_immediate_zero() {
         let mut registry = Registry {
             selected: Some("pad".to_string()),
+            enabled: true,
             ..Registry::default()
         };
         registry.entries.insert(
@@ -693,11 +897,259 @@ mod tests {
             outcome,
             RegistryChange {
                 changed: true,
-                selected_disconnected: true,
+                zero_required: true,
             }
         );
         assert!(registry.selected.is_none());
+        assert!(!registry.enabled);
         assert!(!registry.entries["pad"].connected);
+    }
+
+    #[test]
+    fn disabled_selected_device_disconnect_does_not_publish_zero() {
+        let mut registry = Registry {
+            selected: Some("pad".to_string()),
+            ..Registry::default()
+        };
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Pad".to_string(),
+                connected: true,
+                mapped: true,
+            },
+        );
+
+        let outcome = disconnect_stable_id(&mut registry, "pad");
+
+        assert!(outcome.changed);
+        assert!(!outcome.zero_required);
+        assert!(registry.selected.is_none());
+        assert!(!registry.enabled);
+    }
+
+    #[test]
+    fn rescan_marks_missing_selected_device_disconnected_and_disabled() {
+        let mut registry = Registry {
+            selected: Some("missing".to_string()),
+            enabled: true,
+            ..Registry::default()
+        };
+        registry.entries.insert(
+            "missing".to_string(),
+            PadEntry {
+                base_id: "missing".to_string(),
+                gilrs_id: None,
+                name: "Missing Pad".to_string(),
+                connected: true,
+                mapped: true,
+            },
+        );
+
+        assert!(mark_missing_devices(&mut registry, &HashSet::new()));
+        assert!(registry.selected.is_none());
+        assert!(!registry.enabled);
+        assert!(!registry.entries["missing"].connected);
+    }
+
+    #[test]
+    fn enable_disable_and_selection_are_authoritative() {
+        let mut registry = Registry::default();
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Pad".to_string(),
+                connected: true,
+                mapped: true,
+            },
+        );
+
+        assert!(!handle_select(&mut registry, "pad"));
+        assert!(!registry.enabled);
+        assert!(!handle_set_enabled(&mut registry, true));
+        assert!(registry.enabled);
+        assert!(handle_set_enabled(&mut registry, false));
+        assert!(!registry.enabled);
+        assert!(!handle_set_enabled(&mut registry, false));
+    }
+
+    #[test]
+    fn enable_without_a_selection_fails_closed() {
+        let mut registry = Registry::default();
+
+        assert!(!handle_set_enabled(&mut registry, true));
+        assert!(!registry.enabled);
+        assert_eq!(
+            registry.last_error.as_deref(),
+            Some("no controller is selected")
+        );
+    }
+
+    #[test]
+    fn enable_with_a_non_ready_selection_fails_closed() {
+        let mut registry = Registry {
+            selected: Some("pad".to_string()),
+            ..Registry::default()
+        };
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Pad".to_string(),
+                connected: false,
+                mapped: true,
+            },
+        );
+
+        assert!(!handle_set_enabled(&mut registry, true));
+        assert!(!registry.enabled);
+        assert_eq!(
+            registry.last_error.as_deref(),
+            Some("selected device 'pad' is not ready")
+        );
+    }
+
+    #[test]
+    fn changing_an_enabled_selection_disables_and_requires_zero() {
+        let mut registry = Registry {
+            selected: Some("pad-a".to_string()),
+            enabled: true,
+            ..Registry::default()
+        };
+        for id in ["pad-a", "pad-b"] {
+            registry.entries.insert(
+                id.to_string(),
+                PadEntry {
+                    base_id: id.to_string(),
+                    gilrs_id: None,
+                    name: id.to_string(),
+                    connected: true,
+                    mapped: true,
+                },
+            );
+        }
+
+        assert!(handle_select(&mut registry, "pad-b"));
+        assert_eq!(registry.selected.as_deref(), Some("pad-b"));
+        assert!(!registry.enabled);
+    }
+
+    #[test]
+    fn selected_device_becoming_unsupported_disables_and_requires_zero() {
+        let mut registry = Registry {
+            selected: Some("pad".to_string()),
+            enabled: true,
+            ..Registry::default()
+        };
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Unsupported Pad".to_string(),
+                connected: true,
+                mapped: false,
+            },
+        );
+
+        let outcome = reconcile_connected_device(&mut registry, "pad".to_string());
+        assert_eq!(
+            outcome,
+            RegistryChange {
+                changed: true,
+                zero_required: true,
+            }
+        );
+        assert!(registry.selected.is_none());
+        assert!(!registry.enabled);
+        assert!(registry.last_error.is_none());
+    }
+
+    #[test]
+    fn selecting_the_current_unsupported_device_invalidates_authority() {
+        let mut registry = Registry {
+            selected: Some("pad".to_string()),
+            enabled: true,
+            ..Registry::default()
+        };
+        registry.entries.insert(
+            "pad".to_string(),
+            PadEntry {
+                base_id: "pad".to_string(),
+                gilrs_id: None,
+                name: "Unsupported Pad".to_string(),
+                connected: true,
+                mapped: false,
+            },
+        );
+
+        assert!(handle_select(&mut registry, "pad"));
+        assert!(registry.selected.is_none());
+        assert!(!registry.enabled);
+        assert_eq!(
+            registry.last_error.as_deref(),
+            Some("device 'Unsupported Pad' has no compatible control mapping")
+        );
+    }
+
+    #[test]
+    fn permanent_manual_unavailability_is_separate_from_transient_errors() {
+        let mut registry = Registry {
+            selected: Some("pad".to_string()),
+            unavailable_reason: Some(
+                "manual input requires differential robot kinematics".to_string(),
+            ),
+            last_error: Some("old transient error".to_string()),
+            ..Registry::default()
+        };
+
+        assert!(!handle_set_enabled(&mut registry, true));
+        assert!(!registry.enabled);
+        assert!(registry.last_error.is_none());
+        assert_eq!(
+            devices_snapshot(&registry).unavailable_reason.as_deref(),
+            Some("manual input requires differential robot kinematics")
+        );
+    }
+
+    #[test]
+    fn device_snapshot_distinguishes_ready_disconnected_and_unsupported() {
+        let mut registry = Registry::default();
+        for (id, connected, mapped) in [
+            ("ready", true, true),
+            ("disconnected", false, true),
+            ("unsupported", true, false),
+        ] {
+            registry.entries.insert(
+                id.to_string(),
+                PadEntry {
+                    base_id: id.to_string(),
+                    gilrs_id: None,
+                    name: id.to_string(),
+                    connected,
+                    mapped,
+                },
+            );
+        }
+
+        let snapshot = devices_snapshot(&registry);
+        assert_eq!(
+            snapshot.available[0].status,
+            api::joypad::DeviceStatus::Disconnected
+        );
+        assert_eq!(
+            snapshot.available[1].status,
+            api::joypad::DeviceStatus::Ready
+        );
+        assert_eq!(
+            snapshot.available[2].status,
+            api::joypad::DeviceStatus::Unsupported
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

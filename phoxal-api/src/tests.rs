@@ -113,12 +113,17 @@ fn v2_is_one_preview_api_for_post_v1_contracts() {
         "v2/joypad/devices"
     );
     assert_eq!(
-        <v2::joypad::Connect as ContractBody>::TOPIC,
-        "v2/joypad/connect"
+        <v2::joypad::Select as ContractBody>::TOPIC,
+        "v2/joypad/select"
+    );
+    assert_eq!(v2::topic::new().joypad().select().key(), "v2/joypad/select");
+    assert_eq!(
+        <v2::joypad::SetEnabled as ContractBody>::TOPIC,
+        "v2/joypad/set_enabled"
     );
     assert_eq!(
-        v2::topic::new().joypad().connect().key(),
-        "v2/joypad/connect"
+        v2::topic::new().joypad().set_enabled().key(),
+        "v2/joypad/set_enabled"
     );
     assert_eq!(
         <v2::joypad::Rescan as ContractBody>::TOPIC,
@@ -169,7 +174,8 @@ fn generated_contract_manifest_lists_contract_shapes() {
             "v2::telemetry::Host",
             "v2::telemetry::Process",
             "v2::joypad::Devices",
-            "v2::joypad::Connect",
+            "v2::joypad::Select",
+            "v2::joypad::SetEnabled",
             "v2::joypad::Rescan",
         ] {
             assert!(
@@ -213,7 +219,8 @@ fn v2_role_consts_match_each_topic_role() {
     assert_eq!(v2::telemetry::Host::ROLE, TopicRole::State);
     assert_eq!(v2::telemetry::Process::ROLE, TopicRole::State);
     assert_eq!(v2::joypad::Devices::ROLE, TopicRole::State);
-    assert_eq!(v2::joypad::Connect::ROLE, TopicRole::Command);
+    assert_eq!(v2::joypad::Select::ROLE, TopicRole::Command);
+    assert_eq!(v2::joypad::SetEnabled::ROLE, TopicRole::Command);
     assert_eq!(v2::joypad::Rescan::ROLE, TopicRole::Command);
     assert_eq!(v2::simulation::SpawnRequest::ROLE, TopicRole::Query);
     assert_eq!(v2::simulation::SpawnSet::ROLE, TopicRole::Query);
@@ -492,7 +499,18 @@ fn v2_bodies_round_trip_through_messagepack() {
         cpu_pct: 12.5,
         ram_used_bytes: 1_073_741_824,
         ram_total_bytes: 17_179_869_184,
+        swap_used_bytes: 536_870_912,
+        swap_total_bytes: 2_147_483_648,
         load_1m: 0.75,
+        load_5m: 0.5,
+        load_15m: 0.25,
+        uptime_s: Some(42),
+        disks: vec![v2::telemetry::Disk {
+            mount_point: "/".to_string(),
+            file_system: "apfs".to_string(),
+            used_bytes: 10,
+            total_bytes: 100,
+        }],
         window_ns: 1_000_000_000,
     });
     round_trip(&v2::telemetry::Process {
@@ -503,20 +521,23 @@ fn v2_bodies_round_trip_through_messagepack() {
     round_trip(&v2::joypad::Device {
         id: "xbox-controller-0".to_string(),
         name: "Xbox Wireless Controller".to_string(),
-        connected: true,
+        status: v2::joypad::DeviceStatus::Ready,
     });
     round_trip(&v2::joypad::Devices {
         available: vec![v2::joypad::Device {
             id: "xbox-controller-0".to_string(),
             name: "Xbox Wireless Controller".to_string(),
-            connected: true,
+            status: v2::joypad::DeviceStatus::Ready,
         }],
         selected: Some("xbox-controller-0".to_string()),
+        enabled: false,
+        unavailable_reason: None,
         last_error: None,
     });
-    round_trip(&v2::joypad::Connect {
+    round_trip(&v2::joypad::Select {
         id: "xbox-controller-0".to_string(),
     });
+    round_trip(&v2::joypad::SetEnabled { enabled: true });
     round_trip(&v2::joypad::Rescan {});
 }
 
@@ -541,13 +562,40 @@ fn v2_telemetry_process_rejects_malformed_payloads() {
     // Valid MessagePack of the WRONG shape: a sibling v2 body whose named
     // fields do not satisfy `Process { cpu_pct, rss_bytes, window_ns }`. It must
     // be rejected, not coerced.
-    let wrong_shape = rmp_serde::to_vec_named(&v2::joypad::Connect {
+    let wrong_shape = rmp_serde::to_vec_named(&v2::joypad::Select {
         id: "not-a-process-sample".to_string(),
     })
     .unwrap();
     assert!(
         rmp_serde::from_slice::<v2::telemetry::Process>(&wrong_shape).is_err(),
         "a differently-shaped body must not decode as telemetry::Process"
+    );
+}
+
+#[test]
+#[cfg(feature = "preview-v2")]
+fn v2_session_host_and_joypad_state_reject_malformed_payloads() {
+    let corrupt = [0xc1u8, 0xc1, 0xc1];
+    assert!(
+        rmp_serde::from_slice::<v2::telemetry::Host>(&corrupt).is_err(),
+        "corrupt MessagePack must not decode as telemetry::Host"
+    );
+    assert!(
+        rmp_serde::from_slice::<v2::joypad::Devices>(&corrupt).is_err(),
+        "corrupt MessagePack must not decode as joypad::Devices"
+    );
+
+    let wrong_shape = rmp_serde::to_vec_named(&v2::joypad::Select {
+        id: "not-session-state".to_string(),
+    })
+    .unwrap();
+    assert!(
+        rmp_serde::from_slice::<v2::telemetry::Host>(&wrong_shape).is_err(),
+        "a command body must not decode as telemetry::Host"
+    );
+    assert!(
+        rmp_serde::from_slice::<v2::joypad::Devices>(&wrong_shape).is_err(),
+        "a command body must not decode as joypad::Devices"
     );
 }
 
@@ -704,9 +752,10 @@ fn v2_topic_builder_keys_match_contract_topics() {
         v2::topic::new().joypad().devices().key(),
         "v2/joypad/devices"
     );
+    assert_eq!(v2::topic::new().joypad().select().key(), "v2/joypad/select");
     assert_eq!(
-        v2::topic::new().joypad().connect().key(),
-        "v2/joypad/connect"
+        v2::topic::new().joypad().set_enabled().key(),
+        "v2/joypad/set_enabled"
     );
     assert_eq!(v2::topic::new().joypad().rescan().key(), "v2/joypad/rescan");
 }

@@ -1313,12 +1313,26 @@ phoxal_api_tree! {
         }
 
         telemetry {
+            /// One real mounted filesystem in a host resource sample.
+            struct Disk {
+                mount_point: String,
+                file_system: String,
+                used_bytes: u64,
+                total_bytes: u64,
+            }
+
             /// Host OS resource sample (published by the new tool-telemetry).
             struct Host {
                 cpu_pct: f32,
                 ram_used_bytes: u64,
                 ram_total_bytes: u64,
+                swap_used_bytes: u64,
+                swap_total_bytes: u64,
                 load_1m: f32,
+                load_5m: f32,
+                load_15m: f32,
+                uptime_s: Option<u64>,
+                disks: Vec<Disk>,
                 window_ns: u64,
             }
 
@@ -1336,31 +1350,53 @@ phoxal_api_tree! {
         }
 
         joypad {
+            /// Whether an observed controller is ready for the fixed manual
+            /// input preset, disconnected, or connected without a compatible
+            /// control mapping.
+            enum DeviceStatus {
+                Ready,
+                Disconnected,
+                Unsupported,
+            }
+
             /// One gamepad the tool can see. `id` is a STABLE wire id the tool
             /// assigns (name/guid-derived) - NOT a process-local gilrs id.
             struct Device {
                 id: String,
                 name: String,
-                connected: bool,
+                status: DeviceStatus,
             }
 
             /// The joypad tool's published device state.
             struct Devices {
                 available: Vec<Device>,
                 selected: Option<String>,
+                enabled: bool,
+                /// Structural reason manual input cannot be enabled in this
+                /// session (for example robot-model or backend limitations),
+                /// independent of transient device/request errors.
+                unavailable_reason: Option<String>,
+                /// Most recent failed select/enable/rescan request, cleared by
+                /// the next successful authoritative request.
                 last_error: Option<String>,
             }
 
-            /// Client asks the tool to select/connect a device by its stable id.
-            struct Connect {
+            /// Client asks the tool to select a device by its stable id.
+            struct Select {
                 id: String,
+            }
+
+            /// Client asks the tool to enable or disable manual input.
+            struct SetEnabled {
+                enabled: bool,
             }
 
             /// Client asks the tool to re-enumerate devices.
             struct Rescan {}
 
             topic devices: state Devices;
-            topic connect: command Connect;
+            topic select: command Select;
+            topic set_enabled: command SetEnabled;
             topic rescan: command Rescan;
         }
     }
