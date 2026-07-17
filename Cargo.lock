@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.34.0"
+version = "0.34.1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.21.0"
+version = "0.21.1"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.23.0"
+version = "0.23.1"
 dependencies = [
  "heck",
  "phoxal-bus",
@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "gilrs",
  "phoxal",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-telemetry"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "phoxal",
  "phoxal-api",

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.1](https://github.com/phoxal/framework/compare/phoxal-v0.34.0...phoxal-v0.34.1) - 2026-07-17
+
+### Added
+
+- *(simulator)* remove clock launch controls ([#273](https://github.com/phoxal/framework/pull/273))
+
 ## [0.34.0](https://github.com/phoxal/framework/compare/phoxal-v0.33.0...phoxal-v0.34.0) - 2026-07-16
 
 ### Changed
