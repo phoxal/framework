@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2405,7 +2405,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2415,7 +2415,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2425,7 +2425,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2449,7 +2449,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-asset"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "phoxal",
  "phoxal-api",
@@ -2457,7 +2457,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-behavior"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-frame"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2487,7 +2487,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2496,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-localize"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2506,7 +2506,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-map"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2516,7 +2516,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.19.11"
+version = "0.19.12"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2527,7 +2527,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2548,7 +2548,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.19.10"
+version = "0.19.11"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2558,7 +2558,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-power"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2568,15 +2568,6 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-presence"
-version = "0.19.9"
-dependencies = [
- "anyhow",
- "phoxal",
- "phoxal-api",
-]
-
-[[package]]
-name = "phoxal-service-safety"
 version = "0.19.10"
 dependencies = [
  "anyhow",
@@ -2585,8 +2576,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-service-safety"
+version = "0.19.11"
+dependencies = [
+ "anyhow",
+ "phoxal",
+ "phoxal-api",
+]
+
+[[package]]
 name = "phoxal-service-video"
-version = "0.19.9"
+version = "0.19.10"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2596,7 +2596,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-supervisor"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2625,7 +2625,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "gilrs",
  "phoxal",
@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-router"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-telemetry"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "phoxal",
  "phoxal-api",
