@@ -1,3 +1,5 @@
+#![cfg(feature = "preview-v2")]
+
 //! Runner integration: a scheduled participant runs steps and then shuts down
 //! cleanly, presence heartbeats track readiness, a slow `#[shutdown]` hook is
 //! bounded by grace, `ClockMode::Simulation` steps track the live

@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, OwnerCap, Publisher, host_time};
+#[cfg(test)]
+use phoxal::raw::{Codec, MessagePack};
 use phoxal_api::v2 as api;
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
@@ -10,6 +12,10 @@ use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, Refresh
 /// current, far below anything that would make this tool itself a meaningful
 /// load source on the host it is reporting on.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const MAX_DISK_ROWS: usize = 32;
+const MAX_DISK_TEXT_BYTES: usize = 128;
+#[cfg(test)]
+const MAX_HOST_WIRE_BYTES: usize = 16 * 1024;
 
 // Configless (Part 3 fix, shared runner/macro default): the `#[phoxal::tool]`
 // macro now defaults an omitted `config = …` to `()` for tools, so this
@@ -23,7 +29,7 @@ struct ToolTelemetry;
 impl ToolTelemetry {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let publisher = host_publisher(ctx.raw_bus())?;
+        let publisher = host_publisher(ctx.raw_bus(), ctx.owner_capability())?;
         ctx.spawn_managed_with("host-sampler", ManagedTaskPolicy::FaultOnExit, async move {
             sample_host_forever(publisher).await;
         });
@@ -34,10 +40,8 @@ impl ToolTelemetry {
     }
 }
 
-fn host_publisher(bus: Bus) -> Result<Publisher<api::telemetry::Host>> {
-    let topic = api::topic::internal::new(OwnerCap::__mint())
-        .telemetry()
-        .host();
+fn host_publisher(bus: Bus, cap: OwnerCap) -> Result<Publisher<api::telemetry::Host>> {
+    let topic = api::topic::internal::new(cap).telemetry().host();
     let publisher = Publisher::new(bus, &topic)?;
     Ok(publisher)
 }
@@ -46,12 +50,25 @@ fn host_publisher(bus: Bus) -> Result<Publisher<api::telemetry::Host>> {
 /// [`SAMPLE_INTERVAL`] and publishing a `telemetry::Host` sample each tick.
 /// Runs until the runner cancels it during managed shutdown.
 async fn sample_host_forever(publisher: Publisher<api::telemetry::Host>) {
-    let mut system = System::new_with_specifics(
-        RefreshKind::nothing()
-            .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-            .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
-    );
-    let mut disks = Disks::new_with_refreshed_list_specifics(disk_refresh_kind());
+    let initialized = tokio::task::spawn_blocking(|| {
+        let mut system = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
+        );
+        let disks = Disks::new_with_refreshed_list_specifics(disk_refresh_kind());
+        system.refresh_cpu_usage();
+        system.refresh_memory();
+        (system, disks, Instant::now())
+    })
+    .await;
+    let (mut system, mut disks, mut previous_refresh) = match initialized {
+        Ok(initialized) => initialized,
+        Err(error) => {
+            tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry sampler initialization failed");
+            return;
+        }
+    };
     let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -61,27 +78,44 @@ async fn sample_host_forever(publisher: Publisher<api::telemetry::Host>) {
     // before the loop below starts publishing, so every PUBLISHED sample is
     // a real measurement.
     interval.tick().await;
-    system.refresh_cpu_usage();
-    system.refresh_memory();
-
     loop {
         interval.tick().await;
-        let sample = sample_host(&mut system, &mut disks);
+        let refreshed = tokio::task::spawn_blocking(move || {
+            let (sample, refreshed_at) = sample_host(&mut system, &mut disks, previous_refresh);
+            (system, disks, sample, refreshed_at)
+        })
+        .await;
+        let (returned_system, returned_disks, sample, refreshed_at) = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(error) => {
+                tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry sampler failed");
+                return;
+            }
+        };
+        system = returned_system;
+        disks = returned_disks;
+        previous_refresh = refreshed_at;
         if let Err(error) = publisher.publish_at(host_time(), sample).await {
             tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry publish failed");
         }
     }
 }
 
-fn sample_host(system: &mut System, disks: &mut Disks) -> api::telemetry::Host {
+fn sample_host(
+    system: &mut System,
+    disks: &mut Disks,
+    previous_refresh: Instant,
+) -> (api::telemetry::Host, Instant) {
     system.refresh_cpu_usage();
     system.refresh_memory();
     disks.refresh_specifics(true, disk_refresh_kind());
+    let refreshed_at = Instant::now();
 
     let load = System::load_average();
     let uptime_s = System::uptime();
 
-    api::telemetry::Host {
+    let disks = disk_samples(disks);
+    let sample = api::telemetry::Host {
         cpu_pct: system.global_cpu_usage(),
         ram_used_bytes: system.used_memory(),
         ram_total_bytes: system.total_memory(),
@@ -97,9 +131,15 @@ fn sample_host(system: &mut System, disks: &mut Disks) -> api::telemetry::Host {
         // emitted until one second after startup, so zero is an unavailable
         // value rather than a plausible host uptime here.
         uptime_s: optional_uptime(uptime_s),
-        disks: disk_samples(disks),
-        window_ns: u64::try_from(SAMPLE_INTERVAL.as_nanos()).unwrap_or(u64::MAX),
-    }
+        disks,
+        window_ns: u64::try_from(
+            refreshed_at
+                .saturating_duration_since(previous_refresh)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX),
+    };
+    (sample, refreshed_at)
 }
 
 fn disk_refresh_kind() -> DiskRefreshKind {
@@ -146,15 +186,44 @@ fn normalize_disks(
             std::collections::btree_map::Entry::Occupied(_) => {}
         }
     }
-    by_mount
+    let total = by_mount.len();
+    let keep = if total > MAX_DISK_ROWS {
+        MAX_DISK_ROWS.saturating_sub(1)
+    } else {
+        MAX_DISK_ROWS
+    };
+    let mut disks = by_mount
         .into_values()
+        .take(keep)
         .map(|disk| api::telemetry::Disk {
-            mount_point: disk.mount_point,
-            file_system: disk.file_system,
+            mount_point: truncate_utf8(disk.mount_point, MAX_DISK_TEXT_BYTES),
+            file_system: truncate_utf8(disk.file_system, MAX_DISK_TEXT_BYTES),
             used_bytes: disk.total_bytes.saturating_sub(disk.available_bytes),
             total_bytes: disk.total_bytes,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let truncated = total.saturating_sub(keep);
+    if truncated > 0 {
+        disks.push(api::telemetry::Disk {
+            mount_point: String::new(),
+            file_system: format!("+{truncated} omitted"),
+            used_bytes: 0,
+            total_bytes: 0,
+        });
+    }
+    disks
+}
+
+fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut boundary = max_bytes;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value.truncate(boundary);
+    value
 }
 
 fn disk_preference(disk: &DiskObservation) -> (u64, u64, &str, &str) {
@@ -209,15 +278,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sample_host_window_ns_matches_the_sample_interval() {
+    fn sample_host_window_ns_uses_the_measured_refresh_window() {
         let mut system = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
                 .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
         );
         let mut disks = Disks::new_with_refreshed_list_specifics(disk_refresh_kind());
-        let sample = sample_host(&mut system, &mut disks);
-        assert_eq!(sample.window_ns, 1_000_000_000);
+        let previous_refresh = Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("two seconds before now");
+        let (sample, _) = sample_host(&mut system, &mut disks, previous_refresh);
+        assert!(sample.window_ns >= 2_000_000_000);
+        assert!(sample.window_ns < 3_000_000_000);
     }
 
     #[test]
@@ -248,6 +321,48 @@ mod tests {
         assert_eq!(optional_uptime(0), None);
         assert_eq!(optional_uptime(42), Some(42));
         assert!(normalize_disks([]).is_empty());
+    }
+
+    #[test]
+    fn disk_inventory_is_bounded_disclosed_and_wire_safe() {
+        let observations = (0..(MAX_DISK_ROWS + 5)).map(|index| {
+            observation(
+                &format!("/dev/disk{index}"),
+                &format!("/{}-{index}", "m".repeat(MAX_DISK_TEXT_BYTES * 2)),
+                &"f".repeat(MAX_DISK_TEXT_BYTES * 2),
+                1_000,
+                250,
+            )
+        });
+        let disks = normalize_disks(observations);
+        assert_eq!(disks.len(), MAX_DISK_ROWS);
+        let sentinel = disks.last().expect("truncation sentinel should exist");
+        assert!(sentinel.mount_point.is_empty());
+        assert_eq!(sentinel.file_system, "+6 omitted");
+        assert!(disks[..disks.len() - 1].iter().all(|disk| {
+            disk.mount_point.len() <= MAX_DISK_TEXT_BYTES
+                && disk.file_system.len() <= MAX_DISK_TEXT_BYTES
+        }));
+
+        let host = api::telemetry::Host {
+            cpu_pct: 100.0,
+            ram_used_bytes: u64::MAX,
+            ram_total_bytes: u64::MAX,
+            swap_used_bytes: u64::MAX,
+            swap_total_bytes: u64::MAX,
+            load_1m: f32::MAX,
+            load_5m: f32::MAX,
+            load_15m: f32::MAX,
+            uptime_s: Some(u64::MAX),
+            disks,
+            window_ns: u64::MAX,
+        };
+        let encoded = MessagePack::encode(&host).expect("host telemetry should encode");
+        assert!(
+            encoded.len() <= MAX_HOST_WIRE_BYTES,
+            "{}-byte host snapshot exceeds the wire cap",
+            encoded.len()
+        );
     }
 
     fn observation(

@@ -421,6 +421,7 @@ fn v1_domain_bodies_round_trip_through_messagepack() {
         .into_iter()
         .collect(),
         dropped: 2,
+        truncated: 3,
     });
     round_trip(&api::bus::uplink::State {
         phase: api::bus::uplink::UplinkPhase::Retrying,
@@ -460,6 +461,38 @@ fn v1_domain_bodies_round_trip_through_messagepack() {
         y_m: 2.0,
         yaw_rad: 0.3,
     });
+}
+
+#[test]
+fn logs_event_defaults_truncation_for_pre_field_publishers() {
+    #[derive(serde::Serialize)]
+    struct LegacyLogEvent {
+        seq: u64,
+        time: api::logs::Timestamp,
+        level: api::logs::Level,
+        target: String,
+        message: String,
+        fields: std::collections::BTreeMap<String, api::logs::LogValue>,
+        dropped: u32,
+    }
+
+    let bytes = rmp_serde::to_vec_named(&LegacyLogEvent {
+        seq: 1,
+        time: api::logs::Timestamp {
+            unix_seconds: 2,
+            nanos: 3,
+        },
+        level: api::logs::Level::Info,
+        target: "legacy".to_string(),
+        message: "old publisher".to_string(),
+        fields: std::collections::BTreeMap::new(),
+        dropped: 4,
+    })
+    .expect("encode legacy event");
+    let decoded: api::logs::Event =
+        rmp_serde::from_slice(&bytes).expect("decode additive event field");
+    assert_eq!(decoded.dropped, 4);
+    assert_eq!(decoded.truncated, 0);
 }
 
 #[test]

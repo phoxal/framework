@@ -329,12 +329,28 @@ pub(crate) fn validate_supported_target(
     )
 }
 
-/// Issues ONE `cargo auditable build --release --target <target_triple> -p A
-/// -p B ...` for every selected package name, so Cargo compiles the
-/// independent crates concurrently instead of once per artifact. Packaging
-/// (writing each tarball) happens afterwards, per artifact, from these
-/// already-built binaries - see [`package_artifact`].
+/// Builds stable-feature artifacts together, then builds `phoxal-tool-router`
+/// separately. The router alone enables `zenoh/unstable`; combining it with
+/// the other packages would unify that feature into every shipped binary and
+/// make the release graph differ from the stable graph verified in CI.
 fn build_target_artifacts(root: &Path, package_names: &[&str], target_triple: &str) -> Result<()> {
+    let (stable, router): (Vec<_>, Vec<_>) = package_names
+        .iter()
+        .copied()
+        .partition(|package| *package != "phoxal-tool-router");
+    for packages in [stable.as_slice(), router.as_slice()] {
+        if !packages.is_empty() {
+            build_target_package_group(root, packages, target_triple)?;
+        }
+    }
+    Ok(())
+}
+
+fn build_target_package_group(
+    root: &Path,
+    package_names: &[&str],
+    target_triple: &str,
+) -> Result<()> {
     let mut command = Command::new("cargo");
     command
         .args(["auditable", "build", "--release", "--target", target_triple])

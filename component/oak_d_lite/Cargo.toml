@@ -15,7 +15,7 @@ name = "phoxal-component-oak_d_lite"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
+phoxal = { workspace = true, features = ["preview-v2"] }
 phoxal-api = { workspace = true }
 anyhow = { workspace = true }
 

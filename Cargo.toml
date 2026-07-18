@@ -139,12 +139,28 @@ zenoh = { version = "1.9.0", default-features = false, features = [
     "transport_unixsock-stream",
     "transport_ws",
 ] }
+# The router alone uses Zenoh's explicitly unstable link-introspection API.
+# Keep that tool within the reviewed 1.9 minor line without narrowing the
+# published crates' public Zenoh dependency requirement.
+zenoh-router = { package = "zenoh", version = "~1.9.0", default-features = false, features = [
+    "auth_pubkey",
+    "auth_usrpwd",
+    "transport_multilink",
+    "transport_quic",
+    "transport_quic_datagram",
+    "transport_tcp",
+    "transport_tls",
+    "transport_udp",
+    "transport_unixsock-stream",
+    "transport_ws",
+    "unstable",
+] }
 # Carry a version (not just a path) on every internal dep: cargo strips the path
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
 phoxal = { path = "phoxal", version = "0.34" }
-phoxal-api = { path = "phoxal-api", version = "0.21", features = ["preview-v2"] }
+phoxal-api = { path = "phoxal-api", version = "0.21" }
 phoxal-bus = { path = "phoxal-bus", version = "0.21" }
 phoxal-macros = { path = "phoxal-macros", version = "0.23" }
 

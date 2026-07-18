@@ -1,3 +1,5 @@
+#![cfg(feature = "preview-v2")]
+
 //! A malformed `v2::telemetry::Process` payload, pushed through a live bus
 //! subscription, must be surfaced as a decode error (counted, not silently
 //! accepted) - and a well-formed one on the same key must still decode.

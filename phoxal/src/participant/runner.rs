@@ -72,7 +72,9 @@ use arc_swap::ArcSwapOption;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::bus::{LogicalTime, QueryFailure, Subscriber};
+#[cfg(feature = "preview-v2")]
+use crate::bus::Subscriber;
+use crate::bus::{LogicalTime, QueryFailure};
 use crate::participant::api::ParticipantLifecycle;
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
@@ -87,6 +89,7 @@ use crate::participant::scheduler::{
 };
 use crate::participant::spec::StepSchedule;
 use phoxal_api::v1 as api;
+#[cfg(feature = "preview-v2")]
 use phoxal_api::v2;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
@@ -187,6 +190,7 @@ pub(crate) fn step_scheduler_for(
 /// docs), so the watch channel itself would not close even if this task
 /// stopped, but a stopped task means logical time simply never advances
 /// again.
+#[cfg(feature = "preview-v2")]
 pub(crate) fn spawn_simulation_clock_feed(
     bus: &Bus,
     handle: SimulationClockHandle,
@@ -215,6 +219,14 @@ pub(crate) fn spawn_simulation_clock_feed(
             handle.advance(at);
         }
     }))
+}
+
+#[cfg(not(feature = "preview-v2"))]
+pub(crate) fn spawn_simulation_clock_feed(
+    _bus: &Bus,
+    _handle: SimulationClockHandle,
+) -> crate::Result<JoinHandle<()>> {
+    anyhow::bail!("simulation clock support requires the phoxal preview-v2 feature")
 }
 
 /// Run a participant against an explicit launch and shutdown trigger. The
@@ -446,7 +458,22 @@ where
     let mut server_tasks: Vec<JoinHandle<()>> = Vec::new();
 
     for topic in R::__exclusive_server_topics() {
-        let queryable = bus.declare_server(topic).await?;
+        let queryable = match bus.declare_server(topic).await {
+            Ok(queryable) => queryable,
+            Err(error) => {
+                teardown_lifecycle(
+                    &mut participant,
+                    &mut api,
+                    heartbeat,
+                    clock.as_ref(),
+                    server_tasks,
+                    managed_tasks,
+                    launch.shutdown_grace_ms,
+                )
+                .await;
+                return Err(error.into());
+            }
+        };
         let tx = excl_tx.clone();
         server_tasks.push(tokio::spawn(async move {
             while let Ok(incoming) = queryable.recv().await {
@@ -462,7 +489,22 @@ where
     // topic's task, so aborting the topic task on shutdown also aborts any
     // in-flight handlers (they never outlive the runner / race `bus.close`).
     for topic in R::__snapshot_server_topics() {
-        let queryable = bus.declare_server(topic).await?;
+        let queryable = match bus.declare_server(topic).await {
+            Ok(queryable) => queryable,
+            Err(error) => {
+                teardown_lifecycle(
+                    &mut participant,
+                    &mut api,
+                    heartbeat,
+                    clock.as_ref(),
+                    server_tasks,
+                    managed_tasks,
+                    launch.shutdown_grace_ms,
+                )
+                .await;
+                return Err(error.into());
+            }
+        };
         let committed = Arc::clone(&committed);
         let api_shared = Arc::clone(&api_shared);
         let bus = bus.clone();
@@ -520,15 +562,47 @@ where
     )
     .await;
     watchdog.shutdown();
+    drop(excl_tx);
+    teardown_lifecycle(
+        &mut participant,
+        &mut api,
+        heartbeat,
+        clock.as_ref(),
+        server_tasks,
+        managed_tasks,
+        launch.shutdown_grace_ms,
+    )
+    .await;
+
+    if let Some(fault) = fault {
+        return Err(managed_task_fault_error(&fault));
+    }
+    Ok(())
+}
+
+/// One shutdown path shared by normal completion and every fallible operation
+/// after `#[setup]` succeeds. Keeping this sequence centralized prevents a
+/// server-declaration error from bypassing the participant's hardware-safety
+/// hook or detaching server/managed tasks before the bus closes.
+async fn teardown_lifecycle<R, C>(
+    participant: &mut R,
+    api: &mut R::Api,
+    heartbeat: &mut HeartbeatPublisher,
+    clock: &C,
+    server_tasks: Vec<JoinHandle<()>>,
+    mut managed_tasks: ManagedTasks,
+    shutdown_grace_ms: u64,
+) where
+    R: ParticipantLifecycle,
+    C: ClockSource,
+{
     heartbeat.set_readiness(api::presence::Readiness::Degraded);
     heartbeat.publish(clock.now());
-    drop(excl_tx);
-
     for task in server_tasks {
         task.abort();
     }
 
-    let grace = Duration::from_millis(launch.shutdown_grace_ms);
+    let grace = Duration::from_millis(shutdown_grace_ms);
     let shutdown_deadline = tokio::time::Instant::now() + grace;
     managed_tasks.cancel();
 
@@ -540,18 +614,18 @@ where
         shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
     match tokio::time::timeout(
         shutdown_remaining,
-        participant.__shutdown(&mut api, ShutdownContext::new(grace)),
+        participant.__shutdown(api, ShutdownContext::new(grace)),
     )
     .await
     {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            tracing::warn!(target: "phoxal.runtime", error = %e, "shutdown hook returned error");
+        Ok(Err(error)) => {
+            tracing::warn!(target: "phoxal.runtime", error = %error, "shutdown hook returned error");
         }
         Err(_elapsed) => {
             tracing::warn!(
                 target: "phoxal.runtime",
-                grace_ms = launch.shutdown_grace_ms,
+                grace_ms = shutdown_grace_ms,
                 "shutdown hook exceeded the grace deadline; proceeding to bus close"
             );
         }
@@ -561,14 +635,8 @@ where
     // contract): the same shutdown deadline bounds both `#[shutdown]` and
     // managed-task joining, so a stuck task cannot extend the grace window.
     let unjoined = managed_tasks.join_until(shutdown_deadline).await;
-    log_unjoined_managed_tasks(unjoined, launch.shutdown_grace_ms);
-
+    log_unjoined_managed_tasks(unjoined, shutdown_grace_ms);
     tracing::info!(target: "phoxal.runtime", id = R::ID, "runtime stopped");
-
-    if let Some(fault) = fault {
-        return Err(managed_task_fault_error(&fault));
-    }
-    Ok(())
 }
 
 /// Build the runtime-fault error for an unexpected `FaultOnExit` managed task
@@ -605,7 +673,7 @@ async fn main_loop<R, C, S>(
     mut shutdown: std::pin::Pin<&mut S>,
     heartbeat: &mut HeartbeatPublisher,
     process_metrics: &ProcessMetricsPublisher,
-    process_metrics_rx: &mut watch::Receiver<Option<v2::telemetry::Process>>,
+    process_metrics_rx: &mut watch::Receiver<Option<process_metrics::ProcessMetricsSample>>,
     watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
@@ -982,6 +1050,7 @@ mod tests {
     /// the scheduler releases a tick per sample, in the published epoch's
     /// domain (a reset - epoch bump - is observed even though `now_ns` drops
     /// back to 0), and no further tick releases while no sample is published.
+    #[cfg(feature = "preview-v2")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn simulation_clock_feed_drives_the_scheduler_from_published_samples() {
         let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");

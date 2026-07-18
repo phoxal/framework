@@ -676,7 +676,13 @@ phoxal_api_tree! {
                 target: String,
                 message: String,
                 fields: ::std::collections::BTreeMap<String, LogValue>,
+                /// Complete records lost before publication because a bounded
+                /// queue or publish attempt was saturated.
                 dropped: u32,
+                /// Values or fields truncated inside this published record to
+                /// keep its wire representation bounded.
+                #[serde(default)]
+                truncated: u32,
             }
 
             topic self: state Event;
@@ -691,6 +697,8 @@ phoxal_api_tree! {
                     Disabled,
                     Connecting,
                     Connected,
+                    /// Reserved for future retry telemetry. The router currently
+                    /// reports `Connecting` while Zenoh retries internally.
                     Retrying,
                 }
 
@@ -698,7 +706,12 @@ phoxal_api_tree! {
                 struct State {
                     phase: UplinkPhase,
                     connect: Option<String>,
+                    /// Reserved for future retry telemetry. This is currently
+                    /// always zero because Zenoh does not expose its attempt count.
                     retry_attempt: u32,
+                    /// Optional human-readable diagnostic while not connected,
+                    /// such as DNS failure or waiting for the configured remote
+                    /// link. Invalid endpoints fail configuration before startup.
                     detail: Option<String>,
                 }
 
@@ -1291,7 +1304,21 @@ phoxal_api_tree! {
         }
 
         router {
-            /// One topic's measured ingress over the sample window.
+            /// One topic-producer pair's measured ingress over the sample
+            /// window. Row identity is `(topic, from_participant)`;
+            /// `from_participant == ""` means the sample had no decodable
+            /// Phoxal producer envelope. Quiet rows disappear after a short
+            /// grace period and are then evicted, so
+            /// `count` is cumulative only for the current observed lifetime
+            /// and may restart from zero if that pair later returns. The
+            /// sentinel `topic == "" && from_participant == ""` aggregates
+            /// traffic omitted when the bounded detailed table is full or the
+            /// router's non-blocking observation queue drops a burst or an
+            /// observation has oversized identity metadata. Those
+            /// drops never apply backpressure to robot traffic. Once emitted,
+            /// the sentinel remains present for the session so consumers do
+            /// not lose the fact that earlier traffic was unattributed; its
+            /// window rate may be zero in later snapshots.
             struct TopicMetric {
                 topic: String,
                 from_participant: String,
@@ -1299,10 +1326,13 @@ phoxal_api_tree! {
                 count: u64,
             }
 
-            /// The router's measured message-flow snapshot. `window_ns` is the
-            /// measurement interval LENGTH (not a timestamp; production time is
-            /// the envelope `publish_at`, per the guide's logical-time
-            /// discipline).
+            /// This robot bus root's measured message-flow snapshot; traffic
+            /// transited for other robot roots is intentionally excluded.
+            /// `window_ns` is the measurement interval LENGTH (not a timestamp;
+            /// production time is the envelope `publish_at`, per the guide's
+            /// logical-time discipline). Total throughput remains complete when
+            /// the bounded per-topic table emits its documented aggregate
+            /// sentinel row.
             struct Metrics {
                 topics: Vec<TopicMetric>,
                 throughput_msg_s: f32,
@@ -1314,6 +1344,9 @@ phoxal_api_tree! {
 
         telemetry {
             /// One real mounted filesystem in a host resource sample.
+            /// A publisher that must truncate the inventory appends one
+            /// aggregate sentinel with an empty `mount_point` and a
+            /// `file_system` value of `+N omitted`.
             struct Disk {
                 mount_point: String,
                 file_system: String,
@@ -1376,8 +1409,10 @@ phoxal_api_tree! {
                 /// session (for example robot-model or backend limitations),
                 /// independent of transient device/request errors.
                 unavailable_reason: Option<String>,
-                /// Most recent failed select/enable/rescan request, cleared by
-                /// the next successful authoritative request.
+                /// One-shot acknowledgement of a failed select/enable/rescan
+                /// request. Event-driven consumers may show it once; periodic
+                /// state heartbeats omit it. The tool also writes the failure
+                /// to its log stream for durable diagnostics.
                 last_error: Option<String>,
             }
 

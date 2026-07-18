@@ -9,6 +9,9 @@
 
 use serde::{Deserialize, Serialize};
 
+const MAX_QUERY_FAILURE_BYTES: usize = 64 * 1024;
+const MAX_QUERY_MESSAGE_BYTES: usize = 60 * 1024;
+
 /// The small, fixed set of handler error codes (D31).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,13 +83,41 @@ impl QueryFailure {
 
     /// Encode to the MessagePack error-reply payload.
     pub fn encode(&self) -> Vec<u8> {
-        rmp_serde::to_vec_named(self).expect("QueryFailure is always serializable")
+        let encoded = rmp_serde::to_vec_named(self).expect("QueryFailure is always serializable");
+        if encoded.len() <= MAX_QUERY_FAILURE_BYTES {
+            return encoded;
+        }
+
+        let mut bounded = self.clone();
+        bounded.details = None;
+        bounded.details_encoding = None;
+        bounded.message = truncate_utf8(&bounded.message, MAX_QUERY_MESSAGE_BYTES);
+        let encoded =
+            rmp_serde::to_vec_named(&bounded).expect("QueryFailure is always serializable");
+        debug_assert!(encoded.len() <= MAX_QUERY_FAILURE_BYTES);
+        encoded
     }
 
     /// Decode from the MessagePack error-reply payload.
     pub fn decode(bytes: &[u8]) -> Result<Self, rmp_serde::decode::Error> {
+        if bytes.len() > MAX_QUERY_FAILURE_BYTES {
+            return Err(rmp_serde::decode::Error::Syntax(format!(
+                "QueryFailure exceeds the {MAX_QUERY_FAILURE_BYTES}-byte limit"
+            )));
+        }
         rmp_serde::from_slice(bytes)
     }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 /// What a `Querier` returns to the caller (D31). No `Version` variant - a query

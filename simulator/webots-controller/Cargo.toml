@@ -18,8 +18,8 @@ name = "phoxal-simulator-webots-controller"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
-phoxal-api = { workspace = true }
+phoxal = { workspace = true, features = ["preview-v2"] }
+phoxal-api = { workspace = true, features = ["preview-v2"] }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
