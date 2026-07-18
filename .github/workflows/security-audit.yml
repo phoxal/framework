@@ -48,7 +48,7 @@ jobs:
         # machine report against the three Zenoh 1.9 transitives reviewed here.
         # Any newly yanked crate or version fails until it is investigated.
         run: |
-          cargo audit --json --no-fetch |
+          cargo audit --json |
             jq -e '
               [.warnings.yanked[].package | "\(.name)@\(.version)"] | sort
               == ["spin@0.10.0", "spin@0.9.8", "stabby@72.1.1"]
