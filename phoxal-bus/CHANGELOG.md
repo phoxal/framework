@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.3](https://github.com/phoxal/framework/compare/phoxal-bus-v0.21.2...phoxal-bus-v0.21.3) - 2026-07-18
+
+### Fixed
+
+- *(tools)* expose router metrics and joypad diagnostics ([#277](https://github.com/phoxal/framework/pull/277))
+
 ## [0.21.2](https://github.com/phoxal/framework/compare/phoxal-bus-v0.21.1...phoxal-bus-v0.21.2) - 2026-07-14
 
 ### Other
