@@ -2324,7 +2324,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.34.1"
+version = "0.34.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.21.1"
+version = "0.21.2"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bus"
-version = "0.21.2"
+version = "0.21.3"
 dependencies = [
  "arc-swap",
  "rmp-serde",
