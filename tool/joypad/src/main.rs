@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use gilrs::{Button, EventType, Gamepad, GamepadId, Gilrs};
 use phoxal::prelude::*;
@@ -12,6 +12,21 @@ const TRIGGER_DEADZONE: f32 = 0.08;
 // this tool needs runs as a managed task registered from `#[setup]`, so the
 // runner can cancel, join, and fault it if it exits unexpectedly.
 const POLL_HZ: f64 = 50.0;
+const MAX_DEVICE_REGISTRY: usize = 64;
+const STOP_REPEAT_COUNT: usize = 3;
+const MAX_SELECT_ID_BYTES: usize = 128;
+const MAX_STABLE_ID_SUFFIX_BYTES: usize = 3;
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    &value[..end]
+}
 
 // Configless (Part 3 fix, shared runner/macro default): the `#[phoxal::tool]`
 // macro now defaults an omitted `config = …` to `()` for tools, so this
@@ -19,7 +34,9 @@ const POLL_HZ: f64 = 50.0;
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
 #[phoxal::tool(id = "joypad")]
-struct ToolJoypad;
+struct ToolJoypad {
+    shutdown_publisher: Publisher<motion_api::motion::ManualCommand>,
+}
 
 #[phoxal::behavior]
 impl ToolJoypad {
@@ -30,7 +47,15 @@ impl ToolJoypad {
             .map_err(|error| error.to_string())
             .and_then(ManualDrive::from_robot)
         {
-            Ok(drive) => (Some(drive), None),
+            Ok(drive) => {
+                tracing::info!(
+                    target: "tool_joypad",
+                    wheel_base_m = drive.wheel_base_m,
+                    side_speed_mps = drive.side_speed_mps,
+                    "robot model loaded for manual input"
+                );
+                (Some(drive), None)
+            }
             Err(error) => {
                 tracing::warn!(target: "tool_joypad", error, "manual input unavailable for this robot model");
                 (None, Some(error))
@@ -56,6 +81,7 @@ impl ToolJoypad {
         let rescan_subscriber =
             Subscriber::new(&bus, &api::topic::internal::new(cap).joypad().rescan(), 32).await?;
 
+        let shutdown_publisher = manual_publisher.clone();
         ctx.spawn_managed_with("joypad-poll", ManagedTaskPolicy::FaultOnExit, async move {
             run_joypad(
                 manual_publisher,
@@ -68,7 +94,13 @@ impl ToolJoypad {
             )
             .await
         });
-        Ok((Self, ()))
+        Ok((Self { shutdown_publisher }, ()))
+    }
+
+    #[shutdown]
+    async fn shutdown(&mut self, _api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
+        publish_stop_repeats(&self.shutdown_publisher, "tool shutdown").await;
+        Ok(())
     }
 }
 
@@ -95,6 +127,7 @@ struct PadEntry {
 #[derive(Default)]
 struct Registry {
     entries: HashMap<String, PadEntry>,
+    device_order: VecDeque<String>,
     selected: Option<String>,
     enabled: bool,
     last_error: Option<String>,
@@ -151,9 +184,10 @@ fn combine_unavailable_reasons(robot: Option<String>, backend: Option<String>) -
 /// Owns the gamepad handle and bus handles for the lifetime of the tool.
 /// Polls the selected pad at [`POLL_HZ`] publishing `ManualCommand`, and
 /// services the `joypad::Select`/`joypad::SetEnabled`/`joypad::Rescan`
-/// commands, publishing
-/// `joypad::Devices` on every device-set or selection change. Runs until the
-/// runner cancels it during managed shutdown.
+/// commands. `joypad::Devices` publishes on every device-set or selection
+/// change and once per second as the tool's clockless liveness heartbeat, so a
+/// late subscriber receives authoritative state without depending on robot or
+/// simulation time. Runs until the runner cancels it during managed shutdown.
 async fn run_joypad(
     manual_publisher: Publisher<motion_api::motion::ManualCommand>,
     devices_publisher: Publisher<api::joypad::Devices>,
@@ -178,14 +212,39 @@ async fn run_joypad(
     if let Some(gilrs) = gilrs.as_ref() {
         rescan(gilrs, &mut registry);
     }
-    publish_devices(&devices_publisher, &registry, host_time()).await;
+    log_inventory(&registry, "joypad ready");
+    if publish_devices(&devices_publisher, &registry, host_time()).await {
+        registry.last_error = None;
+    }
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs_f64(1.0 / POLL_HZ));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut devices_heartbeat = tokio::time::interval(std::time::Duration::from_secs(1));
+    devices_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The initial state was just published above; avoid an immediate duplicate.
+    devices_heartbeat.tick().await;
+    let mut pending_zeros = 0_usize;
+    let mut command_publish_failures = 0_u64;
 
     loop {
         tokio::select! {
+            _ = devices_heartbeat.tick() => {
+                if command_publish_failures > 0 {
+                    tracing::warn!(
+                        target: "tool_joypad",
+                        dropped = command_publish_failures,
+                        "manual command publishes failed during the last interval"
+                    );
+                    command_publish_failures = 0;
+                }
+                publish_devices_heartbeat(&devices_publisher, &registry, host_time()).await;
+            }
             _ = ticker.tick() => {
+                publish_pending_zero(
+                    &manual_publisher,
+                    &mut pending_zeros,
+                    &mut command_publish_failures,
+                );
                 let mut changed = false;
                 let mut zero_required = false;
                 if let Some(gilrs) = gilrs.as_mut() {
@@ -197,36 +256,81 @@ async fn run_joypad(
                     }
                 }
                 if zero_required {
-                    publish_zero(&manual_publisher).await;
+                    queue_stop(&mut pending_zeros);
+                    publish_pending_zero(
+                        &manual_publisher,
+                        &mut pending_zeros,
+                        &mut command_publish_failures,
+                    );
                 }
-                if changed {
-                    publish_devices(&devices_publisher, &registry, host_time()).await;
+                if changed
+                    && publish_devices(&devices_publisher, &registry, host_time()).await
+                {
+                    registry.last_error = None;
                 }
 
                 let Some(manual_drive) = manual_drive else { continue };
                 let Some(gilrs) = gilrs.as_ref() else { continue };
                 let Some(selected_id) = selected_gilrs_id(&registry) else { continue };
+                let gamepad = gilrs.gamepad(selected_id);
+                if !gamepad.is_connected() {
+                    if let Some(stable_id) = registry.selected.clone() {
+                        let outcome = disconnect_stable_id(&mut registry, &stable_id);
+                        if outcome.zero_required {
+                            queue_stop(&mut pending_zeros);
+                            publish_pending_zero(
+                                &manual_publisher,
+                                &mut pending_zeros,
+                                &mut command_publish_failures,
+                            );
+                        }
+                        if outcome.changed {
+                            let _ = publish_devices(
+                                &devices_publisher,
+                                &registry,
+                                host_time(),
+                            )
+                            .await;
+                        }
+                    }
+                    continue;
+                }
                 let Some(command) = command_from_gamepad(
-                    &gilrs.gamepad(selected_id),
+                    &gamepad,
                     registry.enabled,
                     manual_drive,
                 ) else { continue };
-                if let Err(error) = manual_publisher.publish_at(host_time(), command).await {
-                    tracing::warn!(target: "tool_joypad", error = %error, "publish failed");
+                if manual_publisher.try_publish(host_time(), command).is_err() {
+                    command_publish_failures = command_publish_failures.saturating_add(1);
                 }
             }
             received = select_subscriber.recv() => {
                 match received {
                     Ok(received) => {
-                        if gilrs.is_some()
-                            && handle_select(&mut registry, &received.body.id)
-                        {
-                            publish_zero(&manual_publisher).await;
+                        if gilrs.is_some() {
+                            tracing::info!(
+                                target: "tool_joypad",
+                                device_id = %truncate_utf8(&received.body.id, MAX_SELECT_ID_BYTES),
+                                "controller selection requested"
+                            );
+                            if handle_select(&mut registry, &received.body.id) {
+                                queue_stop(&mut pending_zeros);
+                            }
+                        } else {
+                            tracing::warn!(
+                                target: "tool_joypad",
+                                device_id = %truncate_utf8(&received.body.id, MAX_SELECT_ID_BYTES),
+                                reason = registry.unavailable_reason.as_deref().unwrap_or("controller backend unavailable"),
+                                "controller selection ignored"
+                            );
                         }
-                        publish_devices(&devices_publisher, &registry, host_time()).await;
+                        if publish_devices(&devices_publisher, &registry, host_time()).await {
+                            registry.last_error = None;
+                        }
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "select subscription failed");
+                        publish_stop_repeats(&manual_publisher, "select subscription failure").await;
                         return;
                     }
                 }
@@ -234,13 +338,21 @@ async fn run_joypad(
             received = set_enabled_subscriber.recv() => {
                 match received {
                     Ok(received) => {
+                        tracing::info!(
+                            target: "tool_joypad",
+                            enabled = received.body.enabled,
+                            "manual input authority change requested"
+                        );
                         if handle_set_enabled(&mut registry, received.body.enabled) {
-                            publish_zero(&manual_publisher).await;
+                            queue_stop(&mut pending_zeros);
                         }
-                        publish_devices(&devices_publisher, &registry, host_time()).await;
+                        if publish_devices(&devices_publisher, &registry, host_time()).await {
+                            registry.last_error = None;
+                        }
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "set-enabled subscription failed");
+                        publish_stop_repeats(&manual_publisher, "set-enabled subscription failure").await;
                         return;
                     }
                 }
@@ -248,15 +360,23 @@ async fn run_joypad(
             received = rescan_subscriber.recv() => {
                 match received {
                     Ok(_received) => {
+                        let before = devices_snapshot(&registry);
                         if let Some(gilrs) = gilrs.as_ref() {
                             if rescan(gilrs, &mut registry) {
-                                publish_zero(&manual_publisher).await;
+                                queue_stop(&mut pending_zeros);
                             }
                         }
-                        publish_devices(&devices_publisher, &registry, host_time()).await;
+                        let inventory_changed = devices_snapshot(&registry) != before;
+                        log_inventory(&registry, "controller rescan completed");
+                        if inventory_changed
+                            && publish_devices(&devices_publisher, &registry, host_time()).await
+                        {
+                            registry.last_error = None;
+                        }
                     }
                     Err(error) => {
                         tracing::warn!(target: "tool_joypad", error = %error, "rescan subscription failed");
+                        publish_stop_repeats(&manual_publisher, "rescan subscription failure").await;
                         return;
                     }
                 }
@@ -265,13 +385,50 @@ async fn run_joypad(
     }
 }
 
-async fn publish_zero(publisher: &Publisher<motion_api::motion::ManualCommand>) {
+fn queue_stop(pending_zeros: &mut usize) {
+    *pending_zeros = (*pending_zeros).max(STOP_REPEAT_COUNT);
+}
+
+fn publish_pending_zero(
+    publisher: &Publisher<motion_api::motion::ManualCommand>,
+    pending_zeros: &mut usize,
+    failures: &mut u64,
+) {
+    if *pending_zeros == 0 {
+        return;
+    }
     let zero = motion_api::motion::ManualCommand {
         linear_x_mps: 0.0,
         angular_z_radps: 0.0,
     };
-    if let Err(error) = publisher.publish_at(host_time(), zero).await {
-        tracing::warn!(target: "tool_joypad", error = %error, "disconnect zero publish failed");
+    if publisher.try_publish(host_time(), zero).is_err() {
+        *failures = (*failures).saturating_add(1);
+    } else {
+        *pending_zeros -= 1;
+    }
+}
+
+async fn publish_stop_repeats(
+    publisher: &Publisher<motion_api::motion::ManualCommand>,
+    reason: &'static str,
+) {
+    for attempt in 0..STOP_REPEAT_COUNT {
+        let zero = motion_api::motion::ManualCommand {
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+        };
+        if let Err(error) = publisher.try_publish(host_time(), zero) {
+            tracing::warn!(
+                target: "tool_joypad",
+                attempt = attempt + 1,
+                error = %error,
+                reason,
+                "failed to publish manual stop during exit"
+            );
+        }
+        if attempt + 1 < STOP_REPEAT_COUNT {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(1.0 / POLL_HZ)).await;
+        }
     }
 }
 
@@ -297,11 +454,34 @@ async fn publish_devices(
     publisher: &Publisher<api::joypad::Devices>,
     registry: &Registry,
     at: LogicalTime,
-) {
+) -> bool {
     let devices = devices_snapshot(registry);
     if let Err(error) = publisher.publish_at(at, devices).await {
         tracing::warn!(target: "tool_joypad", error = %error, "devices publish failed");
+        return false;
     }
+    true
+}
+
+/// Periodic state refresh for late subscribers. `last_error` is a transient
+/// acknowledgement of a rejected user action, so only the event-driven publish
+/// carries it; replaying it every second would turn one rejection into an
+/// endless stream of apparent new errors.
+async fn publish_devices_heartbeat(
+    publisher: &Publisher<api::joypad::Devices>,
+    registry: &Registry,
+    at: LogicalTime,
+) {
+    let devices = devices_heartbeat_snapshot(registry);
+    if let Err(error) = publisher.publish_at(at, devices).await {
+        tracing::warn!(target: "tool_joypad", error = %error, "devices heartbeat publish failed");
+    }
+}
+
+fn devices_heartbeat_snapshot(registry: &Registry) -> api::joypad::Devices {
+    let mut devices = devices_snapshot(registry);
+    devices.last_error = None;
+    devices
 }
 
 fn devices_snapshot(registry: &Registry) -> api::joypad::Devices {
@@ -330,6 +510,29 @@ fn devices_snapshot(registry: &Registry) -> api::joypad::Devices {
     }
 }
 
+fn log_inventory(registry: &Registry, message: &'static str) {
+    let connected = registry
+        .entries
+        .values()
+        .filter(|entry| entry.connected)
+        .count();
+    let ready = registry
+        .entries
+        .values()
+        .filter(|entry| entry.connected && entry.mapped)
+        .count();
+    tracing::info!(
+        target: "tool_joypad",
+        known = registry.entries.len(),
+        connected,
+        ready,
+        selected = registry.selected.as_deref(),
+        enabled = registry.enabled,
+        unavailable = registry.unavailable_reason.as_deref(),
+        "{message}"
+    );
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct RegistryChange {
     changed: bool,
@@ -347,6 +550,18 @@ fn apply_event(
     match event {
         EventType::Connected => {
             let stable_id = observe(gilrs, registry, id);
+            let (name, mapped) = registry
+                .entries
+                .get(&stable_id)
+                .map(|entry| (entry.name.as_str(), entry.mapped))
+                .unwrap_or(("unknown", false));
+            tracing::info!(
+                target: "tool_joypad",
+                device_id = %stable_id,
+                device_name = name,
+                mapped,
+                "controller connected"
+            );
             reconcile_connected_device(registry, stable_id)
         }
         EventType::Disconnected => on_disconnected(registry, id),
@@ -374,6 +589,13 @@ fn reconcile_connected_device(registry: &mut Registry, stable_id: String) -> Reg
 /// Unknown/unavailable ids populate `last_error`; either way the caller
 /// republishes `Devices` (that republish IS the ack).
 fn handle_select(registry: &mut Registry, id: &str) -> bool {
+    if id.len() > MAX_SELECT_ID_BYTES {
+        let id = truncate_utf8(id, MAX_SELECT_ID_BYTES);
+        let failure = format!("device id '{id}…' exceeds the {MAX_SELECT_ID_BYTES}-byte limit");
+        tracing::warn!(target: "tool_joypad", device_id = id, reason = %failure, "controller selection rejected");
+        registry.last_error = Some(failure);
+        return false;
+    }
     let selection_changes = registry.selected.as_deref() != Some(id);
     let failure = match registry.entries.get(id) {
         Some(entry) if entry.connected && entry.mapped => {
@@ -383,6 +605,12 @@ fn handle_select(registry: &mut Registry, id: &str) -> bool {
                 registry.enabled = false;
             }
             registry.last_error = None;
+            tracing::info!(
+                target: "tool_joypad",
+                device_id = id,
+                device_name = %entry.name,
+                "controller selected"
+            );
             return zero_required;
         }
         Some(entry) if entry.connected => {
@@ -392,6 +620,7 @@ fn handle_select(registry: &mut Registry, id: &str) -> bool {
         None => format!("unknown device id '{id}'"),
     };
     let zero_required = !selection_changes && invalidate_selection(registry);
+    tracing::warn!(target: "tool_joypad", device_id = id, reason = %failure, "controller selection rejected");
     registry.last_error = Some(failure);
     zero_required
 }
@@ -404,17 +633,20 @@ fn handle_set_enabled(registry: &mut Registry, enabled: bool) -> bool {
         let was_enabled = registry.enabled;
         registry.enabled = false;
         registry.last_error = None;
+        tracing::info!(target: "tool_joypad", was_enabled, "manual input disabled");
         return was_enabled;
     }
     if let Some(reason) = registry.unavailable_reason.as_ref() {
         registry.enabled = false;
         registry.last_error = None;
-        tracing::debug!(target: "tool_joypad", reason, "manual input enable rejected");
+        tracing::warn!(target: "tool_joypad", reason, "manual input enable rejected");
         return false;
     }
     let Some(selected) = registry.selected.as_ref() else {
         registry.enabled = false;
-        registry.last_error = Some("no controller is selected".to_string());
+        let error = "no controller is selected".to_string();
+        tracing::warn!(target: "tool_joypad", reason = %error, "manual input enable rejected");
+        registry.last_error = Some(error);
         return false;
     };
     let ready = registry
@@ -424,9 +656,12 @@ fn handle_set_enabled(registry: &mut Registry, enabled: bool) -> bool {
     if ready {
         registry.enabled = true;
         registry.last_error = None;
+        tracing::info!(target: "tool_joypad", device_id = %selected, "manual input enabled");
     } else {
         registry.enabled = false;
-        registry.last_error = Some(format!("selected device '{selected}' is not ready"));
+        let error = format!("selected device '{selected}' is not ready");
+        tracing::warn!(target: "tool_joypad", device_id = %selected, reason = %error, "manual input enable rejected");
+        registry.last_error = Some(error);
     }
     false
 }
@@ -442,9 +677,7 @@ fn rescan(gilrs: &Gilrs, registry: &mut Registry) -> bool {
     }
     let zero_required = mark_missing_devices(registry, &seen);
     let reconciliation_zero = reconcile_selection(gilrs, registry);
-    let zero_required = zero_required || reconciliation_zero;
-    registry.last_error = None;
-    zero_required
+    zero_required || reconciliation_zero
 }
 
 fn mark_missing_devices(registry: &mut Registry, seen: &HashSet<String>) -> bool {
@@ -460,7 +693,9 @@ fn mark_missing_devices(registry: &mut Registry, seen: &HashSet<String>) -> bool
             .get(selected.as_str())
             .is_some_and(|entry| !entry.connected)
     });
-    selected_disconnected && invalidate_selection(registry)
+    let zero_required = selected_disconnected && invalidate_selection(registry);
+    prune_device_registry(registry);
+    zero_required
 }
 
 /// If the current selection is no longer ready, clear it, disable manual
@@ -512,29 +747,37 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
     let name = gamepad.name().to_string();
     let mapped = has_compatible_mapping(&gamepad);
 
-    if let Some((stable_id, entry)) = registry
+    if let Some(stable_id) = registry
         .entries
-        .iter_mut()
-        .find(|(_, entry)| entry.gilrs_id == Some(id))
+        .iter()
+        .find_map(|(stable_id, entry)| (entry.gilrs_id == Some(id)).then(|| stable_id.clone()))
     {
+        let entry = registry
+            .entries
+            .get_mut(&stable_id)
+            .expect("observed controller must still exist");
         entry.name = name;
         entry.connected = true;
         entry.mapped = mapped;
-        return stable_id.clone();
+        touch_device(registry, &stable_id);
+        return stable_id;
     }
 
     let base = base_device_id(gamepad.uuid(), gamepad.name());
 
-    if let Some((stable_id, entry)) = registry
-        .entries
-        .iter_mut()
-        .find(|(_, entry)| entry.base_id == base && entry.gilrs_id.is_none())
-    {
+    if let Some(stable_id) = registry.entries.iter().find_map(|(stable_id, entry)| {
+        (entry.base_id == base && entry.gilrs_id.is_none()).then(|| stable_id.clone())
+    }) {
+        let entry = registry
+            .entries
+            .get_mut(&stable_id)
+            .expect("reconnecting controller must still exist");
         entry.gilrs_id = Some(id);
         entry.connected = true;
         entry.mapped = mapped;
         entry.name = name;
-        return stable_id.clone();
+        touch_device(registry, &stable_id);
+        return stable_id;
     }
 
     let stable_id = assign_stable_id(&registry.entries, &base);
@@ -548,7 +791,54 @@ fn observe(gilrs: &Gilrs, registry: &mut Registry, id: GamepadId) -> String {
             mapped,
         },
     );
+    touch_device(registry, &stable_id);
     stable_id
+}
+
+fn touch_device(registry: &mut Registry, stable_id: &str) {
+    registry.device_order.retain(|known| known != stable_id);
+    registry.device_order.push_back(stable_id.to_string());
+    prune_device_registry(registry);
+}
+
+fn prune_device_registry(registry: &mut Registry) {
+    while registry.entries.len() > MAX_DEVICE_REGISTRY {
+        let candidate = registry
+            .device_order
+            .iter()
+            .position(|id| {
+                registry.selected.as_deref() != Some(id.as_str())
+                    && registry
+                        .entries
+                        .get(id)
+                        .is_some_and(|entry| !entry.connected)
+            })
+            .or_else(|| {
+                registry.device_order.iter().position(|id| {
+                    registry.selected.as_deref() != Some(id.as_str())
+                        && registry.entries.contains_key(id)
+                })
+            });
+        let Some(position) = candidate else {
+            break;
+        };
+        let stable_id = registry
+            .device_order
+            .remove(position)
+            .expect("device eviction candidate must exist");
+        if let Some(entry) = registry.entries.remove(&stable_id) {
+            tracing::warn!(
+                target: "tool_joypad",
+                device_id = %stable_id,
+                device_name = %entry.name,
+                connected = entry.connected,
+                "controller registry capacity reached; evicting oldest device"
+            );
+        }
+    }
+    registry
+        .device_order
+        .retain(|stable_id| registry.entries.contains_key(stable_id));
 }
 
 fn on_disconnected(registry: &mut Registry, id: GamepadId) -> RegistryChange {
@@ -563,13 +853,24 @@ fn on_disconnected(registry: &mut Registry, id: GamepadId) -> RegistryChange {
 }
 
 fn disconnect_stable_id(registry: &mut Registry, stable_id: &str) -> RegistryChange {
-    let Some(entry) = registry.entries.get_mut(stable_id) else {
-        return RegistryChange::default();
+    let name = {
+        let Some(entry) = registry.entries.get_mut(stable_id) else {
+            return RegistryChange::default();
+        };
+        entry.gilrs_id = None;
+        entry.connected = false;
+        entry.name.clone()
     };
-    entry.gilrs_id = None;
-    entry.connected = false;
+    touch_device(registry, stable_id);
     let selected_disconnected = registry.selected.as_deref() == Some(stable_id);
     let zero_required = selected_disconnected && invalidate_selection(registry);
+    tracing::info!(
+        target: "tool_joypad",
+        device_id = stable_id,
+        device_name = %name,
+        selection_cleared = selected_disconnected,
+        "controller disconnected"
+    );
     RegistryChange {
         changed: true,
         zero_required,
@@ -582,7 +883,10 @@ fn disconnect_stable_id(registry: &mut Registry, stable_id: &str) -> RegistryCha
 /// name-derived id for backends that report an all-zero uuid.
 fn base_device_id(uuid: [u8; 16], name: &str) -> String {
     if uuid.iter().all(|byte| *byte == 0) {
-        format!("name:{name}")
+        let name_budget = MAX_SELECT_ID_BYTES
+            .saturating_sub("name:".len())
+            .saturating_sub(MAX_STABLE_ID_SUFFIX_BYTES);
+        format!("name:{}", truncate_utf8(name, name_budget))
     } else {
         uuid.iter().map(|byte| format!("{byte:02x}")).collect()
     }
@@ -673,7 +977,7 @@ fn side_input(reverse_modifier: f32, forward_trigger: f32) -> f64 {
 }
 
 fn trigger(value: f32) -> f32 {
-    if value.abs() < TRIGGER_DEADZONE {
+    if !value.is_finite() || value.abs() < TRIGGER_DEADZONE {
         0.0
     } else {
         value.clamp(0.0, 1.0)
@@ -698,6 +1002,13 @@ mod tests {
     fn trigger_clamps_to_unit_range() {
         assert_eq!(trigger(1.5), 1.0);
         assert_eq!(trigger(-1.5), 0.0);
+    }
+
+    #[test]
+    fn non_finite_trigger_values_fail_closed() {
+        assert_eq!(trigger(f32::NAN), 0.0);
+        assert_eq!(trigger(f32::INFINITY), 0.0);
+        assert_eq!(trigger(f32::NEG_INFINITY), 0.0);
     }
 
     #[test]
@@ -817,6 +1128,25 @@ mod tests {
     }
 
     #[test]
+    fn name_fallback_ids_leave_room_for_collision_suffixes() {
+        let base = base_device_id([0_u8; 16], &"controller".repeat(64));
+        assert!(base.len() <= MAX_SELECT_ID_BYTES - MAX_STABLE_ID_SUFFIX_BYTES);
+        let mut entries = HashMap::new();
+        entries.insert(
+            base.clone(),
+            PadEntry {
+                base_id: base.clone(),
+                gilrs_id: None,
+                name: "first".to_string(),
+                connected: false,
+                mapped: true,
+            },
+        );
+        let duplicate = assign_stable_id(&entries, &base);
+        assert!(duplicate.len() <= MAX_SELECT_ID_BYTES);
+    }
+
+    #[test]
     fn assign_stable_id_returns_base_when_unused() {
         let entries: HashMap<String, PadEntry> = HashMap::new();
         assert_eq!(assign_stable_id(&entries, "abc123"), "abc123");
@@ -848,6 +1178,32 @@ mod tests {
             },
         );
         assert_eq!(assign_stable_id(&entries, "abc123"), "abc123#3");
+    }
+
+    #[test]
+    fn device_registry_is_bounded_and_preserves_the_selection() {
+        let mut registry = Registry {
+            selected: Some("pad-0".to_string()),
+            ..Registry::default()
+        };
+        for index in 0..(MAX_DEVICE_REGISTRY + 8) {
+            let id = format!("pad-{index}");
+            registry.entries.insert(
+                id.clone(),
+                PadEntry {
+                    base_id: id.clone(),
+                    gilrs_id: None,
+                    name: id.clone(),
+                    connected: false,
+                    mapped: true,
+                },
+            );
+            touch_device(&mut registry, &id);
+        }
+
+        assert_eq!(registry.entries.len(), MAX_DEVICE_REGISTRY);
+        assert_eq!(registry.device_order.len(), MAX_DEVICE_REGISTRY);
+        assert!(registry.entries.contains_key("pad-0"));
     }
 
     #[test]
@@ -987,6 +1343,18 @@ mod tests {
             registry.last_error.as_deref(),
             Some("no controller is selected")
         );
+    }
+
+    #[test]
+    fn oversized_selection_id_is_bounded_and_rejected() {
+        let mut registry = Registry::default();
+        let requested = "x".repeat(MAX_SELECT_ID_BYTES + 10_000);
+
+        assert!(!handle_select(&mut registry, &requested));
+        let error = registry.last_error.expect("rejection acknowledgement");
+        assert!(error.contains("exceeds"));
+        assert!(error.len() < MAX_SELECT_ID_BYTES + 80);
+        assert!(registry.selected.is_none());
     }
 
     #[test]
@@ -1152,6 +1520,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn heartbeat_snapshot_keeps_state_but_omits_transient_error() {
+        let registry = Registry {
+            selected: Some("pad".to_string()),
+            enabled: true,
+            last_error: Some("one rejected action".to_string()),
+            ..Registry::default()
+        };
+
+        let snapshot = devices_heartbeat_snapshot(&registry);
+        assert_eq!(snapshot.selected.as_deref(), Some("pad"));
+        assert!(snapshot.enabled);
+        assert!(snapshot.last_error.is_none());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn disconnect_zero_is_published_on_the_manual_contract() {
         let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig::in_process(
@@ -1172,7 +1555,11 @@ mod tests {
         .await
         .expect("manual subscriber should attach");
 
-        publish_zero(&publisher).await;
+        let mut pending_zeros = 0;
+        let mut failures = 0;
+        queue_stop(&mut pending_zeros);
+        publish_pending_zero(&publisher, &mut pending_zeros, &mut failures);
+        assert_eq!(failures, 0);
         let received = tokio::time::timeout(std::time::Duration::from_secs(2), subscriber.recv())
             .await
             .expect("zero command should arrive")
@@ -1181,6 +1568,25 @@ mod tests {
         assert_eq!(received.body.linear_x_mps, 0.0);
         assert_eq!(received.body.angular_z_radps, 0.0);
         bus.close().await.expect("bus should close");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn failed_stop_publish_keeps_the_retry_budget() {
+        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig::in_process(
+            format!("test/joypad-stop-retry/{}", std::process::id()),
+            "robot",
+        ))
+        .await
+        .expect("bus should open");
+        let publisher = Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())
+            .expect("manual publisher should attach");
+        bus.close().await.expect("bus should close");
+
+        let mut pending_zeros = STOP_REPEAT_COUNT;
+        let mut failures = 0;
+        publish_pending_zero(&publisher, &mut pending_zeros, &mut failures);
+        assert_eq!(pending_zeros, STOP_REPEAT_COUNT);
+        assert_eq!(failures, 1);
     }
 
     #[test]

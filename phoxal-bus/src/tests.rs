@@ -133,6 +133,35 @@ fn metadata_round_trips() {
 }
 
 #[test]
+fn metadata_and_query_failure_decoders_reject_oversized_wire_values() {
+    let metadata_error = BusMetadata::decode(&vec![0_u8; 4 * 1024 + 1]).unwrap_err();
+    assert!(metadata_error.to_string().contains("4096-byte limit"));
+
+    let query_error = QueryFailure::decode(&vec![0_u8; 64 * 1024 + 1]).unwrap_err();
+    assert!(query_error.to_string().contains("65536-byte limit"));
+}
+
+#[test]
+fn metadata_and_query_failure_encoders_stay_within_their_wire_limits() {
+    let mut meta = metadata();
+    meta.source.participant = "é".repeat(10_000);
+    let encoded = meta.encode();
+    assert!(encoded.len() <= 4 * 1024);
+    let decoded = BusMetadata::decode(&encoded).expect("bounded metadata decodes");
+    assert!(decoded.source.participant.len() <= 512);
+
+    let mut failure = QueryFailure::internal("é".repeat(100_000));
+    failure.details = Some(vec![7; 100_000]);
+    failure.details_encoding = Some("x".repeat(100_000));
+    let encoded = failure.encode();
+    assert!(encoded.len() <= 64 * 1024);
+    let decoded = QueryFailure::decode(&encoded).expect("bounded failure decodes");
+    assert_eq!(decoded.code, QueryCode::Internal);
+    assert!(decoded.details.is_none());
+    assert!(decoded.details_encoding.is_none());
+}
+
+#[test]
 fn decode_accepts_a_matching_sample() {
     let s = sample(CodecId::MessagePack.as_u8());
     let (body, meta) = decode_sample::<Target>(&s, "yTEST/drive/target").unwrap();
@@ -209,6 +238,11 @@ async fn namespace_must_be_concrete_non_wildcard() {
     let err = Bus::open(BusConfig::in_process("", "r1"))
         .await
         .unwrap_err();
+    assert!(matches!(err, BusError::Namespace(_)));
+
+    let mut config = BusConfig::in_process("dev", "r1");
+    config.participant = "x".repeat(513);
+    let err = Bus::open(config).await.unwrap_err();
     assert!(matches!(err, BusError::Namespace(_)));
 }
 

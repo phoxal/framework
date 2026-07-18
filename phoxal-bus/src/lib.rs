@@ -33,7 +33,7 @@ pub mod server;
 pub mod session;
 pub mod topic;
 
-pub use abi::{CodecId, encoding_string};
+pub use abi::{CodecId, encoding_string, parse_encoding_string};
 pub use capability::OwnerCap;
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{ApiVersion, ContractBody, TopicRole};

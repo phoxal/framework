@@ -646,6 +646,70 @@ mod tests {
     }
 
     #[test]
+    fn zenoh_dependency_profiles_keep_transport_compression_disabled() -> Result<()> {
+        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("xtask manifest directory has no workspace parent")?
+            .join("Cargo.toml");
+        let document = fs::read_to_string(&workspace_manifest)?
+            .parse::<toml_edit::DocumentMut>()
+            .context("workspace Cargo.toml is invalid")?;
+        for dependency in ["zenoh", "zenoh-router"] {
+            assert_eq!(
+                document["workspace"]["dependencies"][dependency]["default-features"].as_bool(),
+                Some(false),
+                "{dependency} must disable Zenoh default features while RUSTSEC-2026-0041 is ignored"
+            );
+            let features = document["workspace"]["dependencies"][dependency]["features"]
+                .as_array()
+                .with_context(|| format!("{dependency} must declare an explicit feature list"))?;
+            assert!(
+                !features
+                    .iter()
+                    .any(|feature| feature.as_str() == Some("transport_compression")),
+                "{dependency} must keep transport_compression disabled while RUSTSEC-2026-0041 is ignored"
+            );
+        }
+
+        let metadata = MetadataCommand::new()
+            .manifest_path(&workspace_manifest)
+            .exec()
+            .context("workspace cargo metadata failed")?;
+        let mut direct_zenoh_dependencies = 0;
+        for package in metadata
+            .packages
+            .iter()
+            .filter(|package| package.source.is_none())
+        {
+            for dependency in package
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.name == "zenoh")
+            {
+                direct_zenoh_dependencies += 1;
+                assert!(
+                    !dependency.uses_default_features,
+                    "{} enables Zenoh default features",
+                    package.name
+                );
+                assert!(
+                    !dependency
+                        .features
+                        .iter()
+                        .any(|feature| feature == "transport_compression"),
+                    "{} enables Zenoh transport_compression",
+                    package.name
+                );
+            }
+        }
+        assert_eq!(
+            direct_zenoh_dependencies, 3,
+            "every direct Zenoh dependency must be covered by this guard"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn real_workspace_release_scope_is_valid() -> Result<()> {
         let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

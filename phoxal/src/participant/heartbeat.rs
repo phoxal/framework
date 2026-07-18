@@ -85,5 +85,36 @@ mod tests {
         heartbeat.set_readiness(api::presence::Readiness::Ready);
 
         heartbeat.publish(LogicalTime::new(0, 1));
+        assert!(heartbeat.publisher.is_none());
+        assert_eq!(heartbeat.participant_id, "offline");
+        assert_eq!(heartbeat.readiness, api::presence::Readiness::Ready);
+    }
+
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn heartbeat_publishes_on_the_declared_presence_topic() {
+        let bus = Bus::open(phoxal_bus::BusConfig::in_process("dev", "heartbeat-test"))
+            .await
+            .expect("open bus");
+        let subscriber = phoxal_bus::Subscriber::<api::presence::Heartbeat>::new(
+            &bus,
+            &api::topic::internal::new(phoxal_bus::OwnerCap::__mint())
+                .presence()
+                .heartbeat(),
+            1,
+        )
+        .await
+        .expect("subscribe heartbeat");
+        let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), "drive");
+        heartbeat.set_readiness(api::presence::Readiness::Ready);
+        heartbeat.publish(LogicalTime::new(0, 1));
+
+        let observed = tokio::time::timeout(Duration::from_secs(1), subscriber.recv())
+            .await
+            .expect("heartbeat timeout")
+            .expect("heartbeat receive");
+        assert_eq!(observed.body.participant, "drive");
+        assert_eq!(observed.body.readiness, api::presence::Readiness::Ready);
+        bus.close().await.expect("close bus");
     }
 }

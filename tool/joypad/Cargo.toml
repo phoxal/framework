@@ -18,8 +18,8 @@ name = "phoxal-tool-joypad"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
-phoxal-api = { workspace = true }
+phoxal = { workspace = true, features = ["preview-v2"] }
+phoxal-api = { workspace = true, features = ["preview-v2"] }
 gilrs = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }

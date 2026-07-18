@@ -22,17 +22,19 @@
 //!   nothing a sample costs can delay the heartbeat.
 //!
 //! A single sampler task awaiting each `spawn_blocking` before the next tick
-//! means two refreshes can never overlap, and consecutive refreshes are spaced
-//! by the interval, so the cpu-usage delta window stays well-defined
-//! (`== PROCESS_METRICS_INTERVAL`).
+//! means two refreshes can never overlap. Each sample carries the measured
+//! elapsed wall time between completed refreshes, so a slow refresh or loaded
+//! host cannot make the CPU delta's reported window misleading.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use phoxal_api::v2 as api;
 use phoxal_bus::{Bus, LogicalTime, OwnerCap, Publisher};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, RefreshKind, System};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
+
+pub(crate) type ProcessMetricsSample = api::telemetry::Process;
 
 /// Runner process-metrics sampling cadence.
 ///
@@ -76,7 +78,7 @@ impl ProcessMetricsPublisher {
     }
 
     /// Publish an already-computed sample. Cheap: encodes + enqueues only.
-    pub(crate) fn publish(&self, at: LogicalTime, body: api::telemetry::Process) {
+    pub(crate) fn publish(&self, at: LogicalTime, body: ProcessMetricsSample) {
         let Some(publisher) = &self.publisher else {
             return;
         };
@@ -99,7 +101,7 @@ impl ProcessMetricsPublisher {
 /// All `sysinfo` work happens on this task via [`tokio::task::spawn_blocking`],
 /// NEVER on the lifecycle/heartbeat task.
 pub(crate) fn spawn_sampler() -> (
-    watch::Receiver<Option<api::telemetry::Process>>,
+    watch::Receiver<Option<ProcessMetricsSample>>,
     JoinHandle<()>,
 ) {
     let (tx, rx) = watch::channel(None);
@@ -113,11 +115,12 @@ async fn run_sampler(tx: watch::Sender<Option<api::telemetry::Process>>) {
     // so it belongs on the blocking pool too. This matters for callers that use
     // `phoxal::tokio::run` from a single-worker runtime: no sysinfo work may
     // briefly occupy the lifecycle executor before the first sample.
-    let mut system = match tokio::task::spawn_blocking(|| {
-        System::new_with_specifics(
+    let (mut system, mut previous_refresh) = match tokio::task::spawn_blocking(|| {
+        let system = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
-        )
+        );
+        (system, Instant::now())
     })
     .await
     {
@@ -136,6 +139,10 @@ async fn run_sampler(tx: watch::Sender<Option<api::telemetry::Process>>) {
     // catch-up ticks - keep refreshes ~one interval apart so the cpu delta
     // window stays well-defined.
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Tokio intervals yield once immediately. Consume that bootstrap tick so
+    // the initial sysinfo refresh has a real measurement window before the
+    // first published CPU delta.
+    interval.tick().await;
 
     loop {
         interval.tick().await;
@@ -144,9 +151,9 @@ async fn run_sampler(tx: watch::Sender<Option<api::telemetry::Process>>) {
         // syscalls never touch an async worker) and get it back with the
         // computed sample. Awaiting the join before the next tick guarantees
         // two refreshes can never overlap.
-        let (returned, sample) = match tokio::task::spawn_blocking(move || {
-            let sample = sample_process(&mut system, pid);
-            (system, sample)
+        let (returned, sample, refreshed_at) = match tokio::task::spawn_blocking(move || {
+            let (sample, refreshed_at) = sample_process(&mut system, pid, previous_refresh);
+            (system, sample, refreshed_at)
         })
         .await
         {
@@ -161,6 +168,7 @@ async fn run_sampler(tx: watch::Sender<Option<api::telemetry::Process>>) {
             }
         };
         system = returned;
+        previous_refresh = refreshed_at;
 
         if let Some(body) = sample {
             // `watch` keeps only the latest sample; a dropped receiver means the
@@ -179,20 +187,30 @@ async fn run_sampler(tx: watch::Sender<Option<api::telemetry::Process>>) {
 /// the very first sample reads `0.0` - expected, not a bug: it settles to a
 /// real value from the second refresh on, one [`PROCESS_METRICS_INTERVAL`]
 /// later.
-fn sample_process(system: &mut System, pid: Pid) -> Option<api::telemetry::Process> {
+fn sample_process(
+    system: &mut System,
+    pid: Pid,
+    previous_refresh: Instant,
+) -> (Option<api::telemetry::Process>, Instant) {
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&[pid]),
         false,
         ProcessRefreshKind::nothing().with_cpu().with_memory(),
     );
+    let refreshed_at = Instant::now();
 
-    let process = system.process(pid)?;
-
-    Some(api::telemetry::Process {
+    let sample = system.process(pid).map(|process| api::telemetry::Process {
         cpu_pct: process.cpu_usage(),
         rss_bytes: process.memory(),
-        window_ns: u64::try_from(PROCESS_METRICS_INTERVAL.as_nanos()).unwrap_or(u64::MAX),
-    })
+        window_ns: u64::try_from(
+            refreshed_at
+                .saturating_duration_since(previous_refresh)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX),
+    });
+
+    (sample, refreshed_at)
 }
 
 #[cfg(test)]
@@ -210,6 +228,43 @@ mod tests {
                 window_ns: 0,
             },
         );
+        assert!(metrics.publisher.is_none());
+    }
+
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn process_metrics_publish_on_the_declared_topic() {
+        let bus = Bus::open(phoxal_bus::BusConfig::in_process("dev", "metrics-test"))
+            .await
+            .expect("open bus");
+        let latest = phoxal_bus::Latest::<api::telemetry::Process>::new(
+            &bus,
+            &api::topic::new().telemetry().process(),
+        )
+        .await
+        .expect("subscribe process telemetry");
+        let metrics = ProcessMetricsPublisher::attach(bus.clone());
+        metrics.publish(
+            LogicalTime::new(0, 1),
+            api::telemetry::Process {
+                cpu_pct: 12.5,
+                rss_bytes: 42,
+                window_ns: 3_000_000_000,
+            },
+        );
+
+        let mut observed = None;
+        for _ in 0..50 {
+            if let Some(sample) = latest.latest() {
+                observed = Some(sample);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let observed = observed.expect("process telemetry sample");
+        assert_eq!(observed.rss_bytes, 42);
+        assert_eq!(observed.window_ns, 3_000_000_000);
+        bus.close().await.expect("close bus");
     }
 
     #[test]
@@ -218,18 +273,25 @@ mod tests {
     }
 
     #[test]
-    fn sample_process_reports_this_process_over_the_interval_window() {
+    fn sample_process_reports_this_process_over_the_measured_window() {
         let mut system = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
         );
         let pid = Pid::from_u32(std::process::id());
+        let previous_refresh = Instant::now()
+            .checked_sub(Duration::from_secs(2))
+            .expect("two seconds before now");
 
-        let sample = sample_process(&mut system, pid)
-            .expect("the current process is always present in its own sysinfo refresh");
+        let (sample, _) = sample_process(&mut system, pid, previous_refresh);
+        let sample =
+            sample.expect("the current process is always present in its own sysinfo refresh");
 
-        // The delta window is the sampling interval, not a timestamp.
-        assert_eq!(sample.window_ns, 3_000_000_000);
+        // The delta window is measured rather than copied from the nominal
+        // cadence. Allow refresh overhead while proving the authored 3 s
+        // interval was not substituted.
+        assert!(sample.window_ns >= 2_000_000_000);
+        assert!(sample.window_ns < 3_000_000_000);
         // This process holds a non-trivial resident set; a zero here would mean
         // the refresh kind never populated memory.
         assert!(sample.rss_bytes > 0);

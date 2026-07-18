@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::abi::CodecId;
 
+const MAX_METADATA_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_SOURCE_PARTICIPANT_BYTES: usize = 512;
+
 /// Per-sample metadata carried in the Zenoh attachment (MessagePack-encoded).
 ///
 /// Forward-compatibility: new fields are added as `Option`/defaulted so older
@@ -43,11 +46,24 @@ pub struct Source {
 impl BusMetadata {
     /// Encode to the MessagePack attachment bytes.
     pub fn encode(&self) -> Vec<u8> {
-        rmp_serde::to_vec_named(self).expect("BusMetadata is always serializable")
+        let mut bounded = self.clone();
+        if bounded.source.participant.len() > MAX_SOURCE_PARTICIPANT_BYTES {
+            bounded.source.participant =
+                truncate_utf8(&bounded.source.participant, MAX_SOURCE_PARTICIPANT_BYTES);
+        }
+        let encoded =
+            rmp_serde::to_vec_named(&bounded).expect("BusMetadata is always serializable");
+        debug_assert!(encoded.len() <= MAX_METADATA_BYTES);
+        encoded
     }
 
     /// Decode from the MessagePack attachment bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, rmp_serde::decode::Error> {
+        if bytes.len() > MAX_METADATA_BYTES {
+            return Err(rmp_serde::decode::Error::Syntax(format!(
+                "BusMetadata exceeds the {MAX_METADATA_BYTES}-byte limit"
+            )));
+        }
         rmp_serde::from_slice(bytes)
     }
 
@@ -55,4 +71,15 @@ impl BusMetadata {
     pub fn codec_id(&self) -> Option<CodecId> {
         CodecId::from_u8(self.codec)
     }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }

@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +17,12 @@ use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 
 const DEFAULT_BUFFER_CAPACITY: usize = 1024;
+const MAX_RECORD_TEXT_BYTES: usize = 64 * 1024;
+const MAX_TARGET_BYTES: usize = 256;
+const MAX_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_FIELD_NAME_BYTES: usize = 128;
+const MAX_FIELD_VALUE_BYTES: usize = 8 * 1024;
+const MAX_FIELDS: usize = 64;
 
 thread_local! {
     static IN_BUS_LOG_PUBLISH: Cell<bool> = const { Cell::new(false) };
@@ -93,9 +100,12 @@ impl BusLogState {
     }
 
     fn take_dropped(&self) -> u32 {
-        self.dropped
-            .swap(0, Ordering::Relaxed)
-            .min(u64::from(u32::MAX)) as u32
+        let taken = self
+            .dropped
+            .load(Ordering::Relaxed)
+            .min(u64::from(u32::MAX));
+        self.dropped.fetch_sub(taken, Ordering::Relaxed);
+        taken as u32
     }
 }
 
@@ -128,18 +138,23 @@ struct LogRecord {
     target: String,
     message: String,
     fields: BTreeMap<String, api::logs::LogValue>,
+    truncated: u32,
 }
 
 impl LogRecord {
     fn from_event(event: &Event<'_>) -> Self {
         let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
+        let (target, target_truncated) = bounded_text(event.metadata().target(), MAX_TARGET_BYTES);
         Self {
             time: timestamp_now(),
             level: level_from_tracing(*event.metadata().level()),
-            target: event.metadata().target().to_string(),
+            target,
             message: visitor.message.unwrap_or_default(),
             fields: visitor.fields,
+            truncated: visitor
+                .truncations
+                .saturating_add(u32::from(target_truncated)),
         }
     }
 
@@ -152,6 +167,7 @@ impl LogRecord {
             message: self.message,
             fields: self.fields,
             dropped,
+            truncated: self.truncated,
         }
     }
 
@@ -164,19 +180,48 @@ impl LogRecord {
     }
 }
 
-#[derive(Default)]
 struct FieldVisitor {
     message: Option<String>,
     fields: BTreeMap<String, api::logs::LogValue>,
+    remaining_text_bytes: usize,
+    truncations: u32,
+}
+
+impl Default for FieldVisitor {
+    fn default() -> Self {
+        Self {
+            message: None,
+            fields: BTreeMap::new(),
+            remaining_text_bytes: MAX_RECORD_TEXT_BYTES,
+            truncations: 0,
+        }
+    }
 }
 
 impl FieldVisitor {
-    fn record_value(&mut self, field: &Field, value: api::logs::LogValue) {
+    fn bounded(&mut self, value: &str, per_value_limit: usize) -> String {
+        let limit = per_value_limit.min(self.remaining_text_bytes);
+        let (bounded, truncated) = bounded_text(value, limit);
+        self.remaining_text_bytes = self.remaining_text_bytes.saturating_sub(bounded.len());
+        self.truncations = self.truncations.saturating_add(u32::from(truncated));
+        bounded
+    }
+
+    fn record_value(&mut self, field: &Field, mut value: api::logs::LogValue) {
         let name = field.name();
         if name == "message" {
-            self.message = Some(log_value_to_string(&value));
+            let message = log_value_to_string(&value);
+            self.message = Some(self.bounded(&message, MAX_MESSAGE_BYTES));
         } else {
-            self.fields.insert(name.to_string(), value);
+            if self.fields.len() >= MAX_FIELDS && !self.fields.contains_key(name) {
+                self.truncations = self.truncations.saturating_add(1);
+                return;
+            }
+            let name = self.bounded(name, MAX_FIELD_NAME_BYTES);
+            if let api::logs::LogValue::String(text) = &mut value {
+                *text = self.bounded(text, MAX_FIELD_VALUE_BYTES);
+            }
+            self.fields.insert(name, value);
         }
     }
 }
@@ -203,8 +248,55 @@ impl Visit for FieldVisitor {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.record_value(field, api::logs::LogValue::String(format!("{value:?}")));
+        let per_value_limit = if field.name() == "message" {
+            MAX_MESSAGE_BYTES
+        } else {
+            MAX_FIELD_VALUE_BYTES
+        };
+        let mut formatted = BoundedFormatter::new(per_value_limit.min(self.remaining_text_bytes));
+        let _ = write!(&mut formatted, "{value:?}");
+        if formatted.truncated {
+            self.truncations = self.truncations.saturating_add(1);
+        }
+        self.record_value(field, api::logs::LogValue::String(formatted.value));
     }
+}
+
+struct BoundedFormatter {
+    value: String,
+    limit: usize,
+    truncated: bool,
+}
+
+impl BoundedFormatter {
+    fn new(limit: usize) -> Self {
+        Self {
+            value: String::with_capacity(limit),
+            limit,
+            truncated: false,
+        }
+    }
+}
+
+impl fmt::Write for BoundedFormatter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let remaining = self.limit.saturating_sub(self.value.len());
+        let (bounded, truncated) = bounded_text(value, remaining);
+        self.value.push_str(&bounded);
+        self.truncated |= truncated;
+        Ok(())
+    }
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_string(), false);
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (value[..end].to_string(), true)
 }
 
 pub(crate) fn new_state_from_env() -> Arc<BusLogState> {
@@ -280,7 +372,8 @@ async fn drain_loop(
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
         let at = record.logical_time();
-        let event = record.into_event(seq, state.take_dropped());
+        let dropped = state.take_dropped();
+        let event = record.into_event(seq, dropped);
         seq = seq.wrapping_add(1);
         let result = IN_BUS_LOG_PUBLISH.with(|guard| {
             guard.set(true);
@@ -289,7 +382,9 @@ async fn drain_loop(
             result
         });
         if result.is_err() {
-            state.dropped.fetch_add(1, Ordering::Relaxed);
+            state
+                .dropped
+                .fetch_add(u64::from(dropped).saturating_add(1), Ordering::Relaxed);
         }
     }
 }
@@ -371,6 +466,7 @@ mod tests {
             target: "test".to_string(),
             message: "hello".to_string(),
             fields: BTreeMap::new(),
+            truncated: 0,
         }
     }
 
@@ -414,5 +510,47 @@ mod tests {
         let state = BusLogState::new();
         state.try_enqueue(record());
         assert_eq!(state.take_dropped(), 0);
+    }
+
+    #[test]
+    fn dropped_counter_carries_values_above_the_wire_field_limit() {
+        let state = BusLogState::new();
+        state
+            .dropped
+            .store(u64::from(u32::MAX) + 7, Ordering::Relaxed);
+        assert_eq!(state.take_dropped(), u32::MAX);
+        assert_eq!(state.take_dropped(), 7);
+    }
+
+    #[test]
+    fn record_truncation_is_distinct_from_lost_record_count() {
+        let mut record = record();
+        record.truncated = 4;
+        let event = record.into_event(7, 2);
+        assert_eq!(event.dropped, 2);
+        assert_eq!(event.truncated, 4);
+    }
+
+    #[test]
+    fn debug_formatting_and_text_helpers_are_byte_bounded() {
+        struct HugeDebug;
+        impl fmt::Debug for HugeDebug {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                for _ in 0..100_000 {
+                    formatter.write_str("é")?;
+                }
+                Ok(())
+            }
+        }
+
+        let mut formatted = BoundedFormatter::new(101);
+        write!(&mut formatted, "{:?}", HugeDebug).expect("format debug value");
+        assert!(formatted.truncated);
+        assert!(formatted.value.len() <= 101);
+        assert!(formatted.value.is_char_boundary(formatted.value.len()));
+
+        let (bounded, truncated) = bounded_text(&"é".repeat(100), 17);
+        assert!(truncated);
+        assert!(bounded.len() <= 17);
     }
 }

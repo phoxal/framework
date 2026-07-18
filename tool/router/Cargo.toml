@@ -15,14 +15,16 @@ name = "phoxal-tool-router"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true }
-phoxal-api = { workspace = true }
+phoxal = { workspace = true, features = ["preview-v2"] }
+phoxal-api = { workspace = true, features = ["preview-v2"] }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-zenoh = { workspace = true }
+# This private alias keeps unstable link introspection on the reviewed Zenoh
+# minor line without narrowing the published crates' stable requirement.
+zenoh-router = { workspace = true }
 
 [lints]
 workspace = true

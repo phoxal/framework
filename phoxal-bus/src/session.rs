@@ -10,6 +10,7 @@ use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::error::{BusError, Result};
+use crate::metadata::MAX_SOURCE_PARTICIPANT_BYTES;
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter - it never blocks the
@@ -111,6 +112,11 @@ impl Bus {
                 "participant id must not be empty".to_string(),
             ));
         }
+        if config.participant.len() > MAX_SOURCE_PARTICIPANT_BYTES {
+            return Err(BusError::Namespace(format!(
+                "participant id exceeds the {MAX_SOURCE_PARTICIPANT_BYTES}-byte limit"
+            )));
+        }
 
         let root = format!("{}/robots/{}", config.namespace, config.robot_id);
         // Validate the composed root resolves to a legal Zenoh key.
@@ -193,12 +199,11 @@ impl Bus {
         }
         let bytes = key.len() + encoding.len() + attachment.len() + payload.len();
 
-        // Reserve the bytes *before* making the item visible to the drain, so the
-        // drain's `fetch_sub` can never run before this `fetch_add` (no underflow).
-        // Roll the reservation back if the byte bound is exceeded or the send fails.
-        let prev = self.inner.queued_bytes.fetch_add(bytes, Ordering::AcqRel);
-        if prev + bytes > OUTBOUND_MAX_BYTES {
-            self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        // Atomically reserve the bytes *before* making the item visible to the
+        // drain. A CAS loop makes the limit a global invariant across cloned
+        // Bus publishers; add-then-check would let concurrent callers each
+        // observe an individually valid pre-add value and collectively exceed it.
+        if !reserve_outbound_bytes(&self.inner.queued_bytes, bytes) {
             return Err(self.dropped(&key, "byte bound"));
         }
 
@@ -265,6 +270,16 @@ impl Bus {
             .map_err(|e| BusError::Transport(e.to_string()))?;
         Ok(())
     }
+}
+
+fn reserve_outbound_bytes(queued: &AtomicUsize, bytes: usize) -> bool {
+    queued
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current
+                .checked_add(bytes)
+                .filter(|next| *next <= OUTBOUND_MAX_BYTES)
+        })
+        .is_ok()
 }
 
 async fn drain_loop(
@@ -353,4 +368,36 @@ fn zenoh_config(connect_endpoints: &[String]) -> zenoh::Config {
         }
     }
     config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn concurrent_byte_reservations_never_exceed_the_global_limit() {
+        const CALLERS: usize = 8;
+        let queued = AtomicUsize::new(0);
+        let accepted = AtomicUsize::new(0);
+        let barrier = Barrier::new(CALLERS);
+        let bytes = OUTBOUND_MAX_BYTES / 2 + 1;
+
+        std::thread::scope(|scope| {
+            for _ in 0..CALLERS {
+                scope.spawn(|| {
+                    barrier.wait();
+                    if reserve_outbound_bytes(&queued, bytes) {
+                        accepted.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+
+        assert_eq!(accepted.load(Ordering::Relaxed), 1);
+        assert_eq!(queued.load(Ordering::Relaxed), bytes);
+        assert!(queued.load(Ordering::Relaxed) <= OUTBOUND_MAX_BYTES);
+        assert!(!reserve_outbound_bytes(&queued, usize::MAX));
+    }
 }

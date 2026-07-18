@@ -43,6 +43,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
 
+      # This package-only build also keeps the published Zenoh consumers honest:
+      # the router tool is not selected, so its unstable feature is not unified
+      # into phoxal-bus or phoxal here.
       - name: Build library crates for musl
         run: >
           cargo build
@@ -51,6 +54,18 @@ jobs:
           -p phoxal-api
           -p phoxal-macros
           -p phoxal
+          --features phoxal/preview-v2,phoxal-api/preview-v2
+          --lib
+
+      - name: Build stable library crates for musl
+        run: >
+          cargo build
+          --target ${{ matrix.target }}
+          -p phoxal-bus
+          -p phoxal-api
+          -p phoxal-macros
+          -p phoxal
+          --no-default-features
           --lib
 
       - name: Test library crates for musl
@@ -61,6 +76,7 @@ jobs:
           -p phoxal-api
           -p phoxal-macros
           -p phoxal
+          --features phoxal/preview-v2,phoxal-api/preview-v2
           --lib
 
   # Living authoring entry point: proves
@@ -74,7 +90,8 @@ jobs:
   # PR-branch CI cannot build a matched revision reliably (mismatched trait
   # bounds). That end-to-end check belongs in an integration context once the
   # framework is published and the CLI consumes released versions; see the
-  # schema/validation plan under `organization/tmp`. `ci`/`rust-ci.yml` above
+  # standing schema and validation documentation in the organization repo.
+  # `ci`/`rust-ci.yml` above
   # covers the framework workspace. The hello-rover manifest remains the
   # schema-drift fixture after removal of its obsolete cruise service.
   examples:
@@ -86,4 +103,28 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: Run the robot.yaml schema drift guard
-        run: cargo test -p phoxal --lib schema_guard
+        run: cargo test -p phoxal --lib model::robot::schema_guard::schema_matches_model -- --exact
+
+  feature-boundary:
+    name: stable and router feature boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Verify stable Zenoh consumers outside workspace feature unification
+        run: |
+          cargo package -p phoxal-bus --allow-dirty
+          cargo package -p phoxal --allow-dirty
+
+      - name: Verify stable library boundaries
+        run: |
+          cargo test -p phoxal --lib --no-default-features
+          cargo clippy -p phoxal --all-targets --no-default-features -- -D warnings
+          cargo clippy -p phoxal-bus -p phoxal-api --all-targets --no-default-features -- -D warnings
+
+      # Keep the router's `zenoh/unstable` graph out of the stable package
+      # checks above so workspace feature unification cannot hide either shape.
+      - name: Build the router feature graph separately
+        run: cargo check -p phoxal-tool-router --all-targets --all-features

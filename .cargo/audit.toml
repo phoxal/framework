@@ -36,4 +36,22 @@ ignore = [
     # config programmatically), so no RSA operations run in our deployments.
     # Remove once the rsa crate ships a constant-time fix and zenoh adopts it.
     "RUSTSEC-2023-0071",
+
+    # RUSTSEC-2024-0436: paste is unmaintained, but it is a build-time
+    # transitive dependency of nalgebra/simba and zenoh's token-cell. It has no
+    # reported vulnerability and no maintained compatible replacement is
+    # available through those upstream crates. Remove once both dependency
+    # paths stop using paste.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2025-0134: rustls-pemfile is unmaintained and is pulled in only
+    # by zenoh 1.9's TLS transport. It has no reported vulnerability. Remove
+    # once zenoh adopts rustls-pki-types' direct PEM APIs.
+    "RUSTSEC-2025-0134",
+
+    # RUSTSEC-2026-0205: scc 2.4's Array::insert is unsound only when its
+    # caller-provided comparison function panics. The crate is present solely
+    # through the serial_test dev-dependency; Phoxal does not call Array or
+    # supply a comparison function. Remove once serial_test updates scc.
+    "RUSTSEC-2026-0205",
 ]
