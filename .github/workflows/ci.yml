@@ -116,7 +116,13 @@ jobs:
       - name: Verify stable Zenoh consumers outside workspace feature unification
         run: |
           cargo package -p phoxal-bus --allow-dirty
-          cargo package -p phoxal --allow-dirty
+          # Verify the packaged phoxal crate against the same-release local
+          # libraries. The registry still contains the previous API until the
+          # release workflow publishes this workspace in dependency order.
+          cargo package -p phoxal --allow-dirty \
+            --config "patch.crates-io.phoxal-api.path='${GITHUB_WORKSPACE}/phoxal-api'" \
+            --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \
+            --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'"
 
       - name: Verify stable library boundaries
         run: |
