@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.3](https://github.com/phoxal/framework/compare/phoxal-v0.34.2...phoxal-v0.34.3) - 2026-07-19
+
+### Added
+
+- extract infrastructure router ([#279](https://github.com/phoxal/framework/pull/279))
+
 ## [0.34.2](https://github.com/phoxal/framework/compare/phoxal-v0.34.1...phoxal-v0.34.2) - 2026-07-18
 
 ### Fixed
