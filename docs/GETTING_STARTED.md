@@ -68,7 +68,7 @@ services:
 ```
 
 The root keys are `schema`, `robot`, and optionally `artifacts`, `services`,
-and `bus`:
+and `router`:
 
 - `schema` is always `robot/v0` today.
   It is the only version discriminator; there is no separate `version:` key.
@@ -102,8 +102,14 @@ and `bus`:
 - `services` (optional) declares user services only.
   Official services are never declared here; they resolve from the artifact
   catalog automatically.
-- `bus` (optional) configures router listen endpoints and an upstream uplink.
-  `hello-rover` needs neither and omits the section entirely.
+- `router` (optional) names a project-relative Zenoh JSON5 file through
+  `router.config`. Without one, Phoxal disables discovery and outgoing
+  connections and allocates the first free loopback TCP port from its bounded
+  range. With one, authored Zenoh connect and scouting settings are retained;
+  Phoxal still forces router mode, rejects non-loopback TCP listeners until
+  listener authentication ships, and uses bounded loopback allocation when the
+  file omits `listen.endpoints`. `hello-rover` needs no custom router settings
+  and omits the section entirely.
 
 ## Adding a component
 

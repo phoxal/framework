@@ -1,31 +1,20 @@
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use phoxal::prelude::*;
 use phoxal::raw::{
-    Bus, BusMetadata, Codec, CodecId, ContractBody, MessagePack, OwnerCap, Publish, Source, Topic,
-    encoding_string, host_time, parse_encoding_string,
+    Bus, BusMetadata, CodecId, OwnerCap, Publisher, host_time, parse_encoding_string,
 };
-use phoxal_api::v1 as api;
+#[cfg(test)]
+use phoxal::raw::{Codec, MessagePack, encoding_string};
 use phoxal_api::v2 as preview_api;
-use zenoh_router as zenoh;
-
-const DEFAULT_LISTEN: &str = "tcp/localhost:7447";
-const DEFAULT_RETRY_INITIAL_MS: u64 = 1_000;
-const DEFAULT_RETRY_MAX_MS: u64 = 30_000;
-const SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC: &str = "serial_listen_transport_unavailable";
 
 /// The mirror-subscription measurement window: per-topic counts are rolled up
 /// and republished on this cadence.
 const METRICS_WINDOW: Duration = Duration::from_secs(1);
-const UPLINK_STATE_WINDOW: Duration = Duration::from_secs(1);
-const UPLINK_DNS_REFRESH: Duration = Duration::from_secs(30);
-const UPLINK_DNS_INITIAL_RETRY: Duration = Duration::from_secs(2);
-const UPLINK_DNS_TIMEOUT: Duration = Duration::from_millis(500);
-/// Bound both the router's long-lived counter map and each published snapshot.
+/// Bound both the bus tool's long-lived counter map and each published snapshot.
 /// Traffic beyond the cap still contributes to total throughput, while the API
 /// sentinel row discloses that the detailed table is incomplete.
 const MAX_METRIC_ROWS: usize = 256;
@@ -54,10 +43,10 @@ const ADMISSION_MARGIN: u64 = 4;
 /// Keep a few quiet samples visible so a topic does not flicker out between
 /// sparse publications.
 const PUBLISH_IDLE_WINDOWS: u32 = 5;
-/// Retire a topic/producer counter as soon as its quiet display grace expires. Its cumulative
-/// count intentionally starts over if that pair later returns; bounding the
-/// router's useful telemetry slots is more important than retaining an all-time
-/// count for inactive participants.
+/// Retire a topic/producer counter as soon as its quiet display grace expires.
+/// Its cumulative count intentionally starts over if that pair later returns;
+/// bounding the tool's useful telemetry slots is more important than retaining
+/// an all-time count for inactive participants.
 const EVICT_IDLE_WINDOWS: u32 = PUBLISH_IDLE_WINDOWS + 1;
 /// A mirrored key counts toward `Metrics` only if it has a Phoxal bus shape:
 /// either a raw version-qualified contract key (`v1/drive/state`) or a rooted
@@ -102,116 +91,20 @@ fn is_version_topic(key: &str) -> bool {
     false
 }
 
-/// Launch-time router configuration carried in `PHOXAL_CONFIG`.
-#[derive(Clone, Debug, Default, serde::Deserialize, phoxal::Config)]
-#[serde(deny_unknown_fields)]
-struct RouterConfig {
-    /// Additional listen endpoints merged by the launch plan from `bus.listen`.
-    #[serde(default)]
-    listen: Vec<String>,
-    /// Optional upstream router connection for deployed robots.
-    #[serde(default)]
-    uplink: Option<UplinkConfig>,
-}
-
-/// Optional upstream connection configuration for the site router.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
-#[serde(deny_unknown_fields)]
-struct UplinkConfig {
-    /// Upstream Zenoh endpoint the router should connect to.
-    connect: String,
-    /// Optional mTLS material by path, installed by deploy outside the release dir.
-    #[serde(default)]
-    auth: Option<MtlsAuth>,
-    /// Capped retry backoff; defaults retry forever and never gates readiness.
-    #[serde(default)]
-    retry: RetryConfig,
-}
-
-/// mTLS material used when connecting the router uplink.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
-#[serde(deny_unknown_fields)]
-struct MtlsAuth {
-    /// Root CA certificate path used to verify the upstream router.
-    ca: String,
-    /// Client certificate path identifying this robot/site to the upstream.
-    cert: String,
-    /// Client private-key path paired with `cert`.
-    key: String,
-}
-
-/// Capped backoff configuration for the optional uplink.
-#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
-#[serde(deny_unknown_fields)]
-struct RetryConfig {
-    /// Initial retry delay in milliseconds.
-    #[serde(default = "default_retry_initial_ms")]
-    initial_ms: u64,
-    /// Maximum retry delay in milliseconds.
-    #[serde(default = "default_retry_max_ms")]
-    max_ms: u64,
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            initial_ms: DEFAULT_RETRY_INITIAL_MS,
-            max_ms: DEFAULT_RETRY_MAX_MS,
-        }
-    }
-}
-
-fn default_retry_initial_ms() -> u64 {
-    DEFAULT_RETRY_INITIAL_MS
-}
-
-fn default_retry_max_ms() -> u64 {
-    DEFAULT_RETRY_MAX_MS
-}
-
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
-#[phoxal::tool(id = "router", config = RouterConfig)]
-struct ToolRouter {
-    router: zenoh::Session,
-}
+#[phoxal::tool(id = "bus")]
+struct ToolBus;
 
 #[phoxal::behavior]
-impl ToolRouter {
+impl ToolBus {
     #[setup]
-    async fn setup(
-        ctx: &mut SetupContext<Self>,
-        config: RouterConfig,
-    ) -> Result<(Self, Self::Api)> {
-        let zenoh_config = zenoh_router_config(&config)?;
-        let router = zenoh::open(zenoh_config)
-            .await
-            .map_err(|error| anyhow::anyhow!("failed to open embedded Zenoh router: {error}"))?;
-
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let bus = ctx.raw_bus();
         let cap = ctx.owner_capability();
-        spawn_uplink_state(ctx, &router, bus.clone(), cap, config.uplink.clone()).await?;
-
-        spawn_metrics(ctx, &router, bus).await?;
-
-        // Dynamic egress downsampling belongs here later: this process owns the
-        // uplink session and can re-establish it with refreshed rules.
-        tracing::info!(
-            target: "tool_router",
-            listen = ?listen_endpoints(&config),
-            uplink = config.uplink.as_ref().map(|uplink| uplink.connect.as_str()),
-            "router ready"
-        );
-
-        Ok((Self { router }, ()))
-    }
-
-    #[shutdown]
-    async fn shutdown(&mut self, _api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
-        if let Err(error) = self.router.close().await {
-            tracing::warn!(target: "tool_router", error = %error, "router close failed");
-        }
-        Ok(())
+        spawn_metrics(ctx, bus, cap).await?;
+        tracing::info!(target: "tool_bus", "bus observation ready");
+        Ok((Self, ()))
     }
 }
 
@@ -274,38 +167,39 @@ struct DrainedWindow {
     topics_truncated: bool,
 }
 
-/// Declare the wildcard mirror subscription on the embedded router's own
-/// session and spawn the two managed tasks that turn it into
+/// Declare the wildcard mirror subscription on the tool's ordinary connected
+/// bus session and spawn the two managed tasks that turn it into
 /// `router::Metrics`: one ingests samples into the shared counters, the
 /// other drains + publishes on [`METRICS_WINDOW`].
 ///
 /// The mirror is scoped to this robot's bus root. That prevents its subscription
 /// from propagating across an uplink and pulling other robots' traffic back to
-/// this router. It does not amplify itself: the publish cadence is timer-driven,
+/// this tool. It does not amplify itself: the publish cadence is timer-driven,
 /// not triggered by inbound samples, so `Metrics` being itself mirrored and
 /// counted (like any other local topic) never feeds back into more publishes.
 async fn spawn_metrics(
-    ctx: &mut SetupContext<ToolRouter>,
-    router: &zenoh::Session,
+    ctx: &mut SetupContext<ToolBus>,
     metrics_bus: Bus,
+    cap: OwnerCap,
 ) -> Result<()> {
     let mirror_key_expr = mirror_key_expr(metrics_bus.root());
     let (mirror_tx, mut mirror_rx) = tokio::sync::mpsc::channel(METRICS_INGEST_QUEUE);
     let dropped_mirror_samples = Arc::new(AtomicU64::new(0));
     let callback_drops = Arc::clone(&dropped_mirror_samples);
-    let mirror_subscriber = router
+    let mirror_subscriber = metrics_bus
+        .session()
         .declare_subscriber(mirror_key_expr)
         .callback(move |sample| {
             enqueue_metric_sample(sample, &mirror_tx, &callback_drops);
         })
         .await
-        .map_err(|error| anyhow::anyhow!("failed to declare router mirror subscriber: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("failed to declare bus mirror subscriber: {error}"))?;
 
     let counters: Arc<IngressCounters> = Arc::new(Mutex::new(IngressState::default()));
 
     let ingest_counters = Arc::clone(&counters);
     ctx.spawn_managed_with(
-        "router-metrics-ingest",
+        "bus-metrics-ingest",
         ManagedTaskPolicy::FaultOnExit,
         async move {
             // Keep the callback declaration alive for the whole ingest task.
@@ -320,16 +214,14 @@ async fn spawn_metrics(
         },
     );
 
-    let cap = ctx.owner_capability();
-    let metrics_publisher = RouterPublisher::new(
-        router,
+    let metrics_publisher = Publisher::new(
         metrics_bus,
         &preview_api::topic::internal::new(cap).router().metrics(),
     )?;
     let publish_counters = Arc::clone(&counters);
     let publish_drops = Arc::clone(&dropped_mirror_samples);
     ctx.spawn_managed_with(
-        "router-metrics-publish",
+        "bus-metrics-publish",
         ManagedTaskPolicy::FaultOnExit,
         async move {
             let mut ticker = tokio::time::interval(METRICS_WINDOW);
@@ -356,7 +248,7 @@ async fn spawn_metrics(
                 );
                 window_started = window_ended;
                 if let Err(error) = metrics_publisher.publish_at(host_time(), metrics).await {
-                    tracing::warn!(target: "tool_router", error = %error, "router metrics publish failed");
+                    tracing::warn!(target: "tool_bus", error = %error, "bus metrics publish failed");
                 }
             }
         },
@@ -398,106 +290,6 @@ fn enqueue_metric_sample(
     };
     if mirror_tx.try_send(metric_identity).is_err() {
         dropped_samples.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-async fn spawn_uplink_state(
-    ctx: &mut SetupContext<ToolRouter>,
-    router: &zenoh::Session,
-    bus: Bus,
-    cap: OwnerCap,
-    uplink: Option<UplinkConfig>,
-) -> Result<()> {
-    let publisher = uplink_state_publisher(router, bus, cap)?;
-    let matcher = match uplink.as_ref() {
-        Some(uplink) => Some(UplinkMatcher::new(&uplink.connect).await?),
-        None => None,
-    };
-    ctx.spawn_managed_with(
-        "router-uplink-state-publish",
-        ManagedTaskPolicy::FaultOnExit,
-        async move {
-            let mut matcher = matcher;
-            let mut ticker = tokio::time::interval(UPLINK_STATE_WINDOW);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            // Repeat even immutable Disabled state so late subscribers can
-            // distinguish an intentionally absent uplink from missing telemetry.
-            loop {
-                ticker.tick().await;
-                let state = match uplink.as_ref() {
-                    Some(uplink) => {
-                        let Some(matcher) = matcher.as_mut() else {
-                            tracing::error!(target: "tool_router", "configured uplink matcher is unavailable");
-                            continue;
-                        };
-                        observed_uplink_state(
-                            &publisher.router,
-                            uplink,
-                            matcher,
-                        )
-                        .await
-                    }
-                    None => disabled_uplink_state(),
-                };
-                if let Err(error) = publish_uplink_state(&publisher, state).await {
-                    tracing::warn!(target: "tool_router", error = %error, "uplink state publish failed");
-                }
-            }
-        },
-    );
-    Ok(())
-}
-
-/// A typed publisher bound to the embedded router's own Zenoh session.
-///
-/// The normal runner bus is opened before `ToolRouter::setup`. With no connect
-/// endpoint that session is deliberately in-process-only, so publishing router
-/// telemetry through it makes the samples invisible to clients attached to the
-/// router that setup opens moments later. Router-owned state must instead leave
-/// through the embedded router session while retaining the same Phoxal key,
-/// codec, provenance, and sequence envelope as an ordinary `Publisher`.
-/// Unlike the normal bus handle, this direct Zenoh path cannot contribute to
-/// `Bus::outbound_drops`; callers must treat a successful put as best-effort
-/// delivery under Zenoh's congestion policy. Unlike the regular publisher's
-/// non-blocking `try_publish` path, this helper awaits the Zenoh put and must
-/// stay in a dedicated managed task rather than a runtime step loop.
-struct RouterPublisher<B> {
-    router: zenoh::Session,
-    bus: Bus,
-    key: String,
-    _body: PhantomData<fn() -> B>,
-}
-
-impl<B: ContractBody> RouterPublisher<B> {
-    fn new(router: &zenoh::Session, bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
-        let key = bus.full_key(topic.publish_key()?);
-        Ok(Self {
-            router: router.clone(),
-            bus,
-            key,
-            _body: PhantomData,
-        })
-    }
-
-    async fn publish_at(&self, at: LogicalTime, body: B) -> Result<()> {
-        let payload = MessagePack::encode(&body)?;
-        let metadata = BusMetadata {
-            codec: MessagePack::ID.as_u8(),
-            produced_at_ns: at.time_ns(),
-            epoch: at.epoch(),
-            source: Source {
-                participant: self.bus.participant().to_string(),
-                incarnation: self.bus.incarnation(),
-                sequence: self.bus.next_sequence(),
-            },
-        };
-        self.router
-            .put(self.key.clone(), payload)
-            .encoding(encoding_string(MessagePack::ID))
-            .attachment(metadata.encode())
-            .await
-            .map_err(|error| anyhow::anyhow!("router telemetry publish failed: {error}"))?;
-        Ok(())
     }
 }
 
@@ -784,295 +576,8 @@ fn build_metrics(
     }
 }
 
-fn zenoh_router_config(config: &RouterConfig) -> Result<zenoh::Config> {
-    let listen = listen_endpoints(config);
-    zenoh_router_config_with_listen(config, &listen)
-}
-
-fn zenoh_router_config_with_listen(
-    config: &RouterConfig,
-    listen: &[String],
-) -> Result<zenoh::Config> {
-    reject_unsupported_serial_listen(listen)?;
-
-    let mut zenoh_config = zenoh::Config::default();
-    insert(&mut zenoh_config, "mode", r#""router""#)?;
-    insert_json(&mut zenoh_config, "listen/endpoints", &listen)?;
-    insert(&mut zenoh_config, "scouting/multicast/enabled", "false")?;
-    insert(&mut zenoh_config, "scouting/gossip/enabled", "false")?;
-    insert(
-        &mut zenoh_config,
-        "scouting/multicast/autoconnect",
-        r#"{ router: [], peer: [], client: [] }"#,
-    )?;
-    insert(
-        &mut zenoh_config,
-        "scouting/gossip/autoconnect",
-        r#"{ router: [], peer: [], client: [] }"#,
-    )?;
-    if let Some(uplink) = &config.uplink {
-        insert_json(
-            &mut zenoh_config,
-            "connect/endpoints",
-            &vec![uplink.connect.clone()],
-        )?;
-        insert(
-            &mut zenoh_config,
-            "connect/retry",
-            &format!(
-                "{{ period_init_ms: {}, period_max_ms: {}, period_increase_factor: 2.0, exit_on_failure: false }}",
-                uplink.retry.initial_ms, uplink.retry.max_ms
-            ),
-        )?;
-        insert(&mut zenoh_config, "connect/exit_on_failure", "false")?;
-        if let Some(auth) = &uplink.auth {
-            insert(&mut zenoh_config, "transport/link/tls/enable_mtls", "true")?;
-            insert_json(
-                &mut zenoh_config,
-                "transport/link/tls/root_ca_certificate",
-                &auth.ca,
-            )?;
-            insert_json(
-                &mut zenoh_config,
-                "transport/link/tls/connect_certificate",
-                &auth.cert,
-            )?;
-            insert_json(
-                &mut zenoh_config,
-                "transport/link/tls/connect_private_key",
-                &auth.key,
-            )?;
-        }
-    } else {
-        insert(&mut zenoh_config, "connect/endpoints", "[]")?;
-    }
-    Ok(zenoh_config)
-}
-
-fn reject_unsupported_serial_listen(endpoints: &[String]) -> Result<()> {
-    for endpoint in endpoints {
-        if endpoint.trim().starts_with("serial/") {
-            anyhow::bail!(
-                "{SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC}: serial listen endpoints require the serial transport feature, not enabled in this build (endpoint: {endpoint})"
-            );
-        }
-    }
-    Ok(())
-}
-
-fn insert(config: &mut zenoh::Config, path: &str, json5: &str) -> Result<()> {
-    config
-        .insert_json5(path, json5)
-        .map_err(|error| anyhow::anyhow!("failed to set Zenoh config path {path}: {error}"))
-}
-
-fn insert_json<T: serde::Serialize>(
-    config: &mut zenoh::Config,
-    path: &str,
-    value: &T,
-) -> Result<()> {
-    let json = serde_json::to_string(value)?;
-    insert(config, path, &json)
-}
-
-fn listen_endpoints(config: &RouterConfig) -> Vec<String> {
-    let mut endpoints = vec![DEFAULT_LISTEN.to_string()];
-    for endpoint in &config.listen {
-        if !endpoints.contains(endpoint) {
-            endpoints.push(endpoint.clone());
-        }
-    }
-    endpoints
-}
-
-fn uplink_state_publisher(
-    router: &zenoh::Session,
-    bus: Bus,
-    cap: OwnerCap,
-) -> Result<RouterPublisher<api::bus::uplink::State>> {
-    let topic = api::topic::internal::new(cap).bus().uplink().state();
-    let publisher = RouterPublisher::new(router, bus, &topic)?;
-    Ok(publisher)
-}
-
-async fn observed_uplink_state(
-    router: &zenoh::Session,
-    uplink: &UplinkConfig,
-    matcher: &mut UplinkMatcher,
-) -> api::bus::uplink::State {
-    let connected = matcher.is_connected(router).await;
-    api::bus::uplink::State {
-        phase: if connected {
-            api::bus::uplink::UplinkPhase::Connected
-        } else {
-            api::bus::uplink::UplinkPhase::Connecting
-        },
-        connect: Some(uplink.connect.clone()),
-        retry_attempt: 0,
-        detail: (!connected).then(|| matcher.connection_detail()),
-    }
-}
-
-fn disabled_uplink_state() -> api::bus::uplink::State {
-    api::bus::uplink::State {
-        phase: api::bus::uplink::UplinkPhase::Disabled,
-        connect: None,
-        retry_attempt: 0,
-        detail: None,
-    }
-}
-
-struct UplinkMatcher {
-    protocol: String,
-    configured_address: String,
-    resolved_addresses: Vec<String>,
-    dns_backed: bool,
-    ever_connected: bool,
-    last_resolution: Option<tokio::time::Instant>,
-    last_resolution_error: Option<String>,
-}
-
-impl UplinkMatcher {
-    async fn new(connect: &str) -> Result<Self> {
-        let endpoint = zenoh::config::EndPoint::try_from(connect.to_string())
-            .map_err(|error| anyhow::anyhow!("invalid configured uplink endpoint: {error}"))?;
-        let protocol = endpoint.protocol().as_str().to_string();
-        let configured_address = endpoint.address().as_str().to_string();
-        let dns_backed = protocol_supports_dns(&protocol)
-            && configured_address.parse::<std::net::SocketAddr>().is_err();
-        let resolved_addresses = if dns_backed {
-            Vec::new()
-        } else {
-            vec![configured_address.clone()]
-        };
-        let mut matcher = Self {
-            protocol,
-            configured_address,
-            resolved_addresses,
-            dns_backed,
-            ever_connected: false,
-            last_resolution: None,
-            last_resolution_error: None,
-        };
-        matcher.refresh_dns_if_due(false).await;
-        Ok(matcher)
-    }
-
-    async fn is_connected(&mut self, router: &zenoh::Session) -> bool {
-        let (matches, same_protocol_link) = self.link_match(router).await;
-        if matches {
-            self.ever_connected = true;
-            return true;
-        }
-        // After a previously matched uplink, a new same-protocol destination is
-        // strong evidence of DNS rotation. Refresh on the short retry cadence
-        // so a healthy reconnected link is not reported down for the full cache
-        // interval. Requiring a prior match avoids treating unrelated inbound
-        // links as a reason to hammer DNS.
-        if self
-            .refresh_dns_if_due(self.ever_connected && same_protocol_link)
-            .await
-        {
-            let matches = self.link_match(router).await.0;
-            self.ever_connected |= matches;
-            return matches;
-        }
-        false
-    }
-
-    async fn link_match(&self, router: &zenoh::Session) -> (bool, bool) {
-        // Match the configured remote destination positively. An accepted
-        // inbound link has the connecting participant's ephemeral address as
-        // `dst`, so it cannot satisfy this check.
-        let mut same_protocol_link = false;
-        let links = router.info().links().await;
-        for link in links {
-            if link.dst().protocol().as_str() != self.protocol {
-                continue;
-            }
-            same_protocol_link = true;
-            if self
-                .resolved_addresses
-                .iter()
-                .any(|address| link.dst().address().as_str() == address)
-            {
-                return (true, true);
-            }
-        }
-        (false, same_protocol_link)
-    }
-
-    async fn refresh_dns_if_due(&mut self, fast_retry: bool) -> bool {
-        let refresh_after = self.dns_refresh_interval(fast_retry);
-        if !self.dns_backed
-            || self
-                .last_resolution
-                .is_some_and(|last| last.elapsed() < refresh_after)
-        {
-            return false;
-        }
-        self.last_resolution = Some(tokio::time::Instant::now());
-        let lookup = tokio::net::lookup_host(self.configured_address.clone());
-        match tokio::time::timeout(UPLINK_DNS_TIMEOUT, lookup).await {
-            Ok(Ok(addresses)) => {
-                let mut addresses = addresses
-                    .map(|address| address.to_string())
-                    .collect::<Vec<_>>();
-                addresses.sort();
-                addresses.dedup();
-                if addresses.is_empty() {
-                    self.last_resolution_error =
-                        Some("DNS returned no addresses for the configured uplink".to_string());
-                } else {
-                    let changed = self.resolved_addresses != addresses;
-                    self.resolved_addresses = addresses;
-                    self.last_resolution_error = None;
-                    return changed;
-                }
-            }
-            Ok(Err(error)) => {
-                self.last_resolution_error = Some(format!("uplink DNS resolution failed: {error}"));
-            }
-            Err(_) => {
-                self.last_resolution_error = Some("uplink DNS resolution timed out".to_string());
-            }
-        }
-        false
-    }
-
-    fn dns_refresh_interval(&self, fast_retry: bool) -> Duration {
-        if self.last_resolution_error.is_some() {
-            UPLINK_DNS_REFRESH
-        } else if self.resolved_addresses.is_empty() || fast_retry {
-            UPLINK_DNS_INITIAL_RETRY
-        } else {
-            UPLINK_DNS_REFRESH
-        }
-    }
-
-    fn connection_detail(&self) -> String {
-        self.last_resolution_error
-            .clone()
-            .unwrap_or_else(|| "waiting for the configured remote link".to_string())
-    }
-}
-
-fn protocol_supports_dns(protocol: &str) -> bool {
-    // Zenoh's reliable and datagram QUIC transports share the `quic` locator
-    // prefix. Unix-domain and serial locators are intentionally excluded.
-    matches!(protocol, "tcp" | "tls" | "quic" | "udp" | "ws")
-}
-
-async fn publish_uplink_state(
-    publisher: &RouterPublisher<api::bus::uplink::State>,
-    state: api::bus::uplink::State,
-) -> Result<()> {
-    publisher.publish_at(host_time(), state).await?;
-    Ok(())
-}
-
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<ToolRouter>()
+    phoxal::run::<ToolBus>()
 }
 
 #[cfg(test)]
@@ -1185,183 +690,6 @@ mod tests {
         assert!(!is_version_topic("ns/robots/rover-01/v2"));
         assert!(!is_version_topic("v/x")); // no digits after prefix
         assert!(!is_version_topic("v1x/x")); // non-digit tail
-    }
-
-    #[test]
-    fn default_listen_is_always_present() {
-        assert_eq!(
-            listen_endpoints(&RouterConfig::default()),
-            vec![DEFAULT_LISTEN.to_string()]
-        );
-    }
-
-    #[test]
-    fn listen_endpoints_deduplicate_default() {
-        let config = RouterConfig {
-            listen: vec![DEFAULT_LISTEN.to_string(), "tcp/127.0.0.1:7448".to_string()],
-            uplink: None,
-        };
-        assert_eq!(
-            listen_endpoints(&config),
-            vec![DEFAULT_LISTEN.to_string(), "tcp/127.0.0.1:7448".to_string()]
-        );
-    }
-
-    #[test]
-    fn serial_listen_fails_with_named_diagnostic() {
-        let config = RouterConfig {
-            listen: vec!["serial//dev/ttyACM0#baudrate=115200".to_string()],
-            uplink: None,
-        };
-
-        let error = zenoh_router_config(&config).expect_err("serial listen should be rejected");
-        let error = error.to_string();
-        assert!(error.contains(SERIAL_LISTEN_TRANSPORT_DIAGNOSTIC));
-        assert!(error.contains("serial listen endpoints require the serial transport feature"));
-        assert!(error.contains("serial//dev/ttyACM0#baudrate=115200"));
-    }
-
-    #[test]
-    fn dns_matching_covers_every_enabled_network_locator() {
-        for protocol in ["tcp", "tls", "quic", "udp", "ws"] {
-            assert!(protocol_supports_dns(protocol), "{protocol}");
-        }
-        for protocol in ["unixsock-stream", "serial"] {
-            assert!(!protocol_supports_dns(protocol), "{protocol}");
-        }
-    }
-
-    #[test]
-    fn dns_failures_back_off_before_retrying_the_blocking_resolver() {
-        let mut matcher = UplinkMatcher {
-            protocol: "tcp".to_string(),
-            configured_address: "missing.example:7447".to_string(),
-            resolved_addresses: Vec::new(),
-            dns_backed: true,
-            ever_connected: false,
-            last_resolution: None,
-            last_resolution_error: None,
-        };
-        assert_eq!(
-            matcher.dns_refresh_interval(false),
-            UPLINK_DNS_INITIAL_RETRY
-        );
-        matcher.last_resolution_error = Some("lookup failed".to_string());
-        assert_eq!(matcher.dns_refresh_interval(true), UPLINK_DNS_REFRESH);
-        matcher.last_resolution_error = None;
-        matcher.resolved_addresses = vec!["127.0.0.1:7447".to_string()];
-        assert_eq!(matcher.dns_refresh_interval(true), UPLINK_DNS_INITIAL_RETRY);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn observed_uplink_state_reports_disabled_when_absent() {
-        let router =
-            zenoh::open(zenoh_router_config_with_listen(&RouterConfig::default(), &[]).unwrap())
-                .await
-                .unwrap();
-        let state = disabled_uplink_state();
-        router.close().await.unwrap();
-
-        assert_eq!(state.phase, api::bus::uplink::UplinkPhase::Disabled);
-        assert_eq!(state.connect, None);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn uplink_state_distinguishes_outbound_from_inbound_router_links() {
-        let mut opened = None;
-        for _ in 0..5 {
-            let port = {
-                let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                socket.local_addr().unwrap().port()
-            };
-            let endpoint = format!("tcp/127.0.0.1:{port}");
-            let config = zenoh_router_config_with_listen(
-                &RouterConfig::default(),
-                std::slice::from_ref(&endpoint),
-            )
-            .unwrap();
-            if let Ok(upstream) = zenoh::open(config).await {
-                opened = Some((upstream, endpoint));
-                break;
-            }
-        }
-        let (upstream, endpoint) = opened.expect("test router should bind an ephemeral endpoint");
-        let connect = endpoint.replacen("127.0.0.1", "localhost", 1);
-        let uplink = UplinkConfig {
-            connect,
-            auth: None,
-            retry: RetryConfig::default(),
-        };
-        let downstream_config = RouterConfig {
-            listen: Vec::new(),
-            uplink: Some(uplink.clone()),
-        };
-        let downstream =
-            zenoh::open(zenoh_router_config_with_listen(&downstream_config, &[]).unwrap())
-                .await
-                .unwrap();
-        let mut downstream_matcher = UplinkMatcher::new(&uplink.connect).await.unwrap();
-
-        let downstream_state = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let state =
-                    observed_uplink_state(&downstream, &uplink, &mut downstream_matcher).await;
-                if state.phase == api::bus::uplink::UplinkPhase::Connected {
-                    break state;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("configured outbound uplink should become visible");
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if upstream.info().links().await.next().is_some() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        })
-        .await
-        .expect("upstream should register the accepted inbound transport");
-        let mut upstream_matcher = UplinkMatcher::new(&uplink.connect).await.unwrap();
-        let upstream_state = observed_uplink_state(&upstream, &uplink, &mut upstream_matcher).await;
-
-        downstream.close().await.unwrap();
-        upstream.close().await.unwrap();
-
-        assert_eq!(
-            downstream_state.phase,
-            api::bus::uplink::UplinkPhase::Connected
-        );
-        assert_eq!(downstream_state.retry_attempt, 0);
-        assert_eq!(downstream_state.detail, None);
-        assert_eq!(
-            upstream_state.phase,
-            api::bus::uplink::UplinkPhase::Connecting,
-            "an accepted downstream connection is not this router's uplink"
-        );
-    }
-
-    #[test]
-    fn zenoh_config_accepts_retry_and_tls_paths() {
-        let config = RouterConfig {
-            listen: Vec::new(),
-            uplink: Some(UplinkConfig {
-                connect: "tls/root.example.io:7447".to_string(),
-                auth: Some(MtlsAuth {
-                    ca: "identity/ca.pem".to_string(),
-                    cert: "identity/robot.pem".to_string(),
-                    key: "identity/robot.key".to_string(),
-                }),
-                retry: RetryConfig {
-                    initial_ms: 2_000,
-                    max_ms: 10_000,
-                },
-            }),
-        };
-
-        zenoh_router_config(&config).expect("router config should be accepted by zenoh");
     }
 
     #[test]
@@ -1870,86 +1198,46 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn router_publisher_is_visible_to_an_external_bus_client() {
-        let router_config = RouterConfig::default();
-        let mut opened = None;
-        for _ in 0..5 {
-            let port = {
-                let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-                socket.local_addr().unwrap().port()
-            };
-            let endpoint = format!("tcp/127.0.0.1:{port}");
-            let zenoh_config =
-                zenoh_router_config_with_listen(&router_config, std::slice::from_ref(&endpoint))
-                    .unwrap();
-            if let Ok(router) = zenoh::open(zenoh_config).await {
-                opened = Some((router, endpoint));
-                break;
-            }
-        }
-        let (router, endpoint) = opened.expect("test router should bind an ephemeral endpoint");
-
-        let identity_bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig {
+    async fn metrics_use_the_ordinary_bus_publisher() {
+        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig {
             namespace: "dev".to_string(),
             robot_id: "rover".to_string(),
-            participant: "router".to_string(),
-            incarnation: 0,
+            participant: "bus".to_string(),
+            incarnation: 7,
             connect_endpoints: Vec::new(),
         })
         .await
-        .unwrap();
+        .expect("open bus");
         let topic = preview_api::topic::internal::new(OwnerCap::__mint())
             .router()
             .metrics();
-        let publisher = RouterPublisher::new(&router, identity_bus.clone(), &topic).unwrap();
-
-        let client = phoxal::raw::Bus::open(phoxal::raw::BusConfig {
-            namespace: "dev".to_string(),
-            robot_id: "rover".to_string(),
-            participant: "observer".to_string(),
-            incarnation: 0,
-            connect_endpoints: vec![endpoint],
-        })
-        .await
-        .unwrap();
+        let publisher = Publisher::new(bus.clone(), &topic).expect("metrics publisher");
         let subscriber = phoxal::raw::Subscriber::<preview_api::router::Metrics>::new(
-            &client,
+            &bus,
             &preview_api::topic::new().router().metrics(),
             1,
         )
         .await
-        .unwrap();
+        .expect("metrics subscriber");
 
         let expected = preview_api::router::Metrics {
             topics: Vec::new(),
             throughput_msg_s: 12.5,
             window_ns: 1_000_000_000,
         };
-        // Zenoh discovery is asynchronous: opening the client and declaring a
-        // subscriber does not guarantee that the router has installed the
-        // route before the very next statement. Metrics are periodic in
-        // production, so exercise that same cadence instead of making this
-        // transport regression test depend on a one-shot discovery race.
-        let received_result = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                publisher.publish_at(host_time(), expected.clone()).await?;
-                if let Ok(sample) =
-                    tokio::time::timeout(Duration::from_millis(200), subscriber.recv()).await
-                {
-                    break sample.map_err(anyhow::Error::from);
-                }
-            }
-        })
-        .await;
+        publisher
+            .publish_at(host_time(), expected.clone())
+            .await
+            .expect("publish metrics");
+        let received = tokio::time::timeout(Duration::from_secs(1), subscriber.recv())
+            .await
+            .expect("metrics timeout")
+            .expect("receive metrics");
 
-        client.close().await.unwrap();
-        identity_bus.close().await.unwrap();
-        router.close().await.unwrap();
-
-        let received = received_result
-            .expect("external client should receive router telemetry")
-            .expect("external subscriber should stay healthy");
         assert_eq!(received.body.throughput_msg_s, expected.throughput_msg_s);
-        assert_eq!(received.metadata.source.participant, "router");
+        assert_eq!(received.metadata.source.participant, "bus");
+        assert_eq!(received.metadata.source.incarnation, 7);
+        assert_eq!(bus.health().outbound_drops.load(Ordering::Relaxed), 0);
+        bus.close().await.expect("close bus");
     }
 }

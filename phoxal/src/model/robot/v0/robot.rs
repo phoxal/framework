@@ -28,10 +28,11 @@ pub struct Robot {
     /// run/sim/deploy. Official services are never declared here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, UserService>,
-    /// Bus wiring - listen endpoints and the optional uplink. Never robot
-    /// model; participants never parse bus facts from `robot.yaml`.
-    #[serde(default, skip_serializing_if = "Bus::is_empty")]
-    pub bus: Bus,
+    /// Optional project-relative Zenoh router configuration. The CLI resolves
+    /// this through the normal environment overlay before launching the
+    /// Phoxal-owned infrastructure router.
+    #[serde(default, skip_serializing_if = "Router::is_empty")]
+    pub router: Router,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,73 +304,16 @@ pub struct UserService {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
-pub struct Bus {
-    /// Router listen endpoints merged into the default localhost listen set.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub listen: Vec<String>,
-    /// Optional upstream router connection used for deployed robots.
+pub struct Router {
+    /// Zenoh JSON5 configuration path relative to the resolved robot root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub uplink: Option<BusUplink>,
+    pub config: Option<PathBuf>,
 }
 
-impl Bus {
+impl Router {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.listen.is_empty() && self.uplink.is_none()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BusUplink {
-    /// Upstream Zenoh endpoint the site router should connect to.
-    pub connect: String,
-    /// Optional project-local mTLS material for the upstream connection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth: Option<BusMtlsAuth>,
-    /// Capped retry backoff; retry is forever and never gates readiness.
-    #[serde(default, skip_serializing_if = "BusRetry::is_default")]
-    pub retry: BusRetry,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BusMtlsAuth {
-    /// Project-local root CA certificate path used to verify the upstream router.
-    pub ca: PathBuf,
-    /// Project-local client certificate path identifying this robot/site.
-    pub cert: PathBuf,
-    /// Project-local client private-key path paired with `cert`.
-    pub key: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct BusRetry {
-    /// Initial retry delay in milliseconds.
-    #[serde(default = "default_bus_retry_initial_ms")]
-    pub initial_ms: u64,
-    /// Maximum retry delay in milliseconds.
-    #[serde(default = "default_bus_retry_max_ms")]
-    pub max_ms: u64,
-}
-
-impl Default for BusRetry {
-    fn default() -> Self {
-        Self {
-            initial_ms: default_bus_retry_initial_ms(),
-            max_ms: default_bus_retry_max_ms(),
-        }
-    }
-}
-
-impl BusRetry {
-    #[must_use]
-    pub fn is_default(&self) -> bool {
-        *self == Self::default()
+        self.config.is_none()
     }
 }
 
@@ -380,24 +324,10 @@ pub enum ValidationError {
     EmptyUserServiceConfig {
         service: String,
     },
-    EmptyBusListenEndpoint {
-        index: usize,
-    },
-    UnsupportedBusListenEndpoint {
-        endpoint: String,
-    },
-    NonLoopbackTcpBusListenEndpoint {
-        endpoint: String,
-    },
-    EmptyBusUplinkConnect,
-    EmptyBusUplinkAuthPath {
-        field: String,
-    },
-    AbsoluteBusUplinkAuthPath {
-        field: String,
+    EmptyRouterConfigPath,
+    AbsoluteRouterConfigPath {
         path: PathBuf,
     },
-    InvalidBusRetryBackoff,
     InvalidArtifactPinKey {
         key: String,
     },
@@ -479,7 +409,7 @@ impl Robot {
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
-        self.validate_bus(&mut errors);
+        self.validate_router(&mut errors);
         self.validate_artifact_pins(&mut errors);
         self.validate_user_services(&mut errors);
         self.validate_component_structure(&mut errors);
@@ -556,25 +486,12 @@ impl Robot {
         }
     }
 
-    fn validate_bus(&self, errors: &mut Vec<ValidationError>) {
-        for (index, endpoint) in self.bus.listen.iter().enumerate() {
-            validate_bus_listen_endpoint(index, endpoint, errors);
-        }
-
-        if let Some(uplink) = &self.bus.uplink {
-            if uplink.connect.trim().is_empty() {
-                errors.push(ValidationError::EmptyBusUplinkConnect);
-            }
-            if let Some(auth) = &uplink.auth {
-                validate_project_local_path("ca", &auth.ca, errors);
-                validate_project_local_path("cert", &auth.cert, errors);
-                validate_project_local_path("key", &auth.key, errors);
-            }
-            if uplink.retry.initial_ms == 0
-                || uplink.retry.max_ms == 0
-                || uplink.retry.initial_ms > uplink.retry.max_ms
-            {
-                errors.push(ValidationError::InvalidBusRetryBackoff);
+    fn validate_router(&self, errors: &mut Vec<ValidationError>) {
+        if let Some(path) = &self.router.config {
+            if path.as_os_str().is_empty() {
+                errors.push(ValidationError::EmptyRouterConfigPath);
+            } else if path.is_absolute() {
+                errors.push(ValidationError::AbsoluteRouterConfigPath { path: path.clone() });
             }
         }
     }
@@ -609,30 +526,11 @@ impl fmt::Display for ValidationError {
             Self::EmptyUserServiceConfig { service } => {
                 write!(formatter, "services.{service}.path must not be empty")
             }
-            Self::EmptyBusListenEndpoint { index } => {
-                write!(formatter, "bus.listen[{index}] must not be empty")
-            }
-            Self::UnsupportedBusListenEndpoint { endpoint } => write!(
+            Self::EmptyRouterConfigPath => formatter.write_str("router.config must not be empty"),
+            Self::AbsoluteRouterConfigPath { path } => write!(
                 formatter,
-                "bus.listen endpoint '{endpoint}' must use serial/ or tcp/ on day one"
-            ),
-            Self::NonLoopbackTcpBusListenEndpoint { endpoint } => write!(
-                formatter,
-                "bus.listen TCP endpoint '{endpoint}' must bind loopback until listen auth ships"
-            ),
-            Self::EmptyBusUplinkConnect => {
-                formatter.write_str("bus.uplink.connect must not be empty")
-            }
-            Self::EmptyBusUplinkAuthPath { field } => {
-                write!(formatter, "bus.uplink.auth.{field} must not be empty")
-            }
-            Self::AbsoluteBusUplinkAuthPath { field, path } => write!(
-                formatter,
-                "bus.uplink.auth.{field} path '{}' must be project-local",
+                "router.config path '{}' must be project-relative",
                 path.display()
-            ),
-            Self::InvalidBusRetryBackoff => formatter.write_str(
-                "bus.uplink.retry initial_ms and max_ms must be > 0 with initial_ms <= max_ms",
             ),
             Self::InvalidArtifactPinKey { key } => write!(
                 formatter,
@@ -700,57 +598,6 @@ fn validation_result(
 
 fn default_structure_path() -> PathBuf {
     PathBuf::from("structure.urdf")
-}
-
-fn default_bus_retry_initial_ms() -> u64 {
-    1_000
-}
-
-fn default_bus_retry_max_ms() -> u64 {
-    30_000
-}
-
-fn validate_bus_listen_endpoint(index: usize, endpoint: &str, errors: &mut Vec<ValidationError>) {
-    let endpoint = endpoint.trim();
-    if endpoint.is_empty() {
-        errors.push(ValidationError::EmptyBusListenEndpoint { index });
-    } else if endpoint.starts_with("serial/") {
-        // Zenoh owns serial endpoint parsing; day-one framework validation only
-        // gates the accepted listen schemes.
-    } else if let Some(rest) = endpoint.strip_prefix("tcp/") {
-        if !tcp_endpoint_is_loopback(rest) {
-            errors.push(ValidationError::NonLoopbackTcpBusListenEndpoint {
-                endpoint: endpoint.to_string(),
-            });
-        }
-    } else {
-        errors.push(ValidationError::UnsupportedBusListenEndpoint {
-            endpoint: endpoint.to_string(),
-        });
-    }
-}
-
-fn tcp_endpoint_is_loopback(endpoint_tail: &str) -> bool {
-    let host = endpoint_tail
-        .strip_prefix('[')
-        .and_then(|tail| tail.split_once(']').map(|(host, _rest)| host))
-        .or_else(|| endpoint_tail.split_once(':').map(|(host, _port)| host))
-        .unwrap_or(endpoint_tail);
-
-    host == "localhost" || host == "::1" || host == "127.0.0.1" || host.starts_with("127.")
-}
-
-fn validate_project_local_path(field: &str, path: &Path, errors: &mut Vec<ValidationError>) {
-    if path.as_os_str().is_empty() {
-        errors.push(ValidationError::EmptyBusUplinkAuthPath {
-            field: field.to_string(),
-        });
-    } else if path.is_absolute() {
-        errors.push(ValidationError::AbsoluteBusUplinkAuthPath {
-            field: field.to_string(),
-            path: path.to_path_buf(),
-        });
-    }
 }
 
 #[cfg(test)]
@@ -842,9 +689,8 @@ services:
   avoid-obstacles:
     path: ./services/avoid-obstacles
     config: { max_linear_speed_mps: 0.6 }
-bus:
-  uplink: { connect: "tls/root.example.io:7447" }
-  listen: ["serial//dev/ttyACM0#baudrate=115200"]
+router:
+  config: config/router.json5
 "#;
         let robot = Robot::parse_from_string(yaml)?;
 
@@ -871,12 +717,8 @@ bus:
             Some(0.6)
         );
         assert_eq!(
-            robot
-                .bus
-                .uplink
-                .as_ref()
-                .map(|uplink| uplink.connect.as_str()),
-            Some("tls/root.example.io:7447")
+            robot.router.config.as_deref(),
+            Some(Path::new("config/router.json5"))
         );
         robot
             .validate()
@@ -953,7 +795,7 @@ robot:
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
-        assert!(robot.bus.is_empty());
+        assert!(robot.router.is_empty());
 
         Ok(())
     }
@@ -980,65 +822,72 @@ robot:
     }
 
     #[test]
-    fn bus_listen_and_uplink_parse_and_validate() -> anyhow::Result<()> {
+    fn router_config_parses_and_validates() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&minimal_manifest(
-            r#"bus:
-  listen:
-  - serial//dev/ttyACM0#baudrate=115200
-  - tcp/127.0.0.1:7448
-  uplink:
-    connect: tls/uplink.phoxal.cloud:7447
-    auth:
-      ca: identity/ca.pem
-      cert: identity/robot.pem
-      key: identity/robot.key
-    retry:
-      initial_ms: 2000
-      max_ms: 10000
+            r#"router:
+  config: config/router.json5
 "#,
         ))?;
 
         assert_eq!(
-            robot.bus.listen,
-            vec![
-                "serial//dev/ttyACM0#baudrate=115200".to_string(),
-                "tcp/127.0.0.1:7448".to_string(),
-            ]
-        );
-        let uplink = robot.bus.uplink.as_ref().expect("uplink should parse");
-        assert_eq!(uplink.connect, "tls/uplink.phoxal.cloud:7447");
-        assert_eq!(uplink.retry.initial_ms, 2000);
-        assert_eq!(uplink.retry.max_ms, 10000);
-        assert_eq!(
-            uplink.auth.as_ref().map(|auth| auth.cert.as_path()),
-            Some(Path::new("identity/robot.pem"))
+            robot.router.config.as_deref(),
+            Some(Path::new("config/router.json5"))
         );
         robot
             .validate()
-            .expect("bus listen and uplink should validate");
+            .expect("project-relative router config should validate");
 
         Ok(())
     }
 
     #[test]
-    fn bus_rejects_non_loopback_tcp_listen() -> anyhow::Result<()> {
+    fn router_rejects_absolute_config_path() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&minimal_manifest(
-            r#"bus:
-  listen:
-  - tcp/0.0.0.0:7447
+            r#"router:
+  config: /etc/phoxal/router.json5
 "#,
         ))?;
 
         let errors = robot
             .validate()
-            .expect_err("non-loopback TCP listen should fail validation");
+            .expect_err("absolute router config should fail validation");
         assert!(
-            errors.contains(&super::ValidationError::NonLoopbackTcpBusListenEndpoint {
-                endpoint: "tcp/0.0.0.0:7447".to_string(),
+            errors.contains(&super::ValidationError::AbsoluteRouterConfigPath {
+                path: PathBuf::from("/etc/phoxal/router.json5"),
             })
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn router_rejects_empty_config_path() -> anyhow::Result<()> {
+        let robot = Robot::parse_from_string(&minimal_manifest(
+            r#"router:
+  config: ""
+"#,
+        ))?;
+
+        let errors = robot
+            .validate()
+            .expect_err("empty router config should fail validation");
+        assert!(errors.contains(&super::ValidationError::EmptyRouterConfigPath));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_bus_section_is_rejected() {
+        let error = Robot::parse_from_string(&minimal_manifest(
+            r#"bus:
+  listen: ["tcp/127.0.0.1:7447"]
+"#,
+        ))
+        .expect_err("legacy bus section should no longer parse");
+
+        assert!(
+            format!("{error:#}").contains("unknown field `bus`"),
+            "got: {error:#}"
+        );
     }
 
     #[test]
@@ -1303,11 +1152,11 @@ robot:
     fn artifacts_pins_sha256_form_parses() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
-    phoxal/tool-router: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
+    phoxal/tool-bus: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
         ))?;
 
         assert_eq!(
-            robot.artifacts.pins.get("phoxal/tool-router"),
+            robot.artifacts.pins.get("phoxal/tool-bus"),
             Some(&ArtifactPin::Sha256(Sha256Pin(
                 "sha256:2222222222222222222222222222222222222222222222222222222222222222"
                     .to_string()
@@ -1323,7 +1172,7 @@ robot:
             r#"  pins:
     phoxal/service-drive: v0.8.4
     phoxal/service-frame: 0.8.4
-    phoxal/tool-router: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
+    phoxal/tool-bus: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
         ))?;
 
         assert_eq!(
@@ -1335,7 +1184,7 @@ robot:
             Some(&ArtifactPin::Version(VersionPin("0.8.4".to_string())))
         );
         assert_eq!(
-            robot.artifacts.pins.get("phoxal/tool-router"),
+            robot.artifacts.pins.get("phoxal/tool-bus"),
             Some(&ArtifactPin::Sha256(Sha256Pin(
                 "sha256:2222222222222222222222222222222222222222222222222222222222222222"
                     .to_string()
@@ -1424,8 +1273,8 @@ robot:
     fn artifacts_pins_rejects_unknown_value_form() {
         let error = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
-    phoxal/tool-router:
-      archive: router.tar.zst"#,
+    phoxal/tool-bus:
+      archive: bus.tar.zst"#,
         ))
         .expect_err("unsupported pin form should fail to parse");
 

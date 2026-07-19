@@ -22,12 +22,12 @@
             }
           ]
         },
-        "bus": {
-          "description": "Bus wiring - listen endpoints and the optional uplink. Never robot\nmodel; participants never parse bus facts from `robot.yaml`.",
-          "$ref": "#/$defs/Bus"
-        },
         "robot": {
           "$ref": "#/$defs/RobotSection"
+        },
+        "router": {
+          "description": "Optional project-relative Zenoh router configuration. The CLI resolves\nthis through the normal environment overlay before launching the\nPhoxal-owned infrastructure router.",
+          "$ref": "#/$defs/Router"
         },
         "schema": {
           "type": "string",
@@ -148,101 +148,6 @@
       "additionalProperties": false,
       "required": [
         "root"
-      ]
-    },
-    "Bus": {
-      "type": "object",
-      "properties": {
-        "listen": {
-          "description": "Router listen endpoints merged into the default localhost listen set.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "uplink": {
-          "description": "Optional upstream router connection used for deployed robots.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/BusUplink"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "BusMtlsAuth": {
-      "type": "object",
-      "properties": {
-        "ca": {
-          "description": "Project-local root CA certificate path used to verify the upstream router.",
-          "type": "string"
-        },
-        "cert": {
-          "description": "Project-local client certificate path identifying this robot/site.",
-          "type": "string"
-        },
-        "key": {
-          "description": "Project-local client private-key path paired with `cert`.",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "ca",
-        "cert",
-        "key"
-      ]
-    },
-    "BusRetry": {
-      "type": "object",
-      "properties": {
-        "initial_ms": {
-          "description": "Initial retry delay in milliseconds.",
-          "type": "integer",
-          "format": "uint64",
-          "default": 1000,
-          "minimum": 0
-        },
-        "max_ms": {
-          "description": "Maximum retry delay in milliseconds.",
-          "type": "integer",
-          "format": "uint64",
-          "default": 30000,
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false
-    },
-    "BusUplink": {
-      "type": "object",
-      "properties": {
-        "auth": {
-          "description": "Optional project-local mTLS material for the upstream connection.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/BusMtlsAuth"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "connect": {
-          "description": "Upstream Zenoh endpoint the site router should connect to.",
-          "type": "string"
-        },
-        "retry": {
-          "description": "Capped retry backoff; retry is forever and never gates readiness.",
-          "$ref": "#/$defs/BusRetry"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "connect"
       ]
     },
     "Channel": {
@@ -1018,6 +923,19 @@
         "odometry",
         "perception"
       ]
+    },
+    "Router": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "description": "Zenoh JSON5 configuration path relative to the resolved robot root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "Sha256Pin": {
       "type": "string",

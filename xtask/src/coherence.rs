@@ -24,15 +24,21 @@ use phoxal::check::{
 };
 
 use crate::release::package::build_and_extract_metadata;
-use crate::workspace::{Workspace, require_nonempty_artifacts};
+use crate::workspace::Workspace;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {}
 
 pub fn run(_args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    let artifacts = workspace.official_artifacts();
-    require_nonempty_artifacts(artifacts)?;
+    let artifacts = workspace
+        .official_artifacts()
+        .iter()
+        .filter(|artifact| artifact.kind.embeds_participant_metadata())
+        .collect::<Vec<_>>();
+    if artifacts.is_empty() {
+        bail!("no official participant artifacts were discovered");
+    }
 
     let mut surfaces = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {

@@ -340,7 +340,7 @@ mod tests {
                 "drive",
                 "0.1.0",
             ),
-            artifact("phoxal-tool-router", ArtifactKind::Tool, "router", "0.1.0"),
+            artifact("phoxal-tool-bus", ArtifactKind::Tool, "bus", "0.1.0"),
         ]);
 
         let plan = build_release_plan(
@@ -364,7 +364,7 @@ mod tests {
         for row in &plan.matrix.include {
             assert_eq!(row.packages.len(), 2);
             assert_eq!(row.packages[0].package, "phoxal/service-drive");
-            assert_eq!(row.packages[1].package, "phoxal/tool-router");
+            assert_eq!(row.packages[1].package, "phoxal/tool-bus");
         }
         assert!(plan.assets.is_empty());
         Ok(())
@@ -413,12 +413,12 @@ mod tests {
                 "drive",
                 "0.19.7",
             ),
-            artifact("phoxal-tool-router", ArtifactKind::Tool, "router", "0.2.0"),
+            artifact("phoxal-tool-bus", ArtifactKind::Tool, "bus", "0.2.0"),
         ]);
         let cut = releases(vec![CutRelease {
-            package_name: "phoxal-tool-router".to_string(),
+            package_name: "phoxal-tool-bus".to_string(),
             version: "0.2.0".to_string(),
-            tag: "phoxal-tool-router-v0.2.0".to_string(),
+            tag: "phoxal-tool-bus-v0.2.0".to_string(),
         }])?;
 
         let plan = build_release_plan(&workspace, &cut, ReleaseScope::AllArtifacts)?;

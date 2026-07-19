@@ -50,6 +50,9 @@ pub enum ArtifactKind {
     Component,
     Tool,
     Simulator,
+    /// Phoxal-owned process infrastructure. It is released like other binary
+    /// artifacts but is not a participant and must not embed API metadata.
+    Infrastructure,
 }
 
 impl ArtifactKind {
@@ -60,6 +63,7 @@ impl ArtifactKind {
             ArtifactKind::Component => "component",
             ArtifactKind::Tool => "tool",
             ArtifactKind::Simulator => "simulator",
+            ArtifactKind::Infrastructure => "infrastructure",
         }
     }
 
@@ -67,6 +71,11 @@ impl ArtifactKind {
     /// binary output (design doc §9: every `component/` crate carries both).
     pub fn ships_assets(self) -> bool {
         matches!(self, ArtifactKind::Component)
+    }
+
+    /// Whether binaries of this kind participate in the API coherence graph.
+    pub fn embeds_participant_metadata(self) -> bool {
+        !matches!(self, ArtifactKind::Infrastructure)
     }
 }
 
@@ -363,6 +372,7 @@ fn package_name_segment(kind: ArtifactKind, id: &str) -> String {
         ArtifactKind::Component => format!("component-{id}"),
         ArtifactKind::Tool => format!("tool-{id}"),
         ArtifactKind::Simulator => format!("simulator-{id}"),
+        ArtifactKind::Infrastructure => format!("infrastructure-{id}"),
     }
 }
 
@@ -401,7 +411,7 @@ fn classify_manifest_path(root: &Path, manifest_path: &Path) -> Result<ManifestC
     if components.len() != 3 || components[2] != "Cargo.toml" || components[1].is_empty() {
         bail!(
             "workspace package manifest {} is nested under artifact root '{}'; official artifacts \
-             must live exactly at {{service,component,tool,simulator}}/<id>/Cargo.toml",
+             must live exactly at {{service,component,tool,simulator,infrastructure}}/<id>/Cargo.toml",
             relative.display(),
             top_level
         );
@@ -430,6 +440,7 @@ fn artifact_kind_from_directory(directory: &str) -> Option<ArtifactKind> {
         "component" => Some(ArtifactKind::Component),
         "tool" => Some(ArtifactKind::Tool),
         "simulator" => Some(ArtifactKind::Simulator),
+        "infrastructure" => Some(ArtifactKind::Infrastructure),
         _ => None,
     }
 }
@@ -478,6 +489,7 @@ fn expected_package_name(kind: ArtifactKind, id: &str) -> String {
         ArtifactKind::Component => format!("phoxal-component-{id}"),
         ArtifactKind::Tool => format!("phoxal-tool-{id}"),
         ArtifactKind::Simulator => format!("phoxal-simulator-{id}"),
+        ArtifactKind::Infrastructure => format!("phoxal-infrastructure-{id}"),
     }
 }
 
@@ -499,6 +511,11 @@ fn classify_package_prefix(package_name: &str) -> Option<(ArtifactKind, String)>
             package_name
                 .strip_prefix("phoxal-simulator-")
                 .map(|id| (ArtifactKind::Simulator, id.to_string()))
+        })
+        .or_else(|| {
+            package_name
+                .strip_prefix("phoxal-infrastructure-")
+                .map(|id| (ArtifactKind::Infrastructure, id.to_string()))
         })
 }
 
@@ -634,7 +651,7 @@ mod tests {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .context("xtask manifest directory has no workspace parent")?;
-        for tool in ["joypad", "router", "telemetry"] {
+        for tool in ["joypad", "bus", "telemetry"] {
             let source = workspace_root.join("tool").join(tool).join("src/main.rs");
             let body = fs::read_to_string(&source)?;
             assert!(
@@ -654,22 +671,21 @@ mod tests {
         let document = fs::read_to_string(&workspace_manifest)?
             .parse::<toml_edit::DocumentMut>()
             .context("workspace Cargo.toml is invalid")?;
-        for dependency in ["zenoh", "zenoh-router"] {
-            assert_eq!(
-                document["workspace"]["dependencies"][dependency]["default-features"].as_bool(),
-                Some(false),
-                "{dependency} must disable Zenoh default features while RUSTSEC-2026-0041 is ignored"
-            );
-            let features = document["workspace"]["dependencies"][dependency]["features"]
-                .as_array()
-                .with_context(|| format!("{dependency} must declare an explicit feature list"))?;
-            assert!(
-                !features
-                    .iter()
-                    .any(|feature| feature.as_str() == Some("transport_compression")),
-                "{dependency} must keep transport_compression disabled while RUSTSEC-2026-0041 is ignored"
-            );
-        }
+        let dependency = "zenoh";
+        assert_eq!(
+            document["workspace"]["dependencies"][dependency]["default-features"].as_bool(),
+            Some(false),
+            "{dependency} must disable Zenoh default features while RUSTSEC-2026-0041 is ignored"
+        );
+        let features = document["workspace"]["dependencies"][dependency]["features"]
+            .as_array()
+            .with_context(|| format!("{dependency} must declare an explicit feature list"))?;
+        assert!(
+            !features
+                .iter()
+                .any(|feature| feature.as_str() == Some("transport_compression")),
+            "{dependency} must keep transport_compression disabled while RUSTSEC-2026-0041 is ignored"
+        );
 
         let metadata = MetadataCommand::new()
             .manifest_path(&workspace_manifest)
@@ -703,7 +719,7 @@ mod tests {
             }
         }
         assert_eq!(
-            direct_zenoh_dependencies, 3,
+            direct_zenoh_dependencies, 4,
             "every direct Zenoh dependency must be covered by this guard"
         );
         Ok(())
@@ -718,7 +734,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 25);
+        assert_eq!(workspace.official_artifacts().len(), 26);
 
         let discovered = workspace
             .official_artifacts()
@@ -768,9 +784,16 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("tool/router/Cargo.toml")?,
+            classify("tool/bus/Cargo.toml")?,
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Tool,
+                id: "bus".to_string()
+            }
+        );
+        assert_eq!(
+            classify("infrastructure/router/Cargo.toml")?,
+            ManifestClassification::Artifact {
+                kind: ArtifactKind::Infrastructure,
                 id: "router".to_string()
             }
         );
@@ -903,12 +926,16 @@ mod tests {
             "phoxal/component-ddsm115"
         );
         assert_eq!(
-            package_identity(ArtifactKind::Tool, "router"),
-            "phoxal/tool-router"
+            package_identity(ArtifactKind::Tool, "bus"),
+            "phoxal/tool-bus"
         );
         assert_eq!(
             package_identity(ArtifactKind::Simulator, "webots-supervisor"),
             "phoxal/simulator-webots-supervisor"
+        );
+        assert_eq!(
+            package_identity(ArtifactKind::Infrastructure, "router"),
+            "phoxal/infrastructure-router"
         );
     }
 

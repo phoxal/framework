@@ -19,6 +19,7 @@ members = [
     "phoxal-api",
     "phoxal-bus",
     "phoxal-macros",
+    "infrastructure/router",
     "component/bno085",
     "component/ddsm115",
     "component/oak_d_lite",
@@ -42,7 +43,7 @@ members = [
     "simulator/webots-controller",
     "simulator/webots-supervisor",
     "tool/joypad",
-    "tool/router",
+    "tool/bus",
     "tool/telemetry",
     "xtask",
 ]
@@ -55,6 +56,7 @@ default-members = [
     "phoxal-api",
     "phoxal-bus",
     "phoxal-macros",
+    "infrastructure/router",
     "component/bno085",
     "component/ddsm115",
     "component/oak_d_lite",
@@ -78,7 +80,7 @@ default-members = [
     "simulator/webots-controller",
     "simulator/webots-supervisor",
     "tool/joypad",
-    "tool/router",
+    "tool/bus",
     "tool/telemetry",
 ]
 
@@ -94,6 +96,7 @@ dotenvy = "0.15.7"
 gilrs = "0.11.2"
 glob = "0.3.3"
 heck = "0.5.0"
+json5 = "0.4.1"
 nalgebra = { version = "0.34.2", features = ["serde-serialize"] }
 proc-macro2 = "1.0"
 quote = "1.0"
@@ -138,22 +141,6 @@ zenoh = { version = "1.9.0", default-features = false, features = [
     "transport_udp",
     "transport_unixsock-stream",
     "transport_ws",
-] }
-# The router alone uses Zenoh's explicitly unstable link-introspection API.
-# Keep that tool within the reviewed 1.9 minor line without narrowing the
-# published crates' public Zenoh dependency requirement.
-zenoh-router = { package = "zenoh", version = "~1.9.0", default-features = false, features = [
-    "auth_pubkey",
-    "auth_usrpwd",
-    "transport_multilink",
-    "transport_quic",
-    "transport_quic_datagram",
-    "transport_tcp",
-    "transport_tls",
-    "transport_udp",
-    "transport_unixsock-stream",
-    "transport_ws",
-    "unstable",
 ] }
 # Carry a version (not just a path) on every internal dep: cargo strips the path
 # on publish/package and resolves the dep by version from the index. Without it,
