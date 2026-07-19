@@ -60,7 +60,21 @@ fn select_artifacts(
         .package
         .as_deref()
         .context("package is required unless --changed is present")?;
-    Ok(vec![workspace.official_artifact(package)?.clone()])
+    let artifact = workspace.official_artifact(package)?;
+    match release_state(artifact, git)? {
+        ReleaseState::Initial => bail!(
+            "{} has no release history; it releases at its authored version {}, so no bump is \
+             needed",
+            artifact.package,
+            artifact.version
+        ),
+        ReleaseState::Pending => bail!(
+            "{} version {} is already pending release and must not be bumped again",
+            artifact.package,
+            artifact.version
+        ),
+        ReleaseState::Released => Ok(vec![artifact.clone()]),
+    }
 }
 
 /// Minimal seam over the git queries used by release selection and notes.
@@ -68,7 +82,7 @@ trait GitQuery {
     fn tag_exists(&self, tag: &str) -> Result<bool>;
     fn released_versions(&self, artifact: &OfficialArtifact) -> Result<Vec<String>>;
     fn changed_since(&self, tag: &str, path: &Path) -> Result<bool>;
-    fn commit_subjects_since(&self, tag: &str, path: &Path) -> Result<Vec<String>>;
+    fn commit_subjects(&self, base: Option<&str>, path: &Path) -> Result<Vec<String>>;
 }
 
 struct CliGitQuery;
@@ -122,21 +136,22 @@ impl GitQuery for CliGitQuery {
         }
     }
 
-    fn commit_subjects_since(&self, tag: &str, path: &Path) -> Result<Vec<String>> {
-        let output = Command::new("git")
-            .args([
-                "log",
-                "--no-merges",
-                "--format=%s",
-                &format!("{tag}..HEAD"),
-                "--",
-            ])
-            .arg(path)
-            .output()
-            .with_context(|| format!("failed to spawn git log for {tag}..HEAD -- {path:?}"))?;
+    fn commit_subjects(&self, base: Option<&str>, path: &Path) -> Result<Vec<String>> {
+        let mut command = Command::new("git");
+        command.args(["log", "--no-merges", "--format=%s"]);
+        if let Some(tag) = base {
+            command.arg(format!("{tag}..HEAD"));
+        }
+        let output = command.arg("--").arg(path).output().with_context(|| {
+            format!(
+                "failed to spawn git log for {} -- {path:?}",
+                base.map_or("full history", |tag| tag)
+            )
+        })?;
         if !output.status.success() {
             bail!(
-                "git log {tag}..HEAD -- {path:?} failed with {}",
+                "git log from {} -- {path:?} failed with {}",
+                base.map_or("full history", |tag| tag),
                 output.status
             );
         }
@@ -208,27 +223,60 @@ fn changed_artifacts(workspace: &Workspace, git: &dyn GitQuery) -> Result<Vec<Of
     let mut selected = Vec::new();
     for artifact in workspace.official_artifacts() {
         let tag = artifact.release_tag();
-        if !git
-            .tag_exists(&tag)
-            .with_context(|| format!("failed to check tag {tag}"))?
-        {
-            println!(
+        match release_state(artifact, git)? {
+            ReleaseState::Initial => println!(
+                "skip {}: no release history (initial release at {})",
+                artifact.package, artifact.version
+            ),
+            ReleaseState::Pending => println!(
                 "skip {}: tag {tag} not found (release pending)",
                 artifact.package
-            );
-            continue;
-        }
-
-        if git
-            .changed_since(&tag, &artifact.crate_dir)
-            .with_context(|| format!("failed to diff {} since {tag}", artifact.package))?
-        {
-            selected.push(artifact.clone());
-        } else {
-            println!("skip {}: no changes since {tag}", artifact.package);
+            ),
+            ReleaseState::Released => {
+                if git
+                    .changed_since(&tag, &artifact.crate_dir)
+                    .with_context(|| format!("failed to diff {} since {tag}", artifact.package))?
+                {
+                    selected.push(artifact.clone());
+                } else {
+                    println!("skip {}: no changes since {tag}", artifact.package);
+                }
+            }
         }
     }
     Ok(selected)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReleaseState {
+    /// This package identity has no release tags. Its authored version is the
+    /// initial release and must never be bumped merely to manufacture a diff.
+    Initial,
+    /// Earlier versions exist, but the authored current version is not tagged
+    /// yet because it is already pending on a release branch.
+    Pending,
+    /// The authored current version is tagged and may need a patch bump when
+    /// its own crate directory changed.
+    Released,
+}
+
+fn release_state(artifact: &OfficialArtifact, git: &dyn GitQuery) -> Result<ReleaseState> {
+    let tag = artifact.release_tag();
+    if git
+        .tag_exists(&tag)
+        .with_context(|| format!("failed to check tag {tag}"))?
+    {
+        return Ok(ReleaseState::Released);
+    }
+    if git
+        .released_versions(artifact)
+        .with_context(|| format!("failed to read release history for {}", artifact.package))?
+        .is_empty()
+    {
+        Ok(ReleaseState::Initial)
+    } else {
+        Ok(ReleaseState::Pending)
+    }
 }
 
 fn bump_artifacts(artifacts: &[OfficialArtifact]) -> Result<()> {
@@ -247,9 +295,9 @@ const NOTES_END: &str = "<!-- phoxal-artifact-releases:end -->";
 #[derive(Debug)]
 struct ArtifactRelease {
     artifact: OfficialArtifact,
-    from: String,
+    from: Option<String>,
     to: String,
-    from_tag: String,
+    from_tag: Option<String>,
     to_tag: String,
 }
 
@@ -259,41 +307,47 @@ fn release_note_artifacts(
     git: &dyn GitQuery,
 ) -> Result<Vec<ArtifactRelease>> {
     let mut releases = Vec::new();
-    for artifact in selected {
-        let to = bump_patch_version(&artifact.version)?;
-        releases.push(ArtifactRelease {
-            artifact: artifact.clone(),
-            from: artifact.version.clone(),
-            to_tag: artifact.release_tag_for_version(&to),
-            from_tag: artifact.release_tag(),
-            to,
-        });
-    }
-
-    // On an artifact-only PR rerun, the manifest is already bumped but its new
-    // tag does not exist until the PR merges. Reconstruct that pending release
-    // from the previous patch tag so new commits refresh the notes without a
-    // second version bump.
     for artifact in workspace.official_artifacts() {
-        if selected.iter().any(|item| item.package == artifact.package)
-            || git.tag_exists(&artifact.release_tag())?
-        {
+        // A selected released artifact needs its next patch version. Initial
+        // identities and already-pending versions keep their authored version;
+        // the release PR is the deliberate act that will cut their missing tag.
+        if selected.iter().any(|item| item.package == artifact.package) {
+            let to = bump_patch_version(&artifact.version)?;
+            releases.push(ArtifactRelease {
+                artifact: artifact.clone(),
+                from: Some(artifact.version.clone()),
+                to_tag: artifact.release_tag_for_version(&to),
+                from_tag: Some(artifact.release_tag()),
+                to,
+            });
             continue;
         }
-        let Some(from) = previous_patch_version(&artifact.version)? else {
-            continue;
-        };
-        let from_tag = artifact.release_tag_for_version(&from);
-        if !git.tag_exists(&from_tag)? {
-            continue;
+
+        match release_state(artifact, git)? {
+            ReleaseState::Initial => releases.push(ArtifactRelease {
+                artifact: artifact.clone(),
+                from: None,
+                to: artifact.version.clone(),
+                from_tag: None,
+                to_tag: artifact.release_tag(),
+            }),
+            ReleaseState::Pending => {
+                let (from, from_tag) = previous_release(artifact, git)?.with_context(|| {
+                    format!(
+                        "pending artifact {} has no earlier released version",
+                        artifact.package
+                    )
+                })?;
+                releases.push(ArtifactRelease {
+                    artifact: artifact.clone(),
+                    from: Some(from),
+                    to: artifact.version.clone(),
+                    from_tag: Some(from_tag),
+                    to_tag: artifact.release_tag(),
+                });
+            }
+            ReleaseState::Released => {}
         }
-        releases.push(ArtifactRelease {
-            artifact: artifact.clone(),
-            from,
-            to: artifact.version.clone(),
-            from_tag,
-            to_tag: artifact.release_tag(),
-        });
     }
     releases.sort_by(|left, right| left.artifact.package.cmp(&right.artifact.package));
     Ok(releases)
@@ -315,26 +369,36 @@ fn render_release_notes(releases: &[ArtifactRelease], git: &dyn GitQuery) -> Res
     let mut notes = format!("{NOTES_START}\n\n## 📦 Official artifact releases\n\n");
     for release in releases {
         let package_name = release.artifact.require_package_name()?;
-        notes.push_str(&format!(
-            "* `{package_name}`: {} -> {}\n",
-            release.from, release.to
-        ));
+        if let Some(from) = &release.from {
+            notes.push_str(&format!("* `{package_name}`: {from} -> {}\n", release.to));
+        } else {
+            notes.push_str(&format!(
+                "* `{package_name}`: {} (initial release)\n",
+                release.to
+            ));
+        }
     }
     notes.push_str("\n<details><summary><i><b>Artifact changelog</b></i></summary><p>\n\n");
 
     for release in releases {
         let package_name = release.artifact.require_package_name()?;
-        let subjects = git.commit_subjects_since(&release.from_tag, &release.artifact.crate_dir)?;
+        let subjects =
+            git.commit_subjects(release.from_tag.as_deref(), &release.artifact.crate_dir)?;
         let mut sections: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         for subject in subjects {
             let (section, entry) = changelog_entry(&subject);
             sections.entry(section).or_default().push(entry);
         }
 
-        notes.push_str(&format!(
-            "## `{package_name}`\n\n<blockquote>\n\n## [{}](https://github.com/phoxal/framework/compare/{}...{})\n",
-            release.to, release.from_tag, release.to_tag
-        ));
+        notes.push_str(&format!("## `{package_name}`\n\n<blockquote>\n\n"));
+        if let Some(from_tag) = &release.from_tag {
+            notes.push_str(&format!(
+                "## [{}](https://github.com/phoxal/framework/compare/{from_tag}...{})\n",
+                release.to, release.to_tag
+            ));
+        } else {
+            notes.push_str(&format!("## {}\n", release.to));
+        }
         for section in ["Added", "Fixed", "Other"] {
             let Some(entries) = sections.get(section) else {
                 continue;
@@ -345,10 +409,14 @@ fn render_release_notes(releases: &[ArtifactRelease], git: &dyn GitQuery) -> Res
             }
         }
         if sections.is_empty() {
-            notes.push_str(&format!(
-                "\n### Other\n\n- Changes since `{}`\n",
-                release.from_tag
-            ));
+            if let Some(from_tag) = &release.from_tag {
+                notes.push_str(&format!("\n### Other\n\n- Changes since `{from_tag}`\n"));
+            } else {
+                notes.push_str(&format!(
+                    "\n### Other\n\n- Initial release of `{package_name}` {}\n",
+                    release.to
+                ));
+            }
         }
         notes.push_str("\n</blockquote>\n\n");
     }
@@ -448,14 +516,38 @@ fn bump_patch_version(version: &str) -> Result<String> {
     Ok(version.to_string())
 }
 
-fn previous_patch_version(version: &str) -> Result<Option<String>> {
-    let mut version = Version::parse(version)
-        .with_context(|| format!("artifact version '{version}' is not valid semver"))?;
-    if !version.pre.is_empty() || !version.build.is_empty() || version.patch == 0 {
-        return Ok(None);
-    }
-    version.patch -= 1;
-    Ok(Some(version.to_string()))
+fn previous_release(
+    artifact: &OfficialArtifact,
+    git: &dyn GitQuery,
+) -> Result<Option<(String, String)>> {
+    let current = Version::parse(&artifact.version).with_context(|| {
+        format!(
+            "official artifact {} has invalid SemVer {}",
+            artifact.package, artifact.version
+        )
+    })?;
+    let previous = git
+        .released_versions(artifact)
+        .with_context(|| format!("failed to read release history for {}", artifact.package))?
+        .into_iter()
+        .map(|text| {
+            Version::parse(&text)
+                .with_context(|| {
+                    format!(
+                        "release tag for {} has invalid SemVer {text}",
+                        artifact.package
+                    )
+                })
+                .map(|version| (text, version))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, version)| version < &current)
+        .max_by(|left, right| left.1.cmp(&right.1));
+    Ok(previous.map(|(text, _)| {
+        let tag = artifact.release_tag_for_version(&text);
+        (text, tag)
+    }))
 }
 
 #[cfg(test)]
@@ -497,9 +589,9 @@ mod tests {
     fn release(artifact: &OfficialArtifact, from: &str, to: &str) -> ArtifactRelease {
         ArtifactRelease {
             artifact: artifact.clone(),
-            from: from.to_owned(),
+            from: Some(from.to_owned()),
             to: to.to_owned(),
-            from_tag: artifact.release_tag_for_version(from),
+            from_tag: Some(artifact.release_tag_for_version(from)),
             to_tag: artifact.release_tag_for_version(to),
         }
     }
@@ -529,8 +621,12 @@ mod tests {
             Ok(*self.diffs.get(tag).unwrap_or(&false))
         }
 
-        fn commit_subjects_since(&self, tag: &str, _path: &Path) -> Result<Vec<String>> {
-            Ok(self.subjects.get(tag).cloned().unwrap_or_default())
+        fn commit_subjects(&self, base: Option<&str>, _path: &Path) -> Result<Vec<String>> {
+            Ok(self
+                .subjects
+                .get(base.unwrap_or_default())
+                .cloned()
+                .unwrap_or_default())
         }
     }
 
@@ -575,11 +671,17 @@ mod tests {
         assert!(fs::read_to_string(drive.crate_dir.join("Cargo.toml"))?.contains("0.1.1"));
         assert!(fs::read_to_string(map.crate_dir.join("Cargo.toml"))?.contains("0.1.0"));
         assert!(fs::read_to_string(router.crate_dir.join("Cargo.toml"))?.contains("0.1.0"));
+
+        let releases = release_note_artifacts(&workspace, &selected, &git)?;
+        assert_eq!(releases.len(), 1);
+        let notes = render_release_notes(&releases, &git)?;
+        assert!(notes.contains("`phoxal-service-drive`: 0.1.0 -> 0.1.1"));
+        assert_eq!(notes.matches("`phoxal-service-drive`").count(), 2);
         Ok(())
     }
 
     #[test]
-    fn missing_current_tag_means_the_bump_is_already_pending() -> Result<()> {
+    fn initial_artifact_is_not_selected_for_a_bump() -> Result<()> {
         let artifact = artifact(Path::new("/repo/service"), "drive");
         let workspace = Workspace::from_parts_for_tests(
             PathBuf::from("/repo"),
@@ -595,6 +697,100 @@ mod tests {
             },
         )?;
         assert!(selected.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn pending_artifact_is_not_selected_for_another_bump() -> Result<()> {
+        let mut drive = artifact(Path::new("/repo/service"), "drive");
+        drive.version = "0.1.1".to_owned();
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![drive.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([(drive.release_tag_for_version("0.1.0"), true)]),
+            diffs: HashMap::from([(drive.release_tag(), true)]),
+            subjects: HashMap::new(),
+        };
+
+        let selected = changed_artifacts(&workspace, &git)?;
+        assert!(selected.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn manual_bump_rejects_initial_and_pending_artifacts() -> Result<()> {
+        let initial = artifact(Path::new("/repo/service"), "initial");
+        let mut pending = artifact(Path::new("/repo/service"), "pending");
+        pending.version = "0.1.1".to_owned();
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![initial.clone(), pending.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([(pending.release_tag_for_version("0.1.0"), true)]),
+            diffs: HashMap::new(),
+            subjects: HashMap::new(),
+        };
+
+        let initial_error = select_artifacts(
+            &workspace,
+            &Args {
+                package: Some(initial.package.clone()),
+                changed: false,
+                notes_out: None,
+            },
+            &git,
+        )
+        .expect_err("an initial identity must release at its authored version");
+        assert!(initial_error.to_string().contains("has no release history"));
+
+        let pending_error = select_artifacts(
+            &workspace,
+            &Args {
+                package: Some(pending.package.clone()),
+                changed: false,
+                notes_out: None,
+            },
+            &git,
+        )
+        .expect_err("a pending version must not be bumped again");
+        assert!(
+            pending_error
+                .to_string()
+                .contains("already pending release")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn initial_artifact_renders_an_initial_release_note() -> Result<()> {
+        let bus = artifact(Path::new("/repo/tool"), "bus");
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![bus.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::new(),
+            diffs: HashMap::new(),
+            subjects: HashMap::from([(
+                String::new(),
+                vec!["feat(bus): introduce bus metrics (#279)".to_owned()],
+            )]),
+        };
+
+        let releases = release_note_artifacts(&workspace, &[], &git)?;
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].from, None);
+        assert_eq!(releases[0].to, "0.1.0");
+        let notes = render_release_notes(&releases, &git)?;
+        assert!(notes.contains("`phoxal-service-bus`: 0.1.0 (initial release)"));
+        assert!(notes.contains("introduce bus metrics ([#279]"));
+        assert!(!notes.contains("compare/"));
         Ok(())
     }
 
@@ -722,10 +918,96 @@ mod tests {
 
         let releases = release_note_artifacts(&workspace, &[], &git)?;
         assert_eq!(releases.len(), 1);
-        assert_eq!(releases[0].from, "0.1.0");
+        assert_eq!(releases[0].from.as_deref(), Some("0.1.0"));
         assert_eq!(releases[0].to, "0.1.1");
         let notes = render_release_notes(&releases, &git)?;
         assert!(notes.contains("include late follow-up ([#43]"));
+        Ok(())
+    }
+
+    #[test]
+    fn pending_bump_uses_the_highest_earlier_tag_as_base() -> Result<()> {
+        let mut drive = artifact(Path::new("/repo/service"), "drive");
+        drive.version = "0.2.0".to_owned();
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![drive.clone()],
+        );
+        let tag_018 = drive.release_tag_for_version("0.1.8");
+        let tag_019 = drive.release_tag_for_version("0.1.9");
+        let git = FakeGitQuery {
+            tags: HashMap::from([(tag_018, true), (tag_019.clone(), true)]),
+            diffs: HashMap::new(),
+            subjects: HashMap::new(),
+        };
+
+        let releases = release_note_artifacts(&workspace, &[], &git)?;
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].from.as_deref(), Some("0.1.9"));
+        assert_eq!(releases[0].from_tag.as_deref(), Some(tag_019.as_str()));
+        assert_eq!(releases[0].to, "0.2.0");
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_released_artifact_produces_no_release_note() -> Result<()> {
+        let drive = artifact(Path::new("/repo/service"), "drive");
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![drive.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([(drive.release_tag(), true)]),
+            diffs: HashMap::from([(drive.release_tag(), false)]),
+            subjects: HashMap::new(),
+        };
+
+        let selected = changed_artifacts(&workspace, &git)?;
+        assert!(selected.is_empty());
+        let releases = release_note_artifacts(&workspace, &selected, &git)?;
+        assert!(releases.is_empty());
+        assert_eq!(render_release_notes(&releases, &git)?, "");
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_workspace_orders_initial_pending_and_changed_releases() -> Result<()> {
+        let initial = artifact(Path::new("/repo/service"), "alpha");
+        let mut pending = artifact(Path::new("/repo/service"), "beta");
+        pending.version = "0.1.1".to_owned();
+        let changed = artifact(Path::new("/repo/service"), "drive");
+        let workspace = Workspace::from_parts_for_tests(
+            PathBuf::from("/repo"),
+            PathBuf::from("/repo/target"),
+            vec![changed.clone(), pending.clone(), initial.clone()],
+        );
+        let git = FakeGitQuery {
+            tags: HashMap::from([
+                (pending.release_tag_for_version("0.1.0"), true),
+                (changed.release_tag(), true),
+            ]),
+            diffs: HashMap::from([(changed.release_tag(), true)]),
+            subjects: HashMap::new(),
+        };
+
+        let selected = changed_artifacts(&workspace, &git)?;
+        let releases = release_note_artifacts(&workspace, &selected, &git)?;
+        assert_eq!(
+            releases
+                .iter()
+                .map(|release| release.artifact.package.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "phoxal/service-alpha",
+                "phoxal/service-beta",
+                "phoxal/service-drive"
+            ]
+        );
+        let notes = render_release_notes(&releases, &git)?;
+        assert_eq!(notes.matches(NOTES_START).count(), 1);
+        assert_eq!(notes.matches(NOTES_END).count(), 1);
         Ok(())
     }
 }
