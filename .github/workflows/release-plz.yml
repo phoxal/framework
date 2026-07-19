@@ -13,9 +13,10 @@ name: release-plz
 # catalog (fetched from the current "latest" release), so a single catalog
 # resolves any pinned version. See the design doc for the whole model.
 #
-# Three push-triggered jobs. `release-plz release` runs on every push (a
-# version-based no-op except on the release merge), but the build-snapshot wave
-# (jobs 2-3, and the plan/provenance steps of job 1) runs ONLY when the push is
+# Three push-triggered release/build jobs. `release-plz release` runs on every
+# push (a version-based no-op except on the release merge), but the
+# build-snapshot wave (jobs 2-3, and the plan/provenance steps of job 1) runs
+# ONLY when the push is
 # the merge of release-plz's `chore(release)` PR - the deliberate release act. A
 # plain feature merge never triggers a build.
 #
@@ -40,8 +41,11 @@ name: release-plz
 #                   catalog, run the structural gate, then create the `build-*`
 #                   release with every tarball + catalog.json in one shot and
 #                   mark it "latest".
-# Plus a schedule/dispatch `release-plz-pr` job that lets release-plz prepare the
-# libraries, then adds git-diff-selected artifact bumps to that same PR branch.
+# Plus a `release-plz-pr` job that prepares the libraries after every ordinary
+# main push, then adds git-diff-selected artifact bumps to that same PR branch.
+# A `chore(release)` push is the deliberate publication act and skips PR
+# preparation so it cannot race with publishing. Schedule and non-force dispatch
+# remain retry paths for a missed or failed preparation run.
 
 on:
   push:
@@ -503,8 +507,15 @@ jobs:
 
   release-plz-pr:
     name: release-plz PR
-    # A `force_build` dispatch targets the wave only, not the release PR.
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.force_build)
+    # Prepare immediately after ordinary main updates. A `chore(release)` push
+    # is handled by the release/build wave above and must not prepare the next PR
+    # while library publication is still in flight. A `force_build` dispatch
+    # likewise targets only that wave; schedule and non-force dispatch retry PR
+    # preparation from the current main state.
+    if: >-
+      (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore(release)')) ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && !inputs.force_build)
     runs-on: ubuntu-latest
     env:
       HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
