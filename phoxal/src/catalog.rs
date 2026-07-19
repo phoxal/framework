@@ -131,10 +131,11 @@ pub struct BuildProvenance {
 /// `phoxal/component-<id>` entry carrying both `targets` (binary) and
 /// `assets`; no `kind` or `-driver`/`-assets` suffix is encoded by the shape.
 ///
-/// Services, tools, and simulators carry `targets`; a component carries
-/// `targets` **and** `assets`. Every published entry has at least one of the
-/// two (a structural invariant `catalog check`/`catalog verify` enforce, not
-/// the type itself). A metadata-only catalog legitimately has neither.
+/// Services, tools, simulators, and infrastructure carry `targets`; a
+/// component carries `targets` **and** `assets`. Every published entry has at
+/// least one of the two (a structural invariant `catalog check`/`catalog
+/// verify` enforce, not the type itself). A metadata-only catalog legitimately
+/// has neither.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Artifact {

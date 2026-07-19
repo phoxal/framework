@@ -208,6 +208,16 @@ fn compute_heads(artifacts: &[OfficialArtifact], options: &GenerateOptions) -> R
     let mut surfaces = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
         let triples = binary_target_triples(artifact);
+        if !artifact.kind.embeds_participant_metadata() {
+            package::validate_no_metadata_from_packaged(artifact, &options.package_dir, &triples)
+                .with_context(|| {
+                format!(
+                    "failed to validate metadata absence for {} v{} while computing catalog heads",
+                    artifact.package, artifact.version
+                )
+            })?;
+            continue;
+        }
         let meta = package::extract_metadata_from_packaged(
             artifact,
             &options.package_dir,
@@ -251,17 +261,24 @@ fn validate_changed_artifact_metadata(
                     planned.package
                 )
             })?;
-        package::extract_metadata_from_packaged(
-            artifact,
-            &options.package_dir,
-            &binary_target_triples(artifact),
-        )
-        .with_context(|| {
-            format!(
-                "failed to validate changed packaged metadata for {} v{}",
-                artifact.package, artifact.version
-            )
-        })?;
+        let triples = binary_target_triples(artifact);
+        if artifact.kind.embeds_participant_metadata() {
+            package::extract_metadata_from_packaged(artifact, &options.package_dir, &triples)
+                .with_context(|| {
+                    format!(
+                        "failed to validate changed packaged metadata for {} v{}",
+                        artifact.package, artifact.version
+                    )
+                })?;
+        } else {
+            package::validate_no_metadata_from_packaged(artifact, &options.package_dir, &triples)
+                .with_context(|| {
+                format!(
+                    "failed to validate changed packaged metadata absence for {} v{}",
+                    artifact.package, artifact.version
+                )
+            })?;
+        }
     }
     Ok(())
 }

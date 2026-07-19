@@ -690,24 +690,23 @@ phoxal_api_tree! {
 
         bus {
             uplink {
-                /// Observable state of the router's optional upstream connection.
+                /// Reserved observable state for a future authenticated router
+                /// uplink. Phase 1 has no publisher for this contract.
                 #[derive(Copy, Eq)]
                 #[serde(rename_all = "snake_case")]
                 enum UplinkPhase {
                     Disabled,
                     Connecting,
                     Connected,
-                    /// Reserved for future retry telemetry. The router currently
-                    /// reports `Connecting` while Zenoh retries internally.
+                    /// Reserved for future retry telemetry.
                     Retrying,
                 }
 
-                /// Router-owned out-of-band state for the optional site uplink.
+                /// Reserved router-owned state for a future optional site uplink.
                 struct State {
                     phase: UplinkPhase,
                     connect: Option<String>,
-                    /// Reserved for future retry telemetry. This is currently
-                    /// always zero because Zenoh does not expose its attempt count.
+                    /// Reserved for future retry telemetry.
                     retry_attempt: u32,
                     /// Optional human-readable diagnostic while not connected,
                     /// such as DNS failure or waiting for the configured remote
@@ -1313,7 +1312,7 @@ phoxal_api_tree! {
             /// and may restart from zero if that pair later returns. The
             /// sentinel `topic == "" && from_participant == ""` aggregates
             /// traffic omitted when the bounded detailed table is full or the
-            /// router's non-blocking observation queue drops a burst or an
+            /// bus tool's non-blocking observation queue drops a burst or an
             /// observation has oversized identity metadata. Those
             /// drops never apply backpressure to robot traffic. Once emitted,
             /// the sentinel remains present for the session so consumers do
@@ -1326,7 +1325,8 @@ phoxal_api_tree! {
                 count: u64,
             }
 
-            /// This robot bus root's measured message-flow snapshot; traffic
+            /// The bus tool's measured message-flow snapshot for this robot
+            /// bus root; traffic
             /// transited for other robot roots is intentionally excluded.
             /// `window_ns` is the measurement interval LENGTH (not a timestamp;
             /// production time is the envelope `publish_at`, per the guide's

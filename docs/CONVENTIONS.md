@@ -10,13 +10,17 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
 
 - Use `phoxal::bus` plus the `phoxal_api::<version>` modules for all inter-service
   communication.
-  Do **not** add a direct `zenoh` dependency outside `phoxal::bus`.
+  Do **not** add a direct `zenoh` dependency outside `phoxal::bus`, except in
+  `tool/bus` for sample observation over its runner-owned session and in
+  `infrastructure/router`, which owns the transport process rather than joining
+  the participant graph.
 - `phoxal::bus` owns the Zenoh session/builder (`Bus`), the body-typed handles
   (`Publisher`, `Subscriber`, `Latest`, `Querier`), the query/server primitives,
   and the wire ABI: the topic-key scheme, the codec, the encoding string, and the
   `BusMetadata` attachment.
   Service, driver, tool, and simulator code connect through the runner-owned bus
   (they do not open Zenoh themselves) and name topics through the api modules.
+  The infrastructure router is the sole direct session-opening exception.
 - The wire body is the **plain MessagePack payload** of a version-local body type.
   Compatibility keys on exact name identity (D1): the version is folded into
   the Zenoh key itself, so two participants interoperate on a contract iff they
@@ -128,6 +132,8 @@ the only source of keys, and the wire body never appears in the key
   static in a dedicated linker section on the compiled binary
   (`.phoxal_api_meta` / `__phoxal_meta`), so a consumer reads it straight out of
   the object file without ever executing the artifact.
+  Infrastructure binaries are deliberately outside these authoring kinds and
+  must not embed participant metadata; release validation enforces that absence.
 - Lifecycle methods: `#[setup]` (mandatory, builds all IO from
   `SetupContext<Self>`), `#[step(hz = N)]` (scheduled control step, at most one),
   `#[shutdown]` (graceful park/flush before bus close, at most one).

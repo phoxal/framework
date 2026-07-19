@@ -234,14 +234,14 @@ mod tests {
         write_release_document(
             &path,
             &[CutRelease {
-                package_name: "phoxal-tool-router".to_string(),
+                package_name: "phoxal-tool-bus".to_string(),
                 version: "0.1.6".to_string(),
-                tag: "phoxal-tool-router-v0.1.6".to_string(),
+                tag: "phoxal-tool-bus-v0.1.6".to_string(),
             }],
         )?;
 
         let document: ReleaseDocument = serde_json::from_str(&fs::read_to_string(path)?)?;
-        assert_eq!(document.releases[0].package_name, "phoxal-tool-router");
+        assert_eq!(document.releases[0].package_name, "phoxal-tool-bus");
         Ok(())
     }
 }

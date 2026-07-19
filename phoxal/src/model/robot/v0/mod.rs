@@ -22,7 +22,7 @@ pub use profile::{AutonomyProfileId, AutonomyProfileSpec, autonomy_profile};
 pub use resolver::{ResolvedCapabilityRole, ResolvedFacts, SourceBundle, resolve_source_bundle};
 pub use robot::{
     ArtifactGitPin, ArtifactPathPin, ArtifactPin, Artifacts, BehaviorConfig, Channel, Robot,
-    RobotSection, Sha256Pin, UserService, ValidationError, VersionPin,
+    RobotSection, Router, Sha256Pin, UserService, ValidationError, VersionPin,
     is_provider_qualified_pin_key,
 };
 pub use role::Role;

@@ -154,11 +154,14 @@ pub(crate) fn package_artifact(
     validate_supported_target(artifact, target_triple)?;
     artifact.require_package_name()?;
     let binary_path = target_binary_path(workspace, artifact, target_triple)?;
-    // Packaging validates the participant's compiled-in API metadata as a
-    // fail-fast gate (a malformed section must not reach the tarball stage).
-    // Extraction reads the object file directly - no execution and no
-    // host-runnable rebuild when `target_triple` is cross-compiled.
-    extract_and_validate_metadata(&binary_path, artifact)?;
+    // Participant packages must carry valid API metadata; infrastructure must
+    // carry none. Both sides are fail-closed so adding a new non-participant
+    // kind cannot silently weaken coherence coverage.
+    if artifact.kind.embeds_participant_metadata() {
+        extract_and_validate_metadata(&binary_path, artifact)?;
+    } else {
+        validate_metadata_absent(&binary_path, artifact)?;
+    }
 
     let stem = asset_stem(artifact, target_triple);
     let tarball = out_dir.join(format!("{stem}.tar.zst"));
@@ -329,21 +332,8 @@ pub(crate) fn validate_supported_target(
     )
 }
 
-/// Builds stable-feature artifacts together, then builds `phoxal-tool-router`
-/// separately. The router alone enables `zenoh/unstable`; combining it with
-/// the other packages would unify that feature into every shipped binary and
-/// make the release graph differ from the stable graph verified in CI.
 fn build_target_artifacts(root: &Path, package_names: &[&str], target_triple: &str) -> Result<()> {
-    let (stable, router): (Vec<_>, Vec<_>) = package_names
-        .iter()
-        .copied()
-        .partition(|package| *package != "phoxal-tool-router");
-    for packages in [stable.as_slice(), router.as_slice()] {
-        if !packages.is_empty() {
-            build_target_package_group(root, packages, target_triple)?;
-        }
-    }
-    Ok(())
+    build_target_package_group(root, package_names, target_triple)
 }
 
 fn build_target_package_group(
@@ -452,6 +442,28 @@ fn extract_and_validate_metadata(
     Ok(meta)
 }
 
+fn validate_metadata_absent(binary_path: &Path, artifact: &OfficialArtifact) -> Result<()> {
+    let bytes = fs::read(binary_path)
+        .with_context(|| format!("failed to read binary {}", binary_path.display()))?;
+    let describe = format!("{} ({})", artifact.package, binary_path.display());
+    let section = metadata::extract_participant_metadata_section_from_bytes(&bytes, &describe)
+        .with_context(|| {
+            format!(
+                "failed to inspect API metadata for {} from {}",
+                artifact.package,
+                binary_path.display()
+            )
+        })?;
+    if section.is_some() {
+        bail!(
+            "{} is an {} artifact and must not embed participant API metadata",
+            artifact.package,
+            artifact.kind
+        );
+    }
+    Ok(())
+}
+
 /// Extracts a participant's API metadata from every packaged target binary
 /// being released and enforces that the raw embedded metadata section is
 /// byte-identical across them. This makes any target's section valid evidence
@@ -462,6 +474,13 @@ pub(crate) fn extract_metadata_from_packaged(
     package_dir: &Path,
     target_triples: &[String],
 ) -> Result<ParticipantMeta> {
+    if !artifact.kind.embeds_participant_metadata() {
+        bail!(
+            "{} is {} and does not have participant API metadata",
+            artifact.package,
+            artifact.kind
+        );
+    }
     let bin_name = artifact.require_bin_name()?;
     let mut canonical: Option<(String, Option<Vec<u8>>, ParticipantMeta)> = None;
 
@@ -510,6 +529,61 @@ pub(crate) fn extract_metadata_from_packaged(
             artifact.package, artifact.version
         )
     })
+}
+
+/// Verifies that every packaged target for a non-participant artifact omits
+/// the participant metadata section.
+pub(crate) fn validate_no_metadata_from_packaged(
+    artifact: &OfficialArtifact,
+    package_dir: &Path,
+    target_triples: &[String],
+) -> Result<()> {
+    if artifact.kind.embeds_participant_metadata() {
+        bail!(
+            "{} is a participant and requires metadata validation",
+            artifact.package
+        );
+    }
+    let bin_name = artifact.require_bin_name()?;
+    if target_triples.is_empty() {
+        bail!(
+            "no binary targets were provided for {} v{}",
+            artifact.package,
+            artifact.version
+        );
+    }
+    for triple in target_triples {
+        let stem = asset_stem(artifact, triple);
+        let tarball = package_dir.join(format!("{stem}.tar.zst"));
+        if !tarball.is_file() {
+            bail!(
+                "missing packaged binary for {} v{} target {}: {}",
+                artifact.package,
+                artifact.version,
+                triple,
+                tarball.display()
+            );
+        }
+        let object_bytes = read_binary_from_tarball(&tarball, bin_name)?;
+        let describe = format!(
+            "{} ({triple}, from {})",
+            artifact.package,
+            tarball.display()
+        );
+        let section =
+            metadata::extract_participant_metadata_section_from_bytes(&object_bytes, &describe)
+                .with_context(|| {
+                    format!("failed to inspect API metadata for {}", artifact.package)
+                })?;
+        if section.is_some() {
+            bail!(
+                "{} target {} must not embed participant API metadata",
+                artifact.package,
+                triple
+            );
+        }
+    }
+    Ok(())
 }
 
 fn ensure_metadata_sections_equal(
@@ -568,6 +642,13 @@ pub(crate) fn build_and_extract_metadata(
     workspace: &Workspace,
     artifact: &OfficialArtifact,
 ) -> Result<ParticipantMeta> {
+    if !artifact.kind.embeds_participant_metadata() {
+        bail!(
+            "{} is {} and does not participate in API coherence",
+            artifact.package,
+            artifact.kind
+        );
+    }
     let package_name = artifact.require_package_name()?;
     let mut command = Command::new("cargo");
     command
@@ -767,6 +848,19 @@ mod tests {
     use super::*;
     use crate::workspace::ArtifactKind;
 
+    fn infrastructure_router_artifact() -> OfficialArtifact {
+        OfficialArtifact {
+            package: "phoxal/infrastructure-router".to_string(),
+            package_name: Some("phoxal-infrastructure-router".to_string()),
+            kind: ArtifactKind::Infrastructure,
+            version: "0.1.0".to_string(),
+            crate_dir: PathBuf::from("infrastructure/router"),
+            bin_name: Some("phoxal-infrastructure-router".to_string()),
+            id: "router".to_string(),
+            metadata: Default::default(),
+        }
+    }
+
     #[test]
     fn asset_stem_uses_package_version_and_host_triple() {
         let artifact = OfficialArtifact {
@@ -868,6 +962,67 @@ mod tests {
                 && contract.contract == "battery::State"
                 && !contract.external
         }));
+        Ok(())
+    }
+
+    #[test]
+    fn infrastructure_router_and_packaged_targets_have_no_participant_metadata() -> Result<()> {
+        let workspace = Workspace::discover()?;
+        let artifact = infrastructure_router_artifact();
+        let package_name = artifact.require_package_name()?;
+        let status = Command::new("cargo")
+            .args(["build", "--quiet", "-p", package_name])
+            .current_dir(workspace.root())
+            .status()
+            .context("failed to build infrastructure router")?;
+        assert!(status.success(), "cargo build -p {package_name} failed");
+        let binary = workspace.target_dir().join("debug").join(format!(
+            "{}{}",
+            artifact.require_bin_name()?,
+            std::env::consts::EXE_SUFFIX
+        ));
+        validate_metadata_absent(&binary, &artifact)?;
+
+        let dir = tempfile::tempdir()?;
+        let targets = ["target-a".to_string(), "target-b".to_string()];
+        for target in &targets {
+            let tarball = dir
+                .path()
+                .join(format!("{}.tar.zst", asset_stem(&artifact, target)));
+            write_tar_zst(&tarball, &binary, artifact.require_bin_name()?)?;
+        }
+        validate_no_metadata_from_packaged(&artifact, dir.path(), &targets)
+    }
+
+    #[test]
+    fn infrastructure_metadata_absence_gate_rejects_a_participant_section() -> Result<()> {
+        let artifact = infrastructure_router_artifact();
+        let mut object = object::write::Object::new(
+            object::BinaryFormat::Elf,
+            object::Architecture::Aarch64,
+            object::Endianness::Little,
+        );
+        let section = object.add_section(
+            Vec::new(),
+            b".phoxal_api_meta".to_vec(),
+            object::SectionKind::ReadOnlyData,
+        );
+        object.append_section_data(
+            section,
+            br#"{"participant_api":"Api","contracts":[],"config_schema":{"type":"null"}}"#,
+            1,
+        );
+        let file = tempfile::NamedTempFile::new()?;
+        fs::write(file.path(), object.write()?)?;
+
+        let error = validate_metadata_absent(file.path(), &artifact)
+            .expect_err("infrastructure metadata must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("must not embed participant API metadata"),
+            "{error:#}"
+        );
         Ok(())
     }
 

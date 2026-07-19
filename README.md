@@ -38,7 +38,8 @@ only distribution and version-baseline channel; they create no per-library git
 tags or GitHub releases.
 
 The official artifact crates (`phoxal-service-<name>`, component crates,
-`phoxal-tool-<name>`, `phoxal-simulator-<name>`) set `publish = false`, which
+`phoxal-tool-<name>`, `phoxal-simulator-<name>`, and
+`phoxal-infrastructure-<name>`) set `publish = false`, which
 keeps them entirely outside release-plz. `cargo xtask release bump --changed`
 compares each artifact's own crate directory with its current
 `{package}-v{version}` tag and adds only the changed artifacts' patch bumps to
@@ -51,7 +52,9 @@ release that publishes any of the four shared libraries rebuilds every official
 artifact because their linked code may have changed. An artifact-only release
 builds and uploads only the artifacts whose independent versions were newly
 tagged. A forced recovery build, cold start, or non-coherent previous latest
-catalog also rebuilds the complete set.
+catalog also rebuilds the complete set. Participant binaries must embed their
+contract metadata; infrastructure binaries must embed none, and both rules are
+validated before packaging.
 
 Each wave uploads its selected archives together with an assembled
 `phoxal.catalog/v0` `catalog.json` full index to one immutable

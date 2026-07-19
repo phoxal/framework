@@ -43,9 +43,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends musl-tools
 
-      # This package-only build also keeps the published Zenoh consumers honest:
-      # the router tool is not selected, so its unstable feature is not unified
-      # into phoxal-bus or phoxal here.
+      # This package-only build also keeps the published Zenoh consumers honest.
       - name: Build library crates for musl
         run: >
           cargo build
@@ -106,7 +104,7 @@ jobs:
         run: cargo test -p phoxal --lib model::robot::schema_guard::schema_matches_model -- --exact
 
   feature-boundary:
-    name: stable and router feature boundaries
+    name: stable feature boundaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -129,8 +127,3 @@ jobs:
           cargo test -p phoxal --lib --no-default-features
           cargo clippy -p phoxal --all-targets --no-default-features -- -D warnings
           cargo clippy -p phoxal-bus -p phoxal-api --all-targets --no-default-features -- -D warnings
-
-      # Keep the router's `zenoh/unstable` graph out of the stable package
-      # checks above so workspace feature unification cannot hide either shape.
-      - name: Build the router feature graph separately
-        run: cargo check -p phoxal-tool-router --all-targets --all-features
