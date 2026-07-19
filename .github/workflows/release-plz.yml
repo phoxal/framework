@@ -552,10 +552,11 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       # release-plz creates/updates the library release PR first and reports its
-      # head branch as JSON. Check out that branch, add only per-crate git-diff
-      # artifact bumps (including their lockfile entries), and push them into
-      # the same PR. If no library needs a release, create that same release PR
-      # only when an artifact bump exists.
+      # head branch as JSON. Check out that branch, add per-crate git-diff
+      # artifact bumps (including their lockfile entries) plus any initial
+      # artifact releases at their authored versions, and push them into the
+      # same PR. If no library needs a release, create that release PR only when
+      # an artifact bump or initial release exists.
       - name: Add changed artifact bumps to the release PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
@@ -581,15 +582,39 @@ jobs:
 
           artifact_notes="$RUNNER_TEMP/artifact-release-notes.md"
           cargo xtask release bump --changed --notes-out "$artifact_notes"
+          if [ ! -s "$artifact_notes" ] && git diff --quiet; then
+            echo "no changed, pending, or initial artifact releases to add"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet; then
-            if [ ! -s "$artifact_notes" ]; then
-              echo "no changed or pending artifact versions to add"
-              exit 0
+            # Notes without a manifest diff mean either an already-pending bump
+            # or an initial artifact released at its authored version. A new
+            # artifact-only release still needs one reviewable release PR, so
+            # create exactly one signed-off empty release commit. Reruns find that
+            # PR above and refresh its notes without stacking empty commits.
+            if [ "$release_pr_exists" = false ]; then
+              merge_settings="$(
+                gh api "repos/$GITHUB_REPOSITORY" \
+                  --jq '[.allow_squash_merge, .allow_merge_commit, .allow_rebase_merge] | map(tostring) | join(",")'
+              )"
+              if [ "$merge_settings" != "true,false,false" ]; then
+                echo "::error::artifact-only release PRs require this repository to allow squash merges only"
+                exit 1
+              fi
+              git commit --allow-empty --signoff -m "chore(release): release initial artifacts"
+              git push --force-with-lease origin "$branch"
+              gh pr create \
+                --head "$branch" \
+                --base main \
+                --title "chore(release): release" \
+                --body "Automated release PR. Initial artifact versions are released as authored; later versions are selected independently by git diff of each crate directory against its current version tag. Squash merge is the required release action."
+            else
+              echo "artifact releases are already pending; refreshing release notes only"
             fi
-            echo "artifact versions are already pending; refreshing release notes only"
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add -u
             git commit --signoff -m "chore(release): bump changed artifacts"
             git push --force-with-lease origin "$branch"
@@ -607,7 +632,11 @@ jobs:
           # Append exactly one generated artifact section so the visible release
           # list and changelog match the artifact manifests in the PR diff.
           if [ -s "$artifact_notes" ]; then
-            pr_number="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number')"
+            pr_number="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
+            if [ -z "$pr_number" ]; then
+              echo "::error::artifact release notes exist but no release PR was found for $branch"
+              exit 1
+            fi
             gh pr view "$pr_number" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
             awk '
               index($0, "<!-- phoxal-artifact-releases:start -->") { skipping = 1; next }
