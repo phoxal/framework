@@ -29,9 +29,10 @@ changes. The 4 library crates and the official artifact crates use different
 version authorities.
 
 [release-plz](https://release-plz.dev) owns only the libraries (`phoxal-bus`,
-`phoxal-api`, `phoxal`, `phoxal-macros`). On a schedule (and on demand via
-workflow dispatch), it opens or updates a single `chore(release): release` PR
-for their version and changelog changes.
+`phoxal-api`, `phoxal`, `phoxal-macros`). After each ordinary update to `main`,
+it opens or updates a single `chore(release): release` PR for their version and
+changelog changes. Twice-daily scheduling and on-demand workflow dispatch retry
+preparation from the current `main` state.
 Merging that PR publishes the changed library crates (`phoxal-bus`,
 `phoxal-api`, `phoxal`, `phoxal-macros`) to crates.io. The registry is their
 only distribution and version-baseline channel; they create no per-library git
