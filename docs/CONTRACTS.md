@@ -123,6 +123,9 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
   snapshot, replay only newer buffered items, and re-query on a generation
   change or sequence gap. `v1::tool::log` retains the newest 1,000 existing
   `v1::logs` events; `v1::tool::bus` retains the newest 60 one-second windows.
+  `v1::tool::runtime` retains five host-monotonic minutes of portable runner
+  rollups behind a bounded, participant-filterable backward-paginated query.
+  Its follow stream uses the same generation/sequence recovery rule.
 
 ### Raw retention-tool coherence boundary
 

@@ -9,6 +9,7 @@
 //! The golden tests that bind the bus to the real `v1` tree live in the
 //! `phoxal` crate (`phoxal/tests/bus_api.rs`).
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,8 @@ use crate::metadata::{BusMetadata, Source};
 use crate::topic::Topic;
 use crate::{
     AskQuery, Bus, BusConfig, BusError, Latest, LogicalTime, Publish, Publisher, Querier,
-    QueryCode, QueryError, QueryFailure, Subscribe,
+    QueryCode, QueryError, QueryFailure, RuntimeBufferKind, RuntimeDirection, Subscribe,
+    Subscriber,
 };
 
 // A hand-written API version + contract body, standing in for the macro-generated
@@ -291,6 +293,100 @@ async fn live_publisher_to_latest_round_trip() {
     let body = received.expect("Latest should observe the published body in-process");
     assert_eq!(body.linear_x_mps, 0.9);
 
+    bus.close().await.unwrap();
+}
+
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
+    let bus = Bus::open(BusConfig::in_process("dev", "metrics"))
+        .await
+        .unwrap();
+    let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let publisher = Publisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+    let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+    let subscriber = Subscriber::<Target>::new(&bus, &sub_topic, 1)
+        .await
+        .unwrap();
+
+    // Declarations are retained even before any traffic.
+    let quiet = bus.take_runtime_metrics();
+    assert_eq!(quiet.len(), 3);
+    assert!(quiet.iter().all(|row| row.count == 0));
+
+    for value in [1.0, 2.0, 3.0] {
+        publisher
+            .publish_at(
+                LogicalTime::new(0, value as u64),
+                Target {
+                    linear_x_mps: value,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .await
+            .unwrap();
+    }
+    for _ in 0..50 {
+        if latest
+            .latest()
+            .is_some_and(|sample| sample.linear_x_mps == 3.0)
+            && bus.health().inbound_drops.load(Ordering::Relaxed) >= 2
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Inject a malformed body on the exact subscribed key. Both independent
+    // subscriptions reject it and each exact buffer row counts its own error.
+    bus.session()
+        .put(
+            OwnedKeyExpr::new(bus.full_key(<Target as ContractBody>::TOPIC)).unwrap(),
+            vec![0xc1_u8],
+        )
+        .encoding(Encoding::from(encoding_string(CodecId::MessagePack)))
+        .attachment(metadata().encode())
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        if bus.health().decode_errors.load(Ordering::Relaxed) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let rows = bus.take_runtime_metrics();
+    let outbound = rows
+        .iter()
+        .find(|row| row.key.direction == RuntimeDirection::Publish)
+        .unwrap();
+    assert_eq!(outbound.key.buffer_kind, RuntimeBufferKind::Outbound);
+    assert_eq!(outbound.key.topic, <Target as ContractBody>::TOPIC);
+    assert_eq!(outbound.count, 3);
+
+    let latest_row = rows
+        .iter()
+        .find(|row| row.key.buffer_kind == RuntimeBufferKind::Latest)
+        .unwrap();
+    assert_eq!(latest_row.count, 3);
+    assert_eq!(latest_row.latest_overwrites, 2);
+    assert_eq!(latest_row.capacity, 1);
+    assert_eq!(latest_row.current_depth, 1);
+    assert_eq!(latest_row.decode_errors, 1);
+
+    let subscriber_row = rows
+        .iter()
+        .find(|row| row.key.buffer_kind == RuntimeBufferKind::Subscriber)
+        .unwrap();
+    assert_eq!(subscriber_row.count, 3);
+    assert_eq!(subscriber_row.bounded_evictions, 2);
+    assert_eq!(subscriber_row.drops, 2);
+    assert_eq!(subscriber_row.current_depth, 1);
+    assert_eq!(subscriber_row.high_water_depth, 1);
+    assert_eq!(subscriber_row.decode_errors, 1);
+
+    drop(subscriber);
     bus.close().await.unwrap();
 }
 

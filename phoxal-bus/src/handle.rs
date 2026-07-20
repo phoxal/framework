@@ -52,7 +52,9 @@ use crate::contract::ContractBody;
 use crate::error::{BusError, Result};
 use crate::metadata::{BusMetadata, Source};
 use crate::query::{QueryError, QueryFailure};
+use crate::runtime_metrics::RuntimeMetricHandle;
 use crate::session::Bus;
+use crate::session::OUTBOUND_CAPACITY;
 use crate::topic::{AskQuery, Publish, Subscribe, Topic};
 
 /// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
@@ -65,6 +67,7 @@ pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct Publisher<B> {
     bus: Bus,
     key: String,
+    metric: RuntimeMetricHandle,
     _body: PhantomData<fn() -> B>,
 }
 
@@ -80,6 +83,7 @@ impl<B> Clone for Publisher<B> {
         Publisher {
             bus: self.bus.clone(),
             key: self.key.clone(),
+            metric: self.metric.clone(),
             _body: PhantomData,
         }
     }
@@ -90,10 +94,15 @@ impl<B: ContractBody> Publisher<B> {
     /// The author-facing path is `ctx.publisher(...)` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
     pub fn new(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
-        let key = bus.full_key(topic.publish_key()?);
+        let topic_key = topic.publish_key()?;
+        let metric = bus
+            .runtime_metrics()
+            .register_outbound(topic_key, OUTBOUND_CAPACITY);
+        let key = bus.full_key(topic_key);
         Ok(Publisher {
             bus,
             key,
+            metric,
             _body: PhantomData,
         })
     }
@@ -130,8 +139,13 @@ impl<B: ContractBody> Publisher<B> {
             },
         };
         let encoding = encoding_string(MessagePack::ID);
-        self.bus
-            .enqueue(self.key.clone(), encoding, metadata.encode(), payload)
+        self.bus.enqueue(
+            self.key.clone(),
+            encoding,
+            metadata.encode(),
+            payload,
+            self.metric.clone(),
+        )
     }
 }
 
@@ -320,9 +334,17 @@ impl<B: ContractBody> Latest<B> {
     pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         let slot: Arc<ArcSwapOption<B>> = Arc::new(ArcSwapOption::from(None));
         let store = Arc::clone(&slot);
-        let guard = spawn_subscription::<B, _>(bus, topic.key(), move |body, _meta| {
-            store.store(Some(Arc::new(body)));
-        })
+        let metric = bus.runtime_metrics().register_latest(topic.key());
+        let observe = metric.clone();
+        let guard = spawn_subscription::<B, _>(
+            bus,
+            topic.key(),
+            move |body, _meta| {
+                let overwrote = store.swap(Some(Arc::new(body))).is_some();
+                observe.record_latest(overwrote);
+            },
+            metric,
+        )
         .await?;
         Ok(Latest {
             slot,
@@ -371,6 +393,7 @@ impl<B: ContractBody> Latest<B> {
 /// fan-out.
 pub struct Subscriber<B> {
     ring: Arc<Ring<B>>,
+    metric: RuntimeMetricHandle,
     _guard: Arc<SubscriptionGuard>,
 }
 
@@ -381,6 +404,7 @@ impl<B> Clone for Subscriber<B> {
     fn clone(&self) -> Self {
         Subscriber {
             ring: Arc::clone(&self.ring),
+            metric: self.metric.clone(),
             _guard: Arc::clone(&self._guard),
         }
     }
@@ -391,17 +415,30 @@ impl<B: ContractBody> Subscriber<B> {
     /// The author-facing path is `ctx.subscribe(...)` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
     pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>, depth: usize) -> Result<Self> {
-        let ring = Arc::new(Ring::new(depth.max(1)));
+        let depth = depth.max(1);
+        let ring = Arc::new(Ring::new(depth));
         let push = Arc::clone(&ring);
         let drops = bus.clone();
-        let guard = spawn_subscription::<B, _>(bus, topic.key(), move |body, metadata| {
-            if push.push(Received { body, metadata }) {
-                drops.health().inbound_drops.fetch_add(1, Ordering::Relaxed);
-            }
-        })
+        let metric = bus
+            .runtime_metrics()
+            .register_subscriber(topic.key(), depth);
+        let observe = metric.clone();
+        let guard = spawn_subscription::<B, _>(
+            bus,
+            topic.key(),
+            move |body, metadata| {
+                let (evicted, current_depth) = push.push(Received { body, metadata });
+                observe.record_subscriber(evicted, current_depth);
+                if evicted {
+                    drops.health().inbound_drops.fetch_add(1, Ordering::Relaxed);
+                }
+            },
+            metric.clone(),
+        )
         .await?;
         Ok(Subscriber {
             ring,
+            metric,
             _guard: Arc::new(guard),
         })
     }
@@ -415,7 +452,9 @@ impl<B: ContractBody> Subscriber<B> {
     /// (see the [type docs](Self)). Do not `recv` a `Subscriber` from a
     /// snapshot server; read committed `Snapshot` state instead.
     pub async fn recv(&self) -> Result<Received<B>> {
-        self.ring.recv().await
+        let (received, current_depth) = self.ring.recv().await;
+        self.metric.record_subscriber_pop(current_depth);
+        Ok(received)
     }
 
     /// Take the next decoded body if one is buffered, without awaiting.
@@ -423,7 +462,10 @@ impl<B: ContractBody> Subscriber<B> {
     /// **Destructive**, exactly like [`recv`](Self::recv): it pops from the
     /// shared ring, so clones compete for samples - see the [type docs](Self).
     pub fn try_recv(&self) -> Option<Received<B>> {
-        self.ring.try_pop()
+        self.ring.try_pop().map(|(received, current_depth)| {
+            self.metric.record_subscriber_pop(current_depth);
+            received
+        })
     }
 
     /// Cumulative samples evicted from this subscriber's bounded ring.
@@ -453,34 +495,36 @@ impl<B> Ring<B> {
         }
     }
 
-    /// Push, dropping the oldest if full. Returns `true` if a drop occurred.
-    fn push(&self, item: Received<B>) -> bool {
+    /// Push, dropping the oldest if full. Returns eviction + resulting depth.
+    fn push(&self, item: Received<B>) -> (bool, usize) {
         let mut dropped = false;
-        {
-            let mut buf = self.buf.lock().expect("ring mutex poisoned");
-            if buf.len() == self.cap {
-                buf.pop_front();
-                dropped = true;
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
-            buf.push_back(item);
+        let mut buf = self.buf.lock().expect("ring mutex poisoned");
+        if buf.len() == self.cap {
+            buf.pop_front();
+            dropped = true;
+            self.dropped.fetch_add(1, Ordering::Relaxed);
         }
+        buf.push_back(item);
+        let depth = buf.len();
+        drop(buf);
         self.notify.notify_one();
-        dropped
+        (dropped, depth)
     }
 
-    fn try_pop(&self) -> Option<Received<B>> {
-        self.buf.lock().expect("ring mutex poisoned").pop_front()
+    fn try_pop(&self) -> Option<(Received<B>, usize)> {
+        let mut buf = self.buf.lock().expect("ring mutex poisoned");
+        let item = buf.pop_front()?;
+        Some((item, buf.len()))
     }
 
-    async fn recv(&self) -> Result<Received<B>> {
+    async fn recv(&self) -> (Received<B>, usize) {
         loop {
             // Register the waiter *before* checking, so a push between the check
             // and the await is not missed (tokio::sync::Notify semantics).
             let notified = self.notify.notified();
             // Hold the std mutex only to pop; never across the await below.
-            if let Some(item) = self.buf.lock().expect("ring mutex poisoned").pop_front() {
-                return Ok(item);
+            if let Some(item) = self.try_pop() {
+                return item;
             }
             notified.await;
         }
@@ -505,6 +549,7 @@ async fn spawn_subscription<B, F>(
     bus: &Bus,
     topic_key: &str,
     mut on_sample: F,
+    metric: RuntimeMetricHandle,
 ) -> Result<SubscriptionGuard>
 where
     B: ContractBody,
@@ -527,6 +572,7 @@ where
             match decode_sample::<B>(&sample, &topic_owned) {
                 Ok((body, metadata)) => on_sample(body, metadata),
                 Err(err) => {
+                    metric.record_decode_error();
                     health_bus
                         .health()
                         .decode_errors
@@ -621,10 +667,12 @@ mod subscriber_ring_tests {
     #[test]
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
         let ring = Ring::new(1);
-        assert!(!ring.push(received(1)));
-        assert!(ring.push(received(2)));
-        assert!(ring.push(received(3)));
+        assert_eq!(ring.push(received(1)), (false, 1));
+        assert_eq!(ring.push(received(2)), (true, 1));
+        assert_eq!(ring.push(received(3)), (true, 1));
         assert_eq!(ring.dropped.load(Ordering::Relaxed), 2);
-        assert_eq!(ring.try_pop().unwrap().body, 3);
+        let (received, depth) = ring.try_pop().unwrap();
+        assert_eq!(received.body, 3);
+        assert_eq!(depth, 0);
     }
 }

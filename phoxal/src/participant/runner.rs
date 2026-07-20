@@ -69,7 +69,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 #[cfg(feature = "preview-v2")]
@@ -81,7 +81,7 @@ use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
 use crate::participant::launch::{ClockMode, ParticipantLaunch, ParticipantLaunchPolicy};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
-use crate::participant::process_metrics::{self, ProcessMetricsPublisher};
+use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::{
     AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
     StepScheduler, duration_to_nanos_saturating,
@@ -514,15 +514,10 @@ where
         }));
     }
 
-    // Per-participant process telemetry (D-telemetry): the `sysinfo` sampling
-    // runs entirely on a dedicated background task (its own timer,
-    // `spawn_blocking` refresh), so a resource sample can never delay the
-    // step loop. The lifecycle loop only publishes the
-    // already-computed sample it receives over the watch channel. The sampler
-    // task is aborted at shutdown alongside the server tasks.
-    let process_metrics = ProcessMetricsPublisher::attach(bus.clone());
-    let (mut process_metrics_rx, process_metrics_task) = process_metrics::spawn_sampler();
-    server_tasks.push(process_metrics_task);
+    // Portable runtime evidence is measured at the runner-owned step/buffer
+    // boundaries. No OS sampler or participant-authored telemetry is involved.
+    let runtime_performance_publisher = RuntimePerformancePublisher::attach(bus.clone());
+    let mut runtime_performance = RuntimePerformance::new(schedule);
 
     let shutdown = pin!(shutdown);
     let liveliness = match bus.declare_participant_liveliness().await {
@@ -552,8 +547,8 @@ where
         &committed,
         &mut excl_rx,
         shutdown,
-        &process_metrics,
-        &mut process_metrics_rx,
+        &runtime_performance_publisher,
+        &mut runtime_performance,
         &watchdog,
         &mut managed_tasks,
     )
@@ -661,8 +656,8 @@ async fn main_loop<R, C, S>(
     committed: &Arc<ArcSwapOption<R::Snapshot>>,
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
-    process_metrics: &ProcessMetricsPublisher,
-    process_metrics_rx: &mut watch::Receiver<Option<process_metrics::ProcessMetricsSample>>,
+    runtime_performance_publisher: &RuntimePerformancePublisher,
+    runtime_performance: &mut RuntimePerformance,
     watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
@@ -686,11 +681,8 @@ where
         tokio::select! {
             // Order matters: shutdown first, then a managed-task fault (both are
             // "stop the loop" events and should preempt routine work), then the
-            // framework health tick, then a *due* step, then server queries, then
-            // the lowest-priority process-metrics publish last (a background task
-            // does the sampling; this branch only enqueues the already-computed
-            // sample, never allowed to preempt anything above it). Health is
-            // cheap and must not be starved by an overloaded participant; due
+            // framework health tick, then a *due* step, then server queries.
+            // Health is cheap and must not be starved by an overloaded participant; due
             // steps still take priority over a steady query backlog. `Some(..)`
             // disables the query branch if the channel ever closes, so it never
             // busy-loops.
@@ -708,6 +700,9 @@ where
             _ = health_tick(next_health_tick) => {
                 watchdog.feed();
                 advance_deadline(&mut next_health_tick, HEALTH_TICK_INTERVAL);
+                if let Some(rollup) = runtime_performance.take_rollup(bus) {
+                    runtime_performance_publisher.publish(clock.now(), rollup);
+                }
             }
             SchedulerTick { fired_at, missed_ticks } = step_tick(scheduler, next_step_target) => {
                 let (Some(period), Some(target)) = (period, next_step_target) else { continue };
@@ -736,12 +731,18 @@ where
                 // (D32); the snapshot is committed only after a *successful* step so
                 // a failed mutation is never published as committed state. A panic
                 // would unwind and abort the process.
-                match participant.__step(api, step).await {
-                    Ok(()) => commit_snapshot::<R>(participant, committed),
+                let observation = runtime_performance.begin_step(missed_ticks);
+                let success = match participant.__step(api, step).await {
+                    Ok(()) => {
+                        commit_snapshot::<R>(participant, committed);
+                        true
+                    }
                     Err(e) => {
                         tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
+                        false
                     }
-                }
+                };
+                runtime_performance.finish_step(observation, success);
                 watchdog.feed();
             }
             Some(incoming) = excl_rx.recv() => {
@@ -751,17 +752,6 @@ where
                     commit_snapshot::<R>(participant, committed);
                 }
                 watchdog.feed();
-            }
-            // A fresh sample landed from the background sampler; publish the
-            // latest (this is a `state` contract, so latest wins). Once the
-            // sampler task ends (only at shutdown, or if it faults) `changed()`
-            // errors and this branch simply stops firing - no busy-loop, the
-            // loop keeps parking on the health tick above.
-            Ok(()) = process_metrics_rx.changed() => {
-                let sample = process_metrics_rx.borrow_and_update().clone();
-                if let Some(body) = sample {
-                    process_metrics.publish(clock.now(), body);
-                }
             }
         }
     }

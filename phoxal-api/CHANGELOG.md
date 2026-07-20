@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add stable bounded snapshot/follow contracts for per-robot structured logs
   and bus-rate history under `v1::tool`.
 - Disclose cumulative tool-log ingest-ring loss on snapshots and follow items.
+- Add stable runtime-performance rollup, bounded history query, and follow
+  contracts under `v1::tool::runtime`.
 
 ### Removed
 
 - Remove the superseded preview `v2::router::Metrics` live-only contract.
+- Remove the preview per-process CPU/RSS telemetry contract.
 
 ## [0.22.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.21.3...phoxal-api-v0.22.0) - 2026-07-20
 

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Publish bounded host-monotonic step and typed-bus pressure rollups from every
+  participant runner without participant-authored instrumentation.
+
+### Removed
+
+- Remove the runner's preview per-process `sysinfo` sampler.
+
 ## [0.35.0](https://github.com/phoxal/framework/compare/phoxal-v0.34.3...phoxal-v0.35.0) - 2026-07-20
 
 ### Added

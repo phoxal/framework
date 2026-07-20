@@ -180,6 +180,12 @@ async fn new_model_participant_runs_through_a_real_bus() {
     )
     .await
     .expect("subscribe target");
+    let runtime_latest = Latest::<api::tool::runtime::Rollup>::new(
+        &bus,
+        &api::topic::new().tool().runtime().rollup(),
+    )
+    .await
+    .expect("subscribe runner performance");
     let lookup_querier = Querier::<api::frame::LookupRequest, api::frame::LookupResponse>::new(
         bus.clone(),
         &api::topic::new().frame().lookup(),
@@ -195,7 +201,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
 
     let launch = ParticipantLaunch::local("wall-follower-v2-1", "robot");
     let runner = run_with_bus::<WallFollower, _>(&bus, launch, async {
-        tokio::time::sleep(Duration::from_millis(600)).await
+        tokio::time::sleep(Duration::from_millis(1_200)).await
     });
 
     let queries = async {
@@ -268,6 +274,20 @@ async fn new_model_participant_runs_through_a_real_bus() {
         "#[shutdown]'s `&mut Self::Api` publish should eventually be observed as the zeroed target",
     );
     assert_eq!(zeroed.angular_z_radps, 0.0);
+
+    let runtime = runtime_latest
+        .latest()
+        .expect("the runner should publish a portable rollup without participant-authored code");
+    let step = runtime
+        .step
+        .expect("a scheduled participant should report step timing");
+    assert!(step.completed > 0);
+    assert_eq!(step.target_period_ns, 5_000_000);
+    assert!(runtime.topics.iter().any(|row| {
+        row.topic == "v1/drive/target"
+            && row.direction == api::tool::RuntimeDirection::Publish
+            && row.buffer_kind == api::tool::RuntimeBufferKind::Outbound
+    }));
 }
 
 // ---------------------------------------------------------------------------

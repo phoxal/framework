@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, OwnerCap, Publisher, host_time};
-#[cfg(test)]
-use phoxal::raw::{Codec, MessagePack};
-use phoxal_api::v2 as api;
+use phoxal::raw::{
+    Bus, Codec, MessagePack, OwnerCap, Publisher, QueryFailure, Subscriber, host_time,
+};
+use phoxal_api::{v1 as stable, v2 as api};
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 /// Host sampling cadence: frequent enough for a live CLI dashboard to feel
@@ -14,6 +15,10 @@ use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, Refresh
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_DISK_ROWS: usize = 32;
 const MAX_DISK_TEXT_BYTES: usize = 128;
+const RUNTIME_RETENTION: Duration = Duration::from_secs(5 * 60);
+const MAX_RUNTIME_RECORDS: usize = 4_096;
+const DEFAULT_RUNTIME_QUERY_RECORDS: usize = 64;
+const MAX_RUNTIME_QUERY_RECORDS: usize = 64;
 #[cfg(test)]
 const MAX_HOST_WIRE_BYTES: usize = 16 * 1024;
 
@@ -29,15 +34,238 @@ struct ToolTelemetry;
 impl ToolTelemetry {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let publisher = host_publisher(ctx.raw_bus(), ctx.owner_capability())?;
+        let bus = ctx.raw_bus();
+        let cap = ctx.owner_capability();
+        let publisher = host_publisher(bus.clone(), cap)?;
         ctx.spawn_managed_with("host-sampler", ManagedTaskPolicy::FaultOnExit, async move {
             sample_host_forever(publisher).await;
         });
+
+        let runtime_history = Arc::new(Mutex::new(RuntimeHistory::new(process_generation()?)));
+        let runtime_rollups =
+            Subscriber::new(&bus, &stable::topic::new().tool().runtime().rollup(), 128).await?;
+        let runtime_follow = Publisher::new(
+            bus.clone(),
+            &stable::topic::internal::new(cap).tool().runtime().follow(),
+        )?;
+        let runtime_snapshot_topic = stable::topic::internal::new(cap)
+            .tool()
+            .runtime()
+            .snapshot();
+        let runtime_snapshots = bus.declare_server(runtime_snapshot_topic.key()).await?;
+
+        let ingest_history = Arc::clone(&runtime_history);
+        ctx.spawn_managed_with(
+            "runtime-performance-ingest",
+            ManagedTaskPolicy::FaultOnExit,
+            async move {
+                loop {
+                    let received = match runtime_rollups.recv().await {
+                        Ok(received) => received,
+                        Err(error) => {
+                            tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance ingest stopped");
+                            return;
+                        }
+                    };
+                    let follow = ingest_history
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .ingest(
+                            Instant::now(),
+                            received.metadata.source.participant,
+                            received.body,
+                        );
+                    if let Err(error) = runtime_follow.publish_at(host_time(), follow).await {
+                        tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance follow publish failed");
+                    }
+                }
+            },
+        );
+
+        let query_history = Arc::clone(&runtime_history);
+        let query_bus = bus.clone();
+        ctx.spawn_managed_with(
+            "runtime-performance-query",
+            ManagedTaskPolicy::FaultOnExit,
+            async move {
+                loop {
+                    let incoming = match runtime_snapshots.recv().await {
+                        Ok(incoming) => incoming,
+                        Err(error) => {
+                            tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance snapshot server stopped");
+                            return;
+                        }
+                    };
+                    let request = match MessagePack::decode::<
+                        stable::tool::runtime::SnapshotRequest,
+                    >(&incoming.request_bytes().unwrap_or_default())
+                    {
+                        Ok(request) => request,
+                        Err(error) => {
+                            let _ = incoming
+                                .reply_err(&QueryFailure::invalid_argument(format!(
+                                    "decode runtime-performance snapshot request: {error}"
+                                )))
+                                .await;
+                            continue;
+                        }
+                    };
+                    let snapshot = query_history
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .snapshot(Instant::now(), &request);
+                    match MessagePack::encode(&snapshot) {
+                        Ok(payload) => {
+                            if let Err(error) = incoming.reply(&query_bus, payload).await {
+                                tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance snapshot reply failed");
+                            }
+                        }
+                        Err(error) => {
+                            let _ = incoming
+                                .reply_err(&QueryFailure::internal(format!(
+                                    "encode runtime-performance snapshot: {error}"
+                                )))
+                                .await;
+                        }
+                    }
+                }
+            },
+        );
 
         tracing::info!(target: "tool_telemetry", "telemetry ready");
 
         Ok((Self, ()))
     }
+}
+
+#[derive(Debug)]
+struct TimedRuntimeRecord {
+    received_at: Instant,
+    record: stable::tool::runtime::Record,
+}
+
+#[derive(Debug)]
+struct RuntimeHistory {
+    generation: String,
+    sequence: u64,
+    capacity_evictions: u64,
+    records: VecDeque<TimedRuntimeRecord>,
+}
+
+impl RuntimeHistory {
+    fn new(generation: String) -> Self {
+        Self {
+            generation,
+            sequence: 0,
+            capacity_evictions: 0,
+            records: VecDeque::new(),
+        }
+    }
+
+    fn ingest(
+        &mut self,
+        now: Instant,
+        participant_id: String,
+        rollup: stable::tool::runtime::Rollup,
+    ) -> stable::tool::runtime::Follow {
+        self.prune(now);
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .expect("tool-telemetry runtime sequence exhausted");
+        let record = stable::tool::runtime::Record {
+            sequence: self.sequence,
+            participant_id,
+            window_ns: rollup.window_ns,
+            step: rollup.step,
+            topics: rollup.topics,
+            overflow: rollup.overflow,
+        };
+        self.records.push_back(TimedRuntimeRecord {
+            received_at: now,
+            record: record.clone(),
+        });
+        if self.records.len() > MAX_RUNTIME_RECORDS {
+            self.records.pop_front();
+            self.capacity_evictions = self.capacity_evictions.saturating_add(1);
+        }
+        stable::tool::runtime::Follow {
+            cursor: self.cursor(),
+            record,
+        }
+    }
+
+    fn snapshot(
+        &mut self,
+        now: Instant,
+        request: &stable::tool::runtime::SnapshotRequest,
+    ) -> stable::tool::runtime::Snapshot {
+        self.prune(now);
+        let requested = if request.limit == 0 {
+            DEFAULT_RUNTIME_QUERY_RECORDS
+        } else {
+            usize::try_from(request.limit).unwrap_or(usize::MAX)
+        };
+        let limit = requested.min(MAX_RUNTIME_QUERY_RECORDS);
+        let mut records = self
+            .records
+            .iter()
+            .rev()
+            .filter(|timed| {
+                request
+                    .before_sequence
+                    .is_none_or(|before| timed.record.sequence < before)
+                    && request
+                        .participant_id
+                        .as_ref()
+                        .is_none_or(|participant| timed.record.participant_id == *participant)
+            })
+            .take(limit)
+            .map(|timed| timed.record.clone())
+            .collect::<Vec<_>>();
+        records.reverse();
+        let next_before_sequence = records.first().and_then(|first| {
+            self.records
+                .iter()
+                .any(|timed| {
+                    timed.record.sequence < first.sequence
+                        && request
+                            .participant_id
+                            .as_ref()
+                            .is_none_or(|participant| timed.record.participant_id == *participant)
+                })
+                .then_some(first.sequence)
+        });
+        stable::tool::runtime::Snapshot {
+            cursor: self.cursor(),
+            records,
+            capacity_evictions: self.capacity_evictions,
+            next_before_sequence,
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self.records.front().is_some_and(|record| {
+            now.saturating_duration_since(record.received_at) > RUNTIME_RETENTION
+        }) {
+            self.records.pop_front();
+        }
+    }
+
+    fn cursor(&self) -> stable::tool::Cursor {
+        stable::tool::Cursor {
+            generation: self.generation.clone(),
+            sequence: self.sequence,
+        }
+    }
+}
+
+fn process_generation() -> Result<String> {
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).map_err(|error| {
+        anyhow::anyhow!("OS entropy unavailable for tool-telemetry generation: {error}")
+    })?;
+    Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn host_publisher(bus: Bus, cap: OwnerCap) -> Result<Publisher<api::telemetry::Host>> {
@@ -276,6 +504,99 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_generation_is_opaque_and_unique_per_call() {
+        let first = process_generation().unwrap();
+        let second = process_generation().unwrap();
+        assert_eq!(first.len(), 32);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    fn runtime_rollup(window_ns: u64) -> stable::tool::runtime::Rollup {
+        stable::tool::runtime::Rollup {
+            window_ns,
+            step: None,
+            topics: Vec::new(),
+            overflow: None,
+        }
+    }
+
+    #[test]
+    fn runtime_history_retains_five_minutes_and_uses_cursor_sequence() {
+        let mut history = RuntimeHistory::new("generation-a".to_string());
+        let start = Instant::now();
+        let first = history.ingest(start, "drive".to_string(), runtime_rollup(1_000_000_000));
+        let second = history.ingest(
+            start + Duration::from_secs(1),
+            "map".to_string(),
+            runtime_rollup(1_000_000_001),
+        );
+        assert_eq!(first.cursor.sequence, 1);
+        assert_eq!(second.cursor.sequence, 2);
+
+        let snapshot = history.snapshot(
+            start + RUNTIME_RETENTION,
+            &stable::tool::runtime::SnapshotRequest {
+                participant_id: None,
+                limit: 0,
+                before_sequence: None,
+            },
+        );
+        assert_eq!(snapshot.records.len(), 2);
+
+        let expired = history.snapshot(
+            start + RUNTIME_RETENTION + Duration::from_nanos(1),
+            &stable::tool::runtime::SnapshotRequest {
+                participant_id: None,
+                limit: 0,
+                before_sequence: None,
+            },
+        );
+        assert_eq!(expired.records.len(), 1);
+        assert_eq!(expired.records[0].participant_id, "map");
+        assert_eq!(expired.cursor.sequence, 2);
+    }
+
+    #[test]
+    fn runtime_snapshot_filters_and_returns_newest_bounded_records_in_order() {
+        let mut history = RuntimeHistory::new("generation-a".to_string());
+        let start = Instant::now();
+        for index in 0..5 {
+            let participant = if index % 2 == 0 { "drive" } else { "map" };
+            history.ingest(
+                start + Duration::from_secs(index),
+                participant.to_string(),
+                runtime_rollup(index),
+            );
+        }
+        let snapshot = history.snapshot(
+            start + Duration::from_secs(5),
+            &stable::tool::runtime::SnapshotRequest {
+                participant_id: Some("drive".to_string()),
+                limit: 2,
+                before_sequence: None,
+            },
+        );
+        assert_eq!(snapshot.cursor.sequence, 5);
+        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(snapshot.records[0].window_ns, 2);
+        assert_eq!(snapshot.records[1].window_ns, 4);
+        assert_eq!(snapshot.next_before_sequence, Some(3));
+
+        let older = history.snapshot(
+            start + Duration::from_secs(5),
+            &stable::tool::runtime::SnapshotRequest {
+                participant_id: Some("drive".to_string()),
+                limit: 2,
+                before_sequence: snapshot.next_before_sequence,
+            },
+        );
+        assert_eq!(older.records.len(), 1);
+        assert_eq!(older.records[0].window_ns, 0);
+        assert_eq!(older.next_before_sequence, None);
+    }
 
     #[test]
     fn sample_host_window_ns_uses_the_measured_refresh_window() {

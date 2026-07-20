@@ -72,6 +72,18 @@ fn contract_body_topic_is_version_qualified() {
         <api::tool::bus::Follow as ContractBody>::TOPIC,
         "v1/tool/bus/follow"
     );
+    assert_eq!(
+        <api::tool::runtime::Rollup as ContractBody>::TOPIC,
+        "v1/tool/runtime/rollup"
+    );
+    assert_eq!(
+        <api::tool::runtime::Snapshot as ContractBody>::TOPIC,
+        "v1/tool/runtime/snapshot"
+    );
+    assert_eq!(
+        <api::tool::runtime::Follow as ContractBody>::TOPIC,
+        "v1/tool/runtime/follow"
+    );
 }
 
 #[test]
@@ -109,14 +121,6 @@ fn v2_is_one_preview_api_for_post_v1_contracts() {
     assert_eq!(
         v2::topic::new().telemetry().host().key(),
         "v2/telemetry/host"
-    );
-    assert_eq!(
-        <v2::telemetry::Process as ContractBody>::TOPIC,
-        "v2/telemetry/process"
-    );
-    assert_eq!(
-        v2::topic::new().telemetry().process().key(),
-        "v2/telemetry/process"
     );
 
     assert_eq!(
@@ -186,7 +190,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
         for family in [
             "v2::simulation::Clock",
             "v2::telemetry::Host",
-            "v2::telemetry::Process",
             "v2::joypad::Devices",
             "v2::joypad::Select",
             "v2::joypad::SetEnabled",
@@ -216,6 +219,10 @@ fn generated_role_const_matches_each_topic_role() {
 
     // State: telemetry the owning service publishes.
     assert_eq!(api::drive::State::ROLE, TopicRole::State);
+    assert_eq!(api::tool::runtime::Rollup::ROLE, TopicRole::State);
+    assert_eq!(api::tool::runtime::SnapshotRequest::ROLE, TopicRole::Query);
+    assert_eq!(api::tool::runtime::Snapshot::ROLE, TopicRole::Query);
+    assert_eq!(api::tool::runtime::Follow::ROLE, TopicRole::State);
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
     assert_eq!(api::frame::LookupRequest::ROLE, TopicRole::Query);
@@ -230,7 +237,6 @@ fn v2_role_consts_match_each_topic_role() {
     assert_eq!(v2::battery::State::ROLE, TopicRole::State);
     assert_eq!(v2::simulation::Clock::ROLE, TopicRole::State);
     assert_eq!(v2::telemetry::Host::ROLE, TopicRole::State);
-    assert_eq!(v2::telemetry::Process::ROLE, TopicRole::State);
     assert_eq!(v2::joypad::Devices::ROLE, TopicRole::State);
     assert_eq!(v2::joypad::Select::ROLE, TopicRole::Command);
     assert_eq!(v2::joypad::SetEnabled::ROLE, TopicRole::Command);
@@ -560,7 +566,75 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         current: Some(window.clone()),
         windows: vec![window.clone()],
     });
-    round_trip(&api::tool::bus::Follow { cursor, window });
+    round_trip(&api::tool::bus::Follow {
+        cursor: cursor.clone(),
+        window,
+    });
+
+    let topic = api::tool::RuntimeTopic {
+        topic: "v1/drive/state".to_string(),
+        direction: api::tool::RuntimeDirection::Subscribe,
+        buffer_kind: api::tool::RuntimeBufferKind::Latest,
+        count: 42,
+        rate_hz: 41.5,
+        drops: 0,
+        latest_overwrites: 41,
+        bounded_evictions: 0,
+        capacity: 1,
+        current_depth: 1,
+        high_water_depth: 1,
+        decode_errors: 0,
+        overflowed_rows: 0,
+    };
+    let step = api::tool::RuntimeStep {
+        target_period_ns: 20_000_000,
+        completed: 49,
+        errors: 1,
+        mean_duration_ns: 2_000_000,
+        max_duration_ns: 4_000_000,
+        mean_lateness_ns: 10_000,
+        max_lateness_ns: 100_000,
+        missed_ticks: 0,
+        overruns: 0,
+    };
+    round_trip(&api::tool::runtime::Rollup {
+        window_ns: 1_000_000_000,
+        step: Some(step.clone()),
+        topics: vec![topic.clone()],
+        overflow: None,
+    });
+    round_trip(&api::tool::runtime::SnapshotRequest {
+        participant_id: Some("drive".to_string()),
+        limit: 64,
+        before_sequence: None,
+    });
+    let runtime_record = api::tool::runtime::Record {
+        sequence: 10,
+        participant_id: "drive".to_string(),
+        window_ns: 1_000_000_000,
+        step: Some(step),
+        topics: vec![topic],
+        overflow: None,
+    };
+    round_trip(&api::tool::runtime::Snapshot {
+        cursor: cursor.clone(),
+        records: vec![runtime_record.clone()],
+        capacity_evictions: 0,
+        next_before_sequence: None,
+    });
+    round_trip(&api::tool::runtime::Follow {
+        cursor,
+        record: runtime_record,
+    });
+}
+
+#[test]
+fn runtime_rollup_rejects_malformed_payloads() {
+    let corrupt = [0xc1u8, 0xc1, 0xc1];
+    assert!(rmp_serde::from_slice::<api::tool::runtime::Rollup>(&corrupt).is_err());
+
+    let wrong_shape = rmp_serde::to_vec_named(&api::tool::log::SnapshotRequest {}).unwrap();
+    assert!(rmp_serde::from_slice::<api::tool::runtime::Rollup>(&wrong_shape).is_err());
 }
 
 #[test]
@@ -598,11 +672,6 @@ fn v2_bodies_round_trip_through_messagepack() {
         }],
         window_ns: 1_000_000_000,
     });
-    round_trip(&v2::telemetry::Process {
-        cpu_pct: 3.5,
-        rss_bytes: 41_943_040,
-        window_ns: 1_000_000_000,
-    });
     round_trip(&v2::joypad::Device {
         id: "xbox-controller-0".to_string(),
         name: "Xbox Wireless Controller".to_string(),
@@ -624,37 +693,6 @@ fn v2_bodies_round_trip_through_messagepack() {
     });
     round_trip(&v2::joypad::SetEnabled { enabled: true });
     round_trip(&v2::joypad::Rescan {});
-}
-
-#[test]
-#[cfg(feature = "preview-v2")]
-fn v2_telemetry_process_rejects_malformed_payloads() {
-    // `round_trip` only proves encode+decode are self-consistent - both drift
-    // together and it still passes. This asserts the decode side actually
-    // validates the wire bytes, so a corrupt/wrong-shape payload is surfaced as
-    // an error rather than silently accepted (the same guarantee the bus
-    // subscription path relies on; see the engine-side
-    // `v2_process_subscription_counts_decode_errors` for the counted,
-    // through-a-subscription version).
-
-    // Corrupt MessagePack: 0xc1 is the format's never-used marker byte.
-    let corrupt = [0xc1u8, 0xc1, 0xc1];
-    assert!(
-        rmp_serde::from_slice::<v2::telemetry::Process>(&corrupt).is_err(),
-        "corrupt MessagePack must not decode as telemetry::Process"
-    );
-
-    // Valid MessagePack of the WRONG shape: a sibling v2 body whose named
-    // fields do not satisfy `Process { cpu_pct, rss_bytes, window_ns }`. It must
-    // be rejected, not coerced.
-    let wrong_shape = rmp_serde::to_vec_named(&v2::joypad::Select {
-        id: "not-a-process-sample".to_string(),
-    })
-    .unwrap();
-    assert!(
-        rmp_serde::from_slice::<v2::telemetry::Process>(&wrong_shape).is_err(),
-        "a differently-shaped body must not decode as telemetry::Process"
-    );
 }
 
 #[test]
@@ -801,6 +839,18 @@ fn topic_builder_keys_match_contract_topics() {
         "v1/tool/bus/follow"
     );
     assert_eq!(
+        api::topic::new().tool().runtime().rollup().key(),
+        "v1/tool/runtime/rollup"
+    );
+    assert_eq!(
+        api::topic::new().tool().runtime().snapshot().key(),
+        "v1/tool/runtime/snapshot"
+    );
+    assert_eq!(
+        api::topic::new().tool().runtime().follow().key(),
+        "v1/tool/runtime/follow"
+    );
+    assert_eq!(
         api::topic::new().perception().detections().key(),
         "v1/perception/detections"
     );
@@ -836,10 +886,6 @@ fn v2_topic_builder_keys_match_contract_topics() {
     assert_eq!(
         v2::topic::new().telemetry().host().key(),
         "v2/telemetry/host"
-    );
-    assert_eq!(
-        v2::topic::new().telemetry().process().key(),
-        "v2/telemetry/process"
     );
     assert_eq!(
         v2::topic::new().joypad().devices().key(),
@@ -878,6 +924,14 @@ fn internal_owner_builder_produces_identical_keys() {
     assert_eq!(
         api::topic::internal::new(cap).tool().bus().follow().key(),
         "v1/tool/bus/follow"
+    );
+    assert_eq!(
+        api::topic::internal::new(cap)
+            .tool()
+            .runtime()
+            .rollup()
+            .key(),
+        "v1/tool/runtime/rollup"
     );
     assert_eq!(
         api::topic::internal::new(cap).map().submap().key(),
