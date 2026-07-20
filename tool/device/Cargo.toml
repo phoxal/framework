@@ -1,25 +1,23 @@
 [package]
-name = "phoxal-tool-telemetry"
-version = "0.1.4"
+name = "phoxal-tool-device"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-description = "Phoxal official tool: host sampling and bounded runtime-performance retention."
+description = "Phoxal official tool: portable whole-device resource observations."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "phoxal-tool-telemetry"
+name = "phoxal-tool-device"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = { workspace = true }
-getrandom = { workspace = true }
 phoxal = { workspace = true }
 phoxal-api = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+sysinfo = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 

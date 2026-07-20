@@ -84,6 +84,18 @@ fn contract_body_topic_is_version_qualified() {
         <api::tool::runtime::Follow as ContractBody>::TOPIC,
         "v1/tool/runtime/follow"
     );
+    assert_eq!(
+        <api::tool::device::Sample as ContractBody>::TOPIC,
+        "v1/tool/device/sample"
+    );
+    assert_eq!(
+        <api::tool::device::SnapshotRequest as ContractBody>::TOPIC,
+        "v1/tool/device/snapshot"
+    );
+    assert_eq!(
+        <api::tool::device::Follow as ContractBody>::TOPIC,
+        "v1/tool/device/follow"
+    );
 }
 
 #[test]
@@ -112,15 +124,6 @@ fn v2_is_one_preview_api_for_post_v1_contracts() {
     assert_eq!(
         v2::topic::new().simulation().clock().key(),
         "v2/simulation/clock"
-    );
-
-    assert_eq!(
-        <v2::telemetry::Host as ContractBody>::TOPIC,
-        "v2/telemetry/host"
-    );
-    assert_eq!(
-        v2::topic::new().telemetry().host().key(),
-        "v2/telemetry/host"
     );
 
     assert_eq!(
@@ -165,6 +168,12 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .find(|contract| contract.family == "v1::drive::State")
         .expect("drive::State should be in the generated manifest");
     assert_eq!(drive_state.topic, "v1/drive/state");
+    let device_sample = version
+        .contracts
+        .iter()
+        .find(|contract| contract.family == "v1::tool::device::Sample")
+        .expect("tool::device::Sample should be in the generated manifest");
+    assert_eq!(device_sample.topic, "v1/tool/device/sample");
 
     #[cfg(feature = "preview-v2")]
     {
@@ -189,7 +198,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
 
         for family in [
             "v2::simulation::Clock",
-            "v2::telemetry::Host",
             "v2::joypad::Devices",
             "v2::joypad::Select",
             "v2::joypad::SetEnabled",
@@ -223,6 +231,10 @@ fn generated_role_const_matches_each_topic_role() {
     assert_eq!(api::tool::runtime::SnapshotRequest::ROLE, TopicRole::Query);
     assert_eq!(api::tool::runtime::Snapshot::ROLE, TopicRole::Query);
     assert_eq!(api::tool::runtime::Follow::ROLE, TopicRole::State);
+    assert_eq!(api::tool::device::Sample::ROLE, TopicRole::State);
+    assert_eq!(api::tool::device::SnapshotRequest::ROLE, TopicRole::Query);
+    assert_eq!(api::tool::device::Snapshot::ROLE, TopicRole::Query);
+    assert_eq!(api::tool::device::Follow::ROLE, TopicRole::State);
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
     assert_eq!(api::frame::LookupRequest::ROLE, TopicRole::Query);
@@ -236,7 +248,6 @@ fn generated_role_const_matches_each_topic_role() {
 fn v2_role_consts_match_each_topic_role() {
     assert_eq!(v2::battery::State::ROLE, TopicRole::State);
     assert_eq!(v2::simulation::Clock::ROLE, TopicRole::State);
-    assert_eq!(v2::telemetry::Host::ROLE, TopicRole::State);
     assert_eq!(v2::joypad::Devices::ROLE, TopicRole::State);
     assert_eq!(v2::joypad::Select::ROLE, TopicRole::Command);
     assert_eq!(v2::joypad::SetEnabled::ROLE, TopicRole::Command);
@@ -627,6 +638,48 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         cursor,
         record: runtime_record,
     });
+
+    let cursor = api::tool::Cursor {
+        generation: "device-generation".to_string(),
+        sequence: 9,
+    };
+    let sample = api::tool::device::Sample {
+        device_id: "main".to_string(),
+        cpu_pct: Some(12.5),
+        ram_used_bytes: Some(1_073_741_824),
+        ram_total_bytes: Some(17_179_869_184),
+        swap_used_bytes: None,
+        swap_total_bytes: None,
+        load_1m: Some(0.75),
+        load_5m: Some(0.5),
+        load_15m: Some(0.25),
+        uptime_s: Some(42),
+        disks: Some(vec![api::tool::device::Disk {
+            mount_point: "/".to_string(),
+            file_system: "apfs".to_string(),
+            used_bytes: 10,
+            total_bytes: 100,
+        }]),
+        window_ns: 1_000_000_000,
+    };
+    let record = api::tool::device::Record {
+        sequence: 9,
+        sample: sample.clone(),
+        truncated: 0,
+    };
+    round_trip(&sample);
+    round_trip(&api::tool::device::SnapshotRequest {
+        device_id: Some("main".to_string()),
+        limit: 1,
+        before_sequence: None,
+    });
+    round_trip(&api::tool::device::Snapshot {
+        cursor: cursor.clone(),
+        records: vec![record.clone()],
+        capacity_evictions: 0,
+        next_before_sequence: None,
+    });
+    round_trip(&api::tool::device::Follow { cursor, record });
 }
 
 #[test]
@@ -655,24 +708,6 @@ fn v2_bodies_round_trip_through_messagepack() {
         now_ns: 1_000_000,
         step: 100,
     });
-    round_trip(&v2::telemetry::Host {
-        cpu_pct: 12.5,
-        ram_used_bytes: 1_073_741_824,
-        ram_total_bytes: 17_179_869_184,
-        swap_used_bytes: 536_870_912,
-        swap_total_bytes: 2_147_483_648,
-        load_1m: 0.75,
-        load_5m: 0.5,
-        load_15m: 0.25,
-        uptime_s: Some(42),
-        disks: vec![v2::telemetry::Disk {
-            mount_point: "/".to_string(),
-            file_system: "apfs".to_string(),
-            used_bytes: 10,
-            total_bytes: 100,
-        }],
-        window_ns: 1_000_000_000,
-    });
     round_trip(&v2::joypad::Device {
         id: "xbox-controller-0".to_string(),
         name: "Xbox Wireless Controller".to_string(),
@@ -698,12 +733,8 @@ fn v2_bodies_round_trip_through_messagepack() {
 
 #[test]
 #[cfg(feature = "preview-v2")]
-fn v2_session_host_and_joypad_state_reject_malformed_payloads() {
+fn v2_session_joypad_state_rejects_malformed_payloads() {
     let corrupt = [0xc1u8, 0xc1, 0xc1];
-    assert!(
-        rmp_serde::from_slice::<v2::telemetry::Host>(&corrupt).is_err(),
-        "corrupt MessagePack must not decode as telemetry::Host"
-    );
     assert!(
         rmp_serde::from_slice::<v2::joypad::Devices>(&corrupt).is_err(),
         "corrupt MessagePack must not decode as joypad::Devices"
@@ -713,10 +744,6 @@ fn v2_session_host_and_joypad_state_reject_malformed_payloads() {
         id: "not-session-state".to_string(),
     })
     .unwrap();
-    assert!(
-        rmp_serde::from_slice::<v2::telemetry::Host>(&wrong_shape).is_err(),
-        "a command body must not decode as telemetry::Host"
-    );
     assert!(
         rmp_serde::from_slice::<v2::joypad::Devices>(&wrong_shape).is_err(),
         "a command body must not decode as joypad::Devices"
@@ -883,10 +910,6 @@ fn v2_topic_builder_keys_match_contract_topics() {
     assert_eq!(
         v2::topic::new().simulation().clock().key(),
         "v2/simulation/clock"
-    );
-    assert_eq!(
-        v2::topic::new().telemetry().host().key(),
-        "v2/telemetry/host"
     );
     assert_eq!(
         v2::topic::new().joypad().devices().key(),

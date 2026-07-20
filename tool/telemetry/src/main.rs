@@ -3,18 +3,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use phoxal::prelude::*;
-use phoxal::raw::{
-    Bus, Codec, MessagePack, OwnerCap, Publisher, QueryFailure, Subscriber, host_time,
-};
-use phoxal_api::{v1 as stable, v2 as api};
-use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
+use phoxal::raw::{Codec, MessagePack, Publisher, QueryFailure, Subscriber, host_time};
+use phoxal_api::v1 as stable;
 
-/// Host sampling cadence: frequent enough for a live CLI dashboard to feel
-/// current, far below anything that would make this tool itself a meaningful
-/// load source on the host it is reporting on.
-const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-const MAX_DISK_ROWS: usize = 32;
-const MAX_DISK_TEXT_BYTES: usize = 128;
+const DEVICE_RETENTION: Duration = Duration::from_secs(5 * 60);
+const MAX_DEVICE_RECORDS: usize = 512;
+const MAX_DEVICE_RETAINED_BYTES: usize = 2 * 1024 * 1024;
+const MAX_DEVICE_ID_BYTES: usize = 64;
+const MAX_DEVICE_DISK_ROWS: usize = 32;
+const MAX_DEVICE_TEXT_BYTES: usize = 128;
+const DEFAULT_DEVICE_QUERY_RECORDS: usize = 64;
+const MAX_DEVICE_QUERY_RECORDS: usize = 64;
 const RUNTIME_RETENTION: Duration = Duration::from_secs(5 * 60);
 const MAX_RUNTIME_RECORDS: usize = 4_096;
 /// Sum of retained records' exact MessagePack sizes. Container bookkeeping is
@@ -26,7 +25,7 @@ const MAX_RUNTIME_TOPIC_BYTES: usize = 256;
 const DEFAULT_RUNTIME_QUERY_RECORDS: usize = 64;
 const MAX_RUNTIME_QUERY_RECORDS: usize = 64;
 #[cfg(test)]
-const MAX_HOST_WIRE_BYTES: usize = 16 * 1024;
+const MAX_DEVICE_SNAPSHOT_WIRE_BYTES: usize = 1024 * 1024;
 #[cfg(test)]
 const MAX_RUNTIME_SNAPSHOT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -44,10 +43,90 @@ impl ToolTelemetry {
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let bus = ctx.raw_bus();
         let cap = ctx.owner_capability();
-        let publisher = host_publisher(bus.clone(), cap)?;
-        ctx.spawn_managed_with("host-sampler", ManagedTaskPolicy::FaultOnExit, async move {
-            sample_host_forever(publisher).await;
-        });
+
+        let device_history = Arc::new(Mutex::new(DeviceHistory::new(process_generation()?)));
+        let device_samples =
+            Subscriber::new(&bus, &stable::topic::new().tool().device().sample(), 32).await?;
+        let device_follow = Publisher::new(
+            bus.clone(),
+            &stable::topic::internal::new(cap).tool().device().follow(),
+        )?;
+        let device_snapshot_topic = stable::topic::internal::new(cap).tool().device().snapshot();
+        let device_snapshots = bus.declare_server(device_snapshot_topic.key()).await?;
+
+        let ingest_devices = Arc::clone(&device_history);
+        ctx.spawn_managed_with(
+            "device-telemetry-ingest",
+            ManagedTaskPolicy::FaultOnExit,
+            async move {
+                while let Ok(received) = device_samples.recv().await {
+                    let follow = match ingest_devices
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .ingest(Instant::now(), received.body)
+                    {
+                        Ok(follow) => follow,
+                        Err(error) => {
+                            tracing::warn!(target: "tool_telemetry", error = %error, "device sample could not be retained");
+                            continue;
+                        }
+                    };
+                    if let Err(error) = device_follow.publish_at(host_time(), follow).await {
+                        tracing::warn!(target: "tool_telemetry", error = %error, "device follow publish failed");
+                    }
+                }
+            },
+        );
+
+        let query_devices = Arc::clone(&device_history);
+        let device_query_bus = bus.clone();
+        ctx.spawn_managed_with(
+            "device-telemetry-query",
+            ManagedTaskPolicy::FaultOnExit,
+            async move {
+                loop {
+                    let incoming = match device_snapshots.recv().await {
+                        Ok(incoming) => incoming,
+                        Err(error) => {
+                            tracing::warn!(target: "tool_telemetry", error = %error, "device snapshot server stopped");
+                            return;
+                        }
+                    };
+                    let request = match MessagePack::decode::<
+                        stable::tool::device::SnapshotRequest,
+                    >(&incoming.request_bytes().unwrap_or_default())
+                    {
+                        Ok(request) => request,
+                        Err(error) => {
+                            let _ = incoming
+                                .reply_err(&QueryFailure::invalid_argument(format!(
+                                    "decode device snapshot request: {error}"
+                                )))
+                                .await;
+                            continue;
+                        }
+                    };
+                    let snapshot = query_devices
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .snapshot(Instant::now(), &request);
+                    match MessagePack::encode(&snapshot) {
+                        Ok(payload) => {
+                            if let Err(error) = incoming.reply(&device_query_bus, payload).await {
+                                tracing::warn!(target: "tool_telemetry", error = %error, "device snapshot reply failed");
+                            }
+                        }
+                        Err(error) => {
+                            let _ = incoming
+                                .reply_err(&QueryFailure::internal(format!(
+                                    "encode device snapshot: {error}"
+                                )))
+                                .await;
+                        }
+                    }
+                }
+            },
+        );
 
         let runtime_history = Arc::new(Mutex::new(RuntimeHistory::new(process_generation()?)));
         let runtime_rollups =
@@ -142,6 +221,208 @@ impl ToolTelemetry {
         tracing::info!(target: "tool_telemetry", "telemetry ready");
 
         Ok((Self, ()))
+    }
+}
+
+#[derive(Debug)]
+struct TimedDeviceRecord {
+    received_at: Instant,
+    encoded_bytes: usize,
+    record: stable::tool::device::Record,
+}
+
+#[derive(Debug)]
+struct DeviceHistory {
+    generation: String,
+    sequence: u64,
+    capacity_evictions: u64,
+    retained_bytes: usize,
+    records: VecDeque<TimedDeviceRecord>,
+}
+
+impl DeviceHistory {
+    fn new(generation: String) -> Self {
+        Self {
+            generation,
+            sequence: 0,
+            capacity_evictions: 0,
+            retained_bytes: 0,
+            records: VecDeque::new(),
+        }
+    }
+
+    fn ingest(
+        &mut self,
+        now: Instant,
+        sample: stable::tool::device::Sample,
+    ) -> Result<stable::tool::device::Follow> {
+        self.prune(now);
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .expect("tool-telemetry device sequence exhausted");
+        let (sample, truncated) = bounded_device_sample(sample);
+        let record = stable::tool::device::Record {
+            sequence,
+            sample,
+            truncated,
+        };
+        let encoded_bytes = MessagePack::encode(&record)?.len();
+        self.sequence = sequence;
+        self.retained_bytes = self.retained_bytes.saturating_add(encoded_bytes);
+        self.records.push_back(TimedDeviceRecord {
+            received_at: now,
+            encoded_bytes,
+            record: record.clone(),
+        });
+        while self.records.len() > MAX_DEVICE_RECORDS
+            || self.retained_bytes > MAX_DEVICE_RETAINED_BYTES
+        {
+            self.pop_front(true);
+        }
+        Ok(stable::tool::device::Follow {
+            cursor: self.cursor(),
+            record,
+        })
+    }
+
+    fn snapshot(
+        &mut self,
+        now: Instant,
+        request: &stable::tool::device::SnapshotRequest,
+    ) -> stable::tool::device::Snapshot {
+        self.prune(now);
+        let requested = if request.limit == 0 {
+            DEFAULT_DEVICE_QUERY_RECORDS
+        } else {
+            usize::try_from(request.limit).unwrap_or(usize::MAX)
+        };
+        let limit = requested.min(MAX_DEVICE_QUERY_RECORDS);
+        let matches = |record: &&TimedDeviceRecord| {
+            request
+                .before_sequence
+                .is_none_or(|before| record.record.sequence < before)
+                && request
+                    .device_id
+                    .as_ref()
+                    .is_none_or(|device| record.record.sample.device_id == *device)
+        };
+        let mut records = self
+            .records
+            .iter()
+            .rev()
+            .filter(matches)
+            .take(limit)
+            .map(|timed| timed.record.clone())
+            .collect::<Vec<_>>();
+        records.reverse();
+        let next_before_sequence = records.first().and_then(|first| {
+            self.records
+                .iter()
+                .any(|timed| {
+                    timed.record.sequence < first.sequence
+                        && request
+                            .device_id
+                            .as_ref()
+                            .is_none_or(|device| timed.record.sample.device_id == *device)
+                })
+                .then_some(first.sequence)
+        });
+        stable::tool::device::Snapshot {
+            cursor: self.cursor(),
+            records,
+            capacity_evictions: self.capacity_evictions,
+            next_before_sequence,
+        }
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self.records.front().is_some_and(|record| {
+            now.saturating_duration_since(record.received_at) > DEVICE_RETENTION
+        }) {
+            self.pop_front(false);
+        }
+    }
+
+    fn pop_front(&mut self, capacity_eviction: bool) {
+        let Some(removed) = self.records.pop_front() else {
+            return;
+        };
+        self.retained_bytes = self.retained_bytes.saturating_sub(removed.encoded_bytes);
+        if capacity_eviction {
+            self.capacity_evictions = self.capacity_evictions.saturating_add(1);
+        }
+    }
+
+    fn cursor(&self) -> stable::tool::Cursor {
+        stable::tool::Cursor {
+            generation: self.generation.clone(),
+            sequence: self.sequence,
+        }
+    }
+}
+
+fn bounded_device_sample(
+    mut sample: stable::tool::device::Sample,
+) -> (stable::tool::device::Sample, u32) {
+    let mut truncated = 0_u32;
+    if sample.device_id.len() > MAX_DEVICE_ID_BYTES {
+        sample.device_id = truncate_utf8(sample.device_id, MAX_DEVICE_ID_BYTES);
+        truncated = truncated.saturating_add(1);
+    }
+    if sample.device_id.is_empty() {
+        sample.device_id = "unknown".to_string();
+        truncated = truncated.saturating_add(1);
+    }
+    sample.cpu_pct = sample
+        .cpu_pct
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.0, 100.0));
+    sample.load_1m = finite_optional(sample.load_1m);
+    sample.load_5m = finite_optional(sample.load_5m);
+    sample.load_15m = finite_optional(sample.load_15m);
+    normalize_capacity(&mut sample.ram_used_bytes, &mut sample.ram_total_bytes);
+    normalize_capacity(&mut sample.swap_used_bytes, &mut sample.swap_total_bytes);
+    if let Some(disks) = sample.disks.as_mut() {
+        let omitted = disks.len().saturating_sub(MAX_DEVICE_DISK_ROWS);
+        disks.truncate(MAX_DEVICE_DISK_ROWS);
+        truncated = truncated.saturating_add(u32::try_from(omitted).unwrap_or(u32::MAX));
+        for disk in disks {
+            if disk.mount_point.len() > MAX_DEVICE_TEXT_BYTES {
+                disk.mount_point =
+                    truncate_utf8(std::mem::take(&mut disk.mount_point), MAX_DEVICE_TEXT_BYTES);
+                truncated = truncated.saturating_add(1);
+            }
+            if disk.file_system.len() > MAX_DEVICE_TEXT_BYTES {
+                disk.file_system =
+                    truncate_utf8(std::mem::take(&mut disk.file_system), MAX_DEVICE_TEXT_BYTES);
+                truncated = truncated.saturating_add(1);
+            }
+            if disk.total_bytes == 0 {
+                disk.used_bytes = 0;
+            } else {
+                disk.used_bytes = disk.used_bytes.min(disk.total_bytes);
+            }
+        }
+    }
+    (sample, truncated)
+}
+
+fn finite_optional(value: Option<f32>) -> Option<f32> {
+    value
+        .filter(|value| value.is_finite())
+        .map(|value| value.max(0.0))
+}
+
+fn normalize_capacity(used: &mut Option<u64>, total: &mut Option<u64>) {
+    match *total {
+        Some(0) | None => {
+            *used = None;
+            *total = None;
+        }
+        Some(limit) => {
+            *used = used.map(|value| value.min(limit));
+        }
     }
 }
 
@@ -443,180 +724,6 @@ fn process_generation() -> Result<String> {
     Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn host_publisher(bus: Bus, cap: OwnerCap) -> Result<Publisher<api::telemetry::Host>> {
-    let topic = api::topic::internal::new(cap).telemetry().host();
-    let publisher = Publisher::new(bus, &topic)?;
-    Ok(publisher)
-}
-
-/// Owns the `sysinfo::System` handle for the tool's lifetime, sampling at
-/// [`SAMPLE_INTERVAL`] and publishing a `telemetry::Host` sample each tick.
-/// Runs until the runner cancels it during managed shutdown.
-async fn sample_host_forever(publisher: Publisher<api::telemetry::Host>) {
-    let initialized = tokio::task::spawn_blocking(|| {
-        let mut system = System::new_with_specifics(
-            RefreshKind::nothing()
-                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
-        );
-        let disks = Disks::new_with_refreshed_list_specifics(disk_refresh_kind());
-        system.refresh_cpu_usage();
-        system.refresh_memory();
-        (system, disks, Instant::now())
-    })
-    .await;
-    let (mut system, mut disks, mut previous_refresh) = match initialized {
-        Ok(initialized) => initialized,
-        Err(error) => {
-            tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry sampler initialization failed");
-            return;
-        }
-    };
-    let mut interval = tokio::time::interval(SAMPLE_INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // `sysinfo`'s CPU usage is a delta against the PREVIOUS refresh, so the
-    // very first refresh has nothing to diff against and reads inaccurately
-    // (sysinfo's own documented caveat). Burn one tick priming the delta
-    // before the loop below starts publishing, so every PUBLISHED sample is
-    // a real measurement.
-    interval.tick().await;
-    loop {
-        interval.tick().await;
-        let refreshed = tokio::task::spawn_blocking(move || {
-            let (sample, refreshed_at) = sample_host(&mut system, &mut disks, previous_refresh);
-            (system, disks, sample, refreshed_at)
-        })
-        .await;
-        let (returned_system, returned_disks, sample, refreshed_at) = match refreshed {
-            Ok(refreshed) => refreshed,
-            Err(error) => {
-                tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry sampler failed");
-                return;
-            }
-        };
-        system = returned_system;
-        disks = returned_disks;
-        previous_refresh = refreshed_at;
-        if let Err(error) = publisher.publish_at(host_time(), sample).await {
-            tracing::warn!(target: "tool_telemetry", error = %error, "host telemetry publish failed");
-        }
-    }
-}
-
-fn sample_host(
-    system: &mut System,
-    disks: &mut Disks,
-    previous_refresh: Instant,
-) -> (api::telemetry::Host, Instant) {
-    system.refresh_cpu_usage();
-    system.refresh_memory();
-    disks.refresh_specifics(true, disk_refresh_kind());
-    let refreshed_at = Instant::now();
-
-    let load = System::load_average();
-    let uptime_s = System::uptime();
-
-    let disks = disk_samples(disks);
-    let sample = api::telemetry::Host {
-        cpu_pct: system.global_cpu_usage(),
-        ram_used_bytes: system.used_memory(),
-        ram_total_bytes: system.total_memory(),
-        swap_used_bytes: system.used_swap(),
-        swap_total_bytes: system.total_swap(),
-        // Not available on every platform (notably Windows); `sysinfo`
-        // reports `0.0` there rather than erroring, which is exactly the
-        // "publish 0.0 where unsupported" behavior this field wants.
-        load_1m: load.one as f32,
-        load_5m: load.five as f32,
-        load_15m: load.fifteen as f32,
-        // `sysinfo` reports zero on unsupported targets. A real sample is not
-        // emitted until one second after startup, so zero is an unavailable
-        // value rather than a plausible host uptime here.
-        uptime_s: optional_uptime(uptime_s),
-        disks,
-        window_ns: u64::try_from(
-            refreshed_at
-                .saturating_duration_since(previous_refresh)
-                .as_nanos(),
-        )
-        .unwrap_or(u64::MAX),
-    };
-    (sample, refreshed_at)
-}
-
-fn disk_refresh_kind() -> DiskRefreshKind {
-    DiskRefreshKind::nothing().with_storage()
-}
-
-fn optional_uptime(uptime_s: u64) -> Option<u64> {
-    (uptime_s > 0).then_some(uptime_s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DiskObservation {
-    name: String,
-    mount_point: String,
-    file_system: String,
-    available_bytes: u64,
-    total_bytes: u64,
-}
-
-fn disk_samples(disks: &Disks) -> Vec<api::telemetry::Disk> {
-    normalize_disks(disks.iter().map(|disk| DiskObservation {
-        name: disk.name().to_string_lossy().into_owned(),
-        mount_point: disk.mount_point().to_string_lossy().into_owned(),
-        file_system: disk.file_system().to_string_lossy().into_owned(),
-        available_bytes: disk.available_space(),
-        total_bytes: disk.total_space(),
-    }))
-}
-
-fn normalize_disks(
-    observations: impl IntoIterator<Item = DiskObservation>,
-) -> Vec<api::telemetry::Disk> {
-    let mut by_mount = BTreeMap::<String, DiskObservation>::new();
-    for disk in observations.into_iter().filter(is_real_disk) {
-        match by_mount.entry(disk.mount_point.clone()) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(disk);
-            }
-            std::collections::btree_map::Entry::Occupied(mut entry)
-                if disk_preference(&disk) > disk_preference(entry.get()) =>
-            {
-                entry.insert(disk);
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
-        }
-    }
-    let total = by_mount.len();
-    let keep = if total > MAX_DISK_ROWS {
-        MAX_DISK_ROWS.saturating_sub(1)
-    } else {
-        MAX_DISK_ROWS
-    };
-    let mut disks = by_mount
-        .into_values()
-        .take(keep)
-        .map(|disk| api::telemetry::Disk {
-            mount_point: truncate_utf8(disk.mount_point, MAX_DISK_TEXT_BYTES),
-            file_system: truncate_utf8(disk.file_system, MAX_DISK_TEXT_BYTES),
-            used_bytes: disk.total_bytes.saturating_sub(disk.available_bytes),
-            total_bytes: disk.total_bytes,
-        })
-        .collect::<Vec<_>>();
-    let truncated = total.saturating_sub(keep);
-    if truncated > 0 {
-        disks.push(api::telemetry::Disk {
-            mount_point: String::new(),
-            file_system: format!("+{truncated} omitted"),
-            used_bytes: 0,
-            total_bytes: 0,
-        });
-    }
-    disks
-}
-
 fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value;
@@ -627,49 +734,6 @@ fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
     }
     value.truncate(boundary);
     value
-}
-
-fn disk_preference(disk: &DiskObservation) -> (u64, u64, &str, &str) {
-    (
-        disk.total_bytes,
-        disk.total_bytes.saturating_sub(disk.available_bytes),
-        disk.file_system.as_str(),
-        disk.name.as_str(),
-    )
-}
-
-fn is_real_disk(disk: &DiskObservation) -> bool {
-    let name = disk.name.to_ascii_lowercase();
-    let file_system = disk.file_system.to_ascii_lowercase();
-    let pseudo = matches!(
-        file_system.as_str(),
-        "autofs"
-            | "binfmt_misc"
-            | "cgroup"
-            | "cgroup2"
-            | "configfs"
-            | "debugfs"
-            | "devpts"
-            | "devtmpfs"
-            | "fusectl"
-            | "hugetlbfs"
-            | "mqueue"
-            | "nsfs"
-            | "overlay"
-            | "proc"
-            | "pstore"
-            | "ramfs"
-            | "securityfs"
-            | "squashfs"
-            | "sysfs"
-            | "tmpfs"
-            | "tracefs"
-    );
-    !disk.mount_point.is_empty()
-        && disk.total_bytes > 0
-        && !pseudo
-        && !name.starts_with("/dev/loop")
-        && !name.starts_with("loop")
 }
 
 fn main() -> phoxal::Result<()> {
@@ -1028,107 +1092,122 @@ mod tests {
         assert!(history.retained_bytes <= MAX_RUNTIME_RETAINED_BYTES);
     }
 
+    fn device_sample(device_id: &str, window_ns: u64) -> stable::tool::device::Sample {
+        stable::tool::device::Sample {
+            device_id: device_id.to_string(),
+            cpu_pct: Some(42.0),
+            ram_used_bytes: Some(50),
+            ram_total_bytes: Some(100),
+            swap_used_bytes: None,
+            swap_total_bytes: None,
+            load_1m: Some(1.0),
+            load_5m: Some(0.5),
+            load_15m: Some(0.25),
+            uptime_s: Some(10),
+            disks: Some(Vec::new()),
+            window_ns,
+        }
+    }
+
     #[test]
-    fn sample_host_window_ns_uses_the_measured_refresh_window() {
-        let mut system = System::new_with_specifics(
-            RefreshKind::nothing()
-                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
+    fn device_history_is_bounded_filterable_and_cursor_ordered() {
+        let start = Instant::now();
+        let mut history = DeviceHistory::new("generation-a".to_string());
+        for index in 0..5 {
+            let id = if index % 2 == 0 { "main" } else { "attached" };
+            history
+                .ingest(start + Duration::from_secs(index), device_sample(id, index))
+                .unwrap();
+        }
+        let snapshot = history.snapshot(
+            start + Duration::from_secs(5),
+            &stable::tool::device::SnapshotRequest {
+                device_id: Some("main".to_string()),
+                limit: 2,
+                before_sequence: None,
+            },
         );
-        let mut disks = Disks::new_with_refreshed_list_specifics(disk_refresh_kind());
-        let previous_refresh = Instant::now()
-            .checked_sub(Duration::from_secs(2))
-            .expect("two seconds before now");
-        let (sample, _) = sample_host(&mut system, &mut disks, previous_refresh);
-        assert!(sample.window_ns >= 2_000_000_000);
-        assert!(sample.window_ns < 3_000_000_000);
+        assert_eq!(snapshot.cursor.sequence, 5);
+        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(snapshot.records[0].sample.window_ns, 2);
+        assert_eq!(snapshot.records[1].sample.window_ns, 4);
+        assert_eq!(snapshot.next_before_sequence, Some(3));
     }
 
     #[test]
-    fn disk_samples_filter_pseudo_loop_zero_and_duplicate_mounts() {
-        let observations = [
-            observation("overlay", "/", "overlay", 100, 10),
-            observation("/dev/loop0", "/snap/core", "ext4", 100, 10),
-            observation("/dev/disk1", "/", "apfs", 1_000, 250),
-            observation("/dev/disk2", "/", "apfs", 2_000, 500),
-            observation("/dev/disk3", "/empty", "ext4", 0, 0),
-            observation("/dev/disk4", "/data", "ext4", 500, 125),
-        ];
-
-        let samples = normalize_disks(observations.clone());
-        let reversed = normalize_disks(observations.into_iter().rev());
-
-        assert_eq!(samples, reversed);
-        assert_eq!(samples.len(), 2);
-        assert_eq!(samples[0].mount_point, "/");
-        assert_eq!(samples[0].used_bytes, 1_500);
-        assert_eq!(samples[0].total_bytes, 2_000);
-        assert_eq!(samples[1].mount_point, "/data");
-        assert_eq!(samples[1].used_bytes, 375);
-    }
-
-    #[test]
-    fn unsupported_uptime_and_empty_disk_inventory_are_non_fatal() {
-        assert_eq!(optional_uptime(0), None);
-        assert_eq!(optional_uptime(42), Some(42));
-        assert!(normalize_disks([]).is_empty());
-    }
-
-    #[test]
-    fn disk_inventory_is_bounded_disclosed_and_wire_safe() {
-        let observations = (0..(MAX_DISK_ROWS + 5)).map(|index| {
-            observation(
-                &format!("/dev/disk{index}"),
-                &format!("/{}-{index}", "m".repeat(MAX_DISK_TEXT_BYTES * 2)),
-                &"f".repeat(MAX_DISK_TEXT_BYTES * 2),
-                1_000,
-                250,
-            )
-        });
-        let disks = normalize_disks(observations);
-        assert_eq!(disks.len(), MAX_DISK_ROWS);
-        let sentinel = disks.last().expect("truncation sentinel should exist");
-        assert!(sentinel.mount_point.is_empty());
-        assert_eq!(sentinel.file_system, "+6 omitted");
-        assert!(disks[..disks.len() - 1].iter().all(|disk| {
-            disk.mount_point.len() <= MAX_DISK_TEXT_BYTES
-                && disk.file_system.len() <= MAX_DISK_TEXT_BYTES
+    fn device_ingest_discloses_bounds_and_never_fabricates_capabilities() {
+        let mut sample = device_sample(&"é".repeat(MAX_DEVICE_ID_BYTES), 1);
+        sample.cpu_pct = Some(f32::NAN);
+        sample.ram_used_bytes = Some(200);
+        sample.ram_total_bytes = Some(100);
+        sample.swap_used_bytes = Some(0);
+        sample.swap_total_bytes = Some(0);
+        sample.load_1m = Some(f32::INFINITY);
+        sample.disks = Some(
+            (0..(MAX_DEVICE_DISK_ROWS + 3))
+                .map(|index| stable::tool::device::Disk {
+                    mount_point: format!("/{}-{index}", "m".repeat(MAX_DEVICE_TEXT_BYTES * 2)),
+                    file_system: "f".repeat(MAX_DEVICE_TEXT_BYTES * 2),
+                    used_bytes: 200,
+                    total_bytes: 100,
+                })
+                .collect(),
+        );
+        let mut history = DeviceHistory::new("generation-a".to_string());
+        let record = history.ingest(Instant::now(), sample).unwrap().record;
+        assert!(record.truncated >= 4);
+        assert!(record.sample.device_id.len() <= MAX_DEVICE_ID_BYTES);
+        assert_eq!(record.sample.cpu_pct, None);
+        assert_eq!(record.sample.ram_used_bytes, Some(100));
+        assert_eq!(record.sample.swap_used_bytes, None);
+        assert_eq!(record.sample.swap_total_bytes, None);
+        assert_eq!(record.sample.load_1m, None);
+        let disks = record.sample.disks.unwrap();
+        assert_eq!(disks.len(), MAX_DEVICE_DISK_ROWS);
+        assert!(disks.iter().all(|disk| {
+            disk.mount_point.len() <= MAX_DEVICE_TEXT_BYTES
+                && disk.file_system.len() <= MAX_DEVICE_TEXT_BYTES
+                && disk.used_bytes <= disk.total_bytes
         }));
+    }
 
-        let host = api::telemetry::Host {
-            cpu_pct: 100.0,
-            ram_used_bytes: u64::MAX,
-            ram_total_bytes: u64::MAX,
-            swap_used_bytes: u64::MAX,
-            swap_total_bytes: u64::MAX,
-            load_1m: f32::MAX,
-            load_5m: f32::MAX,
-            load_15m: f32::MAX,
-            uptime_s: Some(u64::MAX),
-            disks,
-            window_ns: u64::MAX,
-        };
-        let encoded = MessagePack::encode(&host).expect("host telemetry should encode");
+    #[test]
+    fn maximal_device_snapshot_is_wire_and_memory_bounded() {
+        let start = Instant::now();
+        let mut history = DeviceHistory::new("generation-a".to_string());
+        for index in 0..MAX_DEVICE_RECORDS * 2 {
+            let mut sample = device_sample("main", u64::MAX);
+            sample.disks = Some(
+                (0..MAX_DEVICE_DISK_ROWS)
+                    .map(|disk| stable::tool::device::Disk {
+                        mount_point: format!("/{disk}-{}", "m".repeat(MAX_DEVICE_TEXT_BYTES)),
+                        file_system: "f".repeat(MAX_DEVICE_TEXT_BYTES),
+                        used_bytes: u64::MAX,
+                        total_bytes: u64::MAX,
+                    })
+                    .collect(),
+            );
+            history
+                .ingest(start + Duration::from_millis(index as u64), sample)
+                .unwrap();
+        }
+        assert!(history.records.len() <= MAX_DEVICE_RECORDS);
+        assert!(history.retained_bytes <= MAX_DEVICE_RETAINED_BYTES);
+        assert!(history.capacity_evictions > 0);
+        let snapshot = history.snapshot(
+            start + Duration::from_secs(2),
+            &stable::tool::device::SnapshotRequest {
+                device_id: None,
+                limit: u32::MAX,
+                before_sequence: None,
+            },
+        );
+        assert!(snapshot.records.len() <= MAX_DEVICE_QUERY_RECORDS);
+        let encoded = MessagePack::encode(&snapshot).unwrap();
         assert!(
-            encoded.len() <= MAX_HOST_WIRE_BYTES,
-            "{}-byte host snapshot exceeds the wire cap",
+            encoded.len() <= MAX_DEVICE_SNAPSHOT_WIRE_BYTES,
+            "{}-byte device snapshot exceeds the wire cap",
             encoded.len()
         );
-    }
-
-    fn observation(
-        name: &str,
-        mount_point: &str,
-        file_system: &str,
-        total_bytes: u64,
-        available_bytes: u64,
-    ) -> DiskObservation {
-        DiskObservation {
-            name: name.to_string(),
-            mount_point: mount_point.to_string(),
-            file_system: file_system.to_string(),
-            available_bytes,
-            total_bytes,
-        }
     }
 }

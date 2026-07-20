@@ -887,6 +887,77 @@ phoxal_api_tree! {
                 topic follow: state Follow;
             }
 
+            device {
+                /// One mounted filesystem capacity observation. The contract
+                /// intentionally excludes OS-specific device names and I/O
+                /// counters; an unavailable storage inventory is represented
+                /// by `Sample::disks == None`, never fabricated zero rows.
+                struct Disk {
+                    mount_point: String,
+                    file_system: String,
+                    used_bytes: u64,
+                    total_bytes: u64,
+                }
+
+                /// Portable whole-device observations produced by one
+                /// runner-owned tool-device. Every optional field is `None`
+                /// when the current platform cannot provide a truthful value.
+                /// These totals must never be attributed to a runtime.
+                struct Sample {
+                    /// Logical device identity within the robot root. The
+                    /// current execution environment is always `main`.
+                    device_id: String,
+                    cpu_pct: Option<f32>,
+                    ram_used_bytes: Option<u64>,
+                    ram_total_bytes: Option<u64>,
+                    swap_used_bytes: Option<u64>,
+                    swap_total_bytes: Option<u64>,
+                    load_1m: Option<f32>,
+                    load_5m: Option<f32>,
+                    load_15m: Option<f32>,
+                    uptime_s: Option<u64>,
+                    disks: Option<Vec<Disk>>,
+                    /// Host-monotonic duration between sampler refreshes.
+                    window_ns: u64,
+                }
+
+                /// Requests tool-telemetry's bounded device history.
+                struct SnapshotRequest {
+                    /// Optional exact logical device filter.
+                    device_id: Option<String>,
+                    /// Maximum newest records to return. Zero selects the
+                    /// tool's bounded default.
+                    limit: u32,
+                    /// Exclusive global ingest-sequence upper bound.
+                    before_sequence: Option<u64>,
+                }
+
+                struct Record {
+                    sequence: u64,
+                    sample: Sample,
+                    /// Text fields or rows truncated by tool-telemetry.
+                    truncated: u32,
+                }
+
+                struct Snapshot {
+                    cursor: crate::v1::tool::Cursor,
+                    records: Vec<Record>,
+                    /// Records evicted by the absolute capacity bound before
+                    /// their five-minute age horizon elapsed.
+                    capacity_evictions: u64,
+                    next_before_sequence: Option<u64>,
+                }
+
+                struct Follow {
+                    cursor: crate::v1::tool::Cursor,
+                    record: Record,
+                }
+
+                topic sample: state Sample;
+                topic snapshot: query SnapshotRequest => Snapshot;
+                topic follow: state Follow;
+            }
+
             runtime {
                 /// Runner-originated portable performance rollup. The runner
                 /// publishes at most one per host-monotonic grid interval;
@@ -1539,36 +1610,6 @@ phoxal_api_tree! {
 
             topic spawn: query SpawnRequest => SpawnSet;
             topic clock: state Clock;
-        }
-
-        telemetry {
-            /// One real mounted filesystem in a host resource sample.
-            /// A publisher that must truncate the inventory appends one
-            /// aggregate sentinel with an empty `mount_point` and a
-            /// `file_system` value of `+N omitted`.
-            struct Disk {
-                mount_point: String,
-                file_system: String,
-                used_bytes: u64,
-                total_bytes: u64,
-            }
-
-            /// Host OS resource sample (published by the new tool-telemetry).
-            struct Host {
-                cpu_pct: f32,
-                ram_used_bytes: u64,
-                ram_total_bytes: u64,
-                swap_used_bytes: u64,
-                swap_total_bytes: u64,
-                load_1m: f32,
-                load_5m: f32,
-                load_15m: f32,
-                uptime_s: Option<u64>,
-                disks: Vec<Disk>,
-                window_ns: u64,
-            }
-
-            topic host: state Host;
         }
 
         joypad {
