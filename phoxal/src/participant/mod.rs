@@ -10,7 +10,6 @@ pub mod api;
 mod bus_log;
 pub mod clock;
 pub mod context;
-mod heartbeat;
 pub mod launch;
 mod managed;
 pub mod metadata;

@@ -1,15 +1,15 @@
 //! Runner-owned per-participant process resource self-sampling.
 //!
 //! Every participant that runs through this runner publishes its own
-//! `v2::telemetry::Process` sample (cpu%, RSS) - like presence
-//! heartbeats, this is runner infrastructure, not part of the
+//! `v2::telemetry::Process` sample (cpu%, RSS). This is runner infrastructure,
+//! not part of the
 //! participant-authored `emit-apis` contract surface.
 //!
 //! # Why the sampling is off the lifecycle task
 //!
-//! The plan requires OS sampling to NEVER couple to or delay the 1 s presence
-//! heartbeat. `sysinfo`'s per-process refresh is a synchronous syscall burst of
-//! non-trivial, unbounded cost, so it must not run on the lifecycle/heartbeat
+//! OS sampling must never delay the participant lifecycle task. `sysinfo`'s
+//! per-process refresh is a synchronous syscall burst of
+//! non-trivial, unbounded cost, so it must not run on the lifecycle
 //! task at all. This module splits the work in two:
 //!
 //! - a dedicated background task ([`spawn_sampler`]) owns the `sysinfo::System`
@@ -19,7 +19,7 @@
 //! - the lifecycle loop holds only [`ProcessMetricsPublisher`], which receives
 //!   an ALREADY-computed sample over a [`watch`] channel and publishes it -
 //!   `Publisher::try_publish` just encodes + enqueues (non-blocking, D43e), so
-//!   nothing a sample costs can delay the heartbeat.
+//!   nothing a sample costs can delay lifecycle work.
 //!
 //! A single sampler task awaiting each `spawn_blocking` before the next tick
 //! means two refreshes can never overlap. Each sample carries the measured
@@ -38,16 +38,14 @@ pub(crate) type ProcessMetricsSample = api::telemetry::Process;
 
 /// Runner process-metrics sampling cadence.
 ///
-/// Slower than [`crate::participant::heartbeat::HEARTBEAT_INTERVAL`] on
-/// purpose: this is diagnostic telemetry (CLI dashboards read it), never a
-/// liveness signal, so it does not need heartbeat cadence.
+/// Diagnostic telemetry cadence; this is never a liveness signal.
 pub(crate) const PROCESS_METRICS_INTERVAL: Duration = Duration::from_secs(3);
 
 /// The publish half, held on the lifecycle task.
 ///
 /// It never touches `sysinfo`: [`Self::publish`] only builds the envelope and
 /// enqueues it (non-blocking, D43e), so no sample cost is ever on the
-/// heartbeat/step path. The sampling half is the background [`spawn_sampler`]
+/// lifecycle/step path. The sampling half is the background [`spawn_sampler`]
 /// task.
 pub(crate) struct ProcessMetricsPublisher {
     publisher: Option<Publisher<api::telemetry::Process>>,
@@ -99,7 +97,7 @@ impl ProcessMetricsPublisher {
 /// samples from (latest wins - this is a `state` contract), plus the task
 /// handle the runner aborts at shutdown alongside its other background tasks.
 /// All `sysinfo` work happens on this task via [`tokio::task::spawn_blocking`],
-/// NEVER on the lifecycle/heartbeat task.
+/// NEVER on the lifecycle task.
 pub(crate) fn spawn_sampler() -> (
     watch::Receiver<Option<ProcessMetricsSample>>,
     JoinHandle<()>,
@@ -265,11 +263,6 @@ mod tests {
         assert_eq!(observed.rss_bytes, 42);
         assert_eq!(observed.window_ns, 3_000_000_000);
         bus.close().await.expect("close bus");
-    }
-
-    #[test]
-    fn process_metrics_interval_is_slower_than_the_heartbeat() {
-        assert!(PROCESS_METRICS_INTERVAL > crate::participant::heartbeat::HEARTBEAT_INTERVAL);
     }
 
     #[test]

@@ -89,6 +89,11 @@ the Webots simulator binaries are built against Webots in release CI, so the
 downloaded controllers are runtime-linked; 39/39 reached Ready in ~12s with a
 clean shutdown.
 
+This observed record predates the Zenoh Liveliness cutover. The current design
+uses a stable participant Liveliness key and a nominal three-second link lease;
+equivalent simulation runtime evidence must be recorded after the consumer
+cutover rather than inferred from the historical heartbeat run.
+
 The framework participant suite and the CLI suite were green at the time of this
 record.
 

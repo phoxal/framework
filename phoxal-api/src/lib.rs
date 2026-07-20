@@ -1182,34 +1182,6 @@ phoxal_api_tree! {
             topic state: state LocalizationState;
         }
 
-        presence {
-            /// Per-participant liveness + readiness beacon.
-            enum Readiness {
-                NotStarted,
-                Initializing,
-                Ready,
-                Degraded,
-                Failed,
-            }
-
-            /// A single participant's liveness beacon. Participants publish their
-            /// own heartbeat; the presence participant subscribes them as its control
-            /// input, hence the `command` role.
-            struct Heartbeat {
-                participant: String,
-                readiness: Readiness,
-            }
-
-            /// The presence participant's aggregate readiness across all participants.
-            /// Presence publishes it; clients subscribe, hence the `state` role.
-            struct State {
-                readiness: Readiness,
-            }
-
-            topic heartbeat: command Heartbeat;
-            topic state: state State;
-        }
-
         map {
             /// A published map revision marker.
             struct Revision {
@@ -1370,8 +1342,8 @@ phoxal_api_tree! {
             }
 
             /// One participant's OWN process resource sample (published by the
-            /// runner off the heartbeat loop). Subscriber demuxes by envelope
-            /// source, like `presence::Heartbeat`.
+            /// runner from a background sampler). Subscriber demuxes by envelope
+            /// source, like other shared static topics.
             struct Process {
                 cpu_pct: f32,
                 rss_bytes: u64,

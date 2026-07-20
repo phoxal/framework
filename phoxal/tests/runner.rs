@@ -1,7 +1,7 @@
 #![cfg(feature = "preview-v2")]
 
 //! Runner integration: a scheduled participant runs steps and then shuts down
-//! cleanly, presence heartbeats track readiness, a slow `#[shutdown]` hook is
+//! cleanly, a slow `#[shutdown]` hook is
 //! bounded by grace, `ClockMode::Simulation` steps track the live
 //! `simulation/clock` feed, and the real runtime proof for the query surface -
 //! not just a trybuild compile (`tests/trybuild/pass/wall_follower.rs`
@@ -525,7 +525,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
 }
 
 // ---------------------------------------------------------------------------
-// Runner-level behavior: shutdown/heartbeat/grace/simulation-clock proofs
+// Runner-level behavior: shutdown/grace/simulation-clock proofs
 // ---------------------------------------------------------------------------
 
 #[derive(phoxal::Api)]
@@ -568,28 +568,6 @@ impl Counter {
     async fn shutdown(&mut self, _api: &mut Self::Api) -> Result<()> {
         SHUTDOWN_CALLED.store(true, Ordering::Relaxed);
         Ok(())
-    }
-}
-
-#[phoxal::service(id = "idle-presence", config = (), api = ())]
-struct IdlePresence;
-
-#[phoxal::behavior]
-impl IdlePresence {
-    #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        Ok((Self, ()))
-    }
-}
-
-#[phoxal::service(id = "setup-failure", config = (), api = ())]
-struct SetupFailure;
-
-#[phoxal::behavior]
-impl SetupFailure {
-    #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        Err(anyhow::anyhow!("intentional setup failure"))
     }
 }
 
@@ -778,12 +756,6 @@ async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
     let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
     bus_config.participant = participant_id.to_string();
     let bus = Bus::open(bus_config).await.expect("bus should open");
-    let heartbeat_topic = api::topic::internal::new(OwnerCap::__mint())
-        .presence()
-        .heartbeat();
-    let heartbeats = Subscriber::<api::presence::Heartbeat>::new(&bus, &heartbeat_topic, 8)
-        .await
-        .expect("heartbeat subscriber should attach");
     let manual = phoxal::raw::Publisher::new(bus.clone(), &api::topic::new().motion().manual())
         .expect("manual publisher should attach");
 
@@ -815,20 +787,6 @@ async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
         1,
         "raw tool subscriptions must run without a logical clock"
     );
-    let mut produced_at = Vec::new();
-    while let Some(received) = heartbeats.try_recv() {
-        if received.body.participant == participant_id {
-            produced_at.push(received.metadata.produced_at_ns);
-        }
-    }
-    assert!(
-        !produced_at.is_empty(),
-        "tool heartbeats should be observed"
-    );
-    assert!(
-        produced_at.iter().all(|at| *at > 1_000_000_000_000_000_000),
-        "tool lifecycle timestamps must stay in host time, got {produced_at:?}"
-    );
     bus.close().await.expect("bus should close");
 }
 
@@ -850,122 +808,6 @@ async fn runner_runs_steps_then_shuts_down_cleanly() {
     assert!(
         SHUTDOWN_CALLED.load(Ordering::Relaxed),
         "the #[shutdown] hook should have run"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runner_publishes_presence_heartbeats_from_idle_loop() {
-    let participant_id = "idle-presence-1";
-    let namespace = unique_namespace("heartbeat");
-    let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
-    bus_config.participant = participant_id.to_string();
-    let bus = Bus::open(bus_config).await.expect("bus should open");
-    let heartbeat_topic = api::topic::internal::new(OwnerCap::__mint())
-        .presence()
-        .heartbeat();
-    let heartbeats =
-        phoxal::bus::Subscriber::<api::presence::Heartbeat>::new(&bus, &heartbeat_topic, 16)
-            .await
-            .expect("heartbeat subscriber should attach");
-
-    let mut launch = ParticipantLaunch::local(participant_id, "robot");
-    launch.namespace = namespace;
-    let runner = run_with_bus::<IdlePresence, _>(&bus, launch, async {
-        tokio::time::sleep(Duration::from_millis(2200)).await;
-    });
-    let collector = async {
-        let mut readiness = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(3200);
-        while tokio::time::Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            match tokio::time::timeout(remaining.min(Duration::from_millis(250)), heartbeats.recv())
-                .await
-            {
-                Ok(Ok(received)) if received.body.participant == participant_id => {
-                    readiness.push(received.body.readiness);
-                    if readiness.contains(&api::presence::Readiness::Initializing)
-                        && readiness.contains(&api::presence::Readiness::Degraded)
-                        && readiness
-                            .iter()
-                            .filter(|state| **state == api::presence::Readiness::Ready)
-                            .count()
-                            >= 2
-                    {
-                        break;
-                    }
-                }
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
-            }
-        }
-        readiness
-    };
-
-    let (run_result, readiness) = tokio::join!(runner, collector);
-    run_result.expect("runner should complete cleanly");
-    bus.close().await.expect("bus should close");
-
-    assert!(
-        readiness.contains(&api::presence::Readiness::Initializing),
-        "runner should publish Initializing before setup completes; got {readiness:?}"
-    );
-    assert!(
-        readiness
-            .iter()
-            .filter(|state| **state == api::presence::Readiness::Ready)
-            .count()
-            >= 2,
-        "idle runner should publish repeated Ready heartbeats on cadence; got {readiness:?}"
-    );
-    assert!(
-        readiness.contains(&api::presence::Readiness::Degraded),
-        "runner should publish Degraded while stopping; got {readiness:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn simulation_setup_failure_heartbeats_use_simulation_time() {
-    let participant_id = "setup-failure-1";
-    let namespace = unique_namespace("simulation-failed-heartbeat");
-    let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
-    bus_config.participant = participant_id.to_string();
-    let bus = Bus::open(bus_config).await.expect("bus should open");
-    let heartbeat_topic = api::topic::internal::new(OwnerCap::__mint())
-        .presence()
-        .heartbeat();
-    let heartbeats = Subscriber::<api::presence::Heartbeat>::new(&bus, &heartbeat_topic, 8)
-        .await
-        .expect("heartbeat subscriber should attach");
-
-    let mut launch = ParticipantLaunch::local(participant_id, "robot");
-    launch.namespace = namespace;
-    launch.clock = ClockMode::Simulation;
-    let injected_clock = TestClock::new();
-    injected_clock.advance(Duration::from_secs(123));
-
-    let error = run_with_bus_clock::<SetupFailure, _, _>(&bus, launch, injected_clock, async {})
-        .await
-        .expect_err("setup should fail");
-    assert!(error.to_string().contains("intentional setup failure"));
-
-    let mut observed = Vec::new();
-    while observed.len() < 2 {
-        let received = tokio::time::timeout(Duration::from_secs(2), heartbeats.recv())
-            .await
-            .expect("heartbeat should arrive")
-            .expect("heartbeat should decode");
-        if received.body.participant == participant_id {
-            observed.push((received.body.readiness, received.metadata.produced_at_ns));
-        }
-    }
-    bus.close().await.expect("bus should close");
-
-    assert_eq!(
-        observed,
-        vec![
-            (api::presence::Readiness::Initializing, 0),
-            (api::presence::Readiness::Failed, 0),
-        ],
-        "both lifecycle heartbeats must use the simulation clock seed, not the injected 123-second clock"
     );
 }
 

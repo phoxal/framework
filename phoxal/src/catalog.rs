@@ -41,7 +41,6 @@ pub const OFFICIAL_SERVICES: &[(&str, &str)] = &[
     ("odometry", "phoxal/service-odometry"),
     ("perception", "phoxal/service-perception"),
     ("power", "phoxal/service-power"),
-    ("presence", "phoxal/service-presence"),
     ("safety", "phoxal/service-safety"),
     ("video", "phoxal/service-video"),
 ];

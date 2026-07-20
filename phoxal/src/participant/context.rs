@@ -58,7 +58,7 @@ impl<R> SetupContext<R> {
     /// task, by contrast, is watched for the rest of the participant's
     /// lifetime - if it panics or returns while `FaultOnExit` applies, the
     /// runner treats that as a runtime fault (participant marked `Failed`,
-    /// see the presence heartbeat) exactly as it would a `#[step]` bug it
+    /// lose the participant Liveliness token) exactly as it would a `#[step]` bug it
     /// cannot recover from. At shutdown the runner cancels every managed task
     /// as the shutdown sequence starts and joins it within the same grace
     /// budget as `#[shutdown]` (see [`ShutdownContext::grace`]), before the bus

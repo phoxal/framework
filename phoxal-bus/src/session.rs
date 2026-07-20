@@ -123,7 +123,7 @@ impl Bus {
         OwnedKeyExpr::new(root.clone())
             .map_err(|e| BusError::Namespace(format!("invalid key root '{root}': {e}")))?;
 
-        let session = zenoh::open(zenoh_config(&config.connect_endpoints))
+        let session = zenoh::open(zenoh_config(&config.connect_endpoints)?)
             .await
             .map_err(|e| BusError::Transport(e.to_string()))?;
 
@@ -354,20 +354,37 @@ fn validate_segment(value: &str, what: &str, multi: bool) -> Result<()> {
     Ok(())
 }
 
-fn zenoh_config(connect_endpoints: &[String]) -> zenoh::Config {
+fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
     let mut config = zenoh::Config::default();
-    let _ = config.insert_json5("scouting/multicast/enabled", "false");
+    // Phoxal-owned links use a nominal three-second lease and Zenoh's documented
+    // four keepalives per lease. Apply these after the authored defaults so the
+    // runtime contract is explicit at the final configuration boundary.
+    config
+        .insert_json5("transport/link/tx/lease", "3000")
+        .map_err(|error| BusError::Transport(error.to_string()))?;
+    config
+        .insert_json5("transport/link/tx/keep_alive", "4")
+        .map_err(|error| BusError::Transport(error.to_string()))?;
+    config
+        .insert_json5("scouting/multicast/enabled", "false")
+        .map_err(|error| BusError::Transport(error.to_string()))?;
     if connect_endpoints.is_empty() {
         // In-process: no listeners, no scouting. A single session still delivers
         // its own publications to its own subscribers.
-        let _ = config.insert_json5("listen/endpoints", "[]");
+        config
+            .insert_json5("listen/endpoints", "[]")
+            .map_err(|error| BusError::Transport(error.to_string()))?;
     } else {
-        let _ = config.insert_json5("mode", "\"client\"");
-        if let Ok(json) = serde_json::to_string(connect_endpoints) {
-            let _ = config.insert_json5("connect/endpoints", &json);
-        }
+        config
+            .insert_json5("mode", "\"client\"")
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        let json = serde_json::to_string(connect_endpoints)
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        config
+            .insert_json5("connect/endpoints", &json)
+            .map_err(|error| BusError::Transport(error.to_string()))?;
     }
-    config
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -399,5 +416,12 @@ mod tests {
         assert_eq!(queued.load(Ordering::Relaxed), bytes);
         assert!(queued.load(Ordering::Relaxed) <= OUTBOUND_MAX_BYTES);
         assert!(!reserve_outbound_bytes(&queued, usize::MAX));
+    }
+
+    #[test]
+    fn phoxal_transport_settings_are_accepted_by_pinned_zenoh_config() {
+        zenoh_config(&[]).expect("pinned Zenoh must accept Phoxal lease settings");
+        zenoh_config(&["tcp/127.0.0.1:7447".to_string()])
+            .expect("pinned Zenoh must accept Phoxal client settings");
     }
 }

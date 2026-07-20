@@ -3,49 +3,30 @@
 //! Run with `cargo run --example runtime_async_entrypoint`.
 
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {}
 
 #[derive(phoxal::Api)]
-struct Api {
-    heartbeat: Publisher<api::presence::Heartbeat>,
-}
+struct Api {}
 
-#[phoxal::service(id = "async-heartbeat")]
-struct AsyncHeartbeat;
+#[phoxal::service(id = "async-participant")]
+struct AsyncParticipant;
 
 #[phoxal::behavior]
-impl AsyncHeartbeat {
+impl AsyncParticipant {
     #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        Ok((
-            Self,
-            Self::Api {
-                heartbeat: ctx
-                    .publisher(api::topic::new().presence().heartbeat())
-                    .await?,
-            },
-        ))
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((Self, Self::Api {}))
     }
 
     #[step(hz = 1)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        api.heartbeat
-            .publish_at(
-                step.time(),
-                api::presence::Heartbeat {
-                    participant: "async-heartbeat".to_string(),
-                    readiness: api::presence::Readiness::Ready,
-                },
-            )
-            .await?;
+    async fn step(&mut self, _api: &mut Self::Api, _step: StepContext) -> Result<()> {
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> phoxal::Result<()> {
-    phoxal::tokio::run::<AsyncHeartbeat>().await
+    phoxal::tokio::run::<AsyncParticipant>().await
 }

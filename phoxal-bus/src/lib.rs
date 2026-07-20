@@ -27,6 +27,7 @@ pub mod codec;
 pub mod contract;
 pub mod error;
 pub mod handle;
+pub mod liveliness;
 pub mod metadata;
 pub mod query;
 pub mod server;
@@ -39,6 +40,10 @@ pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{ApiVersion, ContractBody, TopicRole};
 pub use error::{BusError, Result};
 pub use handle::{DEFAULT_QUERY_TIMEOUT, Latest, Publisher, Querier, Received, Subscriber};
+pub use liveliness::{
+    ParticipantLivelinessEvent, ParticipantLivelinessKey, ParticipantLivelinessObserver,
+    ParticipantLivelinessStatus, ParticipantLivelinessToken,
+};
 pub use metadata::{BusMetadata, Source};
 pub use query::{QueryCode, QueryError, QueryFailure, ServerResult};
 pub use server::{IncomingQuery, ServerQueryable};

@@ -741,10 +741,6 @@ fn topic_builder_keys_match_contract_topics() {
         "v1/simulation/robot_pose"
     );
     assert_eq!(api::topic::new().video().open().key(), "v1/video/open");
-    assert_eq!(
-        api::topic::new().presence().heartbeat().key(),
-        "v1/presence/heartbeat"
-    );
     assert_eq!(api::topic::new().map().revision().key(), "v1/map/revision");
     assert_eq!(api::topic::new().map().submap().key(), "v1/map/submap");
     assert_eq!(api::topic::new().asset().get().key(), "v1/asset/get");

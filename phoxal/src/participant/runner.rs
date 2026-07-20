@@ -79,7 +79,6 @@ use crate::participant::api::ParticipantLifecycle;
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
 use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
-use crate::participant::heartbeat::{self, HeartbeatPublisher};
 use crate::participant::launch::{ClockMode, ParticipantLaunch, ParticipantLaunchPolicy};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::process_metrics::{self, ProcessMetricsPublisher};
@@ -88,10 +87,11 @@ use crate::participant::scheduler::{
     StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::StepSchedule;
-use phoxal_api::v1 as api;
 #[cfg(feature = "preview-v2")]
 use phoxal_api::v2;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
+
+const HEALTH_TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
@@ -337,14 +337,10 @@ where
         AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
         AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
     });
-    // Subscribe before setup so every lifecycle heartbeat uses the effective
-    // clock domain and the simulation clock can advance while setup runs.
+    // Subscribe before setup so the simulation clock can advance while setup runs.
     let clock_feed = clock_handle
         .map(|handle| spawn_simulation_clock_feed(bus, handle))
         .transpose()?;
-
-    let mut heartbeat = HeartbeatPublisher::attach(bus.clone(), launch.participant_id.clone());
-    heartbeat.publish(effective_clock.now());
 
     let result = run_lifecycle_inner::<R, C, S>(
         bus,
@@ -353,13 +349,8 @@ where
         scheduler,
         schedule,
         shutdown,
-        &mut heartbeat,
     )
     .await;
-    if result.is_err() {
-        heartbeat.set_readiness(api::presence::Readiness::Failed);
-        heartbeat.publish(effective_clock.now());
-    }
     if let Some(task) = clock_feed {
         task.abort();
     }
@@ -397,7 +388,6 @@ async fn run_lifecycle_inner<R, C, S>(
     scheduler: AnyStepScheduler,
     schedule: Option<StepSchedule>,
     shutdown: S,
-    heartbeat: &mut HeartbeatPublisher,
 ) -> crate::Result<()>
 where
     R: ParticipantLifecycle,
@@ -464,8 +454,6 @@ where
                 teardown_lifecycle(
                     &mut participant,
                     &mut api,
-                    heartbeat,
-                    clock.as_ref(),
                     server_tasks,
                     managed_tasks,
                     launch.shutdown_grace_ms,
@@ -495,8 +483,6 @@ where
                 teardown_lifecycle(
                     &mut participant,
                     &mut api,
-                    heartbeat,
-                    clock.as_ref(),
                     server_tasks,
                     managed_tasks,
                     launch.shutdown_grace_ms,
@@ -531,7 +517,7 @@ where
     // Per-participant process telemetry (D-telemetry): the `sysinfo` sampling
     // runs entirely on a dedicated background task (its own timer,
     // `spawn_blocking` refresh), so a resource sample can never delay the
-    // heartbeat or step loop. The lifecycle loop only publishes the
+    // step loop. The lifecycle loop only publishes the
     // already-computed sample it receives over the watch channel. The sampler
     // task is aborted at shutdown alongside the server tasks.
     let process_metrics = ProcessMetricsPublisher::attach(bus.clone());
@@ -539,8 +525,20 @@ where
     server_tasks.push(process_metrics_task);
 
     let shutdown = pin!(shutdown);
-    heartbeat.set_readiness(api::presence::Readiness::Ready);
-    heartbeat.publish(clock.now());
+    let liveliness = match bus.declare_participant_liveliness().await {
+        Ok(token) => token,
+        Err(error) => {
+            teardown_lifecycle(
+                &mut participant,
+                &mut api,
+                server_tasks,
+                managed_tasks,
+                launch.shutdown_grace_ms,
+            )
+            .await;
+            return Err(error.into());
+        }
+    };
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
     super::sd_notify::ready();
     let watchdog = super::sd_notify::Watchdog::start();
@@ -554,7 +552,6 @@ where
         &committed,
         &mut excl_rx,
         shutdown,
-        heartbeat,
         &process_metrics,
         &mut process_metrics_rx,
         &watchdog,
@@ -566,13 +563,12 @@ where
     teardown_lifecycle(
         &mut participant,
         &mut api,
-        heartbeat,
-        clock.as_ref(),
         server_tasks,
         managed_tasks,
         launch.shutdown_grace_ms,
     )
     .await;
+    drop(liveliness);
 
     if let Some(fault) = fault {
         return Err(managed_task_fault_error(&fault));
@@ -584,20 +580,15 @@ where
 /// after `#[setup]` succeeds. Keeping this sequence centralized prevents a
 /// server-declaration error from bypassing the participant's hardware-safety
 /// hook or detaching server/managed tasks before the bus closes.
-async fn teardown_lifecycle<R, C>(
+async fn teardown_lifecycle<R>(
     participant: &mut R,
     api: &mut R::Api,
-    heartbeat: &mut HeartbeatPublisher,
-    clock: &C,
     server_tasks: Vec<JoinHandle<()>>,
     mut managed_tasks: ManagedTasks,
     shutdown_grace_ms: u64,
 ) where
     R: ParticipantLifecycle,
-    C: ClockSource,
 {
-    heartbeat.set_readiness(api::presence::Readiness::Degraded);
-    heartbeat.publish(clock.now());
     for task in server_tasks {
         task.abort();
     }
@@ -640,8 +631,7 @@ async fn teardown_lifecycle<R, C>(
 }
 
 /// Build the runtime-fault error for an unexpected `FaultOnExit` managed task
-/// exit. Returned from `run_lifecycle_inner` so it flows through the same
-/// `Result` path `run_lifecycle` already turns into `Readiness::Failed`.
+/// exit. Returned from `run_lifecycle_inner` through the participant result.
 pub(crate) fn managed_task_fault_error(exit: &ManagedTaskExit) -> anyhow::Error {
     match &exit.panic_message {
         Some(message) => anyhow::anyhow!("managed task \"{}\" panicked: {message}", exit.name),
@@ -671,7 +661,6 @@ async fn main_loop<R, C, S>(
     committed: &Arc<ArcSwapOption<R::Snapshot>>,
     excl_rx: &mut mpsc::Receiver<IncomingQuery>,
     mut shutdown: std::pin::Pin<&mut S>,
-    heartbeat: &mut HeartbeatPublisher,
     process_metrics: &ProcessMetricsPublisher,
     process_metrics_rx: &mut watch::Receiver<Option<process_metrics::ProcessMetricsSample>>,
     watchdog: &super::sd_notify::Watchdog,
@@ -686,12 +675,12 @@ where
     let mut step_index: u64 = 0;
     let mut last_time_ns = clock.now().time_ns();
     // The next tick's *logical* due time - what the runner asks the scheduler
-    // to release at (D34/#09), separate from the wall-clock heartbeat below.
+    // to release at (D34/#09), separate from the wall-clock health tick below.
     let mut next_step_target = period.map(|period| {
         let now = scheduler.now();
         advance_logical_deadline(now, period, 0)
     });
-    let mut next_heartbeat = tokio::time::Instant::now();
+    let mut next_health_tick = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -716,10 +705,9 @@ where
                 );
                 return Some(exit);
             }
-            _ = heartbeat_tick(next_heartbeat) => {
-                heartbeat.publish(clock.now());
+            _ = health_tick(next_health_tick) => {
                 watchdog.feed();
-                advance_deadline(&mut next_heartbeat, heartbeat::HEARTBEAT_INTERVAL);
+                advance_deadline(&mut next_health_tick, HEALTH_TICK_INTERVAL);
             }
             SchedulerTick { fired_at, missed_ticks } = step_tick(scheduler, next_step_target) => {
                 let (Some(period), Some(target)) = (period, next_step_target) else { continue };
@@ -768,7 +756,7 @@ where
             // latest (this is a `state` contract, so latest wins). Once the
             // sampler task ends (only at shutdown, or if it faults) `changed()`
             // errors and this branch simply stops firing - no busy-loop, the
-            // loop keeps parking on the heartbeat tick above.
+            // loop keeps parking on the health tick above.
             Ok(()) = process_metrics_rx.changed() => {
                 let sample = process_metrics_rx.borrow_and_update().clone();
                 if let Some(body) = sample {
@@ -794,7 +782,7 @@ pub(crate) fn advance_logical_deadline(
     )
 }
 
-pub(crate) async fn heartbeat_tick(next: tokio::time::Instant) {
+pub(crate) async fn health_tick(next: tokio::time::Instant) {
     tokio::time::sleep_until(next).await;
 }
 
