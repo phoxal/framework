@@ -12,6 +12,13 @@ Official per-robot tools ship the same way. `phoxal-tool-log` retains the newest
 follow topic under `v1::tool`; consumers re-query after an opaque process
 generation change or a sequence gap. The existing `v1::logs` ingest feed stays
 unchanged.
+Every participant runner also publishes at most one portable
+`v1::tool::runtime::Rollup` per host-monotonic grid interval. It reports
+scheduled-step timing and bounded typed-bus buffer pressure without OS process
+sampling or participant-authored instrumentation. `phoxal-tool-telemetry`
+clamps retained participant/topic identities and topic rows, retains the newest
+five minutes subject to both record and byte caps, and exposes the same
+snapshot/cursor/follow recovery model under `v1::tool::runtime`.
 Each crate carries its own version and is released only when it changes; the
 library crates are published to crates.io (see [Releasing](#releasing)).
 

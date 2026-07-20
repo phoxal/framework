@@ -19,7 +19,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
-preview-v2 = ["phoxal-api/preview-v2", "dep:sysinfo"]
+preview-v2 = ["phoxal-api/preview-v2"]
 
 [dependencies]
 phoxal-api = { workspace = true }
@@ -38,7 +38,6 @@ serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
-sysinfo = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
 tracing = { workspace = true }

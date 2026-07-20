@@ -13,12 +13,8 @@ pub mod context;
 pub mod launch;
 mod managed;
 pub mod metadata;
-#[cfg(feature = "preview-v2")]
-mod process_metrics;
-#[cfg(not(feature = "preview-v2"))]
-#[path = "process_metrics_disabled.rs"]
-mod process_metrics;
 pub(crate) mod runner;
+mod runtime_performance;
 pub mod scheduler;
 mod sd_notify;
 pub mod server;

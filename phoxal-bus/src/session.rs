@@ -11,11 +11,12 @@ use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::error::{BusError, Result};
 use crate::metadata::MAX_SOURCE_PARTICIPANT_BYTES;
+use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter - it never blocks the
 /// step loop (D35/D43e).
-const OUTBOUND_CAPACITY: usize = 1024;
+pub(crate) const OUTBOUND_CAPACITY: usize = 1024;
 
 /// Byte bound of the outbound queue (D43e: limits in samples AND bytes). A
 /// publish that would exceed it is dropped + counted rather than blocking.
@@ -69,6 +70,7 @@ struct Outbound {
     attachment: Vec<u8>,
     payload: Vec<u8>,
     bytes: usize,
+    metric: RuntimeMetricHandle,
 }
 
 struct BusInner {
@@ -83,6 +85,7 @@ struct BusInner {
     shutdown: Notify,
     drain: std::sync::Mutex<Option<JoinHandle<()>>>,
     health: BusHealth,
+    runtime_metrics: RuntimeMetrics,
 }
 
 /// A Zenoh session bound to one robot's key root, with a non-blocking publish
@@ -141,6 +144,7 @@ impl Bus {
             shutdown: Notify::new(),
             drain: std::sync::Mutex::new(None),
             health: BusHealth::default(),
+            runtime_metrics: RuntimeMetrics::default(),
         });
 
         let drain = tokio::spawn(drain_loop(drain_session, rx, Arc::clone(&inner)));
@@ -169,6 +173,15 @@ impl Bus {
         &self.inner.health
     }
 
+    #[doc(hidden)]
+    pub fn take_runtime_metrics(&self) -> Vec<RuntimeMetricSnapshot> {
+        self.inner.runtime_metrics.take()
+    }
+
+    pub(crate) fn runtime_metrics(&self) -> &RuntimeMetrics {
+        &self.inner.runtime_metrics
+    }
+
     /// The underlying Zenoh session (for subscriber/queryable declaration).
     pub fn session(&self) -> &zenoh::Session {
         &self.inner.session
@@ -193,6 +206,7 @@ impl Bus {
         encoding: String,
         attachment: Vec<u8>,
         payload: Vec<u8>,
+        metric: RuntimeMetricHandle,
     ) -> Result<()> {
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(BusError::Closed);
@@ -204,8 +218,11 @@ impl Bus {
         // Bus publishers; add-then-check would let concurrent callers each
         // observe an individually valid pre-add value and collectively exceed it.
         if !reserve_outbound_bytes(&self.inner.queued_bytes, bytes) {
+            metric.record_drop();
             return Err(self.dropped(&key, "byte bound"));
         }
+
+        metric.enqueue_started();
 
         let outbound = Outbound {
             key,
@@ -213,15 +230,22 @@ impl Bus {
             attachment,
             payload,
             bytes,
+            metric: metric.clone(),
         };
         match self.inner.outbound.try_send(outbound) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                metric.record_message();
+                Ok(())
+            }
             Err(mpsc::error::TrySendError::Full(out)) => {
                 self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                out.metric.enqueue_finished();
+                out.metric.record_drop();
                 Err(self.dropped(&out.key, "sample bound"))
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.inner.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
+                metric.enqueue_finished();
                 Err(BusError::Closed)
             }
         }
@@ -295,6 +319,7 @@ async fn drain_loop(
             _ = inner.shutdown.notified() => {
                 while let Ok(out) = rx.try_recv() {
                     inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
+                    out.metric.enqueue_finished();
                     put(&session, out).await;
                 }
                 break;
@@ -302,6 +327,7 @@ async fn drain_loop(
             msg = rx.recv() => match msg {
                 Some(out) => {
                     inner.queued_bytes.fetch_sub(out.bytes, Ordering::AcqRel);
+                    out.metric.enqueue_finished();
                     put(&session, out).await;
                 }
                 None => break,

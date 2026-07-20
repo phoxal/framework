@@ -30,6 +30,7 @@ pub mod handle;
 pub mod liveliness;
 pub mod metadata;
 pub mod query;
+mod runtime_metrics;
 pub mod server;
 pub mod session;
 pub mod topic;
@@ -46,6 +47,10 @@ pub use liveliness::{
 };
 pub use metadata::{BusMetadata, Source};
 pub use query::{QueryCode, QueryError, QueryFailure, ServerResult};
+#[doc(hidden)]
+pub use runtime_metrics::{
+    RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,
+};
 pub use server::{IncomingQuery, ServerQueryable};
 pub use session::{Bus, BusConfig, BusHealth};
 pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};
