@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0](https://github.com/phoxal/framework/compare/phoxal-v0.34.3...phoxal-v0.35.0) - 2026-07-20
+
+### Added
+
+- *(bus)* [**breaking**] replace heartbeats with Zenoh liveliness ([#283](https://github.com/phoxal/framework/pull/283))
+
 ## [0.34.3](https://github.com/phoxal/framework/compare/phoxal-v0.34.2...phoxal-v0.34.3) - 2026-07-19
 
 ### Added
