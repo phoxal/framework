@@ -40,6 +40,11 @@ identity (D1), not by a wire-shape hash.
 - There is no `extends` or inheritance between versions. `v1` is the current
   production identity and changes directly during pre-stability simplification.
   `v2` is the one evolving preview surface.
+- A topic body belongs to one node and one topic. Sibling topics duplicate
+  request/response bodies rather than sharing their `ContractBody` identity.
+  A parent may define a plain, non-topic protocol value for children to
+  reference through an absolute crate path; `v1::tool::Cursor` is the deliberate
+  example shared by the separate log and bus retention protocols.
 
 ## Wire body and metadata placement
 
@@ -112,6 +117,30 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
   read-only `Snapshot`; an exclusive `#[server]` handler holds `&mut self` and is
   serialized with `#[step]`.
   State changes use pub/sub commands, not queries.
+- Bounded retention tools use a complete snapshot query plus a live follow
+  topic. Their cursor combines an opaque process generation with a monotonic
+  ingest sequence. Consumers buffer follow items while querying, install the
+  snapshot, replay only newer buffered items, and re-query on a generation
+  change or sequence gap. `v1::tool::log` retains the newest 1,000 existing
+  `v1::logs` events; `v1::tool::bus` retains the newest 60 one-second windows.
+
+### Raw retention-tool coherence boundary
+
+The two retention tools serve `v1::tool::{log,bus}` through their raw-bus owner
+capability. This is an explicit current coherence gap: tools are intentionally
+clockless, raw-bus-only participants and their authoring model fixes `Api = ()`,
+so these served query/state edges are not embedded in the participant metadata
+that `cargo xtask coherence-check` reads. Pretending otherwise with a parallel
+hand-maintained metadata format would create a second contract authority.
+
+Until tool authoring gains a dedicated served-API metadata surface, the proof is
+instead the single `phoxal_api_tree!` declaration (which owns body and topic
+identity), its exact topic-key and MessagePack round-trip tests, and the
+owner-capability constructors used by both servers/publishers. A migration of
+either retained surface must update its raw producer and consumer together; the
+coherence gate cannot currently detect a stranded consumer for these four
+edges. This limitation is canonical and deliberate, not a claim that the raw
+surfaces participate in coherence today.
 
 ## Revision linkage
 

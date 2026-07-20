@@ -34,7 +34,7 @@
 
 use std::collections::VecDeque;
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -425,12 +425,22 @@ impl<B: ContractBody> Subscriber<B> {
     pub fn try_recv(&self) -> Option<Received<B>> {
         self.ring.try_pop()
     }
+
+    /// Cumulative samples evicted from this subscriber's bounded ring.
+    ///
+    /// This counter is local to this subscription (unlike the aggregate bus
+    /// health counter), allowing retention consumers to disclose their own
+    /// ingestion loss explicitly.
+    pub fn dropped(&self) -> u64 {
+        self.ring.dropped.load(Ordering::Relaxed)
+    }
 }
 
 struct Ring<B> {
     buf: Mutex<VecDeque<Received<B>>>,
     notify: Notify,
     cap: usize,
+    dropped: AtomicU64,
 }
 
 impl<B> Ring<B> {
@@ -439,6 +449,7 @@ impl<B> Ring<B> {
             buf: Mutex::new(VecDeque::with_capacity(cap)),
             notify: Notify::new(),
             cap,
+            dropped: AtomicU64::new(0),
         }
     }
 
@@ -450,6 +461,7 @@ impl<B> Ring<B> {
             if buf.len() == self.cap {
                 buf.pop_front();
                 dropped = true;
+                self.dropped.fetch_add(1, Ordering::Relaxed);
             }
             buf.push_back(item);
         }
@@ -584,4 +596,35 @@ pub(crate) fn decode_sample<B: ContractBody>(
 
     let body = MessagePack::decode::<B>(sample.payload().to_bytes().as_ref())?;
     Ok((body, metadata))
+}
+
+#[cfg(test)]
+mod subscriber_ring_tests {
+    use super::*;
+
+    fn received(body: u8) -> Received<u8> {
+        Received {
+            body,
+            metadata: BusMetadata {
+                codec: CodecId::MessagePack.as_u8(),
+                produced_at_ns: 0,
+                epoch: 0,
+                source: Source {
+                    participant: "test".to_string(),
+                    incarnation: 0,
+                    sequence: u64::from(body),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn ring_counts_each_drop_oldest_eviction_cumulatively() {
+        let ring = Ring::new(1);
+        assert!(!ring.push(received(1)));
+        assert!(ring.push(received(2)));
+        assert!(ring.push(received(3)));
+        assert_eq!(ring.dropped.load(Ordering::Relaxed), 2);
+        assert_eq!(ring.try_pop().unwrap().body, 3);
+    }
 }

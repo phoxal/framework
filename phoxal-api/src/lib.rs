@@ -688,6 +688,137 @@ phoxal_api_tree! {
             topic self: state Event;
         }
 
+        tool {
+            /// Opaque identity for one retention-tool process together with a
+            /// position in its completed follow stream. A snapshot cursor
+            /// covers the retained completed items; a bus snapshot's optional
+            /// `current` window deliberately has the next sequence. Consumers
+            /// compare `generation` for equality only and must never parse or
+            /// order it.
+            #[derive(Eq)]
+            struct Cursor {
+                generation: String,
+                sequence: u64,
+            }
+
+            log {
+                /// Requests tool-log's complete current bounded snapshot. The
+                /// first protocol version intentionally has no pagination or
+                /// filtering surface.
+                struct SnapshotRequest {}
+
+                /// Wall-clock timestamp copied from one participant-originated
+                /// structured `v1::logs` event.
+                struct Timestamp {
+                    unix_seconds: i64,
+                    nanos: u32,
+                }
+
+                #[derive(Copy, Eq)]
+                #[serde(rename_all = "snake_case")]
+                enum Level {
+                    Error,
+                    Warn,
+                    Info,
+                    Debug,
+                    Trace,
+                }
+
+                #[serde(untagged)]
+                enum LogValue {
+                    Bool(bool),
+                    I64(i64),
+                    U64(u64),
+                    F64(f64),
+                    String(String),
+                }
+
+                /// One retained participant log. `sequence` is assigned by
+                /// tool-log at ingest and is independent of the producer's
+                /// `source_sequence`.
+                struct Record {
+                    sequence: u64,
+                    participant_id: String,
+                    source_sequence: u64,
+                    time: Timestamp,
+                    level: Level,
+                    target: String,
+                    message: String,
+                    fields: ::std::collections::BTreeMap<String, LogValue>,
+                    dropped: u32,
+                    truncated: u32,
+                }
+
+                /// The complete bounded tool-log state at `cursor`.
+                struct Snapshot {
+                    cursor: crate::v1::tool::Cursor,
+                    /// Cumulative structured log samples evicted from
+                    /// tool-log's bounded ingest subscriber in this process.
+                    /// An increase is observable, unrecoverable source loss;
+                    /// it is distinct from producer-side `Record::dropped`.
+                    ingest_dropped: u64,
+                    records: Vec<Record>,
+                }
+
+                /// One live record following the snapshot query. A consumer
+                /// must re-query when the generation changes or the sequence is
+                /// not exactly one after its installed cursor.
+                struct Follow {
+                    cursor: crate::v1::tool::Cursor,
+                    /// Current cumulative tool-log ingest loss counter.
+                    ingest_dropped: u64,
+                    record: Record,
+                }
+
+                topic snapshot: query SnapshotRequest => Snapshot;
+                topic follow: state Follow;
+            }
+
+            bus {
+                /// Requests tool-bus's complete current bounded snapshot. The
+                /// first protocol version intentionally has no pagination or
+                /// filtering surface.
+                struct SnapshotRequest {}
+
+                /// One topic-producer pair measured during a one-second window.
+                /// Empty topic and producer identify the bounded overflow row.
+                struct TopicMetric {
+                    topic: String,
+                    from_participant: String,
+                    ingress_rate_hz: f32,
+                    count: u64,
+                }
+
+                /// One retained bus-rate window. `window_ns` is a duration, not
+                /// a production timestamp.
+                struct Window {
+                    sequence: u64,
+                    topics: Vec<TopicMetric>,
+                    throughput_msg_s: f32,
+                    window_ns: u64,
+                }
+
+                /// The current partial counters plus the bounded recent
+                /// completed-window history. The partial `current` window has
+                /// the next sequence that its eventual follow item will use;
+                /// the snapshot cursor covers only `windows`.
+                struct Snapshot {
+                    cursor: crate::v1::tool::Cursor,
+                    current: Option<Window>,
+                    windows: Vec<Window>,
+                }
+
+                /// One newly completed bus-rate window.
+                struct Follow {
+                    cursor: crate::v1::tool::Cursor,
+                    window: Window,
+                }
+
+                topic snapshot: query SnapshotRequest => Snapshot;
+                topic follow: state Follow;
+            }
+        }
+
         bus {
             uplink {
                 /// Reserved observable state for a future authenticated router
@@ -1272,46 +1403,6 @@ phoxal_api_tree! {
 
             topic spawn: query SpawnRequest => SpawnSet;
             topic clock: state Clock;
-        }
-
-        router {
-            /// One topic-producer pair's measured ingress over the sample
-            /// window. Row identity is `(topic, from_participant)`;
-            /// `from_participant == ""` means the sample had no decodable
-            /// Phoxal producer envelope. Quiet rows disappear after a short
-            /// grace period and are then evicted, so
-            /// `count` is cumulative only for the current observed lifetime
-            /// and may restart from zero if that pair later returns. The
-            /// sentinel `topic == "" && from_participant == ""` aggregates
-            /// traffic omitted when the bounded detailed table is full or the
-            /// bus tool's non-blocking observation queue drops a burst or an
-            /// observation has oversized identity metadata. Those
-            /// drops never apply backpressure to robot traffic. Once emitted,
-            /// the sentinel remains present for the session so consumers do
-            /// not lose the fact that earlier traffic was unattributed; its
-            /// window rate may be zero in later snapshots.
-            struct TopicMetric {
-                topic: String,
-                from_participant: String,
-                ingress_rate_hz: f32,
-                count: u64,
-            }
-
-            /// The bus tool's measured message-flow snapshot for this robot
-            /// bus root; traffic
-            /// transited for other robot roots is intentionally excluded.
-            /// `window_ns` is the measurement interval LENGTH (not a timestamp;
-            /// production time is the envelope `publish_at`, per the guide's
-            /// logical-time discipline). Total throughput remains complete when
-            /// the bounded per-topic table emits its documented aggregate
-            /// sentinel row.
-            struct Metrics {
-                topics: Vec<TopicMetric>,
-                throughput_msg_s: f32,
-                window_ns: u64,
-            }
-
-            topic metrics: state Metrics;
         }
 
         telemetry {

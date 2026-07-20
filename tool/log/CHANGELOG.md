@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Introduce `phoxal-tool-bus` as a normal connected tool that observes and
-  publishes bounded per-robot bus metrics.
-- Replace the preview router metrics state with stable `v1::tool::bus`
-  snapshot/follow contracts and retain the newest 60 one-second windows.
+- Introduce `phoxal-tool-log` with a bounded 1,000-record structured-log
+  snapshot and live follow feed.
+- Expose cumulative bounded-ingest loss separately from producer-side drops.

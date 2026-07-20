@@ -48,6 +48,30 @@ fn contract_body_topic_is_version_qualified() {
         <api::bus::uplink::State as ContractBody>::TOPIC,
         "v1/bus/uplink/state"
     );
+    assert_eq!(
+        <api::tool::log::SnapshotRequest as ContractBody>::TOPIC,
+        "v1/tool/log/snapshot"
+    );
+    assert_eq!(
+        <api::tool::log::Snapshot as ContractBody>::TOPIC,
+        "v1/tool/log/snapshot"
+    );
+    assert_eq!(
+        <api::tool::log::Follow as ContractBody>::TOPIC,
+        "v1/tool/log/follow"
+    );
+    assert_eq!(
+        <api::tool::bus::SnapshotRequest as ContractBody>::TOPIC,
+        "v1/tool/bus/snapshot"
+    );
+    assert_eq!(
+        <api::tool::bus::Snapshot as ContractBody>::TOPIC,
+        "v1/tool/bus/snapshot"
+    );
+    assert_eq!(
+        <api::tool::bus::Follow as ContractBody>::TOPIC,
+        "v1/tool/bus/follow"
+    );
 }
 
 #[test]
@@ -76,15 +100,6 @@ fn v2_is_one_preview_api_for_post_v1_contracts() {
     assert_eq!(
         v2::topic::new().simulation().clock().key(),
         "v2/simulation/clock"
-    );
-
-    assert_eq!(
-        <v2::router::Metrics as ContractBody>::TOPIC,
-        "v2/router/metrics"
-    );
-    assert_eq!(
-        v2::topic::new().router().metrics().key(),
-        "v2/router/metrics"
     );
 
     assert_eq!(
@@ -170,7 +185,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
 
         for family in [
             "v2::simulation::Clock",
-            "v2::router::Metrics",
             "v2::telemetry::Host",
             "v2::telemetry::Process",
             "v2::joypad::Devices",
@@ -215,7 +229,6 @@ fn generated_role_const_matches_each_topic_role() {
 fn v2_role_consts_match_each_topic_role() {
     assert_eq!(v2::battery::State::ROLE, TopicRole::State);
     assert_eq!(v2::simulation::Clock::ROLE, TopicRole::State);
-    assert_eq!(v2::router::Metrics::ROLE, TopicRole::State);
     assert_eq!(v2::telemetry::Host::ROLE, TopicRole::State);
     assert_eq!(v2::telemetry::Process::ROLE, TopicRole::State);
     assert_eq!(v2::joypad::Devices::ROLE, TopicRole::State);
@@ -496,6 +509,61 @@ fn logs_event_defaults_truncation_for_pre_field_publishers() {
 }
 
 #[test]
+fn retained_tool_contracts_round_trip_through_messagepack() {
+    round_trip(&api::tool::log::SnapshotRequest {});
+    let cursor = api::tool::Cursor {
+        generation: "opaque-generation".to_string(),
+        sequence: 9,
+    };
+    let record = api::tool::log::Record {
+        sequence: 9,
+        participant_id: "drive".to_string(),
+        source_sequence: 41,
+        time: api::tool::log::Timestamp {
+            unix_seconds: 1_800_000_000,
+            nanos: 123,
+        },
+        level: api::tool::log::Level::Info,
+        target: "drive".to_string(),
+        message: "target accepted".to_string(),
+        fields: [("speed".to_string(), api::tool::log::LogValue::F64(0.4))]
+            .into_iter()
+            .collect(),
+        dropped: 0,
+        truncated: 0,
+    };
+    round_trip(&api::tool::log::Snapshot {
+        cursor: cursor.clone(),
+        ingest_dropped: 2,
+        records: vec![record.clone()],
+    });
+    round_trip(&api::tool::log::Follow {
+        cursor: cursor.clone(),
+        ingest_dropped: 2,
+        record,
+    });
+
+    round_trip(&api::tool::bus::SnapshotRequest {});
+    let window = api::tool::bus::Window {
+        sequence: 9,
+        topics: vec![api::tool::bus::TopicMetric {
+            topic: "v1/drive/state".to_string(),
+            from_participant: "drive".to_string(),
+            ingress_rate_hz: 10.0,
+            count: 42,
+        }],
+        throughput_msg_s: 12.5,
+        window_ns: 1_000_000_000,
+    };
+    round_trip(&api::tool::bus::Snapshot {
+        cursor: cursor.clone(),
+        current: Some(window.clone()),
+        windows: vec![window.clone()],
+    });
+    round_trip(&api::tool::bus::Follow { cursor, window });
+}
+
+#[test]
 #[cfg(feature = "preview-v2")]
 fn v2_bodies_round_trip_through_messagepack() {
     round_trip(&v2::simulation::SpawnRequest {
@@ -511,22 +579,6 @@ fn v2_bodies_round_trip_through_messagepack() {
     round_trip(&v2::simulation::Clock {
         now_ns: 1_000_000,
         step: 100,
-    });
-    round_trip(&v2::router::TopicMetric {
-        topic: "v1/drive/state".to_string(),
-        from_participant: "drive".to_string(),
-        ingress_rate_hz: 10.0,
-        count: 42,
-    });
-    round_trip(&v2::router::Metrics {
-        topics: vec![v2::router::TopicMetric {
-            topic: "v1/drive/state".to_string(),
-            from_participant: "drive".to_string(),
-            ingress_rate_hz: 10.0,
-            count: 42,
-        }],
-        throughput_msg_s: 12.5,
-        window_ns: 1_000_000_000,
     });
     round_trip(&v2::telemetry::Host {
         cpu_pct: 12.5,
@@ -733,6 +785,22 @@ fn topic_builder_keys_match_contract_topics() {
         "v1/bus/uplink/state"
     );
     assert_eq!(
+        api::topic::new().tool().log().snapshot().key(),
+        "v1/tool/log/snapshot"
+    );
+    assert_eq!(
+        api::topic::new().tool().log().follow().key(),
+        "v1/tool/log/follow"
+    );
+    assert_eq!(
+        api::topic::new().tool().bus().snapshot().key(),
+        "v1/tool/bus/snapshot"
+    );
+    assert_eq!(
+        api::topic::new().tool().bus().follow().key(),
+        "v1/tool/bus/follow"
+    );
+    assert_eq!(
         api::topic::new().perception().detections().key(),
         "v1/perception/detections"
     );
@@ -764,10 +832,6 @@ fn v2_topic_builder_keys_match_contract_topics() {
     assert_eq!(
         v2::topic::new().simulation().clock().key(),
         "v2/simulation/clock"
-    );
-    assert_eq!(
-        v2::topic::new().router().metrics().key(),
-        "v2/router/metrics"
     );
     assert_eq!(
         v2::topic::new().telemetry().host().key(),
@@ -806,6 +870,14 @@ fn internal_owner_builder_produces_identical_keys() {
     assert_eq!(
         api::topic::internal::new(cap).drive().target().key(),
         "v1/drive/target"
+    );
+    assert_eq!(
+        api::topic::internal::new(cap).tool().log().snapshot().key(),
+        "v1/tool/log/snapshot"
+    );
+    assert_eq!(
+        api::topic::internal::new(cap).tool().bus().follow().key(),
+        "v1/tool/bus/follow"
     );
     assert_eq!(
         api::topic::internal::new(cap).map().submap().key(),

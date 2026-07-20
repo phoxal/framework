@@ -6,6 +6,12 @@ ABI crate (the typed bus client + contract/addressing primitives), the published
 version-local wire bodies and topic builders), the published `phoxal` library crate (engine + model)
 and its `phoxal-macros` companion, plus a growing set of unpublished platform
 service binaries (`phoxal-service-<name>`) that ship as deployables.
+Official per-robot tools ship the same way. `phoxal-tool-log` retains the newest
+1,000 structured `v1::logs` events, while `phoxal-tool-bus` retains the newest
+60 completed one-second traffic windows plus current counters. Both expose a bounded snapshot query and a live
+follow topic under `v1::tool`; consumers re-query after an opaque process
+generation change or a sequence gap. The existing `v1::logs` ingest feed stays
+unchanged.
 Each crate carries its own version and is released only when it changes; the
 library crates are published to crates.io (see [Releasing](#releasing)).
 
