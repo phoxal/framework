@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disclose cumulative tool-log ingest-ring loss on snapshots and follow items.
 - Add stable runtime-performance rollup, bounded history query, and follow
   contracts under `v1::tool::runtime`.
+- Disclose runtime-retention identity truncation and aggregate excess or
+  oversized topic rows instead of retaining unbounded wire shapes.
 
 ### Removed
 

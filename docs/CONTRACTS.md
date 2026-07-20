@@ -125,23 +125,28 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
   `v1::logs` events; `v1::tool::bus` retains the newest 60 one-second windows.
   `v1::tool::runtime` retains five host-monotonic minutes of portable runner
   rollups behind a bounded, participant-filterable backward-paginated query.
-  Its follow stream uses the same generation/sequence recovery rule.
+  Ingest clamps participant ids to 512 bytes, exact topic ids to 256 bytes, and
+  normal rows to 256 plus an explicit aggregate overflow row. Retention has
+  both record and byte caps; capacity evictions and identity truncation remain
+  visible in the response. Its follow stream uses the same
+  generation/sequence recovery rule.
 
 ### Raw retention-tool coherence boundary
 
-The two retention tools serve `v1::tool::{log,bus}` through their raw-bus owner
-capability. This is an explicit current coherence gap: tools are intentionally
-clockless, raw-bus-only participants and their authoring model fixes `Api = ()`,
-so these served query/state edges are not embedded in the participant metadata
-that `cargo xtask coherence-check` reads. Pretending otherwise with a parallel
-hand-maintained metadata format would create a second contract authority.
+The retention tools serve `v1::tool::{log,bus,runtime}` through their raw-bus
+owner capability. This is an explicit current coherence gap: tools are
+intentionally clockless, raw-bus-only participants and their authoring model
+fixes `Api = ()`, so these served query/state edges are not embedded in the
+participant metadata that `cargo xtask coherence-check` reads. Pretending
+otherwise with a parallel hand-maintained metadata format would create a
+second contract authority.
 
 Until tool authoring gains a dedicated served-API metadata surface, the proof is
 instead the single `phoxal_api_tree!` declaration (which owns body and topic
 identity), its exact topic-key and MessagePack round-trip tests, and the
 owner-capability constructors used by both servers/publishers. A migration of
-either retained surface must update its raw producer and consumer together; the
-coherence gate cannot currently detect a stranded consumer for these four
+any retained surface must update its raw producer and consumer together; the
+coherence gate cannot currently detect a stranded consumer for these raw
 edges. This limitation is canonical and deliberate, not a claim that the raw
 surfaces participate in coherence today.
 

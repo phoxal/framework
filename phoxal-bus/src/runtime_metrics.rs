@@ -2,7 +2,17 @@
 //!
 //! Counters live beside the bounded buffers they describe. The participant
 //! runner drains interval counters once per rollup; current depth and declared
-//! quiet rows persist across windows.
+//! quiet rows persist across windows. Rows describe the fixed set of buffers
+//! declared during participant setup and remain for the process lifetime;
+//! dropping an authoring handle does not dynamically unregister its row. That
+//! fixed declaration invariant makes a `Drop` unregister path both misleading
+//! and unnecessary; teardown discards the complete registry with the process.
+//!
+//! Interval counters are best-effort boundary samples, not a transactional
+//! snapshot of every buffer: concurrent activity may land on either side of
+//! the sequence of atomic swaps. Depth/high-water gauges remain monotonic-safe
+//! for their individual buffers, but the complete multi-row rollup has no
+//! global stop-the-world instant.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -82,6 +92,7 @@ impl RuntimeMetricHandle {
                 .latest_overwrites
                 .fetch_add(1, Ordering::Relaxed);
         }
+        // Latest is one occupied slot, not a one-item backlog.
         self.set_inbound_depth(1);
     }
 
@@ -118,10 +129,13 @@ impl RuntimeMetricHandle {
     }
 
     fn set_inbound_depth(&self, depth: u64) {
-        let local = self
-            .local_depth
-            .as_ref()
-            .expect("inbound runtime metric has a local depth gauge");
+        let Some(local) = self.local_depth.as_ref() else {
+            debug_assert!(
+                false,
+                "outbound runtime metric cannot update an inbound depth gauge"
+            );
+            return;
+        };
         let previous = local.swap(depth, Ordering::Relaxed);
         let current = if depth >= previous {
             self.counters
@@ -145,6 +159,9 @@ pub(crate) struct RuntimeMetrics {
 
 impl RuntimeMetrics {
     pub(crate) fn register_outbound(&self, topic: &str, capacity: usize) -> RuntimeMetricHandle {
+        // Every outbound topic is a per-row view of the same process queue.
+        // Capacity is therefore repeated, never added across publishers/rows.
+        // The queue's separate byte bound is intentionally not a v1 metric.
         self.register(
             RuntimeMetricKey {
                 topic: topic.to_string(),
@@ -255,5 +272,33 @@ mod tests {
         assert_eq!(quiet[0].count, 0);
         assert_eq!(quiet[0].capacity, 12);
         assert_eq!(quiet[0].current_depth, 9);
+    }
+
+    #[test]
+    fn outbound_capacity_is_a_non_additive_view_of_one_shared_queue() {
+        let metrics = RuntimeMetrics::default();
+        let first = metrics.register_outbound("v1/drive/target", 1_024);
+        let second = metrics.register_outbound("v1/drive/target", 1_024);
+        let _other = metrics.register_outbound("v1/motion/target", 1_024);
+        first.enqueue_started();
+        second.enqueue_started();
+
+        let rows = metrics.take();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.capacity == 1_024));
+        assert_eq!(rows[0].current_depth, 2);
+    }
+
+    #[test]
+    fn fixed_setup_rows_persist_after_the_declaring_handle_is_dropped() {
+        let metrics = RuntimeMetrics::default();
+        {
+            let _declared = metrics.register_latest("v1/drive/state");
+        }
+        let rows = metrics.take();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].capacity, 1);
+        assert_eq!(rows[0].current_depth, 0);
+        assert_eq!(metrics.take().len(), 1);
     }
 }

@@ -81,7 +81,9 @@ Key rules the example shows:
 The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the scheduled control loop, `#[server]` / `#[server_snapshot]` serve queries, and `#[shutdown]` runs graceful park/stop/flush before the bus closes.
 It measures handler duration/lateness/missed ticks plus the exact
 version-qualified typed-bus buffers declared by the participant and emits one
-bounded portable runtime-performance rollup per host-monotonic second. A
+bounded portable runtime-performance rollup per host-monotonic grid interval.
+The setup-declared rows persist for the process lifetime; interval counters are
+best-effort boundary samples rather than a transactional queue snapshot. A
 participant writes no telemetry code, unscheduled participants report step
 timing as not applicable, and no per-process CPU/RSS sampler is involved.
 

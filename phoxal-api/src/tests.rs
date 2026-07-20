@@ -611,6 +611,7 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
     let runtime_record = api::tool::runtime::Record {
         sequence: 10,
         participant_id: "drive".to_string(),
+        truncated: 0,
         window_ns: 1_000_000_000,
         step: Some(step),
         topics: vec![topic],

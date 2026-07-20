@@ -17,10 +17,18 @@ const MAX_DISK_ROWS: usize = 32;
 const MAX_DISK_TEXT_BYTES: usize = 128;
 const RUNTIME_RETENTION: Duration = Duration::from_secs(5 * 60);
 const MAX_RUNTIME_RECORDS: usize = 4_096;
+/// Sum of retained records' exact MessagePack sizes. Container bookkeeping is
+/// fixed/bounded separately by `MAX_RUNTIME_RECORDS`.
+const MAX_RUNTIME_RETAINED_BYTES: usize = 12 * 1024 * 1024;
+const MAX_RUNTIME_TOPIC_ROWS: usize = 256;
+const MAX_RUNTIME_PARTICIPANT_BYTES: usize = 512;
+const MAX_RUNTIME_TOPIC_BYTES: usize = 256;
 const DEFAULT_RUNTIME_QUERY_RECORDS: usize = 64;
 const MAX_RUNTIME_QUERY_RECORDS: usize = 64;
 #[cfg(test)]
 const MAX_HOST_WIRE_BYTES: usize = 16 * 1024;
+#[cfg(test)]
+const MAX_RUNTIME_SNAPSHOT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 
 // Configless (Part 3 fix, shared runner/macro default): the `#[phoxal::tool]`
 // macro now defaults an omitted `config = …` to `()` for tools, so this
@@ -59,22 +67,21 @@ impl ToolTelemetry {
             "runtime-performance-ingest",
             ManagedTaskPolicy::FaultOnExit,
             async move {
-                loop {
-                    let received = match runtime_rollups.recv().await {
-                        Ok(received) => received,
-                        Err(error) => {
-                            tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance ingest stopped");
-                            return;
-                        }
-                    };
-                    let follow = ingest_history
+                while let Ok(received) = runtime_rollups.recv().await {
+                    let follow = match ingest_history
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .ingest(
                             Instant::now(),
                             received.metadata.source.participant,
                             received.body,
-                        );
+                        ) {
+                        Ok(follow) => follow,
+                        Err(error) => {
+                            tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance rollup could not be retained");
+                            continue;
+                        }
+                    };
                     if let Err(error) = runtime_follow.publish_at(host_time(), follow).await {
                         tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance follow publish failed");
                     }
@@ -141,6 +148,7 @@ impl ToolTelemetry {
 #[derive(Debug)]
 struct TimedRuntimeRecord {
     received_at: Instant,
+    encoded_bytes: usize,
     record: stable::tool::runtime::Record,
 }
 
@@ -149,6 +157,8 @@ struct RuntimeHistory {
     generation: String,
     sequence: u64,
     capacity_evictions: u64,
+    /// Exact MessagePack byte sum for `records`, maintained on every push/pop.
+    retained_bytes: usize,
     records: VecDeque<TimedRuntimeRecord>,
 }
 
@@ -158,6 +168,7 @@ impl RuntimeHistory {
             generation,
             sequence: 0,
             capacity_evictions: 0,
+            retained_bytes: 0,
             records: VecDeque::new(),
         }
     }
@@ -167,32 +178,41 @@ impl RuntimeHistory {
         now: Instant,
         participant_id: String,
         rollup: stable::tool::runtime::Rollup,
-    ) -> stable::tool::runtime::Follow {
+    ) -> Result<stable::tool::runtime::Follow> {
         self.prune(now);
-        self.sequence = self
+        let sequence = self
             .sequence
             .checked_add(1)
             .expect("tool-telemetry runtime sequence exhausted");
+        let participant_was_truncated = participant_id.len() > MAX_RUNTIME_PARTICIPANT_BYTES;
+        let participant_id = truncate_utf8(participant_id, MAX_RUNTIME_PARTICIPANT_BYTES);
+        let (topics, overflow) = bounded_runtime_topics(rollup.topics, rollup.overflow);
         let record = stable::tool::runtime::Record {
-            sequence: self.sequence,
+            sequence,
             participant_id,
+            truncated: u32::from(participant_was_truncated),
             window_ns: rollup.window_ns,
             step: rollup.step,
-            topics: rollup.topics,
-            overflow: rollup.overflow,
+            topics,
+            overflow,
         };
+        let encoded_bytes = MessagePack::encode(&record)?.len();
+        self.sequence = sequence;
+        self.retained_bytes = self.retained_bytes.saturating_add(encoded_bytes);
         self.records.push_back(TimedRuntimeRecord {
             received_at: now,
+            encoded_bytes,
             record: record.clone(),
         });
-        if self.records.len() > MAX_RUNTIME_RECORDS {
-            self.records.pop_front();
-            self.capacity_evictions = self.capacity_evictions.saturating_add(1);
+        while self.records.len() > MAX_RUNTIME_RECORDS
+            || self.retained_bytes > MAX_RUNTIME_RETAINED_BYTES
+        {
+            self.pop_front(true);
         }
-        stable::tool::runtime::Follow {
+        Ok(stable::tool::runtime::Follow {
             cursor: self.cursor(),
             record,
-        }
+        })
     }
 
     fn snapshot(
@@ -248,7 +268,17 @@ impl RuntimeHistory {
         while self.records.front().is_some_and(|record| {
             now.saturating_duration_since(record.received_at) > RUNTIME_RETENTION
         }) {
-            self.records.pop_front();
+            self.pop_front(false);
+        }
+    }
+
+    fn pop_front(&mut self, capacity_eviction: bool) {
+        let Some(removed) = self.records.pop_front() else {
+            return;
+        };
+        self.retained_bytes = self.retained_bytes.saturating_sub(removed.encoded_bytes);
+        if capacity_eviction {
+            self.capacity_evictions = self.capacity_evictions.saturating_add(1);
         }
     }
 
@@ -257,6 +287,85 @@ impl RuntimeHistory {
             generation: self.generation.clone(),
             sequence: self.sequence,
         }
+    }
+}
+
+fn bounded_runtime_topics(
+    mut topics: Vec<stable::tool::RuntimeTopic>,
+    overflow: Option<stable::tool::RuntimeTopic>,
+) -> (
+    Vec<stable::tool::RuntimeTopic>,
+    Option<stable::tool::RuntimeTopic>,
+) {
+    topics.sort_by(|left, right| {
+        left.topic
+            .cmp(&right.topic)
+            .then_with(|| left.direction.cmp(&right.direction))
+            .then_with(|| left.buffer_kind.cmp(&right.buffer_kind))
+    });
+
+    let mut retained = Vec::with_capacity(topics.len().min(MAX_RUNTIME_TOPIC_ROWS));
+    let mut overflow = overflow.map(normalize_runtime_overflow);
+    for row in topics {
+        let is_normal = !row.topic.is_empty()
+            && row.topic.len() <= MAX_RUNTIME_TOPIC_BYTES
+            && row.direction != stable::tool::RuntimeDirection::Mixed
+            && row.buffer_kind != stable::tool::RuntimeBufferKind::Mixed
+            && row.overflowed_rows == 0;
+        if is_normal && retained.len() < MAX_RUNTIME_TOPIC_ROWS {
+            retained.push(row);
+        } else {
+            let omitted_rows = row.overflowed_rows.saturating_add(1);
+            merge_runtime_overflow(&mut overflow, row, omitted_rows);
+        }
+    }
+    (retained, overflow)
+}
+
+fn normalize_runtime_overflow(mut row: stable::tool::RuntimeTopic) -> stable::tool::RuntimeTopic {
+    row.topic.clear();
+    row.direction = stable::tool::RuntimeDirection::Mixed;
+    row.buffer_kind = stable::tool::RuntimeBufferKind::Mixed;
+    row
+}
+
+fn merge_runtime_overflow(
+    overflow: &mut Option<stable::tool::RuntimeTopic>,
+    row: stable::tool::RuntimeTopic,
+    omitted_rows: u32,
+) {
+    let target = overflow.get_or_insert_with(empty_runtime_overflow);
+    target.count = target.count.saturating_add(row.count);
+    target.rate_hz += row.rate_hz;
+    target.drops = target.drops.saturating_add(row.drops);
+    target.latest_overwrites = target
+        .latest_overwrites
+        .saturating_add(row.latest_overwrites);
+    target.bounded_evictions = target
+        .bounded_evictions
+        .saturating_add(row.bounded_evictions);
+    target.capacity = target.capacity.saturating_add(row.capacity);
+    target.current_depth = target.current_depth.saturating_add(row.current_depth);
+    target.high_water_depth = target.high_water_depth.saturating_add(row.high_water_depth);
+    target.decode_errors = target.decode_errors.saturating_add(row.decode_errors);
+    target.overflowed_rows = target.overflowed_rows.saturating_add(omitted_rows);
+}
+
+fn empty_runtime_overflow() -> stable::tool::RuntimeTopic {
+    stable::tool::RuntimeTopic {
+        topic: String::new(),
+        direction: stable::tool::RuntimeDirection::Mixed,
+        buffer_kind: stable::tool::RuntimeBufferKind::Mixed,
+        count: 0,
+        rate_hz: 0.0,
+        drops: 0,
+        latest_overwrites: 0,
+        bounded_evictions: 0,
+        capacity: 0,
+        current_depth: 0,
+        high_water_depth: 0,
+        decode_errors: 0,
+        overflowed_rows: 0,
     }
 }
 
@@ -523,16 +632,80 @@ mod tests {
         }
     }
 
+    fn runtime_topic(topic: String) -> stable::tool::RuntimeTopic {
+        stable::tool::RuntimeTopic {
+            topic,
+            direction: stable::tool::RuntimeDirection::Publish,
+            buffer_kind: stable::tool::RuntimeBufferKind::Outbound,
+            count: 1,
+            rate_hz: 1.0,
+            drops: 1,
+            latest_overwrites: 0,
+            bounded_evictions: 0,
+            capacity: 1_024,
+            current_depth: 1,
+            high_water_depth: 1,
+            decode_errors: 1,
+            overflowed_rows: 0,
+        }
+    }
+
+    fn maximal_runtime_rollup() -> stable::tool::runtime::Rollup {
+        let topics = (0..MAX_RUNTIME_TOPIC_ROWS)
+            .map(|index| {
+                let prefix = format!("v1/{index:03}/");
+                runtime_topic(format!(
+                    "{prefix}{}",
+                    "x".repeat(MAX_RUNTIME_TOPIC_BYTES - prefix.len())
+                ))
+            })
+            .collect();
+        stable::tool::runtime::Rollup {
+            window_ns: u64::MAX,
+            step: Some(stable::tool::RuntimeStep {
+                target_period_ns: u64::MAX,
+                completed: u64::MAX,
+                errors: u64::MAX,
+                mean_duration_ns: u64::MAX,
+                max_duration_ns: u64::MAX,
+                mean_lateness_ns: u64::MAX,
+                max_lateness_ns: u64::MAX,
+                missed_ticks: u64::MAX,
+                overruns: u64::MAX,
+            }),
+            topics,
+            overflow: Some(stable::tool::RuntimeTopic {
+                topic: String::new(),
+                direction: stable::tool::RuntimeDirection::Mixed,
+                buffer_kind: stable::tool::RuntimeBufferKind::Mixed,
+                count: u64::MAX,
+                rate_hz: f32::MAX,
+                drops: u64::MAX,
+                latest_overwrites: u64::MAX,
+                bounded_evictions: u64::MAX,
+                capacity: u64::MAX,
+                current_depth: u64::MAX,
+                high_water_depth: u64::MAX,
+                decode_errors: u64::MAX,
+                overflowed_rows: u32::MAX,
+            }),
+        }
+    }
+
     #[test]
     fn runtime_history_retains_five_minutes_and_uses_cursor_sequence() {
         let mut history = RuntimeHistory::new("generation-a".to_string());
         let start = Instant::now();
-        let first = history.ingest(start, "drive".to_string(), runtime_rollup(1_000_000_000));
-        let second = history.ingest(
-            start + Duration::from_secs(1),
-            "map".to_string(),
-            runtime_rollup(1_000_000_001),
-        );
+        let first = history
+            .ingest(start, "drive".to_string(), runtime_rollup(1_000_000_000))
+            .unwrap();
+        let second = history
+            .ingest(
+                start + Duration::from_secs(1),
+                "map".to_string(),
+                runtime_rollup(1_000_000_001),
+            )
+            .unwrap();
         assert_eq!(first.cursor.sequence, 1);
         assert_eq!(second.cursor.sequence, 2);
 
@@ -565,11 +738,13 @@ mod tests {
         let start = Instant::now();
         for index in 0..5 {
             let participant = if index % 2 == 0 { "drive" } else { "map" };
-            history.ingest(
-                start + Duration::from_secs(index),
-                participant.to_string(),
-                runtime_rollup(index),
-            );
+            history
+                .ingest(
+                    start + Duration::from_secs(index),
+                    participant.to_string(),
+                    runtime_rollup(index),
+                )
+                .unwrap();
         }
         let snapshot = history.snapshot(
             start + Duration::from_secs(5),
@@ -596,6 +771,100 @@ mod tests {
         assert_eq!(older.records.len(), 1);
         assert_eq!(older.records[0].window_ns, 0);
         assert_eq!(older.next_before_sequence, None);
+    }
+
+    #[test]
+    fn runtime_ingest_clamps_identity_and_rows_with_deterministic_overflow() {
+        let mut topics = (0..260)
+            .rev()
+            .map(|index| runtime_topic(format!("v1/test/{index:03}")))
+            .collect::<Vec<_>>();
+        topics.push(runtime_topic("z".repeat(MAX_RUNTIME_TOPIC_BYTES + 1)));
+        let mut source_overflow = empty_runtime_overflow();
+        source_overflow.count = 3;
+        source_overflow.overflowed_rows = 2;
+        let mut history = RuntimeHistory::new("generation-a".to_string());
+        let follow = history
+            .ingest(
+                Instant::now(),
+                "participant-é".repeat(MAX_RUNTIME_PARTICIPANT_BYTES),
+                stable::tool::runtime::Rollup {
+                    window_ns: 1,
+                    step: None,
+                    topics,
+                    overflow: Some(source_overflow),
+                },
+            )
+            .unwrap();
+
+        let record = follow.record;
+        assert_eq!(record.truncated, 1);
+        assert!(record.participant_id.len() <= MAX_RUNTIME_PARTICIPANT_BYTES);
+        assert!(
+            record
+                .participant_id
+                .is_char_boundary(record.participant_id.len())
+        );
+        assert_eq!(record.topics.len(), MAX_RUNTIME_TOPIC_ROWS);
+        assert_eq!(record.topics.first().unwrap().topic, "v1/test/000");
+        assert_eq!(record.topics.last().unwrap().topic, "v1/test/255");
+        assert!(
+            record
+                .topics
+                .iter()
+                .all(|row| row.topic.len() <= MAX_RUNTIME_TOPIC_BYTES)
+        );
+        let overflow = record.overflow.unwrap();
+        assert!(overflow.topic.is_empty());
+        // Two source-overflow rows + four excess valid rows + one oversized row.
+        assert_eq!(overflow.overflowed_rows, 7);
+        assert_eq!(overflow.count, 8);
+    }
+
+    #[test]
+    fn runtime_history_is_byte_bounded_and_maximal_query_is_wire_safe() {
+        let start = Instant::now();
+        let mut history = RuntimeHistory::new("generation-a".to_string());
+        for index in 0..MAX_RUNTIME_QUERY_RECORDS {
+            history
+                .ingest(
+                    start + Duration::from_millis(index as u64),
+                    "p".repeat(MAX_RUNTIME_PARTICIPANT_BYTES),
+                    maximal_runtime_rollup(),
+                )
+                .unwrap();
+        }
+        assert_eq!(history.records.len(), MAX_RUNTIME_QUERY_RECORDS);
+        assert_eq!(history.capacity_evictions, 0);
+        assert!(history.retained_bytes <= MAX_RUNTIME_RETAINED_BYTES);
+
+        let snapshot = history.snapshot(
+            start + Duration::from_secs(1),
+            &stable::tool::runtime::SnapshotRequest {
+                participant_id: None,
+                limit: MAX_RUNTIME_QUERY_RECORDS as u32,
+                before_sequence: None,
+            },
+        );
+        assert_eq!(snapshot.records.len(), MAX_RUNTIME_QUERY_RECORDS);
+        let encoded = MessagePack::encode(&snapshot).unwrap();
+        assert!(
+            encoded.len() <= MAX_RUNTIME_SNAPSHOT_WIRE_BYTES,
+            "{}-byte maximal runtime snapshot exceeds the decoder ceiling",
+            encoded.len()
+        );
+
+        for index in MAX_RUNTIME_QUERY_RECORDS..(MAX_RUNTIME_QUERY_RECORDS * 3) {
+            history
+                .ingest(
+                    start + Duration::from_millis(index as u64),
+                    "p".repeat(MAX_RUNTIME_PARTICIPANT_BYTES),
+                    maximal_runtime_rollup(),
+                )
+                .unwrap();
+        }
+        assert!(history.capacity_evictions > 0);
+        assert!(history.retained_bytes <= MAX_RUNTIME_RETAINED_BYTES);
     }
 
     #[test]

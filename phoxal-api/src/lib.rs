@@ -719,7 +719,11 @@ phoxal_api_tree! {
             #[derive(Copy, Eq, Ord, PartialOrd)]
             #[serde(rename_all = "snake_case")]
             enum RuntimeBufferKind {
+                /// Per-topic view of the one shared process outbound queue.
+                /// Its sample capacity is repeated on each row and must not be
+                /// summed; the queue's separate byte pressure is not in v1.
                 Outbound,
+                /// Keep-last slot. Depth `1` means occupied, never backlog.
                 Latest,
                 Subscriber,
                 /// Used only by the bounded overflow row.
@@ -740,9 +744,11 @@ phoxal_api_tree! {
                 overruns: u64,
             }
 
-            /// One exact version-qualified topic/direction/buffer row. Empty
-            /// `topic` plus `Mixed` direction/kind identifies the explicit
-            /// overflow row; `overflowed_rows` is zero on normal rows.
+            /// One exact version-qualified topic/direction/buffer row. These
+            /// are process-lifetime setup declarations: dropping an authoring
+            /// handle does not dynamically unregister a row. Empty `topic`
+            /// plus `Mixed` direction/kind identifies the explicit overflow
+            /// row; `overflowed_rows` is zero on normal rows.
             struct RuntimeTopic {
                 topic: String,
                 direction: RuntimeDirection,
@@ -752,6 +758,9 @@ phoxal_api_tree! {
                 drops: u64,
                 latest_overwrites: u64,
                 bounded_evictions: u64,
+                /// Sample capacity. Outbound rows repeat the shared process
+                /// queue capacity and are non-additive; byte pressure is not
+                /// represented. Latest capacity/depth describe slot occupancy.
                 capacity: u64,
                 current_depth: u64,
                 high_water_depth: u64,
@@ -878,8 +887,11 @@ phoxal_api_tree! {
 
             runtime {
                 /// Runner-originated portable performance rollup. The runner
-                /// publishes at most one per host-monotonic second; envelope
-                /// provenance identifies the participant.
+                /// publishes at most one per host-monotonic grid interval;
+                /// envelope provenance identifies the participant. Interval
+                /// counters are best-effort sequential atomic samples, not a
+                /// transactional stop-the-world boundary, so concurrent queue
+                /// activity may land on either neighboring rollup.
                 struct Rollup {
                     window_ns: u64,
                     step: Option<crate::v1::tool::RuntimeStep>,
@@ -906,6 +918,10 @@ phoxal_api_tree! {
                 struct Record {
                     sequence: u64,
                     participant_id: String,
+                    /// Text values truncated by tool-telemetry's ingest bound.
+                    /// Oversized/excess topic identities are not truncated;
+                    /// they are aggregated into the explicit overflow row.
+                    truncated: u32,
                     window_ns: u64,
                     step: Option<crate::v1::tool::RuntimeStep>,
                     topics: Vec<crate::v1::tool::RuntimeTopic>,

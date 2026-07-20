@@ -731,7 +731,7 @@ where
                 // (D32); the snapshot is committed only after a *successful* step so
                 // a failed mutation is never published as committed state. A panic
                 // would unwind and abort the process.
-                let observation = runtime_performance.begin_step(missed_ticks);
+                let observation = runtime_performance.begin_step(target, fired_at, missed_ticks);
                 let success = match participant.__step(api, step).await {
                     Ok(()) => {
                         commit_snapshot::<R>(participant, committed);

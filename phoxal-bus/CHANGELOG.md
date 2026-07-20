@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expose each bounded `Subscriber`'s cumulative drop-oldest eviction count.
 - Add runner-facing interval accounting for exact typed publisher, latest, and
   bounded subscriber buffers.
+- Serialize subscriber depth accounting with its ring mutation so a stale
+  concurrent update cannot overwrite the current queue depth.
 
 ## [0.22.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.21.3...phoxal-bus-v0.22.0) - 2026-07-20
 

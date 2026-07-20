@@ -393,7 +393,6 @@ impl<B: ContractBody> Latest<B> {
 /// fan-out.
 pub struct Subscriber<B> {
     ring: Arc<Ring<B>>,
-    metric: RuntimeMetricHandle,
     _guard: Arc<SubscriptionGuard>,
 }
 
@@ -404,7 +403,6 @@ impl<B> Clone for Subscriber<B> {
     fn clone(&self) -> Self {
         Subscriber {
             ring: Arc::clone(&self.ring),
-            metric: self.metric.clone(),
             _guard: Arc::clone(&self._guard),
         }
     }
@@ -416,19 +414,17 @@ impl<B: ContractBody> Subscriber<B> {
     #[doc(hidden)]
     pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>, depth: usize) -> Result<Self> {
         let depth = depth.max(1);
-        let ring = Arc::new(Ring::new(depth));
-        let push = Arc::clone(&ring);
-        let drops = bus.clone();
         let metric = bus
             .runtime_metrics()
             .register_subscriber(topic.key(), depth);
-        let observe = metric.clone();
+        let ring = Arc::new(Ring::new(depth, metric.clone()));
+        let push = Arc::clone(&ring);
+        let drops = bus.clone();
         let guard = spawn_subscription::<B, _>(
             bus,
             topic.key(),
             move |body, metadata| {
-                let (evicted, current_depth) = push.push(Received { body, metadata });
-                observe.record_subscriber(evicted, current_depth);
+                let (evicted, _current_depth) = push.push(Received { body, metadata });
                 if evicted {
                     drops.health().inbound_drops.fetch_add(1, Ordering::Relaxed);
                 }
@@ -438,7 +434,6 @@ impl<B: ContractBody> Subscriber<B> {
         .await?;
         Ok(Subscriber {
             ring,
-            metric,
             _guard: Arc::new(guard),
         })
     }
@@ -452,8 +447,7 @@ impl<B: ContractBody> Subscriber<B> {
     /// (see the [type docs](Self)). Do not `recv` a `Subscriber` from a
     /// snapshot server; read committed `Snapshot` state instead.
     pub async fn recv(&self) -> Result<Received<B>> {
-        let (received, current_depth) = self.ring.recv().await;
-        self.metric.record_subscriber_pop(current_depth);
+        let (received, _current_depth) = self.ring.recv().await;
         Ok(received)
     }
 
@@ -462,10 +456,9 @@ impl<B: ContractBody> Subscriber<B> {
     /// **Destructive**, exactly like [`recv`](Self::recv): it pops from the
     /// shared ring, so clones compete for samples - see the [type docs](Self).
     pub fn try_recv(&self) -> Option<Received<B>> {
-        self.ring.try_pop().map(|(received, current_depth)| {
-            self.metric.record_subscriber_pop(current_depth);
-            received
-        })
+        self.ring
+            .try_pop()
+            .map(|(received, _current_depth)| received)
     }
 
     /// Cumulative samples evicted from this subscriber's bounded ring.
@@ -483,15 +476,17 @@ struct Ring<B> {
     notify: Notify,
     cap: usize,
     dropped: AtomicU64,
+    metric: RuntimeMetricHandle,
 }
 
 impl<B> Ring<B> {
-    fn new(cap: usize) -> Self {
+    fn new(cap: usize, metric: RuntimeMetricHandle) -> Self {
         Ring {
             buf: Mutex::new(VecDeque::with_capacity(cap)),
             notify: Notify::new(),
             cap,
             dropped: AtomicU64::new(0),
+            metric,
         }
     }
 
@@ -506,6 +501,9 @@ impl<B> Ring<B> {
         }
         buf.push_back(item);
         let depth = buf.len();
+        // Serialize the local depth gauge with the queue mutation. Updating it
+        // after unlocking permits an older pop to overwrite a newer push.
+        self.metric.record_subscriber(dropped, depth);
         drop(buf);
         self.notify.notify_one();
         (dropped, depth)
@@ -514,7 +512,9 @@ impl<B> Ring<B> {
     fn try_pop(&self) -> Option<(Received<B>, usize)> {
         let mut buf = self.buf.lock().expect("ring mutex poisoned");
         let item = buf.pop_front()?;
-        Some((item, buf.len()))
+        let depth = buf.len();
+        self.metric.record_subscriber_pop(depth);
+        Some((item, depth))
     }
 
     async fn recv(&self) -> (Received<B>, usize) {
@@ -666,7 +666,9 @@ mod subscriber_ring_tests {
 
     #[test]
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
-        let ring = Ring::new(1);
+        let metrics = crate::runtime_metrics::RuntimeMetrics::default();
+        let metric = metrics.register_subscriber("v1/test/state", 1);
+        let ring = Ring::new(1, metric);
         assert_eq!(ring.push(received(1)), (false, 1));
         assert_eq!(ring.push(received(2)), (true, 1));
         assert_eq!(ring.push(received(3)), (true, 1));
@@ -674,5 +676,11 @@ mod subscriber_ring_tests {
         let (received, depth) = ring.try_pop().unwrap();
         assert_eq!(received.body, 3);
         assert_eq!(depth, 0);
+        let row = metrics.take().pop().unwrap();
+        assert_eq!(row.count, 3);
+        assert_eq!(row.drops, 2);
+        assert_eq!(row.bounded_evictions, 2);
+        assert_eq!(row.current_depth, 0);
+        assert_eq!(row.high_water_depth, 1);
     }
 }
