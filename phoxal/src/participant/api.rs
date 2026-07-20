@@ -7,7 +7,7 @@
 //! may mix contract versions freely across its `Api` fields - there is no
 //! per-participant API version ceiling.
 //!
-//! The runner's own system contracts (heartbeat/presence/simulation clock) do
+//! The runner's own system contracts (Liveliness/simulation clock) do
 //! not resolve a version through this trait hierarchy either:
 //! `participant::runner` hardcodes `use phoxal_api::v1 as api;`,
 //! independent of any participant's chosen `Api`.

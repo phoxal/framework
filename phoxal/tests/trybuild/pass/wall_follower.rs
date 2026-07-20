@@ -25,7 +25,7 @@ struct Api {
     target: Publisher<v1::drive::Target>,
     // OWNER-side publish of `drive/state`, built below from an owner-capability
     // internal topic (`topic::internal::new(cap)`), so this fixture exercises
-    // the owner-cap path P-convert (battery, presence, …) starts every real
+    // the owner-cap path P-convert (battery, shared state, …) starts every real
     // participant with - not just the public client topics.
     state: Publisher<v1::drive::State>,
     odometry: Latest<v1::drive::State>,
