@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1](https://github.com/phoxal/framework/compare/phoxal-bus-v0.22.0...phoxal-bus-v0.22.1) - 2026-07-20
+
+### Added
+
+- *(telemetry)* retain runtime diagnostics ([#286](https://github.com/phoxal/framework/pull/286))
+- *(tools)* retain queryable log and bus history ([#285](https://github.com/phoxal/framework/pull/285))
+
 ### Added
 
 - Expose each bounded `Subscriber`'s cumulative drop-oldest eviction count.

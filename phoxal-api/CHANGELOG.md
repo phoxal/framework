@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1](https://github.com/phoxal/framework/compare/phoxal-api-v0.22.0...phoxal-api-v0.22.1) - 2026-07-20
+
+### Added
+
+- *(device)* add per-root resource telemetry ([#287](https://github.com/phoxal/framework/pull/287))
+- *(telemetry)* retain runtime diagnostics ([#286](https://github.com/phoxal/framework/pull/286))
+- *(tools)* retain queryable log and bus history ([#285](https://github.com/phoxal/framework/pull/285))
+
 ### Added
 
 - Add stable bounded snapshot/follow contracts for per-robot structured logs
