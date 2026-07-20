@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expose each bounded `Subscriber`'s cumulative drop-oldest eviction count.
+
 ## [0.22.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.21.3...phoxal-bus-v0.22.0) - 2026-07-20
 
 ### Added

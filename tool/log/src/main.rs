@@ -46,6 +46,9 @@ impl ToolLog {
         let snapshots = bus.declare_server(snapshot_topic.key()).await?;
 
         let ingest_history = Arc::clone(&history);
+        // This clone exists only for the non-destructive dropped() counter.
+        // Subscriber clones compete for one destructive queue, so the query
+        // task must never call recv()/try_recv() on query_logs.
         let query_logs = logs.clone();
         ctx.spawn_managed_with(
             "log-ingest",
@@ -227,12 +230,16 @@ fn retained_record(
             retained_truncations = retained_truncations.saturating_add(1);
             continue;
         }
-        let name = retained_component(
-            &name,
-            MAX_FIELD_NAME_BYTES,
-            &mut remaining_text_bytes,
-            &mut retained_truncations,
-        );
+        // Field names are identifiers, not display text. Never mutate one:
+        // truncating two distinct names (or truncating after the shared budget
+        // is exhausted) can collapse them onto the same BTreeMap key and
+        // silently overwrite a retained value. A genuinely empty source name
+        // remains legal because it consumes no budget and is not synthesized.
+        if name.len() > MAX_FIELD_NAME_BYTES || name.len() > remaining_text_bytes {
+            retained_truncations = retained_truncations.saturating_add(1);
+            continue;
+        }
+        remaining_text_bytes -= name.len();
         let value = match value {
             api::logs::LogValue::Bool(value) => api::tool::log::LogValue::Bool(value),
             api::logs::LogValue::I64(value) => api::tool::log::LogValue::I64(value),
@@ -448,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn bus_metadata_participant_is_the_retained_attribution_authority() {
+    fn retained_record_preserves_the_supplied_participant_id() {
         let mut history = LogHistory::new("generation-a".to_string());
         let follow = history.ingest("metadata-source".to_string(), event(1, "one"), 0);
         assert_eq!(follow.record.participant_id, "metadata-source");
@@ -504,11 +511,69 @@ mod tests {
                 truncated: 0,
             },
         );
-        assert_eq!(
-            field_record.fields.keys().next().unwrap().len(),
-            MAX_FIELD_NAME_BYTES
-        );
+        assert!(field_record.fields.is_empty());
         assert_eq!(field_record.truncated, 1);
+    }
+
+    #[test]
+    fn exhausted_budget_and_overlong_names_skip_fields_without_key_collisions() {
+        let overlong_prefix = "x".repeat(MAX_FIELD_NAME_BYTES);
+        let fields = [
+            ("first".to_string(), api::logs::LogValue::U64(1)),
+            ("second".to_string(), api::logs::LogValue::U64(2)),
+            (format!("{overlong_prefix}-a"), api::logs::LogValue::U64(3)),
+            (format!("{overlong_prefix}-b"), api::logs::LogValue::U64(4)),
+        ]
+        .into_iter()
+        .collect();
+        let record = retained_record(
+            3,
+            String::new(),
+            api::logs::Event {
+                seq: 3,
+                time: api::logs::Timestamp {
+                    unix_seconds: 1,
+                    nanos: 2,
+                },
+                level: api::logs::Level::Info,
+                target: String::new(),
+                // Legal for the producer but larger than tool-log's shared
+                // retained budget, so no synthetic empty field key may appear.
+                message: "m".repeat(MAX_RETAINED_RECORD_TEXT_BYTES + 1),
+                fields,
+                dropped: 0,
+                truncated: 0,
+            },
+        );
+        assert_eq!(record.message.len(), MAX_RETAINED_RECORD_TEXT_BYTES);
+        assert!(record.fields.is_empty());
+        assert!(!record.fields.contains_key(""));
+        // One message truncation plus all four skipped fields.
+        assert_eq!(record.truncated, 5);
+
+        let genuinely_empty = retained_record(
+            4,
+            String::new(),
+            api::logs::Event {
+                seq: 4,
+                time: api::logs::Timestamp {
+                    unix_seconds: 1,
+                    nanos: 2,
+                },
+                level: api::logs::Level::Info,
+                target: String::new(),
+                message: String::new(),
+                fields: [(String::new(), api::logs::LogValue::U64(9))]
+                    .into_iter()
+                    .collect(),
+                dropped: 0,
+                truncated: 0,
+            },
+        );
+        assert_eq!(
+            genuinely_empty.fields.get(""),
+            Some(&api::tool::log::LogValue::U64(9))
+        );
     }
 
     #[test]
