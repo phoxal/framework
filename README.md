@@ -19,6 +19,12 @@ sampling or participant-authored instrumentation. `phoxal-tool-telemetry`
 clamps retained participant/topic identities and topic rows, retains the newest
 five minutes subject to both record and byte caps, and exposes the same
 snapshot/cursor/follow recovery model under `v1::tool::runtime`.
+One runner-owned `phoxal-tool-device` per robot root publishes truthful,
+capability-aware whole-device observations for logical device `main` under
+`v1::tool::device`. Unsupported values are absent rather than fabricated as
+zero. Per-root `phoxal-tool-telemetry` retains those samples for five minutes
+with record and byte bounds and exposes the same cursor/snapshot/follow recovery
+model. Device totals remain separate from participant runtime measurements.
 Each crate carries its own version and is released only when it changes; the
 library crates are published to crates.io (see [Releasing](#releasing)).
 

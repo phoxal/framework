@@ -651,7 +651,7 @@ mod tests {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .context("xtask manifest directory has no workspace parent")?;
-        for tool in ["joypad", "bus", "telemetry"] {
+        for tool in ["joypad", "bus", "device"] {
             let source = workspace_root.join("tool").join(tool).join("src/main.rs");
             let body = fs::read_to_string(&source)?;
             assert!(
@@ -734,7 +734,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 26);
+        assert_eq!(workspace.official_artifacts().len(), 27);
 
         let discovered = workspace
             .official_artifacts()

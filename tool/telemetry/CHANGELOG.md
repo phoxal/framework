@@ -15,3 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and disclose every truncation or overflow through the stable record shape.
 - Re-aggregate duplicate runtime keys before row limits and clamp every
   retained rate to a finite, saturating value.
+- Retain bounded, capability-aware device samples from the per-root
+  `phoxal-tool-device` publisher and expose snapshot/follow recovery.
+
+### Removed
+
+- Move operating-system sampling out of tool-telemetry so this retention tool
+  no longer acts as a site-scoped device authority.

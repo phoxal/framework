@@ -44,6 +44,7 @@ members = [
     "tool/joypad",
     "tool/log",
     "tool/bus",
+    "tool/device",
     "tool/telemetry",
     "xtask",
 ]
@@ -81,6 +82,7 @@ default-members = [
     "tool/joypad",
     "tool/log",
     "tool/bus",
+    "tool/device",
     "tool/telemetry",
 ]
 

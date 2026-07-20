@@ -2643,6 +2643,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "phoxal-tool-device"
+version = "0.1.0"
+dependencies = [
+ "phoxal",
+ "phoxal-api",
+ "sysinfo",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "phoxal-tool-joypad"
 version = "0.1.13"
 dependencies = [
@@ -2675,7 +2686,6 @@ dependencies = [
  "phoxal",
  "phoxal-api",
  "serde",
- "sysinfo",
  "tokio",
  "tracing",
 ]

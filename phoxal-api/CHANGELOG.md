@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disclose cumulative tool-log ingest-ring loss on snapshots and follow items.
 - Add stable runtime-performance rollup, bounded history query, and follow
   contracts under `v1::tool::runtime`.
+- Add capability-aware whole-device samples and bounded history contracts under
+  `v1::tool::device`.
 - Disclose runtime-retention identity truncation and aggregate excess or
   oversized topic rows instead of retaining unbounded wire shapes.
 
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Remove the superseded preview `v2::router::Metrics` live-only contract.
 - Remove the preview per-process CPU/RSS telemetry contract.
+- Remove the superseded preview host telemetry contract.
 
 ## [0.22.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.21.3...phoxal-api-v0.22.0) - 2026-07-20
 
