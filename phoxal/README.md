@@ -144,9 +144,18 @@ Everything a topic exposes is **derived from the node path** `n1 … nk` to its 
   A dynamic node's method takes its var as `impl Display` (`*` / `**` stay valid for subscribe); the leaf method yields the typed `Topic`.
   So `api::topic::new().component("front_left").motor("drive").command()` builds the key `v1/component/front_left/motor/drive/command`.
 
-Each node is **self-contained**: it declares its own copy of every type it uses, with **no `super::`** and no shared/common module.
-Because the node path disambiguates, names are path-local - `component::imu::Sample` and `component::range::Sample` are distinct types that may safely repeat field names.
-Duplicating an identical type across sibling nodes is intentional, not a smell.
+Each topic node is **self-contained**: it declares its own request, response,
+and state bodies, with **no `super::`** and no shared/common module. This is
+required because one body has one `ContractBody` identity and therefore one
+topic. The narrow exception is a plain, non-topic protocol value declared by a
+parent node and referenced from children through an absolute crate path. For
+example, `v1::tool::Cursor` carries the same retention position in the separate
+`tool::log` and `tool::bus` protocols, while each child still owns its distinct
+`SnapshotRequest`, `Snapshot`, and `Follow` topic bodies.
+Because the node path disambiguates, topic-body names are path-local -
+`component::imu::Sample` and `component::range::Sample` are distinct types that
+may safely repeat field names. Duplicating an identical topic body across
+sibling nodes is intentional, not a smell.
 
 During the current pre-stability simplification, coordinated production
 corrections may change `v1` directly; the owner publishes before consumers

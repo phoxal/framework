@@ -1,19 +1,21 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use phoxal::prelude::*;
-use phoxal::raw::{
-    Bus, BusMetadata, CodecId, OwnerCap, Publisher, host_time, parse_encoding_string,
-};
 #[cfg(test)]
-use phoxal::raw::{Codec, MessagePack, encoding_string};
-use phoxal_api::v2 as preview_api;
+use phoxal::raw::encoding_string;
+use phoxal::raw::{
+    Bus, BusMetadata, Codec, CodecId, MessagePack, OwnerCap, Publisher, QueryFailure, host_time,
+    parse_encoding_string,
+};
+use phoxal_api::v1 as api;
 
 /// The mirror-subscription measurement window: per-topic counts are rolled up
 /// and republished on this cadence.
 const METRICS_WINDOW: Duration = Duration::from_secs(1);
+const RETAINED_RATE_WINDOWS: usize = 60;
 /// Bound both the bus tool's long-lived counter map and each published snapshot.
 /// Traffic beyond the cap still contributes to total throughput, while the API
 /// sentinel row discloses that the detailed table is incomplete.
@@ -34,6 +36,8 @@ const MAX_METRIC_PARTICIPANT_BYTES: usize = 128;
 const MAX_METRIC_IDENTITY_BYTES: usize = 32 * 1_024;
 #[cfg(test)]
 const MAX_METRICS_WIRE_BYTES: usize = 64 * 1_024;
+#[cfg(test)]
+const MAX_SNAPSHOT_WIRE_BYTES: usize = 4 * 1_024 * 1_024;
 /// A small fixed candidate set tracks frequent rejected keys without making
 /// high-cardinality overflow work proportional to the 255-row detail table.
 const MAX_ADMISSION_CANDIDATES: usize = 16;
@@ -48,7 +52,7 @@ const PUBLISH_IDLE_WINDOWS: u32 = 5;
 /// bounding the tool's useful telemetry slots is more important than retaining
 /// an all-time count for inactive participants.
 const EVICT_IDLE_WINDOWS: u32 = PUBLISH_IDLE_WINDOWS + 1;
-/// A mirrored key counts toward `Metrics` only if it has a Phoxal bus shape:
+/// A mirrored key counts toward a rate window only if it has a Phoxal bus shape:
 /// either a raw version-qualified contract key (`v1/drive/state`) or a rooted
 /// key (`<namespace>/robots/<robot-id>/v1/drive/state`). Merely containing a
 /// `v<n>` chunk is not enough: generic paths such as `http/v1/users` must not
@@ -167,10 +171,59 @@ struct DrainedWindow {
     topics_truncated: bool,
 }
 
+#[derive(Debug)]
+struct BusHistory {
+    generation: String,
+    sequence: u64,
+    windows: VecDeque<api::tool::bus::Window>,
+}
+
+impl BusHistory {
+    fn new(generation: String) -> Self {
+        Self {
+            generation,
+            sequence: 0,
+            windows: VecDeque::with_capacity(RETAINED_RATE_WINDOWS),
+        }
+    }
+
+    fn ingest(&mut self, mut window: api::tool::bus::Window) -> api::tool::bus::Follow {
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .expect("tool-bus ingest sequence exhausted");
+        window.sequence = self.sequence;
+        self.windows.push_back(window.clone());
+        if self.windows.len() > RETAINED_RATE_WINDOWS {
+            self.windows.pop_front();
+        }
+        api::tool::bus::Follow {
+            cursor: self.cursor(),
+            window,
+        }
+    }
+
+    fn cursor(&self) -> api::tool::Cursor {
+        api::tool::Cursor {
+            generation: self.generation.clone(),
+            sequence: self.sequence,
+        }
+    }
+
+    fn snapshot(&self, mut current: api::tool::bus::Window) -> api::tool::bus::Snapshot {
+        current.sequence = self.sequence.saturating_add(1);
+        api::tool::bus::Snapshot {
+            cursor: self.cursor(),
+            current: Some(current),
+            windows: self.windows.iter().cloned().collect(),
+        }
+    }
+}
+
 /// Declare the wildcard mirror subscription on the tool's ordinary connected
 /// bus session and spawn the two managed tasks that turn it into
-/// `router::Metrics`: one ingests samples into the shared counters, the
-/// other drains + publishes on [`METRICS_WINDOW`].
+/// retained `tool::bus` history: one ingests samples into the shared counters,
+/// the other drains + publishes on [`METRICS_WINDOW`].
 ///
 /// The mirror is scoped to this robot's bus root. That prevents its subscription
 /// from propagating across an uplink and pulling other robots' traffic back to
@@ -196,6 +249,11 @@ async fn spawn_metrics(
         .map_err(|error| anyhow::anyhow!("failed to declare bus mirror subscriber: {error}"))?;
 
     let counters: Arc<IngressCounters> = Arc::new(Mutex::new(IngressState::default()));
+    let history = Arc::new(Mutex::new(BusHistory::new(process_generation()?)));
+    // Serializes query snapshots with the once-per-second drain/history
+    // transition. Sample ingestion remains independent and non-blocking.
+    let snapshot_gate = Arc::new(Mutex::new(()));
+    let window_started = Arc::new(Mutex::new(tokio::time::Instant::now()));
 
     let ingest_counters = Arc::clone(&counters);
     ctx.spawn_managed_with(
@@ -214,12 +272,77 @@ async fn spawn_metrics(
         },
     );
 
-    let metrics_publisher = Publisher::new(
-        metrics_bus,
-        &preview_api::topic::internal::new(cap).router().metrics(),
+    let follow_publisher = Publisher::new(
+        metrics_bus.clone(),
+        &api::topic::internal::new(cap).tool().bus().follow(),
     )?;
+    let snapshot_topic = api::topic::internal::new(cap).tool().bus().snapshot();
+    let snapshots = metrics_bus.declare_server(snapshot_topic.key()).await?;
+    let query_history = Arc::clone(&history);
+    let query_counters = Arc::clone(&counters);
+    let query_gate = Arc::clone(&snapshot_gate);
+    let query_window_started = Arc::clone(&window_started);
+    let query_bus = metrics_bus.clone();
+    ctx.spawn_managed_with(
+        "bus-snapshot-query",
+        ManagedTaskPolicy::FaultOnExit,
+        async move {
+            loop {
+                let incoming = match snapshots.recv().await {
+                    Ok(incoming) => incoming,
+                    Err(error) => {
+                        tracing::warn!(target: "phoxal.bus", error = %error, "tool-bus snapshot server stopped");
+                        return;
+                    }
+                };
+                if let Err(error) = MessagePack::decode::<api::tool::bus::SnapshotRequest>(
+                    &incoming.request_bytes().unwrap_or_default(),
+                ) {
+                    let _ = incoming
+                        .reply_err(&QueryFailure::invalid_argument(format!(
+                            "decode tool-bus snapshot request: {error}"
+                        )))
+                        .await;
+                    continue;
+                }
+                let snapshot = {
+                    let _gate = query_gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let started = *query_window_started
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let current = snapshot_current(
+                        &query_counters,
+                        tokio::time::Instant::now().duration_since(started),
+                    );
+                    query_history
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .snapshot(current)
+                };
+                match MessagePack::encode(&snapshot) {
+                    Ok(payload) => {
+                        if let Err(error) = incoming.reply(&query_bus, payload).await {
+                            tracing::warn!(target: "phoxal.bus", error = %error, "tool-bus snapshot reply failed");
+                        }
+                    }
+                    Err(error) => {
+                        let _ = incoming
+                            .reply_err(&QueryFailure::internal(format!(
+                                "encode tool-bus snapshot: {error}"
+                            )))
+                            .await;
+                    }
+                }
+            }
+        },
+    );
     let publish_counters = Arc::clone(&counters);
     let publish_drops = Arc::clone(&dropped_mirror_samples);
+    let publish_history = Arc::clone(&history);
+    let publish_gate = Arc::clone(&snapshot_gate);
+    let publish_window_started = Arc::clone(&window_started);
     ctx.spawn_managed_with(
         "bus-metrics-publish",
         ManagedTaskPolicy::FaultOnExit,
@@ -230,7 +353,6 @@ async fn spawn_metrics(
             // bootstrap tick so the first published snapshot covers a real
             // window instead of reporting a near-zero interval as one second.
             ticker.tick().await;
-            let mut window_started = tokio::time::Instant::now();
             loop {
                 ticker.tick().await;
                 let window_ended = tokio::time::Instant::now();
@@ -238,17 +360,29 @@ async fn spawn_metrics(
                     &publish_counters,
                     publish_drops.swap(0, Ordering::Relaxed),
                 );
-                let drained = drain_window(&publish_counters);
-                let metrics = build_metrics(
-                    &drained.samples,
-                    drained.overflow_count,
-                    drained.overflow_cumulative,
-                    drained.topics_truncated,
-                    window_ended.duration_since(window_started),
-                );
-                window_started = window_ended;
-                if let Err(error) = metrics_publisher.publish_at(host_time(), metrics).await {
-                    tracing::warn!(target: "tool_bus", error = %error, "bus metrics publish failed");
+                let follow = {
+                    let _gate = publish_gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut started = publish_window_started
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let drained = drain_window(&publish_counters);
+                    let window = build_metrics(
+                        &drained.samples,
+                        drained.overflow_count,
+                        drained.overflow_cumulative,
+                        drained.topics_truncated,
+                        window_ended.duration_since(*started),
+                    );
+                    *started = window_ended;
+                    publish_history
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .ingest(window)
+                };
+                if let Err(error) = follow_publisher.publish_at(host_time(), follow).await {
+                    tracing::warn!(target: "phoxal.bus", error = %error, "bus metrics follow publish failed");
                 }
             }
         },
@@ -422,6 +556,32 @@ fn drain_window(counters: &IngressCounters) -> DrainedWindow {
     }
 }
 
+/// Copy the in-progress counters without advancing idle ages, promoting
+/// candidates, or resetting the measurement window.
+fn snapshot_current(counters: &IngressCounters, elapsed: Duration) -> api::tool::bus::Window {
+    let guard = counters
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let samples = guard
+        .counters
+        .iter()
+        .filter(|(_, counter)| counter.idle_windows <= PUBLISH_IDLE_WINDOWS)
+        .map(|((topic, from_participant), counter)| TopicWindowSample {
+            topic: topic.clone(),
+            from_participant: from_participant.clone(),
+            window_count: counter.window,
+            cumulative_count: counter.cumulative,
+        })
+        .collect::<Vec<_>>();
+    build_metrics(
+        &samples,
+        guard.overflow_window,
+        guard.overflow_cumulative,
+        guard.overflow_window > 0 || guard.overflow_cumulative > 0,
+        elapsed,
+    )
+}
+
 fn promote_admission_candidates(state: &mut IngressState) {
     // Keep the byte budget derived from the actual table so eviction and test
     // fixtures cannot leave the cached total stale.
@@ -520,7 +680,7 @@ fn metric_identity_bytes((topic, participant): &(String, String)) -> usize {
     topic.len().saturating_add(participant.len())
 }
 
-/// Turn one window's drained samples into the wire `Metrics` state.
+/// Turn one window's drained samples into the retained wire state.
 /// `ingress_rate_hz` is each topic's window count over the window length in
 /// seconds; `throughput_msg_s` sums those rates; `count` is the cumulative
 /// (all-time) total, unaffected by the window reset.
@@ -530,7 +690,7 @@ fn build_metrics(
     overflow_cumulative: u64,
     topics_truncated: bool,
     window: Duration,
-) -> preview_api::router::Metrics {
+) -> api::tool::bus::Window {
     let window_secs = window.as_secs_f32();
     let mut topics = Vec::with_capacity(samples.len());
     let mut throughput_msg_s = if window_secs > 0.0 {
@@ -545,7 +705,7 @@ fn build_metrics(
             0.0
         };
         throughput_msg_s += ingress_rate_hz;
-        topics.push(preview_api::router::TopicMetric {
+        topics.push(api::tool::bus::TopicMetric {
             topic: sample.topic.clone(),
             from_participant: sample.from_participant.clone(),
             ingress_rate_hz,
@@ -553,7 +713,7 @@ fn build_metrics(
         });
     }
     if topics_truncated {
-        topics.push(preview_api::router::TopicMetric {
+        topics.push(api::tool::bus::TopicMetric {
             topic: String::new(),
             from_participant: String::new(),
             ingress_rate_hz: if window_secs > 0.0 {
@@ -569,11 +729,20 @@ fn build_metrics(
             .cmp(&right.topic)
             .then_with(|| left.from_participant.cmp(&right.from_participant))
     });
-    preview_api::router::Metrics {
+    api::tool::bus::Window {
+        sequence: 0,
         topics,
         throughput_msg_s,
         window_ns: u64::try_from(window.as_nanos()).unwrap_or(u64::MAX),
     }
+}
+
+fn process_generation() -> Result<String> {
+    let mut random = [0_u8; 16];
+    getrandom::fill(&mut random).map_err(|error| {
+        anyhow::anyhow!("OS entropy unavailable for tool-bus generation: {error}")
+    })?;
+    Ok(random.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 fn main() -> phoxal::Result<()> {
@@ -583,6 +752,15 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_generation_is_opaque_and_unique_per_call() {
+        let first = process_generation().unwrap();
+        let second = process_generation().unwrap();
+        assert_eq!(first.len(), 32);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
 
     #[test]
     fn mirror_key_expr_is_a_valid_zenoh_key_expr() {
@@ -745,6 +923,60 @@ mod tests {
     }
 
     #[test]
+    fn history_retains_exactly_the_newest_sixty_windows() {
+        let mut history = BusHistory::new("generation".to_string());
+        for index in 0..(RETAINED_RATE_WINDOWS + 3) {
+            history.ingest(api::tool::bus::Window {
+                sequence: 0,
+                topics: Vec::new(),
+                throughput_msg_s: index as f32,
+                window_ns: 1_000_000_000,
+            });
+        }
+
+        let snapshot = history.snapshot(api::tool::bus::Window {
+            sequence: 0,
+            topics: Vec::new(),
+            throughput_msg_s: 0.0,
+            window_ns: 500_000_000,
+        });
+        assert_eq!(snapshot.cursor.sequence, 63);
+        assert_eq!(snapshot.windows.len(), RETAINED_RATE_WINDOWS);
+        assert_eq!(snapshot.windows.first().unwrap().sequence, 4);
+        assert_eq!(snapshot.windows.last().unwrap().sequence, 63);
+        assert_eq!(snapshot.current.as_ref().unwrap().sequence, 64);
+        assert_eq!(snapshot.current.as_ref().unwrap().window_ns, 500_000_000);
+    }
+
+    #[test]
+    fn current_snapshot_is_non_destructive_and_uses_partial_window() {
+        let counters: IngressCounters = Mutex::new(IngressState::default());
+        record_sample(
+            &counters,
+            "v1/drive/state".to_string(),
+            Some("drive".to_string()),
+        );
+        let first = snapshot_current(&counters, Duration::from_millis(250));
+        let second = snapshot_current(&counters, Duration::from_millis(500));
+
+        assert_eq!(first.topics[0].count, 1);
+        assert_eq!(first.topics[0].ingress_rate_hz, 4.0);
+        assert_eq!(second.topics[0].count, 1);
+        assert_eq!(second.topics[0].ingress_rate_hz, 2.0);
+        assert_eq!(
+            counters
+                .lock()
+                .unwrap()
+                .counters
+                .values()
+                .next()
+                .unwrap()
+                .window,
+            1
+        );
+    }
+
+    #[test]
     fn build_metrics_sorts_shared_topic_rows_by_producer() {
         let samples = ["bob", "alice", ""]
             .into_iter()
@@ -857,7 +1089,22 @@ mod tests {
         let encoded = MessagePack::encode(&metrics).unwrap();
         assert!(
             encoded.len() <= MAX_METRICS_WIRE_BYTES,
-            "{}-byte router metrics snapshot exceeds the wire cap",
+            "{}-byte bus rate window exceeds the wire cap",
+            encoded.len()
+        );
+
+        let snapshot = api::tool::bus::Snapshot {
+            cursor: api::tool::Cursor {
+                generation: "generation".to_string(),
+                sequence: RETAINED_RATE_WINDOWS as u64,
+            },
+            current: Some(metrics.clone()),
+            windows: vec![metrics; RETAINED_RATE_WINDOWS],
+        };
+        let encoded = MessagePack::encode(&snapshot).unwrap();
+        assert!(
+            encoded.len() <= MAX_SNAPSHOT_WIRE_BYTES,
+            "{}-byte retained bus snapshot exceeds the wire cap",
             encoded.len()
         );
 
@@ -879,7 +1126,7 @@ mod tests {
         let encoded = MessagePack::encode(&metrics).unwrap();
         assert!(
             encoded.len() <= MAX_METRICS_WIRE_BYTES,
-            "{}-byte max-row router metrics snapshot exceeds the wire cap",
+            "{}-byte max-row bus rate window exceeds the wire cap",
             encoded.len()
         );
     }
@@ -1208,22 +1455,30 @@ mod tests {
         })
         .await
         .expect("open bus");
-        let topic = preview_api::topic::internal::new(OwnerCap::__mint())
-            .router()
-            .metrics();
+        let topic = api::topic::internal::new(OwnerCap::__mint())
+            .tool()
+            .bus()
+            .follow();
         let publisher = Publisher::new(bus.clone(), &topic).expect("metrics publisher");
-        let subscriber = phoxal::raw::Subscriber::<preview_api::router::Metrics>::new(
+        let subscriber = phoxal::raw::Subscriber::<api::tool::bus::Follow>::new(
             &bus,
-            &preview_api::topic::new().router().metrics(),
+            &api::topic::new().tool().bus().follow(),
             1,
         )
         .await
         .expect("metrics subscriber");
 
-        let expected = preview_api::router::Metrics {
-            topics: Vec::new(),
-            throughput_msg_s: 12.5,
-            window_ns: 1_000_000_000,
+        let expected = api::tool::bus::Follow {
+            cursor: api::tool::Cursor {
+                generation: "test".to_string(),
+                sequence: 1,
+            },
+            window: api::tool::bus::Window {
+                sequence: 1,
+                topics: Vec::new(),
+                throughput_msg_s: 12.5,
+                window_ns: 1_000_000_000,
+            },
         };
         publisher
             .publish_at(host_time(), expected.clone())
@@ -1234,7 +1489,7 @@ mod tests {
             .expect("metrics timeout")
             .expect("receive metrics");
 
-        assert_eq!(received.body.throughput_msg_s, expected.throughput_msg_s);
+        assert_eq!(received.body, expected);
         assert_eq!(received.metadata.source.participant, "bus");
         assert_eq!(received.metadata.source.incarnation, 7);
         assert_eq!(bus.health().outbound_drops.load(Ordering::Relaxed), 0);

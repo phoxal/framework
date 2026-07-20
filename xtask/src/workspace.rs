@@ -734,7 +734,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 25);
+        assert_eq!(workspace.official_artifacts().len(), 26);
 
         let discovered = workspace
             .official_artifacts()

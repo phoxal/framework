@@ -505,6 +505,29 @@ mod tests {
         state.clear_sender(token);
     }
 
+    #[tokio::test]
+    async fn structured_bus_layer_captures_without_a_fmt_layer() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let state = Arc::new(BusLogState::new());
+        let (sender, mut receiver) = mpsc::channel(1);
+        let token = state.install_sender(sender);
+        let subscriber = tracing_subscriber::registry().with(BusLogLayer::new(Arc::clone(&state)));
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "runtime", marker = 7_u64, "ready");
+        });
+
+        let captured = receiver.try_recv().expect("structured event captured");
+        assert_eq!(captured.target, "runtime");
+        assert_eq!(captured.message, "ready");
+        assert!(matches!(
+            captured.fields.get("marker"),
+            Some(api::logs::LogValue::U64(7))
+        ));
+        state.clear_sender(token);
+    }
+
     #[test]
     fn no_bus_attached_is_a_noop() {
         let state = BusLogState::new();
