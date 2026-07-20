@@ -291,32 +291,50 @@ impl RuntimeHistory {
 }
 
 fn bounded_runtime_topics(
-    mut topics: Vec<stable::tool::RuntimeTopic>,
+    topics: Vec<stable::tool::RuntimeTopic>,
     overflow: Option<stable::tool::RuntimeTopic>,
 ) -> (
     Vec<stable::tool::RuntimeTopic>,
     Option<stable::tool::RuntimeTopic>,
 ) {
-    topics.sort_by(|left, right| {
-        left.topic
-            .cmp(&right.topic)
-            .then_with(|| left.direction.cmp(&right.direction))
-            .then_with(|| left.buffer_kind.cmp(&right.buffer_kind))
-    });
-
-    let mut retained = Vec::with_capacity(topics.len().min(MAX_RUNTIME_TOPIC_ROWS));
     let mut overflow = overflow.map(normalize_runtime_overflow);
-    for row in topics {
+    let mut normal = BTreeMap::<
+        (
+            String,
+            stable::tool::RuntimeDirection,
+            stable::tool::RuntimeBufferKind,
+        ),
+        stable::tool::RuntimeTopic,
+    >::new();
+    for mut row in topics {
+        row.rate_hz = finite_rate(row.rate_hz);
         let is_normal = !row.topic.is_empty()
             && row.topic.len() <= MAX_RUNTIME_TOPIC_BYTES
             && row.direction != stable::tool::RuntimeDirection::Mixed
             && row.buffer_kind != stable::tool::RuntimeBufferKind::Mixed
             && row.overflowed_rows == 0;
-        if is_normal && retained.len() < MAX_RUNTIME_TOPIC_ROWS {
-            retained.push(row);
+        if is_normal {
+            let key = (row.topic.clone(), row.direction, row.buffer_kind);
+            match normal.entry(key) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(row);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    merge_runtime_values(entry.get_mut(), &row);
+                }
+            }
         } else {
             let omitted_rows = row.overflowed_rows.saturating_add(1);
             merge_runtime_overflow(&mut overflow, row, omitted_rows);
+        }
+    }
+
+    let mut retained = Vec::with_capacity(normal.len().min(MAX_RUNTIME_TOPIC_ROWS));
+    for row in normal.into_values() {
+        if retained.len() < MAX_RUNTIME_TOPIC_ROWS {
+            retained.push(row);
+        } else {
+            merge_runtime_overflow(&mut overflow, row, 1);
         }
     }
     (retained, overflow)
@@ -326,6 +344,7 @@ fn normalize_runtime_overflow(mut row: stable::tool::RuntimeTopic) -> stable::to
     row.topic.clear();
     row.direction = stable::tool::RuntimeDirection::Mixed;
     row.buffer_kind = stable::tool::RuntimeBufferKind::Mixed;
+    row.rate_hz = finite_rate(row.rate_hz);
     row
 }
 
@@ -335,8 +354,13 @@ fn merge_runtime_overflow(
     omitted_rows: u32,
 ) {
     let target = overflow.get_or_insert_with(empty_runtime_overflow);
+    merge_runtime_values(target, &row);
+    target.overflowed_rows = target.overflowed_rows.saturating_add(omitted_rows);
+}
+
+fn merge_runtime_values(target: &mut stable::tool::RuntimeTopic, row: &stable::tool::RuntimeTopic) {
     target.count = target.count.saturating_add(row.count);
-    target.rate_hz += row.rate_hz;
+    target.rate_hz = add_finite_rates(target.rate_hz, row.rate_hz);
     target.drops = target.drops.saturating_add(row.drops);
     target.latest_overwrites = target
         .latest_overwrites
@@ -348,7 +372,26 @@ fn merge_runtime_overflow(
     target.current_depth = target.current_depth.saturating_add(row.current_depth);
     target.high_water_depth = target.high_water_depth.saturating_add(row.high_water_depth);
     target.decode_errors = target.decode_errors.saturating_add(row.decode_errors);
-    target.overflowed_rows = target.overflowed_rows.saturating_add(omitted_rows);
+}
+
+fn finite_rate(rate_hz: f32) -> f32 {
+    if rate_hz.is_nan() || rate_hz <= 0.0 {
+        0.0
+    } else if rate_hz.is_infinite() {
+        f32::MAX
+    } else {
+        rate_hz
+    }
+}
+
+fn add_finite_rates(left: f32, right: f32) -> f32 {
+    let left = finite_rate(left);
+    let right = finite_rate(right);
+    if left > f32::MAX - right {
+        f32::MAX
+    } else {
+        left + right
+    }
 }
 
 fn empty_runtime_overflow() -> stable::tool::RuntimeTopic {
@@ -819,6 +862,90 @@ mod tests {
         // Two source-overflow rows + four excess valid rows + one oversized row.
         assert_eq!(overflow.overflowed_rows, 7);
         assert_eq!(overflow.count, 8);
+    }
+
+    #[test]
+    fn runtime_ingest_sanitizes_all_non_finite_and_saturating_rates() {
+        let mut normal = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, f32::MAX]
+            .into_iter()
+            .enumerate()
+            .map(|(index, rate_hz)| {
+                let mut row = runtime_topic(format!("v1/rate/{index}"));
+                row.rate_hz = rate_hz;
+                row
+            })
+            .collect::<Vec<_>>();
+        for rate_hz in [f32::INFINITY, f32::NEG_INFINITY, f32::MAX, f32::MAX] {
+            let mut row = runtime_topic("x".repeat(MAX_RUNTIME_TOPIC_BYTES + 1));
+            row.rate_hz = rate_hz;
+            normal.push(row);
+        }
+        let mut source_overflow = empty_runtime_overflow();
+        source_overflow.rate_hz = f32::NAN;
+
+        let (topics, overflow) = bounded_runtime_topics(normal, Some(source_overflow));
+        let rates = topics.iter().map(|row| row.rate_hz).collect::<Vec<_>>();
+        assert_eq!(rates, vec![0.0, f32::MAX, 0.0, f32::MAX]);
+        assert!(rates.iter().all(|rate| rate.is_finite()));
+        let overflow = overflow.unwrap();
+        assert_eq!(overflow.rate_hz, f32::MAX);
+        assert!(overflow.rate_hz.is_finite());
+    }
+
+    #[test]
+    fn shuffled_duplicate_keys_aggregate_before_row_cap_without_double_overflow() {
+        let mut rows = (0..MAX_RUNTIME_TOPIC_ROWS)
+            .map(|index| runtime_topic(format!("v1/duplicate/{index:03}")))
+            .collect::<Vec<_>>();
+        let first = rows.first_mut().unwrap();
+        first.count = u64::MAX;
+        first.rate_hz = f32::MAX;
+        first.drops = u64::MAX;
+        first.latest_overwrites = u64::MAX;
+        first.bounded_evictions = u64::MAX;
+        first.capacity = u64::MAX;
+        first.current_depth = u64::MAX;
+        first.high_water_depth = u64::MAX;
+        first.decode_errors = u64::MAX;
+
+        let mut duplicate = runtime_topic("v1/duplicate/000".to_string());
+        duplicate.rate_hz = f32::MAX;
+        duplicate.latest_overwrites = 1;
+        duplicate.bounded_evictions = 1;
+        rows.push(duplicate);
+
+        let mut source_overflow = empty_runtime_overflow();
+        source_overflow.count = 9;
+        source_overflow.rate_hz = 3.0;
+        source_overflow.overflowed_rows = 2;
+
+        let ordered = bounded_runtime_topics(rows.clone(), Some(source_overflow.clone()));
+        rows.rotate_left(73);
+        rows.reverse();
+        let shuffled = bounded_runtime_topics(rows, Some(source_overflow));
+        assert_eq!(
+            MessagePack::encode(&ordered).unwrap(),
+            MessagePack::encode(&shuffled).unwrap()
+        );
+
+        let (topics, overflow) = ordered;
+        assert_eq!(topics.len(), MAX_RUNTIME_TOPIC_ROWS);
+        let aggregate = topics.first().unwrap();
+        assert_eq!(aggregate.topic, "v1/duplicate/000");
+        assert_eq!(aggregate.count, u64::MAX);
+        assert_eq!(aggregate.rate_hz, f32::MAX);
+        assert_eq!(aggregate.drops, u64::MAX);
+        assert_eq!(aggregate.latest_overwrites, u64::MAX);
+        assert_eq!(aggregate.bounded_evictions, u64::MAX);
+        assert_eq!(aggregate.capacity, u64::MAX);
+        assert_eq!(aggregate.current_depth, u64::MAX);
+        assert_eq!(aggregate.high_water_depth, u64::MAX);
+        assert_eq!(aggregate.decode_errors, u64::MAX);
+
+        let overflow = overflow.unwrap();
+        assert_eq!(overflow.count, 9);
+        assert_eq!(overflow.rate_hz, 3.0);
+        assert_eq!(overflow.overflowed_rows, 2);
     }
 
     #[test]

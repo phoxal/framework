@@ -754,6 +754,8 @@ phoxal_api_tree! {
                 direction: RuntimeDirection,
                 buffer_kind: RuntimeBufferKind,
                 count: u64,
+                /// Finite, non-negative message rate. Retention tools clamp
+                /// malformed non-finite inputs before they reach snapshots.
                 rate_hz: f32,
                 drops: u64,
                 latest_overwrites: u64,
@@ -915,6 +917,8 @@ phoxal_api_tree! {
 
                 /// One retained rollup. `sequence` is assigned by
                 /// tool-telemetry at ingest, independent of producer metadata.
+                /// Duplicate normal topic keys are deterministically
+                /// re-aggregated before row bounds are applied.
                 struct Record {
                     sequence: u64,
                     participant_id: String,
