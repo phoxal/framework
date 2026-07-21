@@ -50,8 +50,7 @@ pub(crate) struct PackagedOutput {
 
 pub fn run(args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;
-    let selected = select_artifacts(&workspace, &args)?;
-    require_nonempty_artifacts(&selected)?;
+    let mut selected = select_artifacts(&workspace, &args)?;
     let out_dir = workspace_relative_out_dir(&workspace, &args.out);
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed to create output directory {}", out_dir.display()))?;
@@ -65,9 +64,8 @@ pub fn run(args: Args) -> Result<()> {
              asset bundle"
         );
     }
-    for artifact in &selected {
-        validate_supported_target(artifact, &target_triple)?;
-    }
+    selected = select_supported_artifacts(selected, args.all, &target_triple)?;
+    require_nonempty_artifacts(&selected)?;
 
     if args.dry_run {
         for artifact in &selected {
@@ -138,6 +136,30 @@ fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialAr
         .iter()
         .map(|package_name| workspace.official_artifact(package_name).cloned())
         .collect()
+}
+
+fn select_supported_artifacts(
+    mut artifacts: Vec<OfficialArtifact>,
+    all: bool,
+    target_triple: &str,
+) -> Result<Vec<OfficialArtifact>> {
+    if all {
+        artifacts.retain(|artifact| {
+            let supported = artifact.supports_target(target_triple);
+            if !supported {
+                println!(
+                    "skipping {} for {target_triple}: target is explicitly unsupported",
+                    artifact.package
+                );
+            }
+            supported
+        });
+    } else {
+        for artifact in &artifacts {
+            validate_supported_target(artifact, target_triple)?;
+        }
+    }
+    Ok(artifacts)
 }
 
 /// Packages `artifact`'s already-built `target_triple` binary (built by an
@@ -848,7 +870,7 @@ pub(crate) fn file_name(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::ArtifactKind;
+    use crate::workspace::{ArtifactKind, PhoxalPackageMetadata};
 
     fn infrastructure_router_artifact() -> OfficialArtifact {
         OfficialArtifact {
@@ -861,6 +883,31 @@ mod tests {
             id: "router".to_string(),
             metadata: Default::default(),
         }
+    }
+
+    #[test]
+    fn all_packages_skips_artifacts_unsupported_on_the_matrix_target() {
+        let supported = infrastructure_router_artifact();
+        let mut unsupported = infrastructure_router_artifact();
+        unsupported.package = "phoxal/tool-joypad".into();
+        unsupported.metadata = PhoxalPackageMetadata {
+            unsupported_targets: vec!["*-musl".into()],
+            ..PhoxalPackageMetadata::default()
+        };
+
+        let selected = select_supported_artifacts(
+            vec![supported.clone(), unsupported.clone()],
+            true,
+            "x86_64-unknown-linux-musl",
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].package, supported.package);
+
+        let error =
+            select_supported_artifacts(vec![unsupported], false, "x86_64-unknown-linux-musl")
+                .unwrap_err();
+        assert!(error.to_string().contains("does not support target"));
     }
 
     #[test]

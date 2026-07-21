@@ -42,6 +42,11 @@ jobs:
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
+      - name: Install source-verification dependencies
+        if: steps.train.outputs.publish == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
       - name: Verify source train
         if: steps.train.outputs.publish == 'true'
         run: cargo xtask release verify --tag "${{ steps.train.outputs.tag }}"
@@ -74,7 +79,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt-get install -y libudev-dev musl-tools
           cargo install cargo-auditable --locked
       - name: Install macOS packaging dependencies
         if: runner.os == 'macOS'
@@ -115,6 +120,10 @@ jobs:
           pattern: train-*
           path: target/xtask/release
           merge-multiple: true
+      - name: Install source-verification dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
       - name: Verify staged train and produce suite
         run: cargo xtask release verify --staged --tag "${{ needs.prepare.outputs.tag }}"
       - name: Create or resume non-latest draft release
