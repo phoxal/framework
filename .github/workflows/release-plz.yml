@@ -156,7 +156,17 @@ jobs:
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --draft --latest=false --title "$tag" --notes "Framework train $tag"
           fi
-          gh release upload "$tag" target/xtask/release/* target/xtask/suite.json --skip-existing
+          mapfile -t existing_assets < <(
+            gh release view "$tag" --json assets --jq '.assets[].name'
+          )
+          for file in target/xtask/release/* target/xtask/suite.json; do
+            name="${file##*/}"
+            if printf '%s\n' "${existing_assets[@]}" | grep --fixed-strings --line-regexp --quiet -- "$name"; then
+              echo "skipping existing release asset $name"
+            else
+              gh release upload "$tag" "$file"
+            fi
+          done
 
   publish-crates:
     name: publish crates.io train
