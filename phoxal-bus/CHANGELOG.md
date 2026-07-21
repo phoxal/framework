@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.22.1...phoxal-bus-v0.36.0) - 2026-07-21
+
+### Added
+
+- unify the framework release train ([#289](https://github.com/phoxal/framework/pull/289))
+
 ## [0.22.1](https://github.com/phoxal/framework/compare/phoxal-bus-v0.22.0...phoxal-bus-v0.22.1) - 2026-07-20
 
 ### Added
