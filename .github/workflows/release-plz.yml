@@ -6,6 +6,12 @@ on:
   schedule:
     - cron: "17 5,17 * * *"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Re-run only while a prepared release commit remains at main HEAD
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -31,13 +37,27 @@ jobs:
       - name: Identify train publication
         id: train
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PUBLISH: ${{ inputs.publish }}
+          DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "phoxal") | .version')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           subject="$(git log -1 --pretty=%s)"
-          if [[ "${{ github.event_name }}" == "push" && "$subject" == chore\(release\)* ]]; then
+          if [[ "$EVENT_NAME" == "push" && "$subject" == chore\(release\)* ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_PUBLISH" == "true" ]]; then
+            [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
+              echo "manual publication must run from main" >&2
+              exit 1
+            }
+            [[ "$subject" == chore\(release\)* ]] || {
+              echo "manual publication requires a prepared chore(release) commit" >&2
+              exit 1
+            }
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
