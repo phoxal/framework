@@ -4,7 +4,7 @@
 // `ctx.raw_bus()` and the raw handle constructors.
 use phoxal::prelude::*;
 use phoxal::raw::Publisher;
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {}

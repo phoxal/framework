@@ -43,9 +43,6 @@ commit_parsers = [
 ]
 protect_breaking_commits = true
 filter_commits = false
-# Per-artifact release (plan #01): release-plz tags each crate as
-# `<crate>-v<version>` (set by git_tag_name in release-plz.toml), not the old
-# shared `v<version>`. This field is a regex (NOT a glob): match per-package tags
-# (`<crate>-v<digit>...`) so git-cliff/release-plz pick them up for per-crate
-# changelog sections, while excluding the legacy shared `v<version>` tag.
-tag_pattern = ".*-v[0-9].*"
+# The framework publishes as one train and therefore has one shared `v<version>`
+# release boundary.
+tag_pattern = "^v[0-9].*"

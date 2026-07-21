@@ -1,5 +1,5 @@
 // Snapshot query server fixture.
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 use phoxal::prelude::*;
 
 struct MapState;

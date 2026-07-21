@@ -2,9 +2,9 @@
 
 use std::time::{Duration, Instant};
 
+use phoxal::api;
 use phoxal::bus::LogicalTime;
 use phoxal::model::robot::v0::MotionLimits;
-use phoxal_api::v1 as api;
 
 pub(crate) const MANUAL_STALE: Duration = Duration::from_millis(150);
 pub(crate) const AUTONOMOUS_STALE_NS: u64 = 500_000_000;

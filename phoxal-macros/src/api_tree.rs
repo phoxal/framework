@@ -18,18 +18,17 @@
 //! `topic self: state <Body>;` binds the body to the node path itself instead of
 //! appending a leaf segment, for framework infrastructure topics such as
 //! `logs/{participant_id}`.
-//! A version may be prefixed with `preview`; that emits the module at its final
-//! path behind the per-version `preview-vN` Cargo feature and records
-//! `ApiVersion::IS_PREVIEW = true` without changing the wire shape. `preview` is
-//! the only per-version lifecycle marker. A preview version evolves in place
-//! until promotion; there is no `extends` and no new version per contract edit.
+//! A revision may extend exactly one earlier revision. The child is materialized
+//! as a complete concrete tree; inherited definitions are regenerated under the
+//! child's identity, while `replace` and `remove` make deltas explicit. Exactly
+//! one final `latest <revision>;` declaration emits the facade alias.
 //!
 //! ```text
 //! phoxal_api_tree! {
-//!     version v1 {
+//!     version v0_1 {
 //!         drive {                                  // static node
 //!             struct Target { linear_x_mps: f32, angular_z_radps: f32 }
-//!             topic target: command Target;        // key v1/drive/target
+//!             topic target: command Target;        // key v0.1/drive/target
 //!             struct State { /* … */ }
 //!             topic state: state State;            // owner-published telemetry
 //!         }
@@ -37,15 +36,16 @@
 //!             motor(capability) {                  // literal "motor" + var {capability}
 //!                 enum Command { Velocity(f32), Torque(f32), Stop }
 //!                 topic command: command Command;
-//!                 // path   api::v1::component::motor::Command
-//!                 // key    v1/component/{instance}/motor/{capability}/command
+//!                 // path   api::v0_1::component::motor::Command
+//!                 // key    v0.1/component/{instance}/motor/{capability}/command
 //!             }
 //!         }
 //!     }
-//!     preview version v2 {
-//!         // the single evolving preview surface until v2 is frozen
+//!     version v0_2 extends v0_1 {
 //!         battery { struct State { soc: f32 } topic state: state State; }
+//!         drive { replace struct Target { linear_x_mps: f64, angular_z_radps: f64 } }
 //!     }
+//!     latest v0_2;
 //! }
 //! ```
 //!
@@ -56,14 +56,13 @@
 //!
 //! **Wire identity is the version-qualified key, not a transitive-shape hash
 //! (D1).** The version is folded into `ContractBody::TOPIC`: a contract's
-//! identity is its version-qualified name (`v1::drive::Target`), and that
+//! identity is its version-qualified name (`v0.1::drive::Target`), and that
 //! name is real on the wire because the key carries it too
-//! (`v1/drive/target`). Two participants interoperate on a contract iff
+//! (`v0.1/drive/target`). Two participants interoperate on a contract iff
 //! they use the exact same version-qualified name - enforced by the type system
 //! (the `Api` bound) and realized on the wire by the key, which makes two
 //! differently-versioned contracts physically incapable of colliding. There is
-//! no `SCHEMA_ID`/`FAMILY` and no cross-version `extends`. Stable versions are
-//! immutable; the active preview version may change in place until promotion.
+//! no `SCHEMA_ID`/`FAMILY`. Published concrete revisions are immutable.
 //!
 //! # Self-contained absolute paths (no depth-counted `super::`)
 //!
@@ -118,34 +117,31 @@
 //! key. Under the CURRENT model that capability is redundant, so it is
 //! deliberately not implemented:
 //!
-//! - A production `version` span has an explicit wire identity. During the
-//!   pre-stability simplification it can change directly through coordinated
-//!   owner-first releases and consumer migration; a `rename` attribute would
+//! - A concrete revision has an explicit wire identity. A renamed path is an
+//!   explicit replacement in a new child revision; a `rename` attribute would
 //!   hide that contract change rather than simplify it.
-//! - A `preview` span carries no immutability promise at all: every identifier in
-//!   it, including node/leaf names, can be edited freely with no external
-//!   consumer to break, so there is no window where a Rust name and a wire name
-//!   would need to diverge.
 //! - The whole point of D1's move away from `schema_id`/`FAMILY` is that identity
 //!   collapses onto ONE axis - the version-qualified Rust path IS the wire key
-//!   (`v1::drive::Target` <-> `v1/drive/target`). A `rename` attribute
+//!   (`v0.1::drive::Target` <-> `v0.1/drive/target`). A `rename` attribute
 //!   would reopen a second axis (Rust name vs. wire name) for exactly the
 //!   contracts where the model guarantees they can never need to diverge.
 //!
-//! If a future version needs a differently-worded wire segment than its Rust
-//! name reads naturally, choose that wire-facing name while the active version
-//! is still preview. After promotion, the next breaking change begins in the
-//! next preview version.
+//! If a future revision needs a differently-worded wire segment than its Rust
+//! name reads naturally, declare the new path explicitly in that child revision.
 
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::{Parse, ParseStream};
+use syn::visit_mut::{self, VisitMut};
 use syn::{Ident, ItemEnum, ItemStruct, Token};
 
 use crate::util::body_derives;
 
 mod kw {
-    syn::custom_keyword!(preview);
+    syn::custom_keyword!(extends);
+    syn::custom_keyword!(latest);
+    syn::custom_keyword!(remove);
+    syn::custom_keyword!(replace);
     syn::custom_keyword!(version);
     syn::custom_keyword!(topic);
     syn::custom_keyword!(command);
@@ -160,13 +156,15 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
 struct ApiTree {
     versions: Vec<Version>,
+    latest: Ident,
 }
 
 struct Version {
-    is_preview: bool,
     name: Ident,
-    number: u64,
+    wire_id: String,
+    parent: Option<Ident>,
     nodes: Vec<Node>,
+    removals: Vec<Removal>,
 }
 
 /// One node in the api tree: a `name { … }` (static) or `name(var) { … }`
@@ -174,6 +172,7 @@ struct Version {
 #[derive(Clone)]
 struct Node {
     name: Ident,
+    replace: bool,
     /// The dynamic variable bound by this node (`None` for a static node). When
     /// present, the node contributes `name/{var}` to keys and a var-taking builder
     /// method.
@@ -181,16 +180,24 @@ struct Node {
     types: Vec<TypeDef>,
     topics: Vec<TopicDef>,
     children: Vec<Node>,
+    removals: Vec<Removal>,
 }
 
 #[derive(Clone)]
-enum TypeDef {
+struct TypeDef {
+    replace: bool,
+    item: TypeItem,
+}
+
+#[derive(Clone)]
+enum TypeItem {
     Struct(ItemStruct),
     Enum(ItemEnum),
 }
 
 #[derive(Clone)]
 struct TopicDef {
+    replace: bool,
     leaf: TopicLeaf,
     kind: TopicKind,
     /// The semantic role declared by the topic's role keyword (`command` /
@@ -202,6 +209,11 @@ struct TopicDef {
     /// The role is also emitted as a `ROLE` const on each body; it is not yet
     /// surfaced by `emit-apis` (a later increment of plan #00).
     role: TopicRole,
+}
+
+#[derive(Clone)]
+struct Removal {
+    segments: Vec<Ident>,
 }
 
 #[derive(Clone)]
@@ -247,80 +259,100 @@ enum TopicKind {
 
 struct ManifestVersion {
     name: String,
-    is_preview: bool,
     contracts: Vec<ManifestContract>,
 }
 
 struct ManifestContract {
-    /// Version-qualified contract identity, e.g. `"v1::drive::Target"`
+    /// Version-qualified contract identity, e.g. `"v0.1::drive::Target"`
     /// (D1: the version is part of the name, not a separate axis).
     family: String,
-    /// Version-qualified wire key, e.g. `"v1/drive/target"`.
+    /// Version-qualified wire key, e.g. `"v0.1/drive/target"`.
     topic: String,
 }
 
 impl Parse for ApiTree {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut versions = Vec::new();
-        while !input.is_empty() {
+        while input.peek(kw::version) {
             versions.push(input.parse()?);
         }
         if versions.is_empty() {
             return Err(input.error("phoxal_api_tree! requires at least one `version` block"));
         }
-        Ok(ApiTree { versions })
+        input.parse::<kw::latest>()?;
+        let latest = input.parse()?;
+        input.parse::<Token![;]>()?;
+        if !input.is_empty() {
+            return Err(input.error("expected exactly one final `latest <revision>;` declaration"));
+        }
+        Ok(ApiTree { versions, latest })
     }
 }
 
 impl Parse for Version {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let is_preview = if input.peek(kw::preview) {
-            input.parse::<kw::preview>()?;
-            true
-        } else {
-            false
-        };
         input.parse::<kw::version>()?;
         let name: Ident = input.parse()?;
         let name_text = name.to_string();
-        let Some(number) = name_text.strip_prefix('v') else {
+        let Some(parts) = name_text.strip_prefix('v') else {
             return Err(syn::Error::new(
                 name.span(),
-                "API versions use conventional `vN` names such as `v1` or `v2`",
+                "API revisions use Rust identifiers such as `v0_1` or `v1_0`",
             ));
         };
-        if number.is_empty()
-            || number.starts_with('0')
-            || !number.bytes().all(|byte| byte.is_ascii_digit())
-        {
+        let Some((major, minor)) = parts.split_once('_') else {
             return Err(syn::Error::new(
                 name.span(),
-                "API versions use conventional positive `vN` names such as `v1` or `v2`",
+                "API revisions use two-part Rust identifiers such as `v0_1` or `v1_0`",
+            ));
+        };
+        let valid_part = |part: &str| {
+            !part.is_empty()
+                && (part == "0" || !part.starts_with('0'))
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+        };
+        if !valid_part(major) || !valid_part(minor) {
+            return Err(syn::Error::new(
+                name.span(),
+                "API revision components must be canonical decimal numbers, e.g. `v0_1`",
             ));
         }
-        let number = number.parse::<u64>().map_err(|_| {
-            syn::Error::new(
-                name.span(),
-                "API version number is too large; use a conventional positive `vN` name",
-            )
-        })?;
+        let wire_id = format!("v{major}.{minor}");
+        let parent = if input.peek(kw::extends) {
+            input.parse::<kw::extends>()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
         let body;
         syn::braced!(body in input);
         let mut nodes = Vec::new();
+        let mut removals = Vec::new();
         while !body.is_empty() {
-            nodes.push(body.parse()?);
+            if body.peek(kw::remove) {
+                removals.push(body.parse()?);
+            } else {
+                nodes.push(body.parse()?);
+            }
         }
         Ok(Version {
-            is_preview,
             name,
-            number,
+            wire_id,
+            parent,
             nodes,
+            removals,
         })
     }
 }
 
 impl Parse for Node {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let replace = if input.peek(kw::replace) {
+            input.parse::<kw::replace>()?;
+            true
+        } else {
+            false
+        };
         let name: Ident = input.parse()?;
         // Optional `(var)` makes the node dynamic.
         let var = if input.peek(syn::token::Paren) {
@@ -342,28 +374,54 @@ impl Parse for Node {
         let mut types = Vec::new();
         let mut topics = Vec::new();
         let mut children = Vec::new();
+        let mut removals = Vec::new();
         while !body.is_empty() {
             // Leading doc-comments / attributes apply to the next item; `topic`
             // declarations take none.
             let attrs = body.call(syn::Attribute::parse_outer)?;
-            if body.peek(kw::topic) {
+            let replace_item = if body.peek(kw::replace) {
+                body.parse::<kw::replace>()?;
+                true
+            } else {
+                false
+            };
+            if body.peek(kw::remove) {
+                if replace_item {
+                    return Err(body.error("`replace remove` is not valid; use `remove <path>;`"));
+                }
+                if let Some(attr) = attrs.first() {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "attributes are not allowed on a `remove` declaration",
+                    ));
+                }
+                removals.push(body.parse()?);
+            } else if body.peek(kw::topic) {
                 if let Some(attr) = attrs.first() {
                     return Err(syn::Error::new_spanned(
                         attr,
                         "attributes are not allowed on a `topic` declaration",
                     ));
                 }
-                topics.push(body.parse()?);
+                let mut topic: TopicDef = body.parse()?;
+                topic.replace = replace_item;
+                topics.push(topic);
             } else if body.peek(Token![struct]) {
                 let mut item: ItemStruct = body.parse()?;
                 item.attrs = attrs;
                 item.vis = syn::Visibility::Public(syn::token::Pub::default());
-                types.push(TypeDef::Struct(item));
+                types.push(TypeDef {
+                    replace: replace_item,
+                    item: TypeItem::Struct(item),
+                });
             } else if body.peek(Token![enum]) {
                 let mut item: ItemEnum = body.parse()?;
                 item.attrs = attrs;
                 item.vis = syn::Visibility::Public(syn::token::Pub::default());
-                types.push(TypeDef::Enum(item));
+                types.push(TypeDef {
+                    replace: replace_item,
+                    item: TypeItem::Enum(item),
+                });
             } else if body.peek(Ident)
                 && (body.peek2(syn::token::Paren) || body.peek2(syn::token::Brace))
             {
@@ -374,7 +432,9 @@ impl Parse for Node {
                         "attributes are not allowed on a child node declaration",
                     ));
                 }
-                children.push(body.parse()?);
+                let mut child: Node = body.parse()?;
+                child.replace = replace_item;
+                children.push(child);
             } else {
                 return Err(body.error(
                     "expected `struct`, `enum`, `topic …;`, or a child node `name { … }` / \
@@ -384,10 +444,12 @@ impl Parse for Node {
         }
         Ok(Node {
             name,
+            replace,
             var,
             types,
             topics,
             children,
+            removals,
         })
     }
 }
@@ -428,7 +490,25 @@ impl Parse for TopicDef {
             ));
         };
         input.parse::<Token![;]>()?;
-        Ok(TopicDef { leaf, kind, role })
+        Ok(TopicDef {
+            replace: false,
+            leaf,
+            kind,
+            role,
+        })
+    }
+}
+
+impl Parse for Removal {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<kw::remove>()?;
+        let mut segments = vec![input.parse()?];
+        while input.peek(Token![::]) {
+            input.parse::<Token![::]>()?;
+            segments.push(input.parse()?);
+        }
+        input.parse::<Token![;]>()?;
+        Ok(Self { segments })
     }
 }
 
@@ -436,82 +516,331 @@ impl ApiTree {
     fn expand(&self) -> syn::Result<TokenStream> {
         let mut out = TokenStream::new();
         let mut manifest_versions = Vec::new();
-        let mut seen_names = std::collections::HashSet::new();
-        let mut preview: Option<&Version> = None;
-        let mut max_stable_number = None;
-        if let Some(extra_preview) = self
-            .versions
-            .iter()
-            .filter(|version| version.is_preview)
-            .nth(1)
-        {
-            return Err(syn::Error::new_spanned(
-                &extra_preview.name,
-                "only one API version may be preview at a time; evolve the active preview in place",
-            ));
-        }
-
-        // Versions never inherit or overlay one another. Preview versions may
-        // be edited in place until promotion; production spans stay explicit.
-        for (index, version) in self.versions.iter().enumerate() {
-            if !seen_names.insert(version.name.to_string()) {
+        let mut materialized = std::collections::BTreeMap::<String, Vec<Node>>::new();
+        for version in &self.versions {
+            let name = version.name.to_string();
+            if materialized.contains_key(&name) {
                 return Err(syn::Error::new_spanned(
                     &version.name,
-                    format!(
-                        "duplicate API version `{}` in the same phoxal_api_tree! invocation",
-                        version.name
-                    ),
+                    format!("duplicate API revision `{}`", version.name),
                 ));
             }
-            if version.is_preview {
-                if index + 1 != self.versions.len() {
-                    return Err(syn::Error::new_spanned(
-                        &version.name,
-                        "the preview API version must be the final version block",
-                    ));
-                }
-                preview = Some(version);
+            let nodes = if let Some(parent) = &version.parent {
+                let parent_name = parent.to_string();
+                let base = materialized.get(&parent_name).ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        parent,
+                        "an `extends` parent must be a concrete revision declared earlier",
+                    )
+                })?;
+                apply_version_delta(base, version)?
             } else {
-                max_stable_number = Some(
-                    max_stable_number
-                        .map_or(version.number, |number: u64| number.max(version.number)),
-                );
-            }
+                validate_complete_tree(&version.nodes, &version.removals)?;
+                version.nodes.clone()
+            };
+            let concrete = MaterializedVersion {
+                name: version.name.clone(),
+                wire_id: version.wire_id.clone(),
+                nodes: nodes.clone(),
+            };
             manifest_versions.push(ManifestVersion {
-                name: version.name.to_string(),
-                is_preview: version.is_preview,
-                contracts: contract_manifest_entries(&version.name.to_string(), &version.nodes)?,
+                name: version.wire_id.clone(),
+                contracts: contract_manifest_entries(&version.wire_id, &nodes)?,
             });
-            out.extend(expand_version(version)?);
+            out.extend(expand_version(&concrete)?);
+            materialized.insert(name, nodes);
         }
-        if let (Some(preview), Some(max_stable_number)) = (preview, max_stable_number) {
-            let expected_preview = max_stable_number.checked_add(1).ok_or_else(|| {
-                syn::Error::new_spanned(
-                    &preview.name,
-                    "latest stable API version is too large to create a next preview version",
-                )
-            })?;
-            if preview.number != expected_preview {
-                return Err(syn::Error::new_spanned(
-                    &preview.name,
-                    format!(
-                        "preview API version must be the next version `v{expected_preview}` after the latest stable version; evolve the active preview in place"
-                    ),
-                ));
-            }
+        if !materialized.contains_key(&self.latest.to_string()) {
+            return Err(syn::Error::new_spanned(
+                &self.latest,
+                "`latest` must name a declared concrete API revision",
+            ));
         }
+        let latest = &self.latest;
         let manifest = expand_contract_manifest(&manifest_versions);
         Ok(quote! {
             #manifest
             #out
+            /// The concrete API revision selected by this framework train.
+            pub use #latest as latest;
         })
+    }
+}
+
+struct MaterializedVersion {
+    name: Ident,
+    wire_id: String,
+    nodes: Vec<Node>,
+}
+
+fn validate_complete_tree(nodes: &[Node], removals: &[Removal]) -> syn::Result<()> {
+    if let Some(removal) = removals.first() {
+        return Err(syn::Error::new_spanned(
+            &removal.segments[0],
+            "`remove` is only valid inside a revision that `extends` another revision",
+        ));
+    }
+    for node in nodes {
+        if node.replace {
+            return Err(syn::Error::new_spanned(
+                &node.name,
+                "`replace` is only valid inside a revision that `extends` another revision",
+            ));
+        }
+        if let Some(removal) = node.removals.first() {
+            return Err(syn::Error::new_spanned(
+                &removal.segments[0],
+                "`remove` is only valid inside a revision that `extends` another revision",
+            ));
+        }
+        for ty in &node.types {
+            if ty.replace {
+                return Err(syn::Error::new_spanned(
+                    ty.ident(),
+                    "`replace` is only valid inside a revision that `extends` another revision",
+                ));
+            }
+        }
+        for topic in &node.topics {
+            if topic.replace {
+                return Err(syn::Error::new_spanned(
+                    topic.leaf.method_ident(),
+                    "`replace` is only valid inside a revision that `extends` another revision",
+                ));
+            }
+        }
+        validate_complete_tree(&node.children, &[])?;
+    }
+    Ok(())
+}
+
+fn apply_version_delta(base: &[Node], version: &Version) -> syn::Result<Vec<Node>> {
+    let mut nodes = base.to_vec();
+    let parent = version
+        .parent
+        .as_ref()
+        .expect("version deltas always have an extends parent");
+    reroot_inherited_type_paths(&mut nodes, parent, &version.name);
+    apply_removals(&mut nodes, &version.removals)?;
+    merge_nodes(&mut nodes, &version.nodes)?;
+    Ok(nodes)
+}
+
+/// Re-root absolute paths authored against the parent revision when its types
+/// are materialized into a child. Without this pass, an inherited body such as
+/// `struct Page { cursor: crate::v0_1::tool::Cursor }` would keep referring to
+/// the parent's `Cursor` even after the child explicitly replaced that type.
+fn reroot_inherited_type_paths(nodes: &mut [Node], parent: &Ident, child: &Ident) {
+    struct RevisionPathRewriter<'a> {
+        parent: &'a Ident,
+        child: &'a Ident,
+    }
+
+    impl VisitMut for RevisionPathRewriter<'_> {
+        fn visit_path_mut(&mut self, path: &mut syn::Path) {
+            let mut segments = path.segments.iter_mut();
+            if segments
+                .next()
+                .is_some_and(|segment| segment.ident == "crate")
+            {
+                if let Some(revision) = segments.next() {
+                    if revision.ident == *self.parent {
+                        revision.ident = self.child.clone();
+                    }
+                }
+            }
+            visit_mut::visit_path_mut(self, path);
+        }
+    }
+
+    fn rewrite_nodes(nodes: &mut [Node], rewriter: &mut RevisionPathRewriter<'_>) {
+        for node in nodes {
+            for ty in &mut node.types {
+                match &mut ty.item {
+                    TypeItem::Struct(item) => rewriter.visit_item_struct_mut(item),
+                    TypeItem::Enum(item) => rewriter.visit_item_enum_mut(item),
+                }
+            }
+            rewrite_nodes(&mut node.children, rewriter);
+        }
+    }
+
+    rewrite_nodes(nodes, &mut RevisionPathRewriter { parent, child });
+}
+
+fn merge_nodes(base: &mut Vec<Node>, deltas: &[Node]) -> syn::Result<()> {
+    for delta in deltas {
+        let existing = base.iter().position(|node| node.name == delta.name);
+        match (existing, delta.replace) {
+            (Some(index), true) => {
+                let mut replacement = delta.clone();
+                replacement.replace = false;
+                validate_complete_tree(&[replacement.clone()], &[])?;
+                base[index] = replacement;
+            }
+            (Some(index), false) => merge_node(&mut base[index], delta)?,
+            (None, true) => {
+                return Err(syn::Error::new_spanned(
+                    &delta.name,
+                    "`replace` target does not exist in the parent revision",
+                ));
+            }
+            (None, false) => {
+                validate_complete_tree(std::slice::from_ref(delta), &[])?;
+                base.push(delta.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn merge_node(base: &mut Node, delta: &Node) -> syn::Result<()> {
+    if base.var.as_ref().map(Ident::to_string) != delta.var.as_ref().map(Ident::to_string) {
+        return Err(syn::Error::new_spanned(
+            &delta.name,
+            "an inherited node must keep the same static/dynamic binding",
+        ));
+    }
+    apply_node_removals(base, &delta.removals)?;
+    for delta_type in &delta.types {
+        let ident = delta_type.ident();
+        let existing = base.types.iter().position(|item| item.ident() == ident);
+        match (existing, delta_type.replace) {
+            (Some(index), true) => {
+                let mut replacement = delta_type.clone();
+                replacement.replace = false;
+                base.types[index] = replacement;
+            }
+            (Some(_), false) => {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    "inherited type already exists; prefix the declaration with `replace`",
+                ));
+            }
+            (None, true) => {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    "`replace` type target does not exist in the parent revision",
+                ));
+            }
+            (None, false) => base.types.push(delta_type.clone()),
+        }
+    }
+    for delta_topic in &delta.topics {
+        let ident = delta_topic.leaf.method_ident();
+        let existing = base
+            .topics
+            .iter()
+            .position(|item| item.leaf.method_ident() == ident);
+        match (existing, delta_topic.replace) {
+            (Some(index), true) => {
+                let mut replacement = delta_topic.clone();
+                replacement.replace = false;
+                base.topics[index] = replacement;
+            }
+            (Some(_), false) => {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    "inherited topic already exists; prefix the declaration with `replace`",
+                ));
+            }
+            (None, true) => {
+                return Err(syn::Error::new_spanned(
+                    ident,
+                    "`replace` topic target does not exist in the parent revision",
+                ));
+            }
+            (None, false) => base.topics.push(delta_topic.clone()),
+        }
+    }
+    merge_nodes(&mut base.children, &delta.children)
+}
+
+fn apply_removals(nodes: &mut Vec<Node>, removals: &[Removal]) -> syn::Result<()> {
+    for removal in removals {
+        remove_from_nodes(nodes, &removal.segments)?;
+    }
+    Ok(())
+}
+
+fn remove_from_nodes(nodes: &mut Vec<Node>, path: &[Ident]) -> syn::Result<()> {
+    let Some((head, tail)) = path.split_first() else {
+        return Ok(());
+    };
+    let Some(index) = nodes.iter().position(|node| node.name == *head) else {
+        return Err(syn::Error::new_spanned(
+            head,
+            "`remove` path does not exist in the parent revision",
+        ));
+    };
+    if tail.is_empty() {
+        nodes.remove(index);
+        return Ok(());
+    }
+    remove_from_node(&mut nodes[index], tail)
+}
+
+fn apply_node_removals(node: &mut Node, removals: &[Removal]) -> syn::Result<()> {
+    for removal in removals {
+        remove_from_node(node, &removal.segments)?;
+    }
+    Ok(())
+}
+
+fn remove_from_node(node: &mut Node, path: &[Ident]) -> syn::Result<()> {
+    let Some((head, tail)) = path.split_first() else {
+        return Ok(());
+    };
+    if !tail.is_empty() {
+        let Some(child) = node.children.iter_mut().find(|child| child.name == *head) else {
+            return Err(syn::Error::new_spanned(
+                head,
+                "`remove` path does not exist in the parent revision",
+            ));
+        };
+        return remove_from_node(child, tail);
+    }
+    let type_index = node.types.iter().position(|item| item.ident() == head);
+    let topic_index = node
+        .topics
+        .iter()
+        .position(|item| item.leaf.method_ident() == *head);
+    let child_index = node.children.iter().position(|item| item.name == *head);
+    let matches = usize::from(type_index.is_some())
+        + usize::from(topic_index.is_some())
+        + usize::from(child_index.is_some());
+    if matches != 1 {
+        return Err(syn::Error::new_spanned(
+            head,
+            if matches == 0 {
+                "`remove` target does not exist in the parent revision"
+            } else {
+                "`remove` target is ambiguous; use a uniquely named path"
+            },
+        ));
+    }
+    if let Some(index) = type_index {
+        node.types.remove(index);
+    } else if let Some(index) = topic_index {
+        node.topics.remove(index);
+    } else if let Some(index) = child_index {
+        node.children.remove(index);
+    }
+    Ok(())
+}
+
+impl TypeDef {
+    fn ident(&self) -> &Ident {
+        match &self.item {
+            TypeItem::Struct(item) => &item.ident,
+            TypeItem::Enum(item) => &item.ident,
+        }
     }
 }
 
 fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
     let version_entries = versions.iter().map(|version| {
         let name = &version.name;
-        let is_preview = version.is_preview;
         let contracts = version.contracts.iter().map(|contract| {
             let family = &contract.family;
             let topic = &contract.topic;
@@ -525,7 +854,6 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
         quote! {
             ApiContractManifestVersion {
                 name: #name,
-                is_preview: #is_preview,
                 contracts: &[#(#contracts),*],
             }
         }
@@ -537,7 +865,6 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct ApiContractManifestVersion {
             pub name: &'static str,
-            pub is_preview: bool,
             pub contracts: &'static [ApiContractManifestContract],
         }
 
@@ -617,11 +944,9 @@ fn collect_contract_manifest_entries(
     }
 }
 
-fn expand_version(version: &Version) -> syn::Result<TokenStream> {
+fn expand_version(version: &MaterializedVersion) -> syn::Result<TokenStream> {
     let mod_name = &version.name;
-    let id = version.name.to_string();
-    let is_preview = version.is_preview;
-    let feature_name = format!("preview-{id}");
+    let id = version.wire_id.clone();
     let nodes = &version.nodes;
 
     // Node modules (types + ContractBody impls), recursive. The family prefix
@@ -637,31 +962,16 @@ fn expand_version(version: &Version) -> syn::Result<TokenStream> {
 
     let topic_mod = expand_topic_module(&id, nodes)?;
 
-    let module_attrs = if is_preview {
-        quote! {
-            #[cfg(feature = #feature_name)]
-        }
-    } else {
-        TokenStream::new()
-    };
-    let module_doc = if is_preview {
-        format!(
-            "Preview API version `{id}`. This final-path module is available only with the `{feature_name}` Cargo feature."
-        )
-    } else {
-        format!("Production API version `{id}` - version-local wire bodies + topics.")
-    };
+    let module_doc = format!("Concrete API revision `{id}` - version-local wire bodies + topics.");
 
     Ok(quote! {
         #[doc = #module_doc]
-        #module_attrs
         pub mod #mod_name {
             /// Zero-variant marker identifying this API version (D60).
             #[derive(Clone, Copy, Debug)]
             pub enum Api {}
             impl ::phoxal_bus::ApiVersion for Api {
                 const ID: &'static str = #id;
-                const IS_PREVIEW: bool = #is_preview;
             }
 
             // Self-contained absolute-path anchor (position-independent
@@ -711,12 +1021,12 @@ fn expand_node_module(
 
     let mut types = TokenStream::new();
     for ty in &node.types {
-        match ty {
-            TypeDef::Struct(item) => {
+        match &ty.item {
+            TypeItem::Struct(item) => {
                 let item = with_pub_fields_struct(item.clone());
                 types.extend(quote! { #derives #item });
             }
-            TypeDef::Enum(item) => {
+            TypeItem::Enum(item) => {
                 types.extend(quote! { #derives #item });
             }
         }
@@ -1298,25 +1608,26 @@ mod tests {
     fn topic_and_family_are_version_qualified() {
         let expanded = compact_tokens(
             expand(quote! {
-                version v1 {
+                version v0_1 {
                     drive {
                         struct Target { linear_x_mps: f32 }
                         topic target: command Target;
                     }
                 }
+                latest v0_1;
             })
             .expect("tree expands"),
         );
         assert!(
-            expanded.contains("const TOPIC : & 'static str = \"v1/drive/target\""),
+            expanded.contains("const TOPIC : & 'static str = \"v0.1/drive/target\""),
             "TOPIC must fold the version into the wire key (D1): {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"v1::drive::Target\""),
+            expanded.contains("const NAME : & 'static str = \"v0.1::drive::Target\""),
             "NAME must be the version-qualified type path (D1): {expanded}"
         );
         assert!(
-            expanded.contains("const VERSION : & 'static str = \"v1\""),
+            expanded.contains("const VERSION : & 'static str = \"v0.1\""),
             "VERSION must be the bare version, split from CONTRACT (coherence-gate \
              design §2): {expanded}"
         );
@@ -1339,7 +1650,7 @@ mod tests {
     fn dynamic_node_topic_is_version_and_var_qualified() {
         let expanded = compact_tokens(
             expand(quote! {
-                version v1 {
+                version v0_1 {
                     component(instance) {
                         motor(capability) {
                             enum Command { Stop }
@@ -1347,17 +1658,18 @@ mod tests {
                         }
                     }
                 }
+                latest v0_1;
             })
             .expect("tree expands"),
         );
         assert!(
             expanded.contains(
-                "const TOPIC : & 'static str = \"v1/component/{instance}/motor/{capability}/command\""
+                "const TOPIC : & 'static str = \"v0.1/component/{instance}/motor/{capability}/command\""
             ),
             "dynamic-node TOPIC must carry both the version and the {{var}} placeholders: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"v1::component::motor::Command\""),
+            expanded.contains("const NAME : & 'static str = \"v0.1::component::motor::Command\""),
             "dynamic-node NAME must be the clean type path with no {{var}} placeholders - \
              dynamic-node vars are topic params, never type-path segments: {expanded}"
         );
@@ -1371,17 +1683,18 @@ mod tests {
     fn topic_builder_keys_are_version_qualified() {
         let expanded = compact_tokens(
             expand(quote! {
-                version v1 {
+                version v0_1 {
                     drive {
                         struct Target { linear_x_mps: f32 }
                         topic target: command Target;
                     }
                 }
+                latest v0_1;
             })
             .expect("tree expands"),
         );
         assert!(
-            expanded.contains("Topic :: new_static (\"v1/drive/target\")"),
+            expanded.contains("Topic :: new_static (\"v0.1/drive/target\")"),
             "the api-local topic builder must build the same version-qualified key as \
              ContractBody::TOPIC: {expanded}"
         );
@@ -1390,54 +1703,90 @@ mod tests {
     #[test]
     fn duplicate_version_names_in_one_invocation_are_rejected() {
         let err = expand(quote! {
-            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
-            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            version v0_1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            version v0_1 { sample { struct Body { value: u8 } topic body: state Body; } }
+            latest v0_1;
         })
         .expect_err("a duplicate version name must be rejected");
         assert!(
-            err.to_string().contains("duplicate API version"),
+            err.to_string().contains("duplicate API revision"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn multiple_preview_versions_are_rejected() {
-        let err = expand(quote! {
-            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
-            preview version v2 { sample { struct Body { value: u8 } topic body: state Body; } }
-            preview version v3 { sample { struct Body { value: u8 } topic body: state Body; } }
-        })
-        .expect_err("the active preview must evolve in place");
+    fn inherited_revision_materializes_add_replace_and_remove() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                version v0_1 {
+                    drive {
+                        struct Target { value: u8 }
+                        struct Removed { value: u8 }
+                        topic target: command Target;
+                        topic removed: state Removed;
+                    }
+                }
+                version v0_2 extends v0_1 {
+                    drive {
+                        replace struct Target { value: u16 }
+                        remove Removed;
+                        remove removed;
+                        struct Added { value: u32 }
+                        topic added: state Added;
+                    }
+                }
+                latest v0_2;
+            })
+            .expect("inherited tree expands"),
+        );
+        assert!(expanded.contains("pub mod v0_1"));
+        assert!(expanded.contains("pub mod v0_2"));
+        assert!(expanded.contains("\"v0.2/drive/target\""));
+        assert!(expanded.contains("\"v0.2/drive/added\""));
+        assert!(!expanded.contains("\"v0.2/drive/removed\""));
+        assert!(expanded.contains("pub use v0_2 as latest"));
+    }
+
+    #[test]
+    fn inherited_revision_reroots_absolute_parent_type_paths() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                version v0_1 {
+                    tool {
+                        struct Cursor { sequence: u64 }
+                        struct Page { cursor: crate::v0_1::tool::Cursor }
+                        topic page: state Page;
+                    }
+                }
+                version v0_2 extends v0_1 {
+                    tool { replace struct Cursor { sequence: u128 } }
+                }
+                latest v0_2;
+            })
+            .expect("inherited absolute paths are re-rooted"),
+        );
         assert!(
-            err.to_string()
-                .contains("only one API version may be preview"),
-            "unexpected error: {err}"
+            expanded.contains("cursor : crate :: v0_2 :: tool :: Cursor"),
+            "the materialized child body must use the child revision's replacement: {expanded}"
         );
     }
 
     #[test]
-    fn preview_must_be_the_next_version_after_the_latest_stable() {
-        let err = expand(quote! {
-            version v1 { sample { struct Body { value: u8 } topic body: state Body; } }
-            preview version v3 { sample { struct Body { value: u8 } topic body: state Body; } }
+    fn inherited_revision_rejects_silent_shadowing() {
+        let error = expand(quote! {
+            version v0_1 {
+                sample { struct Body { value: u8 } topic body: state Body; }
+            }
+            version v0_2 extends v0_1 {
+                sample { struct Body { value: u16 } }
+            }
+            latest v0_2;
         })
-        .expect_err("v2 must remain the active preview after v1");
+        .expect_err("same-path declarations require replace");
         assert!(
-            err.to_string().contains("next version `v2`"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn preview_must_be_the_final_version_block() {
-        let err = expand(quote! {
-            preview version v2 { sample { struct Body { value: u8 } topic body: state Body; } }
-            version v3 { sample { struct Body { value: u8 } topic body: state Body; } }
-        })
-        .expect_err("a stable version cannot follow the active preview");
-        assert!(
-            err.to_string().contains("final version block"),
-            "unexpected error: {err}"
+            error
+                .to_string()
+                .contains("prefix the declaration with `replace`")
         );
     }
 
@@ -1445,106 +1794,34 @@ mod tests {
     fn nonstandard_version_names_are_rejected() {
         for name in ["release_1", "preview2", "v0", "v01", "v1_beta"] {
             let source = format!(
-                "version {name} {{ sample {{ struct Body {{ value: u8 }} topic value: state Body; }} }}"
+                "version {name} {{ sample {{ struct Body {{ value: u8 }} topic value: state Body; }} }} latest {name};"
             );
             let tokens: TokenStream = source.parse().expect("test source tokenizes");
             let error = expand(tokens).expect_err("nonstandard API version must fail");
             assert!(
-                error.to_string().contains("conventional"),
+                error.to_string().contains("API revision"),
                 "unexpected error for {name}: {error}"
             );
         }
-    }
-
-    /// `preview` is independent of `extends` (which no longer exists, D1/target
-    /// model #3): a standalone preview version with no parent must still emit
-    /// the final-path module behind its per-version feature gate.
-    #[test]
-    fn standalone_preview_version_emits_final_path_feature_gate_and_lifecycle_const() {
-        let expanded = compact_tokens(
-            expand(quote! {
-                preview version v2 {
-                    sample {
-                        struct Body { value: u8 }
-                        topic body: state Body;
-                    }
-                }
-            })
-            .expect("preview tree expands"),
-        );
-
-        assert!(
-            expanded.contains("pub mod v2"),
-            "preview version must be emitted at its final path: {expanded}"
-        );
-        assert!(
-            !expanded.contains("pub mod preview"),
-            "preview version must not be nested under a preview module: {expanded}"
-        );
-        assert!(
-            expanded.contains("# [cfg (feature = \"preview-v2\")]"),
-            "preview version must be gated by its per-version feature: {expanded}"
-        );
-        assert!(
-            expanded.contains("Preview API version `v2`"),
-            "preview version should carry a discoverable doc note: {expanded}"
-        );
-        assert!(
-            expanded.contains("const IS_PREVIEW : bool = true ;"),
-            "preview ApiVersion must record IS_PREVIEW = true: {expanded}"
-        );
-        assert!(
-            expanded.contains("const TOPIC : & 'static str = \"v2/sample/body\""),
-            "a preview version's wire key is version-qualified exactly like a \
-             released one: {expanded}"
-        );
-    }
-
-    #[test]
-    fn preview_lifecycle_is_wire_neutral_for_contract_identity() {
-        let preview = quote! {
-            preview version v2 {
-                sample {
-                    struct Body { value: u8, label: Option<String> }
-                    topic body: state Body;
-                }
-            }
-        };
-        let promoted = quote! {
-            version v2 {
-                sample {
-                    struct Body { value: u8, label: Option<String> }
-                    topic body: state Body;
-                }
-            }
-        };
-
-        let preview_expanded = compact_tokens(expand(preview).expect("preview tree expands"));
-        let promoted_expanded = compact_tokens(expand(promoted).expect("promoted tree expands"));
-
-        // Preview lifecycle has no wire effect (D1): with no schema_id left to
-        // compare, the version-qualified TOPIC itself is the identity, and it
-        // must be identical whether or not the version is still in preview.
-        assert!(preview_expanded.contains("\"v2/sample/body\""));
-        assert!(promoted_expanded.contains("\"v2/sample/body\""));
     }
 
     #[test]
     fn expansion_emits_root_contract_manifest_for_xtask() {
         let expanded = compact_tokens(
             expand(quote! {
-                version v1 {
+                version v0_1 {
                     sample {
                         struct Body { value: u8 }
                         topic body: state Body;
                     }
                 }
-                preview version v2 {
+                version v0_2 extends v0_1 {
                     sample {
-                        struct Body { value: u8 }
-                        topic body: state Body;
+                        struct Added { value: u16 }
+                        topic added: state Added;
                     }
                 }
+                latest v0_2;
             })
             .expect("tree expands"),
         );
@@ -1554,27 +1831,23 @@ mod tests {
             "root manifest const should be emitted: {expanded}"
         );
         assert!(
-            expanded.contains("name : \"v2\""),
-            "preview version should be represented in the manifest: {expanded}"
+            expanded.contains("name : \"v0.2\""),
+            "child revision should be represented in the manifest: {expanded}"
         );
         assert!(
-            expanded.contains("is_preview : true"),
-            "manifest should carry preview lifecycle: {expanded}"
-        );
-        assert!(
-            expanded.contains("family : \"v1::sample::Body\""),
+            expanded.contains("family : \"v0.1::sample::Body\""),
             "manifest family is the version-qualified contract identity (D1): {expanded}"
         );
         assert!(
-            expanded.contains("topic : \"v1/sample/body\""),
+            expanded.contains("topic : \"v0.1/sample/body\""),
             "manifest topic is the version-qualified wire key (D1): {expanded}"
         );
         assert!(
-            expanded.contains("family : \"v2::sample::Body\""),
+            expanded.contains("family : \"v0.2::sample::Body\""),
             "each version's contracts get their own version-qualified name: {expanded}"
         );
         assert!(
-            expanded.contains("topic : \"v2/sample/body\""),
+            expanded.contains("topic : \"v0.2/sample/body\""),
             "each version's contracts get their own version-qualified key: {expanded}"
         );
         assert!(
@@ -1582,8 +1855,8 @@ mod tests {
             "there is no schema_id field left in the manifest (D1): {expanded}"
         );
         assert!(
-            !expanded.contains("extends :"),
-            "there is no extends field left in the manifest: {expanded}"
+            expanded.contains("pub use v0_2 as latest"),
+            "the selected concrete revision should be exported as latest: {expanded}"
         );
     }
 
@@ -1591,30 +1864,31 @@ mod tests {
     fn query_request_and_response_share_one_version_qualified_topic() {
         let expanded = compact_tokens(
             expand(quote! {
-                version v1 {
+                version v0_1 {
                     asset {
                         struct GetRequest { path: String }
                         enum GetResponse { Missing }
                         topic get: query GetRequest => GetResponse;
                     }
                 }
+                latest v0_1;
             })
             .expect("tree expands"),
         );
         assert_eq!(
             expanded
-                .matches("const TOPIC : & 'static str = \"v1/asset/get\"")
+                .matches("const TOPIC : & 'static str = \"v0.1/asset/get\"")
                 .count(),
             2,
             "both the request and response bodies of a query topic share its \
              version-qualified key: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"v1::asset::GetRequest\""),
+            expanded.contains("const NAME : & 'static str = \"v0.1::asset::GetRequest\""),
             "the request body gets its own type-path NAME: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"v1::asset::GetResponse\""),
+            expanded.contains("const NAME : & 'static str = \"v0.1::asset::GetResponse\""),
             "the response body gets its own type-path NAME, distinct from the \
              request's even though they share one TOPIC: {expanded}"
         );
@@ -1640,7 +1914,7 @@ mod tests {
     fn deeply_nested_dynamic_tree_never_emits_a_multi_hop_super_chain() {
         let expanded = compact_tokens(
             expand(quote! {
-                version v1 {
+                version v0_1 {
                     a(x) {
                         b(y) {
                             c(z) {
@@ -1650,6 +1924,7 @@ mod tests {
                         }
                     }
                 }
+                latest v0_1;
             })
             .expect("tree expands"),
         );
@@ -1660,12 +1935,12 @@ mod tests {
              either the type-tree or the builder-tree side: {expanded}"
         );
         assert!(
-            expanded.contains("const TOPIC : & 'static str = \"v1/a/{x}/b/{y}/c/{z}/leaf\""),
+            expanded.contains("const TOPIC : & 'static str = \"v0.1/a/{x}/b/{y}/c/{z}/leaf\""),
             "the three-level dynamic path must still be fully version- and \
              var-qualified: {expanded}"
         );
         assert!(
-            expanded.contains("const NAME : & 'static str = \"v1::a::b::c::Body\""),
+            expanded.contains("const NAME : & 'static str = \"v0.1::a::b::c::Body\""),
             "NAME excludes every dynamic var from the type path, unlike TOPIC: {expanded}"
         );
         assert!(

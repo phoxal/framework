@@ -8,8 +8,8 @@ struct Version<'a> {
 }
 
 /// `family` is the version-qualified contract identity (e.g.
-/// `"v1::drive::Target"`); `topic` is its version-qualified wire key
-/// (e.g. `"v1/drive/target"`). There is no `schema_id` (D1): the name
+/// `"v0.1::drive::Target"`); `topic` is its version-qualified wire key
+/// (e.g. `"v0.1/drive/target"`). There is no `schema_id` (D1): the name
 /// itself is the whole identity.
 #[derive(Serialize)]
 struct Contract<'a> {
@@ -22,11 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|version| Version {
             name: version.name,
-            channel: if version.is_preview {
-                "preview"
-            } else {
-                "stable"
-            },
+            channel: "revision",
             contracts: version
                 .contracts
                 .iter()

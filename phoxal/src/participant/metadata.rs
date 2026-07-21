@@ -12,10 +12,8 @@
 //! This module owns ONLY the JSON shape, not the object-file section-BYTES
 //! extraction, which stays host-specific (an `object`-crate walk over an
 //! ELF/Mach-O binary or a release tarball) in each consumer:
-//! `xtask/src/release/metadata.rs` for the release pipeline (`cargo xtask
-//! catalog generate`/`release package`), and `phoxal-cli`'s own
-//! `participant_metadata.rs` for the CLI (not yet switched to this shared
-//! type - a later slice, per the coherence-gate design doc §5). Both extract
+//! `xtask/src/release/metadata.rs` for release packaging and suite generation,
+//! and `phoxal-cli`'s own `participant_metadata.rs` for the CLI. Both extract
 //! the section's raw bytes their own way, then hand them to
 //! [`parse_participant_metadata`] here so the JSON shape has exactly one
 //! definition shared by every reader.
@@ -35,7 +33,7 @@ pub struct ParticipantMetaContract {
     /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
     /// (`phoxal::participant::ContractRole`, snake_case).
     pub role: String,
-    /// The contract's version, e.g. `"v1"`
+    /// The contract's dotted wire revision, e.g. `"v0.1"`
     /// (`<Body as phoxal_bus::ContractBody>::VERSION`).
     pub version: String,
     /// The contract's path within its version, e.g. `"drive::Target"`

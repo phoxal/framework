@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use phoxal::api;
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, OwnerCap, Publisher, host_time};
-use phoxal_api::v1 as api;
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);

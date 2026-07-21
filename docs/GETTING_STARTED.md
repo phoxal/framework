@@ -89,19 +89,19 @@ and `router`:
   There is no `components.sources`/`components.instances` split and no
   `identity:` wrapper: those are retired grammar.
   An official component (like `ddsm115` or `bno085` in this repo's own
-  `component/`) resolves automatically from the artifact catalog by its
+  `component/`) resolves automatically from the locked train's suite by its
   logical id; a robot-local component like `hello-rover`'s own `wheel_drive`
   does not need a `driver:` block at all if it has no hardware driver
   participant (see [Adding a component](#adding-a-component)).
-- `artifacts` (optional) controls the release `channel` and any
-  `artifacts.pins` overrides.
+- `artifacts` (optional) contains explicit `artifacts.pins` source overrides;
+  train selection belongs only to the root `Cargo.lock`.
   Base `robot.yaml` is fail-closed for `{ path: ... }` pins; those are legal
   only in a `robot.<env>.yaml` overlay, loaded with `phoxal-cli check --env
   <env>`.
   `hello-rover`'s `robot.dev.yaml` is exactly that overlay.
 - `services` (optional) declares user services only.
-  Official services are never declared here; they resolve from the artifact
-  catalog automatically.
+  Official services are never declared here; they resolve from the train's
+  complete suite automatically.
 - `router` (optional) names a project-relative Zenoh JSON5 file through
   `router.config`. Without one, Phoxal disables discovery and outgoing
   connections and allocates the first free loopback TCP port from its bounded
@@ -151,7 +151,7 @@ hardware driver participant runs for it.
 `hello-rover`'s wheels have none (there is no `phoxal::driver` binary in this
 example), so `left_drive`/`right_drive` list only `component` and
 `mount_link` - the same shape robot-v1's driverless `passive_caster` uses.
-A robot-local component is not in the official artifact catalog, so pin its
+A robot-local component is not in the official train suite, so pin its
 assets from an overlay:
 
 ```yaml
@@ -164,14 +164,14 @@ artifacts:
 
 Load the overlay with `phoxal-cli check --env dev` (or `simulate ... --env
 dev`) whenever you need the local pin; a driverless component that has no pin
-at all also resolves fine (`check` treats a missing catalog entry for a
+at all also resolves fine (`check` treats a missing suite entry for a
 driverless component as valid, not an error) but the pin is what lets
 `simulate` find the local mesh/URDF assets.
 
 ## Writing a user service
 
-A user service is an ordinary Cargo binary crate that depends on the
-workspace's `phoxal`/`phoxal-api` crates, plus:
+A user service is an ordinary Cargo binary crate that inherits the workspace's
+locked `phoxal` dependency and uses its `phoxal::api` facade, plus:
 
 - one `#[derive(phoxal::Config)]` struct read from `robot.yaml`'s
   `services.<name>.config` (skip it if the service takes no config, matching
@@ -189,7 +189,7 @@ official `motion` service owns arbitration, freshness, limits, and e-stop:
 ```rust
 use anyhow::Result;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
+use phoxal_api::v0_1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {
@@ -237,7 +237,7 @@ fn main() -> phoxal::Result<()> {
 A few points that generalize beyond this one service:
 
 - A user service authors against **official contracts** from
-  `phoxal_api::v1` (or whichever API version you target).
+  `phoxal_api::v0_1` (or whichever API version you target).
   It never mints its own bus types; contracts are the shared vocabulary
   every participant on the graph already speaks.
 - `robot.yaml` names the service by its `services.<name>` key and points
@@ -293,7 +293,7 @@ phoxal-cli validate --report --allow-user-service-drift   # lower-level structur
 ```
 
 `check` resolves every official participant (services, tools, and any
-catalog-sourced component drivers) plus every user service and prints
+suite-sourced component drivers) plus every user service and prints
 `ok: N participants validated` once the whole graph is coherent.
 `hello-rover` includes a minimal Webots world:
 

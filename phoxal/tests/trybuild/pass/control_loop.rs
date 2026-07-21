@@ -1,5 +1,5 @@
 // A minimal valid participant: Config + Api + participant impl + setup + step + shutdown.
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

@@ -253,8 +253,8 @@ mod tests {
     #[test]
     fn identical_keys_aggregate_and_quiet_rows_persist() {
         let metrics = RuntimeMetrics::default();
-        let first = metrics.register_subscriber("v1/drive/state", 4);
-        let second = metrics.register_subscriber("v1/drive/state", 8);
+        let first = metrics.register_subscriber("v0.1/drive/state", 4);
+        let second = metrics.register_subscriber("v0.1/drive/state", 8);
         first.record_subscriber(false, 1);
         second.record_subscriber(true, 8);
 
@@ -277,9 +277,9 @@ mod tests {
     #[test]
     fn outbound_capacity_is_a_non_additive_view_of_one_shared_queue() {
         let metrics = RuntimeMetrics::default();
-        let first = metrics.register_outbound("v1/drive/target", 1_024);
-        let second = metrics.register_outbound("v1/drive/target", 1_024);
-        let _other = metrics.register_outbound("v1/motion/target", 1_024);
+        let first = metrics.register_outbound("v0.1/drive/target", 1_024);
+        let second = metrics.register_outbound("v0.1/drive/target", 1_024);
+        let _other = metrics.register_outbound("v0.1/motion/target", 1_024);
         first.enqueue_started();
         second.enqueue_started();
 
@@ -293,7 +293,7 @@ mod tests {
     fn fixed_setup_rows_persist_after_the_declaring_handle_is_dropped() {
         let metrics = RuntimeMetrics::default();
         {
-            let _declared = metrics.register_latest("v1/drive/state");
+            let _declared = metrics.register_latest("v0.1/drive/state");
         }
         let rows = metrics.take();
         assert_eq!(rows.len(), 1);

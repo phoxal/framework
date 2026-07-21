@@ -2,8 +2,8 @@
 //!
 //! Three macro families make up the authoring surface:
 //!
-//! - [`phoxal_api_tree!`] - declares the `vN` API-version modules
-//!   (`phoxal_api::v1`, …), their version-local body types, the
+//! - [`phoxal_api_tree!`] - declares concrete API-revision modules
+//!   (`phoxal_api::v0_1`, …), their revision-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
 //! - [`derive@Api`] / [`derive@Config`] - read an `Api` handle struct's typed
 //!   fields (`Publisher<T>` / `Subscriber<T>` / `Latest<T>` / `Querier<Req,
@@ -40,15 +40,12 @@ use proc_macro::TokenStream;
 
 /// Declare a versioned API tree of version-local wire bodies + topics.
 ///
-/// One invocation owns one or more `version vN { … }` blocks; each becomes a
-/// `pub mod vN` under wherever the macro is invoked. A version may be authored
-/// as `preview version vN`; it is still emitted at `vN`, but behind the
-/// per-version Cargo feature `preview-vN` and with
-/// `ApiVersion::IS_PREVIEW = true`. In this workspace it is invoked in the
-/// `phoxal-api` crate (the canonical import is
-/// `use phoxal_api::v1 as api;`), and the generated tree references the bus
-/// ABI floor as `::phoxal_bus`. There is no `extends`; the active preview
-/// version evolves in place until it is promoted.
+/// One invocation owns one or more `version vM_N { … }` blocks and exactly one
+/// final `latest vM_N;` declaration. A child may `extends` one earlier parent;
+/// inherited definitions are fully materialized with the child's concrete
+/// identity. Additions are direct and same-path changes require explicit
+/// `replace` or `remove`. The generated tree references the bus ABI floor as
+/// `::phoxal_bus`.
 ///
 /// # Node grammar
 ///
@@ -78,11 +75,11 @@ use proc_macro::TokenStream;
 /// - **`TOPIC`** (the wire key) - the version, then the `/`-joined node
 ///   segments plus the leaf, where a static node contributes `name` and a
 ///   dynamic node contributes `name/{var}` (e.g.
-///   `v2/component/{instance}/motor/{capability}/command`). Folding the
+///   `v0.1/component/{instance}/motor/{capability}/command`). Folding the
 ///   version into the key (D1) is what makes two differently-versioned
 ///   contracts physically distinct Zenoh keys - there is no separate
 ///   `FAMILY`/`SCHEMA_ID` axis.
-/// - **body type path** - `phoxal_api::vN::<node>::…::<Body>`; variables never
+/// - **body type path** - `phoxal_api::vM_N::<node>::…::<Body>`; variables never
 ///   appear in the module path.
 ///
 /// A topic is dynamic when its node path contains at least one `(var)` node, and
@@ -170,8 +167,8 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// query, and `Server<Req, Resp>` is a served query contract - no live
 /// connection, declared for `#[phoxal::behavior]`'s `#[server(api = …)]` /
 /// `#[server_snapshot(api = …)]` to implement. A `Vec`/`BTreeMap`/`HashMap` of a
-/// handle carries the inner handle's declaration. There is no participant-level
-/// API version: fields may name contracts from different versions. Also
+/// handle carries the inner handle's declaration. Official participants name
+/// the train-selected complete revision through `phoxal::api`. Also
 /// emits the const contract JSON fragment that the participant attribute puts
 /// in the linker section alongside its config schema.
 ///

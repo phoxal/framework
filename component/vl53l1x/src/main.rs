@@ -1,9 +1,9 @@
 //! `vl53l1x` - VL53L1X range component driver stub.
 
 use anyhow::{Result, bail};
+use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 const STEP_HZ: f64 = 20.0;
 
@@ -137,9 +137,9 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Vl53l1x, divisor_for_rate, range_sample};
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     #[test]
     fn divisor_and_stub_distance_follow_range_config() {

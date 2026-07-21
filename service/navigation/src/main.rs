@@ -8,9 +8,9 @@ mod planner;
 mod scoring;
 
 use anyhow::Result;
+use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 use std::collections::{BTreeMap, VecDeque};
 
 const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
@@ -567,11 +567,11 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::time::Duration;
 
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{
         ClockSource, ContractRole, Participant, ParticipantApi, ParticipantLaunch, TestClock,
     };
     use phoxal::raw::{Bus, BusConfig, OwnerCap, Publisher, Subscriber, run_with_bus_clock};
-    use phoxal_api::ContractBody;
 
     use super::*;
 

@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use phoxal::api;
 use phoxal::prelude::*;
 #[cfg(test)]
 use phoxal::raw::encoding_string;
@@ -10,7 +11,6 @@ use phoxal::raw::{
     Bus, BusMetadata, Codec, CodecId, MessagePack, OwnerCap, Publisher, QueryFailure, host_time,
     parse_encoding_string,
 };
-use phoxal_api::v1 as api;
 
 /// The mirror-subscription measurement window: per-topic counts are rolled up
 /// and republished on this cadence.
@@ -53,15 +53,21 @@ const PUBLISH_IDLE_WINDOWS: u32 = 5;
 /// an all-time count for inactive participants.
 const EVICT_IDLE_WINDOWS: u32 = PUBLISH_IDLE_WINDOWS + 1;
 /// A mirrored key counts toward a rate window only if it has a Phoxal bus shape:
-/// either a raw version-qualified contract key (`v1/drive/state`) or a rooted
-/// key (`<namespace>/robots/<robot-id>/v1/drive/state`). Merely containing a
-/// `v<n>` chunk is not enough: generic paths such as `http/v1/users` must not
+/// either a raw version-qualified contract key (`v0.1/drive/state`) or a rooted
+/// key (`<namespace>/robots/<robot-id>/v0.1/drive/state`). Merely containing a
+/// `v<n>` chunk is not enough: generic paths such as `http/v0.1/users` must not
 /// be reported as Phoxal traffic.
 fn is_version_topic(key: &str) -> bool {
     fn is_version_segment(segment: &str) -> bool {
-        segment
-            .strip_prefix('v')
-            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+        segment.strip_prefix('v').is_some_and(|rest| {
+            let Some((major, revision)) = rest.split_once('.') else {
+                return false;
+            };
+            !major.is_empty()
+                && !revision.is_empty()
+                && major.bytes().all(|b| b.is_ascii_digit())
+                && revision.bytes().all(|b| b.is_ascii_digit())
+        })
     }
 
     let mut segments = key.split('/');
@@ -771,8 +777,8 @@ mod tests {
         assert_eq!(key, "dev/robots/rover/**");
         let mirror =
             zenoh::key_expr::KeyExpr::try_from(key).expect("robot mirror key must be valid");
-        let own = zenoh::key_expr::KeyExpr::try_from("dev/robots/rover/v1/health").unwrap();
-        let other = zenoh::key_expr::KeyExpr::try_from("dev/robots/other/v1/health").unwrap();
+        let own = zenoh::key_expr::KeyExpr::try_from("dev/robots/rover/v0.1/health").unwrap();
+        let other = zenoh::key_expr::KeyExpr::try_from("dev/robots/other/v0.1/health").unwrap();
         assert!(mirror.intersects(&own));
         assert!(!mirror.intersects(&other));
     }
@@ -801,17 +807,17 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let drops = AtomicU64::new(0);
         enqueue_metric_sample(
-            sample("dev/robots/rover/v1/health".to_string(), None),
+            sample("dev/robots/rover/v0.1/health".to_string(), None),
             &tx,
             &drops,
         );
         enqueue_metric_sample(
-            sample("dev/robots/rover/v1/health".to_string(), None),
+            sample("dev/robots/rover/v0.1/health".to_string(), None),
             &tx,
             &drops,
         );
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        assert_eq!(rx.try_recv().unwrap().topic, "dev/robots/rover/v1/health");
+        assert_eq!(rx.try_recv().unwrap().topic, "dev/robots/rover/v0.1/health");
 
         enqueue_metric_sample(
             sample("dev/robots/rover/admin".to_string(), None),
@@ -821,13 +827,16 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert_eq!(drops.load(Ordering::Relaxed), 1);
 
-        let oversized_topic = format!("dev/robots/rover/v1/{}", "x".repeat(MAX_METRIC_TOPIC_BYTES));
+        let oversized_topic = format!(
+            "dev/robots/rover/v0.1/{}",
+            "x".repeat(MAX_METRIC_TOPIC_BYTES)
+        );
         enqueue_metric_sample(sample(oversized_topic, None), &tx, &drops);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
 
         enqueue_metric_sample(
             sample(
-                "dev/robots/rover/v1/health".to_string(),
+                "dev/robots/rover/v0.1/health".to_string(),
                 Some(vec![0; MAX_METRIC_ATTACHMENT_BYTES + 1]),
             ),
             &tx,
@@ -838,7 +847,7 @@ mod tests {
 
         enqueue_metric_sample(
             sample_with_encoding(
-                "dev/robots/rover/v1/health".to_string(),
+                "dev/robots/rover/v0.1/health".to_string(),
                 "x".repeat(MAX_METRIC_ENCODING_BYTES + 1),
                 None,
             ),
@@ -851,20 +860,20 @@ mod tests {
 
     #[test]
     fn is_version_topic_scopes_to_phoxal_versions() {
-        assert!(is_version_topic("v1/drive/state"));
-        assert!(is_version_topic("ns/robots/rover-01/v2/router/metrics"));
+        assert!(is_version_topic("v0.1/drive/state"));
+        assert!(is_version_topic("ns/robots/rover-01/v0.1/router/metrics"));
         assert!(is_version_topic(
-            "tenant/site/robots/rover-01/v2/router/metrics"
+            "tenant/site/robots/rover-01/v0.1/router/metrics"
         ));
-        assert!(is_version_topic("v2/telemetry/host"));
-        assert!(is_version_topic("v1/health"));
-        assert!(is_version_topic("ns/robots/rover-01/v1/health"));
+        assert!(is_version_topic("v0.1/telemetry/host"));
+        assert!(is_version_topic("v0.1/health"));
+        assert!(is_version_topic("ns/robots/rover-01/v0.1/health"));
         // Not version-qualified / admin / malformed:
         assert!(!is_version_topic("@/router/admin"));
         assert!(!is_version_topic("some/other/topic"));
-        assert!(!is_version_topic("http/v1/users"));
-        assert!(!is_version_topic("robots/rover-01/v2/router/metrics"));
-        assert!(!is_version_topic("ns/rover-01/v2/router/metrics"));
+        assert!(!is_version_topic("http/v0.1/users"));
+        assert!(!is_version_topic("robots/rover-01/v0.1/router/metrics"));
+        assert!(!is_version_topic("ns/rover-01/v0.1/router/metrics"));
         assert!(!is_version_topic("ns/robots/rover-01/v2"));
         assert!(!is_version_topic("v/x")); // no digits after prefix
         assert!(!is_version_topic("v1x/x")); // non-digit tail
@@ -873,7 +882,7 @@ mod tests {
     #[test]
     fn build_metrics_computes_rate_from_window_count() {
         let samples = vec![TopicWindowSample {
-            topic: "dev/robots/robot/v2/joypad/devices".to_string(),
+            topic: "dev/robots/robot/v0.1/joypad/devices".to_string(),
             from_participant: "joypad".to_string(),
             window_count: 10,
             cumulative_count: 1_000,
@@ -890,7 +899,7 @@ mod tests {
     #[test]
     fn build_metrics_halves_the_rate_for_a_two_second_window() {
         let samples = vec![TopicWindowSample {
-            topic: "dev/robots/robot/v2/router/metrics".to_string(),
+            topic: "dev/robots/robot/v0.1/router/metrics".to_string(),
             from_participant: String::new(),
             window_count: 10,
             cumulative_count: 10,
@@ -953,7 +962,7 @@ mod tests {
         let counters: IngressCounters = Mutex::new(IngressState::default());
         record_sample(
             &counters,
-            "v1/drive/state".to_string(),
+            "v0.1/drive/state".to_string(),
             Some("drive".to_string()),
         );
         let first = snapshot_current(&counters, Duration::from_millis(250));
@@ -1112,7 +1121,7 @@ mod tests {
         // identities, where named-field overhead dominates the encoding.
         let counters: IngressCounters = Mutex::new(IngressState::default());
         for index in 0..MAX_METRIC_ROWS.saturating_sub(1) {
-            record_sample(&counters, format!("v1/t/{index}"), None);
+            record_sample(&counters, format!("v0.1/t/{index}"), None);
         }
         let drained = drain_window(&counters);
         let metrics = build_metrics(
@@ -1182,7 +1191,7 @@ mod tests {
         for _ in 0..10 {
             record_sample(
                 &counters,
-                "v1/motion/state".to_string(),
+                "v0.1/motion/state".to_string(),
                 Some("motion".to_string()),
             );
         }
@@ -1193,12 +1202,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .counters
-                .contains_key(&("v1/motion/state".to_string(), "motion".to_string()))
+                .contains_key(&("v0.1/motion/state".to_string(), "motion".to_string()))
         );
         let promoted = drained
             .samples
             .iter()
-            .find(|sample| sample.topic == "v1/motion/state" && sample.from_participant == "motion")
+            .find(|sample| {
+                sample.topic == "v0.1/motion/state" && sample.from_participant == "motion"
+            })
             .expect("promoted candidate must carry its current window into the detail table");
         assert_eq!(promoted.window_count, 10);
         assert_eq!(promoted.cumulative_count, 10);
@@ -1209,7 +1220,7 @@ mod tests {
         let next = drain_window(&counters);
         assert!(
             next.samples.iter().any(|sample| {
-                sample.topic == "v1/motion/state"
+                sample.topic == "v0.1/motion/state"
                     && sample.from_participant == "motion"
                     && sample.window_count == 0
                     && sample.cumulative_count == 10

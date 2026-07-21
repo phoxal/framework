@@ -1,5 +1,3 @@
-#![cfg(feature = "preview-v2")]
-
 //! Runner integration: a scheduled participant runs steps and then shuts down
 //! cleanly, a slow `#[shutdown]` hook is
 //! bounded by grace, `ClockMode::Simulation` steps track the live
@@ -30,13 +28,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use phoxal::api;
+use phoxal::bus::ContractBody;
 use phoxal::bus::{DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publisher, Querier};
 use phoxal::participant::{ClockMode, ParticipantLaunch, TestClock};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus, run_with_bus_clock};
-use phoxal_api::ContractBody;
-use phoxal_api::v1 as api;
-use phoxal_api::v2;
 
 static STEPS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -71,7 +68,7 @@ struct WallFollowerSnapshot {
     steps: u64,
 }
 
-#[phoxal::service(id = "runtime-proof-v2", config = ())]
+#[phoxal::service(id = "runtime-proof", config = ())]
 struct WallFollower {
     steps: u64,
 }
@@ -158,12 +155,9 @@ impl WallFollower {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_model_participant_runs_through_a_real_bus() {
-    let bus = Bus::open(BusConfig::in_process(
-        unique_namespace("runner-v2"),
-        "robot",
-    ))
-    .await
-    .expect("open shared bus");
+    let bus = Bus::open(BusConfig::in_process(unique_namespace("runner"), "robot"))
+        .await
+        .expect("open shared bus");
 
     // Companion "client" handles built directly against the same bus (the
     // low-level constructors a raw tool would use - not the `ctx.*` builders,
@@ -199,7 +193,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
     )
     .expect("build submap querier");
 
-    let launch = ParticipantLaunch::local("wall-follower-v2-1", "robot");
+    let launch = ParticipantLaunch::local("wall-follower-1", "robot");
     let runner = run_with_bus::<WallFollower, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(1_200)).await
     });
@@ -284,7 +278,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
     assert!(step.completed > 0);
     assert_eq!(step.target_period_ns, 5_000_000);
     assert!(runtime.topics.iter().any(|row| {
-        row.topic == "v1/drive/target"
+        row.topic == "v0.1/drive/target"
             && row.direction == api::tool::RuntimeDirection::Publish
             && row.buffer_kind == api::tool::RuntimeBufferKind::Outbound
     }));
@@ -306,11 +300,8 @@ async fn new_model_participant_runs_through_a_real_bus() {
 // `recv`s the `Subscriber`, so it steals nothing. This is the field-kind
 // coverage the D3 proof above is missing.
 //
-// It is ALSO the ground-breaker proof for per-contract version mixing
-// (D1): `DrainApi` below holds a `v1` command field (`incoming`) right
-// next to a `v2` state field (`battery`, the contract moved out of
-// `v1` in `phoxal-api/src/lib.rs`) - one participant, one live in-process
-// bus, two API versions round-tripping real bytes at once.
+// It also proves that two distinct contracts from the train-selected API can
+// share one participant and round-trip real bytes on one live in-process bus.
 
 static DRAIN_RECEIVED_TOTAL: AtomicU64 = AtomicU64::new(0);
 static DRAIN_LAST_VOLTAGE_BITS: AtomicU64 = AtomicU64::new(0);
@@ -328,11 +319,10 @@ struct DrainApi {
     // destructive shared-queue field: it is cloned into the snapshot `Arc`,
     // but only `#[step]` (below) ever `recv`s it.
     incoming: Subscriber<api::drive::Target>,
-    // Client-side keep-last-1 of the `v2/battery/state` STATE (owner
-    // publishes, client subscribes) - the moved contract, on its own
-    // version, mixed into the same `Api` as the v1 field above. The
-    // non-destructive inbound field.
-    battery: Latest<v2::battery::State>,
+    // Client-side keep-last-1 of the `v0.1/battery/state` STATE (owner
+    // publishes, client subscribes), alongside the command field above. This
+    // is the non-destructive inbound field.
+    battery: Latest<api::battery::State>,
     // The concurrent snapshot server, deliberately reading committed state
     // only.
     query: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
@@ -348,7 +338,7 @@ struct DrainSnapshot {
 
 // Explicit `api = DrainApi`: this test module already has an `Api` struct (the
 // D3 test above), which is what the bare-`Api` default would resolve to.
-#[phoxal::service(id = "drain-proof-v2", config = (), api = DrainApi)]
+#[phoxal::service(id = "drain-proof", config = (), api = DrainApi)]
 struct Drainer {
     received: u32,
     last_voltage_bits: u32,
@@ -368,7 +358,7 @@ impl Drainer {
                 incoming: ctx
                     .subscriber(api::topic::internal::new(cap).drive().target(), 32)
                     .await?,
-                battery: ctx.latest(v2::topic::new().battery().state()).await?,
+                battery: ctx.latest(api::topic::new().battery().state()).await?,
                 query: ctx.server(api::topic::new().map().submap()).await?,
             },
         ))
@@ -422,31 +412,30 @@ impl Drainer {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscriber_and_latest_survive_the_owned_arc_split() {
     let bus = Bus::open(BusConfig::in_process(
-        unique_namespace("drain-proof-v2"),
+        unique_namespace("drain-proof"),
         "robot",
     ))
     .await
     .expect("open shared bus");
 
-    // Companion "client" handles on the same bus. `drive/target` (v1) is a
-    // command (client publishes), `battery/state` (v2 - the moved
-    // contract) is a state (owner publishes), so the companion takes the
+    // Companion client handles on the same bus. `drive/target` is a command
+    // (client publishes), while `battery/state` is state (owner publishes), so
+    // the companion takes the
     // client side of the former and the owner side of the latter - the mirror
-    // of what `Drainer` subscribes. Two contract versions, one bus, one
-    // participant: this IS the ground-breaker round-trip.
+    // of what `Drainer` subscribes. Two contracts, one bus, one participant.
     let target_pub =
         Publisher::<api::drive::Target>::new(bus.clone(), &api::topic::new().drive().target())
             .expect("build target publisher");
-    let battery_topic = v2::topic::internal::new(OwnerCap::__mint())
+    let battery_topic = api::topic::internal::new(OwnerCap::__mint())
         .battery()
         .state();
     assert_eq!(
-        <v2::battery::State as ContractBody>::TOPIC,
-        "v2/battery/state",
+        <api::battery::State as ContractBody>::TOPIC,
+        "v0.1/battery/state",
         "the moved contract's version-qualified wire key (D1)"
     );
-    assert_eq!(battery_topic.key(), "v2/battery/state");
-    let battery_pub = Publisher::<v2::battery::State>::new(bus.clone(), &battery_topic)
+    assert_eq!(battery_topic.key(), "v0.1/battery/state");
+    let battery_pub = Publisher::<api::battery::State>::new(bus.clone(), &battery_topic)
         .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
@@ -455,7 +444,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     )
     .expect("build submap querier");
 
-    let launch = ParticipantLaunch::local("drain-proof-v2-1", "robot");
+    let launch = ParticipantLaunch::local("drain-proof-1", "robot");
     let runner = run_with_bus::<Drainer, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(800)).await
     });
@@ -465,11 +454,11 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         // no sample is emitted before the drainer is listening.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        // One battery state (v2) for the `Latest` field.
+        // One battery state for the `Latest` field.
         battery_pub
             .publish_at(
                 LogicalTime::new(0, 1),
-                v2::battery::State {
+                api::battery::State {
                     voltage_v: DRAIN_VOLTAGE_V,
                     current_a: 1.0,
                     charge_ratio: 0.9,
@@ -533,14 +522,14 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     );
 
     // The `Latest` field read the current value through the same owned `api` -
-    // the ground-breaker proof itself: a real `v2/battery/state` publish
+    // the ground-breaker proof itself: a real `v0.1/battery/state` publish
     // was delivered over the live bus and observed correctly, WHILE the
-    // sibling `v1/drive/target` command round-tripped on the same
+    // sibling `v0.1/drive/target` command round-tripped on the same
     // participant/bus at the same time (asserted above).
     assert_eq!(
         f32::from_bits(DRAIN_LAST_VOLTAGE_BITS.load(Ordering::Relaxed) as u32),
         DRAIN_VOLTAGE_V,
-        "the step loop should read the published v2 battery voltage through its Latest field"
+        "the step loop should read the published battery voltage through its Latest field"
     );
 }
 
@@ -895,9 +884,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // same `simulation().clock()` builder `simulator/webots-supervisor`
     // uses, so this test proves the runner subscribes the identical wire key
     // a real supervisor publishes (not a look-alike topic).
-    let clock_publisher = Publisher::<v2::simulation::Clock>::new(
+    let clock_publisher = Publisher::<api::simulation::Clock>::new(
         bus.clone(),
-        &v2::topic::internal::new(OwnerCap::__mint())
+        &api::topic::internal::new(OwnerCap::__mint())
             .simulation()
             .clock(),
     )
@@ -941,7 +930,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             clock_publisher
                 .publish_at(
                     at,
-                    v2::simulation::Clock {
+                    api::simulation::Clock {
                         now_ns: step * period_ns,
                         step,
                     },
@@ -983,7 +972,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         // must be discarded without releasing a step or spinning the loop.
         let reset_at = LogicalTime::new(1, 0);
         clock_publisher
-            .publish_at(reset_at, v2::simulation::Clock { now_ns: 0, step: 0 })
+            .publish_at(reset_at, api::simulation::Clock { now_ns: 0, step: 0 })
             .await
             .expect("reset clock sample should publish");
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -997,7 +986,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         clock_publisher
             .publish_at(
                 first_after_reset,
-                v2::simulation::Clock {
+                api::simulation::Clock {
                     now_ns: period_ns,
                     step: 1,
                 },

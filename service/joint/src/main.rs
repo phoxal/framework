@@ -13,11 +13,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
+use phoxal::api;
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::component::v0::capability::{Capability, StructuralTarget};
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 const ENCODER_STALE_NS: u64 = 200_000_000;
 
@@ -203,9 +203,9 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     use super::{EncoderBinding, Joint, JointConfig, joint_state};
 

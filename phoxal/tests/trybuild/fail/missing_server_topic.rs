@@ -1,6 +1,6 @@
 // `#[server(...)]` requires `api = <Api struct field name>` naming the declared
 // `Server<Req, Resp>` slot this handler implements.
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

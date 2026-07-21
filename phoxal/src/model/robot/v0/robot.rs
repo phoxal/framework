@@ -19,9 +19,7 @@ pub struct Robot {
     /// definitions themselves live under `behaviors/` in the robot root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
-    /// Framework-resolved packages: channel, generation ceiling, and the
-    /// unified provider-qualified pins map. Optional; a day-0 robot may omit
-    /// this section entirely.
+    /// Explicit development-only source overrides for official packages.
     #[serde(default, skip_serializing_if = "Artifacts::is_default")]
     pub artifacts: Artifacts,
     /// User services: project-local source crates built by `phoxal-cli` for
@@ -66,52 +64,21 @@ pub struct RobotSection {
     pub motion_limits: MotionLimits,
     /// Component instance map: instance-id -> instance (was
     /// `components.instances`; `components.sources` no longer exists -
-    /// official components resolve from the catalog, forks are
+    /// official components resolve from the train suite, forks are
     /// `artifacts.pins` entries).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub components: BTreeMap<String, Component>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(rename_all = "lowercase")]
-pub enum Channel {
-    #[default]
-    Stable,
-    Preview,
-}
-
-impl Channel {
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Stable => "stable",
-            Self::Preview => "preview",
-        }
-    }
-}
-
-impl fmt::Display for Channel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-/// `artifacts:` (was `phoxal_artifacts`) - framework-resolved packages.
+/// Development-only source overrides. Published artifact inventory comes from
+/// the locked framework train's immutable `suite.json`.
 ///
 /// The whole section is optional; a day-0 robot can omit it entirely.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Artifacts {
-    /// Release channel used when resolving official framework packages.
-    #[serde(default)]
-    pub channel: Channel,
-    /// Deprecated API version ceiling or pin for official package
-    /// resolution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<String>,
-    /// Unified fail-closed pin map keyed by provider-qualified package id
+    /// Fail-closed source override map keyed by provider-qualified package id
     /// (`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).
     ///
     /// Keys must have exactly one `/`, with a non-empty provider segment
@@ -126,12 +93,11 @@ pub struct Artifacts {
 impl Artifacts {
     #[must_use]
     pub fn is_default(&self) -> bool {
-        self.channel == Channel::Stable && self.generation.is_none() && self.pins.is_empty()
+        self.pins.is_empty()
     }
 }
 
-/// One `artifacts.pins` entry. Accepts a version string, a git reference, a
-/// `sha256:...` checksum string, or a local path override.
+/// One development-only `artifacts.pins` source override.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(untagged)]
@@ -140,10 +106,6 @@ pub enum ArtifactPin {
     Path(ArtifactPathPin),
     /// Resolve this package from a git repository at a pinned revision.
     Git(ArtifactGitPin),
-    /// Pin to an exact `sha256:...` checksum.
-    Sha256(Sha256Pin),
-    /// Pin to a `vX.Y.Z` / semver version string.
-    Version(VersionPin),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,127 +127,6 @@ pub struct ArtifactGitPin {
     /// Optional subdirectory within the repository that holds the package.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<PathBuf>,
-}
-
-/// A `sha256:...` checksum pin, validated at parse time to carry the
-/// `sha256:` prefix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Sha256Pin(pub String);
-
-impl Serialize for Sha256Pin {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Sha256Pin {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        if value.starts_with("sha256:") && value.len() > "sha256:".len() {
-            Ok(Self(value))
-        } else {
-            Err(serde::de::Error::custom(
-                "sha256 pin must be a string of the form 'sha256:<digest>'",
-            ))
-        }
-    }
-}
-
-/// Test-only: `Sha256Pin` hand-rolls `Serialize`/`Deserialize` (above) rather
-/// than deriving them, so `#[derive(schemars::JsonSchema)]` cannot see it;
-/// this manual impl keeps the generated `robot.schema.json` matching what the
-/// hand-rolled `Deserialize` actually accepts (see `docs/GETTING_STARTED.md`
-/// and the drift-guard test in `robot.rs`).
-#[cfg(test)]
-impl schemars::JsonSchema for Sha256Pin {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "Sha256Pin".into()
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "string",
-            "pattern": "^sha256:.+$"
-        })
-    }
-}
-
-/// A `vX.Y.Z` / semver version pin, validated at parse time so it cannot
-/// collide with a `sha256:...` string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionPin(pub String);
-
-impl Serialize for VersionPin {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for VersionPin {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        if is_version_pin_string(&value) {
-            Ok(Self(value))
-        } else {
-            Err(serde::de::Error::custom(
-                "version pin must be a 'vX.Y.Z' or semver-shaped string",
-            ))
-        }
-    }
-}
-
-/// Test-only: see the parallel `Sha256Pin` impl above for why this is manual.
-#[cfg(test)]
-impl schemars::JsonSchema for VersionPin {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "VersionPin".into()
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "type": "string",
-            "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$"
-        })
-    }
-}
-
-/// Accepts `v1.2.3` and bare semver `1.2.3` (with optional pre-release/build
-/// metadata), rejecting the `sha256:` prefix so the untagged enum can
-/// distinguish the two string forms unambiguously.
-fn is_version_pin_string(value: &str) -> bool {
-    if value.starts_with("sha256:") {
-        return false;
-    }
-    let rest = value.strip_prefix('v').unwrap_or(value);
-    let core = rest.split(['-', '+']).next().unwrap_or(rest);
-    let mut segments = core.split('.');
-    let Some(major) = segments.next() else {
-        return false;
-    };
-    let Some(minor) = segments.next() else {
-        return false;
-    };
-    let Some(patch) = segments.next() else {
-        return false;
-    };
-    if segments.next().is_some() {
-        return false;
-    }
-    [major, minor, patch]
-        .into_iter()
-        .all(|segment| !segment.is_empty() && segment.chars().all(|c| c.is_ascii_digit()))
 }
 
 /// `services:` (was `user_participants` / `user_services`, and the separate
@@ -604,9 +445,7 @@ fn default_structure_path() -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{
-        ArtifactGitPin, ArtifactPathPin, ArtifactPin, Channel, Robot, Sha256Pin, VersionPin,
-    };
+    use super::{ArtifactGitPin, ArtifactPathPin, ArtifactPin, Robot};
 
     /// Minimal canonical five-root-key manifest that also passes
     /// [`Robot::validate`] (the kinematic model has one actuator so the
@@ -680,11 +519,6 @@ robot:
       parameters:
         motor:   { kind: motor,   direction_sign: 1 }
         encoder: { kind: encoder, direction_sign: 1 }
-artifacts:
-  channel: stable
-  generation: v2
-  pins:
-    phoxal/service-drive: v0.8.4
 services:
   avoid-obstacles:
     path: ./services/avoid-obstacles
@@ -697,12 +531,7 @@ router:
         assert_eq!(robot.robot.id, "rover");
         assert_eq!(robot.robot.namespace, "dev");
         assert_eq!(robot.robot.structure, PathBuf::from("structure.urdf"));
-        assert_eq!(robot.artifacts.channel, Channel::Stable);
-        assert_eq!(robot.artifacts.generation.as_deref(), Some("v2"));
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/service-drive"),
-            Some(&ArtifactPin::Version(VersionPin("v0.8.4".to_string())))
-        );
+        assert!(robot.artifacts.pins.is_empty());
         let service = robot
             .services
             .get("avoid-obstacles")
@@ -1112,18 +941,13 @@ robot:
     }
 
     #[test]
-    fn artifacts_pins_version_form_parses() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
+    fn artifacts_pins_version_form_is_rejected() {
+        let error = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
     phoxal/service-drive: v0.8.4"#,
-        ))?;
-
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/service-drive"),
-            Some(&ArtifactPin::Version(VersionPin("v0.8.4".to_string())))
-        );
-
-        Ok(())
+        ))
+        .expect_err("published artifact versions come from suite.json");
+        assert!(format!("{error:#}").contains("did not match any variant"));
     }
 
     #[test]
@@ -1149,53 +973,13 @@ robot:
     }
 
     #[test]
-    fn artifacts_pins_sha256_form_parses() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
+    fn artifacts_pins_sha256_form_is_rejected() {
+        let error = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
     phoxal/tool-bus: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
-        ))?;
-
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/tool-bus"),
-            Some(&ArtifactPin::Sha256(Sha256Pin(
-                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                    .to_string()
-            )))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn artifacts_pins_string_forms_disambiguate_and_round_trip() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/service-drive: v0.8.4
-    phoxal/service-frame: 0.8.4
-    phoxal/tool-bus: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
-        ))?;
-
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/service-drive"),
-            Some(&ArtifactPin::Version(VersionPin("v0.8.4".to_string())))
-        );
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/service-frame"),
-            Some(&ArtifactPin::Version(VersionPin("0.8.4".to_string())))
-        );
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/tool-bus"),
-            Some(&ArtifactPin::Sha256(Sha256Pin(
-                "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                    .to_string()
-            )))
-        );
-
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
-        let reparsed = Robot::parse_from_string(&yaml)?;
-        assert_eq!(reparsed.artifacts.pins, robot.artifacts.pins);
-
-        Ok(())
+        ))
+        .expect_err("published checksums come from suite.json");
+        assert!(format!("{error:#}").contains("did not match any variant"));
     }
 
     #[test]
@@ -1231,7 +1015,8 @@ robot:
     fn artifacts_pins_unqualified_key_is_validation_error() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  pins:
-    service-drive: v0.8.4"#,
+    service-drive:
+      path: services/drive"#,
         ))?;
 
         let errors = robot
@@ -1251,7 +1036,7 @@ robot:
     fn artifacts_pins_key_missing_provider_or_name_is_validation_error() -> anyhow::Result<()> {
         for bad_key in ["/service-drive", "phoxal/", "phoxal/service/drive"] {
             let robot = Robot::parse_from_string(&manifest_with_artifacts(&format!(
-                "  pins:\n    \"{bad_key}\": v1.0.0"
+                "  pins:\n    \"{bad_key}\":\n      path: services/drive"
             )))?;
 
             let errors = robot
@@ -1301,32 +1086,9 @@ robot:
     }
 
     #[test]
-    fn artifacts_empty_pins_are_absent_from_serialization() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  channel: preview
-  pins: {}"#,
-        ))?;
-
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot))?;
-
-        assert!(
-            yaml.contains("artifacts:\n  channel: preview"),
-            "non-default artifacts section should serialize: {yaml}"
-        );
-        assert!(
-            !yaml.contains("pins:"),
-            "empty pins map should be omitted from serialization: {yaml}"
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn artifacts_section_entirely_omitted_by_default() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&minimal_manifest(""))?;
 
-        assert_eq!(robot.artifacts.channel, Channel::Stable);
-        assert_eq!(robot.artifacts.generation, None);
         assert!(robot.artifacts.pins.is_empty());
 
         let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot))?;
@@ -1343,10 +1105,7 @@ robot:
         let error = Robot::parse_from_string(&manifest_with_artifacts("  channel: experimental"))
             .expect_err("invalid artifacts channel should fail to parse");
 
-        assert!(
-            format!("{error:#}").contains("unknown variant `experimental`"),
-            "got: {error:#}"
-        );
+        assert!(format!("{error:#}").contains("unknown field `channel`"));
     }
 
     #[test]
@@ -1363,16 +1122,13 @@ robot:
     }
 
     #[test]
-    fn artifacts_parses_preview_channel_and_generation_pin() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
+    fn artifacts_rejects_channel_and_generation() {
+        let error = Robot::parse_from_string(&manifest_with_artifacts(
             r#"  channel: preview
   generation: v2"#,
-        ))?;
-
-        assert_eq!(robot.artifacts.channel, Channel::Preview);
-        assert_eq!(robot.artifacts.generation.as_deref(), Some("v2"));
-
-        Ok(())
+        ))
+        .expect_err("train and API selectors do not belong in robot.yaml");
+        assert!(format!("{error:#}").contains("unknown field `channel`"));
     }
 
     #[test]

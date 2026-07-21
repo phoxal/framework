@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -20,7 +20,6 @@ object = "0.36"
 phoxal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-semver = "1"
 sha2 = { workspace = true }
 tar = "0.4.46"
 toml_edit = "0.25.12"

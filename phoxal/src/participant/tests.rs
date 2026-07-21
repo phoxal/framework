@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
+use crate::api;
 use crate::bus::{Codec, ContractBody, MessagePack, QueryCode};
 use crate::participant::ParticipantLifecycle;
 use crate::prelude::*;
-use phoxal_api::v1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {}
@@ -60,7 +60,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     let mut api = AssetTestApi { get: Server::new() };
 
     // The declared topic shows up in the metadata, version-qualified (D1).
-    assert_eq!(AssetTest::__exclusive_server_topics(), &["v1/asset/get"]);
+    assert_eq!(AssetTest::__exclusive_server_topics(), &["v0.1/asset/get"]);
     assert!(AssetTest::__snapshot_server_topics().is_empty());
     AssetTest::__validate_server_topics().unwrap();
     assert!(!AssetTest::HAS_SNAPSHOT);
@@ -75,7 +75,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let reply = rt
-        .__serve_exclusive(&mut api, "v1/asset/get", &request)
+        .__serve_exclusive(&mut api, "v0.1/asset/get", &request)
         .await
         .unwrap();
     let response: api::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
@@ -86,7 +86,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     })
     .unwrap();
     let failure = rt
-        .__serve_exclusive(&mut api, "v1/asset/get", &request)
+        .__serve_exclusive(&mut api, "v0.1/asset/get", &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::NotFound);
@@ -95,7 +95,7 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     // correctness now comes from the key (D1), so there is no separate
     // schema/family mismatch to test.
     let failure = rt
-        .__serve_exclusive(&mut api, "v1/other/topic", &request)
+        .__serve_exclusive(&mut api, "v0.1/other/topic", &request)
         .await
         .unwrap_err();
     assert_eq!(failure.code, QueryCode::Unimplemented);
@@ -149,7 +149,7 @@ impl DuplicateServerTopicTest {
 fn duplicate_server_topics_are_rejected_before_startup() {
     let err = DuplicateServerTopicTest::__validate_server_topics().unwrap_err();
     assert!(err.contains("duplicate server topic"));
-    assert!(err.contains("v1/asset/get"));
+    assert!(err.contains("v0.1/asset/get"));
 }
 
 #[derive(phoxal::Api)]
@@ -214,7 +214,7 @@ async fn snapshot_server_dispatch_reads_committed_state() {
         submap: Server::new(),
     });
     assert!(MapTest::HAS_SNAPSHOT);
-    assert_eq!(MapTest::__snapshot_server_topics(), &["v1/map/submap"]);
+    assert_eq!(MapTest::__snapshot_server_topics(), &["v0.1/map/submap"]);
 
     let snapshot = Arc::new(rt.__take_snapshot());
     let request = MessagePack::encode(&api::map::SubmapRequest {
@@ -225,7 +225,7 @@ async fn snapshot_server_dispatch_reads_committed_state() {
     })
     .unwrap();
 
-    let reply = MapTest::__serve_snapshot(snapshot, api, "v1/map/submap".to_string(), request)
+    let reply = MapTest::__serve_snapshot(snapshot, api, "v0.1/map/submap".to_string(), request)
         .await
         .unwrap();
     let response: api::map::SubmapResponse = MessagePack::decode(&reply.payload).unwrap();

@@ -8,10 +8,10 @@
 //! product, while any valid protective stop or limit still applies.
 
 use anyhow::{Context, Result, bail};
+use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::{v1 as api, v2 as preview};
 
 const INPUT_STALE_NS: u64 = 1_000_000_000;
 const MAP_STALE_NS: u64 = 600_000_000;
@@ -38,7 +38,7 @@ struct WorldInputs {
     map: Option<Timed<api::map::Revision>>,
     drivable_space: Option<Timed<bool>>,
     drive: Option<Timed<api::drive::State>>,
-    battery: Option<Timed<preview::battery::State>>,
+    battery: Option<Timed<api::battery::State>>,
     ranges: Vec<Option<Timed<api::component::range::Sample>>>,
 }
 
@@ -61,7 +61,7 @@ struct Api {
     map: Subscriber<api::map::Revision>,
     map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
     drive: Subscriber<api::drive::State>,
-    battery: Subscriber<preview::battery::State>,
+    battery: Subscriber<api::battery::State>,
     ranges: Vec<Subscriber<api::component::range::Sample>>,
     constraints: Publisher<api::safety::MotionConstraints>,
     state: Publisher<api::safety::State>,
@@ -111,7 +111,7 @@ impl Safety {
                     .subscriber(api::topic::new().drive().state(), 32)
                     .await?,
                 battery: ctx
-                    .subscriber(preview::topic::new().battery().state(), 32)
+                    .subscriber(api::topic::new().battery().state(), 32)
                     .await?,
                 ranges,
                 constraints: ctx

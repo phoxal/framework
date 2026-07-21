@@ -1,663 +1,192 @@
 name: release-plz
 
-# Build-snapshot release pipeline (design doc
-# organization/tmp/ci-release-refactor/design.md §2, §4).
-#
-# release-plz owns only the 4 crates.io libraries. Artifact crates are excluded
-# by their Cargo.toml `publish = false`; xtask owns their independent patch
-# versions and `{package}-v{version}` tags. There are no per-artifact GitHub
-# releases: a CI run produces one immutable `build-YYYYMMDD-<run_number>` release
-# holding this run's freshly-built tarballs plus the assembled `catalog.json`,
-# and marks it GitHub "latest" once the gate passes. The catalog is a FULL
-# INDEX: each run appends the (package, version) pairs it built to the previous
-# catalog (fetched from the current "latest" release), so a single catalog
-# resolves any pinned version. See the design doc for the whole model.
-#
-# Three push-triggered release/build jobs. `release-plz release` runs on every
-# push (a version-based no-op except on the release merge), but the
-# build-snapshot wave (jobs 2-3, and the plan/provenance steps of job 1) runs
-# ONLY when the push is
-# the merge of release-plz's `chore(release)` PR - the deliberate release act. A
-# plain feature merge never triggers a build.
-#
-# The build-* GitHub release is created ONCE, at the very end, by the `catalog`
-# job - only after the catalog is generated and the structural/coverage gate
-# passes. The build/assets jobs never touch GitHub releases; each just PACKAGES
-# its artifacts and hands the tarballs to `catalog` as workflow artifacts
-# (`facts-*`). So there is no window in which a half-populated release is
-# authoritative, and no per-leg upload path to reconcile - the artifacts flow
-# through Actions storage, and one `gh release create` invocation publishes the
-# selected set before the release is marked latest.
-#   1. release    - release-plz publishes the 4 libs to crates.io. IF this is the
-#                   release merge, xtask cuts missing current artifact tags,
-#                   validates that JSON handoff, and plans either all artifacts
-#                   (shared-library/recovery wave) or only newly tagged artifacts
-#                   (artifact-only wave). It does NOT create the build-* release.
-#   2. build      - one matrix leg per binary target: a single `release package`
-#                   builds+packages that row's artifacts, uploaded as `facts-*`.
-#      assets     - one cheap Linux job packages all component asset bundles via
-#                   `release assets`, uploaded as `facts-assets`.
-#   3. catalog    - assemble catalog.json from this run's facts + the previous
-#                   catalog, run the structural gate, then create the `build-*`
-#                   release with every tarball + catalog.json in one shot and
-#                   mark it "latest".
-# Plus a `release-plz-pr` job that prepares the libraries after every ordinary
-# main push, then adds git-diff-selected artifact bumps to that same PR branch.
-# A `chore(release)` push is the deliberate publication act and skips PR
-# preparation so it cannot race with publishing. Schedule and non-force dispatch
-# remain retry paths for a missed or failed preparation run.
-
 on:
   push:
     branches: [main]
   schedule:
     - cron: "17 5,17 * * *"
   workflow_dispatch:
-    inputs:
-      force_build:
-        description: "Force the build-snapshot wave on the current main HEAD (no version bump, no crates.io publish). Use to (re)produce a catalog when a release merge's wave failed or a target was unschedulable."
-        type: boolean
-        default: false
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: release-train
+  group: framework-train
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: release libraries + cut artifacts + build set
-    # Runs on every push (library publish + the gated wave on a release merge),
-    # and on a manual `force_build` dispatch (wave only, see the gate step).
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.force_build)
+  prepare:
+    name: prepare release train
     runs-on: ubuntu-latest
     outputs:
-      released: ${{ steps.plan.outputs.released }}
-      matrix: ${{ steps.plan.outputs.matrix }}
-      assets: ${{ steps.plan.outputs.assets }}
-      build_tag: ${{ steps.provenance.outputs.build_tag }}
-      created_at: ${{ steps.provenance.outputs.created_at }}
-    env:
-      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
+      publish: ${{ steps.train.outputs.publish }}
+      version: ${{ steps.train.outputs.version }}
+      tag: ${{ steps.train.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      # `cache-shared-key: xtask` - this job's cargo work is the xtask binary
-      # (`release plan`); share its cache with the assets/catalog jobs below
-      # instead of each job rebuilding xtask's dependency tree under its own
-      # per-job cache key.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache-shared-key: xtask
-
-      - name: Install release-plz
-        uses: taiki-e/install-action@v2
-        with:
-          tool: release-plz
-
-      - name: Generate GitHub App token
-        id: app-token
-        if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
-      # Libraries publish to crates.io without git tags or GitHub releases.
-      # Artifact crates are publish=false and never enter release-plz.
-      - name: Run release-plz release
-        # Push only: a `force_build` dispatch (re)builds an already-released set,
-        # so it must NOT re-run crate publishing/tagging - it goes straight to
-        # the wave via the gate step below.
-        if: github.event_name == 'push'
+      - name: Identify train publication
+        id: train
+        shell: bash
         run: |
           set -euo pipefail
-          release-plz release
-        env:
-          GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      # The build-snapshot wave (build binaries + assemble catalog + mark latest)
-      # runs ONLY when this push is the merge of release-plz's `chore(release)`
-      # PR - the deliberate release act. A normal feature merge must NOT trigger
-      # a build, even one that introduces an artifact identity not yet in the
-      # catalog (a component rename did exactly that once and rebuilt the whole
-      # component set off a non-release merge). release-plz's PR title is fixed
-      # (`chore(release)`, see release-plz.toml `pr_name`); its squash-merge lands
-      # a commit whose subject starts with `chore(release)`, and that is the
-      # signal. `release-plz release` above still runs every push - it is a
-      # version-based no-op except on the release merge - so library publishing
-      # stays robust regardless of this gate.
-      - name: Detect release-PR merge
-        id: gate
-        run: |
-          set -euo pipefail
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.force_build }}" == "true" ]]; then
-            echo "is_release=true" >> "$GITHUB_OUTPUT"
-            echo "forced build-snapshot wave (workflow_dispatch force_build) on $(git log -1 --pretty=%s)"
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "phoxal") | .version')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          subject="$(git log -1 --pretty=%s)"
+          if [[ "${{ github.event_name }}" == "push" && "$subject" == chore\(release\)* ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           else
-            subject="$(git log -1 --pretty=%s)"
-            if [[ "$subject" == chore\(release\)* ]]; then
-              echo "is_release=true" >> "$GITHUB_OUTPUT"
-              echo "release-plz PR merge detected: $subject"
-            else
-              echo "is_release=false" >> "$GITHUB_OUTPUT"
-              echo "not a release merge ($subject); skipping the build-snapshot wave"
-            fi
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
-
-      # This run's identity: `build-YYYYMMDD-<zero-padded run_number>` and a
-      # single UTC timestamp reused by every downstream job so the catalog's
-      # provenance is internally consistent.
-      - name: Compute build provenance
-        id: provenance
-        if: steps.gate.outputs.is_release == 'true'
-        run: |
-          set -euo pipefail
-          build_tag="build-$(date -u +%Y%m%d)-$(printf '%07d' "${{ github.run_number }}")"
-          created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "build_tag=$build_tag" >> "$GITHUB_OUTPUT"
-          echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
-
-      # The full index to accumulate onto is whatever catalog the current "latest"
-      # release carries. `gh release download` with no tag
-      # targets the latest release; a missing release or missing asset (cold
-      # start, design §4.3) leaves no file and the plan/generate steps below run
-      # unfiltered.
-      - name: Fetch previous catalog (latest release)
-        if: steps.gate.outputs.is_release == 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p prev
-          if gh release download --pattern catalog.json --dir prev --repo "${{ github.repository }}"; then
-            echo "fetched previous catalog"
-          else
-            rm -f prev/catalog.json
-            echo "no previous catalog (cold start)"
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Reconcile only missing current-version artifact tags and emit the
-      # release-plz-compatible JSON document consumed by the plan. Existing
-      # tags are the independent per-artifact version ledger and are skipped.
-      - name: Cut changed artifact versions
-        if: steps.gate.outputs.is_release == 'true'
-        run: >
-          cargo xtask release cut
-          --out target/xtask/artifact-releases.json
-
-      # A shared-library publication can affect every linked binary, so it
-      # rebuilds the complete official set. A forced recovery build and a cold
-      # start/non-coherent previous latest catalog do the same. Otherwise the
-      # cut document is the exact artifact-only build set; unchanged entries
-      # remain pinned to their immutable URLs in the accumulated catalog.
-      - name: Compute release plan
-        id: plan
-        if: steps.gate.outputs.is_release == 'true'
-        run: |
-          set -euo pipefail
-          all_artifacts=false
-          reason="artifact-only release"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            all_artifacts=true
-            reason="forced recovery build"
-          elif ! git diff --quiet HEAD^ HEAD -- \
-            phoxal/Cargo.toml \
-            phoxal-api/Cargo.toml \
-            phoxal-bus/Cargo.toml \
-            phoxal-macros/Cargo.toml; then
-            all_artifacts=true
-            reason="shared-library publication"
-          elif [[ ! -f prev/catalog.json ]] || \
-            ! jq -e '(.heads.stable != "") and (.heads.stable == .build.tag)' prev/catalog.json >/dev/null; then
-            all_artifacts=true
-            reason="no coherent previous latest catalog"
-          fi
-
-          scope_args=()
-          if [[ "$all_artifacts" == "true" ]]; then
-            scope_args+=(--all-artifacts)
-          fi
-          echo "release plan scope: $reason"
-          cargo xtask release plan \
-            --artifact-releases-json target/xtask/artifact-releases.json \
-            --out target/xtask/release-plan.json \
-            --github-output \
-            "${scope_args[@]}"
-
-      # The build-* release is NOT created here - the catalog job creates it at
-      # the end, once the gate passes (see this file's header). This job only
-      # hands the plan + previous catalog forward as workflow artifacts.
-      - uses: actions/upload-artifact@v6
-        if: steps.plan.outputs.released == 'true'
-        with:
-          name: release-plan
-          path: target/xtask/release-plan.json
-
-      - uses: actions/upload-artifact@v6
-        if: steps.plan.outputs.released == 'true' && hashFiles('prev/catalog.json') != ''
-        with:
-          name: previous-catalog
-          path: prev/catalog.json
+      - name: Verify source train
+        if: steps.train.outputs.publish == 'true'
+        run: cargo xtask release verify --tag "${{ steps.train.outputs.tag }}"
 
   build:
-    name: build ${{ matrix.target }}
-    needs: release
-    if: needs.release.outputs.released == 'true'
-    runs-on: ${{ matrix.runner }}
-    env:
-      WEBOTS_VERSION: R2025a
-    permissions:
-      contents: read
+    name: package ${{ matrix.target }}
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.release.outputs.matrix) }}
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
-
-      - name: Install cargo-auditable
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-auditable
-
-      # musl targets cross-compile on the matching-arch Linux runner and need
-      # the musl toolchain (mirrors the `musl-library` guard in ci.yml).
-      - name: Install musl toolchain
-        if: contains(matrix.target, 'musl')
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
         run: |
-          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-
-      # Every Linux row carries many packages, so install the joypad dependency
-      # for the row instead of trying to predicate it on one matrix package.
-      - name: Install joypad Linux dependency
-        if: contains(matrix.target, 'linux')
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libudev-dev
-
-      - name: Install Webots on macOS
-        if: matrix.target == 'aarch64-apple-darwin' && contains(toJson(matrix.packages), 'simulator-webots')
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/webots-${WEBOTS_VERSION}.dmg"
-          mount_point="$RUNNER_TEMP/webots-volume"
-          curl --fail --location --retry 3 \
-            --output "$archive" \
-            "https://github.com/cyberbotics/webots/releases/download/${WEBOTS_VERSION}/webots-${WEBOTS_VERSION}.dmg"
-          mkdir -p "$mount_point"
-          hdiutil attach "$archive" -nobrowse -readonly -mountpoint "$mount_point"
-          trap 'hdiutil detach "$mount_point" >/dev/null' EXIT
-          sudo ditto "$mount_point/Webots.app" /Applications/Webots.app
-          test -d /Applications/Webots.app/Contents/lib/controller
-          echo "WEBOTS_HOME=/Applications/Webots.app" >> "$GITHUB_ENV"
-
-      - name: Install Webots on Linux x86_64
-        if: matrix.target == 'x86_64-unknown-linux-gnu' && contains(toJson(matrix.packages), 'simulator-webots')
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgcc-s1 libstdc++6
-          archive="$RUNNER_TEMP/webots-${WEBOTS_VERSION}-x86-64.tar.bz2"
-          install_root="$RUNNER_TEMP/webots-${WEBOTS_VERSION}"
-          curl --fail --location --retry 3 \
-            --output "$archive" \
-            "https://github.com/cyberbotics/webots/releases/download/${WEBOTS_VERSION}/webots-${WEBOTS_VERSION}-x86-64.tar.bz2"
-          mkdir -p "$install_root"
-          tar -xjf "$archive" -C "$install_root"
-          test -d "$install_root/webots/lib/controller"
-          echo "WEBOTS_HOME=$install_root/webots" >> "$GITHUB_ENV"
-
-      # One `release package` call for the whole row: it issues a single
-      # `cargo auditable build -p A -p B ...` (Cargo compiles the row's crates
-      # concurrently) and packages each into target/xtask/release. The command
-      # fails the step if any package fails - no per-package loop, no
-      # release-failures bookkeeping.
-      - name: Package target artifacts
-        env:
-          PACKAGES: ${{ toJson(matrix.packages) }}
-        run: |
-          set -euo pipefail
-          mapfile -t names < <(jq -r '.[].package' <<< "$PACKAGES")
-          cargo xtask release package "${names[@]}" \
-            --target "${{ matrix.target }}" \
-            --out target/xtask/release
-
-      # Hand the exact packaged bytes to the catalog job, which owns the single
-      # publish path to the build-* release. One facts artifact per target.
+          sudo apt-get install -y musl-tools
+          cargo install cargo-auditable --locked
+      - name: Install macOS packaging dependencies
+        if: runner.os == 'macOS'
+        run: cargo install cargo-auditable --locked
+      - run: cargo xtask release package --all --target "${{ matrix.target }}"
       - uses: actions/upload-artifact@v6
         with:
-          name: facts-${{ matrix.target }}
-          path: |
-            target/xtask/release/*-${{ matrix.target }}.tar.zst
-            target/xtask/release/*-${{ matrix.target }}.tar.zst.sha256
+          name: train-${{ matrix.target }}
+          path: target/xtask/release/*
           if-no-files-found: error
 
   assets:
     name: package component assets
-    needs: release
-    if: needs.release.outputs.released == 'true' && needs.release.outputs.assets != '[]'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      # Shares the xtask-only build cache (see the release job above).
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache-shared-key: xtask
-
-      # `release assets` tars each component's asset bundle (component.yaml,
-      # simulation.yaml, structure.urdf, meshes/) - no cargo build. One call for
-      # the whole asset set; it fails the step if any package fails.
-      - name: Package asset bundles
-        env:
-          PACKAGES: ${{ needs.release.outputs.assets }}
-        run: |
-          set -euo pipefail
-          mapfile -t names < <(jq -r '.[].package' <<< "$PACKAGES")
-          cargo xtask release assets "${names[@]}" \
-            --out target/xtask/release
-
-      # Asset bundles have no target triple in their filename
-      # (`<pkg>-v<version>.tar.zst`); binary targets all carry a `-<triple>`
-      # infix, so this glob selects the bundle filenames by exclusion.
+      - run: cargo xtask release assets --all
       - uses: actions/upload-artifact@v6
         with:
-          name: facts-assets
-          path: |
-            target/xtask/release/*.tar.zst
-            target/xtask/release/*.tar.zst.sha256
+          name: train-assets
+          path: target/xtask/release/*
           if-no-files-found: error
 
-  catalog:
-    name: assemble catalog + create release + mark latest
-    needs:
-      - release
-      - build
-      - assets
-    if: >-
-      always() &&
-      needs.release.outputs.released == 'true' &&
-      needs.build.result == 'success' &&
-      (needs.assets.result == 'success' || needs.assets.result == 'skipped')
+  stage-github:
+    name: stage immutable GitHub train
+    needs: [prepare, build, assets]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      # Shares the xtask-only build cache (see the release job above).
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          cache-shared-key: xtask
-
       - uses: actions/download-artifact@v7
         with:
-          name: release-plan
-          path: target/xtask
-
-      # Optional - absent on a cold start, in which case the merge starts empty.
-      - uses: actions/download-artifact@v7
-        continue-on-error: true
-        with:
-          name: previous-catalog
-          path: prev
-
-      - uses: actions/download-artifact@v7
-        with:
-          pattern: facts-*
+          pattern: train-*
           path: target/xtask/release
           merge-multiple: true
-
-      # Assemble-from-facts: never builds, never runs a binary. Reads this run's
-      # tarballs/checksums, verifies metadata-section equality across target
-      # binaries, computes heads from those packaged sections, merges locations
-      # onto the previous catalog keyed by (package, version), and forms Blob
-      # URLs against this run's build-* tag.
-      - name: Generate catalog
-        run: |
-          set -euo pipefail
-          previous=()
-          if [ -f prev/catalog.json ]; then
-            previous=(--previous-catalog prev/catalog.json)
-          fi
-          cargo xtask catalog generate \
-            --release-plan target/xtask/release-plan.json \
-            --package-dir target/xtask/release \
-            --out target/xtask/catalog/catalog.json \
-            --repo "${{ github.repository }}" \
-            --build-tag "${{ needs.release.outputs.build_tag }}" \
-            --run-number "${{ github.run_number }}" \
-            --run-id "${{ github.run_id }}" \
-            --commit "${{ github.sha }}" \
-            --created-at "${{ needs.release.outputs.created_at }}" \
-            "${previous[@]}"
-
-      # Structural + coverage gate. `catalog generate` already failed the job if
-      # any artifact the plan requires was missing from the facts, so a green
-      # check means target/xtask/release holds this run's complete set.
-      - name: Check catalog (structural + coverage)
-        run: >
-          cargo xtask catalog check
-          --catalog target/xtask/catalog/catalog.json
-
-      # The gate is green: create the release with every packaged tarball +
-      # checksum + catalog.json in one command, then flip it to "latest". This
-      # run created no release earlier, so any failure before the final
-      # `edit --latest` leaves the previous latest authoritative.
-      #
-      # Rerun handling turns on whether the tag is already the published latest:
-      #   - absent            -> fresh create (--latest=false), then mark latest.
-      #   - exists, NOT latest-> a prior attempt died before `edit --latest`;
-      #                          clobber its assets to repair, then mark latest.
-      #   - exists AND latest -> a completed wave is being re-run. build-* releases
-      #                          are immutable once published, so refuse to mutate
-      #                          it in place (an interrupted clobber would corrupt
-      #                          the authoritative latest). Re-running a finished
-      #                          release is a no-op; to genuinely rebuild, delete
-      #                          the release first and dispatch a fresh run.
-      - name: Create build-snapshot release + mark latest
+      - name: Verify staged train and produce suite
+        run: cargo xtask release verify --staged --tag "${{ needs.prepare.outputs.tag }}"
+      - name: Create or resume non-latest draft release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
-          tag="${{ needs.release.outputs.build_tag }}"
-          repo="${{ github.repository }}"
-          assets=(
-            target/xtask/release/*.tar.zst
-            target/xtask/release/*.tar.zst.sha256
-            target/xtask/catalog/catalog.json
-          )
-          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
-            if [ "$(gh release view "$tag" --repo "$repo" --json isLatest -q .isLatest)" = "true" ]; then
-              echo "release $tag is already the published latest - refusing to mutate an immutable release; nothing to do"
-              exit 0
-            fi
-            echo "release $tag exists but is not latest (partial prior attempt) - clobbering its assets to repair"
-            gh release upload "$tag" "${assets[@]}" --repo "$repo" --clobber
-          else
-            gh release create "$tag" "${assets[@]}" \
-              --repo "$repo" \
-              --title "Phoxal build $tag" \
-              --notes "Automated build-snapshot release. Artifacts + catalog.json for run ${{ github.run_id }}." \
-              --target "${{ github.sha }}" \
-              --latest=false
+          tag="${{ needs.prepare.outputs.tag }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --draft --latest=false --title "$tag" --notes "Framework train $tag"
           fi
-          gh release edit "$tag" --repo "$repo" --latest
+          gh release upload "$tag" target/xtask/release/* target/xtask/suite.json --skip-existing
 
-  release-plz-pr:
-    name: release-plz PR
-    # Prepare immediately after ordinary main updates. A `chore(release)` push
-    # is handled by the release/build wave above and must not prepare the next PR
-    # while library publication is still in flight. A `force_build` dispatch
-    # likewise targets only that wave; schedule and non-force dispatch retry PR
-    # preparation from the current main state.
-    if: >-
-      (github.event_name == 'push' && !startsWith(github.event.head_commit.message, 'chore(release)')) ||
-      github.event_name == 'schedule' ||
-      (github.event_name == 'workflow_dispatch' && !inputs.force_build)
+  publish-crates:
+    name: publish crates.io train
+    needs: [prepare, stage-github]
     runs-on: ubuntu-latest
-    env:
-      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
-    concurrency:
-      group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
     steps:
-      - name: Generate GitHub App token
-        id: app-token
-        if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v6
         with:
-          # Full history + artifact tags are required by `release bump --changed`.
-          # release-plz and the follow-up push both use this token; the job
-          # deliberately has no GITHUB_TOKEN fallback (see below).
           fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
-
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      # Token hardening (coherence-gate design doc §5): no `|| secrets.GITHUB_TOKEN`
-      # fallback here. A PR created with the plain repo `GITHUB_TOKEN` triggers NO
-      # downstream workflows (a hard GitHub restriction on Actions-authored
-      # content), which would silently deadlock the release train once
-      # `coherence-check.yml` becomes a required status on this PR - the PR would
-      # sit forever with no check ever reporting. Losing both the App token and
-      # `RELEASE_TOKEN` is a real misconfiguration and should fail this job loudly
-      # instead. `RELEASE_TOKEN` (a PAT) stays as the fallback because a
-      # PAT-created PR triggers workflows normally, same as the App token.
-      - name: Run release-plz (release-pr)
-        id: release-pr
-        uses: release-plz/action@v0.5
+      - uses: taiki-e/install-action@v2
         with:
-          command: release-pr
+          tool: release-plz
+      - name: Publish dependency order with phoxal facade last
         env:
-          # Keep the cargo-package wrapper for the 4 libraries: source comparison
-          # needs package contents, while the normal PR CI is the build/test gate.
-          CARGO: ${{ github.workspace }}/.github/scripts/release-plz-cargo
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
+          GIT_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: release-plz release
 
-      # release-plz creates/updates the library release PR first and reports its
-      # head branch as JSON. Check out that branch, add per-crate git-diff
-      # artifact bumps (including their lockfile entries) plus any initial
-      # artifact releases at their authored versions, and push them into the
-      # same PR. If no library needs a release, create that release PR only when
-      # an artifact bump or initial release exists.
-      - name: Add changed artifact bumps to the release PR
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.RELEASE_TOKEN }}
-          RELEASE_PR: ${{ steps.release-pr.outputs.pr }}
+  complete:
+    name: confirm registries and complete train
+    needs: [prepare, publish-crates]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for exact crates.io train
+        shell: bash
         run: |
           set -euo pipefail
-          branch="$(jq -r '.head_branch // empty' <<< "$RELEASE_PR")"
-          if [ -z "$branch" ]; then
-            branch="$(
-              gh pr list --state open --base main --json title,headRefName |
-                jq -r 'map(select(.title == "chore(release): release"))[0].headRefName // empty'
-            )"
-          fi
-          release_pr_exists=true
-          if [ -n "$branch" ]; then
-            git fetch origin "$branch"
-            git checkout -B "$branch" "origin/$branch"
-          else
-            release_pr_exists=false
-            branch="release-plz-artifact-versions-${{ github.run_id }}"
-            git checkout -B "$branch" origin/main
-          fi
-
-          artifact_notes="$RUNNER_TEMP/artifact-release-notes.md"
-          cargo xtask release bump --changed --notes-out "$artifact_notes"
-          if [ ! -s "$artifact_notes" ] && git diff --quiet; then
-            echo "no changed, pending, or initial artifact releases to add"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet; then
-            # Notes without a manifest diff mean either an already-pending bump
-            # or an initial artifact released at its authored version. A new
-            # artifact-only release still needs one reviewable release PR, so
-            # create exactly one signed-off empty release commit. Reruns find that
-            # PR above and refresh its notes without stacking empty commits.
-            if [ "$release_pr_exists" = false ]; then
-              merge_settings="$(
-                gh api "repos/$GITHUB_REPOSITORY" \
-                  --jq '[.allow_squash_merge, .allow_merge_commit, .allow_rebase_merge] | map(tostring) | join(",")'
-              )"
-              if [ "$merge_settings" != "true,false,false" ]; then
-                echo "::error::artifact-only release PRs require this repository to allow squash merges only"
-                exit 1
+          version="${{ needs.prepare.outputs.version }}"
+          for crate in phoxal-bus phoxal-macros phoxal-api phoxal; do
+            found=false
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+                found=true
+                break
               fi
-              git commit --allow-empty --signoff -m "chore(release): release initial artifacts"
-              git push --force-with-lease origin "$branch"
-              gh pr create \
-                --head "$branch" \
-                --base main \
-                --title "chore(release): release" \
-                --body "Automated release PR. Initial artifact versions are released as authored; later versions are selected independently by git diff of each crate directory against its current version tag. Squash merge is the required release action."
-            else
-              echo "artifact releases are already pending; refreshing release notes only"
-            fi
-          else
-            git add -u
-            git commit --signoff -m "chore(release): bump changed artifacts"
-            git push --force-with-lease origin "$branch"
+              sleep 10
+            done
+            [[ "$found" == true ]] || { echo "$crate $version is not observable" >&2; exit 1; }
+          done
+      - name: Mark GitHub train complete and latest
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false --latest
 
-            if [ "$release_pr_exists" = false ]; then
-              gh pr create \
-                --head "$branch" \
-                --base main \
-                --title "chore(release): release" \
-                --body "Automated release PR. Artifact patch versions are selected independently by git diff of each crate directory against its current version tag."
-            fi
-          fi
-
-          # release-plz wrote the library section before xtask amended the PR.
-          # Append exactly one generated artifact section so the visible release
-          # list and changelog match the artifact manifests in the PR diff.
-          if [ -s "$artifact_notes" ]; then
-            pr_number="$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // empty')"
-            if [ -z "$pr_number" ]; then
-              echo "::error::artifact release notes exist but no release PR was found for $branch"
-              exit 1
-            fi
-            gh pr view "$pr_number" --json body --jq .body > "$RUNNER_TEMP/release-body.md"
-            awk '
-              index($0, "<!-- phoxal-artifact-releases:start -->") { skipping = 1; next }
-              index($0, "<!-- phoxal-artifact-releases:end -->") { skipping = 0; next }
-              !skipping { print }
-            ' "$RUNNER_TEMP/release-body.md" > "$RUNNER_TEMP/release-body-without-artifacts.md"
-            {
-              cat "$RUNNER_TEMP/release-body-without-artifacts.md"
-              printf '\n\n'
-              cat "$artifact_notes"
-            } > "$RUNNER_TEMP/release-body-updated.md"
-            gh pr edit "$pr_number" --body-file "$RUNNER_TEMP/release-body-updated.md"
-          fi
+  release-plz-pr:
+    name: prepare grouped release PR
+    needs: prepare
+    if: needs.prepare.outputs.publish != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+      - name: Prepare one grouped train version
+        env:
+          GIT_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+        run: release-plz release-pr

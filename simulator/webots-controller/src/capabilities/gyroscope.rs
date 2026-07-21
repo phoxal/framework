@@ -3,7 +3,7 @@
 //! (main.rs:1295-1325).
 
 use anyhow::{Result, anyhow};
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 use super::{SampledSpec, is_due};
 

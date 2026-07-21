@@ -15,11 +15,11 @@
 //! best-effort pass to park every wheel before the bus closes.
 
 use anyhow::{Result, bail};
+use phoxal::api;
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::robot::v0::{KinematicConfig, MotionLimits};
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 const TARGET_STALE_NS: u64 = 500_000_000; // 0.5 s
 
 /// Differential-drive inverse kinematics: body twist → wheel angular speeds.
@@ -376,10 +376,10 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::bus::LogicalTime;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     use super::{DifferentialDrive, Drive, DriveConfig, MotionLimits, resolve_target};
     use std::path::PathBuf;
@@ -424,7 +424,7 @@ mod tests {
         assert!(config.kinematics.unwrap().wheel_radius_m > 0.0);
         // Each binding resolves to a concrete dynamic motor topic.
         let topic = config.left[0].topic();
-        assert!(topic.key().starts_with("v1/component/"));
+        assert!(topic.key().starts_with("v0.1/component/"));
         assert!(topic.key().ends_with("/command"));
     }
 
@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn api_declares_the_v1_drive_contracts() {
+    fn api_declares_the_drive_contracts() {
         assert_eq!(<Drive as Participant>::ID, "drive");
 
         let contracts = <<Drive as Participant>::Api as ParticipantApi>::CONTRACTS;

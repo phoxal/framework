@@ -1,4 +1,4 @@
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 use crate::frontiers::{OccupancyGrid, detect_frontiers};
 use crate::scoring::score_frontiers;

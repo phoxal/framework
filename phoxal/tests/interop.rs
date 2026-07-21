@@ -10,10 +10,10 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
+use phoxal::api;
 use phoxal::participant::ParticipantLaunch;
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
-use phoxal_api::v1 as api;
 use serial_test::serial;
 
 static RECEIVED: AtomicU64 = AtomicU64::new(0);

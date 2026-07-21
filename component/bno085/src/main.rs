@@ -1,9 +1,9 @@
 //! `bno085` - BNO085 IMU component driver stub.
 
 use anyhow::{Result, bail};
+use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 const STEP_HZ: f64 = 100.0;
 
@@ -217,9 +217,9 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Bno085, divisor_for_rate, is_due};
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     #[test]
     fn divisor_rounds_to_fixed_step_clock() {

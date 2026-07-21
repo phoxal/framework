@@ -9,10 +9,11 @@ note: the unit struct `Root` is defined here
    |
    |   phoxal_api_tree! {
    |  _-^^^^^^^^^^^^^^^
-   | |     version v1 {
+   | |     version v0_1 {
    | |         drive {
    | |             /// Why actuation authority is in its current state.
 ...  |
+   | |     latest v0_1;
    | | }
    | |_- cannot be constructed because it is `#[non_exhaustive]`
    = note: this error originates in the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)

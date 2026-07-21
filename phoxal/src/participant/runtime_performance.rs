@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use phoxal_api::v1 as api;
+use crate::api;
 use phoxal_bus::{
     Bus, LogicalTime, OwnerCap, Publisher, RuntimeBufferKind, RuntimeDirection,
     RuntimeMetricSnapshot,
@@ -328,7 +328,7 @@ mod tests {
     fn row(index: usize) -> RuntimeMetricSnapshot {
         RuntimeMetricSnapshot {
             key: RuntimeMetricKey {
-                topic: format!("v1/test/{index:03}"),
+                topic: format!("v0.1/test/{index:03}"),
                 direction: RuntimeDirection::Publish,
                 buffer_kind: RuntimeBufferKind::Outbound,
             },
@@ -348,8 +348,8 @@ mod tests {
         let rows = (0..260).map(row).collect();
         let (topics, overflow) = bounded_topics(rows, Duration::from_secs(1));
         assert_eq!(topics.len(), MAX_TOPIC_ROWS);
-        assert_eq!(topics.first().unwrap().topic, "v1/test/000");
-        assert_eq!(topics.last().unwrap().topic, "v1/test/255");
+        assert_eq!(topics.first().unwrap().topic, "v0.1/test/000");
+        assert_eq!(topics.last().unwrap().topic, "v0.1/test/255");
         let overflow = overflow.expect("four rows should overflow");
         assert_eq!(overflow.overflowed_rows, 4);
         assert_eq!(overflow.count, 4);

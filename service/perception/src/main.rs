@@ -19,8 +19,8 @@ mod sensors;
 mod tracker;
 
 use anyhow::Result;
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 use crate::detector::{DetectorHead, DetectorInput, PlaceholderDetector, detect_with};
 use crate::frames::{
@@ -232,9 +232,9 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
+    use phoxal::bus::ContractBody;
     use phoxal::model::v0::Robot;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
 
     use super::*;
     use crate::detector::RawDetection;
@@ -325,11 +325,11 @@ mod tests {
         assert_eq!(depths.len(), 1);
         assert!(
             cameras.iter().any(|camera| camera.camera_topic().key()
-                == "v1/component/front_camera/camera/rgb/frame")
+                == "v0.1/component/front_camera/camera/rgb/frame")
         );
         assert_eq!(
             depths[0].depth_topic().key(),
-            "v1/component/front_camera/depth/depth/frame"
+            "v0.1/component/front_camera/depth/depth/frame"
         );
     }
 

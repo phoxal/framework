@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-simulator-webots-supervisor"
-version = "0.1.9"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,8 +18,7 @@ name = "phoxal-simulator-webots-supervisor"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["preview-v2"] }
-phoxal-api = { workspace = true, features = ["preview-v2"] }
+phoxal = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }

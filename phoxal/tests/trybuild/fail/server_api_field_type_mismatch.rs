@@ -4,7 +4,7 @@
 // the `#[server(api = get)]` handler answers `map::SubmapRequest` /
 // `map::SubmapResponse` - a type mismatch the generated field-cross-check
 // must catch at compile time.
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

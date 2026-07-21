@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Context, Result, bail};
+use phoxal::api;
 use phoxal::behavior::{BehaviorCatalog, BehaviorDefinition, Node, ValueType};
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 #[derive(phoxal::Api)]
 struct Api {

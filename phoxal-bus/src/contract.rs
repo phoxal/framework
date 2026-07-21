@@ -3,7 +3,7 @@
 //!
 //! These are the two traits the bus client is generic over - the ABI floor every
 //! contract body and api-version marker implements. The concrete versioned API
-//! versions (`phoxal_api::v1`, …) and the `phoxal_api_tree!` macro that
+//! versions (`phoxal::api`, …) and the `phoxal_api_tree!` macro that
 //! generates their `ApiVersion` / `ContractBody` impls live in the `phoxal-api`
 //! crate, which re-exports these traits - so they are reachable as
 //! `phoxal_api::ApiVersion` / `phoxal_api::ContractBody`. The `phoxal` engine
@@ -13,23 +13,16 @@
 /// Marker trait identifying one API version (D60).
 ///
 /// Implemented only by the zero-variant `enum Api {}` that
-/// [`phoxal_api_tree!`] generates inside each version module. The [`ID`] is the
-/// version module name (`"v1"`) and is carried in bus metadata as
+/// [`phoxal_api_tree!`] generates inside each revision module. The [`ID`] is the
+/// dotted wire revision (`"v0.1"`) and is carried in bus metadata as
 /// informational provenance, never in the wire body or the topic key (D62).
-/// [`IS_PREVIEW`] records authoring lifecycle only; it has no wire effect.
 ///
 /// [`ID`]: ApiVersion::ID
-/// [`IS_PREVIEW`]: ApiVersion::IS_PREVIEW
 /// [`phoxal_api_tree!`]: https://docs.rs/phoxal
 pub trait ApiVersion: 'static {
-    /// The API-version identifier, equal to the version module name, e.g.
-    /// `"v1"`.
+    /// The dotted wire-revision identifier, e.g. `"v0.1"` (the corresponding
+    /// Rust module is `v0_1`).
     const ID: &'static str;
-    /// Whether this generated API version is still in the preview lifecycle.
-    ///
-    /// This is control-plane metadata only. It is not encoded in bus payloads,
-    /// topics, schema ids, or encoding strings.
-    const IS_PREVIEW: bool = false;
 }
 
 /// The semantic role a topic plays in its owning service's contract.
@@ -82,8 +75,8 @@ impl TopicRole {
 /// envelope (D62).
 ///
 /// **Wire identity is the key, not a hash (D1).** The version is folded into
-/// [`TOPIC`](ContractBody::TOPIC), so `v1::drive::Target` and a
-/// hypothetically re-minted `v2::drive::Target` publish on different Zenoh
+/// [`TOPIC`](ContractBody::TOPIC), so `v0.1::drive::Target` and a
+/// hypothetically re-minted `v0.2::drive::Target` publish on different Zenoh
 /// keys and physically cannot collide. There is therefore no `SCHEMA_ID`/`FAMILY`
 /// axis: two participants interoperate on a contract iff they use the exact same
 /// version-qualified name, which is realized on the wire by the key.
@@ -95,11 +88,10 @@ pub trait ContractBody:
     /// The single API version this body belongs to. Two bodies from different
     /// versions have different `Api`, so the type system keeps them apart.
     type Api: ApiVersion;
-    /// The version-qualified type path this body's own version module
-    /// places it at: the version module name, then the `::`-joined node path
+    /// The version-qualified type identity: the dotted wire revision, then the `::`-joined node path
     /// (dynamic-node vars are topic params, never type-path segments), then
-    /// the PascalCase type leaf, e.g. `"v1::drive::Target"` or
-    /// `"v1::component::motor::Command"`. This is the contract's source
+    /// the PascalCase type leaf, e.g. `"v0.1::drive::Target"` or
+    /// `"v0.1::component::motor::Command"`. This is the contract's source
     /// identity (D1) - two contracts interoperate iff they share this exact
     /// name - as distinct from [`TOPIC`](ContractBody::TOPIC), the resolved
     /// wire key derived from it. `NAME` is exactly the `"::"`-join of
@@ -110,12 +102,12 @@ pub trait ContractBody:
     /// design doc §2 - a joined name is not machine-parseable without
     /// assuming the version naming scheme).
     const NAME: &'static str;
-    /// This body's version alone, e.g. `"v1"` - equal to
+    /// This body's dotted wire revision alone, e.g. `"v0.1"` - equal to
     /// `<Self::Api as ApiVersion>::ID`, but exposed directly on the body so a
     /// metadata recorder (`#[derive(phoxal::Api)]`'s linker-section
     /// splicing) can const-splice it without routing through `Self::Api`.
     /// Split from [`CONTRACT`](ContractBody::CONTRACT) so consumers (the
-    /// coherence gate, catalog) record version and contract as two
+    /// coherence gate and suite generator) record revision and contract as two
     /// separate fields rather than parsing a joined name.
     const VERSION: &'static str;
     /// This body's contract path within its own version: the `::`-joined
@@ -125,10 +117,10 @@ pub trait ContractBody:
     /// pairing it with [`VERSION`](ContractBody::VERSION) recovers the
     /// full version-qualified identity (`NAME`).
     const CONTRACT: &'static str;
-    /// The version-qualified wire key: the version module name, then the
+    /// The version-qualified wire key: the dotted wire revision, then the
     /// `/`-joined node path plus the topic leaf, with each dynamic node
-    /// contributing a `{var}` placeholder, e.g. `"v1/drive/state"` or
-    /// `"v1/component/{instance}/motor/{capability}/command"`. The concrete
+    /// contributing a `{var}` placeholder, e.g. `"v0.1/drive/state"` or
+    /// `"v0.1/component/{instance}/motor/{capability}/command"`. The concrete
     /// key is produced by the api-local `topic` builder, which fills the
     /// placeholders.
     const TOPIC: &'static str;
