@@ -12,8 +12,8 @@
 //! from git source by `phoxal-cli` at check/deploy time.
 
 use anyhow::Result;
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 /// The motor / encoder capability names on a ddsm115 component instance
 /// (matching `component.yaml`).
@@ -134,9 +134,9 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Ddsm115, integrate, velocity_from};
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     #[test]
     fn command_maps_to_velocity() {

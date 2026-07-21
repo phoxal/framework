@@ -1,4 +1,4 @@
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 const WAYPOINT_SPACING_M: f64 = 0.25;
 

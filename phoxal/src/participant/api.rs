@@ -3,13 +3,13 @@
 //! `#[phoxal::service|driver|simulator|tool]` / `#[phoxal::behavior]` target
 //! the traits here.
 //!
-//! `Api` names a participant-authored struct of bus handles, and a participant
-//! may mix contract versions freely across its `Api` fields - there is no
-//! per-participant API version ceiling.
+//! `Api` names a participant-authored struct of bus handles. Official
+//! participants use the train-selected `phoxal::api` facade across all fields;
+//! there is no participant-local API version ceiling.
 //!
 //! The runner's own system contracts (Liveliness/simulation clock) do
 //! not resolve a version through this trait hierarchy either:
-//! `participant::runner` hardcodes `use phoxal_api::v1 as api;`,
+//! `participant::runner` hardcodes `use phoxal::api as api;`,
 //! independent of any participant's chosen `Api`.
 //!
 //! # What this slice defers
@@ -60,8 +60,8 @@ use phoxal_bus::Bus;
 ///
 /// The problem this solves: a participant may alias a version module, so a
 /// macro-time string literal of a field's body type as written
-/// (`api::drive::Target`) can have the version erased and cannot distinguish
-/// a `v1` contract from a same-named `v2` one.
+/// (`api::drive::Target`) can have the revision erased and cannot distinguish
+/// a `v0.1` contract from a same-named `v0.2` one.
 /// The version-qualified identity *is* available, but only as
 /// `<Body as ContractBody>::NAME` (`phoxal-bus/src/contract.rs`), an
 /// associated const on a foreign type the proc-macro cannot evaluate at

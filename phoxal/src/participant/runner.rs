@@ -72,7 +72,7 @@ use arc_swap::ArcSwapOption;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-#[cfg(feature = "preview-v2")]
+use crate::api;
 use crate::bus::Subscriber;
 use crate::bus::{LogicalTime, QueryFailure};
 use crate::participant::api::ParticipantLifecycle;
@@ -87,8 +87,6 @@ use crate::participant::scheduler::{
     StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::StepSchedule;
-#[cfg(feature = "preview-v2")]
-use phoxal_api::v2;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 const HEALTH_TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -166,7 +164,7 @@ pub(crate) fn step_scheduler_for(
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
 /// the other server tasks, aborted at shutdown): this subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
-/// observes (`v2::topic::new().simulation().clock()`, the CLIENT side of
+/// observes (`api::topic::new().simulation().clock()`, the CLIENT side of
 /// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
@@ -190,15 +188,14 @@ pub(crate) fn step_scheduler_for(
 /// docs), so the watch channel itself would not close even if this task
 /// stopped, but a stopped task means logical time simply never advances
 /// again.
-#[cfg(feature = "preview-v2")]
 pub(crate) fn spawn_simulation_clock_feed(
     bus: &Bus,
     handle: SimulationClockHandle,
 ) -> crate::Result<JoinHandle<()>> {
     let bus = bus.clone();
     Ok(tokio::spawn(async move {
-        let topic = v2::topic::new().simulation().clock();
-        let subscriber = match Subscriber::<v2::simulation::Clock>::new(&bus, &topic, 1).await {
+        let topic = api::topic::new().simulation().clock();
+        let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
             Ok(subscriber) => subscriber,
             Err(error) => {
                 tracing::error!(
@@ -219,14 +216,6 @@ pub(crate) fn spawn_simulation_clock_feed(
             handle.advance(at);
         }
     }))
-}
-
-#[cfg(not(feature = "preview-v2"))]
-pub(crate) fn spawn_simulation_clock_feed(
-    _bus: &Bus,
-    _handle: SimulationClockHandle,
-) -> crate::Result<JoinHandle<()>> {
-    anyhow::bail!("simulation clock support requires the phoxal preview-v2 feature")
 }
 
 /// Run a participant against an explicit launch and shutdown trigger. The
@@ -1028,15 +1017,14 @@ mod tests {
     /// the scheduler releases a tick per sample, in the published epoch's
     /// domain (a reset - epoch bump - is observed even though `now_ns` drops
     /// back to 0), and no further tick releases while no sample is published.
-    #[cfg(feature = "preview-v2")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn simulation_clock_feed_drives_the_scheduler_from_published_samples() {
         let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
         let bus = Bus::open(bus_config).await.expect("bus should open");
 
-        let clock_publisher = crate::bus::Publisher::<v2::simulation::Clock>::new(
+        let clock_publisher = crate::bus::Publisher::<api::simulation::Clock>::new(
             bus.clone(),
-            &v2::topic::internal::new(crate::bus::OwnerCap::__mint())
+            &api::topic::internal::new(crate::bus::OwnerCap::__mint())
                 .simulation()
                 .clock(),
         )
@@ -1072,7 +1060,7 @@ mod tests {
         clock_publisher
             .publish_at(
                 first_target,
-                v2::simulation::Clock {
+                api::simulation::Clock {
                     now_ns: period_ns,
                     step: 1,
                 },
@@ -1101,7 +1089,7 @@ mod tests {
         clock_publisher
             .publish_at(
                 second_target,
-                v2::simulation::Clock {
+                api::simulation::Clock {
                     now_ns: 2 * period_ns,
                     step: 2,
                 },

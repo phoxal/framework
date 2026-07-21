@@ -1,9 +1,9 @@
 //! `zed_f9p` - u-blox ZED-F9P GNSS component driver stub.
 
 use anyhow::{Result, bail};
+use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 const STEP_HZ: f64 = 10.0;
 
@@ -123,9 +123,9 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{ZedF9p, divisor_for_rate, gnss_sample};
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     #[test]
     fn divisor_and_stub_sample_are_stable() {

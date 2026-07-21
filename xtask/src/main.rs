@@ -1,9 +1,9 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-mod catalog;
 mod coherence;
 mod release;
+mod suite;
 mod workspace;
 
 #[derive(Debug, Parser)]
@@ -19,10 +19,7 @@ enum Command {
         #[command(subcommand)]
         command: release::Command,
     },
-    Catalog {
-        #[command(subcommand)]
-        command: catalog::Command,
-    },
+    Suite(suite::Args),
     /// The deployment coherence gate over the whole official artifact set
     /// (coherence-gate design doc §4/§5): host-builds every official
     /// artifact, extracts its `#[derive(phoxal::Api)]` contract surface, and
@@ -36,7 +33,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Command::Release { command } => release::run(command),
-        Command::Catalog { command } => catalog::run(command),
+        Command::Suite(args) => suite::run(args),
         Command::CoherenceCheck(args) => coherence::run(args),
     }
 }

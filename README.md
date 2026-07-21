@@ -1,32 +1,31 @@
 # Phoxal Framework
 
-The Phoxal robot framework as one coherent workspace: the published `phoxal-bus`
-ABI crate (the typed bus client + contract/addressing primitives), the published
-`phoxal-api` crate (current production `v1` plus evolving preview `v2` contract modules with
-version-local wire bodies and topic builders), the published `phoxal` library crate (engine + model)
-and its `phoxal-macros` companion, plus a growing set of unpublished platform
-service binaries (`phoxal-service-<name>`) that ship as deployables.
+The Phoxal robot framework as one coherent, versioned train. `phoxal-bus`,
+`phoxal-macros`, `phoxal-api`, the `phoxal` facade, and every official service,
+component, tool, simulator, and infrastructure artifact inherit one workspace
+SemVer. The train exports its selected complete API as `phoxal::api`; concrete
+API revisions remain available from `phoxal-api` for adapters.
 Official per-robot tools ship the same way. `phoxal-tool-log` retains the newest
-1,000 structured `v1::logs` events, while `phoxal-tool-bus` retains the newest
+1,000 structured `v0.1::logs` events, while `phoxal-tool-bus` retains the newest
 60 completed one-second traffic windows plus current counters. Both expose a bounded snapshot query and a live
-follow topic under `v1::tool`; consumers re-query after an opaque process
-generation change or a sequence gap. The existing `v1::logs` ingest feed stays
+follow topic under `v0.1::tool`; consumers re-query after an opaque process
+generation change or a sequence gap. The existing `v0.1::logs` ingest feed stays
 unchanged.
 Every participant runner also publishes at most one portable
-`v1::tool::runtime::Rollup` per host-monotonic grid interval. It reports
+`v0.1::tool::runtime::Rollup` per host-monotonic grid interval. It reports
 scheduled-step timing and bounded typed-bus buffer pressure without OS process
 sampling or participant-authored instrumentation. `phoxal-tool-telemetry`
 clamps retained participant/topic identities and topic rows, retains the newest
 five minutes subject to both record and byte caps, and exposes the same
-snapshot/cursor/follow recovery model under `v1::tool::runtime`.
+snapshot/cursor/follow recovery model under `v0.1::tool::runtime`.
 One runner-owned `phoxal-tool-device` per robot root publishes truthful,
 capability-aware whole-device observations for logical device `main` under
-`v1::tool::device`. Unsupported values are absent rather than fabricated as
+`v0.1::tool::device`. Unsupported values are absent rather than fabricated as
 zero. Per-root `phoxal-tool-telemetry` retains those samples for five minutes
 with record and byte bounds and exposes the same cursor/snapshot/follow recovery
 model. Device totals remain separate from participant runtime measurements.
-Each crate carries its own version and is released only when it changes; the
-library crates are published to crates.io (see [Releasing](#releasing)).
+The four library crates are published to crates.io and the exact official
+artifacts are published with an immutable per-train `suite.json` on GitHub.
 
 Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 [conventions](docs/CONVENTIONS.md), and [validation](docs/VALIDATION.md).
@@ -43,48 +42,18 @@ project, and links the editor-facing
 
 ## Releasing
 
-Each crate carries its own version and advances only when its own source
-changes. The 4 library crates and the official artifact crates use different
-version authorities.
+The root `[workspace.package].version` is the only train version. Every member
+inherits it, and release-plz prepares one grouped `chore(release): release` PR.
+`cargo xtask release verify` checks the complete official source set and API
+graph; the staged form also verifies every target archive and produces
+`phoxal.suite/v0` `suite.json`.
 
-[release-plz](https://release-plz.dev) owns only the libraries (`phoxal-bus`,
-`phoxal-api`, `phoxal`, `phoxal-macros`). After each ordinary update to `main`,
-it opens or updates a single `chore(release): release` PR for their version and
-changelog changes. Twice-daily scheduling and on-demand workflow dispatch retry
-preparation from the current `main` state.
-Merging that PR publishes the changed library crates (`phoxal-bus`,
-`phoxal-api`, `phoxal`, `phoxal-macros`) to crates.io. The registry is their
-only distribution and version-baseline channel; they create no per-library git
-tags or GitHub releases.
-
-The official artifact crates (`phoxal-service-<name>`, component crates,
-`phoxal-tool-<name>`, `phoxal-simulator-<name>`, and
-`phoxal-infrastructure-<name>`) set `publish = false`, which
-keeps them entirely outside release-plz. `cargo xtask release bump --changed`
-compares each artifact's own crate directory with its current
-`{package}-v{version}` tag and adds only the changed artifacts' patch bumps to
-the same release PR. Workspace lockfile and library changes cannot select an
-artifact. After merge, `cargo xtask release cut` creates the missing artifact
-tags and emits the JSON handoff consumed by `cargo xtask release plan`.
-
-Building and publishing the artifact binaries is decoupled from versioning. A
-release that publishes any of the four shared libraries rebuilds every official
-artifact because their linked code may have changed. An artifact-only release
-builds and uploads only the artifacts whose independent versions were newly
-tagged. A forced recovery build, cold start, or non-coherent previous latest
-catalog also rebuilds the complete set. Participant binaries must embed their
-contract metadata; infrastructure binaries must embed none, and both rules are
-validated before packaging.
-
-Each wave uploads its selected archives together with an assembled
-`phoxal.catalog/v0` `catalog.json` full index to one immutable
-`build-YYYYMMDD-<run>` GitHub release, which is marked "latest" once the gate
-passes. The catalog carries unchanged artifact versions forward with their
-existing permanent download URLs. Catalog assembly cross-target-validates the
-changed binaries' embedded metadata, including their `config_schema` slot; the
-release-PR gate checks coherence across the complete official participant set.
-A pinned artifact version resolves through the catalog to its permanent
-download URL.
+Publication is resumable and GitHub-first. CI creates or resumes a non-latest
+draft `v<version>` release, uploads the immutable artifacts and descriptor,
+publishes `phoxal-bus`, `phoxal-macros`, `phoxal-api`, and finally the public
+`phoxal` facade, waits for those exact versions to be observable on crates.io,
+then completes and marks the GitHub train latest. A retry reuses the same tag
+and skips existing immutable assets.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).

@@ -1,6 +1,6 @@
 [package]
 name = "phoxal"
-version = "0.35.1"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,10 +16,6 @@ categories = ["science::robotics", "simulation"]
 [lib]
 name = "phoxal"
 path = "src/lib.rs"
-
-[features]
-default = []
-preview-v2 = ["phoxal-api/preview-v2"]
 
 [dependencies]
 phoxal-api = { workspace = true }

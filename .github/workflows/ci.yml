@@ -52,10 +52,9 @@ jobs:
           -p phoxal-api
           -p phoxal-macros
           -p phoxal
-          --features phoxal/preview-v2,phoxal-api/preview-v2
           --lib
 
-      - name: Build stable library crates for musl
+      - name: Build minimal library crates for musl
         run: >
           cargo build
           --target ${{ matrix.target }}
@@ -74,7 +73,6 @@ jobs:
           -p phoxal-api
           -p phoxal-macros
           -p phoxal
-          --features phoxal/preview-v2,phoxal-api/preview-v2
           --lib
 
   # Living authoring entry point: proves

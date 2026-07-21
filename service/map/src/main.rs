@@ -16,9 +16,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
 
@@ -217,10 +217,10 @@ fn main() -> phoxal::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{Grid, LOCALIZATION_STALE_NS, Map, localization_is_usable, mark_free};
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::bus::LogicalTime;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     #[test]
     fn submap_returns_full_grid_window() {
@@ -283,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn api_declares_the_v1_map_contracts() {
+    fn api_declares_the_map_contracts() {
         assert_eq!(<Map as Participant>::ID, "map");
 
         let contracts = <<Map as Participant>::Api as ParticipantApi>::CONTRACTS;

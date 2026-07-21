@@ -12,10 +12,8 @@
 //! `simulation::spawn` query before the first simulation step.
 
 use anyhow::{Result, anyhow, bail};
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
-use phoxal_api::v2 as open_api;
-use phoxal_api::v2;
 
 const DEFAULT_DT_NS: u64 = 10_000_000;
 
@@ -40,14 +38,14 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
-    clock: Publisher<v2::simulation::Clock>,
+    clock: Publisher<api::simulation::Clock>,
     control: Subscriber<api::simulation::Control>,
     robot_pose: Publisher<api::simulation::RobotPose>,
     contact: Publisher<api::simulation::Contact>,
     // Served by privileged phoxal-cli orchestration outside the checked
     // participant graph.
     #[phoxal(external)]
-    spawn: Querier<open_api::simulation::SpawnRequest, open_api::simulation::SpawnSet>,
+    spawn: Querier<api::simulation::SpawnRequest, api::simulation::SpawnSet>,
 }
 
 #[phoxal::simulator(id = "webots-supervisor", config = Option<WebotsSupervisorConfig>)]
@@ -71,7 +69,7 @@ impl WebotsSupervisorSimulator {
         let cap = ctx.owner_capability();
 
         let clock = ctx
-            .publisher(v2::topic::internal::new(cap).simulation().clock())
+            .publisher(api::topic::internal::new(cap).simulation().clock())
             .await?;
         let control = ctx
             .subscriber(api::topic::internal::new(cap).simulation().control(), 32)
@@ -82,9 +80,7 @@ impl WebotsSupervisorSimulator {
         let contact = ctx
             .publisher(api::topic::internal::new(cap).simulation().contact())
             .await?;
-        let spawn = ctx
-            .querier(open_api::topic::new().simulation().spawn())
-            .await?;
+        let spawn = ctx.querier(api::topic::new().simulation().spawn()).await?;
 
         let mut backend = Backend::open(&config)?;
         let spawn_set = query_spawn_set(&spawn).await;
@@ -133,7 +129,7 @@ impl WebotsSupervisorSimulator {
             api.clock
                 .publish_at(
                     at,
-                    v2::simulation::Clock {
+                    api::simulation::Clock {
                         now_ns: self.time_ns,
                         step: self.step_index,
                     },
@@ -158,11 +154,11 @@ impl WebotsSupervisorSimulator {
 }
 
 async fn query_spawn_set(
-    spawn: &Querier<open_api::simulation::SpawnRequest, open_api::simulation::SpawnSet>,
-) -> open_api::simulation::SpawnSet {
+    spawn: &Querier<api::simulation::SpawnRequest, api::simulation::SpawnSet>,
+) -> api::simulation::SpawnSet {
     loop {
         match spawn
-            .query(open_api::simulation::SpawnRequest {
+            .query(api::simulation::SpawnRequest {
                 known_revision: None,
             })
             .await
@@ -260,7 +256,7 @@ impl Backend {
         }
     }
 
-    fn spawn(&mut self, spawn: &[open_api::simulation::RobotSpawn]) -> Result<()> {
+    fn spawn(&mut self, spawn: &[api::simulation::RobotSpawn]) -> Result<()> {
         match self {
             Self::Native(backend) => backend.spawn(spawn),
             Self::Stub(backend) => {
@@ -273,7 +269,7 @@ impl Backend {
 
 struct StubBackend {
     dt_ns: u64,
-    spawn: Vec<open_api::simulation::RobotSpawn>,
+    spawn: Vec<api::simulation::RobotSpawn>,
 }
 
 impl StubBackend {
@@ -284,7 +280,7 @@ impl StubBackend {
         }
     }
 
-    fn spawn(&mut self, spawn: &[open_api::simulation::RobotSpawn]) {
+    fn spawn(&mut self, spawn: &[api::simulation::RobotSpawn]) {
         for entry in spawn {
             if self
                 .spawn
@@ -339,7 +335,7 @@ struct NativeBackend {
     /// Retained so `reset` can re-import the same robots: a world reset
     /// restores the *saved* world file, which does not include nodes that
     /// were imported at runtime, so they must be re-spawned every reset.
-    spawn: Vec<open_api::simulation::RobotSpawn>,
+    spawn: Vec<api::simulation::RobotSpawn>,
 }
 
 impl NativeBackend {
@@ -365,7 +361,7 @@ impl NativeBackend {
         })
     }
 
-    fn spawn(&mut self, spawn: &[open_api::simulation::RobotSpawn]) -> Result<()> {
+    fn spawn(&mut self, spawn: &[api::simulation::RobotSpawn]) -> Result<()> {
         for entry in spawn {
             if self
                 .spawn
@@ -451,7 +447,7 @@ impl NativeBackend {
 /// robot - rather than silently skipping it.
 fn spawn_robots(
     supervisor: &webots_rs::Supervisor,
-    spawn: &[open_api::simulation::RobotSpawn],
+    spawn: &[api::simulation::RobotSpawn],
 ) -> Result<()> {
     if spawn.is_empty() {
         return Ok(());
@@ -504,12 +500,12 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<v2::simulation::Clock>(ContractRole::Publish),
+        mapping::<api::simulation::Clock>(ContractRole::Publish),
         mapping::<api::simulation::Control>(ContractRole::Subscribe),
         mapping::<api::simulation::RobotPose>(ContractRole::Publish),
         mapping::<api::simulation::Contact>(ContractRole::Publish),
-        mapping::<open_api::simulation::SpawnRequest>(ContractRole::Ask),
-        mapping::<open_api::simulation::SpawnSet>(ContractRole::Ask),
+        mapping::<api::simulation::SpawnRequest>(ContractRole::Ask),
+        mapping::<api::simulation::SpawnSet>(ContractRole::Ask),
     ]
 }
 
@@ -566,7 +562,7 @@ mod tests {
         }
         assert!(
             <Api as ParticipantApi>::__CONTRACTS_JSON.contains(
-                r#""version":"v2","contract":"simulation::SpawnRequest","external":true"#
+                r#""version":"v0.1","contract":"simulation::SpawnRequest","external":true"#
             ),
             "spawn ask must be marked external because phoxal-cli serves it outside the checked participant graph; got {}",
             <Api as ParticipantApi>::__CONTRACTS_JSON
@@ -633,11 +629,11 @@ mod tests {
     #[test]
     fn stub_backend_import_is_idempotent_and_reset_keeps_cached_set() {
         let spawn = vec![
-            open_api::simulation::RobotSpawn {
+            api::simulation::RobotSpawn {
                 robot_id: "robot-a".to_string(),
                 node_string: "Robot { name \"robot-a\" }".to_string(),
             },
-            open_api::simulation::RobotSpawn {
+            api::simulation::RobotSpawn {
                 robot_id: "robot-b".to_string(),
                 node_string: "Robot { name \"robot-b\" }".to_string(),
             },
@@ -666,29 +662,28 @@ mod tests {
         let bus = Bus::open(BusConfig::in_process("test", "spawn-retry"))
             .await
             .unwrap();
-        let topic = open_api::topic::new().simulation().spawn();
-        let querier =
-            Querier::<open_api::simulation::SpawnRequest, open_api::simulation::SpawnSet>::new(
-                bus.clone(),
-                &topic,
-                DEFAULT_QUERY_TIMEOUT,
-            )
-            .unwrap();
+        let topic = api::topic::new().simulation().spawn();
+        let querier = Querier::<api::simulation::SpawnRequest, api::simulation::SpawnSet>::new(
+            bus.clone(),
+            &topic,
+            DEFAULT_QUERY_TIMEOUT,
+        )
+        .unwrap();
 
         let server_bus = bus.clone();
         let server_task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let server = server_bus
-                .declare_server(<open_api::simulation::SpawnRequest as ContractBody>::TOPIC)
+                .declare_server(<api::simulation::SpawnRequest as ContractBody>::TOPIC)
                 .await
                 .unwrap();
             let incoming = server.recv().await.unwrap();
-            let request: open_api::simulation::SpawnRequest =
+            let request: api::simulation::SpawnRequest =
                 MessagePack::decode(&incoming.request_bytes().unwrap()).unwrap();
             assert_eq!(request.known_revision, None);
-            let response = MessagePack::encode(&open_api::simulation::SpawnSet {
+            let response = MessagePack::encode(&api::simulation::SpawnSet {
                 revision: 1,
-                robots: vec![open_api::simulation::RobotSpawn {
+                robots: vec![api::simulation::RobotSpawn {
                     robot_id: "robot-a".to_string(),
                     node_string: "Robot { name \"robot-a\" }".to_string(),
                 }],

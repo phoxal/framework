@@ -11,6 +11,7 @@
 
 mod capabilities;
 
+use phoxal::api;
 use phoxal::bus::ContractBody;
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::robot::v0::ArtifactPin;
@@ -18,8 +19,6 @@ use phoxal::model::simulation::Simulation as SimulationFile;
 use phoxal::model::simulation::v0::Simulation as SimulationSpec;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
-use phoxal_api::v2;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -69,7 +68,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 struct Api {
-    simulation_clock: Subscriber<v2::simulation::Clock>,
+    simulation_clock: Subscriber<api::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
     encoders: Vec<Publisher<api::component::encoder::Sample>>,
     imus: Vec<Publisher<api::component::imu::Sample>>,
@@ -80,7 +79,7 @@ struct Api {
     depths: Vec<Publisher<api::component::depth::Frame>>,
     gnss: Vec<Publisher<api::component::gnss::Sample>>,
     emergency_stops: Vec<Publisher<api::component::emergency_stop::State>>,
-    battery: Publisher<v2::battery::State>,
+    battery: Publisher<api::battery::State>,
 }
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
@@ -109,10 +108,10 @@ impl WebotsControllerSimulator {
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let simulation_clock = ctx
-            .subscriber(v2::topic::new().simulation().clock(), 4)
+            .subscriber(api::topic::new().simulation().clock(), 4)
             .await?;
         let battery = ctx
-            .publisher(v2::topic::internal::new(cap).battery().state())
+            .publisher(api::topic::internal::new(cap).battery().state())
             .await?;
 
         let mut motor_commands = Vec::new();
@@ -418,7 +417,7 @@ impl WebotsControllerSimulator {
         Ok(())
     }
 
-    fn battery_state(&mut self, at: LogicalTime) -> Option<v2::battery::State> {
+    fn battery_state(&mut self, at: LogicalTime) -> Option<api::battery::State> {
         if self
             .last_battery_update
             .is_some_and(|previous| previous.epoch() != at.epoch())
@@ -447,7 +446,7 @@ impl WebotsControllerSimulator {
             return None;
         }
         self.last_battery_publish = Some(at);
-        Some(v2::battery::State {
+        Some(api::battery::State {
             voltage_v: voltage_for(self.battery_charge_ratio, EMPTY_VOLTAGE_V, FULL_VOLTAGE_V)
                 as f32,
             current_a: if self.battery_charge_ratio > 0.0 {
@@ -1024,7 +1023,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<v2::simulation::Clock>(ContractRole::Subscribe),
+        mapping::<api::simulation::Clock>(ContractRole::Subscribe),
         mapping::<api::component::motor::Command>(ContractRole::Subscribe),
         mapping::<api::component::encoder::Sample>(ContractRole::Publish),
         mapping::<api::component::imu::Sample>(ContractRole::Publish),
@@ -1035,7 +1034,7 @@ fn contract_mappings() -> Vec<ContractMapping> {
         mapping::<api::component::depth::Frame>(ContractRole::Publish),
         mapping::<api::component::gnss::Sample>(ContractRole::Publish),
         mapping::<api::component::emergency_stop::State>(ContractRole::Publish),
-        mapping::<v2::battery::State>(ContractRole::Publish),
+        mapping::<api::battery::State>(ContractRole::Publish),
     ]
 }
 
@@ -1093,7 +1092,7 @@ mod tests {
                 .iter()
                 .filter(|c| c.topic.contains("/simulation/"))
                 .all(|c| {
-                    c.topic == v2::simulation::Clock::TOPIC
+                    c.topic == api::simulation::Clock::TOPIC
                         && c.role == phoxal::participant::ContractRole::Subscribe
                 }),
             "controller may only subscribe to simulation/clock: {contracts:?}"

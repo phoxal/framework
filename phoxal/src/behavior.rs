@@ -166,22 +166,22 @@ pub const CONDITIONS: &[ConditionSpec] = &[
     ConditionSpec {
         id: "motion.manual_active",
         args: &[],
-        reads: &["v1/motion/state"],
+        reads: &["v0.1/motion/state"],
     },
     ConditionSpec {
         id: "localization.confident",
         args: &[("min_confidence", ValueType::Number, true)],
-        reads: &["v1/localize/state"],
+        reads: &["v0.1/localize/state"],
     },
     ConditionSpec {
         id: "map.ready",
         args: &[],
-        reads: &["v1/map/revision"],
+        reads: &["v0.1/map/revision"],
     },
     ConditionSpec {
         id: "safety.clear",
         args: &[],
-        reads: &["v1/safety/state"],
+        reads: &["v0.1/safety/state"],
     },
 ];
 

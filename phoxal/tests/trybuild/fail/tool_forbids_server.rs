@@ -1,6 +1,6 @@
 // Plan #15: a tool is a thin raw-bus runner, not a typed-graph participant, so
 // `#[server]` (the exclusive query-server surface) is not allowed on it.
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

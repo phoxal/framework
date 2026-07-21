@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-tool-device"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -16,7 +16,6 @@ path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true }
-phoxal-api = { workspace = true }
 sysinfo = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

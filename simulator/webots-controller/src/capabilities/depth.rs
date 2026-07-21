@@ -4,7 +4,7 @@
 //! `meters_to_u16_mm` helper (main.rs:1553-1559).
 
 use anyhow::{Result, anyhow};
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 use super::{SampledSpec, is_due};
 

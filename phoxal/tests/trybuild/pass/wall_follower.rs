@@ -12,7 +12,7 @@
 // Imported as `v1` (not `as api`), matching the companion doc: the
 // lifecycle parameters are conventionally named `api`, so aliasing the module
 // to `api` too would shadow it inside method bodies.
-use phoxal_api::v1;
+use phoxal::api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]
@@ -22,15 +22,15 @@ struct Config {
 
 #[derive(phoxal::Api)]
 struct Api {
-    target: Publisher<v1::drive::Target>,
+    target: Publisher<api::drive::Target>,
     // OWNER-side publish of `drive/state`, built below from an owner-capability
     // internal topic (`topic::internal::new(cap)`), so this fixture exercises
     // the owner-cap path P-convert (battery, shared state, …) starts every real
     // participant with - not just the public client topics.
-    state: Publisher<v1::drive::State>,
-    odometry: Latest<v1::drive::State>,
-    lookup: Server<v1::frame::LookupRequest, v1::frame::LookupResponse>,
-    submap: Server<v1::map::SubmapRequest, v1::map::SubmapResponse>,
+    state: Publisher<api::drive::State>,
+    odometry: Latest<api::drive::State>,
+    lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
+    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
 
 struct WallFollowerSnapshot;
@@ -54,13 +54,13 @@ impl WallFollower {
         Ok((
             Self { last_error: 0.0 },
             Self::Api {
-                target: ctx.publisher(v1::topic::new().drive().target()).await?,
+                target: ctx.publisher(api::topic::new().drive().target()).await?,
                 state: ctx
-                    .publisher(v1::topic::internal::new(cap).drive().state())
+                    .publisher(api::topic::internal::new(cap).drive().state())
                     .await?,
-                odometry: ctx.latest(v1::topic::new().drive().state()).await?,
-                lookup: ctx.server(v1::topic::new().frame().lookup()).await?,
-                submap: ctx.server(v1::topic::new().map().submap()).await?,
+                odometry: ctx.latest(api::topic::new().drive().state()).await?,
+                lookup: ctx.server(api::topic::new().frame().lookup()).await?,
+                submap: ctx.server(api::topic::new().map().submap()).await?,
             },
         ))
     }
@@ -74,7 +74,7 @@ impl WallFollower {
         api.target
             .publish_at(
                 step.time(),
-                v1::drive::Target {
+                api::drive::Target {
                     linear_x_mps: 0.2,
                     angular_z_radps: 0.0,
                     curvature_limit_radpm: None,
@@ -86,10 +86,10 @@ impl WallFollower {
         api.state
             .publish_at(
                 step.time(),
-                v1::drive::State {
+                api::drive::State {
                     target: odometry.target.clone(),
                     limited_target: odometry.target,
-                    actuator_authority: v1::drive::ActuatorAuthority::Active,
+                    actuator_authority: api::drive::ActuatorAuthority::Active,
                     stop_reason: None,
                     target_age_ns: Some(0),
                 },
@@ -102,20 +102,20 @@ impl WallFollower {
     async fn lookup(
         &mut self,
         api: &mut Self::Api,
-        request: v1::frame::LookupRequest,
-    ) -> ServerResult<v1::frame::LookupResponse> {
+        request: api::frame::LookupRequest,
+    ) -> ServerResult<api::frame::LookupResponse> {
         let _ = (&*api, &request);
-        Ok(v1::frame::LookupResponse { transform: None })
+        Ok(api::frame::LookupResponse { transform: None })
     }
 
     #[server_snapshot(api = submap)]
     async fn submap(
         state: Snapshot<WallFollowerSnapshot>,
         api: &Self::Api,
-        request: v1::map::SubmapRequest,
-    ) -> ServerResult<v1::map::SubmapResponse> {
+        request: api::map::SubmapRequest,
+    ) -> ServerResult<api::map::SubmapResponse> {
         let _ = (state, api, request);
-        Ok(v1::map::SubmapResponse {
+        Ok(api::map::SubmapResponse {
             width: 0,
             height: 0,
             resolution_m: 0.05,
@@ -134,7 +134,7 @@ impl WallFollower {
         api.target
             .publish_at(
                 LogicalTime::new(0, 0),
-                v1::drive::Target {
+                api::drive::Target {
                     linear_x_mps: 0.0,
                     angular_z_radps: 0.0,
                     curvature_limit_radpm: None,

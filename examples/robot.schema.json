@@ -8,7 +8,7 @@
       "type": "object",
       "properties": {
         "artifacts": {
-          "description": "Framework-resolved packages: channel, generation ceiling, and the\nunified provider-qualified pins map. Optional; a day-0 robot may omit\nthis section entirely.",
+          "description": "Explicit development-only source overrides for official packages.",
           "$ref": "#/$defs/Artifacts"
         },
         "behavior": {
@@ -88,7 +88,7 @@
       ]
     },
     "ArtifactPin": {
-      "description": "One `artifacts.pins` entry. Accepts a version string, a git reference, a\n`sha256:...` checksum string, or a local path override.",
+      "description": "One development-only `artifacts.pins` source override.",
       "anyOf": [
         {
           "description": "Resolve this package from a local source checkout (dev-overlay-only).",
@@ -97,35 +97,15 @@
         {
           "description": "Resolve this package from a git repository at a pinned revision.",
           "$ref": "#/$defs/ArtifactGitPin"
-        },
-        {
-          "description": "Pin to an exact `sha256:...` checksum.",
-          "$ref": "#/$defs/Sha256Pin"
-        },
-        {
-          "description": "Pin to a `vX.Y.Z` / semver version string.",
-          "$ref": "#/$defs/VersionPin"
         }
       ]
     },
     "Artifacts": {
-      "description": "`artifacts:` (was `phoxal_artifacts`) - framework-resolved packages.\n\nThe whole section is optional; a day-0 robot can omit it entirely.",
+      "description": "Development-only source overrides. Published artifact inventory comes from\nthe locked framework train's immutable `suite.json`.\n\nThe whole section is optional; a day-0 robot can omit it entirely.",
       "type": "object",
       "properties": {
-        "channel": {
-          "description": "Release channel used when resolving official framework packages.",
-          "$ref": "#/$defs/Channel",
-          "default": "stable"
-        },
-        "generation": {
-          "description": "Deprecated API version ceiling or pin for official package\nresolution.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "pins": {
-          "description": "Unified fail-closed pin map keyed by provider-qualified package id\n(`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).\n\nKeys must have exactly one `/`, with a non-empty provider segment\nbefore it and a non-empty name segment after it; unqualified keys\n(`service-drive`, `driver-ddsm115`) are rejected. The CLI validates\nexistence in the resolved graph, dev-overlay-only path pins, and\nwhether each key is actually used; the model only validates key shape.",
+          "description": "Fail-closed source override map keyed by provider-qualified package id\n(`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).\n\nKeys must have exactly one `/`, with a non-empty provider segment\nbefore it and a non-empty name segment after it; unqualified keys\n(`service-drive`, `driver-ddsm115`) are rejected. The CLI validates\nexistence in the resolved graph, dev-overlay-only path pins, and\nwhether each key is actually used; the model only validates key shape.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/ArtifactPin"
@@ -148,13 +128,6 @@
       "additionalProperties": false,
       "required": [
         "root"
-      ]
-    },
-    "Channel": {
-      "type": "string",
-      "enum": [
-        "stable",
-        "preview"
       ]
     },
     "Component": {
@@ -878,7 +851,7 @@
       "type": "object",
       "properties": {
         "components": {
-          "description": "Component instance map: instance-id -> instance (was\n`components.instances`; `components.sources` no longer exists -\nofficial components resolve from the catalog, forks are\n`artifacts.pins` entries).",
+          "description": "Component instance map: instance-id -> instance (was\n`components.instances`; `components.sources` no longer exists -\nofficial components resolve from the train suite, forks are\n`artifacts.pins` entries).",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Component"
@@ -937,10 +910,6 @@
       },
       "additionalProperties": false
     },
-    "Sha256Pin": {
-      "type": "string",
-      "pattern": "^sha256:.+$"
-    },
     "UserService": {
       "description": "`services:` (was `user_participants` / `user_services`, and the separate\n`tools` map) - user services only; official services are framework\npackages pinned via `artifacts.pins`, never declared here.",
       "type": "object",
@@ -956,10 +925,6 @@
       "required": [
         "path"
       ]
-    },
-    "VersionPin": {
-      "type": "string",
-      "pattern": "^v?[0-9]+\\.[0-9]+\\.[0-9]+([-+].+)?$"
     }
   }
 }

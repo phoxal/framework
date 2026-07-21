@@ -1,6 +1,6 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 const GOAL_TOLERANCE_M: f64 = 0.15;
 const GOAL_YAW_TOLERANCE_RAD: f64 = 0.10;

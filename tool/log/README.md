@@ -2,15 +2,15 @@
 
 The official per-robot structured-log retention tool.
 
-It subscribes to the existing `v1/logs/{participant_id}` feed, preserves the
+It subscribes to the existing `v0.1/logs/{participant_id}` feed, preserves the
 producer sequence on each record, and assigns a process-wide monotonic ingest
 sequence. It retains exactly the newest 1,000 records in memory. A fixed
 per-record text budget keeps the complete snapshot inside the bus body ceiling;
 additional truncation is disclosed through the existing `truncated` count. The
 tool exposes:
 
-- `v1/tool/log/snapshot`: one complete bounded snapshot query;
-- `v1/tool/log/follow`: one live record with its resulting cursor.
+- `v0.1/tool/log/snapshot`: one complete bounded snapshot query;
+- `v0.1/tool/log/follow`: one live record with its resulting cursor.
 
 Each snapshot and follow item also carries `ingest_dropped`, a cumulative
 process-local count of samples evicted from tool-log's bounded input ring. It

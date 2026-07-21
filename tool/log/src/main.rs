@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+use phoxal::api;
 use phoxal::prelude::*;
 use phoxal::raw::{Codec, MessagePack, Publisher, QueryFailure, Subscriber, host_time};
-use phoxal_api::v1 as api;
 
 const RETAINED_LOG_EVENTS: usize = 1_000;
 const INGEST_QUEUE_DEPTH: usize = 1_024;

@@ -1,6 +1,6 @@
 //! `video` - operator preview stream lifecycle service.
 //!
-//! The v1 video contract exposes a compact `video/open` query plus a
+//! The train-selected video contract exposes a compact `video/open` query plus a
 //! per-stream `state` topic. This participant enumerates the robot's camera
 //! capabilities, answers `open` requests (resolving the requested capability and
 //! validating dimensions against the native sensor size), subscribes to the
@@ -14,12 +14,12 @@
 //! dependency set.
 
 use anyhow::{Result, anyhow};
+use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 const CAMERA_STALE_NS: u64 = 1_000_000_000;
 
@@ -329,9 +329,9 @@ fn main() -> phoxal::Result<()> {
 mod tests {
     use std::path::PathBuf;
 
+    use phoxal::bus::ContractBody;
     use phoxal::bus::QueryCode;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
 
     use super::*;
 
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(rgb.stream_id, "front_camera_rgb");
         assert_eq!(
             rgb.camera_topic().key(),
-            "v1/component/front_camera/camera/rgb/frame"
+            "v0.1/component/front_camera/camera/rgb/frame"
         );
         // The owner topic builder requires the runner-minted `OwnerCap` (L2); the
         // test mints one directly via the doc-hidden `__mint`, standing in for the
@@ -372,7 +372,7 @@ mod tests {
         let cap = phoxal::bus::OwnerCap::__mint();
         assert_eq!(
             rgb.state_topic(cap).key(),
-            "v1/video/stream/front_camera_rgb/state"
+            "v0.1/video/stream/front_camera_rgb/state"
         );
     }
 

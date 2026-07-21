@@ -36,17 +36,15 @@ pub struct PackagedArtifact {
     pub checksum: PathBuf,
 }
 
-/// A previously packaged artifact's on-disk facts, read back from
-/// `package_dir` - exactly what the catalog needs to form a `Blob` (design
-/// doc `organization/tmp/ci-release-refactor/design.md` §3). The tarball/
-/// checksum paths themselves aren't carried: the only reader
-/// ([`crate::catalog::generate`]) forms its release URL from `tarball_name`,
-/// never re-opens the file on disk.
+/// A packaged artifact's on-disk facts, read back from `package_dir` so the
+/// suite generator can form an immutable [`crate::suite`] blob. The tarball
+/// and checksum paths themselves are not carried; the release URL is derived
+/// from `tarball_name` without reopening the artifact.
 #[derive(Clone, Debug)]
 pub(crate) struct PackagedOutput {
     pub tarball_name: String,
     pub tarball_sha256: String,
-    /// The tarball's byte length - the catalog's `Blob.size`.
+    /// The tarball's byte length - the suite blob's `size`.
     pub tarball_size: u64,
 }
 
@@ -469,6 +467,7 @@ fn validate_metadata_absent(binary_path: &Path, artifact: &OfficialArtifact) -> 
 /// byte-identical across them. This makes any target's section valid evidence
 /// for the whole `(package, version)` and lets publish-time coherence operate
 /// on the exact bytes users download without a fresh native rebuild.
+#[cfg(test)]
 pub(crate) fn extract_metadata_from_packaged(
     artifact: &OfficialArtifact,
     package_dir: &Path,
@@ -533,6 +532,7 @@ pub(crate) fn extract_metadata_from_packaged(
 
 /// Verifies that every packaged target for a non-participant artifact omits
 /// the participant metadata section.
+#[cfg(test)]
 pub(crate) fn validate_no_metadata_from_packaged(
     artifact: &OfficialArtifact,
     package_dir: &Path,
@@ -586,6 +586,7 @@ pub(crate) fn validate_no_metadata_from_packaged(
     Ok(())
 }
 
+#[cfg(test)]
 fn ensure_metadata_sections_equal(
     artifact: &OfficialArtifact,
     canonical_target: &str,
@@ -609,6 +610,7 @@ fn ensure_metadata_sections_equal(
 /// Reads the single binary named `bin_name` out of a `.tar.zst` release
 /// tarball into memory (the archive holds exactly that one entry - see
 /// [`write_tar_zst`]).
+#[cfg(test)]
 fn read_binary_from_tarball(tarball: &Path, bin_name: &str) -> Result<Vec<u8>> {
     let file = File::open(tarball)
         .with_context(|| format!("failed to open tarball {}", tarball.display()))?;
@@ -694,8 +696,8 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
 /// asset bundle ([`ASSETS_SCOPE`]) carries no trailing scope token - it is the
 /// one release output for its
 /// `(package, version)` with no sibling to disambiguate from by filename, and
-/// the packaged-output reader ([`crate::catalog::generate`]) classifies by
-/// the release plan's `target_triples`, never the filename. A real target
+/// the packaged-output reader ([`crate::suite`]) classifies by
+/// the suite inventory's target triples, never the filename. A real target
 /// triple keeps the `-{triple}` suffix so distinct architectures don't
 /// collide in the same directory.
 pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
@@ -958,7 +960,7 @@ mod tests {
         let meta = extract_metadata_from_packaged(&artifact, dir.path(), &triples)?;
         assert!(meta.contracts.iter().any(|contract| {
             contract.role == "publish"
-                && contract.version == "v2"
+                && contract.version == "v0.1"
                 && contract.contract == "battery::State"
                 && !contract.external
         }));

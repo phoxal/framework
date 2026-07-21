@@ -1,5 +1,5 @@
 // Two #[step] methods - a participant has at most one scheduled loop.
-use phoxal_api::v1 as api;
+use phoxal::api as api;
 use phoxal::prelude::*;
 
 #[derive(serde::Deserialize, phoxal::Config)]

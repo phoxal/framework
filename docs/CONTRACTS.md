@@ -15,19 +15,19 @@ These rules are the target contract discipline the workspace is converging to
 Where a runtime's current implementation lags, the rule is the direction, not a
 claim that every handler already enforces it.
 
-## Per-field API versions and per-contract identity
+## Train-selected concrete API identity
 
 There is no version-tagged wire enum and no `{"v":…,"data":…}` body wrapper.
-A participant's `#[derive(phoxal::Api)]` handle struct may mix contract types
-from `v1` and preview `v2` field by field.
-There is no participant-wide or graph-wide version pin.
+A participant's `#[derive(phoxal::Api)]` handle struct names bodies through
+`phoxal::api`. The resolved framework train selects one complete concrete API
+revision for the official graph.
 The graph is compatible **per contract** by exact version-qualified name
 identity (D1), not by a wire-shape hash.
 
-- API versions are conventional **`vN` modules** in the `phoxal-api` crate -
-  current production `phoxal_api::v1` and preview `phoxal_api::v2` - each with a zero-variant marker
+- API revisions are conventional **`v<major>_<minor>` modules** in the `phoxal-api` crate,
+  beginning with `phoxal_api::v0_1`, each with a zero-variant marker
   `enum Api {}` implementing `ApiVersion { const ID }` (the canonical version
-  string, `"v1"`).
+  string, `"v0.1"`).
 - Contract bodies are **version-local plain serde structs/enums**
   (`api::drive::State`, `api::drive::Target`), each with a generated `ContractBody`
   impl that fixes its `Api`, `NAME`, `VERSION`, `CONTRACT`, and `TOPIC`. There
@@ -37,14 +37,16 @@ identity (D1), not by a wire-shape hash.
 - One macro - **`phoxal_api_tree!`** (in `phoxal-macros`) - owns the whole tree:
   the version modules, the bodies, the topic keys, the pub/sub vs query
   kind, and the api-local `topic` builders.
-- There is no `extends` or inheritance between versions. `v1` is the current
-  production identity and changes directly during pre-stability simplification.
-  `v2` is the one evolving preview surface.
+- A child revision may `extends` exactly one earlier revision. The macro
+  materializes a complete child tree, regenerating inherited bodies under the
+  child's concrete identity and re-rooting inherited `crate::<parent>::...`
+  type references to the child. Additions are direct; replacement and removal
+  are explicit. Exactly one final `latest` declaration selects `phoxal::api`.
 - A topic body belongs to one node and one topic. Sibling topics duplicate
   request/response bodies rather than sharing their `ContractBody` identity.
   A parent may define a plain, non-topic protocol value for children to
-  reference through an absolute crate path; `v1::tool::Cursor` is the deliberate
-  example shared by the separate log and bus retention protocols.
+  reference through an absolute crate path; `crate::v0_1::tool::Cursor` is the
+  deliberate example shared by the separate log and bus retention protocols.
 
 ## Wire body and metadata placement
 
@@ -121,9 +123,9 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
   topic. Their cursor combines an opaque process generation with a monotonic
   ingest sequence. Consumers buffer follow items while querying, install the
   snapshot, replay only newer buffered items, and re-query on a generation
-  change or sequence gap. `v1::tool::log` retains the newest 1,000 existing
-  `v1::logs` events; `v1::tool::bus` retains the newest 60 one-second windows.
-  `v1::tool::runtime` retains five host-monotonic minutes of portable runner
+  change or sequence gap. `v0.1::tool::log` retains the newest 1,000 existing
+  `v0.1::logs` events; `v0.1::tool::bus` retains the newest 60 one-second windows.
+  `v0.1::tool::runtime` retains five host-monotonic minutes of portable runner
   rollups behind a bounded, participant-filterable backward-paginated query.
   Ingest clamps participant ids to 512 bytes, exact topic ids to 256 bytes, and
   normal rows to 256 plus an explicit aggregate overflow row. Retention has
@@ -133,7 +135,7 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
 
 ### Raw retention-tool coherence boundary
 
-The retention tools serve `v1::tool::{log,bus,runtime}` through their raw-bus
+The retention tools serve `v0.1::tool::{log,bus,runtime}` through their raw-bus
 owner capability. This is an explicit current coherence gap: tools are
 intentionally clockless, raw-bus-only participants and their authoring model
 fixes `Api = ()`, so these served query/state edges are not embedded in the
@@ -171,14 +173,11 @@ publisher profile, never inflating a control-state topic.
 
 ## API evolution
 
-Until the public compatibility boundary is declared, `v1` is version identity,
-not an immutability promise. Breaking changes require coordinated owner-first
-releases and consumer migration. `v2` remains the single preview channel; do not
-mint additional preview generations while it is still evolving.
+Published concrete revisions are immutable. Breaking changes create a new
+major/minor revision extending one earlier parent; the development branch and
+pull request are the only preview boundary.
 
-There is no `extends`: a contract is declared in the version that owns its wire
-identity. Participants may mix `v1` and `v2` contracts field by field during the
-migration. There are no per-service independent semver tracks for contracts and
+There are no per-service independent semver tracks for contracts and
 no mixed-version *decoding* on one topic: a shared topic's key is
 version-qualified, so producers and consumers on it already use the exact same
 name.

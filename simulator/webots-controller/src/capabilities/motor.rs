@@ -4,9 +4,9 @@
 //! (main.rs:1498-1501).
 
 use anyhow::{Result, anyhow, bail};
+use phoxal::api;
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::component::v0::capability::MotorCommand;
-use phoxal_api::v1 as api;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MotorSpec {

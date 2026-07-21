@@ -1,40 +1,37 @@
-# release-plz owns only the four crates.io library crates. Official artifact
-# crates set `publish = false` in their Cargo.toml, so release-plz drops them
-# before applying this configuration: there is no `git_only` artifact package
-# list and no artifact packaging/version analysis in the release-plz job.
-#
-# Artifact versions and tags are owned by xtask instead. The release-PR job runs
-# `cargo xtask release bump --changed`, which compares each artifact's own crate
-# directory with its `{package}-v{version}` tag. The release job runs `release
-# cut` to create missing current-version tags and hand its JSON output to
-# `release plan`.
+# release-plz changes the one inherited workspace train version and publishes
+# the four crates.io libraries. Official artifact crates are publish=false and
+# are staged together in the matching GitHub train release by xtask.
 [workspace]
 release_always = true
 dependencies_update = false
-git_tag_name = "{{ package }}-v{{ version }}"
 pr_name = "chore(release): release"
 semver_check = false
-# no version_group (it reintroduces a shared version axis)
+# One train version is inherited by every workspace member. release-plz changes
+# the root version once and rewrites exact internal dependency pins together.
 
 # Libraries are crates.io-only. crates.io and `.cargo_vcs_info.json` are their
 # version/current-contract baseline; no library git tag or GitHub release.
 
 [[package]]
 name = "phoxal"
+version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false
 
 [[package]]
 name = "phoxal-api"
+version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false
 
 [[package]]
 name = "phoxal-bus"
+version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false
 
 [[package]]
 name = "phoxal-macros"
+version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false

@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 use tokio::process::Command;
 use tokio::time::timeout;
 

@@ -8,7 +8,7 @@
 //! binaries).
 //!
 //! **There is no interop gate on contract identity (D1).** Contract identity is
-//! the version-qualified `family` name alone (e.g. `"v1::drive::Target"`);
+//! the version-qualified `family` name alone (e.g. `"api::drive::Target"`);
 //! there is no `schema_id` hash to agree on, because two participants naming the
 //! same version-qualified contract are compatible by construction (same name
 //! ⇒ same frozen shape, enforced by the type system and made physically real by
@@ -158,7 +158,7 @@ pub enum ParticipantScope {
 }
 
 /// One contract use from an `emit-apis` report: its version-qualified name
-/// (e.g. `"v1::drive::Target"`, D1). There is no `schema_id` - the name
+/// (e.g. `"api::drive::Target"`, D1). There is no `schema_id` - the name
 /// itself is the whole identity.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Contract {
@@ -454,8 +454,8 @@ mod tests {
     fn healthy_pubsub_graph_has_no_problems() {
         // producer publishes drive/target; consumer subscribes it.
         let graph = vec![
-            participant("mission", "v1", vec![contract("v1::drive::Target")]),
-            participant("drive", "v1", vec![contract("v1::drive::Target")]),
+            participant("mission", "v1", vec![contract("api::drive::Target")]),
+            participant("drive", "v1", vec![contract("api::drive::Target")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
@@ -464,20 +464,20 @@ mod tests {
     fn healthy_query_graph_has_no_problems() {
         // a server serves asset/get; a client queries it.
         let graph = vec![
-            participant("asset", "v1", vec![contract("v1::asset::GetRequest")]),
-            participant("client", "v1", vec![contract("v1::asset::GetRequest")]),
+            participant("asset", "v1", vec![contract("api::asset::GetRequest")]),
+            participant("client", "v1", vec![contract("api::asset::GetRequest")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
 
     #[test]
     fn mixed_versions_on_the_same_contract_family_are_simply_different_contracts() {
-        // D1: with no schema_id, a `v1::drive::Target` user and a
-        // `v2::drive::Target` user are unrelated contracts, not a
+        // D1: with no schema_id, a `api::drive::Target` user and a
+        // `api::drive::Target` user are unrelated contracts, not a
         // mismatch - there is nothing to report.
         let graph = vec![
-            participant("mission", "v1", vec![contract("v1::drive::Target")]),
-            participant("drive", "v2", vec![contract("v2::drive::Target")]),
+            participant("mission", "v1", vec![contract("api::drive::Target")]),
+            participant("drive", "v2", vec![contract("api::drive::Target")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
@@ -485,9 +485,9 @@ mod tests {
     #[test]
     fn tool_kind_participant_contracts_do_not_gate_the_graph() {
         let graph = vec![
-            participant("mission", "v1", vec![contract("v1::drive::Target")]),
-            participant("drive", "v1", vec![contract("v1::drive::Target")]),
-            privileged_participant("inspector", "v1", vec![contract("v1::drive::Target")]),
+            participant("mission", "v1", vec![contract("api::drive::Target")]),
+            participant("drive", "v1", vec![contract("api::drive::Target")]),
+            privileged_participant("inspector", "v1", vec![contract("api::drive::Target")]),
         ];
 
         assert!(check_graph(&graph).is_ok());
@@ -496,9 +496,9 @@ mod tests {
     #[test]
     fn a_publisher_anywhere_satisfies_all_subscribers() {
         let graph = vec![
-            participant("odometry", "v1", vec![contract("v1::odometry::State")]),
-            participant("localize", "v1", vec![contract("v1::odometry::State")]),
-            participant("map", "v1", vec![contract("v1::odometry::State")]),
+            participant("odometry", "v1", vec![contract("api::odometry::State")]),
+            participant("localize", "v1", vec![contract("api::odometry::State")]),
+            participant("map", "v1", vec![contract("api::odometry::State")]),
         ];
         assert!(check_graph(&graph).is_ok());
     }
@@ -514,10 +514,10 @@ mod tests {
             participant(
                 "navigation",
                 "v1",
-                vec![contract("v1::navigation::Request")],
+                vec![contract("api::navigation::Request")],
             ),
             // Offers a query endpoint with no client in the graph.
-            participant("asset", "v1", vec![contract("v1::asset::GetRequest")]),
+            participant("asset", "v1", vec![contract("api::asset::GetRequest")]),
         ];
 
         let report = check_graph(&participants);

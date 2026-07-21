@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use nalgebra::Isometry3;
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 use crate::config::{DynamicJoint, FrameConfig, JointMeta};
 use crate::ring_buffer::RingBuffer;
@@ -204,10 +204,10 @@ mod tests {
     use std::sync::Arc;
 
     use nalgebra::{Quaternion, UnitQuaternion};
+    use phoxal::api;
+    use phoxal::bus::ContractBody;
     use phoxal::model::structure::Structure;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
-    use phoxal_api::v1 as api;
 
     use super::*;
 

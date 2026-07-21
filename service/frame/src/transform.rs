@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 use crate::config::{FrameJointType, JointMeta};
 use crate::ring_buffer::RingBuffer;

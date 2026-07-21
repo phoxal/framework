@@ -667,7 +667,7 @@ mod subscriber_ring_tests {
     #[test]
     fn ring_counts_each_drop_oldest_eviction_cumulatively() {
         let metrics = crate::runtime_metrics::RuntimeMetrics::default();
-        let metric = metrics.register_subscriber("v1/test/state", 1);
+        let metric = metrics.register_subscriber("v0.1/test/state", 1);
         let ring = Ring::new(1, metric);
         assert_eq!(ring.push(received(1)), (false, 1));
         assert_eq!(ring.push(received(2)), (true, 1));

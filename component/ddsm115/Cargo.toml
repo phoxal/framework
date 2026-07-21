@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-component-ddsm115"
-version = "0.1.8"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -15,8 +15,7 @@ name = "phoxal-component-ddsm115"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["preview-v2"] }
-phoxal-api = { workspace = true }
+phoxal = { workspace = true }
 anyhow = { workspace = true }
 
 [dev-dependencies]

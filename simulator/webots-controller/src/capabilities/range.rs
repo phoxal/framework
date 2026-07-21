@@ -3,7 +3,7 @@
 //! (main.rs:578-583) and `NativeRange` (main.rs:1327-1368).
 
 use anyhow::{Result, anyhow};
-use phoxal_api::v1 as api;
+use phoxal::api;
 
 use super::{SampledSpec, is_due};
 

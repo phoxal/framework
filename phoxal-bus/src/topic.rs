@@ -4,7 +4,7 @@
 //! that ties the key to its body type(s) **and to the side** the holder may
 //! take. The api tree's `topic` builders return these; the `SetupContext` handle
 //! builders consume them. The wire body never appears in the key, but the
-//! version does - the key is `v1/drive/state`, not `drive/state` (D62/D1):
+//! version does - the key is `v0.1/drive/state`, not `drive/state` (D62/D1):
 //! folding the version into the key is what makes different versioned names
 //! physically distinct Zenoh keys.
 //!
@@ -118,7 +118,7 @@ impl<Kind> Topic<Kind> {
         }
     }
 
-    /// The version-qualified topic key (e.g. `v1/drive/state`).
+    /// The version-qualified topic key (e.g. `v0.1/drive/state`).
     pub fn key(&self) -> &str {
         &self.key
     }

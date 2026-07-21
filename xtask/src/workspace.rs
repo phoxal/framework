@@ -27,7 +27,7 @@ const BINARY_TARGETS: [&str; 5] = [
 ];
 
 /// Official Phoxal packages always use this provider segment in their public
-/// `package` identity (`phoxal/<name>`). Third-party catalogs will use their own
+/// `package` identity (`phoxal/<name>`). Third-party suites use their own
 /// provider segment; the grammar has no other official provider today.
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
@@ -56,8 +56,8 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    /// The catalog's serialized `kind` tag (`xtask/src/catalog/schema.rs`).
-    pub fn catalog_kind(self) -> &'static str {
+    /// The suite's serialized artifact `kind` tag (`xtask/src/suite.rs`).
+    pub fn suite_kind(self) -> &'static str {
         match self {
             ArtifactKind::Service => "service",
             ArtifactKind::Component => "component",
@@ -81,7 +81,7 @@ impl ArtifactKind {
 
 impl fmt::Display for ArtifactKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.pad(self.catalog_kind())
+        formatter.pad(self.suite_kind())
     }
 }
 
@@ -106,8 +106,8 @@ pub struct PhoxalPackageMetadata {
 #[derive(Clone, Debug, Serialize)]
 pub struct OfficialArtifact {
     /// The provider-qualified public identity, e.g. `phoxal/component-ddsm115`.
-    /// This is the sole public identity; release tags/assets are filesystem-safe
-    /// projections of it (see [`Self::release_tag`]).
+    /// This is the sole public identity; asset filenames are filesystem-safe
+    /// projections of it.
     pub package: String,
     /// The Cargo crate name backing this package (e.g. `phoxal-component-ddsm115`).
     /// Every discovered [`OfficialArtifact`] is crate-backed today; this stays
@@ -127,17 +127,6 @@ pub struct OfficialArtifact {
 }
 
 impl OfficialArtifact {
-    /// The release tag: a filesystem-safe projection of the provider-qualified
-    /// `package` (`phoxal/component-ddsm115` -> `phoxal-component-ddsm115-v0.1.5`).
-    pub fn release_tag(&self) -> String {
-        self.release_tag_for_version(&self.version)
-    }
-
-    /// The release tag for an explicitly selected version.
-    pub fn release_tag_for_version(&self, version: &str) -> String {
-        format!("{}-v{version}", filesystem_safe_package(&self.package))
-    }
-
     /// The full set of release targets this artifact packages for: its
     /// per-triple binary targets, plus [`ASSETS_SCOPE`] when the kind also
     /// ships an asset bundle
@@ -202,24 +191,6 @@ impl OfficialArtifact {
 /// tags and asset filenames (`docs #21` "Release tags and assets").
 pub fn filesystem_safe_package(package: &str) -> String {
     package.replace('/', "-")
-}
-
-pub fn runner_for_target(target: &str) -> Result<&'static str> {
-    match target {
-        // Native Linux runners for the gnu targets; the musl targets
-        // cross-compile on the matching-arch Linux runner too (the `build`
-        // job installs `musl-tools` there - see `release-plz.yml`).
-        "aarch64-unknown-linux-gnu" | "aarch64-unknown-linux-musl" => Ok("ubuntu-24.04-arm"),
-        "x86_64-unknown-linux-gnu" | "x86_64-unknown-linux-musl" => Ok("ubuntu-24.04"),
-        // Native macOS runner: `macos-14` is Apple Silicon (aarch64). There is
-        // no Intel (x86_64) macOS target in the matrix - see `BINARY_TARGETS`.
-        "aarch64-apple-darwin" => Ok("macos-14"),
-        // A component's asset-bundle packaging just tars files (no cargo
-        // build, no per-architecture binary), so any host runner works; the
-        // cheapest Linux runner is used.
-        ASSETS_SCOPE => Ok("ubuntu-24.04"),
-        _ => bail!("no CI runner is configured for release target {target}"),
-    }
 }
 
 #[derive(Debug)]
@@ -342,19 +313,6 @@ impl Workspace {
                     .join(", ");
                 format!("unknown official artifact package {package}; known packages: {known}")
             })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_parts_for_tests(
-        root: PathBuf,
-        target_dir: PathBuf,
-        official_artifacts: Vec<OfficialArtifact>,
-    ) -> Self {
-        Self {
-            root,
-            target_dir,
-            official_artifacts,
-        }
     }
 }
 
@@ -736,13 +694,14 @@ mod tests {
 
         assert_eq!(workspace.official_artifacts().len(), 27);
 
-        let discovered = workspace
-            .official_artifacts()
-            .iter()
-            .filter(|artifact| artifact.kind == ArtifactKind::Service)
-            .map(|artifact| (artifact.id.as_str(), artifact.package.as_str()))
-            .collect::<Vec<_>>();
-        assert_eq!(discovered, phoxal::catalog::OFFICIAL_SERVICES);
+        assert_eq!(
+            workspace
+                .official_artifacts()
+                .iter()
+                .filter(|artifact| artifact.kind == ArtifactKind::Service)
+                .count(),
+            14
+        );
         Ok(())
     }
 
@@ -936,25 +895,6 @@ mod tests {
         assert_eq!(
             package_identity(ArtifactKind::Infrastructure, "router"),
             "phoxal/infrastructure-router"
-        );
-    }
-
-    #[test]
-    fn release_tag_projects_provider_qualified_package_to_filesystem_safe_form() {
-        let artifact = OfficialArtifact {
-            package: "phoxal/component-ddsm115".to_string(),
-            package_name: Some("phoxal-component-ddsm115".to_string()),
-            kind: ArtifactKind::Component,
-            version: "0.1.5".to_string(),
-            crate_dir: PathBuf::from("component/ddsm115"),
-            bin_name: Some("phoxal-component-ddsm115".to_string()),
-            id: "ddsm115".to_string(),
-            metadata: PhoxalPackageMetadata::default(),
-        };
-        assert_eq!(artifact.release_tag(), "phoxal-component-ddsm115-v0.1.5");
-        assert_eq!(
-            artifact.release_tag_for_version("0.1.6"),
-            "phoxal-component-ddsm115-v0.1.6"
         );
     }
 

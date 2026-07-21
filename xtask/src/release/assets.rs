@@ -2,9 +2,7 @@
 //! crates' asset bundles (`component.yaml`,
 //! `simulation.yaml`, `structure.urdf`, `meshes/` - design doc
 //! `organization/tmp/ci-release-refactor/design.md` §9). No cargo build, no
-//! binary, no `--target` flag: this is a plain file-tarball job, so any host
-//! runner works (`crate::workspace::runner_for_target`'s
-//! [`ASSETS_SCOPE`] arm).
+//! binary, no `--target` flag: this is a plain file-tarball job.
 //!
 //! Kept as a separate verb from `release package` (which is binaries-only):
 //! the two outputs have unrelated build steps, and the workflow's assets job
@@ -22,8 +20,10 @@ use crate::workspace::{OfficialArtifact, Workspace, require_nonempty_artifacts};
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     /// One or more Component package names to package as asset bundles.
-    #[arg(value_name = "PACKAGE", required = true)]
+    #[arg(value_name = "PACKAGE", conflicts_with = "all")]
     pub packages: Vec<String>,
+    #[arg(long)]
+    pub all: bool,
     #[arg(long, value_name = "DIR", default_value = "target/xtask/release")]
     pub out: PathBuf,
 }
@@ -62,8 +62,16 @@ pub fn run(args: Args) -> Result<()> {
 }
 
 fn select_artifacts(workspace: &Workspace, args: &Args) -> Result<Vec<OfficialArtifact>> {
+    if args.all {
+        return Ok(workspace
+            .official_artifacts()
+            .iter()
+            .filter(|artifact| artifact.kind.ships_assets())
+            .cloned()
+            .collect());
+    }
     if args.packages.is_empty() {
-        bail!("at least one PACKAGE is required");
+        bail!("at least one PACKAGE is required, or pass --all");
     }
 
     args.packages

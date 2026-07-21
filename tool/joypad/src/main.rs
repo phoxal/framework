@@ -1,10 +1,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use gilrs::{Button, EventType, Gamepad, GamepadId, Gilrs};
+use phoxal::api;
 use phoxal::prelude::*;
 use phoxal::raw::{Publisher, Subscriber, host_time};
-use phoxal_api::v1 as motion_api;
-use phoxal_api::v2 as api;
 
 const TRIGGER_DEADZONE: f32 = 0.08;
 
@@ -35,7 +34,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 // just `ctx.raw_bus()` and the raw handle constructors.
 #[phoxal::tool(id = "joypad")]
 struct ToolJoypad {
-    shutdown_publisher: Publisher<motion_api::motion::ManualCommand>,
+    shutdown_publisher: Publisher<api::motion::ManualCommand>,
 }
 
 #[phoxal::behavior]
@@ -64,8 +63,7 @@ impl ToolJoypad {
         let cap = ctx.owner_capability();
         let bus = ctx.raw_bus();
 
-        let manual_publisher =
-            Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())?;
+        let manual_publisher = Publisher::new(bus.clone(), &api::topic::new().motion().manual())?;
         let devices_publisher = Publisher::new(
             bus.clone(),
             &api::topic::internal::new(cap).joypad().devices(),
@@ -189,7 +187,7 @@ fn combine_unavailable_reasons(robot: Option<String>, backend: Option<String>) -
 /// late subscriber receives authoritative state without depending on robot or
 /// simulation time. Runs until the runner cancels it during managed shutdown.
 async fn run_joypad(
-    manual_publisher: Publisher<motion_api::motion::ManualCommand>,
+    manual_publisher: Publisher<api::motion::ManualCommand>,
     devices_publisher: Publisher<api::joypad::Devices>,
     select_subscriber: Subscriber<api::joypad::Select>,
     set_enabled_subscriber: Subscriber<api::joypad::SetEnabled>,
@@ -390,14 +388,14 @@ fn queue_stop(pending_zeros: &mut usize) {
 }
 
 fn publish_pending_zero(
-    publisher: &Publisher<motion_api::motion::ManualCommand>,
+    publisher: &Publisher<api::motion::ManualCommand>,
     pending_zeros: &mut usize,
     failures: &mut u64,
 ) {
     if *pending_zeros == 0 {
         return;
     }
-    let zero = motion_api::motion::ManualCommand {
+    let zero = api::motion::ManualCommand {
         linear_x_mps: 0.0,
         angular_z_radps: 0.0,
     };
@@ -409,11 +407,11 @@ fn publish_pending_zero(
 }
 
 async fn publish_stop_repeats(
-    publisher: &Publisher<motion_api::motion::ManualCommand>,
+    publisher: &Publisher<api::motion::ManualCommand>,
     reason: &'static str,
 ) {
     for attempt in 0..STOP_REPEAT_COUNT {
-        let zero = motion_api::motion::ManualCommand {
+        let zero = api::motion::ManualCommand {
             linear_x_mps: 0.0,
             angular_z_radps: 0.0,
         };
@@ -925,7 +923,7 @@ fn command_from_gamepad(
     gamepad: &Gamepad<'_>,
     enabled: bool,
     drive: ManualDrive,
-) -> Option<motion_api::motion::ManualCommand> {
+) -> Option<api::motion::ManualCommand> {
     command_from_shoulders(
         enabled,
         button_value(gamepad, Button::LeftTrigger),
@@ -955,13 +953,13 @@ fn command_from_shoulders(
     reverse_right: f32,
     forward_right: f32,
     drive: ManualDrive,
-) -> Option<motion_api::motion::ManualCommand> {
+) -> Option<api::motion::ManualCommand> {
     if !enabled {
         return None;
     }
     let left = side_input(reverse_left, forward_left) * drive.side_speed_mps;
     let right = side_input(reverse_right, forward_right) * drive.side_speed_mps;
-    Some(motion_api::motion::ManualCommand {
+    Some(api::motion::ManualCommand {
         linear_x_mps: (left + right) / 2.0,
         angular_z_radps: (right - left) / drive.wheel_base_m,
     })
@@ -1543,11 +1541,11 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let publisher = Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())
+        let publisher = Publisher::new(bus.clone(), &api::topic::new().motion().manual())
             .expect("manual publisher should attach");
         let subscriber = Subscriber::new(
             &bus,
-            &motion_api::topic::internal::new(phoxal::raw::OwnerCap::__mint())
+            &api::topic::internal::new(phoxal::raw::OwnerCap::__mint())
                 .motion()
                 .manual(),
             1,
@@ -1578,7 +1576,7 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let publisher = Publisher::new(bus.clone(), &motion_api::topic::new().motion().manual())
+        let publisher = Publisher::new(bus.clone(), &api::topic::new().motion().manual())
             .expect("manual publisher should attach");
         bus.close().await.expect("bus should close");
 

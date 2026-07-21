@@ -15,11 +15,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Result;
+use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::robot::v0::MotionLimits;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 use crate::arbitration::{
     ManualCandidate, Timed, arbitrate, candidate_age_ns, manual_candidate_age_ns, safety_is_usable,
@@ -336,8 +336,8 @@ fn main() -> phoxal::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use phoxal::bus::ContractBody;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
-    use phoxal_api::ContractBody;
 
     use super::*;
 

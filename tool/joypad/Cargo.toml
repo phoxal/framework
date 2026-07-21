@@ -1,6 +1,6 @@
 [package]
 name = "phoxal-tool-joypad"
-version = "0.1.13"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -18,8 +18,7 @@ name = "phoxal-tool-joypad"
 path = "src/main.rs"
 
 [dependencies]
-phoxal = { workspace = true, features = ["preview-v2"] }
-phoxal-api = { workspace = true, features = ["preview-v2"] }
+phoxal = { workspace = true }
 gilrs = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }

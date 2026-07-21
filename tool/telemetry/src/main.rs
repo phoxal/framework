@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use phoxal::api as stable;
 use phoxal::prelude::*;
 use phoxal::raw::{Codec, MessagePack, Publisher, QueryFailure, Subscriber, host_time};
-use phoxal_api::v1 as stable;
 
 const DEVICE_RETENTION: Duration = Duration::from_secs(5 * 60);
 const MAX_DEVICE_RECORDS: usize = 512;
@@ -783,7 +783,7 @@ mod tests {
     fn maximal_runtime_rollup() -> stable::tool::runtime::Rollup {
         let topics = (0..MAX_RUNTIME_TOPIC_ROWS)
             .map(|index| {
-                let prefix = format!("v1/{index:03}/");
+                let prefix = format!("v0.1/{index:03}/");
                 runtime_topic(format!(
                     "{prefix}{}",
                     "x".repeat(MAX_RUNTIME_TOPIC_BYTES - prefix.len())
@@ -907,7 +907,7 @@ mod tests {
     fn runtime_ingest_clamps_identity_and_rows_with_deterministic_overflow() {
         let mut topics = (0..260)
             .rev()
-            .map(|index| runtime_topic(format!("v1/test/{index:03}")))
+            .map(|index| runtime_topic(format!("v0.1/test/{index:03}")))
             .collect::<Vec<_>>();
         topics.push(runtime_topic("z".repeat(MAX_RUNTIME_TOPIC_BYTES + 1)));
         let mut source_overflow = empty_runtime_overflow();
@@ -936,8 +936,8 @@ mod tests {
                 .is_char_boundary(record.participant_id.len())
         );
         assert_eq!(record.topics.len(), MAX_RUNTIME_TOPIC_ROWS);
-        assert_eq!(record.topics.first().unwrap().topic, "v1/test/000");
-        assert_eq!(record.topics.last().unwrap().topic, "v1/test/255");
+        assert_eq!(record.topics.first().unwrap().topic, "v0.1/test/000");
+        assert_eq!(record.topics.last().unwrap().topic, "v0.1/test/255");
         assert!(
             record
                 .topics
@@ -957,7 +957,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, rate_hz)| {
-                let mut row = runtime_topic(format!("v1/rate/{index}"));
+                let mut row = runtime_topic(format!("v0.1/rate/{index}"));
                 row.rate_hz = rate_hz;
                 row
             })
@@ -984,7 +984,7 @@ mod tests {
         const ADVERSARIAL_RATES: [f32; 3] = [323.832_76, 150.849_17, 650.934_45];
 
         let mut rows = (0..MAX_RUNTIME_TOPIC_ROWS)
-            .map(|index| runtime_topic(format!("v1/duplicate/{index:03}")))
+            .map(|index| runtime_topic(format!("v0.1/duplicate/{index:03}")))
             .collect::<Vec<_>>();
         let first = rows.first_mut().unwrap();
         first.count = u64::MAX;
@@ -997,12 +997,12 @@ mod tests {
         first.high_water_depth = u64::MAX;
         first.decode_errors = u64::MAX;
 
-        let mut duplicate = runtime_topic("v1/duplicate/000".to_string());
+        let mut duplicate = runtime_topic("v0.1/duplicate/000".to_string());
         duplicate.rate_hz = ADVERSARIAL_RATES[1];
         duplicate.latest_overwrites = 1;
         duplicate.bounded_evictions = 1;
         rows.push(duplicate);
-        let mut duplicate = runtime_topic("v1/duplicate/000".to_string());
+        let mut duplicate = runtime_topic("v0.1/duplicate/000".to_string());
         duplicate.rate_hz = ADVERSARIAL_RATES[2];
         rows.push(duplicate);
 
@@ -1029,7 +1029,7 @@ mod tests {
         let (topics, overflow) = ordered;
         assert_eq!(topics.len(), MAX_RUNTIME_TOPIC_ROWS);
         let aggregate = topics.first().unwrap();
-        assert_eq!(aggregate.topic, "v1/duplicate/000");
+        assert_eq!(aggregate.topic, "v0.1/duplicate/000");
         assert_eq!(aggregate.count, u64::MAX);
         assert_eq!(aggregate.rate_hz.to_bits(), 0x448c_b3ba);
         assert_eq!(aggregate.drops, u64::MAX);

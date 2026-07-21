@@ -8,8 +8,8 @@
 //!
 //! Run it with `cargo run --example runtime_control_loop` (Ctrl-C to stop).
 
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {}
