@@ -1,11 +1,13 @@
-use std::io::Write;
+use std::io::{BufWriter, Write};
+#[cfg(unix)]
+use std::os::fd::{FromRawFd, RawFd};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
+use phoxal::infrastructure::router::RouterReadyV0;
 
-const DEFAULT_PORT_START: u16 = 7_447;
-const DEFAULT_PORT_COUNT: u16 = 16;
+const MAX_READY_FAILURE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -17,25 +19,55 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
 
-    /// Exact Zenoh listen endpoint. Repeat to replace authored listeners.
-    #[arg(long = "listen", value_name = "ENDPOINT")]
-    listen: Vec<String>,
+    /// Exact project-local Unix endpoint that every local participant uses.
+    #[arg(long, value_name = "UNIX_ENDPOINT")]
+    local_endpoint: String,
+
+    /// Inherited descriptor receiving exactly one typed readiness result.
+    #[cfg(unix)]
+    #[arg(long, value_name = "FD")]
+    ready_fd: RawFd,
 }
 
 struct OpenedRouter {
     session: zenoh::Session,
+    local_endpoint: String,
     listeners: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     init_tracing()?;
-    let opened = open_router(Args::parse()).await?;
+    let args = Args::parse();
+    #[cfg(unix)]
+    let ready_fd = args.ready_fd;
+    let opened = match open_router(args).await {
+        Ok(opened) => opened,
+        Err(error) => {
+            #[cfg(unix)]
+            if let Err(report_error) = write_ready_result(
+                ready_fd,
+                &RouterReadyV0::Failed {
+                    message: bounded_failure(format!("{error:#}")),
+                },
+            ) {
+                tracing::warn!(
+                    error = %report_error,
+                    "failed to report router startup failure to supervisor"
+                );
+            }
+            return Err(error);
+        }
+    };
 
-    println!("{}", ready_line(&opened.listeners));
-    std::io::stdout()
-        .flush()
-        .context("failed to flush router readiness event")?;
+    #[cfg(unix)]
+    write_ready_result(
+        ready_fd,
+        &RouterReadyV0::Ready {
+            local_endpoint: opened.local_endpoint.clone(),
+            listeners: opened.listeners.clone(),
+        },
+    )?;
     tracing::info!(listeners = ?opened.listeners, "Phoxal infrastructure router ready");
 
     shutdown_signal().await?;
@@ -60,14 +92,8 @@ fn init_tracing() -> Result<()> {
 }
 
 async fn open_router(args: Args) -> Result<OpenedRouter> {
-    open_router_in_range(args, DEFAULT_PORT_START, DEFAULT_PORT_COUNT).await
-}
-
-async fn open_router_in_range(
-    args: Args,
-    port_start: u16,
-    port_count: u16,
-) -> Result<OpenedRouter> {
+    validate_local_endpoint(&args.local_endpoint)?;
+    ensure_local_endpoint_available(&args.local_endpoint)?;
     let authored = args.config.is_some();
     let mut base = load_config(args.config.as_deref())?;
     let authored_listeners = args
@@ -83,47 +109,21 @@ async fn open_router_in_range(
         apply_no_config_defaults(&mut base)?;
     }
 
-    let listeners = if args.listen.is_empty() {
-        if authored && !authored_listeners {
-            Vec::new()
-        } else {
-            configured_listeners(&base)?
-        }
+    let mut listeners = if authored && authored_listeners {
+        configured_listeners(&base)?
     } else {
-        args.listen
+        Vec::new()
     };
-
-    if !listeners.is_empty() {
-        validate_listeners(&listeners)?;
-        let session = open_exact(base, &listeners).await?;
-        return Ok(OpenedRouter { session, listeners });
+    if !listeners.contains(&args.local_endpoint) {
+        listeners.insert(0, args.local_endpoint.clone());
     }
-
-    if port_count == 0 {
-        bail!("default router listener range is empty");
-    }
-
-    let mut failures = Vec::new();
-    for offset in 0..port_count {
-        let Some(port) = port_start.checked_add(offset) else {
-            break;
-        };
-        let listener = format!("tcp/127.0.0.1:{port}");
-        match open_exact(base.clone(), std::slice::from_ref(&listener)).await {
-            Ok(session) => {
-                return Ok(OpenedRouter {
-                    session,
-                    listeners: vec![listener],
-                });
-            }
-            Err(error) => failures.push(format!("{listener}: {error:#}")),
-        }
-    }
-
-    bail!(
-        "failed to bind a loopback router listener in the bounded range starting at {port_start}: {}",
-        failures.join("; ")
-    )
+    validate_listeners(&listeners)?;
+    let session = open_exact(base, &listeners).await?;
+    Ok(OpenedRouter {
+        session,
+        local_endpoint: args.local_endpoint,
+        listeners,
+    })
 }
 
 fn load_config(path: Option<&Path>) -> Result<zenoh::Config> {
@@ -235,6 +235,32 @@ fn validate_listeners(listeners: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn validate_local_endpoint(endpoint: &str) -> Result<()> {
+    let Some(path) = endpoint.strip_prefix("unixsock-stream/") else {
+        bail!("router local endpoint '{endpoint}' must use the unixsock-stream transport");
+    };
+    if path.is_empty() || !Path::new(path).is_absolute() {
+        bail!("router local unixsock-stream endpoint must contain an absolute path");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_local_endpoint_available(endpoint: &str) -> Result<()> {
+    let path = endpoint
+        .strip_prefix("unixsock-stream/")
+        .expect("validated local endpoint");
+    if Path::new(path).exists() && std::os::unix::net::UnixStream::connect(path).is_ok() {
+        bail!("router local endpoint '{endpoint}' is already accepting connections");
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_local_endpoint_available(_endpoint: &str) -> Result<()> {
+    bail!("router local unix endpoint is unsupported on this platform")
+}
+
 fn tcp_endpoint_is_loopback(endpoint: &str) -> bool {
     let endpoint = endpoint
         .split_once('#')
@@ -265,12 +291,32 @@ fn insert_json<T: serde::Serialize + ?Sized>(
     insert(config, path, &serde_json::to_string(value)?)
 }
 
-fn ready_line(listeners: &[String]) -> String {
-    serde_json::json!({
-        "event": "ready",
-        "listen": listeners,
-    })
-    .to_string()
+fn bounded_failure(mut message: String) -> String {
+    if message.len() > MAX_READY_FAILURE_BYTES {
+        let mut end = MAX_READY_FAILURE_BYTES;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+    }
+    message
+}
+
+#[cfg(unix)]
+fn write_ready_result(fd: RawFd, result: &RouterReadyV0) -> Result<()> {
+    // SAFETY: the supervisor transfers ownership of this inherited descriptor
+    // to the router. This function consumes it exactly once and closes it after
+    // the one-shot result is flushed.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut writer = BufWriter::new(file);
+    serde_json::to_writer(&mut writer, result)
+        .context("failed to encode router readiness result")?;
+    writer
+        .write_all(b"\n")
+        .context("failed to write router readiness delimiter")?;
+    writer
+        .flush()
+        .context("failed to flush router readiness result")
 }
 
 #[cfg(unix)]
@@ -295,43 +341,21 @@ async fn shutdown_signal() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
+    use std::io::{BufRead, BufReader};
+    #[cfg(unix)]
+    use std::os::fd::IntoRawFd;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixStream;
 
     use super::*;
 
-    fn args(listen: Vec<String>) -> Args {
+    fn args(local_endpoint: String) -> Args {
         Args {
             config: None,
-            listen,
+            local_endpoint,
+            #[cfg(unix)]
+            ready_fd: -1,
         }
-    }
-
-    fn contiguous_free_range(count: u16) -> (u16, Vec<TcpListener>) {
-        for _ in 0..100 {
-            let first = TcpListener::bind("127.0.0.1:0").expect("bind candidate");
-            let start = first.local_addr().expect("candidate address").port();
-            let Some(end) = start.checked_add(count.saturating_sub(1)) else {
-                continue;
-            };
-            if end == u16::MAX {
-                continue;
-            }
-            let mut listeners = vec![first];
-            let mut complete = true;
-            for port in start + 1..=end {
-                match TcpListener::bind(("127.0.0.1", port)) {
-                    Ok(listener) => listeners.push(listener),
-                    Err(_) => {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-            if complete {
-                return (start, listeners);
-            }
-        }
-        panic!("failed to reserve a contiguous loopback port range")
     }
 
     #[test]
@@ -431,9 +455,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn authored_config_without_listeners_uses_bounded_loopback_allocation() {
-        let (start, listeners) = contiguous_free_range(1);
-        drop(listeners);
+    async fn authored_config_preserves_external_settings_beside_exact_local_endpoint() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let local = format!(
+            "unixsock-stream/{}",
+            dir.path().join("zenoh.sock").display()
+        );
         let file = tempfile::Builder::new()
             .suffix(".json5")
             .tempfile()
@@ -442,7 +469,8 @@ mod tests {
             file.path(),
             r#"{
                 mode: "peer",
-                connect: { endpoints: [] },
+                listen: { endpoints: ["tcp/127.0.0.1:0"] },
+                connect: { endpoints: ["tcp/example.invalid:7447"] },
                 scouting: {
                     multicast: { enabled: false },
                     gossip: { enabled: false }
@@ -451,68 +479,85 @@ mod tests {
         )
         .expect("write config");
 
-        let opened = open_router_in_range(
-            Args {
-                config: Some(file.path().to_path_buf()),
-                listen: Vec::new(),
-            },
-            start,
-            1,
-        )
+        let opened = open_router(Args {
+            config: Some(file.path().to_path_buf()),
+            local_endpoint: local.clone(),
+            #[cfg(unix)]
+            ready_fd: -1,
+        })
         .await
-        .expect("authored config should use fallback allocation");
-        assert_eq!(opened.listeners, vec![format!("tcp/127.0.0.1:{start}")]);
+        .expect("authored config should retain external listener");
+        assert_eq!(opened.local_endpoint, local);
+        assert_eq!(opened.listeners.len(), 2);
+        assert_eq!(opened.listeners[0], opened.local_endpoint);
+        assert_eq!(opened.listeners[1], "tcp/127.0.0.1:0");
         opened.session.close().await.expect("close router");
     }
 
     #[test]
-    fn readiness_event_is_machine_readable() {
-        let line = ready_line(&["tcp/127.0.0.1:7448".to_string()]);
-        let event: serde_json::Value = serde_json::from_str(&line).expect("ready JSON");
-        assert_eq!(event["event"], "ready");
-        assert_eq!(event["listen"][0], "tcp/127.0.0.1:7448");
+    fn local_endpoint_must_be_an_absolute_unix_socket() {
+        validate_local_endpoint("unixsock-stream//tmp/project/zenoh.sock").expect("absolute UDS");
+        for invalid in [
+            "tcp/127.0.0.1:7447",
+            "unixsock-stream/relative.sock",
+            "unixsock-stream/",
+        ] {
+            validate_local_endpoint(invalid).expect_err(invalid);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_result_is_typed_bounded_and_one_shot() {
+        let (read, write) = UnixStream::pair().expect("socket pair");
+        let expected = RouterReadyV0::Ready {
+            local_endpoint: "unixsock-stream//tmp/project/zenoh.sock".to_string(),
+            listeners: vec!["unixsock-stream//tmp/project/zenoh.sock".to_string()],
+        };
+        write_ready_result(write.into_raw_fd(), &expected).expect("write readiness");
+
+        let mut lines = BufReader::new(read).lines();
+        let line = lines.next().expect("one result").expect("read result");
+        let decoded: RouterReadyV0 = serde_json::from_str(&line).expect("typed result");
+        assert_eq!(decoded, expected);
+        assert!(lines.next().is_none(), "writer must close after one result");
+
+        let bounded = bounded_failure("é".repeat(MAX_READY_FAILURE_BYTES));
+        assert!(bounded.len() <= MAX_READY_FAILURE_BYTES);
+        assert!(bounded.is_char_boundary(bounded.len()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_readiness_result_round_trips_on_the_one_shot_descriptor() {
+        let (read, write) = UnixStream::pair().expect("socket pair");
+        let expected = RouterReadyV0::Failed {
+            message: bounded_failure("bind failed: occupied endpoint".to_string()),
+        };
+        write_ready_result(write.into_raw_fd(), &expected).expect("write failed readiness");
+
+        let mut lines = BufReader::new(read).lines();
+        let line = lines.next().expect("one result").expect("read result");
+        let decoded: RouterReadyV0 = serde_json::from_str(&line).expect("typed failed result");
+        assert_eq!(decoded, expected);
+        assert!(lines.next().is_none(), "writer must close after one result");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn explicit_occupied_listener_fails_instead_of_moving() {
-        let occupied = TcpListener::bind("127.0.0.1:0").expect("occupy port");
-        let endpoint = format!("tcp/{}", occupied.local_addr().expect("occupied address"));
-        let error = match open_router_in_range(args(vec![endpoint.clone()]), 1, 1).await {
-            Ok(_) => panic!("explicit listener must fail"),
+    async fn occupied_local_endpoint_fails_instead_of_moving() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("zenoh.sock");
+        let _occupied = std::os::unix::net::UnixListener::bind(&path).expect("occupy socket");
+        let endpoint = format!("unixsock-stream/{}", path.display());
+        let error = match open_router(args(endpoint.clone())).await {
+            Ok(_) => panic!("exact local listener must fail"),
             Err(error) => error,
         };
         let message = format!("{error:#}");
-        assert!(message.contains("failed to open Zenoh router"), "{message}");
-        assert!(message.contains(&endpoint), "{message}");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn automatic_allocation_skips_an_unrelated_listener() {
-        let (start, mut occupied) = contiguous_free_range(2);
-        let first = occupied.remove(0);
-        drop(occupied);
-
-        let opened = open_router_in_range(args(Vec::new()), start, 2)
-            .await
-            .expect("fallback router");
-        assert_eq!(
-            opened.listeners,
-            vec![format!("tcp/127.0.0.1:{}", start + 1)]
+        assert!(
+            message.contains("already accepting connections"),
+            "{message}"
         );
-        opened.session.close().await.expect("close router");
-        drop(first);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bounded_allocation_reports_exhaustion() {
-        let (start, occupied) = contiguous_free_range(2);
-        let error = match open_router_in_range(args(Vec::new()), start, 2).await {
-            Ok(_) => panic!("range must be exhausted"),
-            Err(error) => error,
-        };
-        let message = format!("{error:#}");
-        assert!(message.contains("bounded range"), "{message}");
-        assert!(message.contains(&start.to_string()), "{message}");
-        drop(occupied);
+        assert!(message.contains(&endpoint), "{message}");
     }
 }
