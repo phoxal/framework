@@ -1,8 +1,8 @@
 //! Participant presence built on Zenoh Liveliness.
 //!
-//! Presence is keyed only by robot and participant id. Duplicate participant
-//! ids therefore merge into one present/not-present entry that remains present
-//! until the final holder disappears.
+//! Each token is keyed by robot, participant id, and process incarnation.
+//! Observers receive exact incarnation events and can aggregate them by the
+//! stable participant id for present/not-present UI state.
 
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
@@ -16,23 +16,30 @@ const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 pub struct ParticipantLivelinessKey {
     key: OwnedKeyExpr,
     participant: String,
+    incarnation: u64,
 }
 
 impl ParticipantLivelinessKey {
     pub(crate) fn for_bus(bus: &Bus) -> Result<Self> {
-        Self::new(bus.root(), bus.participant())
+        Self::new(bus.root(), bus.participant(), bus.incarnation())
     }
 
-    /// Build and validate a participant key below an existing robot root.
-    pub fn new(robot_root: &str, participant: impl Into<String>) -> Result<Self> {
+    /// Build and validate an incarnation-qualified participant key below an
+    /// existing robot root.
+    pub fn new(robot_root: &str, participant: impl Into<String>, incarnation: u64) -> Result<Self> {
         validate_robot_root(robot_root)?;
         let participant = participant.into();
         validate_participant(&participant)?;
-        let raw = format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}");
+        let raw =
+            format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{incarnation}");
         let key = OwnedKeyExpr::new(raw.clone()).map_err(|error| {
             BusError::Namespace(format!("invalid Liveliness key '{raw}': {error}"))
         })?;
-        Ok(Self { key, participant })
+        Ok(Self {
+            key,
+            participant,
+            incarnation,
+        })
     }
 
     /// The complete robot-rooted Zenoh key.
@@ -45,22 +52,28 @@ impl ParticipantLivelinessKey {
         &self.participant
     }
 
+    /// Per-process incarnation encoded in the key.
+    pub fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
     /// Parse a concrete participant key emitted below `robot_root`.
     pub fn parse(robot_root: &str, key: &str) -> Option<Self> {
         let suffix = key.strip_prefix(robot_root)?.strip_prefix('/')?;
         let suffix = suffix
             .strip_prefix(PARTICIPANT_LIVELINESS_PREFIX)?
             .strip_prefix('/')?;
-        if suffix.contains('/') {
+        let (participant, incarnation) = suffix.split_once('/')?;
+        if incarnation.contains('/') {
             return None;
         }
-        Self::new(robot_root, suffix).ok()
+        Self::new(robot_root, participant, incarnation.parse().ok()?).ok()
     }
 
     /// Wildcard selector used by a robot-scoped observer.
     pub fn selector(robot_root: &str) -> Result<OwnedKeyExpr> {
         validate_robot_root(robot_root)?;
-        let selector = format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/*");
+        let selector = format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/*/*");
         OwnedKeyExpr::new(selector.clone()).map_err(|error| {
             BusError::Namespace(format!("invalid Liveliness selector '{selector}': {error}"))
         })
@@ -119,10 +132,9 @@ impl Bus {
     /// operations. Sending the event to a local channel or updating local state
     /// is appropriate.
     ///
-    /// A session that both declares and observes its own participant key can
-    /// receive a self `Lost` when a stale holder of the same key is reaped; no
-    /// compensating `Alive` follows. Observers must ignore observations for
-    /// their own participant id rather than treating them as recoverable.
+    /// Callers that render stable participant presence must aggregate the exact
+    /// incarnation events and consider the participant present while at least
+    /// one incarnation remains live.
     pub async fn observe_participant_liveliness(
         &self,
         callback: impl Fn(ParticipantLivelinessEvent) + Send + Sync + 'static,
@@ -195,27 +207,37 @@ mod tests {
 
     #[test]
     fn key_builder_owns_validation_and_round_trips_identity() {
-        let key = ParticipantLivelinessKey::new("dev/robots/rover", "drive").unwrap();
+        let key = ParticipantLivelinessKey::new("dev/robots/rover", "drive", 42).unwrap();
         assert_eq!(
             key.as_str(),
-            "dev/robots/rover/liveliness/participants/drive"
+            "dev/robots/rover/liveliness/participants/drive/42"
         );
         assert_eq!(
             ParticipantLivelinessKey::parse("dev/robots/rover", key.as_str()),
-            Some(key)
+            Some(key.clone())
         );
-        assert!(ParticipantLivelinessKey::new("dev/robots/rover", "bad/id").is_err());
-        assert!(ParticipantLivelinessKey::new("dev/*", "drive").is_err());
+        assert_eq!(key.participant(), "drive");
+        assert_eq!(key.incarnation(), 42);
+        assert!(ParticipantLivelinessKey::new("dev/robots/rover", "bad/id", 42).is_err());
+        assert!(ParticipantLivelinessKey::new("dev/*", "drive", 42).is_err());
+        assert!(
+            ParticipantLivelinessKey::parse(
+                "dev/robots/rover",
+                "dev/robots/rover/liveliness/participants/drive/not-a-number"
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn participant_event_maps_sample_kinds() {
         let root = "dev/robots/rover";
-        let key = "dev/robots/rover/liveliness/participants/drive";
+        let key = "dev/robots/rover/liveliness/participants/drive/7";
         let alive = participant_event(root, key, SampleKind::Put).unwrap();
         let lost = participant_event(root, key, SampleKind::Delete).unwrap();
 
         assert_eq!(alive.key.participant(), "drive");
+        assert_eq!(alive.key.incarnation(), 7);
         assert_eq!(alive.status, ParticipantLivelinessStatus::Alive);
         assert_eq!(lost.status, ParticipantLivelinessStatus::Lost);
         assert!(participant_event(root, "other/robot/key", SampleKind::Put).is_none());
@@ -225,10 +247,10 @@ mod tests {
     fn observer_selector_covers_exactly_the_emitted_identity_segments() {
         let root = "dev/robots/rover";
         let selector = ParticipantLivelinessKey::selector(root).unwrap();
-        let key = ParticipantLivelinessKey::new(root, "drive").unwrap();
+        let key = ParticipantLivelinessKey::new(root, "drive", 9).unwrap();
         assert_eq!(
             selector.as_str(),
-            "dev/robots/rover/liveliness/participants/*"
+            "dev/robots/rover/liveliness/participants/*/*"
         );
         assert!(selector.includes(&key.key));
     }
