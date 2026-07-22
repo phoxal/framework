@@ -37,9 +37,9 @@ pub struct PackagedArtifact {
 }
 
 /// A packaged artifact's on-disk facts, read back from `package_dir` so the
-/// suite generator can form an immutable [`crate::suite`] blob. The tarball
-/// and checksum paths themselves are not carried; the release URL is derived
-/// from `tarball_name` without reopening the artifact.
+/// suite generator can form an immutable [`crate::release::suite`] blob. The
+/// tarball and checksum paths themselves are not carried; the release URL is
+/// derived from `tarball_name` without reopening the artifact.
 #[derive(Clone, Debug)]
 pub(crate) struct PackagedOutput {
     pub tarball_name: String,
@@ -484,181 +484,6 @@ fn validate_metadata_absent(binary_path: &Path, artifact: &OfficialArtifact) -> 
     Ok(())
 }
 
-/// Extracts a participant's API metadata from every packaged target binary
-/// being released and enforces that the raw embedded metadata section is
-/// byte-identical across them. This makes any target's section valid evidence
-/// for the whole `(package, version)` and lets publish-time coherence operate
-/// on the exact bytes users download without a fresh native rebuild.
-#[cfg(test)]
-pub(crate) fn extract_metadata_from_packaged(
-    artifact: &OfficialArtifact,
-    package_dir: &Path,
-    target_triples: &[String],
-) -> Result<ParticipantMeta> {
-    if !artifact.kind.embeds_participant_metadata() {
-        bail!(
-            "{} is {} and does not have participant API metadata",
-            artifact.package,
-            artifact.kind
-        );
-    }
-    let bin_name = artifact.require_bin_name()?;
-    let mut canonical: Option<(String, Option<Vec<u8>>, ParticipantMeta)> = None;
-
-    for triple in target_triples {
-        let stem = asset_stem(artifact, triple);
-        let tarball = package_dir.join(format!("{stem}.tar.zst"));
-        if !tarball.is_file() {
-            bail!(
-                "missing packaged binary for {} v{} target {}: {}",
-                artifact.package,
-                artifact.version,
-                triple,
-                tarball.display()
-            );
-        }
-        let object_bytes = read_binary_from_tarball(&tarball, bin_name)?;
-        let describe = format!(
-            "{} ({triple}, from {})",
-            artifact.package,
-            tarball.display()
-        );
-        let section =
-            metadata::extract_participant_metadata_section_from_bytes(&object_bytes, &describe)
-                .with_context(|| {
-                    format!("failed to extract API metadata for {}", artifact.package)
-                })?;
-        let meta = metadata::parse_participant_metadata_section(section.as_deref(), &describe)?;
-        validate_metadata(&meta, artifact)?;
-
-        if let Some((canonical_target, canonical_section, _)) = &canonical {
-            ensure_metadata_sections_equal(
-                artifact,
-                canonical_target,
-                canonical_section.as_deref(),
-                triple,
-                section.as_deref(),
-            )?;
-        } else {
-            canonical = Some((triple.clone(), section, meta));
-        }
-    }
-
-    canonical.map(|(_, _, meta)| meta).with_context(|| {
-        format!(
-            "no binary targets were provided for {} v{}",
-            artifact.package, artifact.version
-        )
-    })
-}
-
-/// Verifies that every packaged target for a non-participant artifact omits
-/// the participant metadata section.
-#[cfg(test)]
-pub(crate) fn validate_no_metadata_from_packaged(
-    artifact: &OfficialArtifact,
-    package_dir: &Path,
-    target_triples: &[String],
-) -> Result<()> {
-    if artifact.kind.embeds_participant_metadata() {
-        bail!(
-            "{} is a participant and requires metadata validation",
-            artifact.package
-        );
-    }
-    let bin_name = artifact.require_bin_name()?;
-    if target_triples.is_empty() {
-        bail!(
-            "no binary targets were provided for {} v{}",
-            artifact.package,
-            artifact.version
-        );
-    }
-    for triple in target_triples {
-        let stem = asset_stem(artifact, triple);
-        let tarball = package_dir.join(format!("{stem}.tar.zst"));
-        if !tarball.is_file() {
-            bail!(
-                "missing packaged binary for {} v{} target {}: {}",
-                artifact.package,
-                artifact.version,
-                triple,
-                tarball.display()
-            );
-        }
-        let object_bytes = read_binary_from_tarball(&tarball, bin_name)?;
-        let describe = format!(
-            "{} ({triple}, from {})",
-            artifact.package,
-            tarball.display()
-        );
-        let section =
-            metadata::extract_participant_metadata_section_from_bytes(&object_bytes, &describe)
-                .with_context(|| {
-                    format!("failed to inspect API metadata for {}", artifact.package)
-                })?;
-        if section.is_some() {
-            bail!(
-                "{} target {} must not embed participant API metadata",
-                artifact.package,
-                triple
-            );
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn ensure_metadata_sections_equal(
-    artifact: &OfficialArtifact,
-    canonical_target: &str,
-    canonical_section: Option<&[u8]>,
-    candidate_target: &str,
-    candidate_section: Option<&[u8]>,
-) -> Result<()> {
-    if canonical_section != candidate_section {
-        bail!(
-            "cross-target metadata mismatch for {} v{}: embedded metadata section differs between \
-             targets {} and {}",
-            artifact.package,
-            artifact.version,
-            canonical_target,
-            candidate_target
-        );
-    }
-    Ok(())
-}
-
-/// Reads the single binary named `bin_name` out of a `.tar.zst` release
-/// tarball into memory (the archive holds exactly that one entry - see
-/// [`write_tar_zst`]).
-#[cfg(test)]
-fn read_binary_from_tarball(tarball: &Path, bin_name: &str) -> Result<Vec<u8>> {
-    let file = File::open(tarball)
-        .with_context(|| format!("failed to open tarball {}", tarball.display()))?;
-    let decoder = zstd::Decoder::new(file)
-        .with_context(|| format!("failed to start zstd decoder for {}", tarball.display()))?;
-    let mut archive = tar::Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .with_context(|| format!("failed to read entries of {}", tarball.display()))?;
-    for entry in entries {
-        let mut entry =
-            entry.with_context(|| format!("failed to read an entry of {}", tarball.display()))?;
-        let path = entry
-            .path()
-            .with_context(|| format!("entry of {} has no path", tarball.display()))?;
-        if path.as_os_str() == std::ffi::OsStr::new(bin_name) {
-            let mut bytes = Vec::new();
-            entry
-                .read_to_end(&mut bytes)
-                .with_context(|| format!("failed to read {bin_name} from {}", tarball.display()))?;
-            return Ok(bytes);
-        }
-    }
-    bail!("tarball {} does not contain {bin_name}", tarball.display())
-}
-
 /// Builds `artifact` for the host with a plain (non-`auditable`, non-release)
 /// `cargo build` and extracts its compiled-in API metadata. Used by the
 /// release-PR coherence gate, which checks the whole workspace before release.
@@ -688,9 +513,8 @@ pub(crate) fn build_and_extract_metadata(
     extract_and_validate_metadata(&binary_path, artifact)
 }
 
-/// Returns the local host triple used in asset names. This seed packages only
-/// host builds; cross-target naming and build orchestration belongs to native
-/// release CI plan #01.
+/// Returns the local host triple used in asset names and as the default
+/// `--target` for `release package` when no cross-target triple is given.
 pub(crate) fn host_triple(root: &Path) -> Result<String> {
     let output = Command::new("rustc")
         .arg("-vV")
@@ -714,12 +538,14 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
 }
 
 /// The release asset filename stem: a filesystem-safe projection of the
-/// provider-qualified `package` (docs #21), not the Cargo crate name. A
+/// provider-qualified `package`, not the Cargo crate name. An
 /// asset bundle ([`ASSETS_SCOPE`]) carries no trailing scope token - it is the
 /// one release output for its
 /// `(package, version)` with no sibling to disambiguate from by filename, and
-/// the packaged-output reader ([`crate::suite`]) classifies by
-/// the suite inventory's target triples, never the filename. A real target
+/// the packaged-output reader ([`crate::release::suite`]) classifies by
+/// the workspace artifact inventory's supported target scopes
+/// ([`crate::workspace::OfficialArtifact::supported_target_triples`]), never
+/// the filename. A real target
 /// triple keeps the `-{triple}` suffix so distinct architectures don't
 /// collide in the same directory.
 pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {
@@ -967,82 +793,6 @@ mod tests {
         );
     }
 
-    /// Full package-output wiring proof: build a real participant, package the
-    /// same metadata-bearing binary for two target labels, then extract and
-    /// equality-check both tarballs rather than rebuilding.
-    #[test]
-    fn extract_metadata_from_packaged_reads_the_tarball_binary() -> Result<()> {
-        let workspace = Workspace::discover()?;
-        let bin_name = "phoxal-simulator-webots-controller";
-        let status = Command::new("cargo")
-            .args(["build", "--quiet", "-p", bin_name])
-            .current_dir(workspace.root())
-            .status()
-            .context("failed to spawn cargo build for webots controller")?;
-        assert!(status.success(), "cargo build -p {bin_name} failed");
-        let binary = workspace
-            .target_dir()
-            .join("debug")
-            .join(format!("{bin_name}{}", std::env::consts::EXE_SUFFIX));
-
-        let artifact = OfficialArtifact {
-            package: "phoxal/simulator-webots-controller".to_string(),
-            package_name: Some(bin_name.to_string()),
-            kind: ArtifactKind::Simulator,
-            version: "0.1.0".to_string(),
-            crate_dir: PathBuf::from("simulator/webots-controller"),
-            bin_name: Some(bin_name.to_string()),
-            id: "webots-controller".to_string(),
-            metadata: Default::default(),
-        };
-
-        let dir = tempfile::tempdir().context("create tempdir")?;
-        let triples = ["target-a".to_string(), "target-b".to_string()];
-        for triple in &triples {
-            let stem = asset_stem(&artifact, triple);
-            let tarball = dir.path().join(format!("{stem}.tar.zst"));
-            write_tar_zst(&tarball, &binary, bin_name)?;
-        }
-
-        let meta = extract_metadata_from_packaged(&artifact, dir.path(), &triples)?;
-        assert!(meta.contracts.iter().any(|contract| {
-            contract.role == "publish"
-                && contract.version == "v0.1"
-                && contract.contract == "battery::State"
-                && !contract.external
-        }));
-        Ok(())
-    }
-
-    #[test]
-    fn infrastructure_router_and_packaged_targets_have_no_participant_metadata() -> Result<()> {
-        let workspace = Workspace::discover()?;
-        let artifact = infrastructure_router_artifact();
-        let package_name = artifact.require_package_name()?;
-        let status = Command::new("cargo")
-            .args(["build", "--quiet", "-p", package_name])
-            .current_dir(workspace.root())
-            .status()
-            .context("failed to build infrastructure router")?;
-        assert!(status.success(), "cargo build -p {package_name} failed");
-        let binary = workspace.target_dir().join("debug").join(format!(
-            "{}{}",
-            artifact.require_bin_name()?,
-            std::env::consts::EXE_SUFFIX
-        ));
-        validate_metadata_absent(&binary, &artifact)?;
-
-        let dir = tempfile::tempdir()?;
-        let targets = ["target-a".to_string(), "target-b".to_string()];
-        for target in &targets {
-            let tarball = dir
-                .path()
-                .join(format!("{}.tar.zst", asset_stem(&artifact, target)));
-            write_tar_zst(&tarball, &binary, artifact.require_bin_name()?)?;
-        }
-        validate_no_metadata_from_packaged(&artifact, dir.path(), &targets)
-    }
-
     #[test]
     fn infrastructure_metadata_absence_gate_rejects_a_participant_section() -> Result<()> {
         let artifact = infrastructure_router_artifact();
@@ -1072,89 +822,6 @@ mod tests {
                 .contains("must not embed participant API metadata"),
             "{error:#}"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn cross_target_metadata_mismatch_names_package_version_and_targets() -> Result<()> {
-        let artifact = OfficialArtifact {
-            package: "phoxal/simulator-webots-controller".to_string(),
-            package_name: Some("phoxal-simulator-webots-controller".to_string()),
-            kind: ArtifactKind::Simulator,
-            version: "0.19.7".to_string(),
-            crate_dir: PathBuf::from("simulator/webots-controller"),
-            bin_name: Some("phoxal-simulator-webots-controller".to_string()),
-            id: "webots-controller".to_string(),
-            metadata: Default::default(),
-        };
-        let dir = tempfile::tempdir()?;
-        let targets = [
-            (
-                "x86_64-unknown-linux-gnu",
-                br#"{"participant_api":"Api","contracts":[],"config_schema":{"type":"null"}}"#.as_slice(),
-            ),
-            (
-                "aarch64-unknown-linux-gnu",
-                br#"{"participant_api":"Api","contracts":[{"role":"publish","version":"v1","contract":"battery::State","external":false}],"config_schema":{"type":"null"}}"#
-                    .as_slice(),
-            ),
-        ];
-        for (target, payload) in targets {
-            let mut object = object::write::Object::new(
-                object::BinaryFormat::Elf,
-                object::Architecture::Aarch64,
-                object::Endianness::Little,
-            );
-            let section = object.add_section(
-                Vec::new(),
-                b".phoxal_api_meta".to_vec(),
-                object::SectionKind::ReadOnlyData,
-            );
-            object.append_section_data(section, payload, 1);
-            let binary = dir.path().join(format!("{target}.bin"));
-            fs::write(&binary, object.write()?)?;
-            let tarball = dir
-                .path()
-                .join(format!("{}.tar.zst", asset_stem(&artifact, target)));
-            write_tar_zst(&tarball, &binary, "phoxal-simulator-webots-controller")?;
-        }
-
-        let err = extract_metadata_from_packaged(
-            &artifact,
-            dir.path(),
-            &[
-                "x86_64-unknown-linux-gnu".to_string(),
-                "aarch64-unknown-linux-gnu".to_string(),
-            ],
-        )
-        .unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("phoxal/simulator-webots-controller v0.19.7"));
-        assert!(message.contains("x86_64-unknown-linux-gnu"));
-        assert!(message.contains("aarch64-unknown-linux-gnu"));
-        Ok(())
-    }
-
-    #[test]
-    fn extract_metadata_from_packaged_fails_when_no_tarball_present() -> Result<()> {
-        let artifact = OfficialArtifact {
-            package: "phoxal/simulator-webots-controller".to_string(),
-            package_name: Some("phoxal-simulator-webots-controller".to_string()),
-            kind: ArtifactKind::Simulator,
-            version: "0.1.0".to_string(),
-            crate_dir: PathBuf::from("simulator/webots-controller"),
-            bin_name: Some("phoxal-simulator-webots-controller".to_string()),
-            id: "webots-controller".to_string(),
-            metadata: Default::default(),
-        };
-        let dir = tempfile::tempdir().context("create tempdir")?;
-        let err = extract_metadata_from_packaged(
-            &artifact,
-            dir.path(),
-            &["some-target-triple".to_string()],
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("missing packaged binary"), "{err}");
         Ok(())
     }
 }

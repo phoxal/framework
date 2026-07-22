@@ -4,23 +4,18 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::MetadataCommand;
 use clap::Args as ClapArgs;
 
-use crate::suite;
+use crate::release::suite;
 use crate::workspace::Workspace;
 
+/// The pure source/train gate: no packaged artifacts are read or produced
+/// here. Staged-artifact verification and `suite.json` generation are
+/// `release suite`'s job.
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    /// Verify staged release artifacts and produce suite.json in addition to
-    /// the source/train gates.
-    #[arg(long)]
-    pub staged: bool,
-    #[arg(long, default_value = "target/xtask/release")]
-    pub package_dir: std::path::PathBuf,
-    #[arg(long, default_value = "target/xtask/suite.json")]
-    pub out: std::path::PathBuf,
+    /// Exact release tag, checked against the workspace train version when
+    /// given.
     #[arg(long)]
     pub tag: Option<String>,
-    #[arg(long, env = "GITHUB_REPOSITORY", default_value = "phoxal/framework")]
-    pub repo: String,
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -44,15 +39,7 @@ pub fn run(args: Args) -> Result<()> {
     )?;
     crate::coherence::run(crate::coherence::Args {})?;
 
-    if args.staged {
-        let tag = args.tag.context("--tag is required with --staged")?;
-        suite::run(suite::Args {
-            package_dir: args.package_dir,
-            out: args.out,
-            tag,
-            repo: args.repo,
-        })?;
-    } else if let Some(tag) = args.tag {
+    if let Some(tag) = args.tag {
         if tag != format!("v{train}") {
             bail!("release tag {tag} does not match workspace train v{train}");
         }
