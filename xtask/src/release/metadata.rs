@@ -47,8 +47,9 @@ const SECTION_NAMES: [&str; 2] = [".phoxal_api_meta", "__phoxal_meta"];
 /// name in [`SECTION_NAMES`] in turn. `Ok(None)` means the object file parsed
 /// but is not a participant: every participant attribute emits the section,
 /// including `Api = ()`. A malformed/unrecognized *object file* is still a
-/// hard error. `describe` names the source (a file path, or a `pkg@target from
-/// tarball` label) for error messages.
+/// hard error. `describe` is an arbitrary caller-chosen label for the object
+/// file's source (a file path, or another descriptive tag) used in error
+/// messages.
 pub(crate) fn extract_participant_metadata_section_from_bytes(
     object_bytes: &[u8],
     describe: &str,
@@ -82,10 +83,11 @@ pub(crate) fn parse_participant_metadata_section(
 /// Parses the embedded participant metadata out of an in-memory object file
 /// (an ELF/Mach-O binary of any target architecture - this is how `release
 /// package` reads the section out of a just-built, possibly cross-compiled,
-/// binary without executing it). Reads nothing, runs nothing. A binary with
-/// no section at all (an `Api = ()` participant - see
-/// [`extract_participant_metadata_section_from_bytes`])
-/// parses as an empty contract list, not an error.
+/// binary without executing it). Reads nothing, runs nothing. An `Api = ()`
+/// participant still emits the section, with an empty contract list; a binary
+/// with no section at all is a hard error (see
+/// [`extract_participant_metadata_section_from_bytes`] and
+/// [`parse_participant_metadata_section`]).
 pub(crate) fn extract_participant_metadata_from_bytes(
     object_bytes: &[u8],
     describe: &str,

@@ -32,9 +32,11 @@ const BINARY_TARGETS: [&str; 5] = [
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
 /// The assets scope token recorded for a [`ArtifactKind::Component`] package's
-/// asset bundle instead of a real target triple. The suite blob's `assets`
-/// slot carries exactly this key for that output rather than pretending it is
-/// a binary target.
+/// asset bundle instead of a real target triple. It is purely an internal
+/// packaging scope sentinel - the suite schema itself stores this output as
+/// `assets: Option<Blob>` with no such key - and [`crate::release::suite`]'s
+/// generator maps a target equal to this sentinel into that `assets` field
+/// rather than into the per-triple `targets` map.
 pub const ASSETS_SCOPE: &str = "assets";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -432,8 +434,9 @@ fn validate_artifact_publish(
     if !publish.is_some_and(|registries| registries.is_empty()) {
         bail!(
             "{package_name} is an official artifact but {} does not set publish = false; \
-             artifacts stay outside release-plz and crates.io - xtask builds, packages, and \
-             stages their binaries/assets into the GitHub train release. Set publish = false",
+             artifacts stay outside release-plz and crates.io - the release workflow builds \
+             and packages them with xtask and stages them into the GitHub train release. \
+             Set publish = false",
             relative_display(root, manifest_path)
         );
     }
@@ -709,8 +712,10 @@ mod tests {
     fn artifact_publish_true_is_an_error() {
         let manifest = root().join("simulator/webots/Cargo.toml");
 
-        validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest)
-            .expect("publish = false is valid: xtask stages artifacts into the train release");
+        validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest).expect(
+            "publish = false is valid: the release workflow builds, packages, and stages \
+             artifacts with xtask into the train release",
+        );
 
         let error = validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
             .unwrap_err();

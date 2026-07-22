@@ -543,7 +543,9 @@ pub(crate) fn host_triple(root: &Path) -> Result<String> {
 /// one release output for its
 /// `(package, version)` with no sibling to disambiguate from by filename, and
 /// the packaged-output reader ([`crate::release::suite`]) classifies by
-/// the suite inventory's target triples, never the filename. A real target
+/// the workspace artifact inventory's supported target scopes
+/// ([`crate::workspace::OfficialArtifact::supported_target_triples`]), never
+/// the filename. A real target
 /// triple keeps the `-{triple}` suffix so distinct architectures don't
 /// collide in the same directory.
 pub(crate) fn asset_stem(artifact: &OfficialArtifact, host_triple: &str) -> String {

@@ -130,8 +130,10 @@ pub struct ArtifactGitPin {
 }
 
 /// `services:` (was `user_participants` / `user_services`, and the separate
-/// `tools` map) - user services only; official services are framework
-/// packages pinned via `artifacts.pins`, never declared here.
+/// `tools` map) - user services only; official services are supplied by the
+/// locked train's complete suite, never declared here. `artifacts.pins` is
+/// only an optional development-time source override, not how official
+/// services are normally selected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]

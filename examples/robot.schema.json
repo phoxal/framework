@@ -911,7 +911,7 @@
       "additionalProperties": false
     },
     "UserService": {
-      "description": "`services:` (was `user_participants` / `user_services`, and the separate\n`tools` map) - user services only; official services are framework\npackages pinned via `artifacts.pins`, never declared here.",
+      "description": "`services:` (was `user_participants` / `user_services`, and the separate\n`tools` map) - user services only; official services are supplied by the\nlocked train's complete suite, never declared here. `artifacts.pins` is\nonly an optional development-time source override, not how official\nservices are normally selected.",
       "type": "object",
       "properties": {
         "config": {
