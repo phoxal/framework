@@ -713,8 +713,8 @@ mod tests {
         let manifest = root().join("simulator/webots/Cargo.toml");
 
         validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest).expect(
-            "publish = false is valid: the release workflow builds, packages, and stages \
-             artifacts with xtask into the train release",
+            "publish = false is valid: the release workflow builds and packages artifacts \
+             with xtask and stages them into the train release",
         );
 
         let error = validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
