@@ -45,8 +45,8 @@ project, and links the editor-facing
 The root `[workspace.package].version` is the only train version. Every member
 inherits it, and release-plz prepares one grouped `chore(release): release` PR.
 `cargo xtask release verify` checks the complete official source set and API
-graph; the staged form also verifies every target archive and produces
-`phoxal.suite/v0` `suite.json`.
+graph; `cargo xtask release suite` then verifies every staged target archive
+and produces `phoxal.suite/v0` `suite.json`.
 
 Publication is resumable and GitHub-first. CI creates or resumes a non-latest
 draft `v<version>` release, uploads the immutable artifacts and descriptor,

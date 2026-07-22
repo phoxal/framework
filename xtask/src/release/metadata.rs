@@ -1,23 +1,20 @@
-//! Compile-time participant metadata extraction (X-tools slice).
+//! Compile-time participant metadata extraction.
 //!
 //! The participant attribute embeds one JSON manifest per participant binary in
 //! a dedicated linker section - `__DATA,__phoxal_meta` on Mach-O, `.phoxal_api_meta`
 //! everywhere else (`phoxal-macros/src/authoring.rs`'s `link_section_attrs`).
-//! `xtask` no longer runs `emit-apis` (that runtime subcommand is being retired
-//! separately, see the Cleanup slice) to learn a participant's contract
-//! surface: it reads the section's bytes straight out of the object file,
-//! without ever executing the artifact. This module is format- and
-//! architecture-agnostic (via the `object` crate), which is load-bearing for
-//! the release pipeline: the `catalog-publish` job runs on an x86_64 Linux host
-//! but the binaries it indexes are the cross-compiled artifacts actually being
-//! shipped - aarch64/x86_64 ELF *and* aarch64/x86_64 Mach-O. Parsing the
-//! section out of *those* binaries (see `package::extract_metadata_from_packaged`,
-//! which reads every target straight out of the release tarballs) rather than
-//! from a fresh native rebuild is what makes publish-time coherence reflect the
-//! exact bytes that users download.
+//! This module reads the section's bytes straight out of the object file,
+//! without ever executing the artifact. It is format- and architecture-agnostic
+//! (via the `object` crate), which is load-bearing for its two consumers: the
+//! release-PR coherence gate builds each participant for the host and reads
+//! the section from that debug binary (`package::build_and_extract_metadata`),
+//! while `release package` validates the section on the just-built release
+//! binary for whichever target it is packaging - together covering every
+//! aarch64/x86_64 ELF and Mach-O shape the framework ships without a fresh
+//! native rebuild per target.
 //!
 //! This module owns only the object-file section-BYTES extraction (an
-//! `object`-crate walk over an ELF/Mach-O binary or tarball); the JSON shape
+//! `object`-crate walk over an ELF/Mach-O binary); the JSON shape
 //! itself - `{"role","version","contract","external"}` - is deserialized
 //! via the shared [`phoxal::participant::metadata`] type, per the
 //! coherence-gate design doc §5 ("move the parser alongside the rule into
@@ -83,9 +80,9 @@ pub(crate) fn parse_participant_metadata_section(
 }
 
 /// Parses the embedded participant metadata out of an in-memory object file
-/// (an ELF/Mach-O binary of any target architecture - this is how the
-/// `catalog-publish` job on an x86_64 host reads the section out of a
-/// cross-compiled aarch64 binary). Reads nothing, runs nothing. A binary with
+/// (an ELF/Mach-O binary of any target architecture - this is how `release
+/// package` reads the section out of a just-built, possibly cross-compiled,
+/// binary without executing it). Reads nothing, runs nothing. A binary with
 /// no section at all (an `Api = ()` participant - see
 /// [`extract_participant_metadata_section_from_bytes`])
 /// parses as an empty contract list, not an error.
@@ -215,9 +212,9 @@ mod tests {
     /// host-locked. Parses the phoxal section out of both an aarch64 ELF and an
     /// x86_64 Mach-O built entirely in memory - on any given test host at least
     /// one of these is a foreign object format, and neither matches the host on
-    /// both format and architecture. This is exactly what the `catalog-publish`
-    /// x86_64-Linux job relies on when it reads the section out of the shipped
-    /// aarch64 (ELF) and Apple (Mach-O) release binaries.
+    /// both format and architecture. This is exactly what `release package`
+    /// relies on when it validates a just-built, possibly cross-compiled,
+    /// target binary without a native rebuild.
     #[test]
     fn extracts_metadata_from_foreign_format_and_arch_object_files() -> Result<()> {
         let payload = br#"{"participant_api":"Api","contracts":[{"role":"publish","version":"v1","contract":"drive::State","external":false}],"config_schema":{"type":"null"}}"#;

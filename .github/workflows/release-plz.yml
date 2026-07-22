@@ -144,8 +144,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libudev-dev
+      - name: Verify source train
+        run: cargo xtask release verify --tag "${{ needs.prepare.outputs.tag }}"
       - name: Verify staged train and produce suite
-        run: cargo xtask release verify --staged --tag "${{ needs.prepare.outputs.tag }}"
+        run: cargo xtask release suite --tag "${{ needs.prepare.outputs.tag }}"
       - name: Create or resume non-latest draft release
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

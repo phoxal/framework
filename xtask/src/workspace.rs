@@ -32,9 +32,9 @@ const BINARY_TARGETS: [&str; 5] = [
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
 /// The assets scope token recorded for a [`ArtifactKind::Component`] package's
-/// asset bundle instead of a real target triple. Catalog artifact maps carry
-/// exactly this key for that output rather than pretending it is a binary
-/// target.
+/// asset bundle instead of a real target triple. The suite blob's `assets`
+/// slot carries exactly this key for that output rather than pretending it is
+/// a binary target.
 pub const ASSETS_SCOPE: &str = "assets";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -132,7 +132,7 @@ impl OfficialArtifact {
     /// ships an asset bundle
     /// ([`ArtifactKind::ships_assets`], design doc §9).
     pub fn supported_target_triples(&self) -> Vec<String> {
-        // Every discovered artifact starts from the uniform six-target matrix
+        // Every discovered artifact starts from the uniform five-target matrix
         // (#197); a `Component` additionally ships the asset bundle (design
         // doc §9). Package metadata may add exceptional
         // targets and subtract targets the artifact cannot build.
@@ -187,8 +187,8 @@ impl OfficialArtifact {
 }
 
 /// Projects a provider-qualified `package` (`phoxal/component-ddsm115`)
-/// to its filesystem-safe form (`phoxal-component-ddsm115`) for release
-/// tags and asset filenames (`docs #21` "Release tags and assets").
+/// to its filesystem-safe form (`phoxal-component-ddsm115`) for asset
+/// filenames.
 pub fn filesystem_safe_package(package: &str) -> String {
     package.replace('/', "-")
 }
@@ -432,8 +432,8 @@ fn validate_artifact_publish(
     if !publish.is_some_and(|registries| registries.is_empty()) {
         bail!(
             "{package_name} is an official artifact but {} does not set publish = false; \
-             artifacts stay outside release-plz and crates.io - xtask versions/tags them and \
-             the build-snapshot workflow publishes their binaries/assets. Set publish = false",
+             artifacts stay outside release-plz and crates.io - xtask builds, packages, and \
+             stages their binaries/assets into the GitHub train release. Set publish = false",
             relative_display(root, manifest_path)
         );
     }
@@ -710,7 +710,7 @@ mod tests {
         let manifest = root().join("simulator/webots/Cargo.toml");
 
         validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest)
-            .expect("publish = false is valid: xtask git-releases artifacts");
+            .expect("publish = false is valid: xtask stages artifacts into the train release");
 
         let error = validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
             .unwrap_err();
