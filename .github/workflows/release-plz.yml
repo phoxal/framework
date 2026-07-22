@@ -199,7 +199,9 @@ jobs:
           for crate in phoxal-bus phoxal-macros phoxal-api phoxal; do
             found=false
             for attempt in $(seq 1 30); do
-              if curl --fail --silent "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
+              if curl --fail --silent \
+                --user-agent "phoxal-release-verifier/1.0 (https://github.com/phoxal/framework)" \
+                "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
                 found=true
                 break
               fi
