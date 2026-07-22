@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2](https://github.com/phoxal/framework/compare/phoxal-bus-v0.36.1...phoxal-bus-v0.36.2) - 2026-07-22
+
+### Added
+
+- qualify participant liveliness by incarnation
+
 ## [0.36.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.22.1...phoxal-bus-v0.36.0) - 2026-07-21
 
 ### Added
