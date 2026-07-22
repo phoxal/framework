@@ -212,6 +212,7 @@ jobs:
       - name: Mark GitHub train complete and latest
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false --latest
 
   release-plz-pr:
