@@ -232,7 +232,7 @@ where
         namespace: launch.namespace.clone(),
         robot_id: launch.robot_id.clone(),
         participant: launch.participant_id.clone(),
-        incarnation: 0,
+        incarnation: launch.incarnation,
         connect_endpoints: launch.bus.connect_endpoints.clone(),
     })
     .await?;

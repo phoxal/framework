@@ -78,6 +78,13 @@ Key rules the example shows:
   Official participants take no `config` param and read the robot model through `ctx.robot()`.
 
 The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the scheduled control loop, `#[server]` / `#[server_snapshot]` serve queries, and `#[shutdown]` runs graceful park/stop/flush before the bus closes.
+For a supervised process, `PHOXAL_INCARNATION` (or `--incarnation`) carries the
+supervisor-minted nonzero `u64` into bus metadata and the participant's exact
+Liveliness key:
+`<robot-root>/liveliness/participants/<participant-id>/<incarnation>`.
+Observers use that exact key for spawn readiness and aggregate all live
+incarnations of a participant id when they need stable present/not-present
+state. Unmanaged local runs use incarnation `0`.
 It measures handler duration/lateness/missed ticks plus the exact
 version-qualified typed-bus buffers declared by the participant and emits one
 bounded portable runtime-performance rollup per host-monotonic grid interval.

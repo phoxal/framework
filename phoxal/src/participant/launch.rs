@@ -20,6 +20,8 @@ pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
 pub mod env {
     /// Bus-unique participant id.
     pub const PARTICIPANT_ID: &str = "PHOXAL_PARTICIPANT_ID";
+    /// Supervisor-minted per-process incarnation.
+    pub const INCARNATION: &str = "PHOXAL_INCARNATION";
     /// Robot id for the transport root.
     pub const ROBOT_ID: &str = "PHOXAL_ROBOT_ID";
     /// Bus namespace for the transport root.
@@ -38,6 +40,7 @@ pub mod env {
     /// All env names in contract order.
     pub const ALL: &[&str] = &[
         PARTICIPANT_ID,
+        INCARNATION,
         ROBOT_ID,
         NAMESPACE,
         ROBOT_ROOT,
@@ -53,6 +56,10 @@ pub mod env {
 pub struct ParticipantLaunch {
     /// The bus-unique participant id (never the static participant/artifact id, D53).
     pub participant_id: String,
+    /// Per-process incarnation. Supervisors mint a random nonzero value for
+    /// every spawn; zero is reserved for unmanaged local runs and tests.
+    #[serde(default)]
+    pub incarnation: u64,
     /// The bus namespace (`robot.namespace`).
     pub namespace: String,
     /// The robot id (`robot.id`).
@@ -93,6 +100,7 @@ impl ParticipantLaunch {
     pub fn local(participant_id: impl Into<String>, robot_id: impl Into<String>) -> Self {
         ParticipantLaunch {
             participant_id: participant_id.into(),
+            incarnation: 0,
             namespace: "dev".to_string(),
             robot_id: robot_id.into(),
             bus: BusProfile::default(),
@@ -128,6 +136,16 @@ struct CommonLaunchCli {
         value_name = "ID"
     )]
     participant_id: Option<String>,
+
+    /// Supervisor-minted per-process incarnation. Zero means unmanaged local run.
+    #[arg(
+        long,
+        env = env::INCARNATION,
+        hide_env_values = true,
+        value_name = "U64",
+        default_value_t = 0
+    )]
+    incarnation: u64,
 
     /// Robot id for the transport root. Defaults to `robot` for local runs.
     #[arg(long, env = env::ROBOT_ID, hide_env_values = true, value_name = "ID")]
@@ -239,6 +257,7 @@ impl CommonLaunchCli {
             nonempty_or(self.participant_id, || default_participant_id.to_string());
         let robot_id = nonempty_or(self.robot_id, || default_robot_id.to_string());
         let mut launch = ParticipantLaunch::local(participant_id, robot_id);
+        launch.incarnation = self.incarnation;
         launch.namespace = nonempty_or(self.namespace, || "dev".to_string());
         launch.robot_root = self.robot_root.filter(|path| !path.as_os_str().is_empty());
         launch.component_instance = self
@@ -434,6 +453,7 @@ mod tests {
         clear_env();
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "default-id");
+        assert_eq!(launch.incarnation, 0);
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
         assert_eq!(launch.robot_root, None);
@@ -449,6 +469,7 @@ mod tests {
         // SAFETY: serialized test; see clear_env.
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "tof-3");
+            std::env::set_var(env::INCARNATION, "41");
             std::env::set_var(env::ROBOT_ID, "robot-a");
             std::env::set_var(env::NAMESPACE, "lab");
             std::env::set_var(env::ROBOT_ROOT, "/robot");
@@ -459,6 +480,7 @@ mod tests {
         }
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "tof-3");
+        assert_eq!(launch.incarnation, 41);
         assert_eq!(launch.robot_id, "robot-a");
         assert_eq!(launch.namespace, "lab");
         assert_eq!(
@@ -485,6 +507,7 @@ mod tests {
         // SAFETY: serialized test; see clear_env.
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "env-participant");
+            std::env::set_var(env::INCARNATION, "41");
             std::env::set_var(env::ROBOT_ID, "env-robot");
             std::env::set_var(env::NAMESPACE, "env-ns");
             std::env::set_var(env::ROBOT_ROOT, "/env-robot");
@@ -498,6 +521,8 @@ mod tests {
             "participant-bin",
             "--participant-id",
             "flag-participant",
+            "--incarnation",
+            "42",
             "--robot-id",
             "flag-robot",
             "--namespace",
@@ -516,6 +541,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(launch.participant_id, "flag-participant");
+        assert_eq!(launch.incarnation, 42);
         assert_eq!(launch.robot_id, "flag-robot");
         assert_eq!(launch.namespace, "flag-ns");
         assert_eq!(
@@ -562,6 +588,7 @@ mod tests {
 
         for (flag, env_name) in [
             ("--participant-id", env::PARTICIPANT_ID),
+            ("--incarnation", env::INCARNATION),
             ("--robot-id", env::ROBOT_ID),
             ("--namespace", env::NAMESPACE),
             ("--robot-root", env::ROBOT_ROOT),

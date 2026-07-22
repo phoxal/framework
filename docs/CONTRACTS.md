@@ -65,6 +65,11 @@ The version is part of the contract's topic key.
   struct never carries a generic `timestamp_ns`.
   A publish stamps these from the runtime's `LogicalTime`
   (`publisher.publish_at(at, body)`).
+- Participant startup presence is an exact process-incarnation fact. The
+  Liveliness token key is
+  `<robot-root>/liveliness/participants/<participant-id>/<incarnation>`;
+  readiness waits for the launched incarnation, while UI presence aggregates
+  all live incarnations by stable participant id.
 - A body **may** carry an additional, explicitly named time field only when it
   denotes a different instant than produce time - `measured_at_ns` (sensor sample),
   `expires_at_ns` (when something lapses).
