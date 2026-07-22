@@ -103,13 +103,17 @@ and `router`:
   Official services are never declared here; they resolve from the train's
   complete suite automatically.
 - `router` (optional) names a project-relative Zenoh JSON5 file through
-  `router.config`. Without one, Phoxal disables discovery and outgoing
-  connections and allocates the first free loopback TCP port from its bounded
-  range. With one, authored Zenoh connect and scouting settings are retained;
-  Phoxal still forces router mode, rejects non-loopback TCP listeners until
-  listener authentication ships, and uses bounded loopback allocation when the
-  file omits `listen.endpoints`. `hello-rover` needs no custom router settings
-  and omits the section entirely.
+  `router.config`. Every supervised project binds its local participant
+  transport at the exact project-owned
+  `unixsock-stream/<project>/.phoxal/zenoh.sock` endpoint known before launch.
+  Without an authored config, Phoxal disables discovery and outgoing
+  connections. With one, authored Zenoh listeners, connect endpoints, and
+  scouting settings are retained alongside the mandatory local Unix endpoint;
+  Phoxal still forces router mode and rejects non-loopback authored TCP
+  listeners until listener authentication ships. Router readiness is a one-shot
+  typed result on the supervisor-provided bootstrap descriptor; stdout and
+  stderr contain only ordinary logs. `hello-rover` needs no custom router
+  settings and omits the section entirely.
 
 ## Adding a component
 

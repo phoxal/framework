@@ -160,6 +160,7 @@ extern crate self as phoxal;
 
 pub mod behavior;
 pub mod check;
+pub mod infrastructure;
 pub mod model;
 pub mod participant;
 pub mod suite;
