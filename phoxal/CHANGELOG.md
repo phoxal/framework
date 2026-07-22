@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0](https://github.com/phoxal/framework/compare/phoxal-v0.36.2...phoxal-v0.37.0) - 2026-07-22
+
+### Added
+
+- *(router)* [**breaking**] add fixed Unix readiness contract
+
 ## [0.36.2](https://github.com/phoxal/framework/compare/phoxal-v0.36.1...phoxal-v0.36.2) - 2026-07-22
 
 ### Added
