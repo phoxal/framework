@@ -4,7 +4,7 @@
 [workspace]
 release_always = true
 dependencies_update = false
-pr_name = "chore(release): release"
+pr_name = "chore(release): release v{{ version }}"
 semver_check = false
 # One train version is inherited by every workspace member. release-plz changes
 # the root version once and rewrites exact internal dependency pins together.

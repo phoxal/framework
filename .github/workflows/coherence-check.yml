@@ -13,16 +13,16 @@ name: Coherence gate
 # untrusted head code - not safe for a job that builds that code. Plain
 # `pull_request` carries no such elevated token, so building head code here is
 # safe. It DOES fire on release-plz's bot PR: that PR is created with the
-# phoxal GitHub App's token (`release-plz.yml`, `release-pr` step), which is
-# verified sufficient to trigger `pull_request` workflows - the existing
-# `pr-title-check` check already fires on those app-authored PRs today.
+# phoxal GitHub App's token (the shared `rust-release-plz-pr.yml` authoring
+# workflow delegated from `release-plz.yml`), which is verified sufficient to
+# trigger `pull_request` workflows - the existing `pr-title-check` check already
+# fires on those app-authored PRs today.
 #
-# SCOPE - enforced only on the release PR: the gate protects the
-# RELEASE, not every feature branch. A feature PR may be temporarily
-# incoherent mid-migration (a rolling contract-version move spans several
-# PRs), so only a PR whose title starts with `chore(release)` (release-plz's
-# fixed `pr_name`, `release-plz.toml`) pays the cost of a full workspace host
-# build; every other PR exits 0 immediately without building anything.
+# SCOPE - enforced only on the release PR: the gate protects the RELEASE, not
+# every feature branch. A feature PR may be temporarily incoherent mid-migration
+# (a rolling contract-version move spans several PRs), so only release-plz's
+# tooling-controlled `release-plz-*` branch pays the cost of a full workspace
+# host build; every other PR exits 0 immediately without building anything.
 #
 # NOTE for repo admins: this workflow only makes the check appear on PRs - it
 # does not itself make the check REQUIRED. Add "Coherence gate / coherence-check"
@@ -44,14 +44,11 @@ jobs:
     steps:
       - name: Check whether this is the release PR
         id: release-pr
-        # The PR title is untrusted input; it is passed via `env:` (data) rather
-        # than interpolated directly into the script text (`${{ }}` inside `run:`)
-        # so a crafted title cannot inject shell syntax.
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
-          if [[ "$PR_TITLE" == chore\(release\)* ]]; then
+          if [[ "$HEAD_REF" == release-plz-* ]]; then
             echo "is_release=true" >> "$GITHUB_OUTPUT"
             echo "release PR detected - coherence will be enforced"
           else

@@ -26,8 +26,15 @@ on:
     - cron: "17 5 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   audit:
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): release v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

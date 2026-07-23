@@ -43,7 +43,8 @@ project, and links the editor-facing
 ## Releasing
 
 The root `[workspace.package].version` is the only train version. Every member
-inherits it, and release-plz prepares one grouped `chore(release): release` PR.
+inherits it, and release-plz prepares one grouped
+`chore(release): release v<version>` PR.
 `cargo xtask release verify` checks the complete official source set and API
 graph; `cargo xtask release suite` then verifies every staged target archive
 and produces `phoxal.suite/v0` `suite.json`.
@@ -53,7 +54,7 @@ draft `v<version>` release, uploads the immutable artifacts and descriptor,
 publishes `phoxal-bus`, `phoxal-macros`, `phoxal-api`, and finally the public
 `phoxal` facade, waits for those exact versions to be observable on crates.io,
 then completes and marks the GitHub train latest. A retry reuses the same tag
-and skips existing immutable assets.
+and replaces assets only while the release remains a draft.
 
 See [`.github/workflows/release-plz.yml`](.github/workflows/release-plz.yml) and
 [`release-plz.toml`](release-plz.toml).

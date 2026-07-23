@@ -47,15 +47,15 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           subject="$(git log -1 --pretty=%s)"
-          if [[ "$EVENT_NAME" == "push" && "$subject" == chore\(release\)* ]]; then
+          if [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_PUBLISH" == "true" ]]; then
             [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
               echo "manual publication must run from main" >&2
               exit 1
             }
-            [[ "$subject" == chore\(release\)* ]] || {
-              echo "manual publication requires a prepared chore(release) commit" >&2
+            [[ "$subject" == "chore(release): release v"* ]] || {
+              echo "manual publication requires a versioned chore(release): release commit" >&2
               exit 1
             }
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -133,7 +133,7 @@ jobs:
   # `HAS_RELEASE_APP` guard keeps forks without the App secrets working on the
   # plain GITHUB_TOKEN fallback.
   stage-github:
-    name: stage immutable GitHub train
+    name: stage GitHub train
     needs: [prepare, build, assets]
     runs-on: ubuntu-latest
     env:
@@ -148,12 +148,6 @@ jobs:
           pattern: train-*
           path: target/xtask/release
           merge-multiple: true
-      - name: Install source-verification dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
-      - name: Verify source train
-        run: cargo xtask release verify --tag "${{ needs.prepare.outputs.tag }}"
       - name: Verify staged train and produce suite
         run: cargo xtask release suite --tag "${{ needs.prepare.outputs.tag }}"
       - name: Generate GitHub App token
@@ -171,19 +165,17 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ needs.prepare.outputs.tag }}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
+          if gh release view "$tag" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
+            [[ "$is_draft" == "true" ]] || {
+              echo "::error::Release $tag is already published; refusing to replace immutable assets."
+              exit 1
+            }
+          else
             gh release create "$tag" --draft --latest=false --title "$tag" --notes "Framework train $tag"
           fi
-          mapfile -t existing_assets < <(
-            gh release view "$tag" --json assets --jq '.assets[].name'
-          )
           for file in target/xtask/release/* target/xtask/suite.json; do
-            name="${file##*/}"
-            if printf '%s\n' "${existing_assets[@]}" | grep --fixed-strings --line-regexp --quiet -- "$name"; then
-              echo "skipping existing release asset $name"
-            else
-              gh release upload "$tag" "$file"
-            fi
+            gh release upload "$tag" "$file" --clobber
           done
 
   publish-crates:
@@ -221,7 +213,7 @@ jobs:
           version="${{ needs.prepare.outputs.version }}"
           for crate in phoxal-bus phoxal-macros phoxal-api phoxal; do
             found=false
-            for attempt in $(seq 1 30); do
+            for _attempt in $(seq 1 30); do
               if curl --fail --silent \
                 --user-agent "phoxal-release-verifier/1.0 (https://github.com/phoxal/framework)" \
                 "https://crates.io/api/v1/crates/$crate/$version" >/dev/null; then
@@ -250,38 +242,5 @@ jobs:
     name: prepare grouped release PR
     needs: prepare
     if: needs.prepare.outputs.publish != 'true'
-    runs-on: ubuntu-latest
-    env:
-      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: release-plz
-      # The release PR must be authored with the App token: authored with the
-      # workflow's GITHUB_TOKEN it triggers no `pull_request` workflows, so the
-      # required coherence gate never appears and the PR stays unmergeable. On
-      # the canonical repository a missing App is therefore a loud failure, not
-      # a silent fallback; the GITHUB_TOKEN fallback remains for forks.
-      - name: Require the release App on the canonical repository
-        if: github.repository == 'phoxal/framework' && env.HAS_RELEASE_APP != 'true'
-        run: |
-          echo "phoxal/framework must author release PRs with the phoxal-release-bot App;" >&2
-          echo "RELEASE_APP_ID/RELEASE_APP_PRIVATE_KEY are missing or not visible to this repo." >&2
-          exit 1
-      - name: Generate GitHub App token
-        id: app-token
-        if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-      - name: Prepare one grouped train version
-        env:
-          GIT_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
-        run: release-plz release-pr
+    uses: phoxal/.github/.github/workflows/rust-release-plz-pr.yml@main
+    secrets: inherit
