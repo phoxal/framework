@@ -4,12 +4,76 @@
 
 use crate::v0_1;
 use crate::v0_1 as api;
+use crate::v0_2;
 use crate::{ApiVersion, ContractBody};
 use phoxal_bus::TopicRole;
 
 #[test]
-fn v0_1_is_the_train_selected_api_revision() {
+fn v0_1_remains_available_as_an_immutable_concrete_revision() {
     assert_eq!(<api::Api as ApiVersion>::ID, "v0.1");
+}
+
+#[test]
+fn v0_2_is_the_train_selected_revision_with_identity_derived_device_samples() {
+    assert_eq!(<crate::latest::Api as ApiVersion>::ID, "v0.2");
+    assert_eq!(
+        <v0_1::tool::device::Sample as ContractBody>::TOPIC,
+        "v0.1/tool/device/sample"
+    );
+    assert_eq!(
+        <v0_2::tool::device::Sample as ContractBody>::TOPIC,
+        "v0.2/tool/device/sample"
+    );
+    assert_eq!(
+        v0_2::topic::new().tool().device().sample().key(),
+        "v0.2/tool/device/sample"
+    );
+}
+
+#[test]
+fn v0_2_device_sample_has_the_exact_identity_derived_wire_shape() {
+    let sample = v0_2::tool::device::Sample {
+        device_id: "project-e2e".to_string(),
+        cpu_pct: Some(12.5),
+        ram_used_bytes: Some(1_073_741_824),
+        ram_total_bytes: Some(17_179_869_184),
+        swap_used_bytes: None,
+        swap_total_bytes: None,
+        load_1m: Some(0.75),
+        load_5m: Some(0.5),
+        load_15m: Some(0.25),
+        uptime_s: Some(42),
+        disks: Some(vec![v0_2::tool::device::Disk {
+            mount_point: "/".to_string(),
+            file_system: "apfs".to_string(),
+            used_bytes: 10,
+            total_bytes: 100,
+        }]),
+        window_ns: 1_000_000_000,
+    };
+    assert_eq!(
+        serde_json::to_value(&sample).unwrap(),
+        serde_json::json!({
+            "device_id": "project-e2e",
+            "cpu_pct": 12.5,
+            "ram_used_bytes": 1_073_741_824_u64,
+            "ram_total_bytes": 17_179_869_184_u64,
+            "swap_used_bytes": null,
+            "swap_total_bytes": null,
+            "load_1m": 0.75,
+            "load_5m": 0.5,
+            "load_15m": 0.25,
+            "uptime_s": 42,
+            "disks": [{
+                "mount_point": "/",
+                "file_system": "apfs",
+                "used_bytes": 10,
+                "total_bytes": 100
+            }],
+            "window_ns": 1_000_000_000
+        })
+    );
+    round_trip(&sample);
 }
 
 #[test]
@@ -217,6 +281,17 @@ fn generated_contract_manifest_lists_contract_shapes() {
             );
         }
     }
+
+    let current = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .find(|version| version.name == "v0.2")
+        .expect("v0.2 should be in the generated manifest");
+    let device_sample = current
+        .contracts
+        .iter()
+        .find(|contract| contract.family == "v0.2::tool::device::Sample")
+        .expect("tool::device::Sample should be in the v0.2 manifest entry");
+    assert_eq!(device_sample.topic, "v0.2/tool/device/sample");
 }
 
 #[test]

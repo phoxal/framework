@@ -42,13 +42,15 @@ the only source of keys, and the wire body never appears in the key
 ([`phoxal-api/src/lib.rs`](../phoxal-api/src/lib.rs),
 [`phoxal-bus/src/topic.rs`](../phoxal-bus/src/topic.rs)).
 
-- Domain streams: `<revision>/<domain>/<stream>` (e.g. `v0.1/drive/state`,
-  `v0.1/drive/target`), built as `api::topic::new().drive().state()`.
+- Domain streams: `<revision>/<domain>/<stream>` (e.g.
+  `<revision>/drive/state`, `<revision>/drive/target`), built as
+  `api::topic::new().drive().state()`.
 - Domain queries: a single `<revision>/<domain>/<query>` key carrying request + response
-  bodies (e.g. `v0.1/frame/lookup`, `v0.1/map/submap`, `v0.1/asset/get`).
+  bodies (e.g. `<revision>/frame/lookup`, `<revision>/map/submap`,
+  `<revision>/asset/get`).
 - Per-instance component capabilities:
   `<revision>/component/<instance>/<kind>/<capability>/<stream>` (e.g.
-  `v0.1/component/front_left_drive/motor/motor/command`), built as
+  `<revision>/component/front_left_drive/motor/motor/command`), built as
   `api::topic::new().component(instance).motor(capability).command()`.
   These are dynamic keys resolved from the robot model in `#[setup]`.
 - The runner applies the multi-robot root `<namespace>/robots/<robot-id>/` to every
@@ -104,7 +106,8 @@ the only source of keys, and the wire body never appears in the key
   checks are comparable) and latches monotonically; `TestClock` is an injectable
   fake for tests.
 - In `ClockMode::Simulation`, the runner subscribes to the supervisor's
-  authoritative `v0.1/simulation/clock`. Each received sample advances the
+  authoritative version-qualified `simulation/clock` contract. Each received
+  sample advances the
   scheduler to the envelope's logical time. If Webots does not step, the
   supervisor publishes nothing and participant scheduling remains still.
 

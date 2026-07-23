@@ -12,7 +12,7 @@ note: function defined here
    | |         drive {
    | |             /// Why actuation authority is in its current state.
 ...  |
-   | |     latest v0_1;
+   | |     latest v0_2;
    | | }
    | |_^
    = note: this error originates in the macro `phoxal_api_tree` (in Nightly builds, run with -Z macro-backtrace for more info)

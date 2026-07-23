@@ -6,23 +6,24 @@ component, tool, simulator, and infrastructure artifact inherit one workspace
 SemVer. The train exports its selected complete API as `phoxal::api`; concrete
 API revisions remain available from `phoxal-api` for adapters.
 Official per-robot tools ship the same way. `phoxal-tool-log` retains the newest
-1,000 structured `v0.1::logs` events, while `phoxal-tool-bus` retains the newest
+1,000 structured `v0.2::logs` events, while `phoxal-tool-bus` retains the newest
 60 completed one-second traffic windows plus current counters. Both expose a bounded snapshot query and a live
-follow topic under `v0.1::tool`; consumers re-query after an opaque process
-generation change or a sequence gap. The existing `v0.1::logs` ingest feed stays
-unchanged.
+follow topic under `v0.2::tool`; consumers re-query after an opaque process
+generation change or a sequence gap.
 Every participant runner also publishes at most one portable
-`v0.1::tool::runtime::Rollup` per host-monotonic grid interval. It reports
+`v0.2::tool::runtime::Rollup` per host-monotonic grid interval. It reports
 scheduled-step timing and bounded typed-bus buffer pressure without OS process
 sampling or participant-authored instrumentation. `phoxal-tool-telemetry`
 clamps retained participant/topic identities and topic rows, retains the newest
 five minutes subject to both record and byte caps, and exposes the same
-snapshot/cursor/follow recovery model under `v0.1::tool::runtime`.
+snapshot/cursor/follow recovery model under `v0.2::tool::runtime`.
 One runner-owned `phoxal-tool-device` per robot root publishes truthful,
-capability-aware whole-device observations for logical device `main` under
-`v0.1::tool::device`. Unsupported values are absent rather than fabricated as
-zero. Per-root `phoxal-tool-telemetry` retains those samples for five minutes
-with record and byte bounds and exposes the same cursor/snapshot/follow recovery
+capability-aware whole-device observations under `v0.2::tool::device`.
+The project supervisor supplies one bounded execution-device identity through
+`PHOXAL_EXECUTION_DEVICE_ID`; every per-robot sampler in that project uses the
+same value. Unsupported measurements are absent rather than fabricated as zero.
+Per-root `phoxal-tool-telemetry` retains those samples for five minutes with
+record and byte bounds and exposes the same cursor/snapshot/follow recovery
 model. Device totals remain separate from participant runtime measurements.
 The four library crates are published to crates.io and the exact official
 artifacts are published with an immutable per-train `suite.json` on GitHub.
@@ -47,7 +48,11 @@ inherits it, and release-plz prepares one grouped
 `chore(release): release v<version>` PR.
 `cargo xtask release verify` checks the complete official source set and API
 graph; `cargo xtask release suite` then verifies every staged target archive
-and produces `phoxal.suite/v0` `suite.json`.
+and produces `phoxal.suite/v1` `suite.json`. Its deterministic `native` and
+`webots` profiles activate the required per-project infrastructure router, the
+optional per-project joypad tool, and the optional per-robot bus, log,
+telemetry, and device tools. Simulators remain Webots-owned and are not direct
+suite activations.
 
 Publication is resumable and GitHub-first. CI creates or resumes a non-latest
 draft `v<version>` release, uploads the immutable artifacts and descriptor,

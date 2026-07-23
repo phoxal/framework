@@ -672,10 +672,24 @@ pub trait SetupContextToolExt {
     /// already open from the launch contract, so a tool does not reparse launch
     /// env or open an unrelated session.
     fn raw_bus(&self) -> Bus;
+
+    /// Read the bounded project/deployment identity supplied by the
+    /// supervisor. `tool-device` requires this value; it is optional in the
+    /// generic launch record so unrelated tools do not need a meaningless id.
+    fn execution_device_id(&self) -> crate::Result<&crate::participant::ExecutionDeviceId>;
 }
 
 impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
     fn raw_bus(&self) -> Bus {
         self.bus().clone()
+    }
+
+    fn execution_device_id(&self) -> crate::Result<&crate::participant::ExecutionDeviceId> {
+        self.execution_device_id_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} is required for this tool",
+                crate::participant::launch::env::EXECUTION_DEVICE_ID
+            )
+        })
     }
 }

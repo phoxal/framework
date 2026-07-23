@@ -35,7 +35,8 @@ their runner clock. They self-drive through `wb_robot_step` (both spawn
 `synchronization TRUE`, so Webots does not advance until each has stepped) on the
 fixed host scheduler.
 The supervisor derives logical simulation time from Webots and publishes it on
-the `v0.1/simulation/clock` contract after each completed world step. The
+the train-selected `v0.2/simulation/clock` contract after each completed world
+step. The
 payload is `{ now_ns, step }`: publication itself is the advancement signal,
 and silence means Webots has not advanced. There is no separate pause flag.
 

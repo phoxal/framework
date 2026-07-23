@@ -27,11 +27,11 @@ fn contract_body_topic_is_version_qualified_on_the_real_tree() {
     // contract of the same leaf name.
     assert_eq!(
         <api::drive::Target as ContractBody>::TOPIC,
-        "v0.1/drive/target"
+        "v0.2/drive/target"
     );
     assert_eq!(
         <api::asset::GetRequest as ContractBody>::TOPIC,
-        "v0.1/asset/get"
+        "v0.2/asset/get"
     );
 }
 

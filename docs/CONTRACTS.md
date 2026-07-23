@@ -128,20 +128,20 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
   topic. Their cursor combines an opaque process generation with a monotonic
   ingest sequence. Consumers buffer follow items while querying, install the
   snapshot, replay only newer buffered items, and re-query on a generation
-  change or sequence gap. `v0.1::tool::log` retains the newest 1,000 existing
-  `v0.1::logs` events; `v0.1::tool::bus` retains the newest 60 one-second windows.
-  `v0.1::tool::runtime` retains five host-monotonic minutes of portable runner
+  change or sequence gap. `v0.2::tool::log` retains the newest 1,000 existing
+  `v0.2::logs` events; `v0.2::tool::bus` retains the newest 60 one-second windows.
+  `v0.2::tool::runtime` retains five host-monotonic minutes of portable runner
   rollups behind a bounded, participant-filterable backward-paginated query.
   Ingest clamps participant ids to 512 bytes, exact topic ids to 256 bytes, and
   normal rows to 256 plus an explicit aggregate overflow row. Retention has
   both record and byte caps; capacity evictions and identity truncation remain
-  visible in the response. Its follow stream uses the same
-  generation/sequence recovery rule.
+  visible in the response. The published `v0.1` concrete revision remains
+  immutable. Its follow stream uses the same generation/sequence recovery rule.
 
 ### Raw retention-tool coherence boundary
 
-The retention tools serve `v0.1::tool::{log,bus,runtime}` through their raw-bus
-owner capability. This is an explicit current coherence gap: tools are
+The retention tools serve `v0.2::tool::{log,bus,runtime,device}` through their
+raw-bus owner capability. This is an explicit current coherence gap: tools are
 intentionally clockless, raw-bus-only participants and their authoring model
 fixes `Api = ()`, so these served query/state edges are not embedded in the
 participant metadata that `cargo xtask coherence-check` reads. Pretending

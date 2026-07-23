@@ -406,6 +406,7 @@ where
         robot,
         launch.robot_root.clone(),
         launch.component_instance.clone(),
+        launch.execution_device_id.clone(),
     );
     let (mut participant, api) = match R::__setup(&mut ctx, config).await {
         Ok(pair) => pair,

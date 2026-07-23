@@ -139,7 +139,7 @@ mod tests {
         assert_eq!(meta.participant_api, "Api");
         assert!(meta.contracts.contains(&ParticipantMetaContract {
             role: "publish".to_string(),
-            version: "v0.1".to_string(),
+            version: "v0.2".to_string(),
             contract: "battery::State".to_string(),
             external: false,
         }));

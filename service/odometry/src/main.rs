@@ -417,7 +417,7 @@ mod tests {
 
         for binding in config.left.iter().chain(&config.right) {
             let topic = binding.topic();
-            assert!(topic.key().starts_with("v0.1/component/"));
+            assert!(topic.key().starts_with("v0.2/component/"));
             assert!(topic.key().ends_with("/sample"));
         }
     }

@@ -325,11 +325,11 @@ mod tests {
         assert_eq!(depths.len(), 1);
         assert!(
             cameras.iter().any(|camera| camera.camera_topic().key()
-                == "v0.1/component/front_camera/camera/rgb/frame")
+                == "v0.2/component/front_camera/camera/rgb/frame")
         );
         assert_eq!(
             depths[0].depth_topic().key(),
-            "v0.1/component/front_camera/depth/depth/frame"
+            "v0.2/component/front_camera/depth/depth/frame"
         );
     }
 
