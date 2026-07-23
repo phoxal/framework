@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.37.0...phoxal-api-v0.38.0) - 2026-07-23
+
+### Added
+
+- *(suite)* [**breaking**] add launch profiles and device identity ([#304](https://github.com/phoxal/framework/pull/304))
+
 ## [0.36.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.22.1...phoxal-api-v0.36.0) - 2026-07-21
 
 ### Added
