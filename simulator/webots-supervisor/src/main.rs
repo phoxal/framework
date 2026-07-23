@@ -562,7 +562,7 @@ mod tests {
         }
         assert!(
             <Api as ParticipantApi>::__CONTRACTS_JSON.contains(
-                r#""version":"v0.1","contract":"simulation::SpawnRequest","external":true"#
+                r#""version":"v0.2","contract":"simulation::SpawnRequest","external":true"#
             ),
             "spawn ask must be marked external because phoxal-cli serves it outside the checked participant graph; got {}",
             <Api as ParticipantApi>::__CONTRACTS_JSON

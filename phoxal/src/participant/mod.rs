@@ -27,7 +27,9 @@ pub use api::{
 };
 pub use clock::{ClockSource, RealClock, TestClock};
 pub use context::{SetupContext, ShutdownContext, StepContext};
-pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
+pub use launch::{
+    BusProfile, ClockMode, ExecutionDeviceId, MAX_EXECUTION_DEVICE_ID_BYTES, ParticipantLaunch,
+};
 pub use managed::ManagedTaskPolicy;
 pub use runner::{run, run_async, run_with};
 pub use scheduler::{

@@ -278,7 +278,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
     assert!(step.completed > 0);
     assert_eq!(step.target_period_ns, 5_000_000);
     assert!(runtime.topics.iter().any(|row| {
-        row.topic == "v0.1/drive/target"
+        row.topic == "v0.2/drive/target"
             && row.direction == api::tool::RuntimeDirection::Publish
             && row.buffer_kind == api::tool::RuntimeBufferKind::Outbound
     }));
@@ -431,10 +431,10 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         .state();
     assert_eq!(
         <api::battery::State as ContractBody>::TOPIC,
-        "v0.1/battery/state",
+        "v0.2/battery/state",
         "the moved contract's version-qualified wire key (D1)"
     );
-    assert_eq!(battery_topic.key(), "v0.1/battery/state");
+    assert_eq!(battery_topic.key(), "v0.2/battery/state");
     let battery_pub = Publisher::<api::battery::State>::new(bus.clone(), &battery_topic)
         .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(

@@ -10,6 +10,11 @@ documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
 
+[package.metadata.phoxal.activation]
+profiles = ["native", "webots"]
+scope = "per_robot"
+criticality = "optional"
+
 [[bin]]
 name = "phoxal-tool-log"
 path = "src/main.rs"

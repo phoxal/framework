@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::bus::{LogicalTime, OwnerCap};
 use crate::model::v0::Robot;
+use crate::participant::launch::ExecutionDeviceId;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::Bus;
 
@@ -21,6 +22,7 @@ pub struct SetupContext<R> {
     robot: Option<Arc<Robot>>,
     robot_root: Option<PathBuf>,
     component_instance: Option<String>,
+    execution_device_id: Option<ExecutionDeviceId>,
     managed_tasks: ManagedTasks,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -36,6 +38,7 @@ impl<R> SetupContext<R> {
         robot: Option<Arc<Robot>>,
         robot_root: Option<PathBuf>,
         component_instance: Option<String>,
+        execution_device_id: Option<ExecutionDeviceId>,
     ) -> Self {
         SetupContext {
             bus,
@@ -43,6 +46,7 @@ impl<R> SetupContext<R> {
             robot,
             robot_root,
             component_instance,
+            execution_device_id,
             managed_tasks: ManagedTasks::default(),
             _runtime: PhantomData,
         }
@@ -121,6 +125,11 @@ impl<R> SetupContext<R> {
     /// driver/simulator `component()` builders (`participant::api`).
     pub(crate) fn component_instance(&self) -> Option<&str> {
         self.component_instance.as_deref()
+    }
+
+    /// The bounded project/deployment identity supplied by the supervisor.
+    pub(crate) fn execution_device_id_ref(&self) -> Option<&ExecutionDeviceId> {
+        self.execution_device_id.as_ref()
     }
 
     /// The resolved robot model, if bound. In-crate accessor for

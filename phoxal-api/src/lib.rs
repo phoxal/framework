@@ -22,7 +22,7 @@
 //! revision; the generator materializes the complete child tree with its own
 //! identity. Exactly one `latest` alias is selected for each framework train.
 //!
-//! [`Api`]: v0_1::Api
+//! [`Api`]: v0_2::Api
 //!
 //! # Train-selected revision and per-contract identity
 //!
@@ -1639,7 +1639,36 @@ phoxal_api_tree! {
             topic rescan: command Rescan;
         }
     }
-    latest v0_1;
+    version v0_2 extends v0_1 {
+        tool {
+            device {
+                /// Portable whole-device observations produced by one
+                /// runner-owned tool-device. Every optional field is `None`
+                /// when the current platform cannot provide a truthful value.
+                /// These totals must never be attributed to a runtime.
+                replace struct Sample {
+                    /// Bounded execution-device label supplied by the project
+                    /// supervisor. Every per-robot sampler in one project uses
+                    /// the same value, so robot-rooted records remain joinable
+                    /// without creating device-rooted bus authority.
+                    device_id: String,
+                    cpu_pct: Option<f32>,
+                    ram_used_bytes: Option<u64>,
+                    ram_total_bytes: Option<u64>,
+                    swap_used_bytes: Option<u64>,
+                    swap_total_bytes: Option<u64>,
+                    load_1m: Option<f32>,
+                    load_5m: Option<f32>,
+                    load_15m: Option<f32>,
+                    uptime_s: Option<u64>,
+                    disks: Option<Vec<Disk>>,
+                    /// Host-monotonic duration between sampler refreshes.
+                    window_ns: u64,
+                }
+            }
+        }
+    }
+    latest v0_2;
 }
 
 #[cfg(test)]

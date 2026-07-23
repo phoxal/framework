@@ -192,8 +192,8 @@ official `motion` service owns arbitration, freshness, limits, and e-stop:
 
 ```rust
 use anyhow::Result;
+use phoxal::api;
 use phoxal::prelude::*;
-use phoxal_api::v0_1 as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
 struct Config {
@@ -240,8 +240,8 @@ fn main() -> phoxal::Result<()> {
 
 A few points that generalize beyond this one service:
 
-- A user service authors against **official contracts** from
-  `phoxal_api::v0_1` (or whichever API version you target).
+- A user service authors against **official contracts** from `phoxal::api`,
+  the concrete API revision selected by the locked framework train.
   It never mints its own bus types; contracts are the shared vocabulary
   every participant on the graph already speaks.
 - `robot.yaml` names the service by its `services.<name>` key and points

@@ -13,6 +13,11 @@ repository.workspace = true
 [package.metadata.phoxal]
 unsupported-targets = ["*-musl"]
 
+[package.metadata.phoxal.activation]
+profiles = ["native", "webots"]
+scope = "per_project"
+criticality = "optional"
+
 [[bin]]
 name = "phoxal-tool-joypad"
 path = "src/main.rs"

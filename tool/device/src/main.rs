@@ -7,7 +7,6 @@ use phoxal::raw::{Bus, OwnerCap, Publisher, host_time};
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
-const DEVICE_ID: &str = "main";
 const MAX_DISK_ROWS: usize = 32;
 const MAX_DISK_TEXT_BYTES: usize = 128;
 
@@ -19,12 +18,13 @@ impl ToolDevice {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let publisher = device_publisher(ctx.raw_bus(), ctx.owner_capability())?;
+        let device_id = ctx.execution_device_id()?.clone();
         ctx.spawn_managed_with(
             "device-sampler",
             ManagedTaskPolicy::FaultOnExit,
-            sample_device_forever(publisher),
+            sample_device_forever(publisher, device_id.clone()),
         );
-        tracing::info!(target: "tool_device", device_id = DEVICE_ID, "device telemetry ready");
+        tracing::info!(target: "tool_device", device_id = %device_id, "device telemetry ready");
         Ok((Self, ()))
     }
 }
@@ -34,7 +34,10 @@ fn device_publisher(bus: Bus, cap: OwnerCap) -> Result<Publisher<api::tool::devi
     Ok(Publisher::new(bus, &topic)?)
 }
 
-async fn sample_device_forever(publisher: Publisher<api::tool::device::Sample>) {
+async fn sample_device_forever(
+    publisher: Publisher<api::tool::device::Sample>,
+    device_id: ExecutionDeviceId,
+) {
     let initialized = tokio::task::spawn_blocking(new_sampler).await;
     let (mut system, mut disks, mut previous_refresh) = match initialized {
         Ok(initialized) => initialized,
@@ -51,8 +54,10 @@ async fn sample_device_forever(publisher: Publisher<api::tool::device::Sample>) 
     interval.tick().await;
     loop {
         interval.tick().await;
+        let sample_device_id = device_id.clone();
         let refreshed = tokio::task::spawn_blocking(move || {
-            let sample = sample_device(&mut system, &mut disks, previous_refresh);
+            let sample =
+                sample_device(&mut system, &mut disks, previous_refresh, &sample_device_id);
             (system, disks, sample)
         })
         .await;
@@ -88,6 +93,7 @@ fn sample_device(
     system: &mut System,
     disks: &mut Disks,
     previous_refresh: Instant,
+    device_id: &ExecutionDeviceId,
 ) -> (api::tool::device::Sample, Instant) {
     system.refresh_cpu_usage();
     system.refresh_memory();
@@ -98,7 +104,7 @@ fn sample_device(
     let (swap_used_bytes, swap_total_bytes) = capacity(system.used_swap(), system.total_swap());
 
     let sample = api::tool::device::Sample {
-        device_id: DEVICE_ID.to_string(),
+        device_id: device_id.as_str().to_string(),
         cpu_pct: finite_percentage(system.global_cpu_usage()),
         ram_used_bytes,
         ram_total_bytes,
@@ -281,14 +287,39 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn live_macos_sample_reports_main_with_truthful_capabilities() {
+    fn live_macos_sample_reports_supervisor_identity_with_truthful_capabilities() {
         let (mut system, mut disks, started) = new_sampler();
+        let device_id = ExecutionDeviceId::new("project-e2e").unwrap();
         std::thread::sleep(Duration::from_millis(250));
-        let (sample, _) = sample_device(&mut system, &mut disks, started);
-        assert_eq!(sample.device_id, DEVICE_ID);
+        let (sample, _) = sample_device(&mut system, &mut disks, started, &device_id);
+        assert_eq!(sample.device_id, device_id.as_str());
         assert!(sample.cpu_pct.is_some_and(f32::is_finite));
         assert!(sample.ram_total_bytes.is_some_and(|total| total > 0));
         assert!(sample.ram_used_bytes <= sample.ram_total_bytes);
         assert!(sample.disks.is_some());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn separate_per_robot_samplers_preserve_the_same_project_identity() {
+        let device_id = ExecutionDeviceId::new("project-e2e").unwrap();
+        let (mut first_system, mut first_disks, first_started) = new_sampler();
+        let (mut second_system, mut second_disks, second_started) = new_sampler();
+        std::thread::sleep(Duration::from_millis(250));
+
+        let (first, _) = sample_device(
+            &mut first_system,
+            &mut first_disks,
+            first_started,
+            &device_id,
+        );
+        let (second, _) = sample_device(
+            &mut second_system,
+            &mut second_disks,
+            second_started,
+            &device_id,
+        );
+        assert_eq!(first.device_id, "project-e2e");
+        assert_eq!(second.device_id, first.device_id);
     }
 }

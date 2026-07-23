@@ -11,10 +11,67 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{CommandFactory, FromArgMatches};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Default bounded shutdown grace, in milliseconds.
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
+/// Maximum UTF-8 byte length of a supervisor-provided execution-device id.
+pub const MAX_EXECUTION_DEVICE_ID_BYTES: usize = 64;
+
+/// Bounded project/deployment identity attached to whole-device observations.
+///
+/// A supervisor supplies the same value to every per-robot `tool-device`
+/// process in one project. It is an observation label, not a bus authority or
+/// participant id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ExecutionDeviceId(String);
+
+impl ExecutionDeviceId {
+    /// Validate a supervisor-provided execution-device identity.
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.is_empty() {
+            return Err("execution-device id must not be empty".to_string());
+        }
+        if value.len() > MAX_EXECUTION_DEVICE_ID_BYTES {
+            return Err(format!(
+                "execution-device id must be at most {MAX_EXECUTION_DEVICE_ID_BYTES} UTF-8 bytes"
+            ));
+        }
+        if value.chars().any(char::is_control) {
+            return Err("execution-device id must not contain control characters".to_string());
+        }
+        Ok(Self(value))
+    }
+
+    /// Borrow the validated identity.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for ExecutionDeviceId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl AsRef<str> for ExecutionDeviceId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl<'de> Deserialize<'de> for ExecutionDeviceId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 /// Public env variable names for the participant launch contract.
 pub mod env {
@@ -30,6 +87,8 @@ pub mod env {
     pub const ROBOT_ROOT: &str = "PHOXAL_ROBOT_ROOT";
     /// Component instance id for driver launches.
     pub const COMPONENT_INSTANCE: &str = "PHOXAL_COMPONENT_INSTANCE";
+    /// Bounded project/deployment identity for whole-device observations.
+    pub const EXECUTION_DEVICE_ID: &str = "PHOXAL_EXECUTION_DEVICE_ID";
     /// Comma-separated Zenoh connect endpoints.
     pub const CONNECT: &str = "PHOXAL_CONNECT";
     /// Inline JSON participant config block.
@@ -45,6 +104,7 @@ pub mod env {
         NAMESPACE,
         ROBOT_ROOT,
         COMPONENT_INSTANCE,
+        EXECUTION_DEVICE_ID,
         CONNECT,
         CONFIG,
         CLOCK,
@@ -85,6 +145,10 @@ pub struct ParticipantLaunch {
     /// `SetupContext::component()`. Absent for non-driver participants.
     #[serde(default)]
     pub component_instance: Option<String>,
+    /// Project/deployment identity for whole-device observations. Supervisors
+    /// set this for `tool-device`; unrelated participants may leave it absent.
+    #[serde(default)]
+    pub execution_device_id: Option<ExecutionDeviceId>,
     /// Bounded shutdown grace, in milliseconds.
     #[serde(default = "default_grace")]
     pub shutdown_grace_ms: u64,
@@ -108,6 +172,7 @@ impl ParticipantLaunch {
             config: None,
             robot_root: None,
             component_instance: None,
+            execution_device_id: None,
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
         }
     }
@@ -121,6 +186,12 @@ impl ParticipantLaunch {
     /// Set the component instance this participant drives (driver launch, D47/D53).
     pub fn with_component_instance(mut self, instance: impl Into<String>) -> Self {
         self.component_instance = Some(instance.into());
+        self
+    }
+
+    /// Set the bounded identity used by whole-device observations.
+    pub fn with_execution_device_id(mut self, identity: ExecutionDeviceId) -> Self {
+        self.execution_device_id = Some(identity);
         self
     }
 }
@@ -178,6 +249,15 @@ struct CommonLaunchCli {
         value_name = "ID"
     )]
     component_instance: Option<String>,
+
+    /// Project/deployment identity attached to whole-device observations.
+    #[arg(
+        long,
+        env = env::EXECUTION_DEVICE_ID,
+        hide_env_values = true,
+        value_name = "ID"
+    )]
+    execution_device_id: Option<String>,
 
     /// Comma-separated Zenoh connect endpoints. Empty means in-process.
     #[arg(
@@ -263,6 +343,12 @@ impl CommonLaunchCli {
         launch.component_instance = self
             .component_instance
             .filter(|instance| !instance.is_empty());
+        launch.execution_device_id = self
+            .execution_device_id
+            .map(ExecutionDeviceId::new)
+            .transpose()
+            .map_err(anyhow::Error::msg)
+            .context("PHOXAL_EXECUTION_DEVICE_ID is invalid")?;
         if let Some(endpoints) = self.connect.filter(|endpoints| !endpoints.is_empty()) {
             launch.bus.connect_endpoints = endpoints
                 .split(',')
@@ -474,6 +560,7 @@ mod tests {
             std::env::set_var(env::NAMESPACE, "lab");
             std::env::set_var(env::ROBOT_ROOT, "/robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "tof_front");
+            std::env::set_var(env::EXECUTION_DEVICE_ID, "project-e2e");
             std::env::set_var(env::CONNECT, "tcp/127.0.0.1:7447, tcp/127.0.0.1:7448");
             std::env::set_var(env::CONFIG, r#"{"rate_hz":10}"#);
             std::env::set_var(env::CLOCK, "simulation");
@@ -488,6 +575,13 @@ mod tests {
             Some(std::path::Path::new("/robot"))
         );
         assert_eq!(launch.component_instance.as_deref(), Some("tof_front"));
+        assert_eq!(
+            launch
+                .execution_device_id
+                .as_ref()
+                .map(ExecutionDeviceId::as_str),
+            Some("project-e2e")
+        );
         assert_eq!(
             launch.bus.connect_endpoints,
             vec![
@@ -512,6 +606,7 @@ mod tests {
             std::env::set_var(env::NAMESPACE, "env-ns");
             std::env::set_var(env::ROBOT_ROOT, "/env-robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "env-component");
+            std::env::set_var(env::EXECUTION_DEVICE_ID, "env-project");
             std::env::set_var(env::CONNECT, "tcp/env:7447");
             std::env::set_var(env::CONFIG, r#"{"source":"env"}"#);
             std::env::set_var(env::CLOCK, "simulation");
@@ -531,6 +626,8 @@ mod tests {
             "/flag-robot",
             "--component-instance",
             "flag-component",
+            "--execution-device-id",
+            "flag-project",
             "--connect",
             "tcp/flag:7447",
             "--config",
@@ -549,6 +646,13 @@ mod tests {
             Some(std::path::Path::new("/flag-robot"))
         );
         assert_eq!(launch.component_instance.as_deref(), Some("flag-component"));
+        assert_eq!(
+            launch
+                .execution_device_id
+                .as_ref()
+                .map(ExecutionDeviceId::as_str),
+            Some("flag-project")
+        );
         assert_eq!(launch.bus.connect_endpoints, vec!["tcp/flag:7447"]);
         assert_eq!(launch.config, Some(serde_json::json!({"source": "flag"})));
         assert_eq!(launch.clock, ClockMode::Real);
@@ -593,6 +697,7 @@ mod tests {
             ("--namespace", env::NAMESPACE),
             ("--robot-root", env::ROBOT_ROOT),
             ("--component-instance", env::COMPONENT_INSTANCE),
+            ("--execution-device-id", env::EXECUTION_DEVICE_ID),
             ("--connect", env::CONNECT),
             ("--config", env::CONFIG),
             ("--clock", env::CLOCK),
@@ -601,6 +706,38 @@ mod tests {
             assert!(help.contains(env_name), "help should list {env_name}");
         }
         assert!(!help.contains("do-not-print"));
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn execution_device_id_is_required_nonempty_bounded_and_control_free_when_present() {
+        clear_env();
+
+        for invalid in [
+            String::new(),
+            "line\nbreak".to_string(),
+            "x".repeat(MAX_EXECUTION_DEVICE_ID_BYTES + 1),
+        ] {
+            let error = parse_tool_from(&["tool-bin", "--execution-device-id", invalid.as_str()])
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("PHOXAL_EXECUTION_DEVICE_ID is invalid"),
+                "{error:#}"
+            );
+        }
+
+        let boundary = "é".repeat(MAX_EXECUTION_DEVICE_ID_BYTES / 2);
+        let launch = parse_tool_from(&["tool-bin", "--execution-device-id", &boundary]).unwrap();
+        assert_eq!(
+            launch
+                .execution_device_id
+                .as_ref()
+                .map(ExecutionDeviceId::as_str),
+            Some(boundary.as_str())
+        );
         clear_env();
     }
 
