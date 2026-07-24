@@ -23,11 +23,21 @@ pub struct Robot {
     /// definitions themselves live under `behaviors/` in the robot root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
-    /// User-owned configuration keyed by workspace service identity.
-    /// Cargo workspace membership, not this map, declares which user services
-    /// belong to the robot.
+    /// The user services this robot runs, keyed by service identity, each with
+    /// its user-owned configuration. The Cargo workspace is the candidate set
+    /// (a declared service must have a matching workspace crate); this map
+    /// selects which discovered services belong to the robot and are built,
+    /// staged, and launched. An undeclared workspace service crate is legal
+    /// and simply not part of the robot.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, UserService>,
+    /// The additional user tools this robot runs, keyed by tool identity, each
+    /// with its user-owned configuration - symmetric with `services`. Official
+    /// tools stay CLI-catalog-owned, always run, and take no configuration
+    /// here; a `tools/` workspace crate overriding an official identity is a
+    /// source override, not a declaration, and is never listed here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, UserTool>,
     /// Optional project-relative Zenoh router configuration.
     #[serde(default, skip_serializing_if = "Router::is_empty")]
     pub router: Router,
@@ -67,11 +77,23 @@ pub struct RobotSection {
     pub components: BTreeMap<String, Component>,
 }
 
-/// Optional user-owned configuration for one Cargo-discovered service.
+/// One declared user service: presence in `services` is the declaration;
+/// `config` is its user-owned configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UserService {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<serde_json::Value>,
+}
+
+/// One declared additional user tool: presence in `tools` is the declaration;
+/// `config` is its user-owned configuration. Same shape as [`UserService`],
+/// kept distinct so the two declarations stay independently documented types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct UserTool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
 }
@@ -698,32 +720,48 @@ robot:
     }
 
     #[test]
-    fn manifest_rejects_root_tools_key() {
-        let error = Robot::parse_from_string(
-            r#"
-schema: robot/v0
-robot:
-  id: test-bot
-  namespace: dev
-  motion_limits:
-    max_linear_speed_mps: 0.6
-    max_angular_speed_radps: 2.0
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components: {}
-tools:
-  router:
-    version: "0.4.2"
+    fn root_tools_map_declares_user_tools_with_config() -> anyhow::Result<()> {
+        // The `tools:` map declares additional user tools symmetrically with
+        // `services:` (#950); the old pin-style entries (`version:`) stay
+        // rejected as unknown fields inside a declaration.
+        let robot = Robot::parse_from_string(&minimal_manifest(
+            r#"tools:
+  lidar-viz:
+    config:
+      port: 9000
+  plain: {}
 "#,
-        )
-        .expect_err("root tools key should no longer parse");
-
+        ))?;
+        let tool = robot.tools.get("lidar-viz").expect("tool should parse");
+        assert_eq!(
+            tool.config
+                .as_ref()
+                .and_then(|config| config.get("port"))
+                .and_then(serde_json::Value::as_u64),
+            Some(9000)
+        );
         assert!(
-            format!("{error:#}").contains("unknown field `tools`"),
+            robot
+                .tools
+                .get("plain")
+                .expect("plain tool")
+                .config
+                .is_none()
+        );
+
+        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
+        let reparsed = Robot::parse_from_string(&yaml)?;
+        assert_eq!(reparsed.tools, robot.tools);
+
+        let error = Robot::parse_from_string(&minimal_manifest(
+            "tools:\n  router:\n    version: \"0.4.2\"\n",
+        ))
+        .expect_err("pin-style tool entries stay rejected");
+        assert!(
+            format!("{error:#}").contains("unknown field `version`"),
             "got: {error:#}"
         );
+        Ok(())
     }
 
     #[test]

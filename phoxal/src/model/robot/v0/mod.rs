@@ -20,6 +20,8 @@ pub use localize_backend::{
 pub use motion::{KinematicConfig, MotionLimits};
 pub use profile::{AutonomyProfileId, AutonomyProfileSpec, autonomy_profile};
 pub use resolver::{ResolvedCapabilityRole, ResolvedFacts, SourceBundle, resolve_source_bundle};
-pub use robot::{BehaviorConfig, Robot, RobotSection, Router, UserService, ValidationError};
+pub use robot::{
+    BehaviorConfig, Robot, RobotSection, Router, UserService, UserTool, ValidationError,
+};
 pub use role::Role;
 pub use role_resolution::{RoleAssignment, RoleResolution};
