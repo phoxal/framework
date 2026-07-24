@@ -5,13 +5,12 @@ use crate::model::component::v0::capability::{Capability, Encoder, Imu, Motor, S
 use crate::model::component::v0::{CapabilityRef, Component as ComponentSpec};
 use crate::model::robot::v0::capability::Parameters;
 use crate::model::robot::v0::{
-    self as robot_v0, ArtifactPin, ResolvedFacts, SourceBundle, resolve_source_bundle,
+    self as robot_v0, ResolvedFacts, SourceBundle, resolve_source_bundle,
 };
 use crate::model::structure::Structure;
 use anyhow::{Context, Result, anyhow, bail};
 
 const COMPONENTS_DIR: &str = "components";
-const COMPONENT_FILE: &str = "component.yaml";
 
 /// Complete authored robot bundle: manifest, used component specs, and structure.
 #[derive(Debug, Clone)]
@@ -75,10 +74,9 @@ impl Robot {
 
     fn read_component_config(
         path: impl AsRef<Path>,
-        manifest: &crate::model::robot::v0::Robot,
         component_type: &str,
     ) -> Result<ComponentSpec> {
-        let component_path = component_config_path(path.as_ref(), manifest, component_type);
+        let component_path = component_config_path(path.as_ref(), component_type);
         Ok(
             crate::model::component::Component::read_from_dir(&component_path)
                 .with_context(|| {
@@ -104,7 +102,7 @@ impl Robot {
             .map(|component_type| {
                 Ok((
                     component_type.to_string(),
-                    Self::read_component_config(path.as_ref(), manifest, component_type)?,
+                    Self::read_component_config(path.as_ref(), component_type)?,
                 ))
             })
             .collect()
@@ -306,30 +304,10 @@ impl Robot {
 
 /// Resolves the on-disk directory for a used component type.
 ///
-/// The default is the staged `<bundle_root>/components/<type>` directory that
-/// `phoxal-cli` populates for official/resolved components. A local/forked
-/// component overrides this via an `artifacts.pins` path pin keyed by its
-/// provider-qualified package id (`phoxal/component-<type>` - one crate ships
-/// both the driver binary and the asset bundle, design doc §9, no `-assets`
-/// suffix); the override is only honored when it actually contains a
-/// `component.yaml`, otherwise resolution falls back to the staged path.
-fn component_config_path(
-    bundle_root: &Path,
-    manifest: &crate::model::robot::v0::Robot,
-    component_type: &str,
-) -> PathBuf {
-    let staged_path = bundle_root.join(COMPONENTS_DIR).join(component_type);
-    let pin_key = format!("phoxal/component-{component_type}");
-    let Some(ArtifactPin::Path(path_pin)) = manifest.artifacts.pins.get(&pin_key) else {
-        return staged_path;
-    };
-
-    let source_path = bundle_root.join(&path_pin.path);
-    if source_path.join(COMPONENT_FILE).is_file() {
-        source_path
-    } else {
-        staged_path
-    }
+/// Component assets are always staged by the CLI from their defining Cargo
+/// crate or the locked suite before framework model resolution runs.
+fn component_config_path(bundle_root: &Path, component_type: &str) -> PathBuf {
+    bundle_root.join(COMPONENTS_DIR).join(component_type)
 }
 
 #[cfg(test)]

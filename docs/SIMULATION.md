@@ -50,7 +50,7 @@ feed publishes 0-based simulation time and logical time only advances forward.
 
 ## Acceptance record - single robot (2026-07-12)
 
-Command: `phoxal-cli simulation run default --env dev` in the `robot-v1` reference
+Command: `phoxal-cli simulation run default` in the `robot-v1` reference
 project, host-native against Webots R2025a on macOS.
 
 Observed over a bus probe of the live session:
@@ -85,7 +85,8 @@ part of the tested path):
   crashed-then-restarted service that recovers does not trip this.
 
 The same single-robot graph also runs on the plain
-`phoxal-cli simulation run default` path (vendored artifacts, no `--env dev`):
+`phoxal-cli simulation run default` path (vendored official artifacts plus
+Cargo-discovered project component assets):
 the Webots simulator binaries are built against Webots in release CI, so the
 downloaded controllers are runtime-linked; 39/39 reached Ready in ~12s with a
 clean shutdown.

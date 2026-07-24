@@ -650,7 +650,7 @@ mod tests {
             .parent()
             .context("xtask manifest directory has no workspace parent")?;
         for tool in ["joypad", "bus", "device"] {
-            let source = workspace_root.join("tool").join(tool).join("src/main.rs");
+            let source = workspace_root.join("tool").join(tool).join("src/lib.rs");
             let body = fs::read_to_string(&source)?;
             assert!(
                 body.contains("set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip)"),

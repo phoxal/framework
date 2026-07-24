@@ -90,15 +90,3 @@ robot:
       roles:
         gnss:
         - localization
-artifacts:
-  pins:
-    phoxal/component-camera_rgbd_640x480:
-      path: "../../component/camera_rgbd_640x480"
-    phoxal/component-drive_motor:
-      path: "../../component/drive_motor"
-    phoxal/component-gnss:
-      path: "../../component/gnss"
-    phoxal/component-imu:
-      path: "../../component/imu"
-    phoxal/component-range_tof:
-      path: "../../component/range_tof"

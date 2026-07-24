@@ -87,13 +87,3 @@ robot:
         range:
         - mapping
         - traversability
-artifacts:
-  pins:
-    phoxal/component-camera_rgbd_640x480:
-      path: "../../component/camera_rgbd_640x480"
-    phoxal/component-drive_motor:
-      path: "../../component/drive_motor"
-    phoxal/component-imu:
-      path: "../../component/imu"
-    phoxal/component-range_tof:
-      path: "../../component/range_tof"

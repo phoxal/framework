@@ -62,13 +62,12 @@ robot:
       mount_link: right_wheel_mount
 services:
   cruise:
-    path: services/cruise
     config:
       cruise_speed_mps: 0.2
 ```
 
-The root keys are `schema`, `robot`, and optionally `artifacts`, `services`,
-and `router`:
+The root keys are `schema`, `robot`, and optionally `extends`, `services`, and
+`router`:
 
 - `schema` is always `robot/v0` today.
   It is the only version discriminator; there is no separate `version:` key.
@@ -93,15 +92,13 @@ and `router`:
   logical id; a robot-local component like `hello-rover`'s own `wheel_drive`
   does not need a `driver:` block at all if it has no hardware driver
   participant (see [Adding a component](#adding-a-component)).
-- `artifacts` (optional) contains explicit `artifacts.pins` source overrides;
-  train selection belongs only to the root `Cargo.lock`.
-  Base `robot.yaml` is fail-closed for `{ path: ... }` pins; those are legal
-  only in a `robot.<env>.yaml` overlay, loaded with `phoxal-cli check --env
-  <env>`.
-  `hello-rover`'s `robot.dev.yaml` is exactly that overlay.
-- `services` (optional) declares user services only.
-  Official services are never declared here; they resolve from the train's
-  complete suite automatically.
+- `extends` (optional) is an ordered list of project-relative parent robot
+  documents. Parent maps are deep-merged in order and the leaf wins; sequences
+  and scalars replace. Parents are partial documents and may not themselves
+  extend another document.
+- `services` (optional) configures Cargo-discovered user services. Workspace
+  crates under `services/` declare membership; this map never declares a path.
+  Official services are never declared here.
 - `router` (optional) names a project-relative Zenoh JSON5 file through
   `router.config`. Every supervised project binds its local participant
   transport at the exact project-owned
@@ -155,22 +152,11 @@ hardware driver participant runs for it.
 `hello-rover`'s wheels have none (there is no `phoxal::driver` binary in this
 example), so `left_drive`/`right_drive` list only `component` and
 `mount_link` - the same shape robot-v1's driverless `passive_caster` uses.
-A robot-local component is not in the official train suite, so pin its
-assets from an overlay:
-
-```yaml
-# robot.dev.yaml
-artifacts:
-  pins:
-    phoxal/component-wheel_drive:
-      path: ./components/wheel_drive
-```
-
-Load the overlay with `phoxal-cli check --env dev` (or `simulate ... --env
-dev`) whenever you need the local pin; a driverless component that has no pin
-at all also resolves fine (`check` treats a missing suite entry for a
-driverless component as valid, not an error) but the pin is what lets
-`simulate` find the local mesh/URDF assets.
+A robot-local component is an ordinary workspace crate under `components/`.
+Its library target owns the component assets. A binary target in that same
+crate means the component has a driver; a library-only crate is driverless.
+The robot service/tool/component workspace graph is the sole membership and
+source authority, so no manifest pin or environment overlay is needed.
 
 ## Writing a user service
 
@@ -281,7 +267,7 @@ robot:
 ```
 
 or via a `yaml.schemas` entry in your editor settings mapping
-`robot.schema.json` to `robot.yaml`/`robot.*.yaml`.
+`robot.schema.json` to your robot documents.
 Either way you get inline validation and completion for the manifest grammar
 as you type, including the closed set of kinematic kinds, connection types,
 and capability kinds.
@@ -291,8 +277,7 @@ and capability kinds.
 From the project directory:
 
 ```sh
-phoxal-cli check              # resolve the graph, validate it, no --env needed
-phoxal-cli check --env dev    # same, with robot.dev.yaml's local component pin applied
+phoxal-cli check              # resolve the complete Cargo-owned graph
 phoxal-cli validate --report --allow-user-service-drift   # lower-level structural check (see above)
 ```
 
@@ -302,7 +287,7 @@ suite-sourced component drivers) plus every user service and prints
 `hello-rover` includes a minimal Webots world:
 
 ```sh
-phoxal-cli simulation run default --env dev
+phoxal-cli simulation run default
 ```
 
 The CLI stages the authored world and injects the generated rover and Webots
