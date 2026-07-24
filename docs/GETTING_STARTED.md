@@ -173,8 +173,11 @@ example), so `left_drive`/`right_drive` list only `component` and
 A robot-local component is an ordinary workspace crate under `components/`.
 Its library target owns the component assets. A binary target in that same
 crate means the component has a driver; a library-only crate is driverless.
-The robot service/tool/component workspace graph is the sole membership and
-source authority, so no manifest pin or environment overlay is needed.
+The workspace graph is the candidate and source authority - it owns how every
+crate is built, with no manifest pin or environment overlay - while the
+manifest's `services:` and `tools:` maps select which user runtimes belong to
+the robot. Component membership stays workspace-driven: an instance in
+`robot.components` resolves its crate from the workspace directly.
 
 ## Writing a user service
 
