@@ -261,6 +261,9 @@ robot:
 services:
   autonomy:
     config: { planner: base, limit: 1 }
+tools:
+  lidar-viz:
+    config: { port: 9000, verbose: false }
 "#,
         )?;
         std::fs::write(
@@ -272,6 +275,9 @@ robot:
 services:
   autonomy:
     config: { planner: host }
+tools:
+  lidar-viz:
+    config: { verbose: true }
 "#,
         )?;
         std::fs::write(dir.path().join("robot.yaml"), LEAF)?;
@@ -284,6 +290,10 @@ services:
         let config = robot.services["autonomy"].config.as_ref().unwrap();
         assert_eq!(config["planner"], "host");
         assert_eq!(config["limit"], 1);
+        // The tools declaration deep-merges exactly like services (#950).
+        let tool_config = robot.tools["lidar-viz"].config.as_ref().unwrap();
+        assert_eq!(tool_config["port"], 9000);
+        assert_eq!(tool_config["verbose"], true);
         Ok(())
     }
 

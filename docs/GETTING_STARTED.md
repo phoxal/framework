@@ -66,8 +66,8 @@ services:
       cruise_speed_mps: 0.2
 ```
 
-The root keys are `schema`, `robot`, and optionally `extends`, `services`, and
-`router`:
+The root keys are `schema`, `robot`, and optionally `extends`, `services`,
+`tools`, and `router`:
 
 - `schema` is always `robot/v0` today.
   It is the only version discriminator; there is no separate `version:` key.
@@ -96,9 +96,27 @@ The root keys are `schema`, `robot`, and optionally `extends`, `services`, and
   documents. Parent maps are deep-merged in order and the leaf wins; sequences
   and scalars replace. Parents are partial documents and may not themselves
   extend another document.
-- `services` (optional) configures Cargo-discovered user services. Workspace
-  crates under `services/` declare membership; this map never declares a path.
-  Official services are never declared here.
+- `services` (optional) declares the user services this robot runs, each with
+  its optional `config` block.
+  The Cargo workspace is the candidate set: a declared service must have a
+  matching crate under `services/`, and a workspace service crate that is not
+  declared here is legal but not part of the robot (the CLI surfaces it as a
+  drift diagnostic).
+  This map never declares a path, and official services are never declared
+  here.
+- `tools` (optional) declares additional user tools the same way, each with
+  its optional `config` block:
+
+  ```yaml
+  tools:
+    lidar-viz:
+      config:
+        port: 9000
+  ```
+
+  Official tools are catalog-owned, always run, and are never declared here;
+  a `tools/` workspace crate whose name matches an official tool identity
+  overrides that official binary without being declared.
 - `router` (optional) names a project-relative Zenoh JSON5 file through
   `router.config`. Every supervised project binds its local participant
   transport at the exact project-owned
@@ -155,8 +173,11 @@ example), so `left_drive`/`right_drive` list only `component` and
 A robot-local component is an ordinary workspace crate under `components/`.
 Its library target owns the component assets. A binary target in that same
 crate means the component has a driver; a library-only crate is driverless.
-The robot service/tool/component workspace graph is the sole membership and
-source authority, so no manifest pin or environment overlay is needed.
+The workspace graph is the candidate and source authority - it owns how every
+crate is built, with no manifest pin or environment overlay - while the
+manifest's `services:` and `tools:` maps select which user runtimes belong to
+the robot. Component membership stays workspace-driven: an instance in
+`robot.components` resolves its crate from the workspace directly.
 
 ## Writing a user service
 
@@ -230,10 +251,10 @@ A few points that generalize beyond this one service:
   the concrete API revision selected by the locked framework train.
   It never mints its own bus types; contracts are the shared vocabulary
   every participant on the graph already speaks.
-- `robot.yaml` names the service by its `services.<name>` key and points
-  `path` at the crate directory (relative to `robot.yaml`); the config block
-  under it is validated against the crate's own compile-time JSON Schema
-  (from `#[derive(phoxal::Config)]`) by `phoxal-cli check`.
+- `robot.yaml` declares the service by its `services.<name>` key, which must
+  match the crate's directory name under `services/`; the config block under
+  it is validated against the crate's own compile-time JSON Schema
+  (from `#[derive(phoxal::Config)]`) by `phoxal check`.
 - The crate needs its own `Cargo.toml` with a `phoxal` dependency; outside
   this repo, pin it to a released version (`phoxal = "0.32"`, or a git tag).
   `hello-rover`'s own `services/cruise/Cargo.toml` uses

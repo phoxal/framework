@@ -37,10 +37,17 @@
           "const": "robot/v0"
         },
         "services": {
-          "description": "User-owned configuration keyed by workspace service identity.\nCargo workspace membership, not this map, declares which user services\nbelong to the robot.",
+          "description": "The user services this robot runs, keyed by service identity, each with\nits user-owned configuration. The Cargo workspace is the candidate set\n(a declared service must have a matching workspace crate); this map\nselects which discovered services belong to the robot and are built,\nstaged, and launched. An undeclared workspace service crate is legal\nand simply not part of the robot.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/UserService"
+          }
+        },
+        "tools": {
+          "description": "The additional user tools this robot runs, keyed by tool identity, each\nwith its user-owned configuration - symmetric with `services`. Official\ntools stay CLI-catalog-owned, always run, and take no configuration\nhere; a `tools/` workspace crate overriding an official identity is a\nsource override, not a declaration, and is never listed here.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/UserTool"
           }
         }
       },
@@ -849,7 +856,15 @@
       "additionalProperties": false
     },
     "UserService": {
-      "description": "Optional user-owned configuration for one Cargo-discovered service.",
+      "description": "One declared user service: presence in `services` is the declaration;\n`config` is its user-owned configuration.",
+      "type": "object",
+      "properties": {
+        "config": true
+      },
+      "additionalProperties": false
+    },
+    "UserTool": {
+      "description": "One declared additional user tool: presence in `tools` is the declaration;\n`config` is its user-owned configuration. Same shape as [`UserService`],\nkept distinct so the two declarations stay independently documented types.",
       "type": "object",
       "properties": {
         "config": true

@@ -34,7 +34,8 @@ Design docs are in [`docs/`](docs/): [contract discipline](docs/CONTRACTS.md),
 ## Getting started
 
 Robot projects are hand-authored: a `robot.yaml` manifest, a `structure.urdf`,
-component definitions, and user service crates.
+component definitions, and user service and tool crates declared in the
+manifest's `services:` and `tools:` maps.
 [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) walks through authoring
 one using the checked-in [`examples/hello-rover`](examples/hello-rover)
 project, and links the editor-facing
