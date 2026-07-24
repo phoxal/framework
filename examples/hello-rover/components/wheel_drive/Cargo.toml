@@ -1,0 +1,13 @@
+[package]
+name = "hello-rover-component-wheel-drive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Hello-rover wheel-drive assets."
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

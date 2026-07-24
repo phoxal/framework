@@ -1,0 +1,38 @@
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+publish = false
+description = "Phoxal hello-rover - a minimal differential-drive example robot."
+
+[workspace]
+resolver = "3"
+members = [
+  ".",
+  "components/wheel_drive",
+]
+
+[workspace.dependencies]
+phoxal = "=0.38.1"
+
+[workspace.lints.rust]
+unused = "warn"
+
+[profile.release]
+lto = false
+codegen-units = 16
+
+[package]
+name = "hello-rover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Hello-rover Cargo train anchor."
+
+[dependencies]
+phoxal = { workspace = true }
+
+[lints]
+workspace = true
