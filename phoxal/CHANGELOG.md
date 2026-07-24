@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0](https://github.com/phoxal/framework/compare/phoxal-v0.38.1...phoxal-v0.39.0) - 2026-07-24
+
+### Added
+
+- *(model)* [**breaking**] declare user services and tools in robot.yaml ([#309](https://github.com/phoxal/framework/pull/309))
+
 ## [0.38.1](https://github.com/phoxal/framework/compare/phoxal-v0.38.0...phoxal-v0.38.1) - 2026-07-24
 
 ### Added
