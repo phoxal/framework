@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.1](https://github.com/phoxal/framework/compare/phoxal-v0.38.0...phoxal-v0.38.1) - 2026-07-24
+
+### Added
+
+- *(framework)* adopt Cargo-owned runtime model ([#306](https://github.com/phoxal/framework/pull/306))
+
 ## [0.38.0](https://github.com/phoxal/framework/compare/phoxal-v0.37.0...phoxal-v0.38.0) - 2026-07-23
 
 ### Added
