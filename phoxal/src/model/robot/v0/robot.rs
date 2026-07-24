@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -6,29 +6,29 @@ use std::path::{Path, PathBuf};
 
 use super::{Component, KinematicConfig, MotionLimits, Role, capability};
 
-const ROBOT_FILE: &str = "robot.yaml";
-
 /// Top-level `robot:` section - the robot model, and exactly what
 /// `ctx.robot()` exposes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Robot {
+    /// Ordered parent robot documents composed before this leaf manifest.
+    ///
+    /// Parent maps are deep-merged in declaration order, then the leaf wins.
+    /// Sequence and scalar values replace earlier values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extends: Vec<PathBuf>,
     pub robot: RobotSection,
     /// Authoritative behavior root selected for this robot. Behavior
     /// definitions themselves live under `behaviors/` in the robot root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<BehaviorConfig>,
-    /// Explicit development-only source overrides for official packages.
-    #[serde(default, skip_serializing_if = "Artifacts::is_default")]
-    pub artifacts: Artifacts,
-    /// User services: project-local source crates built by `phoxal-cli` for
-    /// run/sim/deploy. Official services are never declared here.
+    /// User-owned configuration keyed by workspace service identity.
+    /// Cargo workspace membership, not this map, declares which user services
+    /// belong to the robot.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, UserService>,
-    /// Optional project-relative Zenoh router configuration. The CLI resolves
-    /// this through the normal environment overlay before launching the
-    /// Phoxal-owned infrastructure router.
+    /// Optional project-relative Zenoh router configuration.
     #[serde(default, skip_serializing_if = "Router::is_empty")]
     pub router: Router,
 }
@@ -62,84 +62,16 @@ pub struct RobotSection {
     /// independently so an arbitration defect cannot bypass the actuator
     /// backstop.
     pub motion_limits: MotionLimits,
-    /// Component instance map: instance-id -> instance (was
-    /// `components.instances`; `components.sources` no longer exists -
-    /// official components resolve from the train suite, forks are
-    /// `artifacts.pins` entries).
+    /// Component instance map: instance-id -> instance.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub components: BTreeMap<String, Component>,
 }
 
-/// Development-only source overrides. Published artifact inventory comes from
-/// the locked framework train's immutable `suite.json`.
-///
-/// The whole section is optional; a day-0 robot can omit it entirely.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct Artifacts {
-    /// Fail-closed source override map keyed by provider-qualified package id
-    /// (`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).
-    ///
-    /// Keys must have exactly one `/`, with a non-empty provider segment
-    /// before it and a non-empty name segment after it; unqualified keys
-    /// (`service-drive`, `driver-ddsm115`) are rejected. The CLI validates
-    /// existence in the resolved graph, dev-overlay-only path pins, and
-    /// whether each key is actually used; the model only validates key shape.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub pins: BTreeMap<String, ArtifactPin>,
-}
-
-impl Artifacts {
-    #[must_use]
-    pub fn is_default(&self) -> bool {
-        self.pins.is_empty()
-    }
-}
-
-/// One development-only `artifacts.pins` source override.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(untagged)]
-pub enum ArtifactPin {
-    /// Resolve this package from a local source checkout (dev-overlay-only).
-    Path(ArtifactPathPin),
-    /// Resolve this package from a git repository at a pinned revision.
-    Git(ArtifactGitPin),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactPathPin {
-    /// Project-relative or overlay-relative source path for this package.
-    pub path: PathBuf,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactGitPin {
-    /// Git repository URL.
-    pub git: String,
-    /// Pinned revision (commit sha, tag, or branch).
-    pub rev: String,
-    /// Optional subdirectory within the repository that holds the package.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub directory: Option<PathBuf>,
-}
-
-/// `services:` (was `user_participants` / `user_services`, and the separate
-/// `tools` map) - user services only; official services are supplied by the
-/// locked train's complete suite, never declared here. `artifacts.pins` is
-/// only an optional development-time source override, not how official
-/// services are normally selected.
+/// Optional user-owned configuration for one Cargo-discovered service.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct UserService {
-    pub path: PathBuf,
-    /// First-class typed config block, read by the service as `Self::Config`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
 }
@@ -164,15 +96,9 @@ impl Router {
 pub enum ValidationError {
     EmptyRobotId,
     EmptyRobotNamespace,
-    EmptyUserServiceConfig {
-        service: String,
-    },
     EmptyRouterConfigPath,
     AbsoluteRouterConfigPath {
         path: PathBuf,
-    },
-    InvalidArtifactPinKey {
-        key: String,
     },
     InvalidToken {
         field: String,
@@ -212,15 +138,7 @@ pub enum ValidationError {
 
 impl Robot {
     pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        Self::read_from_string(
-            &std::fs::read_to_string(path.join(ROBOT_FILE)).with_context(|| {
-                format!(
-                    "failed to read robot file {}",
-                    path.join(ROBOT_FILE).display()
-                )
-            })?,
-        )
+        crate::model::robot::Robot::read_from_dir(path).map(crate::model::robot::Robot::into_v0)
     }
 
     pub fn read_from_string(string: &str) -> Result<Self> {
@@ -229,15 +147,7 @@ impl Robot {
     }
 
     pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        Self::parse_from_string(
-            &std::fs::read_to_string(path.join(ROBOT_FILE)).with_context(|| {
-                format!(
-                    "failed to read robot file {}",
-                    path.join(ROBOT_FILE).display()
-                )
-            })?,
-        )
+        crate::model::robot::Robot::parse_from_dir(path).map(crate::model::robot::Robot::into_v0)
     }
 
     pub fn parse_from_string(string: &str) -> Result<Self> {
@@ -253,8 +163,6 @@ impl Robot {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
         self.validate_router(&mut errors);
-        self.validate_artifact_pins(&mut errors);
-        self.validate_user_services(&mut errors);
         self.validate_component_structure(&mut errors);
         self.validate_driver_structure(&mut errors);
         self.validate_role_hints(&mut errors);
@@ -321,14 +229,6 @@ impl Robot {
         }
     }
 
-    fn validate_artifact_pins(&self, errors: &mut Vec<ValidationError>) {
-        for key in self.artifacts.pins.keys() {
-            if !is_provider_qualified_pin_key(key) {
-                errors.push(ValidationError::InvalidArtifactPinKey { key: key.clone() });
-            }
-        }
-    }
-
     fn validate_router(&self, errors: &mut Vec<ValidationError>) {
         if let Some(path) = &self.router.config {
             if path.as_os_str().is_empty() {
@@ -338,27 +238,6 @@ impl Robot {
             }
         }
     }
-
-    fn validate_user_services(&self, errors: &mut Vec<ValidationError>) {
-        for (service, config) in &self.services {
-            if config.path.as_os_str().is_empty() {
-                errors.push(ValidationError::EmptyUserServiceConfig {
-                    service: service.clone(),
-                });
-            }
-        }
-    }
-}
-
-/// A provider-qualified package id has exactly one `/`, with a non-empty
-/// provider segment before it and a non-empty name segment after it.
-#[must_use]
-pub fn is_provider_qualified_pin_key(key: &str) -> bool {
-    let mut parts = key.split('/');
-    let (Some(provider), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    !provider.is_empty() && !name.is_empty()
 }
 
 impl fmt::Display for ValidationError {
@@ -366,18 +245,11 @@ impl fmt::Display for ValidationError {
         match self {
             Self::EmptyRobotId => formatter.write_str("robot.id must not be empty"),
             Self::EmptyRobotNamespace => formatter.write_str("robot.namespace must not be empty"),
-            Self::EmptyUserServiceConfig { service } => {
-                write!(formatter, "services.{service}.path must not be empty")
-            }
             Self::EmptyRouterConfigPath => formatter.write_str("router.config must not be empty"),
             Self::AbsoluteRouterConfigPath { path } => write!(
                 formatter,
                 "router.config path '{}' must be project-relative",
                 path.display()
-            ),
-            Self::InvalidArtifactPinKey { key } => write!(
-                formatter,
-                "artifacts.pins key '{key}' must be a provider-qualified package id ('<provider>/<name>')"
             ),
             Self::InvalidToken { field, value } => write!(
                 formatter,
@@ -447,7 +319,7 @@ fn default_structure_path() -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{ArtifactGitPin, ArtifactPathPin, ArtifactPin, Robot};
+    use super::Robot;
 
     /// Minimal canonical five-root-key manifest that also passes
     /// [`Robot::validate`] (the kinematic model has one actuator so the
@@ -469,27 +341,6 @@ robot:
     encoders: []
   components: {{}}
 {extra_top_level}"#
-        )
-    }
-
-    fn manifest_with_artifacts(artifacts_block: &str) -> String {
-        format!(
-            r#"
-schema: robot/v0
-robot:
-  id: test-bot
-  namespace: dev
-  motion_limits:
-    max_linear_speed_mps: 0.6
-    max_angular_speed_radps: 2.0
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components: {{}}
-artifacts:
-{artifacts_block}
-"#
         )
     }
 
@@ -523,7 +374,6 @@ robot:
         encoder: { kind: encoder, direction_sign: 1 }
 services:
   avoid-obstacles:
-    path: ./services/avoid-obstacles
     config: { max_linear_speed_mps: 0.6 }
 router:
   config: config/router.json5
@@ -533,12 +383,10 @@ router:
         assert_eq!(robot.robot.id, "rover");
         assert_eq!(robot.robot.namespace, "dev");
         assert_eq!(robot.robot.structure, PathBuf::from("structure.urdf"));
-        assert!(robot.artifacts.pins.is_empty());
         let service = robot
             .services
             .get("avoid-obstacles")
             .expect("service should parse");
-        assert_eq!(service.path, PathBuf::from("./services/avoid-obstacles"));
         assert_eq!(
             service
                 .config
@@ -602,11 +450,10 @@ robot:
     }
 
     #[test]
-    fn user_service_with_path_and_config_parses() -> anyhow::Result<()> {
+    fn user_service_config_parses() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&minimal_manifest(
             r#"services:
   autonomy:
-    path: services/autonomy
     config:
       max_linear_speed_mps: 0.6
       enabled: true
@@ -617,7 +464,6 @@ robot:
             .services
             .get("autonomy")
             .expect("user service should parse");
-        assert_eq!(service.path, PathBuf::from("services/autonomy"));
         assert_eq!(
             service
                 .config
@@ -635,8 +481,7 @@ robot:
     fn user_service_without_config_round_trips_and_omits_config() -> anyhow::Result<()> {
         let robot = Robot::parse_from_string(&minimal_manifest(
             r#"services:
-  autonomy:
-    path: services/autonomy
+  autonomy: {}
 "#,
         ))?;
         let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
@@ -943,194 +788,16 @@ robot:
     }
 
     #[test]
-    fn artifacts_pins_version_form_is_rejected() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/service-drive: v0.8.4"#,
+    fn artifacts_and_service_path_are_rejected() {
+        let artifacts = Robot::parse_from_string(&minimal_manifest("artifacts:\n  pins: {}\n"))
+            .expect_err("Cargo owns source selection");
+        assert!(format!("{artifacts:#}").contains("unknown field `artifacts`"));
+
+        let service_path = Robot::parse_from_string(&minimal_manifest(
+            "services:\n  autonomy:\n    path: services/autonomy\n",
         ))
-        .expect_err("published artifact versions come from suite.json");
-        assert!(format!("{error:#}").contains("did not match any variant"));
-    }
-
-    #[test]
-    fn artifacts_pins_git_form_parses() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/component-ddsm115:
-      git: https://github.com/you/ddsm115-component
-      rev: 9f2c1e7
-      directory: component/ddsm115"#,
-        ))?;
-
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/component-ddsm115"),
-            Some(&ArtifactPin::Git(ArtifactGitPin {
-                git: "https://github.com/you/ddsm115-component".to_string(),
-                rev: "9f2c1e7".to_string(),
-                directory: Some(PathBuf::from("component/ddsm115")),
-            }))
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn artifacts_pins_sha256_form_is_rejected() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/tool-bus: "sha256:2222222222222222222222222222222222222222222222222222222222222222""#,
-        ))
-        .expect_err("published checksums come from suite.json");
-        assert!(format!("{error:#}").contains("did not match any variant"));
-    }
-
-    #[test]
-    fn artifacts_pins_path_form_round_trips() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/service-drive:
-      path: ../framework/service/drive"#,
-        ))?;
-
-        assert_eq!(
-            robot.artifacts.pins.get("phoxal/service-drive"),
-            Some(&ArtifactPin::Path(ArtifactPathPin {
-                path: PathBuf::from("../framework/service/drive"),
-            }))
-        );
-
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot.clone()))?;
-        assert!(
-            yaml.contains(
-                "pins:\n    phoxal/service-drive:\n      path: ../framework/service/drive"
-            ),
-            "path pin should serialize in the unified pins map: {yaml}"
-        );
-
-        let reparsed = Robot::parse_from_string(&yaml)?;
-        assert_eq!(reparsed.artifacts.pins, robot.artifacts.pins);
-
-        Ok(())
-    }
-
-    #[test]
-    fn artifacts_pins_unqualified_key_is_validation_error() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    service-drive:
-      path: services/drive"#,
-        ))?;
-
-        let errors = robot
-            .validate()
-            .expect_err("unqualified pin key should fail validation");
-
-        assert!(
-            errors.contains(&super::ValidationError::InvalidArtifactPinKey {
-                key: "service-drive".to_string(),
-            })
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn artifacts_pins_key_missing_provider_or_name_is_validation_error() -> anyhow::Result<()> {
-        for bad_key in ["/service-drive", "phoxal/", "phoxal/service/drive"] {
-            let robot = Robot::parse_from_string(&manifest_with_artifacts(&format!(
-                "  pins:\n    \"{bad_key}\":\n      path: services/drive"
-            )))?;
-
-            let errors = robot
-                .validate()
-                .expect_err("malformed pin key should fail validation");
-            assert!(
-                errors.iter().any(|error| matches!(
-                    error,
-                    super::ValidationError::InvalidArtifactPinKey { key } if key == bad_key
-                )),
-                "expected InvalidArtifactPinKey for {bad_key:?}, got: {errors:?}"
-            );
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn artifacts_pins_rejects_unknown_value_form() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/tool-bus:
-      archive: bus.tar.zst"#,
-        ))
-        .expect_err("unsupported pin form should fail to parse");
-
-        assert!(
-            format!("{error:#}").contains("data did not match any variant of untagged enum"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn artifacts_pins_rejects_unknown_fields_inside_path_pin() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  pins:
-    phoxal/service-drive:
-      path: ../framework/service/drive
-      rev: 9f2c1e7"#,
-        ))
-        .expect_err("unknown path pin field should fail to parse");
-
-        assert!(
-            format!("{error:#}").contains("data did not match any variant of untagged enum"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn artifacts_section_entirely_omitted_by_default() -> anyhow::Result<()> {
-        let robot = Robot::parse_from_string(&minimal_manifest(""))?;
-
-        assert!(robot.artifacts.pins.is_empty());
-
-        let yaml = serde_yaml::to_string(&crate::model::robot::Robot::V0(robot))?;
-        assert!(
-            !yaml.contains("artifacts:"),
-            "default artifacts section should be omitted entirely: {yaml}"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn artifacts_rejects_invalid_channel() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts("  channel: experimental"))
-            .expect_err("invalid artifacts channel should fail to parse");
-
-        assert!(format!("{error:#}").contains("unknown field `channel`"));
-    }
-
-    #[test]
-    fn artifacts_no_longer_accepts_target_field() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts(
-            "  target: aarch64-unknown-linux-gnu",
-        ))
-        .expect_err("artifacts.target should no longer parse");
-
-        assert!(
-            format!("{error:#}").contains("unknown field `target`"),
-            "got: {error:#}"
-        );
-    }
-
-    #[test]
-    fn artifacts_rejects_channel_and_generation() {
-        let error = Robot::parse_from_string(&manifest_with_artifacts(
-            r#"  channel: preview
-  generation: v2"#,
-        ))
-        .expect_err("train and API selectors do not belong in robot.yaml");
-        assert!(format!("{error:#}").contains("unknown field `channel`"));
+        .expect_err("workspace membership owns service discovery");
+        assert!(format!("{service_path:#}").contains("unknown field `path`"));
     }
 
     #[test]

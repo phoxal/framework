@@ -7,10 +7,6 @@
       "description": "Top-level `robot:` section - the robot model, and exactly what\n`ctx.robot()` exposes.",
       "type": "object",
       "properties": {
-        "artifacts": {
-          "description": "Explicit development-only source overrides for official packages.",
-          "$ref": "#/$defs/Artifacts"
-        },
         "behavior": {
           "description": "Authoritative behavior root selected for this robot. Behavior\ndefinitions themselves live under `behaviors/` in the robot root.",
           "anyOf": [
@@ -22,11 +18,18 @@
             }
           ]
         },
+        "extends": {
+          "description": "Ordered parent robot documents composed before this leaf manifest.\n\nParent maps are deep-merged in declaration order, then the leaf wins.\nSequence and scalar values replace earlier values.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "robot": {
           "$ref": "#/$defs/RobotSection"
         },
         "router": {
-          "description": "Optional project-relative Zenoh router configuration. The CLI resolves\nthis through the normal environment overlay before launching the\nPhoxal-owned infrastructure router.",
+          "description": "Optional project-relative Zenoh router configuration.",
           "$ref": "#/$defs/Router"
         },
         "schema": {
@@ -34,7 +37,7 @@
           "const": "robot/v0"
         },
         "services": {
-          "description": "User services: project-local source crates built by `phoxal-cli` for\nrun/sim/deploy. Official services are never declared here.",
+          "description": "User-owned configuration keyed by workspace service identity.\nCargo workspace membership, not this map, declares which user services\nbelong to the robot.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/UserService"
@@ -49,71 +52,6 @@
     }
   ],
   "$defs": {
-    "ArtifactGitPin": {
-      "type": "object",
-      "properties": {
-        "directory": {
-          "description": "Optional subdirectory within the repository that holds the package.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "git": {
-          "description": "Git repository URL.",
-          "type": "string"
-        },
-        "rev": {
-          "description": "Pinned revision (commit sha, tag, or branch).",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "git",
-        "rev"
-      ]
-    },
-    "ArtifactPathPin": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "description": "Project-relative or overlay-relative source path for this package.",
-          "type": "string"
-        }
-      },
-      "additionalProperties": false,
-      "required": [
-        "path"
-      ]
-    },
-    "ArtifactPin": {
-      "description": "One development-only `artifacts.pins` source override.",
-      "anyOf": [
-        {
-          "description": "Resolve this package from a local source checkout (dev-overlay-only).",
-          "$ref": "#/$defs/ArtifactPathPin"
-        },
-        {
-          "description": "Resolve this package from a git repository at a pinned revision.",
-          "$ref": "#/$defs/ArtifactGitPin"
-        }
-      ]
-    },
-    "Artifacts": {
-      "description": "Development-only source overrides. Published artifact inventory comes from\nthe locked framework train's immutable `suite.json`.\n\nThe whole section is optional; a day-0 robot can omit it entirely.",
-      "type": "object",
-      "properties": {
-        "pins": {
-          "description": "Fail-closed source override map keyed by provider-qualified package id\n(`phoxal/service-drive`, `phoxal/component-ddsm115`, ...).\n\nKeys must have exactly one `/`, with a non-empty provider segment\nbefore it and a non-empty name segment after it; unqualified keys\n(`service-drive`, `driver-ddsm115`) are rejected. The CLI validates\nexistence in the resolved graph, dev-overlay-only path pins, and\nwhether each key is actually used; the model only validates key shape.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/ArtifactPin"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
     "BehaviorConfig": {
       "type": "object",
       "properties": {
@@ -851,7 +789,7 @@
       "type": "object",
       "properties": {
         "components": {
-          "description": "Component instance map: instance-id -> instance (was\n`components.instances`; `components.sources` no longer exists -\nofficial components resolve from the train suite, forks are\n`artifacts.pins` entries).",
+          "description": "Component instance map: instance-id -> instance.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Component"
@@ -911,20 +849,12 @@
       "additionalProperties": false
     },
     "UserService": {
-      "description": "`services:` (was `user_participants` / `user_services`, and the separate\n`tools` map) - user services only; official services are supplied by the\nlocked train's complete suite, never declared here. `artifacts.pins` is\nonly an optional development-time source override, not how official\nservices are normally selected.",
+      "description": "Optional user-owned configuration for one Cargo-discovered service.",
       "type": "object",
       "properties": {
-        "config": {
-          "description": "First-class typed config block, read by the service as `Self::Config`."
-        },
-        "path": {
-          "type": "string"
-        }
+        "config": true
       },
-      "additionalProperties": false,
-      "required": [
-        "path"
-      ]
+      "additionalProperties": false
     }
   }
 }

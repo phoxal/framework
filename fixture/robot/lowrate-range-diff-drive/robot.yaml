@@ -92,13 +92,3 @@ robot:
       mount_link: ground_tof_mount
       roles:
         range:
-artifacts:
-  pins:
-    phoxal/component-camera_rgbd_640x480:
-      path: "../../component/camera_rgbd_640x480"
-    phoxal/component-drive_motor:
-      path: "../../component/drive_motor"
-    phoxal/component-imu:
-      path: "../../component/imu"
-    phoxal/component-range_lowrate:
-      path: "../../component/range_lowrate"
