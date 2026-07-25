@@ -25,7 +25,7 @@ pub use api::{
     SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
 };
 pub use clock::{ClockSource, RealClock, TestClock};
-pub use context::{SetupContext, ShutdownContext, StepContext};
+pub use context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 pub use launch::{
     BusProfile, ClockMode, ExecutionDeviceId, MAX_EXECUTION_DEVICE_ID_BYTES, ParticipantLaunch,
 };

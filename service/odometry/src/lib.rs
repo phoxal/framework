@@ -165,6 +165,18 @@ impl Odometry {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.x_m = 0.0;
+        self.y_m = 0.0;
+        self.yaw_rad = 0.0;
+        self.left_velocity_radps.fill(0.0);
+        self.right_velocity_radps.fill(0.0);
+        self.left_sample_at.fill(None);
+        self.right_sample_at.fill(None);
+        Ok(())
+    }
+
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         if !self.config.active {

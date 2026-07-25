@@ -1,0 +1,59 @@
+error[E0425]: cannot find type `RobotSpawn` in module `api::simulation`
+ --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:4:50
+  |
+4 |     let _ = std::mem::size_of::<api::simulation::RobotSpawn>();
+  |                                                  ^^^^^^^^^^ not found in `api::simulation`
+
+error[E0425]: cannot find type `SpawnRequest` in module `api::simulation`
+ --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:5:50
+  |
+5 |     let _ = std::mem::size_of::<api::simulation::SpawnRequest>();
+  |                                                  ^^^^^^^^^^^^ not found in `api::simulation`
+
+error[E0425]: cannot find type `SpawnSet` in module `api::simulation`
+ --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:6:50
+  |
+6 |     let _ = std::mem::size_of::<api::simulation::SpawnSet>();
+  |                                                  ^^^^^^^^ not found in `api::simulation`
+
+error[E0425]: cannot find type `Control` in module `api::simulation`
+ --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:7:50
+  |
+7 |     let _ = std::mem::size_of::<api::simulation::Control>();
+  |                                                  ^^^^^^^ not found in `api::simulation`
+
+error[E0425]: cannot find type `RobotPose` in module `api::simulation`
+ --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:8:50
+  |
+8 |     let _ = std::mem::size_of::<api::simulation::RobotPose>();
+  |                                                  ^^^^^^^^^ not found in `api::simulation`
+
+error[E0425]: cannot find type `Contact` in module `api::simulation`
+ --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:9:50
+  |
+9 |     let _ = std::mem::size_of::<api::simulation::Contact>();
+  |                                                  ^^^^^^^ not found in `api::simulation`
+
+error[E0599]: no method named `spawn` found for struct `phoxal::api::topic::simulation::Builder` in the current scope
+  --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:12:24
+   |
+12 |     let _ = simulation.spawn();
+   |                        ^^^^^ method not found in `phoxal::api::topic::simulation::Builder`
+
+error[E0599]: no method named `control` found for struct `phoxal::api::topic::simulation::Builder` in the current scope
+  --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:13:24
+   |
+13 |     let _ = simulation.control();
+   |                        ^^^^^^^ method not found in `phoxal::api::topic::simulation::Builder`
+
+error[E0599]: no method named `robot_pose` found for struct `phoxal::api::topic::simulation::Builder` in the current scope
+  --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:14:24
+   |
+14 |     let _ = simulation.robot_pose();
+   |                        ^^^^^^^^^^ method not found in `phoxal::api::topic::simulation::Builder`
+
+error[E0599]: no method named `contact` found for struct `phoxal::api::topic::simulation::Builder` in the current scope
+  --> tests/trybuild/fail/retired_simulation_api_is_absent.rs:15:24
+   |
+15 |     let _ = simulation.contact();
+   |                        ^^^^^^^ method not found in `phoxal::api::topic::simulation::Builder`

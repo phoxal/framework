@@ -40,10 +40,16 @@ static NAMESPACE_SEQ: AtomicU64 = AtomicU64::new(0);
 static COUNTER_STEPS: AtomicU64 = AtomicU64::new(0);
 static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
+static RESET_FAILURE_SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SIM_CLOCK_STEPS: AtomicU64 = AtomicU64::new(0);
+static SIM_CLOCK_RESETS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
 static HOST_TOOL_TICKS: AtomicU64 = AtomicU64::new(0);
 static HOST_TOOL_MESSAGES: AtomicU64 = AtomicU64::new(0);
 static SIM_CLOCK_CONTEXTS: Mutex<Vec<(LogicalTime, u64)>> = Mutex::new(Vec::new());
+static NO_STEP_RESETS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+static NO_STEP_INGRESS: AtomicU64 = AtomicU64::new(0);
+static NO_STEP_RESET_ACTIVE: AtomicBool = AtomicBool::new(false);
+static NO_STEP_SERVER_OVERLAP: AtomicBool = AtomicBool::new(false);
 
 /// A fresh in-process namespace per test invocation, so concurrently-run
 /// `#[tokio::test]`s never share a Zenoh in-process session (mirrors
@@ -290,15 +296,15 @@ async fn new_model_participant_runs_through_a_real_bus() {
 
 // The first test omits the two `Api` field kinds whose sharing semantics the
 // reviewer flagged: `Subscriber` (a DESTRUCTIVE shared queue - two clones
-// compete) and `Latest` as an INBOUND handle (a non-destructive `ArcSwapOption`
-// read). This second test drives a participant that owns BOTH through the same
-// owned-`api` / `Arc<Self::Api>`-snapshot split the runner applies, and proves
-// the SAFE path: the `#[step]` loop (which holds `&mut Self::Api`) drains ALL
-// samples on its `Subscriber` and reads its `Latest` correctly, WHILE a
-// concurrent `#[server_snapshot]` runs against the shared `Arc<Self::Api>`
-// clone - a snapshot server that reads committed `Snapshot` state and never
-// `recv`s the `Subscriber`, so it steals nothing. This is the field-kind
-// coverage the D3 proof above is missing.
+// compete) and `Latest` as an INBOUND handle (a non-destructive read from one
+// mutex-serialized retained slot). This second test drives a participant that
+// owns BOTH through the same owned-`api` / `Arc<Self::Api>`-snapshot split the
+// runner applies, and proves the SAFE path: the `#[step]` loop (which holds
+// `&mut Self::Api`) drains ALL samples on its `Subscriber` and reads its
+// `Latest` correctly, WHILE a concurrent `#[server_snapshot]` runs against the
+// shared `Arc<Self::Api>` clone - a snapshot server that reads committed
+// `Snapshot` state and never `recv`s the `Subscriber`, so it steals nothing.
+// This is the field-kind coverage the D3 proof above is missing.
 //
 // It also proves that two distinct contracts from the train-selected API can
 // share one participant and round-trip real bytes on one live in-process bus.
@@ -601,6 +607,28 @@ impl SlowShutdown {
     }
 }
 
+#[phoxal::service(id = "reset-failure", config = (), api = ())]
+struct ResetFailure;
+
+#[phoxal::behavior]
+impl ResetFailure {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((Self, ()))
+    }
+
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        Err(anyhow::anyhow!("intentional reset failure"))
+    }
+
+    #[shutdown]
+    async fn shutdown(&mut self, _api: &mut Self::Api) -> Result<()> {
+        RESET_FAILURE_SHUTDOWN_CALLED.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
 /// Acceptance fixture (P6-3): a `#[step]` participant with no other IO, used
 /// to prove `#[step]` ticks under `ClockMode::Simulation` release only as the
 /// live `simulation/clock` feed advances (see `simulation_mode_step_advances_only_with_the_clock_feed`).
@@ -624,6 +652,15 @@ impl SimClockStepper {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+        SIM_CLOCK_RESETS
+            .lock()
+            .expect("simulation reset log poisoned")
+            .push((ctx.previous_epoch(), ctx.new_epoch()));
+        Ok(())
+    }
+
     #[step(hz = 1000)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         SIM_CLOCK_CONTEXTS
@@ -642,6 +679,70 @@ impl SimClockStepper {
             )
             .await?;
         Ok(())
+    }
+}
+
+#[derive(phoxal::Api)]
+struct NoStepResetApi {
+    target: Subscriber<api::drive::Target>,
+    lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
+}
+
+#[phoxal::service(id = "no-step-reset-observer", config = (), api = NoStepResetApi)]
+struct NoStepResetObserver;
+
+#[phoxal::behavior]
+impl NoStepResetObserver {
+    #[setup]
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        let target = ctx
+            .subscriber(
+                api::topic::internal::new(ctx.owner_capability())
+                    .drive()
+                    .target(),
+                8,
+            )
+            .await?;
+        let receiver = target.clone();
+        ctx.spawn_managed("no-step-ingress", async move {
+            while receiver.recv().await.is_ok() {
+                NO_STEP_INGRESS.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        // Keep setup in flight long enough for the test's first controller
+        // clock to become current before main_loop clones the watch receiver.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok((
+            Self,
+            Self::Api {
+                target,
+                lookup: ctx.server(api::topic::new().frame().lookup()).await?,
+            },
+        ))
+    }
+
+    #[reset]
+    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+        NO_STEP_RESET_ACTIVE.store(true, Ordering::SeqCst);
+        NO_STEP_RESETS
+            .lock()
+            .expect("no-step reset log poisoned")
+            .push((ctx.previous_epoch(), ctx.new_epoch()));
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        NO_STEP_RESET_ACTIVE.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[server(api = lookup)]
+    async fn lookup(
+        &mut self,
+        _api: &mut Self::Api,
+        _request: api::frame::LookupRequest,
+    ) -> ServerResult<api::frame::LookupResponse> {
+        if NO_STEP_RESET_ACTIVE.load(Ordering::SeqCst) {
+            NO_STEP_SERVER_OVERLAP.store(true, Ordering::SeqCst);
+        }
+        Ok(api::frame::LookupResponse { transform: None })
     }
 }
 
@@ -854,11 +955,11 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 /// ticks are released by the live `simulation/clock` feed, not a free-running
 /// wall clock - the full path (runner subscribes `simulation/clock` on the
 /// shared bus, drives the `SimulationScheduler` handle from it) exercised
-/// exactly as a real `Simulator` kind (e.g. the Webots supervisor) would drive
+/// exactly as a real `Simulator` kind (the Webots controller) would drive
 /// it, minus Webots itself.
 ///
 /// This publishes `simulation::Clock` samples the same way
-/// `simulator/webots-supervisor/src/main.rs` does (owner-side publisher over
+/// `simulator/webots-controller/src/lib.rs` does (owner-side publisher over
 /// `api::topic::internal::new(cap).simulation().clock()`, `publish_at` an
 /// explicit `LogicalTime`), and proves three things the runner's wiring must
 /// get right:
@@ -871,6 +972,10 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     SIM_CLOCK_STEPS.store(0, Ordering::Relaxed);
+    SIM_CLOCK_RESETS
+        .lock()
+        .expect("simulation reset log poisoned")
+        .clear();
     SIM_CLOCK_CONTEXTS
         .lock()
         .expect("simulation context log poisoned")
@@ -880,10 +985,9 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     let bus_config = BusConfig::in_process(namespace.clone(), "robot");
     let bus = Bus::open(bus_config).await.expect("bus should open");
 
-    // Stand in for the Webots supervisor: the OWNER-side publisher over the
-    // same `simulation().clock()` builder `simulator/webots-supervisor`
-    // uses, so this test proves the runner subscribes the identical wire key
-    // a real supervisor publishes (not a look-alike topic).
+    // Stand in for the Webots controller: the OWNER-side publisher over the
+    // same `simulation().clock()` builder it uses, so this test proves the
+    // runner subscribes the identical wire key (not a look-alike topic).
     let clock_publisher = Publisher::<api::simulation::Clock>::new(
         bus.clone(),
         &api::topic::internal::new(OwnerCap::__mint())
@@ -921,16 +1025,39 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             "no simulation/clock sample has been published yet; the step must not have released"
         );
 
+        let initial = LogicalTime::new(9, 0);
+        clock_publisher
+            .publish_at(
+                initial,
+                api::simulation::Clock {
+                    epoch: initial.epoch(),
+                    now_ns: initial.time_ns(),
+                    step: 0,
+                },
+            )
+            .await
+            .expect("initial epoch clock should publish");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            SIM_CLOCK_RESETS
+                .lock()
+                .expect("simulation reset log poisoned")
+                .as_slice(),
+            &[],
+            "the first observed simulation epoch must not invoke reset"
+        );
+
         // Advance one period at a time, waiting for the runner to observe
         // each step before publishing the next - proves steps track the
         // feed's cadence, not a free-running timer (each iteration sleeps
         // far longer, in real time, than the participant's 1ms period).
         for step in 1..=5u64 {
-            let at = LogicalTime::new(0, step * period_ns);
+            let at = LogicalTime::new(9, step * period_ns);
             clock_publisher
                 .publish_at(
                     at,
                     api::simulation::Clock {
+                        epoch: at.epoch(),
                         now_ns: step * period_ns,
                         step,
                     },
@@ -972,7 +1099,14 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         // must be discarded without releasing a step or spinning the loop.
         let reset_at = LogicalTime::new(1, 0);
         clock_publisher
-            .publish_at(reset_at, api::simulation::Clock { now_ns: 0, step: 0 })
+            .publish_at(
+                reset_at,
+                api::simulation::Clock {
+                    epoch: reset_at.epoch(),
+                    now_ns: 0,
+                    step: 0,
+                },
+            )
             .await
             .expect("reset clock sample should publish");
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -987,6 +1121,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             .publish_at(
                 first_after_reset,
                 api::simulation::Clock {
+                    epoch: first_after_reset.epoch(),
                     now_ns: period_ns,
                     step: 1,
                 },
@@ -1001,10 +1136,114 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        let contexts = SIM_CLOCK_CONTEXTS
-            .lock()
-            .expect("simulation context log poisoned");
-        assert_eq!(contexts.last(), Some(&(first_after_reset, 0)));
+        {
+            let contexts = SIM_CLOCK_CONTEXTS
+                .lock()
+                .expect("simulation context log poisoned");
+            assert_eq!(contexts.last(), Some(&(first_after_reset, 0)));
+        }
+        assert_eq!(
+            SIM_CLOCK_RESETS
+                .lock()
+                .expect("simulation reset log poisoned")
+                .as_slice(),
+            &[(9, 1)],
+            "a numerically lower opaque epoch must reset exactly once before its first step"
+        );
+
+        // A late clock from the retired controller must not reactivate its
+        // execution. In particular it cannot run a second reset or release a
+        // step stamped in epoch 9 after epoch 1 has become active.
+        let late_retired = LogicalTime::new(9, 6 * period_ns);
+        clock_publisher
+            .publish_at(
+                late_retired,
+                api::simulation::Clock {
+                    epoch: late_retired.epoch(),
+                    now_ns: late_retired.time_ns(),
+                    step: 6,
+                },
+            )
+            .await
+            .expect("late retired clock sample should publish at the bus layer");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+            6,
+            "a late retired clock must not release a step"
+        );
+        assert_eq!(
+            SIM_CLOCK_RESETS
+                .lock()
+                .expect("simulation reset log poisoned")
+                .as_slice(),
+            &[(9, 1)],
+            "9 -> 1 -> late 9 must perform exactly the original 9 -> 1 reset"
+        );
+        assert_eq!(
+            SIM_CLOCK_CONTEXTS
+                .lock()
+                .expect("simulation context log poisoned")
+                .last(),
+            Some(&(first_after_reset, 0)),
+            "no retired-epoch StepContext may appear after the replacement reset"
+        );
+
+        // Epochs are opaque identities, so a numerically higher replacement
+        // must follow the same reset path as the lower-valued replacement.
+        let higher_reset_at = LogicalTime::new(12, 0);
+        clock_publisher
+            .publish_at(
+                higher_reset_at,
+                api::simulation::Clock {
+                    epoch: higher_reset_at.epoch(),
+                    now_ns: 0,
+                    step: 0,
+                },
+            )
+            .await
+            .expect("higher-valued reset clock sample should publish");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            SIM_CLOCK_STEPS.load(Ordering::Relaxed),
+            6,
+            "a higher-valued epoch reset must rebase without releasing a step"
+        );
+
+        let first_after_higher_reset = LogicalTime::new(12, period_ns);
+        clock_publisher
+            .publish_at(
+                first_after_higher_reset,
+                api::simulation::Clock {
+                    epoch: first_after_higher_reset.epoch(),
+                    now_ns: period_ns,
+                    step: 1,
+                },
+            )
+            .await
+            .expect("first step after higher-valued reset should publish");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while SIM_CLOCK_STEPS.load(Ordering::Relaxed) < 7 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "first step after higher-valued reset did not release"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        {
+            let contexts = SIM_CLOCK_CONTEXTS
+                .lock()
+                .expect("simulation context log poisoned");
+            assert_eq!(contexts.last(), Some(&(first_after_higher_reset, 0)));
+        }
+        assert_eq!(
+            SIM_CLOCK_RESETS
+                .lock()
+                .expect("simulation reset log poisoned")
+                .as_slice(),
+            &[(9, 1), (1, 12)],
+            "every differing opaque epoch must reset exactly once before its first step"
+        );
     });
 
     tokio::time::timeout(Duration::from_secs(10), runner)
@@ -1015,9 +1254,186 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
 
     assert_eq!(
         SIM_CLOCK_STEPS.load(Ordering::Relaxed),
-        6,
+        7,
         "shutdown must not have released any further steps"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
+    NO_STEP_INGRESS.store(0, Ordering::Relaxed);
+    NO_STEP_RESET_ACTIVE.store(false, Ordering::Relaxed);
+    NO_STEP_SERVER_OVERLAP.store(false, Ordering::Relaxed);
+    NO_STEP_RESETS
+        .lock()
+        .expect("no-step reset log poisoned")
+        .clear();
+
+    let namespace = unique_namespace("no-step-reset");
+    let bus = Bus::open(BusConfig::in_process(namespace.clone(), "robot"))
+        .await
+        .expect("bus should open");
+    let clock = Publisher::<api::simulation::Clock>::new(
+        bus.clone(),
+        &api::topic::internal::new(OwnerCap::__mint())
+            .simulation()
+            .clock(),
+    )
+    .expect("clock publisher should attach");
+    let target =
+        Publisher::<api::drive::Target>::new(bus.clone(), &api::topic::new().drive().target())
+            .expect("target publisher should attach");
+    let lookup = Querier::<api::frame::LookupRequest, api::frame::LookupResponse>::new(
+        bus.clone(),
+        &api::topic::new().frame().lookup(),
+        DEFAULT_QUERY_TIMEOUT,
+    )
+    .expect("lookup querier should attach");
+
+    let traffic = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let initial = LogicalTime::new(7, 10);
+        clock
+            .publish_at(
+                initial,
+                api::simulation::Clock {
+                    epoch: initial.epoch(),
+                    now_ns: initial.time_ns(),
+                    step: 1,
+                },
+            )
+            .await
+            .expect("initial clock should publish during setup");
+
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        for at in [LogicalTime::new(6, 20), LogicalTime::new(7, 20)] {
+            target
+                .publish_at(
+                    at,
+                    api::drive::Target {
+                        linear_x_mps: at.epoch() as f32,
+                        angular_z_radps: 0.0,
+                        curvature_limit_radpm: None,
+                    },
+                )
+                .await
+                .expect("target should publish");
+        }
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let replacement = LogicalTime::new(3, 0);
+        clock
+            .publish_at(
+                replacement,
+                api::simulation::Clock {
+                    epoch: replacement.epoch(),
+                    now_ns: replacement.time_ns(),
+                    step: 0,
+                },
+            )
+            .await
+            .expect("replacement clock should publish");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while !NO_STEP_RESET_ACTIVE.load(Ordering::SeqCst) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "reset did not begin"
+            );
+            tokio::task::yield_now().await;
+        }
+        lookup
+            .query(api::frame::LookupRequest {
+                target_frame_id: "map".to_string(),
+                source_frame_id: "base".to_string(),
+                at_ns: None,
+            })
+            .await
+            .expect("exclusive query should run after reset completes");
+    });
+
+    let mut launch = ParticipantLaunch::local("no-step-reset-observer-1", "robot");
+    launch.namespace = namespace;
+    launch.clock = ClockMode::Simulation;
+    run_with_bus::<NoStepResetObserver, _>(&bus, launch, async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    })
+    .await
+    .expect("step-less service should run cleanly");
+    traffic.await.expect("traffic task should complete");
+
+    assert_eq!(
+        NO_STEP_INGRESS.load(Ordering::Relaxed),
+        1,
+        "startup barrier must reject the late old-epoch sample and preserve the current one"
+    );
+    assert_eq!(
+        NO_STEP_RESETS
+            .lock()
+            .expect("no-step reset log poisoned")
+            .as_slice(),
+        &[(7, 3)],
+        "step-less service must reset exactly once on a numerically lower replacement epoch"
+    );
+    assert!(
+        !NO_STEP_SERVER_OVERLAP.load(Ordering::SeqCst),
+        "reset and exclusive server handling must be serialized"
+    );
+    bus.close().await.expect("bus should close");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reset_error_faults_the_runner_and_still_runs_teardown() {
+    RESET_FAILURE_SHUTDOWN_CALLED.store(false, Ordering::Relaxed);
+    let namespace = unique_namespace("reset-failure");
+    let bus = Bus::open(BusConfig::in_process(namespace.clone(), "robot"))
+        .await
+        .expect("bus should open");
+    let clock = Publisher::<api::simulation::Clock>::new(
+        bus.clone(),
+        &api::topic::internal::new(OwnerCap::__mint())
+            .simulation()
+            .clock(),
+    )
+    .expect("clock publisher should attach");
+    let traffic = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        for (epoch, delay_ms) in [(4, 100), (8, 0)] {
+            let at = LogicalTime::new(epoch, 0);
+            clock
+                .publish_at(
+                    at,
+                    api::simulation::Clock {
+                        epoch,
+                        now_ns: 0,
+                        step: 0,
+                    },
+                )
+                .await
+                .expect("clock should publish");
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+    });
+
+    let mut launch = ParticipantLaunch::local("reset-failure-1", "robot");
+    launch.namespace = namespace;
+    launch.clock = ClockMode::Simulation;
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        run_with_bus::<ResetFailure, _>(&bus, launch, std::future::pending()),
+    )
+    .await
+    .expect("reset failure should terminate the runner")
+    .expect_err("reset failure must fault the runner");
+    assert!(
+        error.to_string().contains("intentional reset failure"),
+        "unexpected reset error: {error:#}"
+    );
+    assert!(
+        RESET_FAILURE_SHUTDOWN_CALLED.load(Ordering::Relaxed),
+        "reset failure must still execute normal teardown"
+    );
+    traffic.await.expect("traffic task should complete");
+    bus.close().await.expect("bus should close");
 }
 
 #[test]

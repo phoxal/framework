@@ -146,6 +146,21 @@ impl Video {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+        for (active, phase) in self.active.iter().zip(&mut self.phase) {
+            *phase = if *active {
+                StreamPhase::Starting
+            } else {
+                StreamPhase::Stopped
+            };
+        }
+        self.frames_seen.fill(0);
+        self.last_frame.fill(None);
+        self.last_time = LogicalTime::new(ctx.new_epoch(), 0);
+        Ok(())
+    }
+
     #[step(hz = 30)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.last_time = step.time();

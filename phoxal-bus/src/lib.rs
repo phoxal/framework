@@ -55,12 +55,51 @@ pub use server::{IncomingQuery, ServerQueryable};
 pub use session::{Bus, BusConfig, BusHealth};
 pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};
 
+use std::collections::VecDeque;
+
+/// Fixed history used wherever opaque simulation epochs are retired.
+///
+/// The bounded history rejects in-flight samples from recently replaced
+/// executions without imposing numeric ordering or unbounded memory growth.
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct RetiredEpochs {
+    epochs: VecDeque<u64>,
+}
+
+impl RetiredEpochs {
+    /// The shared retirement-history bound for clock and data paths.
+    pub const CAPACITY: usize = 8;
+
+    pub fn contains(&self, epoch: u64) -> bool {
+        self.epochs.contains(&epoch)
+    }
+
+    pub fn retire(&mut self, epoch: u64) {
+        if epoch == 0 {
+            return;
+        }
+        self.epochs.retain(|candidate| *candidate != epoch);
+        if self.epochs.len() == Self::CAPACITY {
+            self.epochs.pop_front();
+        }
+        self.epochs.push_back(epoch);
+    }
+
+    pub fn activate(&mut self, epoch: u64) {
+        self.epochs.retain(|candidate| *candidate != epoch);
+    }
+}
+
 /// Logical robot time: an epoch + a nanosecond timestamp in the clock's domain.
 ///
 /// Every bus sample's `produced_at_ns`/`epoch` is stamped from a `LogicalTime`,
-/// so all participants share one time domain (D34). Within an epoch `time_ns`
-/// strictly increases; an epoch bump signals a reset.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// so all participants share one time domain (D34). Within one epoch
+/// `time_ns` strictly increases. Epochs are opaque execution identities:
+/// different epochs are comparable only for equality and have no numeric
+/// generation order. Epoch `0` is reserved for the framework's
+/// not-yet-initialized sentinel and is never a valid simulation execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogicalTime {
     epoch: u64,
     time_ns: u64,
@@ -72,7 +111,7 @@ impl LogicalTime {
         LogicalTime { epoch, time_ns }
     }
 
-    /// The clock epoch (reset counter).
+    /// The opaque simulation execution identity.
     pub const fn epoch(self) -> u64 {
         self.epoch
     }

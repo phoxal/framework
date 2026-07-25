@@ -1,5 +1,6 @@
-//! Participant contexts: `SetupContext` (IO construction), `StepContext` (logical
-//! time per scheduled step), and `ShutdownContext`.
+//! Participant contexts: `SetupContext` (IO construction), `ResetContext`
+//! (simulation execution replacement), `StepContext` (logical time per
+//! scheduled step), and `ShutdownContext`.
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -154,6 +155,33 @@ pub struct StepContext {
     time_ns: u64,
     dt_ns: u64,
     missed_ticks: u32,
+}
+
+/// Context for `#[reset]`: the runner observed a different opaque simulation
+/// epoch and is about to begin releasing steps for that execution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResetContext {
+    previous_epoch: u64,
+    new_epoch: u64,
+}
+
+impl ResetContext {
+    pub(crate) fn new(previous_epoch: u64, new_epoch: u64) -> Self {
+        Self {
+            previous_epoch,
+            new_epoch,
+        }
+    }
+
+    /// The execution identity whose derived state must be discarded.
+    pub fn previous_epoch(&self) -> u64 {
+        self.previous_epoch
+    }
+
+    /// The newly active execution identity.
+    pub fn new_epoch(&self) -> u64 {
+        self.new_epoch
+    }
 }
 
 impl StepContext {

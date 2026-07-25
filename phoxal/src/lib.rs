@@ -267,7 +267,7 @@ pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{Latest, Publisher, Querier, QueryError, ServerResult, Subscriber};
     pub use crate::participant::{
-        ExecutionDeviceId, LogicalTime, ManagedTaskPolicy, Server, SetupContext,
+        ExecutionDeviceId, LogicalTime, ManagedTaskPolicy, ResetContext, Server, SetupContext,
         SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
         ShutdownContext, Snapshot, StepContext,
     };

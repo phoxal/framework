@@ -15,7 +15,6 @@ name = "phoxal_bus"
 path = "src/lib.rs"
 
 [dependencies]
-arc-swap = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

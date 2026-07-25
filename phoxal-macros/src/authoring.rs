@@ -101,12 +101,11 @@ fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Parses an `Api` struct field's `#[phoxal(external)]` helper attribute
-/// (coherence-gate design doc §1). Returns `Ok(true)` iff the field carries
-/// `#[phoxal(external)]`; rejects any other key inside `#[phoxal(...)]` as a
-/// compile error rather than silently ignoring a typo.
-fn parse_external_attr(field: &syn::Field) -> syn::Result<bool> {
+/// Parse the `#[phoxal(external)]` and `#[phoxal(epoch_agnostic)]` field
+/// helpers, rejecting unknown keys instead of silently ignoring a typo.
+fn parse_field_attrs(field: &syn::Field) -> syn::Result<(bool, bool)> {
     let mut external = false;
+    let mut epoch_agnostic = false;
     for attr in &field.attrs {
         if !attr.path().is_ident("phoxal") {
             continue;
@@ -115,13 +114,17 @@ fn parse_external_attr(field: &syn::Field) -> syn::Result<bool> {
             if meta.path.is_ident("external") {
                 external = true;
                 Ok(())
+            } else if meta.path.is_ident("epoch_agnostic") {
+                epoch_agnostic = true;
+                Ok(())
             } else {
-                Err(meta
-                    .error("unknown #[phoxal(...)] key on an `Api` field (expected `external`)"))
+                Err(meta.error(
+                    "unknown #[phoxal(...)] key on an `Api` field (expected `external` or `epoch_agnostic`)",
+                ))
             }
         })?;
     }
-    Ok(external)
+    Ok((external, epoch_agnostic))
 }
 
 /// The compile error raised when `#[phoxal(external)]` is used on a
@@ -292,6 +295,7 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     // `Resp` individually.
     let mut seen_declares = std::collections::BTreeSet::<String>::new();
     let mut declare_impls = Vec::new();
+    let mut epoch_sensitive_field_names = Vec::new();
     let phoxal_for_declares = phoxal();
     let mut declare = |key: String, tokens: TokenStream| {
         if seen_declares.insert(key) {
@@ -309,7 +313,24 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
             ));
         };
         let field_span = field.span();
-        let field_external = parse_external_attr(field)?;
+        let (field_external, epoch_agnostic) = parse_field_attrs(field)?;
+        let subscribes = decls
+            .iter()
+            .any(|decl| matches!(decl, ApiDecl::Subscribe(_)));
+        if epoch_agnostic && !subscribes {
+            return Err(syn::Error::new_spanned(
+                field,
+                "#[phoxal(epoch_agnostic)] is only valid on Subscriber/Latest fields",
+            ));
+        }
+        if subscribes && !epoch_agnostic {
+            epoch_sensitive_field_names.push(
+                field
+                    .ident
+                    .as_ref()
+                    .expect("derive Api requires named fields"),
+            );
+        }
         for decl in decls {
             match decl {
                 ApiDecl::Publish(body) => {
@@ -420,6 +441,16 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
             const CONTRACTS: &'static [#phoxal::participant::ApiContractUse] = &[
                 #(#contract_entries),*
             ];
+
+            fn __retain_epoch(&self, epoch: u64) {
+                let _ = epoch;
+                #(
+                    #phoxal::participant::api::EpochSensitiveApiField::__retain_epoch(
+                        &self.#epoch_sensitive_field_names,
+                        epoch,
+                    );
+                )*
+            }
         }
 
         #(#declare_impls)*

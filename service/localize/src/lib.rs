@@ -50,6 +50,12 @@ impl Localize {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.last_odometry = None;
+        Ok(())
+    }
+
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         while let Some(received) = api.odometry.try_recv() {

@@ -1,7 +1,7 @@
 //! `#[phoxal::behavior]` codegen: reads the lifecycle/server helper attributes
 //! on a participant's inherent impl and emits
 //! `impl phoxal::participant::api::ParticipantLifecycle for Self`, threading
-//! `Self::Api` through `#[step]`/`#[shutdown]`/`#[server]` and giving
+//! `Self::Api` through `#[step]`/`#[reset]`/`#[shutdown]`/`#[server]` and giving
 //! `#[server_snapshot]` a read-only `Arc<Self::Api>` (D3).
 //!
 //! `#[setup]` returns `Result<(Self, Self::Api)>` - participant state and its
@@ -45,6 +45,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let mut setup: Option<SetupFn> = None;
     let mut step: Option<StepFn> = None;
+    let mut reset: Option<ResetFn> = None;
     let mut shutdown: Option<ShutdownFn> = None;
     let mut servers: Vec<ServerFn> = Vec::new();
     let mut snapshot_servers: Vec<SnapshotServerFn> = Vec::new();
@@ -80,6 +81,19 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 }
                 tool_forbidden.push((attr_span, "step"));
                 step = Some(StepFn::parse(method, hz)?);
+            }
+            Lifecycle::Reset => {
+                if reset.is_some() {
+                    return Err(syn::Error::new(method.sig.span(), "duplicate #[reset]"));
+                }
+                if method.sig.ident != "reset" {
+                    return Err(syn::Error::new(
+                        method.sig.ident.span(),
+                        "the #[reset] method must be named `reset`",
+                    ));
+                }
+                tool_forbidden.push((attr_span, "reset"));
+                reset = Some(ResetFn::parse(method)?);
             }
             Lifecycle::Shutdown => {
                 if shutdown.is_some() {
@@ -126,6 +140,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
 
     let setup_call = setup_call(&setup);
     let step_call = step_call(step.as_ref());
+    let reset_call = reset_call(reset.as_ref());
     let step_schedule = step_schedule(step.as_ref());
     let shutdown_call = shutdown_call(shutdown.as_ref());
     let (snapshot_ty, take_snapshot, has_snapshot) = snapshot_items(snapshot.as_ref());
@@ -251,6 +266,14 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
                 #step_call
             }
 
+            async fn __reset(
+                &mut self,
+                api: &mut <Self as #phoxal::participant::Participant>::Api,
+                ctx: #phoxal::participant::ResetContext,
+            ) -> #phoxal::Result<()> {
+                #reset_call
+            }
+
             async fn __shutdown(
                 &mut self,
                 api: &mut <Self as #phoxal::participant::Participant>::Api,
@@ -329,6 +352,26 @@ fn step_schedule(step: Option<&StepFn>) -> TokenStream {
             quote!(::core::option::Option::Some(::phoxal::participant::StepSchedule::hz(#hz)))
         }
         None => quote!(::core::option::Option::None),
+    }
+}
+
+fn reset_call(reset: Option<&ResetFn>) -> TokenStream {
+    match reset {
+        Some(reset) if reset.takes_api => {
+            let name = &reset.name;
+            quote!(self.#name(api, ctx).await)
+        }
+        Some(reset) => {
+            let name = &reset.name;
+            quote!({
+                let _ = &api;
+                self.#name(ctx).await
+            })
+        }
+        None => quote!({
+            let _ = (&api, ctx);
+            ::core::result::Result::Ok(())
+        }),
     }
 }
 
@@ -629,7 +672,7 @@ fn one_server_field_assertion(
     }
 }
 
-/// One `const _: () = { ... };` per `#[step]`/`#[server]`/`#[server_snapshot]`
+/// One `const _: () = { ... };` per `#[step]`/`#[reset]`/`#[server]`/`#[server_snapshot]`
 /// found, asserting the impl type has the `TypedGraphSurface` marker (emitted
 /// by `#[phoxal::service|driver|simulator]`, not `#[phoxal::tool]`), so a
 /// tool gets a compile error span-targeted at the offending attribute.
@@ -651,10 +694,71 @@ fn tool_forbidden_guards(self_ty: &Type, forbidden: &[(Span, &'static str)]) -> 
 enum Lifecycle {
     Setup,
     Step(f64),
+    Reset,
     Shutdown,
     Server(Ident),
     ServerSnapshot(Ident),
     Snapshot,
+}
+
+struct ResetFn {
+    name: Ident,
+    takes_api: bool,
+}
+
+impl ResetFn {
+    fn parse(method: &ImplItemFn) -> syn::Result<Self> {
+        if method.sig.asyncness.is_none() {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[reset] must be `async`",
+            ));
+        }
+        if !has_exclusive_receiver(method) {
+            return Err(syn::Error::new(
+                method.sig.span(),
+                "#[reset] takes `&mut self`",
+            ));
+        }
+        let typed = typed_arg_types(method);
+        let takes_api = match typed.len() {
+            2 => {
+                if !type_is_self_api_mut_ref(&typed[0]) {
+                    return Err(syn::Error::new_spanned(
+                        &typed[0],
+                        "#[reset] second argument must be `api: &mut Self::Api`",
+                    ));
+                }
+                if !type_ends_with(&typed[1], "ResetContext") {
+                    return Err(syn::Error::new_spanned(
+                        &typed[1],
+                        "#[reset] last argument must be `ctx: ResetContext`",
+                    ));
+                }
+                true
+            }
+            1 => {
+                if !type_ends_with(&typed[0], "ResetContext") {
+                    return Err(syn::Error::new_spanned(
+                        &typed[0],
+                        "#[reset] argument must be `ctx: ResetContext`",
+                    ));
+                }
+                false
+            }
+            _ => {
+                return Err(syn::Error::new(
+                    method.sig.span(),
+                    "#[reset] takes `&mut self`, optional `api: &mut Self::Api`, and `ctx: ResetContext`",
+                ));
+            }
+        };
+        require_result_return(&method.sig.output, "#[reset] must return `Result<()>`")?;
+        Ok(Self {
+            name: method.sig.ident.clone(),
+            takes_api,
+        })
+    }
 }
 
 struct SetupFn {
@@ -1149,6 +1253,10 @@ fn take_lifecycle_attr(method: &mut ImplItemFn) -> syn::Result<Option<(Lifecycle
                 Lifecycle::Setup
             }
             "step" => Lifecycle::Step(parse_step_hz(attr)?),
+            "reset" => {
+                expect_path_only(attr, "reset")?;
+                Lifecycle::Reset
+            }
             "shutdown" => {
                 expect_path_only(attr, "shutdown")?;
                 Lifecycle::Shutdown

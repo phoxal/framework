@@ -94,22 +94,23 @@ the only source of keys, and the wire body never appears in the key
 - Simulators are also not clock-selectable participants. Their process launch
   contract exposes no `--clock` or `PHOXAL_CLOCK`; Webots drives their execution.
   This does not remove the semantic simulation-time contract: the simulator
-  supervisor publishes `simulation/clock`, controllers may observe it for
-  coherent device timestamps, and clocked robot participants consume it.
+  controller publishes `simulation/clock` after each completed Webots step and
+  clocked robot participants consume it.
 - A logical-time consumer of asynchronous external input owns retention and
   freshness. Keep only the latest bounded value, record its consumer-local
   monotonic arrival instant, and sample that value at the logical step. A
   logical pause must not accumulate a replay backlog.
-- `LogicalTime` is `{ epoch, time_ns }`.
-  Within an epoch `time_ns` strictly increases; an epoch bump signals a reset.
+- `LogicalTime` is `{ epoch, time_ns }`. Epochs are opaque equality-only
+  execution identities: any different epoch signals replacement, regardless
+  of numeric direction. Within one epoch `time_ns` strictly increases.
   `RealClock` reads the host-wide UNIX-epoch domain (so cross-process staleness
   checks are comparable) and latches monotonically; `TestClock` is an injectable
   fake for tests.
-- In `ClockMode::Simulation`, the runner subscribes to the supervisor's
+- In `ClockMode::Simulation`, the runner subscribes to the Webots controller's
   authoritative version-qualified `simulation/clock` contract. Each received
   sample advances the
   scheduler to the envelope's logical time. If Webots does not step, the
-  supervisor publishes nothing and participant scheduling remains still.
+  controller publishes nothing and participant scheduling remains still.
 
 ## Participant authoring
 
@@ -139,7 +140,15 @@ the only source of keys, and the wire body never appears in the key
   must not embed participant metadata; release validation enforces that absence.
 - Lifecycle methods: `#[setup]` (mandatory, builds all IO from
   `SetupContext<Self>`), `#[step(hz = N)]` (scheduled control step, at most one),
-  `#[shutdown]` (graceful park/flush before bus close, at most one).
+  optional async `#[reset]` (simulation execution replacement, serialized with
+  steps and exclusive servers), and `#[shutdown]` (graceful park/flush before
+  bus close, at most one). `#[reset]` receives `ResetContext`, may also take
+  `&mut Self::Api`, and is unavailable to clockless tools.
+  Official component drivers intentionally use the generated no-op reset:
+  their mutable state is hardware-derived and remains owned by the hardware
+  process rather than a replaceable simulated world. Simulator participants
+  are structurally real-clock world owners, so their own reset hook is never
+  driven by `simulation/clock`; Webots process replacement is their reset.
   Query servers: `#[server(topic = …)]` (exclusive, holds `&mut self`, serialized
   with `#[step]`), `#[server_snapshot(topic = …)]` (concurrent, reads a committed
   `Snapshot`), `#[snapshot]` (the committed-snapshot provider).
@@ -148,6 +157,15 @@ the only source of keys, and the wire body never appears in the key
   IO.
   Every body must implement `ContractBody`, and the derived `Api` records each
   field's own version-qualified contract identity.
+  Once an epoch is active, inbound buffers expose only its samples. Samples
+  from a possible replacement epoch are quarantined in bounded per-epoch
+  storage so controller outputs published before their matching clock can be
+  promoted atomically at the boundary; they never replace active data early.
+  Activation purges unmatched candidates and late samples from a retired epoch
+  remain unobservable. Runtime buffer rows disclose these discards through
+  `epoch_filtered`. A `Subscriber` or `Latest` carrying clockless host/operator
+  intent opts out explicitly with `#[phoxal(epoch_agnostic)]`; producer handles
+  cannot use that marker.
   A field using the wrong contract type or a setup handle not declared by the
   `Api` struct is a compile error
   ([`phoxal/src/participant/context.rs`](../phoxal/src/participant/context.rs)).

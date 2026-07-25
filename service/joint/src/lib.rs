@@ -135,6 +135,12 @@ impl Joint {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.sample_at.fill(None);
+        Ok(())
+    }
+
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let mut latest_by_joint = BTreeMap::new();

@@ -49,6 +49,7 @@ pub struct RuntimeMetricSnapshot {
     pub current_depth: u64,
     pub high_water_depth: u64,
     pub decode_errors: u64,
+    pub epoch_filtered: u64,
 }
 
 #[derive(Debug, Default)]
@@ -61,6 +62,7 @@ struct Counters {
     current_depth: AtomicU64,
     high_water_depth: AtomicU64,
     decode_errors: AtomicU64,
+    epoch_filtered: AtomicU64,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +87,12 @@ impl RuntimeMetricHandle {
         self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_epoch_filtered(&self, count: u64) {
+        self.counters
+            .epoch_filtered
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_latest(&self, overwrote: bool) {
         self.record_message();
         if overwrote {
@@ -96,6 +104,14 @@ impl RuntimeMetricHandle {
         self.set_inbound_depth(1);
     }
 
+    pub(crate) fn record_pending_latest(&self) {
+        self.record_message();
+    }
+
+    pub(crate) fn record_latest_depth(&self, occupied: bool) {
+        self.set_inbound_depth(u64::from(occupied));
+    }
+
     pub(crate) fn record_subscriber(&self, evicted: bool, current_depth: usize) {
         self.record_message();
         if evicted {
@@ -105,6 +121,10 @@ impl RuntimeMetricHandle {
             self.record_drop();
         }
         self.set_inbound_depth(u64::try_from(current_depth).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_pending_subscriber(&self) {
+        self.record_message();
     }
 
     pub(crate) fn record_subscriber_pop(&self, current_depth: usize) {
@@ -234,6 +254,7 @@ impl RuntimeMetrics {
                         .high_water_depth
                         .swap(current_depth, Ordering::Relaxed),
                     decode_errors: counters.decode_errors.swap(0, Ordering::Relaxed),
+                    epoch_filtered: counters.epoch_filtered.swap(0, Ordering::Relaxed),
                 }
             })
             .collect()

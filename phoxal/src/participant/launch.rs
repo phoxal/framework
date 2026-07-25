@@ -77,7 +77,7 @@ impl<'de> Deserialize<'de> for ExecutionDeviceId {
 pub mod env {
     /// Bus-unique participant id.
     pub const PARTICIPANT_ID: &str = "PHOXAL_PARTICIPANT_ID";
-    /// Supervisor-minted per-process incarnation.
+    /// Launcher-minted per-process incarnation.
     pub const INCARNATION: &str = "PHOXAL_INCARNATION";
     /// Robot id for the transport root.
     pub const ROBOT_ID: &str = "PHOXAL_ROBOT_ID";
@@ -116,8 +116,8 @@ pub mod env {
 pub struct ParticipantLaunch {
     /// The bus-unique participant id (never the static participant/artifact id, D53).
     pub participant_id: String,
-    /// Per-process incarnation. Supervisors mint a random nonzero value for
-    /// every spawn; zero is reserved for unmanaged local runs and tests.
+    /// Per-process incarnation. Managed launchers mint a random nonzero value
+    /// for every spawn; zero is reserved for unmanaged local runs and tests.
     #[serde(default)]
     pub incarnation: u64,
     /// The bus namespace (`robot.namespace`).
@@ -208,7 +208,7 @@ struct CommonLaunchCli {
     )]
     participant_id: Option<String>,
 
-    /// Supervisor-minted per-process incarnation. Zero means unmanaged local run.
+    /// Launcher-minted per-process incarnation. Zero means unmanaged local run.
     #[arg(
         long,
         env = env::INCARNATION,
@@ -471,9 +471,8 @@ pub struct BusProfile {
 /// The clock mode the runner uses.
 ///
 /// [`ClockMode::Real`] drives scheduled steps from wall time. [`ClockMode::Simulation`]
-/// selects the logical-time step scheduler, but the live `simulation/clock`
-/// bus feed is still future work; until that feed is wired, scheduled steps
-/// wait for logical time to advance.
+/// drives the logical-time scheduler from the authoritative
+/// `simulation/clock` bus feed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum ClockMode {

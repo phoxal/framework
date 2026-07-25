@@ -100,6 +100,17 @@ impl Map {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        let (width, height, resolution_m) =
+            (self.grid.width, self.grid.height, self.grid.resolution_m);
+        self.grid = Arc::new(Grid::empty(width, height, resolution_m));
+        self.rev = 0;
+        self.has_localization = false;
+        self.last_localization = None;
+        Ok(())
+    }
+
     #[step(hz = 5)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         while let Some(received) = api.localize.try_recv() {

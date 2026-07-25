@@ -676,6 +676,7 @@ fn merge_runtime_values(target: &mut stable::tool::RuntimeTopic, row: &stable::t
     target.current_depth = target.current_depth.saturating_add(row.current_depth);
     target.high_water_depth = target.high_water_depth.saturating_add(row.high_water_depth);
     target.decode_errors = target.decode_errors.saturating_add(row.decode_errors);
+    target.epoch_filtered = target.epoch_filtered.saturating_add(row.epoch_filtered);
 }
 
 fn finite_rate(rate_hz: f32) -> f32 {
@@ -712,6 +713,7 @@ fn empty_runtime_overflow() -> stable::tool::RuntimeTopic {
         current_depth: 0,
         high_water_depth: 0,
         decode_errors: 0,
+        epoch_filtered: 0,
         overflowed_rows: 0,
     }
 }
@@ -772,6 +774,7 @@ mod tests {
             current_depth: 1,
             high_water_depth: 1,
             decode_errors: 1,
+            epoch_filtered: 1,
             overflowed_rows: 0,
         }
     }
@@ -813,6 +816,7 @@ mod tests {
                 current_depth: u64::MAX,
                 high_water_depth: u64::MAX,
                 decode_errors: u64::MAX,
+                epoch_filtered: u64::MAX,
                 overflowed_rows: u32::MAX,
             }),
         }
@@ -992,6 +996,7 @@ mod tests {
         first.current_depth = u64::MAX;
         first.high_water_depth = u64::MAX;
         first.decode_errors = u64::MAX;
+        first.epoch_filtered = u64::MAX;
 
         let mut duplicate = runtime_topic("v0.1/duplicate/000".to_string());
         duplicate.rate_hz = ADVERSARIAL_RATES[1];
@@ -1035,6 +1040,7 @@ mod tests {
         assert_eq!(aggregate.current_depth, u64::MAX);
         assert_eq!(aggregate.high_water_depth, u64::MAX);
         assert_eq!(aggregate.decode_errors, u64::MAX);
+        assert_eq!(aggregate.epoch_filtered, u64::MAX);
 
         let overflow = overflow.unwrap();
         assert_eq!(overflow.count, 12);

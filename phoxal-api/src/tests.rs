@@ -176,14 +176,6 @@ fn folded_contracts_are_available_on_the_first_revision() {
         "v0.1/battery/state"
     );
     assert_eq!(
-        <v0_1::simulation::SpawnRequest as ContractBody>::TOPIC,
-        "v0.1/simulation/spawn"
-    );
-    assert_eq!(
-        v0_1::topic::new().simulation().spawn().key(),
-        "v0.1/simulation/spawn"
-    );
-    assert_eq!(
         <v0_1::simulation::Clock as ContractBody>::TOPIC,
         "v0.1/simulation/clock"
     );
@@ -258,13 +250,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
             .find(|contract| contract.family == "v0.1::battery::State")
             .expect("battery::State should be in the v0.1 manifest entry");
         assert_eq!(battery_state.topic, "v0.1/battery/state");
-        assert!(
-            current
-                .contracts
-                .iter()
-                .any(|contract| contract.family == "v0.1::simulation::SpawnRequest")
-        );
-
         for family in [
             "v0.1::simulation::Clock",
             "v0.1::joypad::Devices",
@@ -331,8 +316,6 @@ fn folded_role_consts_match_each_topic_role() {
     assert_eq!(v0_1::joypad::Select::ROLE, TopicRole::Command);
     assert_eq!(v0_1::joypad::SetEnabled::ROLE, TopicRole::Command);
     assert_eq!(v0_1::joypad::Rescan::ROLE, TopicRole::Command);
-    assert_eq!(v0_1::simulation::SpawnRequest::ROLE, TopicRole::Query);
-    assert_eq!(v0_1::simulation::SpawnSet::ROLE, TopicRole::Query);
 }
 
 #[test]
@@ -565,11 +548,6 @@ fn domain_bodies_round_trip_through_messagepack() {
         phase: api::video::stream::StreamPhase::Active,
         frames_seen: 12,
     });
-    round_trip(&api::simulation::RobotPose {
-        x_m: 1.0,
-        y_m: 2.0,
-        yaw_rad: 0.3,
-    });
 }
 
 #[test]
@@ -674,6 +652,7 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         current_depth: 1,
         high_water_depth: 1,
         decode_errors: 0,
+        epoch_filtered: 0,
         overflowed_rows: 0,
     };
     let step = api::tool::RuntimeStep {
@@ -772,20 +751,20 @@ fn runtime_rollup_rejects_malformed_payloads() {
 
 #[test]
 fn folded_bodies_round_trip_through_messagepack() {
-    round_trip(&v0_1::simulation::SpawnRequest {
-        known_revision: Some(4),
-    });
-    round_trip(&v0_1::simulation::SpawnSet {
-        revision: 5,
-        robots: vec![v0_1::simulation::RobotSpawn {
-            robot_id: "rover".to_string(),
-            node_string: "Rover { name \"rover\" }".to_string(),
-        }],
-    });
-    round_trip(&v0_1::simulation::Clock {
+    let clock = v0_1::simulation::Clock {
+        epoch: 0xfeed_beef,
         now_ns: 1_000_000,
         step: 100,
-    });
+    };
+    assert_eq!(
+        serde_json::to_value(&clock).unwrap(),
+        serde_json::json!({
+            "epoch": 0xfeed_beef_u64,
+            "now_ns": 1_000_000_u64,
+            "step": 100_u64,
+        })
+    );
+    round_trip(&clock);
     round_trip(&v0_1::joypad::Device {
         id: "xbox-controller-0".to_string(),
         name: "Xbox Wireless Controller".to_string(),
@@ -965,10 +944,6 @@ fn topic_builder_keys_match_contract_topics() {
         api::topic::new().perception().detections().key(),
         "v0.1/perception/detections"
     );
-    assert_eq!(
-        api::topic::new().simulation().robot_pose().key(),
-        "v0.1/simulation/robot_pose"
-    );
     assert_eq!(api::topic::new().video().open().key(), "v0.1/video/open");
     assert_eq!(
         api::topic::new().map().revision().key(),
@@ -988,10 +963,6 @@ fn topic_builder_keys_match_contract_topics() {
 
 #[test]
 fn folded_topic_builder_keys_match_contract_topics() {
-    assert_eq!(
-        v0_1::topic::new().simulation().spawn().key(),
-        "v0.1/simulation/spawn"
-    );
     assert_eq!(
         v0_1::topic::new().simulation().clock().key(),
         "v0.1/simulation/clock"

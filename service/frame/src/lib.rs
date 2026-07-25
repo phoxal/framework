@@ -107,6 +107,17 @@ impl Frame {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        for buffer in self.buffers.values_mut() {
+            buffer.clear();
+        }
+        // Static transforms are immutable configuration and remain valid, but
+        // republish them for the replacement execution.
+        self.published_static = false;
+        Ok(())
+    }
+
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         for (subscriber, dynamic) in api.joints.iter_mut().zip(&self.dynamic_joints) {

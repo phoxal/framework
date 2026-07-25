@@ -81,6 +81,11 @@ impl RuntimePerformance {
             .map(|step| step.begin(Instant::now(), lateness, missed_ticks))
     }
 
+    /// Drop cadence/history derived from the previous simulation execution.
+    pub(crate) fn reset(&mut self, schedule: Option<StepSchedule>) {
+        *self = Self::new(schedule);
+    }
+
     pub(crate) fn finish_step(&mut self, observation: Option<StepObservation>, success: bool) {
         if let (Some(step), Some(observation)) = (&mut self.step, observation) {
             step.finish(observation, Instant::now(), success);
@@ -254,6 +259,7 @@ fn bounded_topics(
         current_depth: 0,
         high_water_depth: 0,
         decode_errors: 0,
+        epoch_filtered: 0,
         overflowed_rows: u32::try_from(omitted.len()).unwrap_or(u32::MAX),
     };
     for row in omitted {
@@ -271,6 +277,7 @@ fn bounded_topics(
             .high_water_depth
             .saturating_add(row.high_water_depth);
         overflow.decode_errors = overflow.decode_errors.saturating_add(row.decode_errors);
+        overflow.epoch_filtered = overflow.epoch_filtered.saturating_add(row.epoch_filtered);
     }
     overflow.rate_hz = rate(overflow.count, elapsed);
     (converted, Some(overflow))
@@ -297,6 +304,7 @@ fn topic_row(row: RuntimeMetricSnapshot, elapsed: Duration) -> api::tool::Runtim
         current_depth: row.current_depth,
         high_water_depth: row.high_water_depth,
         decode_errors: row.decode_errors,
+        epoch_filtered: row.epoch_filtered,
         overflowed_rows: 0,
     }
 }
@@ -340,6 +348,7 @@ mod tests {
             current_depth: 0,
             high_water_depth: 1,
             decode_errors: 0,
+            epoch_filtered: 0,
         }
     }
 

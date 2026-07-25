@@ -49,7 +49,7 @@ use crate::bus::{
     AskQuery, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, OwnerCap, Publish, Publisher, Querier,
     Subscribe, Subscriber, Topic,
 };
-use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
+use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
 use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
 use phoxal_bus::Bus;
@@ -203,9 +203,9 @@ pub struct ApiContractUse {
 /// `#[step]`/`#[server]`/`#[shutdown]` - rather than one value shared behind
 /// `&mut`/`Arc` at once, which Rust's aliasing rules forbid without unsafe
 /// code. Because every clone is a handle to the same live state (shared
-/// `Bus`/`ArcSwapOption`/subscription task), the two never diverge, so this
-/// is exactly D3's "read-only `&Self::Api`, or an api snapshot" - here
-/// realized as a cloned api snapshot.
+/// `Bus`, mutex-serialized retained `Latest` slot, or subscription task), the
+/// two never diverge, so this is exactly D3's "read-only `&Self::Api`, or an
+/// api snapshot" - here realized as a cloned api snapshot.
 pub trait ParticipantApi: Send + Sync + Clone + 'static {
     #[doc(hidden)]
     const __NAME: &'static str;
@@ -213,6 +213,11 @@ pub trait ParticipantApi: Send + Sync + Clone + 'static {
     const __CONTRACTS_JSON: &'static str;
     /// Every contract this `Api` struct's fields use, deduplicated.
     const CONTRACTS: &'static [ApiContractUse];
+
+    /// Retain only inbound samples belonging to the newly active simulation
+    /// execution. Generated from every handle field by `#[derive(Api)]`.
+    #[doc(hidden)]
+    fn __retain_epoch(&self, epoch: u64);
 }
 
 /// `Api = ()` for participants that opt out of a typed bus surface (tools,
@@ -221,6 +226,53 @@ impl ParticipantApi for () {
     const __NAME: &'static str = "()";
     const __CONTRACTS_JSON: &'static str = "[]";
     const CONTRACTS: &'static [ApiContractUse] = &[];
+
+    fn __retain_epoch(&self, _epoch: u64) {}
+}
+
+/// Framework-internal recursive hook used by a derived participant `Api` to
+/// clear stale inbound state at an epoch boundary.
+#[doc(hidden)]
+pub trait EpochSensitiveApiField {
+    fn __retain_epoch(&self, epoch: u64);
+}
+
+impl<B: ContractBody> EpochSensitiveApiField for Subscriber<B> {
+    fn __retain_epoch(&self, epoch: u64) {
+        Subscriber::__retain_epoch(self, epoch);
+    }
+}
+
+impl<B: ContractBody> EpochSensitiveApiField for Latest<B> {
+    fn __retain_epoch(&self, epoch: u64) {
+        Latest::__retain_epoch(self, epoch);
+    }
+}
+
+impl<T: EpochSensitiveApiField> EpochSensitiveApiField for Vec<T> {
+    fn __retain_epoch(&self, epoch: u64) {
+        for value in self {
+            value.__retain_epoch(epoch);
+        }
+    }
+}
+
+impl<K, T: EpochSensitiveApiField> EpochSensitiveApiField for std::collections::BTreeMap<K, T> {
+    fn __retain_epoch(&self, epoch: u64) {
+        for value in self.values() {
+            value.__retain_epoch(epoch);
+        }
+    }
+}
+
+impl<K, T: EpochSensitiveApiField, S> EpochSensitiveApiField
+    for std::collections::HashMap<K, T, S>
+{
+    fn __retain_epoch(&self, epoch: u64) {
+        for value in self.values() {
+            value.__retain_epoch(epoch);
+        }
+    }
 }
 
 /// Per-`Api`-struct marker: this `Api` declared a *publish* handle for body
@@ -392,6 +444,10 @@ pub trait ParticipantLifecycle: Participant {
 
     /// Run one scheduled step (`#[step]`; a no-op when none is declared).
     async fn __step(&mut self, api: &mut Self::Api, step: StepContext) -> crate::Result<()>;
+
+    /// Reset participant-owned state derived from the prior simulation
+    /// execution (`#[reset]`; a generated no-op when none is declared).
+    async fn __reset(&mut self, api: &mut Self::Api, ctx: ResetContext) -> crate::Result<()>;
 
     /// Graceful shutdown (`#[shutdown]`; a no-op when none is declared).
     async fn __shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> crate::Result<()>;

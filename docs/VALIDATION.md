@@ -96,14 +96,18 @@ cannot be meaningfully validated until P2 passes as a group.
 A scenario is complete only when it validates several independent facts.
 A navigation scenario, for example, checks that navigation accepted the request,
 localization was fresh, the planner produced a revision-consistent path,
-motion selected the candidate, drive published bounded commands, simulator pose
-reached tolerance with no disallowed contact, and
-the products could explain the behavior.
+motion selected the candidate, drive published bounded commands, localization
+reached the authored goal tolerance, safety never reported a
+disallowed stop condition, and the products could explain the behavior.
 Moving the robot is not enough.
 
 Scenario failures report the failed service/topic/query, relevant revision ids,
 localization state, navigation outcome, motion arbitration state, and
-simulator truth - actionable without reading raw logs first.
+the component samples and authoritative simulation clock that were actually
+published - actionable without reading raw logs first. The Webots controller
+does not publish framework-level ground-truth pose or contact contracts;
+scenario assertions must use shipped estimator, safety, and component surfaces
+or live-simulator tooling outside the framework contract graph.
 
 ## Sim-to-real
 

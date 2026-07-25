@@ -38,6 +38,13 @@ impl Asset {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        // Stateless with respect to the simulated world: the immutable robot
+        // root remains valid across controller executions.
+        Ok(())
+    }
+
     #[server(api = get)]
     async fn get(
         &mut self,
