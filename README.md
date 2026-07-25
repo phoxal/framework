@@ -49,11 +49,7 @@ inherits it, and release-plz prepares one grouped
 `chore(release): release v<version>` PR.
 `cargo xtask release verify` checks the complete official source set and API
 graph; `cargo xtask release suite` then verifies every staged target archive
-and produces `phoxal.suite/v1` `suite.json`. Its deterministic `native` and
-`webots` profiles activate the required per-project infrastructure router, the
-optional per-project joypad tool, and the optional per-robot bus, log,
-telemetry, and device tools. Simulators remain Webots-owned and are not direct
-suite activations.
+and produces the immutable, artifact-only `phoxal.suite/v0` `suite.json`.
 
 Publication is resumable and GitHub-first. CI creates or resumes a non-latest
 draft `v<version>` release, uploads the immutable artifacts and descriptor,
