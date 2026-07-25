@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.39.0...phoxal-macros-v0.40.0) - 2026-07-25
+
+### Added
+
+- *(runtime)* [**breaking**] remove participant systemd notification ([#311](https://github.com/phoxal/framework/pull/311))
+
 ## [0.36.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.23.2...phoxal-macros-v0.36.0) - 2026-07-21
 
 ### Added
