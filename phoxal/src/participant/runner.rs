@@ -795,6 +795,28 @@ where
                     &mut next_runtime_performance_tick,
                     RUNTIME_PERFORMANCE_TICK_INTERVAL,
                 );
+                // A real participant with no `#[step]` schedule would otherwise
+                // check its clock once at startup and never again, and go on
+                // serving queries from state it can no longer date. This tick
+                // is its only recurring beat, so clock discipline is checked
+                // here too - a stepping participant reaches the same check
+                // sooner, in its own step arm.
+                //
+                // Simulation is excluded on purpose: there, "unsynchronized"
+                // means the world authority has not published a first step yet,
+                // which is a world that has not started rather than a clock
+                // that was lost.
+                if period.is_none()
+                    && matches!(scheduler, AnyStepScheduler::Real(_))
+                    && let ClockReading::Unsynchronized(reason) = clock.read()
+                {
+                    tracing::error!(
+                        target: "phoxal.runtime",
+                        error = %reason,
+                        "clock discipline lost; failing the participant"
+                    );
+                    return Ok(Some(LoopFault::ClockDiscipline(reason)));
+                }
                 if let Some(rollup) = runtime_performance.take_rollup(bus) {
                     runtime_performance_publisher.publish(rollup);
                 }
