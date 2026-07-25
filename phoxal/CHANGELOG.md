@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.1](https://github.com/phoxal/framework/compare/phoxal-v0.40.0...phoxal-v0.40.1) - 2026-07-25
+
+### Other
+
+- *(suite)* drop launch profiles, revert descriptor to phoxal.suite/v0 ([#313](https://github.com/phoxal/framework/pull/313))
+
 ## [0.40.0](https://github.com/phoxal/framework/compare/phoxal-v0.39.0...phoxal-v0.40.0) - 2026-07-25
 
 ### Added
