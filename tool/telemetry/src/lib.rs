@@ -4,12 +4,11 @@ use std::time::{Duration, Instant};
 
 use phoxal::api as stable;
 use phoxal::prelude::*;
-use phoxal::raw::{Codec, MessagePack, Publisher, QueryFailure, Subscriber, host_time};
+use phoxal::raw::{Codec, DiagnosticPublisher, MessagePack, QueryFailure, Subscriber};
 
 const DEVICE_RETENTION: Duration = Duration::from_secs(5 * 60);
 const MAX_DEVICE_RECORDS: usize = 512;
 const MAX_DEVICE_RETAINED_BYTES: usize = 2 * 1024 * 1024;
-const MAX_DEVICE_ID_BYTES: usize = 64;
 const MAX_DEVICE_DISK_ROWS: usize = 32;
 const MAX_DEVICE_TEXT_BYTES: usize = 128;
 const DEFAULT_DEVICE_QUERY_RECORDS: usize = 64;
@@ -47,7 +46,7 @@ impl ToolTelemetry {
         let device_history = Arc::new(Mutex::new(DeviceHistory::new(process_generation()?)));
         let device_samples =
             Subscriber::new(&bus, &stable::topic::new().tool().device().sample(), 32).await?;
-        let device_follow = Publisher::new(
+        let device_follow = DiagnosticPublisher::new(
             bus.clone(),
             &stable::topic::internal::new(cap).tool().device().follow(),
         )?;
@@ -71,7 +70,7 @@ impl ToolTelemetry {
                             continue;
                         }
                     };
-                    if let Err(error) = device_follow.publish_at(host_time(), follow).await {
+                    if let Err(error) = device_follow.publish(follow) {
                         tracing::warn!(target: "tool_telemetry", error = %error, "device follow publish failed");
                     }
                 }
@@ -131,7 +130,7 @@ impl ToolTelemetry {
         let runtime_history = Arc::new(Mutex::new(RuntimeHistory::new(process_generation()?)));
         let runtime_rollups =
             Subscriber::new(&bus, &stable::topic::new().tool().runtime().rollup(), 128).await?;
-        let runtime_follow = Publisher::new(
+        let runtime_follow = DiagnosticPublisher::new(
             bus.clone(),
             &stable::topic::internal::new(cap).tool().runtime().follow(),
         )?;
@@ -152,7 +151,7 @@ impl ToolTelemetry {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .ingest(
                             Instant::now(),
-                            received.metadata.source.participant,
+                            received.metadata.participant,
                             received.body,
                         ) {
                         Ok(follow) => follow,
@@ -161,7 +160,7 @@ impl ToolTelemetry {
                             continue;
                         }
                     };
-                    if let Err(error) = runtime_follow.publish_at(host_time(), follow).await {
+                    if let Err(error) = runtime_follow.publish(follow) {
                         tracing::warn!(target: "tool_telemetry", error = %error, "runtime-performance follow publish failed");
                     }
                 }
@@ -302,10 +301,6 @@ impl DeviceHistory {
             request
                 .before_sequence
                 .is_none_or(|before| record.record.sequence < before)
-                && request
-                    .device_id
-                    .as_ref()
-                    .is_none_or(|device| record.record.sample.device_id == *device)
         };
         let mut records = self
             .records
@@ -319,13 +314,7 @@ impl DeviceHistory {
         let next_before_sequence = records.first().and_then(|first| {
             self.records
                 .iter()
-                .any(|timed| {
-                    timed.record.sequence < first.sequence
-                        && request
-                            .device_id
-                            .as_ref()
-                            .is_none_or(|device| timed.record.sample.device_id == *device)
-                })
+                .any(|timed| timed.record.sequence < first.sequence)
                 .then_some(first.sequence)
         });
         stable::tool::device::Snapshot {
@@ -366,14 +355,6 @@ fn bounded_device_sample(
     mut sample: stable::tool::device::Sample,
 ) -> (stable::tool::device::Sample, u32) {
     let mut truncated = 0_u32;
-    if sample.device_id.len() > MAX_DEVICE_ID_BYTES {
-        sample.device_id = truncate_utf8(sample.device_id, MAX_DEVICE_ID_BYTES);
-        truncated = truncated.saturating_add(1);
-    }
-    if sample.device_id.is_empty() {
-        sample.device_id = "unknown".to_string();
-        truncated = truncated.saturating_add(1);
-    }
     sample.cpu_pct = sample
         .cpu_pct
         .filter(|value| value.is_finite())
@@ -1094,9 +1075,8 @@ mod tests {
         assert!(history.retained_bytes <= MAX_RUNTIME_RETAINED_BYTES);
     }
 
-    fn device_sample(device_id: &str, window_ns: u64) -> stable::tool::device::Sample {
+    fn device_sample(window_ns: u64) -> stable::tool::device::Sample {
         stable::tool::device::Sample {
-            device_id: device_id.to_string(),
             cpu_pct: Some(42.0),
             ram_used_bytes: Some(50),
             ram_total_bytes: Some(100),
@@ -1112,33 +1092,31 @@ mod tests {
     }
 
     #[test]
-    fn device_history_is_bounded_filterable_and_cursor_ordered() {
+    fn device_history_is_bounded_and_cursor_ordered() {
         let start = Instant::now();
         let mut history = DeviceHistory::new("generation-a".to_string());
         for index in 0..5 {
-            let id = if index % 2 == 0 { "main" } else { "attached" };
             history
-                .ingest(start + Duration::from_secs(index), device_sample(id, index))
+                .ingest(start + Duration::from_secs(index), device_sample(index))
                 .unwrap();
         }
         let snapshot = history.snapshot(
             start + Duration::from_secs(5),
             &stable::tool::device::SnapshotRequest {
-                device_id: Some("main".to_string()),
                 limit: 2,
                 before_sequence: None,
             },
         );
         assert_eq!(snapshot.cursor.sequence, 5);
         assert_eq!(snapshot.records.len(), 2);
-        assert_eq!(snapshot.records[0].sample.window_ns, 2);
+        assert_eq!(snapshot.records[0].sample.window_ns, 3);
         assert_eq!(snapshot.records[1].sample.window_ns, 4);
-        assert_eq!(snapshot.next_before_sequence, Some(3));
+        assert_eq!(snapshot.next_before_sequence, Some(4));
     }
 
     #[test]
     fn device_ingest_discloses_bounds_and_never_fabricates_capabilities() {
-        let mut sample = device_sample(&"é".repeat(MAX_DEVICE_ID_BYTES), 1);
+        let mut sample = device_sample(1);
         sample.cpu_pct = Some(f32::NAN);
         sample.ram_used_bytes = Some(200);
         sample.ram_total_bytes = Some(100);
@@ -1158,7 +1136,6 @@ mod tests {
         let mut history = DeviceHistory::new("generation-a".to_string());
         let record = history.ingest(Instant::now(), sample).unwrap().record;
         assert!(record.truncated >= 4);
-        assert!(record.sample.device_id.len() <= MAX_DEVICE_ID_BYTES);
         assert_eq!(record.sample.cpu_pct, None);
         assert_eq!(record.sample.ram_used_bytes, Some(100));
         assert_eq!(record.sample.swap_used_bytes, None);
@@ -1178,7 +1155,7 @@ mod tests {
         let start = Instant::now();
         let mut history = DeviceHistory::new("generation-a".to_string());
         for index in 0..MAX_DEVICE_RECORDS * 2 {
-            let mut sample = device_sample("main", u64::MAX);
+            let mut sample = device_sample(u64::MAX);
             sample.disks = Some(
                 (0..MAX_DEVICE_DISK_ROWS)
                     .map(|disk| stable::tool::device::Disk {
@@ -1199,7 +1176,6 @@ mod tests {
         let snapshot = history.snapshot(
             start + Duration::from_secs(2),
             &stable::tool::device::SnapshotRequest {
-                device_id: None,
                 limit: u32::MAX,
                 before_sequence: None,
             },

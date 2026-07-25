@@ -30,9 +30,9 @@ use crate::frames::{
 use crate::sensors::{SensorBinding, camera_bindings, depth_bindings};
 use crate::tracker::PointTracker;
 
-const CAMERA_STALE_NS: u64 = 1_000_000_000;
-const DEPTH_STALE_NS: u64 = 1_000_000_000;
-const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
+const CAMERA_STALE: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000);
+const DEPTH_STALE: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000);
+const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000);
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
 #[derive(phoxal::Api)]
@@ -40,8 +40,8 @@ pub struct Api {
     cameras: Vec<Subscriber<api::component::camera::Frame>>,
     depths: Vec<Subscriber<api::component::depth::Frame>>,
     localization: Subscriber<api::localize::LocalizationState>,
-    detections: Publisher<api::perception::Detections>,
-    state: Publisher<api::perception::State>,
+    detections: StatePublisher<api::perception::Detections>,
+    state: StatePublisher<api::perception::State>,
 }
 
 #[phoxal::service(id = "perception", config = ())]
@@ -84,10 +84,10 @@ impl Perception {
         // -> owner (`internal`) builder; sensor frames and `localize/state` are
         // CONSUMED via the public builder.
         let detections = ctx
-            .publisher(api::topic::internal::new(cap).perception().detections())
+            .state_publisher(api::topic::internal::new(cap).perception().detections())
             .await?;
         let state = ctx
-            .publisher(api::topic::internal::new(cap).perception().state())
+            .state_publisher(api::topic::internal::new(cap).perception().state())
             .await?;
 
         Ok((
@@ -125,39 +125,35 @@ impl Perception {
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.drain_inputs(api);
 
-        let now = step.time();
+        let now = step.now();
         if self.camera_sources.is_empty()
-            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE_NS).is_none()
+            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE).is_none()
         {
             return Ok(());
         }
         let detections = self.detect(now);
         let healthy = !detections.is_empty()
-            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE_NS).is_some();
+            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE).is_some();
         if healthy {
             self.health.observe_healthy();
         } else {
             self.health.degrade();
         }
 
-        api.detections
-            .publish_at(
-                step.time(),
-                api::perception::Detections {
-                    detections,
-                    stamp_ns: Some(now.time_ns()),
-                },
-            )
-            .await?;
-        api.state
-            .publish_at(
-                step.time(),
-                api::perception::State {
-                    healthy: self.health.healthy(),
-                    detector: self.detector.detector_name().to_string(),
-                },
-            )
-            .await?;
+        api.detections.publish(
+            step.token(),
+            api::perception::Detections {
+                detections,
+                stamp: Some(now),
+            },
+        )?;
+        api.state.publish(
+            step.token(),
+            api::perception::State {
+                healthy: self.health.healthy(),
+                detector: self.detector.detector_name().to_string(),
+            },
+        )?;
         Ok(())
     }
 }
@@ -165,32 +161,37 @@ impl Perception {
 impl Perception {
     fn drain_inputs(&mut self, api: &mut Api) {
         for (subscriber, slot) in api.cameras.iter().zip(&mut self.latest_cameras) {
-            while let Some(received) = subscriber.try_recv() {
-                *slot = Some(FrameSample {
-                    body: received.body,
-                    at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
-                });
+            while let Some(observed) = subscriber.try_recv() {
+                if let Some(at) = observed.metadata.produced_exactly_at() {
+                    *slot = Some(FrameSample {
+                        body: observed.body,
+                        at,
+                    });
+                }
             }
         }
         for (subscriber, slot) in api.depths.iter().zip(&mut self.latest_depths) {
-            while let Some(received) = subscriber.try_recv() {
-                *slot = Some(FrameSample {
-                    body: received.body,
-                    at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
+            while let Some(observed) = subscriber.try_recv() {
+                if let Some(at) = observed.metadata.produced_exactly_at() {
+                    *slot = Some(FrameSample {
+                        body: observed.body,
+                        at,
+                    });
+                }
+            }
+        }
+        while let Some(observed) = api.localization.try_recv() {
+            if let Some(at) = observed.metadata.produced_exactly_at() {
+                self.latest_localization = Some(FrameSample {
+                    body: observed.body,
+                    at,
                 });
             }
         }
-        while let Some(received) = api.localization.try_recv() {
-            self.latest_localization = Some(FrameSample {
-                body: received.body,
-                at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
-            });
-        }
     }
 
-    fn detect(&mut self, now: LogicalTime) -> Vec<api::perception::Detection> {
-        let Some(camera_index) =
-            latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE_NS)
+    fn detect(&mut self, now: RobotInstant) -> Vec<api::perception::Detection> {
+        let Some(camera_index) = latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE)
         else {
             return Vec::new();
         };
@@ -204,16 +205,19 @@ impl Perception {
             &self.latest_depths,
             &source.component_id,
             now,
-            DEPTH_STALE_NS,
+            DEPTH_STALE,
         );
         let localization = fresh_localization(
             &self.latest_localization,
             now,
-            LOCALIZATION_STALE_NS,
+            LOCALIZATION_STALE,
             MIN_LOCALIZATION_CONFIDENCE,
         )
         .cloned();
-        let stamp_ns = camera.body.measured_at_ns.unwrap_or(camera.at.time_ns());
+        // The camera frame's capture instant now rides in its envelope, which
+        // `FrameSample` already captured, so there is no body field to prefer
+        // over it and no fallback to choose.
+        let stamp = camera.at;
 
         let raw = detect_with(
             &mut self.detector,
@@ -221,7 +225,7 @@ impl Perception {
                 camera: &camera.body,
                 depth: depth.as_ref().map(|sample| &sample.body),
                 frame_id: &source.frame_id,
-                stamp_ns,
+                stamp_ns: stamp.ticks(),
                 localization: localization.as_ref(),
             },
         );
@@ -229,7 +233,7 @@ impl Perception {
             .into_iter()
             .map(|raw| detection_from_raw(raw, &source.frame_id, localization.as_ref()))
             .collect::<Vec<_>>();
-        self.tracker.update(&mut detections, stamp_ns);
+        self.tracker.update(&mut detections, stamp.ticks());
         detections
     }
 }
@@ -268,7 +272,6 @@ mod tests {
             intrinsics: None,
             distortion: None,
             exposure: None,
-            measured_at_ns: Some(123),
             calibration: None,
             data: vec![0; 12],
         };
@@ -331,11 +334,11 @@ mod tests {
         assert_eq!(depths.len(), 1);
         assert!(
             cameras.iter().any(|camera| camera.camera_topic().key()
-                == "v0.2/component/front_camera/camera/rgb/frame")
+                == "v0.1/component/front_camera/camera/rgb/frame")
         );
         assert_eq!(
             depths[0].depth_topic().key(),
-            "v0.2/component/front_camera/depth/depth/frame"
+            "v0.1/component/front_camera/depth/depth/frame"
         );
     }
 

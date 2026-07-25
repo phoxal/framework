@@ -3,7 +3,7 @@
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface, just
 // `ctx.raw_bus()` and the raw handle constructors.
 use phoxal::prelude::*;
-use phoxal::raw::Publisher;
+use phoxal::raw::CommandPublisher;
 use phoxal::api as api;
 
 #[derive(serde::Deserialize, phoxal::Config)]
@@ -11,14 +11,14 @@ struct Config {}
 
 #[phoxal::tool(id = "tool-thin-runner-lifecycle")]
 struct ToolThinRunnerLifecycle {
-    publisher: Publisher<api::motion::ManualCommand>,
+    publisher: CommandPublisher<api::motion::ManualCommand>,
 }
 
 #[phoxal::behavior]
 impl ToolThinRunnerLifecycle {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let publisher = Publisher::new(ctx.raw_bus(), &api::topic::new().motion().manual())?;
+        let publisher = CommandPublisher::new(ctx.raw_bus(), &api::topic::new().motion().manual())?;
         Ok((Self { publisher }, ()))
     }
 

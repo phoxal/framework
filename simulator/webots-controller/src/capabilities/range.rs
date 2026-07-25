@@ -36,7 +36,6 @@ impl NativeRange {
     pub(crate) fn read_if_due(
         &self,
         step_index: u64,
-        time_ns: u64,
     ) -> Result<Option<api::component::range::Sample>> {
         if !is_due(step_index, self.spec.sampled.publish_every_steps) {
             return Ok(None);
@@ -47,7 +46,6 @@ impl NativeRange {
                 min_m: self.spec.min_range_m,
                 max_m: self.spec.max_range_m,
             }),
-            measured_at_ns: Some(time_ns),
             quality: Some(api::component::range::SampleQuality {
                 valid: true,
                 confidence: None,

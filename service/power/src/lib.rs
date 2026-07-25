@@ -19,9 +19,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    #[phoxal(epoch_agnostic)]
     commands: Subscriber<api::power::Command>,
-    state: Publisher<api::power::State>,
+    state: StatePublisher<api::power::State>,
 }
 
 #[phoxal::service(id = "power", config = ())]
@@ -46,7 +45,7 @@ impl Power {
                     .subscriber(api::topic::internal::new(cap).power().command(), 32)
                     .await?,
                 state: ctx
-                    .publisher(api::topic::internal::new(cap).power().state())
+                    .state_publisher(api::topic::internal::new(cap).power().state())
                     .await?,
             },
         ))
@@ -63,9 +62,7 @@ impl Power {
         while let Some(received) = api.commands.try_recv() {
             self.latched = state_for_command(received.body, self.executor.as_deref()).await;
         }
-        api.state
-            .publish_at(step.time(), self.latched.clone())
-            .await?;
+        api.state.publish(step.token(), self.latched.clone())?;
         Ok(())
     }
 }

@@ -20,12 +20,12 @@ use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
 
-const LOCALIZATION_STALE_NS: u64 = 1_000_000_000;
+const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(phoxal::Api)]
 pub struct Api {
     localize: Subscriber<api::localize::LocalizationState>,
-    revision: Publisher<api::map::Revision>,
+    revision: StatePublisher<api::map::Revision>,
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
 
@@ -34,7 +34,7 @@ pub struct Map {
     grid: Arc<Grid>,
     rev: u64,
     has_localization: bool,
-    last_localization: Option<(api::localize::LocalizationState, LogicalTime)>,
+    last_localization: Option<(api::localize::LocalizationState, RobotInstant)>,
 }
 
 #[derive(Clone)]
@@ -93,7 +93,7 @@ impl Map {
                 // `map/submap` query it serves below) -> owner (`internal`)
                 // builder; `localize/state` is CONSUMED via the public builder.
                 revision: ctx
-                    .publisher(api::topic::internal::new(cap).map().revision())
+                    .state_publisher(api::topic::internal::new(cap).map().revision())
                     .await?,
                 submap: ctx.server(api::topic::new().map().submap()).await?,
             },
@@ -113,14 +113,13 @@ impl Map {
 
     #[step(hz = 5)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        while let Some(received) = api.localize.try_recv() {
-            self.last_localization = Some((
-                received.body,
-                LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
-            ));
+        while let Some(observed) = api.localize.try_recv() {
+            if let Some(at) = observed.metadata.produced_exactly_at() {
+                self.last_localization = Some((observed.body, at));
+            }
         }
 
-        if !localization_is_usable(self.last_localization.as_ref(), step.time())? {
+        if !localization_is_usable(self.last_localization.as_ref(), step.now())? {
             self.has_localization = false;
             return Ok(());
         }
@@ -134,15 +133,13 @@ impl Map {
             }
         }
 
-        api.revision
-            .publish_at(
-                step.time(),
-                api::map::Revision {
-                    revision: self.rev,
-                    resolution_m: self.grid.resolution_m,
-                },
-            )
-            .await?;
+        api.revision.publish(
+            step.token(),
+            api::map::Revision {
+                revision: self.rev,
+                resolution_m: self.grid.resolution_m,
+            },
+        )?;
         Ok(())
     }
 
@@ -175,14 +172,19 @@ impl Map {
 }
 
 fn localization_is_usable(
-    sample: Option<&(api::localize::LocalizationState, LogicalTime)>,
-    now: LogicalTime,
+    sample: Option<&(api::localize::LocalizationState, RobotInstant)>,
+    now: RobotInstant,
 ) -> Result<bool> {
     match sample {
         None => Ok(false),
-        Some((_, at)) if at.epoch() != now.epoch() => Ok(false),
-        Some((_, at)) if at.time_ns() > now.time_ns() => Ok(false),
-        Some((_, at)) if now.time_ns().saturating_sub(at.time_ns()) > LOCALIZATION_STALE_NS => {
+        // A sample from a replaced world, from this step's future, or older
+        // than the window is not usable; the checked predicate answers all
+        // three and can never silently pass across timelines.
+        Some((_, at))
+            if !TimeWindow::exact(*at)
+                .possibly_fresh_within(now, LOCALIZATION_STALE)
+                .unwrap_or(false) =>
+        {
             Ok(false)
         }
         Some((loc, _))
@@ -223,10 +225,10 @@ fn mark_free(grid: &mut Grid, x_m: f64, y_m: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grid, LOCALIZATION_STALE_NS, Map, localization_is_usable, mark_free};
+    use super::{Grid, LOCALIZATION_STALE, Map, localization_is_usable, mark_free};
     use phoxal::api;
     use phoxal::bus::ContractBody;
-    use phoxal::bus::LogicalTime;
+    use phoxal::bus::RobotInstant;
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     #[test]
@@ -269,7 +271,7 @@ mod tests {
 
     #[test]
     fn localization_gate_rejects_unavailable_stale_future_epoch_and_invalid_samples() {
-        let sample = |x_m, epoch, at| {
+        let sample = |x_m, timeline, at| {
             (
                 api::localize::LocalizationState {
                     x_m,
@@ -277,16 +279,29 @@ mod tests {
                     yaw_rad: 0.0,
                     confidence: 1.0,
                 },
-                LogicalTime::new(epoch, at),
+                RobotInstant::new(timeline, at),
             )
         };
-        let now = LogicalTime::new(2, LOCALIZATION_STALE_NS + 10);
+        let line = phoxal::bus::TimelineId::mint();
+        let replaced = phoxal::bus::TimelineId::mint();
+        let stale_ns = u64::try_from(LOCALIZATION_STALE.as_nanos()).unwrap();
+        let now = RobotInstant::new(line, stale_ns + 10);
+
         assert!(!localization_is_usable(None, now).unwrap());
-        assert!(localization_is_usable(Some(&sample(0.0, 2, 10)), now).unwrap());
-        assert!(!localization_is_usable(Some(&sample(0.0, 1, now.time_ns())), now).unwrap());
-        assert!(!localization_is_usable(Some(&sample(0.0, 2, now.time_ns() + 1)), now).unwrap());
-        assert!(!localization_is_usable(Some(&sample(0.0, 2, 9)), now).unwrap());
-        assert!(localization_is_usable(Some(&sample(f64::NAN, 2, now.time_ns())), now).is_err());
+        assert!(localization_is_usable(Some(&sample(0.0, line, 10)), now).unwrap());
+        assert!(
+            !localization_is_usable(Some(&sample(0.0, replaced, now.ticks())), now).unwrap(),
+            "a sample from a replaced world is incomparable, never usable"
+        );
+        assert!(
+            !localization_is_usable(Some(&sample(0.0, line, now.ticks() + 1)), now).unwrap(),
+            "a sample from this step's future is not usable"
+        );
+        assert!(
+            !localization_is_usable(Some(&sample(0.0, line, 9)), now).unwrap(),
+            "a sample older than the window is not usable"
+        );
+        assert!(localization_is_usable(Some(&sample(f64::NAN, line, now.ticks())), now).is_err());
     }
 
     #[test]

@@ -30,7 +30,10 @@ use std::time::Duration;
 
 use phoxal::api;
 use phoxal::bus::ContractBody;
-use phoxal::bus::{DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, OwnerCap, Publisher, Querier};
+use phoxal::bus::{
+    CommandPublisher, DEFAULT_QUERY_TIMEOUT, Latest, OwnerCap, Querier, RobotInstant,
+    StatePublisher, StepToken, TimelineAuthority, TimelineId,
+};
 use phoxal::participant::{ClockMode, ParticipantLaunch, TestClock};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus, run_with_bus_clock};
@@ -42,11 +45,11 @@ static SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SLOW_SHUTDOWN_COMPLETED: AtomicBool = AtomicBool::new(false);
 static RESET_FAILURE_SHUTDOWN_CALLED: AtomicBool = AtomicBool::new(false);
 static SIM_CLOCK_STEPS: AtomicU64 = AtomicU64::new(0);
-static SIM_CLOCK_RESETS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+static SIM_CLOCK_RESETS: Mutex<Vec<(TimelineId, TimelineId)>> = Mutex::new(Vec::new());
 static HOST_TOOL_TICKS: AtomicU64 = AtomicU64::new(0);
 static HOST_TOOL_MESSAGES: AtomicU64 = AtomicU64::new(0);
-static SIM_CLOCK_CONTEXTS: Mutex<Vec<(LogicalTime, u64)>> = Mutex::new(Vec::new());
-static NO_STEP_RESETS: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
+static SIM_CLOCK_CONTEXTS: Mutex<Vec<(RobotInstant, u64)>> = Mutex::new(Vec::new());
+static NO_STEP_RESETS: Mutex<Vec<(TimelineId, TimelineId)>> = Mutex::new(Vec::new());
 static NO_STEP_INGRESS: AtomicU64 = AtomicU64::new(0);
 static NO_STEP_RESET_ACTIVE: AtomicBool = AtomicBool::new(false);
 static NO_STEP_SERVER_OVERLAP: AtomicBool = AtomicBool::new(false);
@@ -62,7 +65,7 @@ fn unique_namespace(label: &str) -> String {
 
 #[derive(phoxal::Api)]
 struct Api {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
     lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
@@ -86,7 +89,9 @@ impl WallFollower {
         Ok((
             Self { steps: 0 },
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx
+                    .command_publisher(api::topic::new().drive().target())
+                    .await?,
                 lookup: ctx.server(api::topic::new().frame().lookup()).await?,
                 submap: ctx.server(api::topic::new().map().submap()).await?,
             },
@@ -94,19 +99,14 @@ impl WallFollower {
     }
 
     #[step(hz = 200)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
         self.steps += 1;
         STEPS_OBSERVED.store(self.steps, Ordering::Relaxed);
-        api.target
-            .publish_at(
-                step.time(),
-                api::drive::Target {
-                    linear_x_mps: 0.5,
-                    angular_z_radps: 0.0,
-                    curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+        api.target.send(api::drive::Target {
+            linear_x_mps: 0.5,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        })?;
         Ok(())
     }
 
@@ -145,16 +145,11 @@ impl WallFollower {
     #[shutdown]
     async fn shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> Result<()> {
         let _ = ctx;
-        api.target
-            .publish_at(
-                LogicalTime::new(0, 0),
-                api::drive::Target {
-                    linear_x_mps: 0.0,
-                    angular_z_radps: 0.0,
-                    curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+        api.target.send(api::drive::Target {
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        })?;
         Ok(())
     }
 }
@@ -213,7 +208,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
             .query(api::frame::LookupRequest {
                 target_frame_id: "map".to_string(),
                 source_frame_id: "base".to_string(),
-                at_ns: None,
+                at: None,
             })
             .await
             .expect("exclusive #[server] should answer over the real bus");
@@ -284,7 +279,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
     assert!(step.completed > 0);
     assert_eq!(step.target_period_ns, 5_000_000);
     assert!(runtime.topics.iter().any(|row| {
-        row.topic == "v0.2/drive/target"
+        row.topic == "v0.1/drive/target"
             && row.direction == api::tool::RuntimeDirection::Publish
             && row.buffer_kind == api::tool::RuntimeBufferKind::Outbound
     }));
@@ -429,19 +424,21 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     // the companion takes the
     // client side of the former and the owner side of the latter - the mirror
     // of what `Drainer` subscribes. Two contracts, one bus, one participant.
-    let target_pub =
-        Publisher::<api::drive::Target>::new(bus.clone(), &api::topic::new().drive().target())
-            .expect("build target publisher");
+    let target_pub = CommandPublisher::<api::drive::Target>::new(
+        bus.clone(),
+        &api::topic::new().drive().target(),
+    )
+    .expect("build target publisher");
     let battery_topic = api::topic::internal::new(OwnerCap::__mint())
         .battery()
         .state();
     assert_eq!(
         <api::battery::State as ContractBody>::TOPIC,
-        "v0.2/battery/state",
+        "v0.1/battery/state",
         "the moved contract's version-qualified wire key (D1)"
     );
-    assert_eq!(battery_topic.key(), "v0.2/battery/state");
-    let battery_pub = Publisher::<api::battery::State>::new(bus.clone(), &battery_topic)
+    assert_eq!(battery_topic.key(), "v0.1/battery/state");
+    let battery_pub = StatePublisher::<api::battery::State>::new(bus.clone(), &battery_topic)
         .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
@@ -461,33 +458,29 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // One battery state for the `Latest` field.
+        let line = TimelineId::mint();
         battery_pub
-            .publish_at(
-                LogicalTime::new(0, 1),
+            .publish(
+                &StepToken::__mint(RobotInstant::new(line, 1)),
                 api::battery::State {
                     voltage_v: DRAIN_VOLTAGE_V,
                     current_a: 1.0,
                     charge_ratio: 0.9,
                 },
             )
-            .await
             .expect("publish battery state");
 
         // Feed exactly `DRAIN_COMMANDS` commands, spaced so the 200 Hz step
         // loop drains between them (well under the 32-deep ring), then query
         // the snapshot server CONCURRENTLY - it must answer from committed
         // state while the step loop keeps draining, stealing nothing.
-        for i in 0..DRAIN_COMMANDS {
+        for _ in 0..DRAIN_COMMANDS {
             target_pub
-                .publish_at(
-                    LogicalTime::new(0, u64::from(i) + 1),
-                    api::drive::Target {
-                        linear_x_mps: 1.0,
-                        angular_z_radps: 0.0,
-                        curvature_limit_radpm: None,
-                    },
-                )
-                .await
+                .send(api::drive::Target {
+                    linear_x_mps: 1.0,
+                    angular_z_radps: 0.0,
+                    curvature_limit_radpm: None,
+                })
                 .expect("publish target command");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -545,7 +538,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
 
 #[derive(phoxal::Api)]
 struct CounterApi {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "counter", config = (), api = CounterApi)]
@@ -558,24 +551,21 @@ impl Counter {
         Ok((
             Self,
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx
+                    .command_publisher(api::topic::new().drive().target())
+                    .await?,
             },
         ))
     }
 
     #[step(hz = 200)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
         COUNTER_STEPS.fetch_add(1, Ordering::Relaxed);
-        api.target
-            .publish_at(
-                step.time(),
-                api::drive::Target {
-                    linear_x_mps: 0.0,
-                    angular_z_radps: 0.0,
-                    curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+        api.target.send(api::drive::Target {
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        })?;
         Ok(())
     }
 
@@ -634,7 +624,7 @@ impl ResetFailure {
 /// live `simulation/clock` feed advances (see `simulation_mode_step_advances_only_with_the_clock_feed`).
 #[derive(phoxal::Api)]
 struct SimClockApi {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "sim-clock-stepper", config = (), api = SimClockApi)]
@@ -647,7 +637,9 @@ impl SimClockStepper {
         Ok((
             Self,
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx
+                    .command_publisher(api::topic::new().drive().target())
+                    .await?,
             },
         ))
     }
@@ -657,7 +649,7 @@ impl SimClockStepper {
         SIM_CLOCK_RESETS
             .lock()
             .expect("simulation reset log poisoned")
-            .push((ctx.previous_epoch(), ctx.new_epoch()));
+            .push((ctx.previous_timeline(), ctx.new_timeline()));
         Ok(())
     }
 
@@ -666,25 +658,20 @@ impl SimClockStepper {
         SIM_CLOCK_CONTEXTS
             .lock()
             .expect("simulation context log poisoned")
-            .push((step.time(), step.step_index()));
+            .push((step.now(), step.step_index()));
         SIM_CLOCK_STEPS.fetch_add(1, Ordering::Relaxed);
-        api.target
-            .publish_at(
-                step.time(),
-                api::drive::Target {
-                    linear_x_mps: 0.0,
-                    angular_z_radps: 0.0,
-                    curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+        api.target.send(api::drive::Target {
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        })?;
         Ok(())
     }
 }
 
 #[derive(phoxal::Api)]
 struct NoStepResetApi {
-    target: Subscriber<api::drive::Target>,
+    battery: Subscriber<api::battery::State>,
     lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
 }
 
@@ -695,15 +682,10 @@ struct NoStepResetObserver;
 impl NoStepResetObserver {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let target = ctx
-            .subscriber(
-                api::topic::internal::new(ctx.owner_capability())
-                    .drive()
-                    .target(),
-                8,
-            )
+        let battery = ctx
+            .subscriber(api::topic::new().battery().state(), 8)
             .await?;
-        let receiver = target.clone();
+        let receiver = battery.clone();
         ctx.spawn_managed("no-step-ingress", async move {
             while receiver.recv().await.is_ok() {
                 NO_STEP_INGRESS.fetch_add(1, Ordering::Relaxed);
@@ -715,7 +697,7 @@ impl NoStepResetObserver {
         Ok((
             Self,
             Self::Api {
-                target,
+                battery,
                 lookup: ctx.server(api::topic::new().frame().lookup()).await?,
             },
         ))
@@ -727,7 +709,7 @@ impl NoStepResetObserver {
         NO_STEP_RESETS
             .lock()
             .expect("no-step reset log poisoned")
-            .push((ctx.previous_epoch(), ctx.new_epoch()));
+            .push((ctx.previous_timeline(), ctx.new_timeline()));
         tokio::time::sleep(Duration::from_millis(80)).await;
         NO_STEP_RESET_ACTIVE.store(false, Ordering::SeqCst);
         Ok(())
@@ -770,7 +752,7 @@ impl WorldSimulator {
 
     #[step(hz = 20)]
     async fn step(&mut self, _api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let _ = step.time();
+        let _ = step.now();
         Ok(())
     }
 }
@@ -866,22 +848,19 @@ async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
     let mut bus_config = BusConfig::in_process(namespace.clone(), "robot");
     bus_config.participant = participant_id.to_string();
     let bus = Bus::open(bus_config).await.expect("bus should open");
-    let manual = phoxal::raw::Publisher::new(bus.clone(), &api::topic::new().motion().manual())
-        .expect("manual publisher should attach");
+    let manual =
+        phoxal::raw::CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
+            .expect("manual publisher should attach");
 
     let mut launch = ParticipantLaunch::local(participant_id, "robot");
     launch.namespace = namespace;
     run_with_bus::<HostDrivenTool, _>(&bus, launch, async move {
         tokio::time::sleep(Duration::from_millis(20)).await;
         manual
-            .publish_at(
-                LogicalTime::new(7, 42),
-                api::motion::ManualCommand {
-                    linear_x_mps: 0.2,
-                    angular_z_radps: 0.0,
-                },
-            )
-            .await
+            .send(api::motion::ManualCommand {
+                linear_x_mps: 0.2,
+                angular_z_radps: 0.0,
+            })
             .expect("raw tool input should publish");
         tokio::time::sleep(Duration::from_millis(80)).await;
     })
@@ -961,7 +940,7 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 /// This publishes `simulation::Clock` samples the same way
 /// `simulator/webots-controller/src/lib.rs` does (owner-side publisher over
 /// `api::topic::internal::new(cap).simulation().clock()`, `publish_at` an
-/// explicit `LogicalTime`), and proves three things the runner's wiring must
+/// explicit `RobotInstant`), and proves three things the runner's wiring must
 /// get right:
 /// 1. with no clock samples published yet, the participant never steps;
 /// 2. each clock advance releases exactly one more step, in step with the
@@ -969,6 +948,9 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 ///    spaced far apart in real time to make that unambiguous);
 /// 3. publishing no new sample leaves the participant stopped at its last
 ///    logical step.
+// Stands in for one controller process, which owns at most one timeline
+// authority; these must not overlap inside the shared test binary.
+#[serial_test::serial(timeline_authority)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     SIM_CLOCK_STEPS.store(0, Ordering::Relaxed);
@@ -988,13 +970,18 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // Stand in for the Webots controller: the OWNER-side publisher over the
     // same `simulation().clock()` builder it uses, so this test proves the
     // runner subscribes the identical wire key (not a look-alike topic).
-    let clock_publisher = Publisher::<api::simulation::Clock>::new(
+    let clock_publisher = StatePublisher::<api::simulation::Clock>::new(
         bus.clone(),
         &api::topic::internal::new(OwnerCap::__mint())
             .simulation()
             .clock(),
     )
     .expect("clock publisher should attach");
+    let first_timeline = TimelineId::from_raw(9).expect("timeline must be nonzero");
+    let replacement = TimelineId::from_raw(1).expect("timeline must be nonzero");
+    let higher_replacement = TimelineId::from_raw(12).expect("timeline must be nonzero");
+    let mut authority =
+        TimelineAuthority::__mint(first_timeline).expect("world authority should mint");
     let target_subscriber = Subscriber::<api::drive::Target>::new(
         &bus,
         &api::topic::internal::new(OwnerCap::__mint())
@@ -1024,19 +1011,12 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
             0,
             "no simulation/clock sample has been published yet; the step must not have released"
         );
-
-        let initial = LogicalTime::new(9, 0);
         clock_publisher
-            .publish_at(
-                initial,
-                api::simulation::Clock {
-                    epoch: initial.epoch(),
-                    now_ns: initial.time_ns(),
-                    step: 0,
-                },
+            .publish(
+                &authority.completed_step(0),
+                api::simulation::Clock { step: 0 },
             )
-            .await
-            .expect("initial epoch clock should publish");
+            .expect("initial timeline clock should publish");
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             SIM_CLOCK_RESETS
@@ -1044,7 +1024,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 .expect("simulation reset log poisoned")
                 .as_slice(),
             &[],
-            "the first observed simulation epoch must not invoke reset"
+            "the first observed timeline must not invoke reset"
         );
 
         // Advance one period at a time, waiting for the runner to observe
@@ -1052,17 +1032,12 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
         // feed's cadence, not a free-running timer (each iteration sleeps
         // far longer, in real time, than the participant's 1ms period).
         for step in 1..=5u64 {
-            let at = LogicalTime::new(9, step * period_ns);
+            let at = RobotInstant::new(first_timeline, step * period_ns);
             clock_publisher
-                .publish_at(
-                    at,
-                    api::simulation::Clock {
-                        epoch: at.epoch(),
-                        now_ns: step * period_ns,
-                        step,
-                    },
+                .publish(
+                    &authority.completed_step(step * period_ns),
+                    api::simulation::Clock { step },
                 )
-                .await
                 .expect("clock sample should publish");
 
             let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -1082,8 +1057,11 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 .await
                 .expect("step publication should arrive")
                 .expect("step publication should decode");
-            assert_eq!(published.metadata.epoch, at.epoch());
-            assert_eq!(published.metadata.produced_at_ns, at.time_ns());
+            assert_eq!(
+                published.metadata.produced_at, None,
+                "a command expresses no robot time, whatever the step it was sent from"
+            );
+            let _ = at;
         }
 
         // No publication means no world advance and therefore no service
@@ -1097,36 +1075,26 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
 
         // Reset to a new epoch at time zero. The old epoch's pending target
         // must be discarded without releasing a step or spinning the loop.
-        let reset_at = LogicalTime::new(1, 0);
+        authority.replace_timeline(replacement);
         clock_publisher
-            .publish_at(
-                reset_at,
-                api::simulation::Clock {
-                    epoch: reset_at.epoch(),
-                    now_ns: 0,
-                    step: 0,
-                },
+            .publish(
+                &authority.completed_step(0),
+                api::simulation::Clock { step: 0 },
             )
-            .await
             .expect("reset clock sample should publish");
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(
             SIM_CLOCK_STEPS.load(Ordering::Relaxed),
             5,
-            "an epoch reset must rebase the target without releasing or spinning"
+            "a timeline replacement must rebase the target without releasing or spinning"
         );
 
-        let first_after_reset = LogicalTime::new(1, period_ns);
+        let first_after_reset = RobotInstant::new(replacement, period_ns);
         clock_publisher
-            .publish_at(
-                first_after_reset,
-                api::simulation::Clock {
-                    epoch: first_after_reset.epoch(),
-                    now_ns: period_ns,
-                    step: 1,
-                },
+            .publish(
+                &authority.completed_step(period_ns),
+                api::simulation::Clock { step: 1 },
             )
-            .await
             .expect("first post-reset clock sample should publish");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while SIM_CLOCK_STEPS.load(Ordering::Relaxed) < 6 {
@@ -1147,24 +1115,19 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 .lock()
                 .expect("simulation reset log poisoned")
                 .as_slice(),
-            &[(9, 1)],
-            "a numerically lower opaque epoch must reset exactly once before its first step"
+            &[(first_timeline, replacement)],
+            "a replacement timeline must reset exactly once before its first step"
         );
 
         // A late clock from the retired controller must not reactivate its
         // execution. In particular it cannot run a second reset or release a
         // step stamped in epoch 9 after epoch 1 has become active.
-        let late_retired = LogicalTime::new(9, 6 * period_ns);
+        authority.replace_timeline(first_timeline);
         clock_publisher
-            .publish_at(
-                late_retired,
-                api::simulation::Clock {
-                    epoch: late_retired.epoch(),
-                    now_ns: late_retired.time_ns(),
-                    step: 6,
-                },
+            .publish(
+                &authority.completed_step(6 * period_ns),
+                api::simulation::Clock { step: 6 },
             )
-            .await
             .expect("late retired clock sample should publish at the bus layer");
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(
@@ -1177,8 +1140,8 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 .lock()
                 .expect("simulation reset log poisoned")
                 .as_slice(),
-            &[(9, 1)],
-            "9 -> 1 -> late 9 must perform exactly the original 9 -> 1 reset"
+            &[(first_timeline, replacement)],
+            "first -> replacement -> late first must perform exactly the original reset"
         );
         assert_eq!(
             SIM_CLOCK_CONTEXTS
@@ -1186,41 +1149,31 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 .expect("simulation context log poisoned")
                 .last(),
             Some(&(first_after_reset, 0)),
-            "no retired-epoch StepContext may appear after the replacement reset"
+            "no retired-timeline StepContext may appear after the replacement reset"
         );
 
         // Epochs are opaque identities, so a numerically higher replacement
         // must follow the same reset path as the lower-valued replacement.
-        let higher_reset_at = LogicalTime::new(12, 0);
+        authority.replace_timeline(higher_replacement);
         clock_publisher
-            .publish_at(
-                higher_reset_at,
-                api::simulation::Clock {
-                    epoch: higher_reset_at.epoch(),
-                    now_ns: 0,
-                    step: 0,
-                },
+            .publish(
+                &authority.completed_step(0),
+                api::simulation::Clock { step: 0 },
             )
-            .await
             .expect("higher-valued reset clock sample should publish");
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert_eq!(
             SIM_CLOCK_STEPS.load(Ordering::Relaxed),
             6,
-            "a higher-valued epoch reset must rebase without releasing a step"
+            "a higher-valued replacement must rebase without releasing a step"
         );
 
-        let first_after_higher_reset = LogicalTime::new(12, period_ns);
+        let first_after_higher_reset = RobotInstant::new(higher_replacement, period_ns);
         clock_publisher
-            .publish_at(
-                first_after_higher_reset,
-                api::simulation::Clock {
-                    epoch: first_after_higher_reset.epoch(),
-                    now_ns: period_ns,
-                    step: 1,
-                },
+            .publish(
+                &authority.completed_step(period_ns),
+                api::simulation::Clock { step: 1 },
             )
-            .await
             .expect("first step after higher-valued reset should publish");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while SIM_CLOCK_STEPS.load(Ordering::Relaxed) < 7 {
@@ -1241,8 +1194,11 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
                 .lock()
                 .expect("simulation reset log poisoned")
                 .as_slice(),
-            &[(9, 1), (1, 12)],
-            "every differing opaque epoch must reset exactly once before its first step"
+            &[
+                (first_timeline, replacement),
+                (replacement, higher_replacement)
+            ],
+            "every differing timeline must reset exactly once before its first step"
         );
     });
 
@@ -1259,8 +1215,11 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     );
 }
 
+// Stands in for one controller process, which owns at most one timeline
+// authority; these must not overlap inside the shared test binary.
+#[serial_test::serial(timeline_authority)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
+async fn no_step_service_observes_timeline_changes_and_installs_startup_barrier() {
     NO_STEP_INGRESS.store(0, Ordering::Relaxed);
     NO_STEP_RESET_ACTIVE.store(false, Ordering::Relaxed);
     NO_STEP_SERVER_OVERLAP.store(false, Ordering::Relaxed);
@@ -1273,16 +1232,20 @@ async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
     let bus = Bus::open(BusConfig::in_process(namespace.clone(), "robot"))
         .await
         .expect("bus should open");
-    let clock = Publisher::<api::simulation::Clock>::new(
+    let clock = StatePublisher::<api::simulation::Clock>::new(
         bus.clone(),
         &api::topic::internal::new(OwnerCap::__mint())
             .simulation()
             .clock(),
     )
     .expect("clock publisher should attach");
-    let target =
-        Publisher::<api::drive::Target>::new(bus.clone(), &api::topic::new().drive().target())
-            .expect("target publisher should attach");
+    let battery = StatePublisher::<api::battery::State>::new(
+        bus.clone(),
+        &api::topic::internal::new(OwnerCap::__mint())
+            .battery()
+            .state(),
+    )
+    .expect("battery publisher should attach");
     let lookup = Querier::<api::frame::LookupRequest, api::frame::LookupResponse>::new(
         bus.clone(),
         &api::topic::new().frame().lookup(),
@@ -1290,48 +1253,42 @@ async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
     )
     .expect("lookup querier should attach");
 
+    let first = TimelineId::from_raw(7).expect("timeline must be nonzero");
+    let retired = TimelineId::from_raw(6).expect("timeline must be nonzero");
+    let replacement = TimelineId::from_raw(3).expect("timeline must be nonzero");
     let traffic = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        let initial = LogicalTime::new(7, 10);
+        let mut authority = TimelineAuthority::__mint(first).expect("world authority should mint");
         clock
-            .publish_at(
-                initial,
-                api::simulation::Clock {
-                    epoch: initial.epoch(),
-                    now_ns: initial.time_ns(),
-                    step: 1,
-                },
+            .publish(
+                &authority.completed_step(10),
+                api::simulation::Clock { step: 1 },
             )
-            .await
             .expect("initial clock should publish during setup");
 
         tokio::time::sleep(Duration::from_millis(180)).await;
-        for at in [LogicalTime::new(6, 20), LogicalTime::new(7, 20)] {
-            target
-                .publish_at(
-                    at,
-                    api::drive::Target {
-                        linear_x_mps: at.epoch() as f32,
-                        angular_z_radps: 0.0,
-                        curvature_limit_radpm: None,
+        // One state sample from a retired world and one from the current one:
+        // only the current one may become visible.
+        for (timeline, voltage) in [(retired, 6.0), (first, 7.0)] {
+            battery
+                .publish(
+                    &StepToken::__mint(RobotInstant::new(timeline, 20)),
+                    api::battery::State {
+                        voltage_v: voltage,
+                        current_a: 0.0,
+                        charge_ratio: 1.0,
                     },
                 )
-                .await
-                .expect("target should publish");
+                .expect("battery state should publish");
         }
 
         tokio::time::sleep(Duration::from_millis(80)).await;
-        let replacement = LogicalTime::new(3, 0);
+        authority.replace_timeline(replacement);
         clock
-            .publish_at(
-                replacement,
-                api::simulation::Clock {
-                    epoch: replacement.epoch(),
-                    now_ns: replacement.time_ns(),
-                    step: 0,
-                },
+            .publish(
+                &authority.completed_step(0),
+                api::simulation::Clock { step: 0 },
             )
-            .await
             .expect("replacement clock should publish");
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
         while !NO_STEP_RESET_ACTIVE.load(Ordering::SeqCst) {
@@ -1345,7 +1302,7 @@ async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
             .query(api::frame::LookupRequest {
                 target_frame_id: "map".to_string(),
                 source_frame_id: "base".to_string(),
-                at_ns: None,
+                at: None,
             })
             .await
             .expect("exclusive query should run after reset completes");
@@ -1364,15 +1321,15 @@ async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
     assert_eq!(
         NO_STEP_INGRESS.load(Ordering::Relaxed),
         1,
-        "startup barrier must reject the late old-epoch sample and preserve the current one"
+        "startup barrier must reject the retired-timeline sample and preserve the current one"
     );
     assert_eq!(
         NO_STEP_RESETS
             .lock()
             .expect("no-step reset log poisoned")
             .as_slice(),
-        &[(7, 3)],
-        "step-less service must reset exactly once on a numerically lower replacement epoch"
+        &[(first, replacement)],
+        "a step-less service must reset exactly once on a replacement timeline"
     );
     assert!(
         !NO_STEP_SERVER_OVERLAP.load(Ordering::SeqCst),
@@ -1381,6 +1338,9 @@ async fn no_step_service_observes_epoch_changes_and_installs_startup_barrier() {
     bus.close().await.expect("bus should close");
 }
 
+// Stands in for one controller process, which owns at most one timeline
+// authority; these must not overlap inside the shared test binary.
+#[serial_test::serial(timeline_authority)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reset_error_faults_the_runner_and_still_runs_teardown() {
     RESET_FAILURE_SHUTDOWN_CALLED.store(false, Ordering::Relaxed);
@@ -1388,7 +1348,7 @@ async fn reset_error_faults_the_runner_and_still_runs_teardown() {
     let bus = Bus::open(BusConfig::in_process(namespace.clone(), "robot"))
         .await
         .expect("bus should open");
-    let clock = Publisher::<api::simulation::Clock>::new(
+    let clock = StatePublisher::<api::simulation::Clock>::new(
         bus.clone(),
         &api::topic::internal::new(OwnerCap::__mint())
             .simulation()
@@ -1397,18 +1357,16 @@ async fn reset_error_faults_the_runner_and_still_runs_teardown() {
     .expect("clock publisher should attach");
     let traffic = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        for (epoch, delay_ms) in [(4, 100), (8, 0)] {
-            let at = LogicalTime::new(epoch, 0);
+        let mut authority =
+            TimelineAuthority::__mint(TimelineId::from_raw(4).expect("timeline must be nonzero"))
+                .expect("world authority should mint");
+        for (timeline, delay_ms) in [(4, 100), (8, 0)] {
+            authority.replace_timeline(TimelineId::from_raw(timeline).expect("nonzero timeline"));
             clock
-                .publish_at(
-                    at,
-                    api::simulation::Clock {
-                        epoch,
-                        now_ns: 0,
-                        step: 0,
-                    },
+                .publish(
+                    &authority.completed_step(0),
+                    api::simulation::Clock { step: 0 },
                 )
-                .await
                 .expect("clock should publish");
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }

@@ -27,25 +27,37 @@ pub mod codec;
 pub mod contract;
 pub mod error;
 pub mod handle;
+pub mod identity;
+pub mod lease;
 pub mod liveliness;
 pub mod metadata;
 pub mod query;
 mod runtime_metrics;
 pub mod server;
 pub mod session;
+pub mod time;
 pub mod topic;
 
 pub use abi::{CodecId, encoding_string, parse_encoding_string};
 pub use capability::OwnerCap;
 pub use codec::{Codec, CodecError, MessagePack};
-pub use contract::{ApiVersion, ContractBody, TopicRole};
+pub use contract::{
+    ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,
+    StateContract, TopicRole,
+};
 pub use error::{BusError, Result};
-pub use handle::{DEFAULT_QUERY_TIMEOUT, Latest, Publisher, Querier, Received, Subscriber};
+pub use handle::{
+    CommandPublisher, DEFAULT_QUERY_TIMEOUT, DiagnosticPublisher, Latest, MeasurementPublisher,
+    Observed, Querier, StatePublisher, StepStamp, StepToken, Subscriber, TimelineAuthority,
+    WorldStepToken,
+};
+pub use identity::{ExecutionId, InvalidIdentity, ProducerId, TimelineId};
+pub use lease::{Lease, LeaseDecision, LeaseRejection, ProducerFence};
 pub use liveliness::{
     ParticipantLivelinessEvent, ParticipantLivelinessKey, ParticipantLivelinessObserver,
     ParticipantLivelinessStatus, ParticipantLivelinessToken,
 };
-pub use metadata::{BusMetadata, Source};
+pub use metadata::BusMetadata;
 pub use query::{QueryCode, QueryError, QueryFailure, ServerResult};
 #[doc(hidden)]
 pub use runtime_metrics::{
@@ -53,72 +65,42 @@ pub use runtime_metrics::{
 };
 pub use server::{IncomingQuery, ServerQueryable};
 pub use session::{Bus, BusConfig, BusHealth};
+pub use time::{
+    CaptureStamp, LocalInstant, RobotInstant, TimeWindow, TimelineMismatch, WallTimestamp,
+};
 pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};
 
 use std::collections::VecDeque;
 
-/// Fixed history used wherever opaque simulation epochs are retired.
+/// Fixed history used wherever replaced timelines are retired.
 ///
-/// The bounded history rejects in-flight samples from recently replaced
-/// executions without imposing numeric ordering or unbounded memory growth.
+/// The bounded history rejects in-flight samples from recently replaced world
+/// histories without imposing an ordering on opaque timeline identities or
+/// growing without bound.
 #[doc(hidden)]
 #[derive(Debug, Default)]
-pub struct RetiredEpochs {
-    epochs: VecDeque<u64>,
+pub struct RetiredTimelines {
+    timelines: VecDeque<TimelineId>,
 }
 
-impl RetiredEpochs {
+impl RetiredTimelines {
     /// The shared retirement-history bound for clock and data paths.
     pub const CAPACITY: usize = 8;
 
-    pub fn contains(&self, epoch: u64) -> bool {
-        self.epochs.contains(&epoch)
+    pub fn contains(&self, timeline: TimelineId) -> bool {
+        self.timelines.contains(&timeline)
     }
 
-    pub fn retire(&mut self, epoch: u64) {
-        if epoch == 0 {
-            return;
+    pub fn retire(&mut self, timeline: TimelineId) {
+        self.timelines.retain(|candidate| *candidate != timeline);
+        if self.timelines.len() == Self::CAPACITY {
+            self.timelines.pop_front();
         }
-        self.epochs.retain(|candidate| *candidate != epoch);
-        if self.epochs.len() == Self::CAPACITY {
-            self.epochs.pop_front();
-        }
-        self.epochs.push_back(epoch);
+        self.timelines.push_back(timeline);
     }
 
-    pub fn activate(&mut self, epoch: u64) {
-        self.epochs.retain(|candidate| *candidate != epoch);
-    }
-}
-
-/// Logical robot time: an epoch + a nanosecond timestamp in the clock's domain.
-///
-/// Every bus sample's `produced_at_ns`/`epoch` is stamped from a `LogicalTime`,
-/// so all participants share one time domain (D34). Within one epoch
-/// `time_ns` strictly increases. Epochs are opaque execution identities:
-/// different epochs are comparable only for equality and have no numeric
-/// generation order. Epoch `0` is reserved for the framework's
-/// not-yet-initialized sentinel and is never a valid simulation execution.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LogicalTime {
-    epoch: u64,
-    time_ns: u64,
-}
-
-impl LogicalTime {
-    /// Construct a logical time from an epoch + nanosecond timestamp.
-    pub const fn new(epoch: u64, time_ns: u64) -> Self {
-        LogicalTime { epoch, time_ns }
-    }
-
-    /// The opaque simulation execution identity.
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// The nanosecond timestamp within the epoch.
-    pub const fn time_ns(self) -> u64 {
-        self.time_ns
+    pub fn activate(&mut self, timeline: TimelineId) {
+        self.timelines.retain(|candidate| *candidate != timeline);
     }
 }
 

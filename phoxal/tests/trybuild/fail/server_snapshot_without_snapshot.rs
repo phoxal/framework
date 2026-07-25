@@ -9,7 +9,7 @@ struct Config {}
 
 #[derive(phoxal::Api)]
 struct Api {
-    revision: Publisher<api::map::Revision>,
+    revision: StatePublisher<api::map::Revision>,
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
 
@@ -25,7 +25,7 @@ impl NoSnap {
             Self,
             Self::Api {
                 revision: ctx
-                    .publisher(api::topic::internal::new(cap).map().revision())
+                    .state_publisher(api::topic::internal::new(cap).map().revision())
                     .await?,
                 submap: ctx.server(api::topic::new().map().submap()).await?,
             },

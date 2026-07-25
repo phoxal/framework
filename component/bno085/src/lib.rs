@@ -9,9 +9,9 @@ const STEP_HZ: f64 = 100.0;
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    imu: Vec<Publisher<api::component::imu::Sample>>,
-    accelerometer: Vec<Publisher<api::component::accelerometer::Sample>>,
-    gyroscope: Vec<Publisher<api::component::gyroscope::Sample>>,
+    imu: Vec<MeasurementPublisher<api::component::imu::Sample>>,
+    accelerometer: Vec<MeasurementPublisher<api::component::accelerometer::Sample>>,
+    gyroscope: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
 }
 
 #[phoxal::driver(id = "bno085", config = ())]
@@ -74,7 +74,7 @@ impl Bno085 {
         let mut imu_divisors = Vec::new();
         for slot in imu_slots {
             imu.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .imu(&slot.capability_id)
@@ -89,7 +89,7 @@ impl Bno085 {
         let mut accelerometer_divisors = Vec::new();
         for slot in accelerometer_slots {
             accelerometer.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .accelerometer(&slot.capability_id)
@@ -104,7 +104,7 @@ impl Bno085 {
         let mut gyroscope_divisors = Vec::new();
         for slot in gyroscope_slots {
             gyroscope.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .gyroscope(&slot.capability_id)
@@ -131,24 +131,24 @@ impl Bno085 {
 
     #[step(hz = 100)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let at = step.time();
+        let at = step.now();
         let step_index = step.step_index();
 
         for (publisher, divisor) in api.imu.iter().zip(&self.imu_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, imu_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), imu_sample())?;
             }
         }
 
         for (publisher, divisor) in api.accelerometer.iter().zip(&self.accelerometer_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, accelerometer_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), accelerometer_sample())?;
             }
         }
 
         for (publisher, divisor) in api.gyroscope.iter().zip(&self.gyroscope_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, gyroscope_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), gyroscope_sample())?;
             }
         }
 
@@ -192,7 +192,6 @@ fn imu_sample() -> api::component::imu::Sample {
         covariance: None,
         noise_density: None,
         sensor_frame_id: None,
-        measured_at_ns: None,
         health: api::component::imu::SensorHealth::Nominal,
         bias: None,
     }

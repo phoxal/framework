@@ -11,21 +11,23 @@
 //! It does not implement ORB-SLAM3, visual-inertial localization, or GNSS
 //! anchoring; map-frame and odometry-frame are assumed identical.
 
+use std::time::Duration;
+
 use phoxal::api;
 use phoxal::prelude::*;
 
-const LOCALIZE_STALE_NS: u64 = 1_000_000_000; // 1 s
+const LOCALIZE_STALE: Duration = Duration::from_secs(1);
 
 #[derive(phoxal::Api)]
 pub struct Api {
     odometry: Subscriber<api::odometry::State>,
-    state: Publisher<api::localize::LocalizationState>,
+    state: StatePublisher<api::localize::LocalizationState>,
 }
 
 #[phoxal::service(id = "localize", config = ())]
 pub struct Localize {
     // Runtime-private typed state (not handles).
-    last_odometry: Option<(api::odometry::State, LogicalTime)>,
+    last_odometry: Option<(api::odometry::State, RobotInstant)>,
 }
 
 #[phoxal::behavior]
@@ -39,7 +41,7 @@ impl Localize {
             .subscriber(api::topic::new().odometry().state(), 32)
             .await?;
         let state = ctx
-            .publisher(api::topic::internal::new(cap).localize().state())
+            .state_publisher(api::topic::internal::new(cap).localize().state())
             .await?;
 
         Ok((
@@ -58,14 +60,13 @@ impl Localize {
 
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        while let Some(received) = api.odometry.try_recv() {
-            self.last_odometry = Some((
-                received.body,
-                LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
-            ));
+        while let Some(observed) = api.odometry.try_recv() {
+            if let Some(at) = observed.metadata.produced_exactly_at() {
+                self.last_odometry = Some((observed.body, at));
+            }
         }
 
-        let now = step.time();
+        let now = step.now();
         if !odometry_is_usable(self.last_odometry.as_ref(), now)? {
             return Ok(());
         }
@@ -77,24 +78,29 @@ impl Localize {
             .as_ref()
             .expect("usable odometry requires a sample");
 
-        let confidence = confidence_for(now.time_ns().saturating_sub(produced_at.time_ns()));
+        let age = now
+            .duration_since(*produced_at)
+            .expect("a usable sample is on this step's timeline");
+        let confidence = confidence_for(age);
         api.state
-            .publish_at(step.time(), localization_from(odometry, confidence))
-            .await?;
+            .publish(step.token(), localization_from(odometry, confidence))?;
         Ok(())
     }
 }
 
 fn odometry_is_usable(
-    sample: Option<&(api::odometry::State, LogicalTime)>,
-    now: LogicalTime,
+    sample: Option<&(api::odometry::State, RobotInstant)>,
+    now: RobotInstant,
 ) -> Result<bool> {
     match sample {
         None => Ok(false),
-        Some((_, produced_at)) if produced_at.epoch() != now.epoch() => Ok(false),
-        Some((_, produced_at)) if produced_at.time_ns() > now.time_ns() => Ok(false),
+        // A sample from a replaced world, from this step's future, or older
+        // than the window is not usable. The checked predicate answers all
+        // three, and a cross-timeline comparison can never silently pass.
         Some((_, produced_at))
-            if now.time_ns().saturating_sub(produced_at.time_ns()) > LOCALIZE_STALE_NS =>
+            if !TimeWindow::exact(*produced_at)
+                .possibly_fresh_within(now, LOCALIZE_STALE)
+                .unwrap_or(false) =>
         {
             Ok(false)
         }
@@ -113,8 +119,8 @@ fn odometry_is_finite(state: &api::odometry::State) -> bool {
         && state.angular_z_radps.is_finite()
 }
 
-fn confidence_for(age_ns: u64) -> f32 {
-    let age_fraction = age_ns as f64 / LOCALIZE_STALE_NS as f64;
+fn confidence_for(age: Duration) -> f32 {
+    let age_fraction = age.as_secs_f64() / LOCALIZE_STALE.as_secs_f64();
     (1.0 - age_fraction).clamp(0.0, 1.0) as f32
 }
 
@@ -134,19 +140,22 @@ fn localization_from(
 mod tests {
     use phoxal::api;
     use phoxal::bus::ContractBody;
-    use phoxal::bus::LogicalTime;
+    use phoxal::bus::{RobotInstant, TimelineId};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::{
-        LOCALIZE_STALE_NS, Localize, confidence_for, localization_from, odometry_is_usable,
+        Duration, LOCALIZE_STALE, Localize, confidence_for, localization_from, odometry_is_usable,
     };
 
     #[test]
     fn confidence_decays_with_age() {
-        assert_eq!(confidence_for(0), 1.0);
-        assert_eq!(confidence_for(LOCALIZE_STALE_NS), 0.0);
-        assert!((confidence_for(LOCALIZE_STALE_NS / 2) - 0.5).abs() < 1e-6);
-        assert_eq!(confidence_for(LOCALIZE_STALE_NS + 1), 0.0);
+        assert_eq!(confidence_for(Duration::ZERO), 1.0);
+        assert_eq!(confidence_for(LOCALIZE_STALE), 0.0);
+        assert!((confidence_for(LOCALIZE_STALE / 2) - 0.5).abs() < 1e-6);
+        assert_eq!(
+            confidence_for(LOCALIZE_STALE + Duration::from_nanos(1)),
+            0.0
+        );
     }
 
     #[test]
@@ -176,28 +185,31 @@ mod tests {
             linear_x_mps: 0.0,
             angular_z_radps: 0.0,
         };
-        let now = LogicalTime::new(2, LOCALIZE_STALE_NS + 10);
+        let line = TimelineId::mint();
+        let replaced = TimelineId::mint();
+        let stale_ns = u64::try_from(LOCALIZE_STALE.as_nanos()).unwrap();
+        let now = RobotInstant::new(line, stale_ns + 10);
+        let at = |ticks| RobotInstant::new(line, ticks);
+
         assert!(!odometry_is_usable(None, now).unwrap());
-        assert!(odometry_is_usable(Some(&(state(0.0), LogicalTime::new(2, 10))), now).unwrap());
-        assert!(!odometry_is_usable(Some(&(state(0.0), LogicalTime::new(2, 9))), now).unwrap());
+        assert!(odometry_is_usable(Some(&(state(0.0), at(10))), now).unwrap());
+        assert!(
+            !odometry_is_usable(Some(&(state(0.0), at(9))), now).unwrap(),
+            "a sample older than the window is not usable"
+        );
+        assert!(
+            !odometry_is_usable(Some(&(state(0.0), at(now.ticks() + 1))), now).unwrap(),
+            "a sample from this step's future is not usable"
+        );
         assert!(
             !odometry_is_usable(
-                Some(&(state(0.0), LogicalTime::new(2, now.time_ns() + 1))),
+                Some(&(state(0.0), RobotInstant::new(replaced, now.ticks()))),
                 now
             )
-            .unwrap()
+            .unwrap(),
+            "a sample from a replaced world is incomparable, never usable"
         );
-        assert!(
-            !odometry_is_usable(Some(&(state(0.0), LogicalTime::new(1, now.time_ns()))), now)
-                .unwrap()
-        );
-        assert!(
-            odometry_is_usable(
-                Some(&(state(f64::NAN), LogicalTime::new(2, now.time_ns()))),
-                now
-            )
-            .is_err()
-        );
+        assert!(odometry_is_usable(Some(&(state(f64::NAN), at(now.ticks()))), now).is_err());
     }
 
     #[test]

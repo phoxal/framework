@@ -11,74 +11,24 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use clap::{CommandFactory, FromArgMatches};
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
+
+use crate::bus::{ExecutionId, ProducerId};
+use crate::participant::clock::ExecutionOrigin;
 
 /// Default bounded shutdown grace, in milliseconds.
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
-/// Maximum UTF-8 byte length of a supervisor-provided execution-device id.
-pub const MAX_EXECUTION_DEVICE_ID_BYTES: usize = 64;
-
-/// Bounded project/deployment identity attached to whole-device observations.
-///
-/// A supervisor supplies the same value to every per-robot `tool-device`
-/// process in one project. It is an observation label, not a bus authority or
-/// participant id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct ExecutionDeviceId(String);
-
-impl ExecutionDeviceId {
-    /// Validate a supervisor-provided execution-device identity.
-    pub fn new(value: impl Into<String>) -> Result<Self, String> {
-        let value = value.into();
-        if value.is_empty() {
-            return Err("execution-device id must not be empty".to_string());
-        }
-        if value.len() > MAX_EXECUTION_DEVICE_ID_BYTES {
-            return Err(format!(
-                "execution-device id must be at most {MAX_EXECUTION_DEVICE_ID_BYTES} UTF-8 bytes"
-            ));
-        }
-        if value.chars().any(char::is_control) {
-            return Err("execution-device id must not contain control characters".to_string());
-        }
-        Ok(Self(value))
-    }
-
-    /// Borrow the validated identity.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for ExecutionDeviceId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-impl AsRef<str> for ExecutionDeviceId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl<'de> Deserialize<'de> for ExecutionDeviceId {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(serde::de::Error::custom)
-    }
-}
 
 /// Public env variable names for the participant launch contract.
 pub mod env {
     /// Bus-unique participant id.
     pub const PARTICIPANT_ID: &str = "PHOXAL_PARTICIPANT_ID";
-    /// Launcher-minted per-process incarnation.
-    pub const INCARNATION: &str = "PHOXAL_INCARNATION";
+    /// The supervised run this participant joins. Part of the bus key root.
+    pub const EXECUTION_ID: &str = "PHOXAL_EXECUTION_ID";
+    /// Supervisor-pre-minted producer identity for this process.
+    pub const PRODUCER_ID: &str = "PHOXAL_PRODUCER_ID";
+    /// Supervisor-minted origin of real robot time for this execution.
+    pub const EXECUTION_ORIGIN: &str = "PHOXAL_EXECUTION_ORIGIN";
     /// Robot id for the transport root.
     pub const ROBOT_ID: &str = "PHOXAL_ROBOT_ID";
     /// Bus namespace for the transport root.
@@ -87,8 +37,6 @@ pub mod env {
     pub const ROBOT_ROOT: &str = "PHOXAL_ROBOT_ROOT";
     /// Component instance id for driver launches.
     pub const COMPONENT_INSTANCE: &str = "PHOXAL_COMPONENT_INSTANCE";
-    /// Bounded project/deployment identity for whole-device observations.
-    pub const EXECUTION_DEVICE_ID: &str = "PHOXAL_EXECUTION_DEVICE_ID";
     /// Comma-separated Zenoh connect endpoints.
     pub const CONNECT: &str = "PHOXAL_CONNECT";
     /// Inline JSON participant config block.
@@ -99,12 +47,13 @@ pub mod env {
     /// All env names in contract order.
     pub const ALL: &[&str] = &[
         PARTICIPANT_ID,
-        INCARNATION,
+        EXECUTION_ID,
+        PRODUCER_ID,
+        EXECUTION_ORIGIN,
         ROBOT_ID,
         NAMESPACE,
         ROBOT_ROOT,
         COMPONENT_INSTANCE,
-        EXECUTION_DEVICE_ID,
         CONNECT,
         CONFIG,
         CLOCK,
@@ -114,12 +63,22 @@ pub mod env {
 /// One participant's launch record.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParticipantLaunch {
-    /// The bus-unique participant id (never the static participant/artifact id, D53).
+    /// The bus-unique participant id (never the static participant/artifact id,
+    /// D53). A diagnostic label, never bus identity.
     pub participant_id: String,
-    /// Per-process incarnation. Managed launchers mint a random nonzero value
-    /// for every spawn; zero is reserved for unmanaged local runs and tests.
-    #[serde(default)]
-    pub incarnation: u64,
+    /// The supervised run this participant joins (#952 section B). The
+    /// supervisor mints it once per run and every participant carries it; it
+    /// scopes the bus key root.
+    pub execution: ExecutionId,
+    /// This process's producer identity (#952 section G). A supervisor
+    /// pre-mints it so restart fencing can re-key on the same value; an
+    /// unmanaged local run mints its own.
+    pub producer: ProducerId,
+    /// The supervisor-minted origin of real robot time. Absent for a run with
+    /// no supervisor, in which case a real-clock participant reports itself
+    /// unsynchronized rather than inventing an origin.
+    #[serde(default, with = "origin_serde")]
+    pub execution_origin: Option<ExecutionOrigin>,
     /// The bus namespace (`robot.namespace`).
     pub namespace: String,
     /// The robot id (`robot.id`).
@@ -145,10 +104,6 @@ pub struct ParticipantLaunch {
     /// `SetupContext::component()`. Absent for non-driver participants.
     #[serde(default)]
     pub component_instance: Option<String>,
-    /// Project/deployment identity for whole-device observations. Supervisors
-    /// set this for `tool-device`; unrelated participants may leave it absent.
-    #[serde(default)]
-    pub execution_device_id: Option<ExecutionDeviceId>,
     /// Bounded shutdown grace, in milliseconds.
     #[serde(default = "default_grace")]
     pub shutdown_grace_ms: u64,
@@ -159,12 +114,15 @@ fn default_grace() -> u64 {
 }
 
 impl ParticipantLaunch {
-    /// A default launch for local runs: in-process bus, real clock, the given
+    /// A default launch for local runs: a freshly minted execution and
+    /// producer, an in-process bus, a real clock anchored now, and the given
     /// participant id (defaulting the namespace to `dev`, D38).
     pub fn local(participant_id: impl Into<String>, robot_id: impl Into<String>) -> Self {
         ParticipantLaunch {
             participant_id: participant_id.into(),
-            incarnation: 0,
+            execution: ExecutionId::mint(),
+            producer: ProducerId::mint(),
+            execution_origin: Some(ExecutionOrigin::mint()),
             namespace: "dev".to_string(),
             robot_id: robot_id.into(),
             bus: BusProfile::default(),
@@ -172,7 +130,6 @@ impl ParticipantLaunch {
             config: None,
             robot_root: None,
             component_instance: None,
-            execution_device_id: None,
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
         }
     }
@@ -189,10 +146,36 @@ impl ParticipantLaunch {
         self
     }
 
-    /// Set the bounded identity used by whole-device observations.
-    pub fn with_execution_device_id(mut self, identity: ExecutionDeviceId) -> Self {
-        self.execution_device_id = Some(identity);
+    /// Join an existing supervised run instead of the freshly minted one.
+    pub fn in_execution(mut self, execution: ExecutionId) -> Self {
+        self.execution = execution;
         self
+    }
+}
+
+/// `ExecutionOrigin` rides the JSON launch record as its rendered form, so the
+/// record stays a flat, human-readable document rather than exposing the boot
+/// identity as three separate fields nobody sets by hand.
+mod origin_serde {
+    use super::ExecutionOrigin;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<ExecutionOrigin>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.map(ExecutionOrigin::encode).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ExecutionOrigin>, D::Error> {
+        let Some(rendered) = Option::<String>::deserialize(deserializer)? else {
+            return Ok(None);
+        };
+        ExecutionOrigin::decode(&rendered).map(Some).ok_or_else(|| {
+            serde::de::Error::custom(format!("malformed execution origin '{rendered}'"))
+        })
     }
 }
 
@@ -208,15 +191,33 @@ struct CommonLaunchCli {
     )]
     participant_id: Option<String>,
 
-    /// Launcher-minted per-process incarnation. Zero means unmanaged local run.
+    /// The supervised run to join. Absent means an unmanaged local run, which
+    /// mints its own.
     #[arg(
         long,
-        env = env::INCARNATION,
+        env = env::EXECUTION_ID,
         hide_env_values = true,
-        value_name = "U64",
-        default_value_t = 0
+        value_name = "ID"
     )]
-    incarnation: u64,
+    execution_id: Option<String>,
+
+    /// Supervisor-pre-minted producer identity. Absent means mint one.
+    #[arg(
+        long,
+        env = env::PRODUCER_ID,
+        hide_env_values = true,
+        value_name = "ID"
+    )]
+    producer_id: Option<String>,
+
+    /// Supervisor-minted origin of real robot time for this execution.
+    #[arg(
+        long,
+        env = env::EXECUTION_ORIGIN,
+        hide_env_values = true,
+        value_name = "ORIGIN"
+    )]
+    execution_origin: Option<String>,
 
     /// Robot id for the transport root. Defaults to `robot` for local runs.
     #[arg(long, env = env::ROBOT_ID, hide_env_values = true, value_name = "ID")]
@@ -249,15 +250,6 @@ struct CommonLaunchCli {
         value_name = "ID"
     )]
     component_instance: Option<String>,
-
-    /// Project/deployment identity attached to whole-device observations.
-    #[arg(
-        long,
-        env = env::EXECUTION_DEVICE_ID,
-        hide_env_values = true,
-        value_name = "ID"
-    )]
-    execution_device_id: Option<String>,
 
     /// Comma-separated Zenoh connect endpoints. Empty means in-process.
     #[arg(
@@ -337,18 +329,26 @@ impl CommonLaunchCli {
             nonempty_or(self.participant_id, || default_participant_id.to_string());
         let robot_id = nonempty_or(self.robot_id, || default_robot_id.to_string());
         let mut launch = ParticipantLaunch::local(participant_id, robot_id);
-        launch.incarnation = self.incarnation;
+        if let Some(execution) = self.execution_id.filter(|value| !value.is_empty()) {
+            launch.execution = ExecutionId::parse(&execution)
+                .map_err(anyhow::Error::msg)
+                .context("PHOXAL_EXECUTION_ID is invalid")?;
+        }
+        if let Some(producer) = self.producer_id.filter(|value| !value.is_empty()) {
+            launch.producer = ProducerId::parse(&producer)
+                .map_err(anyhow::Error::msg)
+                .context("PHOXAL_PRODUCER_ID is invalid")?;
+        }
+        if let Some(origin) = self.execution_origin.filter(|value| !value.is_empty()) {
+            launch.execution_origin = Some(ExecutionOrigin::decode(&origin).ok_or_else(|| {
+                anyhow::anyhow!("PHOXAL_EXECUTION_ORIGIN is malformed: '{origin}'")
+            })?);
+        }
         launch.namespace = nonempty_or(self.namespace, || "dev".to_string());
         launch.robot_root = self.robot_root.filter(|path| !path.as_os_str().is_empty());
         launch.component_instance = self
             .component_instance
             .filter(|instance| !instance.is_empty());
-        launch.execution_device_id = self
-            .execution_device_id
-            .map(ExecutionDeviceId::new)
-            .transpose()
-            .map_err(anyhow::Error::msg)
-            .context("PHOXAL_EXECUTION_DEVICE_ID is invalid")?;
         if let Some(endpoints) = self.connect.filter(|endpoints| !endpoints.is_empty()) {
             launch.bus.connect_endpoints = endpoints
                 .split(',')
@@ -538,7 +538,6 @@ mod tests {
         clear_env();
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "default-id");
-        assert_eq!(launch.incarnation, 0);
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
         assert_eq!(launch.robot_root, None);
@@ -551,22 +550,28 @@ mod tests {
     #[serial]
     fn env_overrides_each_launch_field() {
         clear_env();
+        let execution = ExecutionId::mint();
+        let producer = ProducerId::mint();
+        let origin = ExecutionOrigin::mint();
         // SAFETY: serialized test; see clear_env.
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "tof-3");
-            std::env::set_var(env::INCARNATION, "41");
+            std::env::set_var(env::EXECUTION_ID, execution.to_string());
+            std::env::set_var(env::PRODUCER_ID, producer.to_string());
+            std::env::set_var(env::EXECUTION_ORIGIN, origin.encode());
             std::env::set_var(env::ROBOT_ID, "robot-a");
             std::env::set_var(env::NAMESPACE, "lab");
             std::env::set_var(env::ROBOT_ROOT, "/robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "tof_front");
-            std::env::set_var(env::EXECUTION_DEVICE_ID, "project-e2e");
             std::env::set_var(env::CONNECT, "tcp/127.0.0.1:7447, tcp/127.0.0.1:7448");
             std::env::set_var(env::CONFIG, r#"{"rate_hz":10}"#);
             std::env::set_var(env::CLOCK, "simulation");
         }
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "tof-3");
-        assert_eq!(launch.incarnation, 41);
+        assert_eq!(launch.execution, execution);
+        assert_eq!(launch.producer, producer);
+        assert_eq!(launch.execution_origin, Some(origin));
         assert_eq!(launch.robot_id, "robot-a");
         assert_eq!(launch.namespace, "lab");
         assert_eq!(
@@ -574,13 +579,6 @@ mod tests {
             Some(std::path::Path::new("/robot"))
         );
         assert_eq!(launch.component_instance.as_deref(), Some("tof_front"));
-        assert_eq!(
-            launch
-                .execution_device_id
-                .as_ref()
-                .map(ExecutionDeviceId::as_str),
-            Some("project-e2e")
-        );
         assert_eq!(
             launch.bus.connect_endpoints,
             vec![
@@ -597,15 +595,17 @@ mod tests {
     #[serial]
     fn flags_take_precedence_over_env() {
         clear_env();
+        let flag_execution = ExecutionId::mint();
+        let flag_producer = ProducerId::mint();
         // SAFETY: serialized test; see clear_env.
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "env-participant");
-            std::env::set_var(env::INCARNATION, "41");
+            std::env::set_var(env::EXECUTION_ID, ExecutionId::mint().to_string());
+            std::env::set_var(env::PRODUCER_ID, ProducerId::mint().to_string());
             std::env::set_var(env::ROBOT_ID, "env-robot");
             std::env::set_var(env::NAMESPACE, "env-ns");
             std::env::set_var(env::ROBOT_ROOT, "/env-robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "env-component");
-            std::env::set_var(env::EXECUTION_DEVICE_ID, "env-project");
             std::env::set_var(env::CONNECT, "tcp/env:7447");
             std::env::set_var(env::CONFIG, r#"{"source":"env"}"#);
             std::env::set_var(env::CLOCK, "simulation");
@@ -615,8 +615,10 @@ mod tests {
             "participant-bin",
             "--participant-id",
             "flag-participant",
-            "--incarnation",
-            "42",
+            "--execution-id",
+            &flag_execution.to_string(),
+            "--producer-id",
+            &flag_producer.to_string(),
             "--robot-id",
             "flag-robot",
             "--namespace",
@@ -625,8 +627,6 @@ mod tests {
             "/flag-robot",
             "--component-instance",
             "flag-component",
-            "--execution-device-id",
-            "flag-project",
             "--connect",
             "tcp/flag:7447",
             "--config",
@@ -637,7 +637,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(launch.participant_id, "flag-participant");
-        assert_eq!(launch.incarnation, 42);
+        assert_eq!(launch.execution, flag_execution);
+        assert_eq!(launch.producer, flag_producer);
         assert_eq!(launch.robot_id, "flag-robot");
         assert_eq!(launch.namespace, "flag-ns");
         assert_eq!(
@@ -645,13 +646,6 @@ mod tests {
             Some(std::path::Path::new("/flag-robot"))
         );
         assert_eq!(launch.component_instance.as_deref(), Some("flag-component"));
-        assert_eq!(
-            launch
-                .execution_device_id
-                .as_ref()
-                .map(ExecutionDeviceId::as_str),
-            Some("flag-project")
-        );
         assert_eq!(launch.bus.connect_endpoints, vec!["tcp/flag:7447"]);
         assert_eq!(launch.config, Some(serde_json::json!({"source": "flag"})));
         assert_eq!(launch.clock, ClockMode::Real);
@@ -691,12 +685,13 @@ mod tests {
 
         for (flag, env_name) in [
             ("--participant-id", env::PARTICIPANT_ID),
-            ("--incarnation", env::INCARNATION),
+            ("--execution-id", env::EXECUTION_ID),
+            ("--producer-id", env::PRODUCER_ID),
+            ("--execution-origin", env::EXECUTION_ORIGIN),
             ("--robot-id", env::ROBOT_ID),
             ("--namespace", env::NAMESPACE),
             ("--robot-root", env::ROBOT_ROOT),
             ("--component-instance", env::COMPONENT_INSTANCE),
-            ("--execution-device-id", env::EXECUTION_DEVICE_ID),
             ("--connect", env::CONNECT),
             ("--config", env::CONFIG),
             ("--clock", env::CLOCK),
@@ -710,34 +705,52 @@ mod tests {
 
     #[test]
     #[serial]
-    fn execution_device_id_is_required_nonempty_bounded_and_control_free_when_present() {
+    fn a_malformed_identity_or_origin_is_rejected_rather_than_silently_replaced() {
         clear_env();
 
-        for invalid in [
-            String::new(),
-            "line\nbreak".to_string(),
-            "x".repeat(MAX_EXECUTION_DEVICE_ID_BYTES + 1),
-        ] {
-            let error = parse_tool_from(&["tool-bin", "--execution-device-id", invalid.as_str()])
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("PHOXAL_EXECUTION_DEVICE_ID is invalid"),
-                "{error:#}"
-            );
-        }
-
-        let boundary = "é".repeat(MAX_EXECUTION_DEVICE_ID_BYTES / 2);
-        let launch = parse_tool_from(&["tool-bin", "--execution-device-id", &boundary]).unwrap();
-        assert_eq!(
-            launch
-                .execution_device_id
-                .as_ref()
-                .map(ExecutionDeviceId::as_str),
-            Some(boundary.as_str())
+        let error = parse_tool_from(&["tool-bin", "--execution-id", "not-an-id"]).unwrap_err();
+        assert!(
+            error.to_string().contains("PHOXAL_EXECUTION_ID is invalid"),
+            "{error:#}"
         );
+
+        let error = parse_tool_from(&["tool-bin", "--producer-id", "0011"]).unwrap_err();
+        assert!(
+            error.to_string().contains("PHOXAL_PRODUCER_ID is invalid"),
+            "{error:#}"
+        );
+
+        let error =
+            parse_clocked_from(&["participant-bin", "--execution-origin", "1:2"]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("PHOXAL_EXECUTION_ORIGIN is malformed"),
+            "{error:#}"
+        );
+
+        // An unmanaged local run has no supervisor to mint identities, so it
+        // mints its own rather than defaulting to a shared constant that two
+        // processes would collide on.
+        let first = parse_tool_from(&["tool-bin"]).unwrap();
+        let second = parse_tool_from(&["tool-bin"]).unwrap();
+        assert_ne!(first.execution, second.execution);
+        assert_ne!(first.producer, second.producer);
         clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn a_launch_record_round_trips_its_identities_and_origin_through_json() {
+        let launch = ParticipantLaunch::local("drive", "robot");
+        let encoded = serde_json::to_string(&launch).unwrap();
+        let decoded: ParticipantLaunch = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, launch);
+        assert!(encoded.contains(&launch.execution.to_string()));
+
+        let malformed =
+            encoded.replace(&launch.execution_origin.unwrap().encode(), "not-an-origin");
+        assert!(serde_json::from_str::<ParticipantLaunch>(&malformed).is_err());
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
 use phoxal::api;
+use phoxal::bus::RobotInstant;
 
 use crate::config::{FrameJointType, JointMeta};
 use crate::ring_buffer::RingBuffer;
@@ -46,7 +47,7 @@ pub(crate) fn lookup_transform(
     let (target_stamp, lca_to_target) = transform_from_ancestor_to_descendant(
         &lca,
         target,
-        request.at_ns,
+        request.at,
         &snapshot.statics,
         &snapshot.dynamics,
         &snapshot.parent_by_child,
@@ -54,18 +55,24 @@ pub(crate) fn lookup_transform(
     let (source_stamp, lca_to_source) = transform_from_ancestor_to_descendant(
         &lca,
         source,
-        request.at_ns,
+        request.at,
         &snapshot.statics,
         &snapshot.dynamics,
         &snapshot.parent_by_child,
     )?;
 
-    let stamp_ns = target_stamp.into_iter().chain(source_stamp).max();
+    // The composed transform is only as fresh as its stalest edge; both edges
+    // came from the same timeline (`nearest` rejects any other), so comparing
+    // ticks is well-defined here.
+    let stamp = target_stamp
+        .into_iter()
+        .chain(source_stamp)
+        .max_by_key(|instant| instant.ticks());
     Some(transform_from_isometry(
         target.clone(),
         source.clone(),
         lca_to_target.inverse() * lca_to_source,
-        stamp_ns,
+        stamp,
     ))
 }
 
@@ -117,44 +124,51 @@ fn ancestors(
 fn transform_from_ancestor_to_descendant(
     ancestor: &str,
     descendant: &str,
-    at_ns: Option<u64>,
+    at: Option<RobotInstant>,
     statics: &BTreeMap<String, api::frame::FrameTransform>,
     dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
     parent_by_child: &BTreeMap<String, (String, JointMeta)>,
-) -> Option<(Option<u64>, Isometry3<f64>)> {
+) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
     let mut child_to_parent_edges = Vec::new();
     let mut current = descendant.to_string();
 
     while current != ancestor {
         let (parent, _) = parent_by_child.get(&current)?;
-        child_to_parent_edges.push(edge_transform(&current, at_ns, statics, dynamics)?);
+        child_to_parent_edges.push(edge_transform(&current, at, statics, dynamics)?);
         current = parent.clone();
     }
 
-    let mut stamp_ns = None;
+    let mut stamp = None;
     let mut transform = Isometry3::identity();
-    for (edge_stamp_ns, edge) in child_to_parent_edges.into_iter().rev() {
-        stamp_ns = stamp_ns.into_iter().chain(edge_stamp_ns).max();
+    for (edge_stamp, edge) in child_to_parent_edges.into_iter().rev() {
+        // The composed transform is only as fresh as its stalest edge, so the
+        // latest edge instant is the honest stamp. Edges on different
+        // timelines cannot be composed at all, so `max_by_key` on ticks is
+        // safe: `nearest` already rejected any foreign-timeline edge.
+        stamp = stamp
+            .into_iter()
+            .chain(edge_stamp)
+            .max_by_key(|instant| instant.ticks());
         transform *= edge;
     }
-    Some((stamp_ns, transform))
+    Some((stamp, transform))
 }
 
 fn edge_transform(
     child_frame_id: &str,
-    at_ns: Option<u64>,
+    at: Option<RobotInstant>,
     statics: &BTreeMap<String, api::frame::FrameTransform>,
     dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
-) -> Option<(Option<u64>, Isometry3<f64>)> {
+) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
     if let Some(transform) = statics.get(child_frame_id) {
         return Some((None, isometry_from_transform(transform)));
     }
     let buffer = dynamics.get(child_frame_id)?;
-    let (stamp_ns, transform) = match at_ns {
-        Some(timestamp_ns) => buffer.nearest(timestamp_ns)?,
+    let (stamp, transform) = match at {
+        Some(at) => buffer.nearest(at)?,
         None => buffer.latest()?,
     };
-    Some((Some(stamp_ns), transform))
+    Some((Some(stamp), transform))
 }
 
 pub(crate) fn joint_transform(
@@ -201,7 +215,7 @@ pub(crate) fn transform_from_isometry(
     parent_frame_id: String,
     child_frame_id: String,
     transform: Isometry3<f64>,
-    stamp_ns: Option<u64>,
+    stamp: Option<RobotInstant>,
 ) -> api::frame::FrameTransform {
     let q = transform.rotation.quaternion();
     api::frame::FrameTransform {
@@ -213,7 +227,7 @@ pub(crate) fn transform_from_isometry(
             transform.translation.z,
         ],
         rotation_quat_xyzw: [q.i, q.j, q.k, q.w],
-        stamp_ns,
+        stamp,
     }
 }
 

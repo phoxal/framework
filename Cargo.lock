@@ -2333,6 +2333,7 @@ dependencies = [
  "derive-new",
  "dotenvy",
  "jsonschema",
+ "libc",
  "nalgebra",
  "phoxal-api",
  "phoxal-bus",
@@ -2371,8 +2372,11 @@ dependencies = [
 name = "phoxal-bus"
 version = "0.40.2"
 dependencies = [
+ "getrandom 0.3.4",
+ "libc",
  "rmp-serde",
  "serde",
+ "serde_bytes",
  "serde_json",
  "serial_test",
  "thiserror 2.0.18",
@@ -2397,6 +2401,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -2480,6 +2485,7 @@ version = "0.40.2"
 dependencies = [
  "anyhow",
  "phoxal",
+ "tracing",
 ]
 
 [[package]]
@@ -2525,6 +2531,7 @@ dependencies = [
  "phoxal",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -10,8 +10,10 @@ use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::error::{BusError, Result};
-use crate::metadata::MAX_SOURCE_PARTICIPANT_BYTES;
+use crate::identity::{ExecutionId, ProducerId};
+use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
+use crate::time::TimeWindow;
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter - it never blocks the
@@ -29,25 +31,40 @@ pub struct BusConfig {
     pub namespace: String,
     /// The robot id (`identity.id`); one concrete key segment.
     pub robot_id: String,
+    /// The supervised run this session joins (#952 section B). It is part of
+    /// the key root, so traffic from a previous execution - an ad hoc
+    /// publisher, an attached tool, a replayed recording, a second checkout
+    /// reusing the namespace - physically cannot be observed as current.
+    pub execution: ExecutionId,
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
-    /// participant/artifact id - D53).
+    /// participant/artifact id - D53). A diagnostic label, never identity.
     pub participant: String,
-    /// Per-process incarnation (bumped on restart).
-    pub incarnation: u64,
+    /// This process's producer identity. A spawned participant receives a
+    /// supervisor-pre-minted one; an ad hoc publisher mints its own.
+    pub producer: ProducerId,
     /// Zenoh connect endpoints. Empty = in-process (local sim / tests).
     pub connect_endpoints: Vec<String>,
 }
 
 impl BusConfig {
-    /// An in-process config (no endpoints, multicast off) for local sim + tests.
+    /// An in-process config (no endpoints, multicast off) for local sim + tests,
+    /// on a freshly minted execution.
     pub fn in_process(namespace: impl Into<String>, robot_id: impl Into<String>) -> Self {
         BusConfig {
             namespace: namespace.into(),
             robot_id: robot_id.into(),
+            execution: ExecutionId::mint(),
             participant: "local".to_string(),
-            incarnation: 0,
+            producer: ProducerId::mint(),
             connect_endpoints: Vec::new(),
         }
+    }
+
+    /// Join `execution` instead of a freshly minted one.
+    #[must_use]
+    pub fn in_execution(mut self, execution: ExecutionId) -> Self {
+        self.execution = execution;
+        self
     }
 }
 
@@ -76,8 +93,9 @@ struct Outbound {
 struct BusInner {
     session: zenoh::Session,
     root: String,
+    execution: ExecutionId,
     participant: String,
-    incarnation: u64,
+    producer: ProducerId,
     seq: AtomicU64,
     outbound: mpsc::Sender<Outbound>,
     queued_bytes: AtomicUsize,
@@ -121,7 +139,15 @@ impl Bus {
             )));
         }
 
-        let root = format!("{}/robots/{}", config.namespace, config.robot_id);
+        // Execution scoping lives in the *root*, not in any contract name: a
+        // previous run's traffic lands on a different key and cannot be
+        // observed as current (#952 section B).
+        let root = format!(
+            "{}/robots/{}/{}",
+            config.namespace,
+            config.robot_id,
+            config.execution.as_key_segment()
+        );
         // Validate the composed root resolves to a legal Zenoh key.
         OwnedKeyExpr::new(root.clone())
             .map_err(|e| BusError::Namespace(format!("invalid key root '{root}': {e}")))?;
@@ -135,8 +161,9 @@ impl Bus {
         let inner = Arc::new(BusInner {
             session,
             root,
+            execution: config.execution,
             participant: config.participant,
-            incarnation: config.incarnation,
+            producer: config.producer,
             seq: AtomicU64::new(0),
             outbound: tx,
             queued_bytes: AtomicUsize::new(0),
@@ -153,19 +180,37 @@ impl Bus {
         Ok(Bus { inner })
     }
 
-    /// The composed key root (`<namespace>/robots/<robot-id>`).
+    /// The composed key root
+    /// (`<namespace>/robots/<robot-id>/x<execution-id>`).
     pub fn root(&self) -> &str {
         &self.inner.root
     }
 
-    /// The participant id used as the metadata source.
+    /// The supervised run this session belongs to.
+    pub fn execution(&self) -> ExecutionId {
+        self.inner.execution
+    }
+
+    /// The participant id carried as a diagnostic label in sample metadata.
     pub fn participant(&self) -> &str {
         &self.inner.participant
     }
 
-    /// Per-process incarnation.
-    pub fn incarnation(&self) -> u64 {
-        self.inner.incarnation
+    /// This process's producer identity.
+    pub fn producer(&self) -> ProducerId {
+        self.inner.producer
+    }
+
+    /// Build the provenance for one outbound sample: this producer, its next
+    /// sequence, and the production instant the caller's temporal role permits.
+    pub(crate) fn metadata(&self, produced_at: Option<TimeWindow>) -> BusMetadata {
+        BusMetadata {
+            codec: crate::abi::CodecId::MessagePack.as_u8(),
+            producer: self.inner.producer,
+            sequence: self.next_sequence(),
+            produced_at,
+            participant: self.inner.participant.clone(),
+        }
     }
 
     /// Live health counters.

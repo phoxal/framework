@@ -9,20 +9,18 @@ use phoxal::prelude::*;
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    #[phoxal(epoch_agnostic)]
     command: Subscriber<api::behavior::Command>,
-    #[phoxal(epoch_agnostic)]
     request: Subscriber<api::behavior::Request>,
     navigation_result: Subscriber<api::navigation::Result>,
     localization: Latest<api::localize::LocalizationState>,
     map_revision: Latest<api::map::Revision>,
     motion_state: Latest<api::motion::State>,
     safety_state: Latest<api::safety::State>,
-    state: Publisher<api::behavior::State>,
-    snapshot: Publisher<api::behavior::Snapshot>,
-    event: Publisher<api::behavior::Event>,
-    navigation_request: Publisher<api::navigation::Request>,
-    power_command: Publisher<api::power::Command>,
+    state: StatePublisher<api::behavior::State>,
+    snapshot: StatePublisher<api::behavior::Snapshot>,
+    event: StatePublisher<api::behavior::Event>,
+    navigation_request: CommandPublisher<api::navigation::Request>,
+    power_command: CommandPublisher<api::power::Command>,
 }
 
 #[derive(Clone)]
@@ -79,7 +77,6 @@ pub struct BehaviorService {
     authoritative_root: Option<String>,
     next_execution: u64,
     next_event: u64,
-    last_time: LogicalTime,
 }
 
 #[phoxal::behavior]
@@ -113,7 +110,6 @@ impl BehaviorService {
                     .map(|config| config.root),
                 next_execution: 1,
                 next_event: 1,
-                last_time: LogicalTime::new(0, 0),
             },
             Self::Api {
                 command: ctx
@@ -130,44 +126,44 @@ impl BehaviorService {
                 motion_state: ctx.latest(api::topic::new().motion().state()).await?,
                 safety_state: ctx.latest(api::topic::new().safety().state()).await?,
                 state: ctx
-                    .publisher(api::topic::internal::new(cap).behavior().state())
+                    .state_publisher(api::topic::internal::new(cap).behavior().state())
                     .await?,
                 snapshot: ctx
-                    .publisher(api::topic::internal::new(cap).behavior().snapshot())
+                    .state_publisher(api::topic::internal::new(cap).behavior().snapshot())
                     .await?,
                 event: ctx
-                    .publisher(api::topic::internal::new(cap).behavior().event())
+                    .state_publisher(api::topic::internal::new(cap).behavior().event())
                     .await?,
                 navigation_request: ctx
-                    .publisher(api::topic::new().navigation().request())
+                    .command_publisher(api::topic::new().navigation().request())
                     .await?,
-                power_command: ctx.publisher(api::topic::new().power().command()).await?,
+                power_command: ctx
+                    .command_publisher(api::topic::new().power().command())
+                    .await?,
             },
         ))
     }
 
     #[reset]
-    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
         self.execution = None;
         self.navigation_outcomes.clear();
         // Queued behavior requests and identity counters are host/operator
         // intent and process identity, not simulated-world projections.
-        self.last_time = LogicalTime::new(ctx.new_epoch(), 0);
         Ok(())
     }
 
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        self.last_time = step.time();
         while let Some(received) = api.navigation_result.try_recv() {
             self.navigation_outcomes
                 .insert(received.body.request_id.value, received.body.outcome);
         }
         while let Some(received) = api.command.try_recv() {
-            self.handle_command(api, received.body, step.time()).await?;
+            self.handle_command(api, received.body, step).await?;
         }
         while let Some(received) = api.request.try_recv() {
-            self.handle_request(api, received.body, step.time()).await?;
+            self.handle_request(api, received.body, step).await?;
         }
 
         // Keep the terminal snapshot observable while idle, but release it once
@@ -183,10 +179,10 @@ impl BehaviorService {
 
         if self.execution.is_none() {
             if let Some(root) = self.authoritative_root.clone() {
-                self.start_execution(api, root, BTreeMap::new(), step.time())
+                self.start_execution(api, root, BTreeMap::new(), step)
                     .await?;
             } else if let Some(request) = self.queued.pop_front() {
-                self.start_execution(api, request.behavior_id, request.args, step.time())
+                self.start_execution(api, request.behavior_id, request.args, step)
                     .await?;
             }
         }
@@ -207,7 +203,7 @@ impl BehaviorService {
                 .as_ref()
                 .is_some_and(|execution| execution.active_request.is_some())
         {
-            self.cancel_active_request(api, step.time()).await?;
+            self.cancel_active_request(api, step).await?;
         }
         if !world.manual_active
             && self.execution.as_ref().is_some_and(|execution| {
@@ -216,7 +212,7 @@ impl BehaviorService {
             })
             && let Some(request) = self.queued.pop_front()
         {
-            self.accept_request(api, request, step.time()).await?;
+            self.accept_request(api, request, step).await?;
         }
         let mut effects = Vec::new();
         let mut transitions = Vec::new();
@@ -237,7 +233,7 @@ impl BehaviorService {
                 execution,
                 &world,
                 &self.navigation_outcomes,
-                step.time().time_ns(),
+                step.now().ticks(),
                 &mut effects,
             )?;
             for (path, status) in &execution.node_statuses {
@@ -264,11 +260,11 @@ impl BehaviorService {
             }
         }
 
-        self.apply_effects(api, effects, step.time()).await?;
+        self.apply_effects(api, effects, step).await?;
         for (path, status) in transitions {
             self.publish_event(
                 api,
-                step.time(),
+                step,
                 api::behavior::EventKind::NodeTransition(status),
                 Some(path),
                 None,
@@ -285,7 +281,7 @@ impl BehaviorService {
         }) {
             self.publish_event(
                 api,
-                step.time(),
+                step,
                 api::behavior::EventKind::ExecutionCompleted,
                 None,
                 self.execution
@@ -297,7 +293,7 @@ impl BehaviorService {
                 execution.completion_published = true;
             }
         }
-        self.publish_observation(api, step.time()).await
+        self.publish_observation(api, step).await
     }
 
     #[shutdown]
@@ -315,17 +311,12 @@ impl BehaviorService {
                 None,
                 None,
             ));
-            self.publish_event(
-                api,
-                self.last_time,
-                api::behavior::EventKind::ExecutionAbandoned,
-                None,
-                self.execution
-                    .as_ref()
-                    .and_then(|execution| execution.failure.clone()),
-            )
-            .await?;
         }
+        // Shutdown is outside every step, so there is no instant to publish the
+        // abandonment event at. The state is recorded locally; consumers learn
+        // the execution stopped from the participant going silent, exactly as
+        // they would if the process were killed.
+        let _ = api;
         Ok(())
     }
 }
@@ -335,7 +326,7 @@ impl BehaviorService {
         &mut self,
         api: &Api,
         command: api::behavior::Command,
-        at: LogicalTime,
+        step: StepContext,
     ) -> Result<()> {
         if matches!(command, api::behavior::Command::Cancel)
             && self
@@ -343,7 +334,7 @@ impl BehaviorService {
                 .as_ref()
                 .is_some_and(|execution| execution.active_request.is_some())
         {
-            return self.cancel_active_request(api, at).await;
+            return self.cancel_active_request(api, step).await;
         }
         let Some(execution) = self.execution.as_mut() else {
             return Ok(());
@@ -369,7 +360,7 @@ impl BehaviorService {
                 ) =>
             {
                 for request_id in execution.navigation_requests.values() {
-                    publish_navigation_cancel(api, at, request_id.clone()).await?;
+                    publish_navigation_cancel(api, step.now(), request_id.clone()).await?;
                 }
                 execution.status = api::behavior::ExecutionStatus::Cancelled;
                 Some(api::behavior::EventKind::ExecutionCancelled)
@@ -377,7 +368,7 @@ impl BehaviorService {
             _ => None,
         };
         if let Some(kind) = kind {
-            self.publish_event(api, at, kind, None, None).await?;
+            self.publish_event(api, step, kind, None, None).await?;
         }
         Ok(())
     }
@@ -386,7 +377,7 @@ impl BehaviorService {
         &mut self,
         api: &Api,
         request: api::behavior::Request,
-        at: LogicalTime,
+        step: StepContext,
     ) -> Result<()> {
         let invalid = if request.request_id.value.trim().is_empty() {
             Some("request_id must not be empty".to_string())
@@ -400,7 +391,7 @@ impl BehaviorService {
         if let Some(detail) = invalid {
             self.publish_request_event(
                 api,
-                at,
+                step,
                 &request,
                 api::behavior::EventKind::RequestRejected(
                     api::behavior::FailureReason::InvalidArgument,
@@ -418,11 +409,12 @@ impl BehaviorService {
 
         if self.authoritative_root.is_some() && self.execution.is_none() {
             let root = self.authoritative_root.clone().expect("checked");
-            self.start_execution(api, root, BTreeMap::new(), at).await?;
+            self.start_execution(api, root, BTreeMap::new(), step)
+                .await?;
         }
 
         if self.authoritative_root.is_none() {
-            self.start_execution(api, request.behavior_id, request.args, at)
+            self.start_execution(api, request.behavior_id, request.args, step)
                 .await?;
             return Ok(());
         }
@@ -437,7 +429,7 @@ impl BehaviorService {
                 api::behavior::ConflictPolicy::Reject => {
                     self.publish_request_event(
                         api,
-                        at,
+                        step,
                         &request,
                         api::behavior::EventKind::RequestRejected(
                             api::behavior::FailureReason::ResourceConflict,
@@ -460,12 +452,12 @@ impl BehaviorService {
                     self.queued.insert(position, request);
                 }
                 api::behavior::ConflictPolicy::Interrupt => {
-                    self.cancel_active_request(api, at).await?;
-                    self.accept_request(api, request, at).await?;
+                    self.cancel_active_request(api, step).await?;
+                    self.accept_request(api, request, step).await?;
                 }
             }
         } else {
-            self.accept_request(api, request, at).await?;
+            self.accept_request(api, request, step).await?;
         }
         Ok(())
     }
@@ -475,7 +467,7 @@ impl BehaviorService {
         api: &Api,
         behavior_id: String,
         args: BTreeMap<String, api::behavior::Value>,
-        at: LogicalTime,
+        step: StepContext,
     ) -> Result<()> {
         let definition = self
             .catalog
@@ -489,7 +481,7 @@ impl BehaviorService {
             root_id: behavior_id,
             args,
             status: api::behavior::ExecutionStatus::Running,
-            started_at_ns: at.time_ns(),
+            started_at_ns: step.now().ticks(),
             node_statuses: BTreeMap::new(),
             node_started_at_ns: BTreeMap::new(),
             retry_counts: BTreeMap::new(),
@@ -500,7 +492,7 @@ impl BehaviorService {
         });
         self.publish_event(
             api,
-            at,
+            step,
             api::behavior::EventKind::ExecutionStarted,
             None,
             None,
@@ -512,7 +504,7 @@ impl BehaviorService {
         &mut self,
         api: &Api,
         request: api::behavior::Request,
-        at: LogicalTime,
+        step: StepContext,
     ) -> Result<()> {
         let active = ActiveRequest {
             request_id: request.request_id.clone(),
@@ -525,7 +517,7 @@ impl BehaviorService {
             .active_request = Some(active);
         self.publish_request_event(
             api,
-            at,
+            step,
             &request,
             api::behavior::EventKind::RequestAccepted,
             None,
@@ -533,7 +525,7 @@ impl BehaviorService {
         .await
     }
 
-    async fn cancel_active_request(&mut self, api: &Api, at: LogicalTime) -> Result<()> {
+    async fn cancel_active_request(&mut self, api: &Api, step: StepContext) -> Result<()> {
         let Some(execution) = self.execution.as_mut() else {
             return Ok(());
         };
@@ -542,11 +534,11 @@ impl BehaviorService {
         };
         let navigation = std::mem::take(&mut execution.navigation_requests);
         for request_id in navigation.into_values() {
-            publish_navigation_cancel(api, at, request_id).await?;
+            publish_navigation_cancel(api, step.now(), request_id).await?;
         }
         self.publish_request_outcome(
             api,
-            at,
+            step,
             active.request_id,
             active.behavior_id,
             api::behavior::ExecutionStatus::Cancelled,
@@ -559,28 +551,21 @@ impl BehaviorService {
         &mut self,
         api: &Api,
         effects: Vec<Effect>,
-        at: LogicalTime,
+        step: StepContext,
     ) -> Result<()> {
         for effect in effects {
             match effect {
                 Effect::Navigate { request_id, pose } => {
-                    api.navigation_request
-                        .publish_at(
-                            at,
-                            api::navigation::Request {
-                                request_id,
-                                kind: api::navigation::RequestKind::GotoPose(pose),
-                            },
-                        )
-                        .await?;
+                    api.navigation_request.send(api::navigation::Request {
+                        request_id,
+                        kind: api::navigation::RequestKind::GotoPose(pose),
+                    })?;
                 }
                 Effect::CancelNavigation(request_id) => {
-                    publish_navigation_cancel(api, at, request_id).await?;
+                    publish_navigation_cancel(api, step.now(), request_id).await?;
                 }
                 Effect::Shutdown => {
-                    api.power_command
-                        .publish_at(at, api::power::Command::Shutdown)
-                        .await?;
+                    api.power_command.send(api::power::Command::Shutdown)?;
                 }
                 Effect::CompleteRequest {
                     request_id,
@@ -599,15 +584,22 @@ impl BehaviorService {
                         execution.navigation_requests.clear();
                         execution.failure = None;
                     }
-                    self.publish_request_outcome(api, at, request_id, behavior_id, status, failure)
-                        .await?;
+                    self.publish_request_outcome(
+                        api,
+                        step,
+                        request_id,
+                        behavior_id,
+                        status,
+                        failure,
+                    )
+                    .await?;
                 }
             }
         }
         Ok(())
     }
 
-    async fn publish_observation(&self, api: &Api, at: LogicalTime) -> Result<()> {
+    async fn publish_observation(&self, api: &Api, step: StepContext) -> Result<()> {
         let execution = self.execution.as_ref();
         let root = execution.and_then(|execution| self.catalog.get(&execution.root_id));
         let active_request = execution.and_then(|execution| execution.active_request.as_ref());
@@ -616,55 +608,51 @@ impl BehaviorService {
                 (*status == api::behavior::NodeStatus::Running).then(|| path.clone())
             })
         });
-        api.state
-            .publish_at(
-                at,
-                api::behavior::State {
-                    execution_id: execution.map(|execution| execution.id.clone()),
-                    root_behavior_id: execution.map(|execution| execution.root_id.clone()),
-                    active_request_id: active_request.map(|active| active.request_id.clone()),
-                    active_behavior_id: active_request.map(|active| active.behavior_id.clone()),
-                    status: execution.map_or(api::behavior::ExecutionStatus::Idle, |execution| {
-                        execution.status
-                    }),
-                    active_node_path: active_node_path.clone(),
-                    failure: execution.and_then(|execution| execution.failure.clone()),
-                },
-            )
-            .await?;
-        api.snapshot
-            .publish_at(
-                at,
-                api::behavior::Snapshot {
-                    execution_id: execution.map(|execution| execution.id.clone()),
-                    root: root.map(definition_ref),
-                    definition_stack: root.into_iter().map(definition_ref).collect(),
-                    active_request_id: active_request.map(|active| active.request_id.clone()),
-                    active_behavior_id: active_request.map(|active| active.behavior_id.clone()),
-                    status: execution.map_or(api::behavior::ExecutionStatus::Idle, |execution| {
-                        execution.status
-                    }),
-                    node_statuses: execution
-                        .map_or_else(BTreeMap::new, |execution| execution.node_statuses.clone()),
-                    active_node_path,
-                    blackboard: BTreeMap::new(),
-                    args: active_request.map_or_else(
-                        || execution.map_or_else(BTreeMap::new, |execution| execution.args.clone()),
-                        |active| active.args.clone(),
-                    ),
-                    started_at_ns: execution.map(|execution| execution.started_at_ns),
-                    updated_at_ns: at.time_ns(),
-                    failure: execution.and_then(|execution| execution.failure.clone()),
-                },
-            )
-            .await?;
+        api.state.publish(
+            step.token(),
+            api::behavior::State {
+                execution_id: execution.map(|execution| execution.id.clone()),
+                root_behavior_id: execution.map(|execution| execution.root_id.clone()),
+                active_request_id: active_request.map(|active| active.request_id.clone()),
+                active_behavior_id: active_request.map(|active| active.behavior_id.clone()),
+                status: execution.map_or(api::behavior::ExecutionStatus::Idle, |execution| {
+                    execution.status
+                }),
+                active_node_path: active_node_path.clone(),
+                failure: execution.and_then(|execution| execution.failure.clone()),
+            },
+        )?;
+        api.snapshot.publish(
+            step.token(),
+            api::behavior::Snapshot {
+                execution_id: execution.map(|execution| execution.id.clone()),
+                root: root.map(definition_ref),
+                definition_stack: root.into_iter().map(definition_ref).collect(),
+                active_request_id: active_request.map(|active| active.request_id.clone()),
+                active_behavior_id: active_request.map(|active| active.behavior_id.clone()),
+                status: execution.map_or(api::behavior::ExecutionStatus::Idle, |execution| {
+                    execution.status
+                }),
+                node_statuses: execution
+                    .map_or_else(BTreeMap::new, |execution| execution.node_statuses.clone()),
+                active_node_path,
+                blackboard: BTreeMap::new(),
+                args: active_request.map_or_else(
+                    || execution.map_or_else(BTreeMap::new, |execution| execution.args.clone()),
+                    |active| active.args.clone(),
+                ),
+                started_at_ns: execution.map(|execution| execution.started_at_ns),
+                updated_at_ns: step.now().ticks(),
+                failure: execution.and_then(|execution| execution.failure.clone()),
+            },
+        )?;
         Ok(())
     }
 
     async fn publish_event(
         &mut self,
         api: &Api,
-        at: LogicalTime,
+        step: StepContext,
         kind: api::behavior::EventKind,
         node_path: Option<String>,
         failure: Option<api::behavior::Failure>,
@@ -673,37 +661,35 @@ impl BehaviorService {
         let definition = execution.and_then(|execution| self.catalog.get(&execution.root_id));
         let sequence = self.next_event;
         self.next_event = self.next_event.saturating_add(1);
-        api.event
-            .publish_at(
-                at,
-                api::behavior::Event {
-                    sequence,
-                    execution_id: execution.map(|execution| execution.id.clone()),
-                    request_id: None,
-                    behavior_id: definition.map(|definition| definition.authored.id.clone()),
-                    content_hash: definition.map(|definition| definition.content_hash.clone()),
-                    node_path,
-                    kind,
-                    failure,
-                    participant_id: "behavior".to_string(),
-                    logical_time_ns: at.time_ns(),
-                },
-            )
-            .await?;
+        api.event.publish(
+            step.token(),
+            api::behavior::Event {
+                sequence,
+                execution_id: execution.map(|execution| execution.id.clone()),
+                request_id: None,
+                behavior_id: definition.map(|definition| definition.authored.id.clone()),
+                content_hash: definition.map(|definition| definition.content_hash.clone()),
+                node_path,
+                kind,
+                failure,
+                participant_id: "behavior".to_string(),
+                logical_time_ns: step.now().ticks(),
+            },
+        )?;
         Ok(())
     }
 
     async fn publish_request_event(
         &mut self,
         api: &Api,
-        at: LogicalTime,
+        step: StepContext,
         request: &api::behavior::Request,
         kind: api::behavior::EventKind,
         failure: Option<api::behavior::Failure>,
     ) -> Result<()> {
         self.publish_request_event_parts(
             api,
-            at,
+            step,
             request.request_id.clone(),
             request.behavior_id.clone(),
             kind,
@@ -715,7 +701,7 @@ impl BehaviorService {
     async fn publish_request_outcome(
         &mut self,
         api: &Api,
-        at: LogicalTime,
+        step: StepContext,
         request_id: api::behavior::RequestId,
         behavior_id: String,
         status: api::behavior::ExecutionStatus,
@@ -723,7 +709,7 @@ impl BehaviorService {
     ) -> Result<()> {
         self.publish_request_event_parts(
             api,
-            at,
+            step,
             request_id,
             behavior_id,
             api::behavior::EventKind::RequestCompleted(status),
@@ -735,7 +721,7 @@ impl BehaviorService {
     async fn publish_request_event_parts(
         &mut self,
         api: &Api,
-        at: LogicalTime,
+        step: StepContext,
         request_id: api::behavior::RequestId,
         behavior_id: String,
         kind: api::behavior::EventKind,
@@ -751,23 +737,21 @@ impl BehaviorService {
             .catalog
             .get(&behavior_id)
             .map(|definition| definition.content_hash.clone());
-        api.event
-            .publish_at(
-                at,
-                api::behavior::Event {
-                    sequence,
-                    execution_id,
-                    request_id: Some(request_id),
-                    behavior_id: Some(behavior_id),
-                    content_hash,
-                    node_path: None,
-                    kind,
-                    failure,
-                    participant_id: "behavior".to_string(),
-                    logical_time_ns: at.time_ns(),
-                },
-            )
-            .await?;
+        api.event.publish(
+            step.token(),
+            api::behavior::Event {
+                sequence,
+                execution_id,
+                request_id: Some(request_id),
+                behavior_id: Some(behavior_id),
+                content_hash,
+                node_path: None,
+                kind,
+                failure,
+                participant_id: "behavior".to_string(),
+                logical_time_ns: step.now().ticks(),
+            },
+        )?;
         Ok(())
     }
 }
@@ -1276,20 +1260,15 @@ fn json_to_binding(value: &serde_json::Value, kind: ValueType) -> Result<api::be
 
 async fn publish_navigation_cancel(
     api: &Api,
-    at: LogicalTime,
+    at: RobotInstant,
     target: api::navigation::RequestId,
 ) -> Result<()> {
-    api.navigation_request
-        .publish_at(
-            at,
-            api::navigation::Request {
-                request_id: api::navigation::RequestId {
-                    value: format!("cancel-{}-{}", target.value, at.time_ns()),
-                },
-                kind: api::navigation::RequestKind::Cancel(target),
-            },
-        )
-        .await?;
+    api.navigation_request.send(api::navigation::Request {
+        request_id: api::navigation::RequestId {
+            value: format!("cancel-{}-{}", target.value, at.ticks()),
+        },
+        kind: api::navigation::RequestKind::Cancel(target),
+    })?;
     Ok(())
 }
 

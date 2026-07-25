@@ -24,8 +24,8 @@ use crate::util::phoxal;
 // shared: canonical-syntactic-form field classification (Publish/Subscribe/Serve)
 // ---------------------------------------------------------------------------
 
-/// A handle field's declared role(s): `Publisher<T>`/`Subscriber<T>`/
-/// `Latest<T>`/`Server<Req, Resp>`/`Querier<Req, Resp>`.
+/// A handle field's declared role(s): one of the four role-gated publishers,
+/// `Subscriber<T>`/`Latest<T>`, `Server<Req, Resp>`, or `Querier<Req, Resp>`.
 #[allow(clippy::large_enum_variant)] // transient macro-internal AST holder
 enum ApiDecl {
     Publish(Type),
@@ -43,7 +43,11 @@ fn classify_api_field(ty: &Type) -> Option<Vec<ApiDecl>> {
     let name = seg.ident.to_string();
 
     match name.as_str() {
-        "Publisher" => Some(vec![ApiDecl::Publish(generic_type(seg, 0)?)]),
+        // The four publisher handles differ in the robot time they may express
+        // (#952 section D); all four declare the same publish contract role.
+        "StatePublisher" | "MeasurementPublisher" | "CommandPublisher" | "DiagnosticPublisher" => {
+            Some(vec![ApiDecl::Publish(generic_type(seg, 0)?)])
+        }
         "Subscriber" | "Latest" => Some(vec![ApiDecl::Subscribe(generic_type(seg, 0)?)]),
         "Server" => Some(vec![ApiDecl::Serve {
             req: generic_type(seg, 0)?,
@@ -101,11 +105,16 @@ fn json_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// Parse the `#[phoxal(external)]` and `#[phoxal(epoch_agnostic)]` field
-/// helpers, rejecting unknown keys instead of silently ignoring a typo.
-fn parse_field_attrs(field: &syn::Field) -> syn::Result<(bool, bool)> {
+/// Parse the `#[phoxal(external)]` field helper, rejecting unknown keys instead
+/// of silently ignoring a typo.
+///
+/// There is deliberately no timeline opt-out any more: a contract that must
+/// survive a world replacement is one that expresses no robot time, and the
+/// temporal role already says so, so the quarantine never sees it (#952 section
+/// C). An author cannot get that classification wrong by forgetting an
+/// attribute.
+fn parse_field_attrs(field: &syn::Field) -> syn::Result<bool> {
     let mut external = false;
-    let mut epoch_agnostic = false;
     for attr in &field.attrs {
         if !attr.path().is_ident("phoxal") {
             continue;
@@ -114,17 +123,13 @@ fn parse_field_attrs(field: &syn::Field) -> syn::Result<(bool, bool)> {
             if meta.path.is_ident("external") {
                 external = true;
                 Ok(())
-            } else if meta.path.is_ident("epoch_agnostic") {
-                epoch_agnostic = true;
-                Ok(())
             } else {
-                Err(meta.error(
-                    "unknown #[phoxal(...)] key on an `Api` field (expected `external` or `epoch_agnostic`)",
-                ))
+                Err(meta
+                    .error("unknown #[phoxal(...)] key on an `Api` field (expected `external`)"))
             }
         })?;
     }
-    Ok((external, epoch_agnostic))
+    Ok(external)
 }
 
 /// The compile error raised when `#[phoxal(external)]` is used on a
@@ -295,7 +300,7 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     // `Resp` individually.
     let mut seen_declares = std::collections::BTreeSet::<String>::new();
     let mut declare_impls = Vec::new();
-    let mut epoch_sensitive_field_names = Vec::new();
+    let mut subscribe_field_names = Vec::new();
     let phoxal_for_declares = phoxal();
     let mut declare = |key: String, tokens: TokenStream| {
         if seen_declares.insert(key) {
@@ -309,22 +314,16 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
         let Some(decls) = classify_api_field(&field.ty) else {
             return Err(syn::Error::new_spanned(
                 &field.ty,
-                "unsupported #[derive(phoxal::Api)] field type; expected Publisher, Subscriber, Querier, Server, or a supported collection wrapper",
+                "unsupported #[derive(phoxal::Api)] field type; expected StatePublisher, MeasurementPublisher, CommandPublisher, DiagnosticPublisher, Subscriber, Latest, Querier, Server, or a supported collection wrapper",
             ));
         };
         let field_span = field.span();
-        let (field_external, epoch_agnostic) = parse_field_attrs(field)?;
-        let subscribes = decls
+        let field_external = parse_field_attrs(field)?;
+        if decls
             .iter()
-            .any(|decl| matches!(decl, ApiDecl::Subscribe(_)));
-        if epoch_agnostic && !subscribes {
-            return Err(syn::Error::new_spanned(
-                field,
-                "#[phoxal(epoch_agnostic)] is only valid on Subscriber/Latest fields",
-            ));
-        }
-        if subscribes && !epoch_agnostic {
-            epoch_sensitive_field_names.push(
+            .any(|decl| matches!(decl, ApiDecl::Subscribe(_)))
+        {
+            subscribe_field_names.push(
                 field
                     .ident
                     .as_ref()
@@ -442,12 +441,12 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                 #(#contract_entries),*
             ];
 
-            fn __retain_epoch(&self, epoch: u64) {
-                let _ = epoch;
+            fn __retain_timeline(&self, timeline: #phoxal::bus::TimelineId) {
+                let _ = timeline;
                 #(
-                    #phoxal::participant::api::EpochSensitiveApiField::__retain_epoch(
-                        &self.#epoch_sensitive_field_names,
-                        epoch,
+                    #phoxal::participant::api::TimelineScopedApiField::__retain_timeline(
+                        &self.#subscribe_field_names,
+                        timeline,
                     );
                 )*
             }

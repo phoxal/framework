@@ -1,4 +1,4 @@
-error: unsupported #[derive(phoxal::Api)] field type; expected Publisher, Subscriber, Querier, Server, or a supported collection wrapper
+error: unsupported #[derive(phoxal::Api)] field type; expected StatePublisher, MeasurementPublisher, CommandPublisher, DiagnosticPublisher, Subscriber, Latest, Querier, Server, or a supported collection wrapper
  --> tests/trybuild/fail/unsupported_api_field.rs:5:31
   |
 5 |     ignored_before_issue_941: String,

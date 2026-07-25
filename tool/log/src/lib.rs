@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal::raw::{Codec, MessagePack, Publisher, QueryFailure, Subscriber, host_time};
+use phoxal::raw::{Codec, DiagnosticPublisher, MessagePack, QueryFailure, Subscriber};
 
 const RETAINED_LOG_EVENTS: usize = 1_000;
 const INGEST_QUEUE_DEPTH: usize = 1_024;
@@ -38,7 +38,7 @@ impl ToolLog {
             INGEST_QUEUE_DEPTH,
         )
         .await?;
-        let follow = Publisher::new(
+        let follow = DiagnosticPublisher::new(
             bus.clone(),
             &api::topic::internal::new(cap).tool().log().follow(),
         )?;
@@ -62,7 +62,7 @@ impl ToolLog {
                             return;
                         }
                     };
-                    let participant_id = received.metadata.source.participant;
+                    let participant_id = received.metadata.participant;
                     // This is the subscription-local cumulative count, not the
                     // aggregate BusHealth counter. Every retained item and
                     // snapshot therefore exposes any loss before this receive.
@@ -73,7 +73,7 @@ impl ToolLog {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .ingest(participant_id, received.body, ingest_dropped)
                     };
-                    if let Err(error) = follow.publish_at(host_time(), item).await {
+                    if let Err(error) = follow.publish(item) {
                         // This target is filtered by the runner's bus-log layer,
                         // preventing a failed follow publish from recursively
                         // creating another retained log.

@@ -1,14 +1,13 @@
 //! The step scheduler (D34/#09): split "time reading" from "tick release".
 //!
 //! [`ClockSource`](crate::participant::clock::ClockSource) answers "what time is
-//! it", and every produced timestamp is stamped from it. [`StepScheduler`]
+//! it", and every produced instant is read from it. [`StepScheduler`]
 //! answers a different question: "when should the next `#[step]` tick fire".
-//! Real mode answers that from wall time (unchanged behavior); a true
-//! simulation clock instead releases ticks only when the authoritative
-//! `simulation/clock` (owned by the `Simulator` kind, decisions.md D1) advances
-//! logical time. Without this split, simulated time could label samples but
-//! could never drive the loop - the runner would still free-run on the wall
-//! clock underneath a "simulated" label.
+//! Real mode answers that from the host monotonic clock, never from a bus
+//! message; a simulation clock instead releases ticks only when the world
+//! authority advances robot time. Without this split, simulated time could
+//! label samples but could never drive the loop - the runner would still
+//! free-run on the host clock underneath a "simulated" label.
 //!
 //! Three schedulers are shipped or scoped here:
 //!
@@ -25,9 +24,9 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use crate::bus::LogicalTime;
+use crate::bus::{RobotInstant, TimelineId};
 use crate::participant::spec::MissedTick;
-use phoxal_bus::RetiredEpochs;
+use phoxal_bus::RetiredTimelines;
 
 pub(crate) fn duration_to_nanos_saturating(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
@@ -42,9 +41,9 @@ pub(crate) fn duration_to_nanos_saturating(duration: Duration) -> u64 {
 /// far the external logical-time feed jumped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SchedulerTick {
-    /// The logical time the tick fired at (`>= target`, modulo the scheduler's
-    /// own clamping/collapse policy).
-    pub fired_at: LogicalTime,
+    /// The robot instant the tick fired at (`>= target`, modulo the
+    /// scheduler's own clamping/collapse policy).
+    pub fired_at: RobotInstant,
     /// How many additional ticks were collapsed into this one after an
     /// overrun (0 when the tick fired on time). Under
     /// [`MissedTick::Collapse`] this is "how many periods were skipped", never
@@ -64,74 +63,70 @@ pub struct SchedulerTick {
 pub trait StepScheduler: Send + Sync + 'static {
     /// Wait until the tick logically due at `target` should release, applying
     /// the scheduler's missed-tick policy, and report what actually happened.
-    async fn wait_until(&self, target: LogicalTime) -> SchedulerTick;
+    async fn wait_until(&self, target: RobotInstant) -> SchedulerTick;
 
-    /// The scheduler's own view of "now", in the same logical-time domain as
-    /// [`SchedulerTick::fired_at`]. For [`RealScheduler`] this agrees with the
-    /// wall clock; for [`SimulationScheduler`] it is the last logical time
-    /// observed from the feed.
-    fn now(&self) -> LogicalTime;
+    /// The scheduler's own view of "now", on the same timeline as
+    /// [`SchedulerTick::fired_at`]. For [`RealScheduler`] this tracks the host
+    /// clock; for [`SimulationScheduler`] it is the last instant observed from
+    /// the feed, or `None` before any world history exists.
+    fn now(&self) -> Option<RobotInstant>;
 }
 
 /// Wall-clock scheduler: wraps [`tokio::time::Instant`] sleeps. This is the
 /// default and must reproduce the runner's pre-#09 cadence/collapse behavior
 /// exactly - real mode is not allowed to regress.
 ///
-/// `LogicalTime` has no wall-clock unit of its own (D34: it is an
-/// epoch + a nanosecond counter in whatever domain the active `ClockSource`
-/// defines), so [`RealScheduler`] tracks the wall-time deadline internally as
-/// a [`tokio::time::Instant`] and only translates to/from `LogicalTime` at the
-/// edges (`wait_until`'s `target`/`fired_at`, `now()`). The nanosecond value
-/// carried by `LogicalTime` is assumed to be wall-clock nanoseconds in real
-/// mode (true for [`RealClock`](crate::participant::clock::RealClock), the
-/// only `ClockSource` real mode ships with).
+/// A [`RobotInstant`] carries no wall-clock unit of its own, so
+/// [`RealScheduler`] tracks the deadline internally as a
+/// [`tokio::time::Instant`] and only translates at the edges (`wait_until`'s
+/// `target`/`fired_at`, `now()`). Real cadence therefore never waits on a bus
+/// message (#952 section I).
 pub struct RealScheduler {
     missed_tick: MissedTick,
     /// The nominal step period, needed to collapse a multi-period overrun
     /// into a single released tick (see [`Self::wait_until`]). `None` when the
     /// participant has no `#[step]` schedule at all.
     period: Option<Duration>,
-    epoch: u64,
+    timeline: TimelineId,
     started_at: tokio::time::Instant,
-    started_ns: u64,
+    started_ticks: u64,
 }
 
 impl RealScheduler {
-    /// A real scheduler anchored to `now` (the epoch/time the runner's clock
+    /// A real scheduler anchored to `now` (the instant the runner's clock
     /// reports at start), running `period` and applying `missed_tick` after an
     /// overrun. `period` is `None` for a step-less participant, in which case
     /// [`Self::wait_until`] is never called by the runner.
-    pub fn new(missed_tick: MissedTick, period: Option<Duration>, now: LogicalTime) -> Self {
+    pub fn new(missed_tick: MissedTick, period: Option<Duration>, now: RobotInstant) -> Self {
         RealScheduler {
             missed_tick,
             period,
-            epoch: now.epoch(),
+            timeline: now.timeline(),
             started_at: tokio::time::Instant::now(),
-            started_ns: now.time_ns(),
+            started_ticks: now.ticks(),
         }
     }
 
-    /// Convert a `LogicalTime` in this scheduler's epoch to the equivalent
-    /// wall-clock `Instant`, anchored at construction.
-    fn instant_for(&self, target: LogicalTime) -> tokio::time::Instant {
-        let delta_ns = target.time_ns().saturating_sub(self.started_ns);
+    /// Convert an instant on this scheduler's timeline to the equivalent host
+    /// `Instant`, anchored at construction.
+    fn instant_for(&self, target: RobotInstant) -> tokio::time::Instant {
+        let delta_ns = target.ticks().saturating_sub(self.started_ticks);
         self.started_at + Duration::from_nanos(delta_ns)
     }
 
-    /// Convert a wall-clock `Instant` back to this scheduler's `LogicalTime`
-    /// domain.
-    fn logical_for(&self, instant: tokio::time::Instant) -> LogicalTime {
+    /// Convert a host `Instant` back onto this scheduler's timeline.
+    fn robot_instant_for(&self, instant: tokio::time::Instant) -> RobotInstant {
         let elapsed = instant.saturating_duration_since(self.started_at);
-        LogicalTime::new(
-            self.epoch,
-            self.started_ns
+        RobotInstant::new(
+            self.timeline,
+            self.started_ticks
                 .saturating_add(duration_to_nanos_saturating(elapsed)),
         )
     }
 }
 
 impl StepScheduler for RealScheduler {
-    async fn wait_until(&self, target: LogicalTime) -> SchedulerTick {
+    async fn wait_until(&self, target: RobotInstant) -> SchedulerTick {
         let deadline = self.instant_for(target);
         tokio::time::sleep_until(deadline).await;
 
@@ -154,33 +149,33 @@ impl StepScheduler for RealScheduler {
         }
 
         SchedulerTick {
-            fired_at: self.logical_for(tokio::time::Instant::now()),
+            fired_at: self.robot_instant_for(tokio::time::Instant::now()),
             missed_ticks,
         }
     }
 
-    fn now(&self) -> LogicalTime {
-        self.logical_for(tokio::time::Instant::now())
+    fn now(&self) -> Option<RobotInstant> {
+        Some(self.robot_instant_for(tokio::time::Instant::now()))
     }
 }
 
-/// Simulation scheduler: releases ticks from **logical** time advanced by an
-/// external source, never a real sleep.
+/// Simulation scheduler: releases ticks from **robot** time advanced by the
+/// world authority, never a real sleep.
 ///
 /// # The live seam
 ///
-/// The Webots controller is the authoritative owner of the
+/// The simulation controller is the authoritative owner of the
 /// `simulation/clock` state topic.
 /// In simulation mode the participant runner subscribes that topic through
-/// `spawn_simulation_clock_feed` and forwards each observed `LogicalTime` into
-/// this scheduler through [`SimulationClockHandle::advance`].
+/// `spawn_simulation_clock_feed` and forwards each observed [`RobotInstant`]
+/// into this scheduler through [`SimulationClockHandle::advance`].
 /// Tests drive the same handle directly, so live and deterministic test paths
 /// share the scheduler boundary.
 ///
 /// # Determinism
 ///
 /// [`SimulationScheduler::wait_until`] never sleeps on a wall-clock timer: it
-/// awaits a [`tokio::sync::watch`] change, so a test drives logical time
+/// awaits a [`tokio::sync::watch`] change, so a test drives robot time
 /// forward with [`SimulationClockHandle::advance`] and gets deterministic tick
 /// order with no real waiting. Clock silence is the only pause signal.
 pub struct SimulationScheduler {
@@ -193,13 +188,13 @@ pub struct SimulationScheduler {
     /// external `simulation/clock` feed yet. Without this, dropping the
     /// returned handle would close the channel and make waits resolve
     /// immediately instead of waiting for logical time.
-    _tx_keepalive: watch::Sender<LogicalTime>,
-    rx: watch::Receiver<LogicalTime>,
+    _tx_keepalive: watch::Sender<Option<RobotInstant>>,
+    rx: watch::Receiver<Option<RobotInstant>>,
 }
 
 struct SimulationClockState {
-    current: LogicalTime,
-    retired_epochs: RetiredEpochs,
+    current: Option<RobotInstant>,
+    retired_timelines: RetiredTimelines,
 }
 
 /// Result of applying one clock sample to a simulation scheduler.
@@ -208,8 +203,7 @@ struct SimulationClockState {
 pub enum SimulationClockAdvance {
     Advanced,
     DuplicateOrBackward,
-    RetiredEpoch,
-    ReservedEpoch,
+    RetiredTimeline,
 }
 
 /// A cloneable handle that advances the logical time a
@@ -222,35 +216,36 @@ pub enum SimulationClockAdvance {
 /// sleeping.
 #[derive(Clone)]
 pub struct SimulationClockHandle {
-    tx: watch::Sender<LogicalTime>,
+    tx: watch::Sender<Option<RobotInstant>>,
     state: std::sync::Arc<std::sync::Mutex<SimulationClockState>>,
 }
 
 impl SimulationClockHandle {
-    /// Advance the observed logical time to `time`. A no-op (time does not
-    /// move forwards within the active epoch) if `time` is duplicate or
-    /// backwards. Any new opaque epoch replaces the active execution,
-    /// regardless of numeric value; recently retired epochs are ignored so an
-    /// in-flight clock from a dead controller cannot reactivate old state.
-    pub fn advance(&self, time: LogicalTime) -> SimulationClockAdvance {
-        if time.epoch() == 0 {
-            return SimulationClockAdvance::ReservedEpoch;
-        }
+    /// Advance the observed robot time to `at`. A no-op if `at` is a duplicate
+    /// or backwards within the active timeline. Any different timeline replaces
+    /// the active world history, since timelines are opaque identities with no
+    /// generation order; recently retired timelines are ignored so an in-flight
+    /// clock from a dead controller cannot reactivate old state.
+    pub fn advance(&self, at: RobotInstant) -> SimulationClockAdvance {
         let mut state = self.state.lock().expect("simulation clock mutex poisoned");
-        if time.epoch() == state.current.epoch() {
-            if time.time_ns() <= state.current.time_ns() {
-                return SimulationClockAdvance::DuplicateOrBackward;
+        match state.current {
+            Some(current) if current.timeline() == at.timeline() => {
+                if at.ticks() <= current.ticks() {
+                    return SimulationClockAdvance::DuplicateOrBackward;
+                }
             }
-        } else {
-            if state.retired_epochs.contains(time.epoch()) {
-                return SimulationClockAdvance::RetiredEpoch;
+            current => {
+                if state.retired_timelines.contains(at.timeline()) {
+                    return SimulationClockAdvance::RetiredTimeline;
+                }
+                if let Some(previous) = current {
+                    state.retired_timelines.retire(previous.timeline());
+                }
+                state.retired_timelines.activate(at.timeline());
             }
-            let previous_epoch = state.current.epoch();
-            state.retired_epochs.retire(previous_epoch);
-            state.retired_epochs.activate(time.epoch());
         }
-        state.current = time;
-        self.tx.send_replace(time);
+        state.current = Some(at);
+        self.tx.send_replace(Some(at));
         SimulationClockAdvance::Advanced
     }
 }
@@ -263,12 +258,11 @@ impl SimulationScheduler {
     /// [`RealScheduler`]'s behavior for a wall-clock overrun. `period` is
     /// `None` for a step-less participant, in which case [`Self::wait_until`]
     /// is never called by the runner.
-    pub fn new(
-        missed_tick: MissedTick,
-        period: Option<Duration>,
-        start: LogicalTime,
-    ) -> (Self, SimulationClockHandle) {
-        let (tx, rx) = watch::channel(start);
+    pub fn new(missed_tick: MissedTick, period: Option<Duration>) -> (Self, SimulationClockHandle) {
+        // There is no world history until the authority publishes one. Seeding
+        // an invented instant here is exactly the `(0, 0)` sentinel this train
+        // deletes.
+        let (tx, rx) = watch::channel(None);
         let scheduler = SimulationScheduler {
             missed_tick,
             period,
@@ -278,70 +272,68 @@ impl SimulationScheduler {
         let handle = SimulationClockHandle {
             tx,
             state: std::sync::Arc::new(std::sync::Mutex::new(SimulationClockState {
-                current: start,
-                retired_epochs: RetiredEpochs::default(),
+                current: None,
+                retired_timelines: RetiredTimelines::default(),
             })),
         };
         (scheduler, handle)
     }
 
     /// A [`SimulationClock`](crate::participant::clock::SimulationClock) that
-    /// observes the same logical-time feed this scheduler releases ticks from.
-    /// The runner uses it as the timestamp source in simulation mode so
-    /// `#[step]` release time and stamped `produced_at_ns` never diverge.
+    /// observes the same feed this scheduler releases ticks from. The runner
+    /// uses it as the instant source in simulation mode so `#[step]` release
+    /// time and stamped production time never diverge.
     pub(crate) fn simulation_clock(&self) -> crate::participant::clock::SimulationClock {
         crate::participant::clock::SimulationClock::from_receiver(self.rx.clone())
     }
 
-    fn missed_ticks(&self, target: LogicalTime, current: LogicalTime) -> u32 {
+    fn missed_ticks(&self, target: RobotInstant, current: RobotInstant) -> u32 {
         let (MissedTick::Collapse, Some(period)) = (self.missed_tick, self.period) else {
             return 0;
         };
-        if current.epoch() != target.epoch() || current.time_ns() <= target.time_ns() {
+        let Ok(overrun) = current.duration_since(target) else {
             return 0;
-        }
-
+        };
         let period_ns = duration_to_nanos_saturating(period);
         if period_ns == 0 {
             return 0;
         }
-
-        let overrun_ns = current.time_ns().saturating_sub(target.time_ns());
-        u32::try_from(overrun_ns / period_ns).unwrap_or(u32::MAX)
+        u32::try_from(duration_to_nanos_saturating(overrun) / period_ns).unwrap_or(u32::MAX)
     }
 }
 
 impl StepScheduler for SimulationScheduler {
-    async fn wait_until(&self, target: LogicalTime) -> SchedulerTick {
+    async fn wait_until(&self, target: RobotInstant) -> SchedulerTick {
         let mut rx = self.rx.clone();
         loop {
-            let current = *rx.borrow_and_update();
-            if current.epoch() != target.epoch() || current.time_ns() >= target.time_ns() {
-                // Collapse policy (D34): when the feed had already advanced
-                // past `target` (by one or more whole periods) before we even
-                // started waiting, fire once and report how many periods were
-                // skipped, rather than the runner replaying each one - the
-                // same "no catch-up storm" behavior as `RealScheduler`'s
-                // wall-clock overrun.
-                let missed_ticks = self.missed_ticks(target, current);
-                return SchedulerTick {
-                    fired_at: current,
-                    missed_ticks,
-                };
+            if let Some(current) = *rx.borrow_and_update() {
+                let reached = current.timeline() != target.timeline()
+                    || current
+                        .checked_cmp(target)
+                        .is_ok_and(|order| order != std::cmp::Ordering::Less);
+                if reached {
+                    // Collapse policy (D34): when the feed had already advanced
+                    // past `target` (by one or more whole periods) before we
+                    // even started waiting, fire once and report how many
+                    // periods were skipped, rather than the runner replaying
+                    // each one - the same "no catch-up storm" behavior as
+                    // `RealScheduler`'s overrun handling.
+                    return SchedulerTick {
+                        fired_at: current,
+                        missed_ticks: self.missed_ticks(target, current),
+                    };
+                }
             }
             if rx.changed().await.is_err() {
                 // `SimulationScheduler` owns a sender keepalive, so this is
-                // only defensive for future constructors: report the last
-                // known time rather than hang on a closed feed.
-                return SchedulerTick {
-                    fired_at: *rx.borrow_and_update(),
-                    missed_ticks: 0,
-                };
+                // only defensive for future constructors: never release a tick
+                // for a world history that does not exist.
+                return std::future::pending().await;
             }
         }
     }
 
-    fn now(&self) -> LogicalTime {
+    fn now(&self) -> Option<RobotInstant> {
         *self.rx.borrow()
     }
 }
@@ -366,8 +358,8 @@ impl AnyStepScheduler {
     /// Subscribe to logical-time changes when this is a simulation scheduler.
     ///
     /// The runner uses this independently of the optional step cadence so
-    /// epoch replacement is still observed by clocked, step-less services.
-    pub(crate) fn simulation_time_receiver(&self) -> Option<watch::Receiver<LogicalTime>> {
+    /// timeline replacement is still observed by clocked, step-less services.
+    pub(crate) fn simulation_time_receiver(&self) -> Option<watch::Receiver<Option<RobotInstant>>> {
         match self {
             AnyStepScheduler::Real(_) => None,
             AnyStepScheduler::Simulation(scheduler) => Some(scheduler.rx.clone()),
@@ -376,14 +368,14 @@ impl AnyStepScheduler {
 }
 
 impl StepScheduler for AnyStepScheduler {
-    async fn wait_until(&self, target: LogicalTime) -> SchedulerTick {
+    async fn wait_until(&self, target: RobotInstant) -> SchedulerTick {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.wait_until(target).await,
             AnyStepScheduler::Simulation(scheduler) => scheduler.wait_until(target).await,
         }
     }
 
-    fn now(&self) -> LogicalTime {
+    fn now(&self) -> Option<RobotInstant> {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.now(),
             AnyStepScheduler::Simulation(scheduler) => scheduler.now(),
@@ -393,10 +385,25 @@ impl StepScheduler for AnyStepScheduler {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
 
-    fn lt(ns: u64) -> LogicalTime {
-        LogicalTime::new(1, ns)
+    /// One fixed timeline for the scheduler tests, so `lt` reads like the
+    /// nanosecond counter these tests actually care about.
+    fn line() -> TimelineId {
+        TimelineId::from_raw(1).expect("test timeline must be nonzero")
+    }
+
+    fn lt(ticks: u64) -> RobotInstant {
+        RobotInstant::new(line(), ticks)
+    }
+
+    fn other(ticks: u64) -> RobotInstant {
+        RobotInstant::new(
+            TimelineId::from_raw(2).expect("test timeline must be nonzero"),
+            ticks,
+        )
     }
 
     /// The nominal step period for `RealScheduler` tests, which sleep on real
@@ -404,8 +411,8 @@ mod tests {
     const PERIOD: Duration = Duration::from_millis(10);
 
     /// The nominal step period for `SimulationScheduler` tests, expressed in
-    /// the same tiny-nanosecond `LogicalTime` units those tests use (they
-    /// never touch the wall clock, so the unit is arbitrary).
+    /// the same tiny-tick units those tests use (they never touch the host
+    /// clock, so the scale is arbitrary).
     const SIM_PERIOD: Duration = Duration::from_nanos(10);
 
     #[tokio::test(start_paused = true)]
@@ -417,7 +424,7 @@ mod tests {
         let tick = scheduler.wait_until(lt(period_ns)).await;
 
         assert_eq!(tick.missed_ticks, 0);
-        assert!(tick.fired_at.time_ns() >= period_ns);
+        assert!(tick.fired_at.ticks() >= period_ns);
         assert!(start.elapsed() >= PERIOD);
     }
 
@@ -444,70 +451,66 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_scheduler_releases_ticks_in_order_deterministically() {
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
 
         let mut fired = Vec::new();
         for step in 1..=5u64 {
             let target = lt(step * 10);
-            // Drive logical time forward from a concurrent task, exactly like
-            // a future `simulation/clock` bus subscriber would.
+            // Drive robot time forward from a concurrent task, exactly like
+            // the live `simulation/clock` subscriber does.
             let handle = handle.clone();
-            let advance_target = target;
-            let advancer = tokio::spawn(async move { handle.advance(advance_target) });
+            let advancer = tokio::spawn(async move { handle.advance(target) });
             let tick = scheduler.wait_until(target).await;
             advancer.await.unwrap();
-            fired.push(tick.fired_at.time_ns());
+            fired.push(tick.fired_at.ticks());
         }
 
         assert_eq!(fired, vec![10, 20, 30, 40, 50]);
     }
 
     #[test]
-    fn simulation_epoch_replacement_is_equality_only_in_both_numeric_directions() {
-        let (scheduler, handle) = SimulationScheduler::new(
-            MissedTick::Collapse,
-            Some(SIM_PERIOD),
-            LogicalTime::new(5, 100),
+    fn a_scheduler_with_no_world_history_yet_reports_no_time_rather_than_zero() {
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
+        assert_eq!(
+            scheduler.now(),
+            None,
+            "before the authority publishes, there is no world history at all"
         );
+        handle.advance(lt(10));
+        assert_eq!(scheduler.now(), Some(lt(10)));
+    }
+
+    #[test]
+    fn timeline_replacement_is_equality_only_with_no_generation_order() {
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
+
+        assert_eq!(handle.advance(lt(100)), SimulationClockAdvance::Advanced);
+        // A different timeline replaces the active one regardless of any
+        // numeric relationship: identities are opaque.
+        assert_eq!(handle.advance(other(0)), SimulationClockAdvance::Advanced);
+        assert_eq!(scheduler.now(), Some(other(0)));
 
         assert_eq!(
-            handle.advance(LogicalTime::new(2, 0)),
-            SimulationClockAdvance::Advanced
-        );
-        assert_eq!(scheduler.now(), LogicalTime::new(2, 0));
-        assert_eq!(
-            handle.advance(LogicalTime::new(9, 0)),
-            SimulationClockAdvance::Advanced
-        );
-        assert_eq!(scheduler.now(), LogicalTime::new(9, 0));
-
-        assert_eq!(
-            handle.advance(LogicalTime::new(2, 1)),
-            SimulationClockAdvance::RetiredEpoch,
-            "a late clock from the retired execution must not reactivate it"
+            handle.advance(lt(101)),
+            SimulationClockAdvance::RetiredTimeline,
+            "a late clock from the retired world must not reactivate it"
         );
         assert_eq!(
-            handle.advance(LogicalTime::new(9, 0)),
+            handle.advance(other(0)),
             SimulationClockAdvance::DuplicateOrBackward
         );
         assert_eq!(
-            handle.advance(LogicalTime::new(0, 1)),
-            SimulationClockAdvance::ReservedEpoch
-        );
-        assert_eq!(
             scheduler.now(),
-            LogicalTime::new(9, 0),
-            "duplicate and same-epoch non-forward samples are ignored"
+            Some(other(0)),
+            "duplicate and same-timeline non-forward samples are ignored"
         );
     }
 
     #[tokio::test]
     async fn simulation_scheduler_never_sleeps_on_a_wall_clock_timer() {
         // No `start_paused`/`tokio::time::advance` needed: the scheduler must
-        // resolve purely from the logical-time feed, with no real waiting.
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
+        // resolve purely from the world-authority feed, with no real waiting.
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
         handle.advance(lt(100));
 
         let started = std::time::Instant::now();
@@ -523,8 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_scheduler_releases_when_advance_happened_before_wait() {
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
 
         handle.advance(lt(30));
         let tick = tokio::time::timeout(Duration::from_millis(50), scheduler.wait_until(lt(20)))
@@ -537,14 +539,13 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_scheduler_does_not_miss_racing_advance_after_pending_poll() {
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
 
         let wait = scheduler.wait_until(lt(10));
         tokio::pin!(wait);
         assert!(
             poll_once(wait.as_mut()).is_none(),
-            "wait should pend before logical time reaches the target"
+            "wait should pend before robot time reaches the target"
         );
 
         handle.advance(lt(10));
@@ -557,8 +558,7 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_scheduler_keeps_waiting_if_external_handle_is_dropped() {
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
         drop(handle);
 
         let wait = scheduler.wait_until(lt(10));
@@ -572,11 +572,10 @@ mod tests {
 
     #[tokio::test]
     async fn simulation_scheduler_collapses_a_multi_period_jump() {
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
+        let (scheduler, handle) = SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD));
 
-        // Jump straight past three periods (10ns each in this LogicalTime unit
-        // test scale) before the scheduler ever waits.
+        // Jump straight past three periods (10 ticks each at this test scale)
+        // before the scheduler ever waits.
         handle.advance(lt(40));
         let tick = scheduler.wait_until(lt(10)).await;
 
@@ -598,6 +597,8 @@ mod tests {
             RawWaker::new(std::ptr::null(), &VTABLE)
         }
         static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+        // SAFETY: the vtable's clone/wake/drop are all no-ops over a null data
+        // pointer, so every operation is trivially valid.
         let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
         let mut cx = Context::from_waker(&waker);
         match fut.poll(&mut cx) {

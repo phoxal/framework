@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
-use phoxal_bus::{Bus, LogicalTime, OwnerCap, Publisher};
+use phoxal_bus::{Bus, DiagnosticPublisher, OwnerCap};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::field::{Field, Visit};
@@ -169,14 +169,6 @@ impl LogRecord {
             dropped,
             truncated: self.truncated,
         }
-    }
-
-    fn logical_time(&self) -> LogicalTime {
-        let seconds = u64::try_from(self.time.unix_seconds).unwrap_or(0);
-        let nanos = seconds
-            .saturating_mul(1_000_000_000)
-            .saturating_add(u64::from(self.time.nanos));
-        LogicalTime::new(0, nanos)
     }
 }
 
@@ -365,19 +357,18 @@ async fn drain_loop(
     let topic = api::topic::internal::new(OwnerCap::__mint())
         .logs(&participant_id)
         .topic();
-    let publisher = match Publisher::<api::logs::Event>::new(bus, &topic) {
+    let publisher = match DiagnosticPublisher::<api::logs::Event>::new(bus, &topic) {
         Ok(publisher) => publisher,
         Err(_) => return,
     };
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
-        let at = record.logical_time();
         let dropped = state.take_dropped();
         let event = record.into_event(seq, dropped);
         seq = seq.wrapping_add(1);
         let result = IN_BUS_LOG_PUBLISH.with(|guard| {
             guard.set(true);
-            let result = publisher.try_publish(at, event);
+            let result = publisher.publish(event);
             guard.set(false);
             result
         });

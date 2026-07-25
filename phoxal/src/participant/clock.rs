@@ -1,146 +1,296 @@
-//! The clock + time source (D34).
+//! One type system, two clock drivers (#952 section I).
 //!
-//! No participant mints its own clock; the runner owns one [`ClockSource`] and stamps
-//! every `StepContext`/`produced_at_ns` from it, so all participants share one
-//! logical-time domain. Three sources are envisaged: **real** (host-monotonic),
-//! **simulation** (subscribe the authoritative `simulation/clock`), and **test**
-//! (an injectable fake). The first slice ships real + test; the simulation source
-//! lands with the Webots port.
+//! The identity and coordinate authority is unified - every participant reads
+//! [`RobotInstant`]s on one [`TimelineId`] - but the *tick mechanism*
+//! deliberately is not:
+//!
+//! - **Real execution.** Cadence runs from the host's suspend-aware monotonic
+//!   boot clock ([`LocalInstant`]) against a supervisor-minted execution
+//!   origin. Control ticks never wait on a bus message: making real-mode
+//!   cadence depend on a published clock would put the control loop behind a
+//!   transport that is explicitly allowed to drop samples under saturation, and
+//!   one-way published ticks cannot bound offset across hosts anyway.
+//! - **Simulation and replay.** Exact discrete steps advanced by the world
+//!   authority (the simulation controller). No interpolation. Pause means no
+//!   new step; reset means a new timeline.
+//!
+//! # Losing clock discipline (#952 section J)
+//!
+//! A participant that cannot trust its clock does **not** freeze. Freezing the
+//! steps is exactly the failure mode that leaves an actuator commanded. Instead
+//! the clock reports [`ClockReading::Unsynchronized`], the runner invalidates
+//! the capability to publish time-sensitive state, stops renewing actuator
+//! leases so the local and hardware watchdogs stop the machine, marks the
+//! participant unsynchronized, and enters ordinary failure and restart policy.
+//! Recovery flushes retained state before publication resumes.
 
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use tokio::sync::watch;
 
-use crate::bus::LogicalTime;
+use crate::bus::{LocalInstant, RobotInstant, TimelineId};
 
-/// A source of logical robot time.
+/// Why a participant cannot currently produce a trustworthy robot instant.
+///
+/// These are the complete same-host v1 triggers. Transport loss is deliberately
+/// **not** one of them: same-host robot time has no bus discipline feed, so a
+/// dropped sample says nothing about the clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TimeUnsynchronized {
+    /// The supervisor supplied no execution origin, or an unparsable one.
+    #[error("the launch contract carried no valid execution origin")]
+    MissingOrigin,
+    /// The origin was minted against a different host boot, so it does not name
+    /// an instant on this host's boot clock at all.
+    #[error("the execution origin belongs to a different host boot")]
+    ForeignBoot,
+    /// The host clock could not be read, or read backwards.
+    #[error("the host boot clock read failed or regressed")]
+    ClockFault,
+}
+
+/// What a clock can currently say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockReading {
+    /// A trustworthy instant on the participant's timeline.
+    Synchronized(RobotInstant),
+    /// The clock is not trustworthy, and why.
+    Unsynchronized(TimeUnsynchronized),
+}
+
+impl ClockReading {
+    /// The instant, if the clock is trustworthy.
+    pub const fn instant(self) -> Option<RobotInstant> {
+        match self {
+            ClockReading::Synchronized(instant) => Some(instant),
+            ClockReading::Unsynchronized(_) => None,
+        }
+    }
+}
+
+/// A source of robot time.
 pub trait ClockSource: Send + Sync + 'static {
-    /// The current logical time. Within an epoch this strictly increases.
-    fn now(&self) -> LogicalTime;
+    /// The current reading. Within a timeline a synchronized reading never
+    /// regresses.
+    fn read(&self) -> ClockReading;
 }
 
-/// Host-wide real clock (D34, "host-monotonic domain shared across processes").
+/// The supervisor-minted origin of one real execution.
 ///
-/// `produced_at_ns` is stamped from this clock and is compared *across
-/// processes* by the safety/motion/follow staleness checks, so the source must
-/// be the same for every participant on a host, not a process-local origin. A
-/// per-process monotonic `Instant` would make two processes' timestamps
-/// incomparable (each counts from its own start), silently breaking freshness.
-///
-/// We therefore base `time_ns` on `SystemTime` (nanoseconds since the UNIX
-/// epoch): a single host-wide domain every process agrees on, and the natural
-/// fit for the simulation source that will publish wall-style time later. Wall
-/// clocks can step backwards (NTP/manual set); within an epoch `time_ns` must
-/// not regress, so the clock latches the last value and never reports a smaller
-/// one. A real backward jump is the operator's signal to bump the epoch.
-pub struct RealClock {
-    epoch: u64,
-    last_ns: Mutex<u64>,
+/// The origin is a [`LocalInstant`] on the host boot clock plus the identity of
+/// the boot it was taken during. A participant validates the boot identity and
+/// refuses an origin from a different boot: a boot-clock reading is only
+/// meaningful within the boot that produced it, and treating a stale one as
+/// valid would silently shift every instant on the timeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutionOrigin {
+    boot: BootId,
+    at: LocalInstant,
+    timeline: TimelineId,
 }
 
-impl RealClock {
-    /// A real clock starting at epoch 0, in the host-wide UNIX-epoch domain.
-    pub fn new() -> Self {
-        RealClock {
-            epoch: 0,
-            last_ns: Mutex::new(0),
+impl ExecutionOrigin {
+    /// Mint the origin for a new real execution, now, on this host.
+    pub fn mint() -> Self {
+        ExecutionOrigin {
+            boot: BootId::current(),
+            at: LocalInstant::now(),
+            timeline: TimelineId::mint(),
         }
     }
 
-    /// Nanoseconds since the UNIX epoch, saturating at `u64::MAX` (year ~2554).
-    fn unix_now_ns() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-            .unwrap_or(0)
+    /// Rebuild an origin the supervisor passed through the launch contract.
+    pub const fn new(boot: BootId, at: LocalInstant, timeline: TimelineId) -> Self {
+        ExecutionOrigin { boot, at, timeline }
+    }
+
+    /// The boot this origin was minted during.
+    pub const fn boot(self) -> BootId {
+        self.boot
+    }
+
+    /// The boot-clock instant this execution started at.
+    pub const fn started_at(self) -> LocalInstant {
+        self.at
+    }
+
+    /// The timeline real execution runs on.
+    pub const fn timeline(self) -> TimelineId {
+        self.timeline
+    }
+
+    /// Render for the launch contract: `<boot>:<boot-ns>:<timeline>`.
+    pub fn encode(self) -> String {
+        format!(
+            "{}:{}:{}",
+            self.boot.0,
+            self.at.boot_ns(),
+            self.timeline.get()
+        )
+    }
+
+    /// Parse a rendered origin.
+    pub fn decode(value: &str) -> Option<Self> {
+        let mut parts = value.split(':');
+        let boot = BootId(parts.next()?.parse().ok()?);
+        let at = LocalInstant::from_boot_ns(parts.next()?.parse().ok()?);
+        let timeline = TimelineId::from_raw(parts.next()?.parse().ok()?)?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(ExecutionOrigin { boot, at, timeline })
     }
 }
 
-impl Default for RealClock {
-    fn default() -> Self {
-        RealClock::new()
+/// An identity for one host boot.
+///
+/// Derived from the host's own boot record where the platform exposes one, and
+/// otherwise from the wall time the boot clock's zero corresponds to. Both
+/// forms answer the only question asked of it: "was this origin taken during
+/// the boot I am running in".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootId(u64);
+
+impl BootId {
+    /// This host's current boot identity.
+    pub fn current() -> Self {
+        BootId(host_boot_identity())
+    }
+}
+
+/// The real-execution clock: the host boot clock, offset by the execution
+/// origin, projected onto the execution's timeline.
+///
+/// The domain is host-wide, so two processes on one host compute the same
+/// [`RobotInstant`] for the same physical moment without exchanging a message.
+/// Suspend counts, because [`LocalInstant`] reads the continuous clock.
+pub struct RealClock {
+    origin: Result<ExecutionOrigin, TimeUnsynchronized>,
+    last_ticks: Mutex<u64>,
+}
+
+impl RealClock {
+    /// A clock anchored at `origin`, validated against this host's boot.
+    pub fn new(origin: ExecutionOrigin) -> Self {
+        let origin = if origin.boot() == BootId::current() {
+            Ok(origin)
+        } else {
+            Err(TimeUnsynchronized::ForeignBoot)
+        };
+        RealClock {
+            origin,
+            last_ticks: Mutex::new(0),
+        }
+    }
+
+    /// A clock that reports [`TimeUnsynchronized::MissingOrigin`] until the
+    /// supervisor supplies one.
+    pub fn without_origin() -> Self {
+        RealClock {
+            origin: Err(TimeUnsynchronized::MissingOrigin),
+            last_ticks: Mutex::new(0),
+        }
     }
 }
 
 impl ClockSource for RealClock {
-    fn now(&self) -> LogicalTime {
-        let now = Self::unix_now_ns();
-        // Latch monotonically within the epoch: a backward wall-clock step never
-        // produces a smaller `time_ns` than already observed.
-        let mut last = self.last_ns.lock().expect("real clock poisoned");
-        *last = (*last).max(now);
-        LogicalTime::new(self.epoch, *last)
+    fn read(&self) -> ClockReading {
+        let origin = match self.origin {
+            Ok(origin) => origin,
+            Err(reason) => return ClockReading::Unsynchronized(reason),
+        };
+        let now = LocalInstant::now();
+        if now.boot_ns() == 0 {
+            return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
+        }
+        let ticks = u64::try_from(
+            now.saturating_duration_since(origin.started_at())
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX);
+        // The boot clock is monotonic, so this is a defensive latch rather than
+        // a correction: a regression means the clock read is untrustworthy.
+        let mut last = self.last_ticks.lock().expect("real clock poisoned");
+        if ticks < *last {
+            return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
+        }
+        *last = ticks;
+        ClockReading::Synchronized(RobotInstant::new(origin.timeline(), ticks))
     }
 }
 
-/// The simulation-time clock (the deferred "Webots port" source named in this
-/// module's docs). In [`ClockMode::Simulation`](crate::participant::launch::ClockMode::Simulation)
-/// the runner stamps `StepContext`/`produced_at_ns` from this clock instead of
-/// [`RealClock`], so every simulated participant shares the *simulation* time
-/// domain (owned by the Webots controller) rather than the host UNIX
-/// domain. Cross-participant staleness checks (safety/motion/follow) then
-/// compare sensor timestamps against the same sim clock the samples were
-/// produced under; stamping sim participants from the wall clock instead makes
-/// every sim-time sensor sample look arbitrarily stale and breaks those checks.
+/// The simulation/replay clock: exact discrete steps advanced by the world
+/// authority.
 ///
-/// It reads the same authoritative logical time the
+/// It reads the same authoritative instant the
 /// [`SimulationScheduler`](crate::participant::scheduler::SimulationScheduler)
 /// releases ticks from - both share one [`watch`] channel driven by the live
-/// `simulation/clock` feed - so "what time is it" and "when does the next
-/// `#[step]` fire" never diverge. Before the first clock sample arrives it
-/// reports the channel's seed (logical zero).
+/// clock feed - so "what time is it" and "when does the next `#[step]` fire"
+/// never diverge. Before the first sample arrives there is no world history at
+/// all, which is honestly reported as unsynchronized rather than as instant
+/// zero of some invented timeline.
 #[derive(Clone)]
 pub struct SimulationClock {
-    rx: watch::Receiver<LogicalTime>,
+    rx: watch::Receiver<Option<RobotInstant>>,
 }
 
 impl SimulationClock {
     /// Build a clock that observes `rx` - the receiver half of the same
     /// [`watch`] channel a
     /// [`SimulationScheduler`](crate::participant::scheduler::SimulationScheduler)
-    /// is driven through, so both see identical logical time.
-    pub(crate) fn from_receiver(rx: watch::Receiver<LogicalTime>) -> Self {
+    /// is driven through, so both see identical robot time.
+    pub(crate) fn from_receiver(rx: watch::Receiver<Option<RobotInstant>>) -> Self {
         Self { rx }
     }
 }
 
 impl ClockSource for SimulationClock {
-    fn now(&self) -> LogicalTime {
+    fn read(&self) -> ClockReading {
         // The feed only ever advances the watched value (see
-        // `SimulationClockHandle::advance`), so this is already monotonic within
-        // an epoch and needs no latching of its own.
-        *self.rx.borrow()
+        // `SimulationClockHandle::advance`), so this is already monotonic
+        // within a timeline and needs no latching of its own.
+        match *self.rx.borrow() {
+            Some(instant) => ClockReading::Synchronized(instant),
+            None => ClockReading::Unsynchronized(TimeUnsynchronized::MissingOrigin),
+        }
     }
 }
 
-/// An injectable fake clock for tests + the participant test harness (D34/D41).
+/// An injectable deterministic clock for tests and the participant test
+/// harness (D34/D41).
 #[derive(Clone)]
 pub struct TestClock {
-    state: Arc<Mutex<(u64, u64)>>, // (epoch, time_ns)
+    state: Arc<Mutex<(TimelineId, u64)>>,
 }
 
 impl TestClock {
-    /// A test clock at epoch 0, time 0.
+    /// A test clock at tick 0 on a fresh timeline.
     pub fn new() -> Self {
         TestClock {
-            state: Arc::new(Mutex::new((0, 0))),
+            state: Arc::new(Mutex::new((TimelineId::mint(), 0))),
         }
+    }
+
+    /// The timeline this clock is currently on.
+    pub fn timeline(&self) -> TimelineId {
+        self.state.lock().expect("test clock poisoned").0
     }
 
     /// Advance the current time by `delta`.
     pub fn advance(&self, delta: Duration) {
         let mut state = self.state.lock().expect("test clock poisoned");
-        let ns = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
-        state.1 = state.1.saturating_add(ns);
+        let ticks = u64::try_from(delta.as_nanos()).unwrap_or(u64::MAX);
+        state.1 = state.1.saturating_add(ticks);
     }
 
-    /// Bump the epoch (reset) and restart time at 0.
-    pub fn bump_epoch(&self) {
+    /// Replace the world history (a reset) and restart at tick 0.
+    pub fn replace_timeline(&self) -> TimelineId {
         let mut state = self.state.lock().expect("test clock poisoned");
-        state.0 = state.0.saturating_add(1);
+        state.0 = TimelineId::mint();
         state.1 = 0;
+        state.0
     }
 }
 
@@ -151,10 +301,62 @@ impl Default for TestClock {
 }
 
 impl ClockSource for TestClock {
-    fn now(&self) -> LogicalTime {
+    fn read(&self) -> ClockReading {
         let state = self.state.lock().expect("test clock poisoned");
-        LogicalTime::new(state.0, state.1)
+        ClockReading::Synchronized(RobotInstant::new(state.0, state.1))
     }
+}
+
+/// Read a stable identity for the current host boot.
+///
+/// Linux exposes a per-boot random id; Darwin exposes the boot wall time. Both
+/// are hashed into one opaque `u64`, since the only operation is equality.
+fn host_boot_identity() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(boot_id) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
+            return fnv1a(boot_id.trim().as_bytes());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut boottime = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        let mut size = std::mem::size_of::<libc::timeval>();
+        // SAFETY: `sysctlbyname` writes at most `size` bytes into `boottime`,
+        // which we own and borrow mutably for the call.
+        let outcome = unsafe {
+            libc::sysctlbyname(
+                c"kern.boottime".as_ptr(),
+                (&raw mut boottime).cast(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if outcome == 0 {
+            return fnv1a(&boottime.tv_sec.to_le_bytes());
+        }
+    }
+    // Portable fallback: the wall time the boot clock's zero corresponds to,
+    // truncated to whole seconds so ordinary NTP slew does not change it.
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0);
+    let uptime = Duration::from_nanos(LocalInstant::now().boot_ns()).as_secs();
+    fnv1a(&wall.saturating_sub(uptime).to_le_bytes())
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -162,54 +364,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn real_clock_uses_host_wide_unix_domain() {
-        // Two independently constructed clocks model two processes on one host.
-        // Because both read the shared UNIX-epoch domain (not a process-local
-        // origin), their timestamps are directly comparable - the property the
-        // cross-process staleness checks rely on (D34).
-        let unix_before = RealClock::unix_now_ns();
-        let a = RealClock::new();
-        let b = RealClock::new();
-        let ta = a.now().time_ns();
-        let tb = b.now().time_ns();
-        let unix_after = RealClock::unix_now_ns();
-
+    fn the_real_clock_shares_one_host_wide_domain_across_processes() {
+        // Two independently constructed clocks on one origin model two
+        // processes on one host: because both read the host boot clock against
+        // the same supervisor-minted origin, they compute directly comparable
+        // instants - the property the cross-process freshness checks rely on.
+        let origin = ExecutionOrigin::mint();
+        let a = RealClock::new(origin);
+        let b = RealClock::new(origin);
+        let ta = a.read().instant().expect("clock a must be synchronized");
+        let tb = b.read().instant().expect("clock b must be synchronized");
+        assert_eq!(ta.timeline(), tb.timeline());
+        let gap = tb
+            .duration_since(ta)
+            .expect("same timeline must be comparable");
         assert!(
-            ta >= unix_before && ta <= unix_after,
-            "clock a ({ta}) is not in the UNIX-epoch domain [{unix_before}, {unix_after}]"
-        );
-        assert!(
-            tb >= unix_before && tb <= unix_after,
-            "clock b ({tb}) is not in the UNIX-epoch domain [{unix_before}, {unix_after}]"
-        );
-        // Comparable: both near "now", not separated by per-process origins.
-        let gap = ta.abs_diff(tb);
-        assert!(
-            gap <= unix_after.saturating_sub(unix_before),
-            "two host clocks disagree by {gap}ns, more than the sampling window"
+            gap < Duration::from_secs(1),
+            "two host clocks disagree by {gap:?}"
         );
     }
 
     #[test]
-    fn real_clock_never_regresses_within_epoch() {
-        let clock = RealClock::new();
-        let mut last = clock.now().time_ns();
+    fn the_real_clock_never_regresses_within_a_timeline() {
+        let clock = RealClock::new(ExecutionOrigin::mint());
+        let mut last = clock.read().instant().unwrap();
         for _ in 0..1000 {
-            let next = clock.now().time_ns();
-            assert!(next >= last, "time_ns regressed: {next} < {last}");
+            let next = clock.read().instant().unwrap();
+            assert!(
+                next.checked_cmp(last).unwrap() != std::cmp::Ordering::Less,
+                "robot time regressed: {next} < {last}"
+            );
             last = next;
         }
     }
 
     #[test]
-    fn test_clock_is_deterministic() {
+    fn a_missing_or_foreign_boot_origin_is_reported_not_papered_over() {
+        assert_eq!(
+            RealClock::without_origin().read(),
+            ClockReading::Unsynchronized(TimeUnsynchronized::MissingOrigin)
+        );
+
+        let foreign = ExecutionOrigin::new(
+            BootId(BootId::current().0 ^ 0xffff),
+            LocalInstant::now(),
+            TimelineId::mint(),
+        );
+        assert_eq!(
+            RealClock::new(foreign).read(),
+            ClockReading::Unsynchronized(TimeUnsynchronized::ForeignBoot)
+        );
+    }
+
+    #[test]
+    fn an_execution_origin_round_trips_through_the_launch_contract() {
+        let origin = ExecutionOrigin::mint();
+        assert_eq!(ExecutionOrigin::decode(&origin.encode()), Some(origin));
+        assert_eq!(ExecutionOrigin::decode("garbage"), None);
+        assert_eq!(
+            ExecutionOrigin::decode("1:2:0"),
+            None,
+            "timeline zero is not a timeline"
+        );
+        assert_eq!(ExecutionOrigin::decode("1:2:3:4"), None);
+    }
+
+    #[test]
+    fn the_boot_identity_is_stable_within_one_boot() {
+        assert_eq!(BootId::current(), BootId::current());
+    }
+
+    #[test]
+    fn the_test_clock_is_deterministic_and_resets_onto_a_new_timeline() {
         let clock = TestClock::new();
-        assert_eq!(clock.now(), LogicalTime::new(0, 0));
+        let first = clock.timeline();
+        assert_eq!(
+            clock.read(),
+            ClockReading::Synchronized(RobotInstant::new(first, 0))
+        );
         clock.advance(Duration::from_nanos(5));
-        assert_eq!(clock.now(), LogicalTime::new(0, 5));
         clock.advance(Duration::from_nanos(7));
-        assert_eq!(clock.now(), LogicalTime::new(0, 12));
-        clock.bump_epoch();
-        assert_eq!(clock.now(), LogicalTime::new(1, 0));
+        assert_eq!(
+            clock.read(),
+            ClockReading::Synchronized(RobotInstant::new(first, 12))
+        );
+
+        let second = clock.replace_timeline();
+        assert_ne!(second, first);
+        assert_eq!(
+            clock.read(),
+            ClockReading::Synchronized(RobotInstant::new(second, 0))
+        );
     }
 }

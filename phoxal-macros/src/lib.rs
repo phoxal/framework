@@ -6,7 +6,7 @@
 //!   (`phoxal_api::v0_1`, …), their revision-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
 //! - [`derive@Api`] / [`derive@Config`] - read an `Api` handle struct's typed
-//!   fields (`Publisher<T>` / `Subscriber<T>` / `Latest<T>` / `Querier<Req,
+//!   fields (the role-gated publishers / `Subscriber<T>` / `Latest<T>` / `Querier<Req,
 //!   Resp>` / `Server<Req, Resp>`) and a `Config` struct respectively, and emit
 //!   the static metadata (`ParticipantApi`/`ParticipantConfig`) the runner
 //!   consumes.
@@ -162,7 +162,7 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Derive the bus-facing contract surface from an `Api` handle struct. See
 /// `phoxal::participant::api` for the trait shape.
 ///
-/// Scans fields by canonical syntactic form: `Publisher<T>` / `Subscriber<T>` /
+/// Scans fields by canonical syntactic form: a role-gated publisher / `Subscriber<T>` /
 /// `Latest<T>` are pub/sub handles, `Querier<Req, Resp>` is the asking side of a
 /// query, and `Server<Req, Resp>` is a served query contract - no live
 /// connection, declared for `#[phoxal::behavior]`'s `#[server(api = …)]` /

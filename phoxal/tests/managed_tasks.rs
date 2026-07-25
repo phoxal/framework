@@ -125,7 +125,7 @@ impl ManagedEarlyReturnAllowed {
 
     #[step(hz = 50)]
     async fn step(&mut self, step: StepContext) -> Result<()> {
-        let _ = step.time();
+        let _ = step.now();
         ALLOWED_RUNNER_STEPPED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -169,7 +169,7 @@ impl ManagedPanicAllowed {
 
     #[step(hz = 50)]
     async fn step(&mut self, step: StepContext) -> Result<()> {
-        let _ = step.time();
+        let _ = step.now();
         ALLOWED_PANIC_RUNNER_STEPPED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

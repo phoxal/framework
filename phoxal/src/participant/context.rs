@@ -7,9 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bus::{LogicalTime, OwnerCap};
+use crate::bus::{OwnerCap, RobotInstant, StepToken, TimelineId};
 use crate::model::v0::Robot;
-use crate::participant::launch::ExecutionDeviceId;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::Bus;
 
@@ -23,7 +22,6 @@ pub struct SetupContext<R> {
     robot: Option<Arc<Robot>>,
     robot_root: Option<PathBuf>,
     component_instance: Option<String>,
-    execution_device_id: Option<ExecutionDeviceId>,
     managed_tasks: ManagedTasks,
     _runtime: PhantomData<fn() -> R>,
 }
@@ -39,7 +37,6 @@ impl<R> SetupContext<R> {
         robot: Option<Arc<Robot>>,
         robot_root: Option<PathBuf>,
         component_instance: Option<String>,
-        execution_device_id: Option<ExecutionDeviceId>,
     ) -> Self {
         SetupContext {
             bus,
@@ -47,7 +44,6 @@ impl<R> SetupContext<R> {
             robot,
             robot_root,
             component_instance,
-            execution_device_id,
             managed_tasks: ManagedTasks::default(),
             _runtime: PhantomData,
         }
@@ -128,11 +124,6 @@ impl<R> SetupContext<R> {
         self.component_instance.as_deref()
     }
 
-    /// The bounded project/deployment identity supplied by the supervisor.
-    pub(crate) fn execution_device_id_ref(&self) -> Option<&ExecutionDeviceId> {
-        self.execution_device_id.as_ref()
-    }
-
     /// The resolved robot model, if bound. In-crate accessor for
     /// [`SetupContextApiExt::robot`](super::api::SetupContextApiExt::robot).
     pub(crate) fn robot_ref(&self) -> Option<&Robot> {
@@ -146,84 +137,80 @@ impl<R> SetupContext<R> {
     }
 }
 
-/// Per-step logical-time context (D34). `time()` is in the same domain as every
-/// bus `produced_at_ns`.
+/// Per-step context: the robot instant this step reached, plus the capability
+/// to publish state at it.
+///
+/// The [`StepToken`] is what a [`StatePublisher`](crate::bus::StatePublisher)
+/// requires, and only the runner mints one - so a participant publishes state
+/// at the instant it actually reached, or not at all (#952 section D).
 #[derive(Clone, Copy, Debug)]
 pub struct StepContext {
-    epoch: u64,
+    token: StepToken,
     step_index: u64,
-    time_ns: u64,
-    dt_ns: u64,
+    dt: Duration,
     missed_ticks: u32,
 }
 
-/// Context for `#[reset]`: the runner observed a different opaque simulation
-/// epoch and is about to begin releasing steps for that execution.
+/// Context for `#[reset]`: the runner observed a different timeline and is
+/// about to begin releasing steps for that world history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResetContext {
-    previous_epoch: u64,
-    new_epoch: u64,
+    previous_timeline: TimelineId,
+    new_timeline: TimelineId,
 }
 
 impl ResetContext {
-    pub(crate) fn new(previous_epoch: u64, new_epoch: u64) -> Self {
+    pub(crate) fn new(previous_timeline: TimelineId, new_timeline: TimelineId) -> Self {
         Self {
-            previous_epoch,
-            new_epoch,
+            previous_timeline,
+            new_timeline,
         }
     }
 
-    /// The execution identity whose derived state must be discarded.
-    pub fn previous_epoch(&self) -> u64 {
-        self.previous_epoch
+    /// The world history whose derived state must be discarded.
+    pub fn previous_timeline(&self) -> TimelineId {
+        self.previous_timeline
     }
 
-    /// The newly active execution identity.
-    pub fn new_epoch(&self) -> u64 {
-        self.new_epoch
+    /// The newly active world history.
+    pub fn new_timeline(&self) -> TimelineId {
+        self.new_timeline
     }
 }
 
 impl StepContext {
-    pub(crate) fn new(
-        epoch: u64,
-        step_index: u64,
-        time_ns: u64,
-        dt_ns: u64,
-        missed_ticks: u32,
-    ) -> Self {
+    pub(crate) fn new(token: StepToken, step_index: u64, dt: Duration, missed_ticks: u32) -> Self {
         StepContext {
-            epoch,
+            token,
             step_index,
-            time_ns,
-            dt_ns,
+            dt,
             missed_ticks,
         }
     }
 
-    /// Logical robot time for this step.
-    pub fn time(&self) -> LogicalTime {
-        LogicalTime::new(self.epoch, self.time_ns)
+    /// The capability to publish state at this step's instant.
+    pub fn token(&self) -> &StepToken {
+        &self.token
     }
 
-    /// The clock epoch.
-    pub fn epoch(&self) -> u64 {
-        self.epoch
+    /// The robot instant this step reached.
+    pub fn now(&self) -> RobotInstant {
+        crate::bus::StepStamp::instant(&self.token)
     }
 
-    /// Monotonic step counter within the epoch.
+    /// The world history this step belongs to.
+    pub fn timeline(&self) -> TimelineId {
+        self.now().timeline()
+    }
+
+    /// Monotonic step counter within the timeline.
     pub fn step_index(&self) -> u64 {
         self.step_index
     }
 
-    /// Nanoseconds since the previous step.
-    pub fn dt_ns(&self) -> u64 {
-        self.dt_ns
-    }
-
-    /// `dt` as a [`Duration`].
+    /// Robot time since the previous step.
     pub fn dt(&self) -> Duration {
-        Duration::from_nanos(self.dt_ns)
+        self.dt
     }
 
     /// Ticks collapsed into this step after an overrun (D34).

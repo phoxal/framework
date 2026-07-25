@@ -12,7 +12,9 @@
 
 use phoxal::api;
 use phoxal::bus::ContractBody;
-use phoxal::bus::{BusMetadata, CodecId, Source, encoding_string};
+use phoxal::bus::{
+    BusMetadata, CodecId, ProducerId, RobotInstant, TimeWindow, TimelineId, encoding_string,
+};
 
 #[test]
 fn encoding_string_carries_only_the_codec() {
@@ -27,25 +29,33 @@ fn contract_body_topic_is_version_qualified_on_the_real_tree() {
     // contract of the same leaf name.
     assert_eq!(
         <api::drive::Target as ContractBody>::TOPIC,
-        "v0.2/drive/target"
+        "v0.1/drive/target"
     );
     assert_eq!(
         <api::asset::GetRequest as ContractBody>::TOPIC,
-        "v0.2/asset/get"
+        "v0.1/asset/get"
     );
 }
 
 #[test]
 fn bus_metadata_for_a_real_body_round_trips() {
+    let timeline = TimelineId::mint();
     let meta = BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
-        produced_at_ns: 42,
-        epoch: 1,
-        source: Source {
-            participant: "tester".to_string(),
-            incarnation: 3,
-            sequence: 9,
-        },
+        producer: ProducerId::mint(),
+        sequence: 9,
+        produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
+        participant: "tester".to_string(),
     };
     assert_eq!(BusMetadata::decode(&meta.encode()).unwrap(), meta);
+
+    // A command or diagnostic expresses no robot time, and that absence round
+    // trips as absence rather than as a zero instant.
+    let timeless = BusMetadata {
+        produced_at: None,
+        ..meta
+    };
+    let decoded = BusMetadata::decode(&timeless.encode()).unwrap();
+    assert_eq!(decoded, timeless);
+    assert_eq!(decoded.produced_exactly_at(), None);
 }

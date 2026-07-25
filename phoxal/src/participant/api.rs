@@ -46,8 +46,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::bus::{
-    AskQuery, ContractBody, DEFAULT_QUERY_TIMEOUT, Latest, OwnerCap, Publish, Publisher, Querier,
-    Subscribe, Subscriber, Topic,
+    AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
+    DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
+    OwnerCap, Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineId,
+    Topic,
 };
 use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
@@ -163,7 +165,7 @@ pub mod __meta {
 /// The role a [`ParticipantApi`] handle field plays on the bus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContractRole {
-    /// A `Publisher<B>` field (or `Vec`/map of one).
+    /// A role-gated publisher field (or `Vec`/map of one).
     Publish,
     /// A `Subscriber<B>`/`Latest<B>` field (or `Vec`/map of one).
     Subscribe,
@@ -190,8 +192,8 @@ pub struct ApiContractUse {
 /// Emitted by `#[derive(phoxal::Api)]`: the bus-facing contract surface of a
 /// participant's `Api` handle struct.
 ///
-/// `Clone`: every bus handle type (`Publisher`/`Latest`/`Subscriber`/
-/// `Querier`/[`Server`]) is cheaply `Clone` - a second handle to the same
+/// `Clone`: every bus handle type (the role-gated publishers, `Latest`,
+/// `Subscriber`, `Querier`, [`Server`]) is cheaply `Clone` - a second handle to the same
 /// underlying subscription/publish key/session, never a deep copy - because
 /// every real operation on them takes `&self` (`phoxal-bus/src/handle.rs`'s
 /// module docs). `#[derive(phoxal::Api)]` emits a field-wise `Clone` impl
@@ -214,10 +216,12 @@ pub trait ParticipantApi: Send + Sync + Clone + 'static {
     /// Every contract this `Api` struct's fields use, deduplicated.
     const CONTRACTS: &'static [ApiContractUse];
 
-    /// Retain only inbound samples belonging to the newly active simulation
-    /// execution. Generated from every handle field by `#[derive(Api)]`.
+    /// Retain only inbound samples belonging to the newly active timeline.
+    /// Generated from every subscribe field by `#[derive(Api)]`. Samples that
+    /// express no robot time belong to no world history and are never
+    /// discarded, so a command input needs no opt-out.
     #[doc(hidden)]
-    fn __retain_epoch(&self, epoch: u64);
+    fn __retain_timeline(&self, timeline: TimelineId);
 }
 
 /// `Api = ()` for participants that opt out of a typed bus surface (tools,
@@ -227,57 +231,57 @@ impl ParticipantApi for () {
     const __CONTRACTS_JSON: &'static str = "[]";
     const CONTRACTS: &'static [ApiContractUse] = &[];
 
-    fn __retain_epoch(&self, _epoch: u64) {}
+    fn __retain_timeline(&self, _timeline: TimelineId) {}
 }
 
 /// Framework-internal recursive hook used by a derived participant `Api` to
-/// clear stale inbound state at an epoch boundary.
+/// clear stale inbound state at a timeline boundary.
 #[doc(hidden)]
-pub trait EpochSensitiveApiField {
-    fn __retain_epoch(&self, epoch: u64);
+pub trait TimelineScopedApiField {
+    fn __retain_timeline(&self, timeline: TimelineId);
 }
 
-impl<B: ContractBody> EpochSensitiveApiField for Subscriber<B> {
-    fn __retain_epoch(&self, epoch: u64) {
-        Subscriber::__retain_epoch(self, epoch);
+impl<B: ContractBody> TimelineScopedApiField for Subscriber<B> {
+    fn __retain_timeline(&self, timeline: TimelineId) {
+        Subscriber::__retain_timeline(self, timeline);
     }
 }
 
-impl<B: ContractBody> EpochSensitiveApiField for Latest<B> {
-    fn __retain_epoch(&self, epoch: u64) {
-        Latest::__retain_epoch(self, epoch);
+impl<B: ContractBody> TimelineScopedApiField for Latest<B> {
+    fn __retain_timeline(&self, timeline: TimelineId) {
+        Latest::__retain_timeline(self, timeline);
     }
 }
 
-impl<T: EpochSensitiveApiField> EpochSensitiveApiField for Vec<T> {
-    fn __retain_epoch(&self, epoch: u64) {
+impl<T: TimelineScopedApiField> TimelineScopedApiField for Vec<T> {
+    fn __retain_timeline(&self, timeline: TimelineId) {
         for value in self {
-            value.__retain_epoch(epoch);
+            value.__retain_timeline(timeline);
         }
     }
 }
 
-impl<K, T: EpochSensitiveApiField> EpochSensitiveApiField for std::collections::BTreeMap<K, T> {
-    fn __retain_epoch(&self, epoch: u64) {
+impl<K, T: TimelineScopedApiField> TimelineScopedApiField for std::collections::BTreeMap<K, T> {
+    fn __retain_timeline(&self, timeline: TimelineId) {
         for value in self.values() {
-            value.__retain_epoch(epoch);
+            value.__retain_timeline(timeline);
         }
     }
 }
 
-impl<K, T: EpochSensitiveApiField, S> EpochSensitiveApiField
+impl<K, T: TimelineScopedApiField, S> TimelineScopedApiField
     for std::collections::HashMap<K, T, S>
 {
-    fn __retain_epoch(&self, epoch: u64) {
+    fn __retain_timeline(&self, timeline: TimelineId) {
         for value in self.values() {
-            value.__retain_epoch(epoch);
+            value.__retain_timeline(timeline);
         }
     }
 }
 
 /// Per-`Api`-struct marker: this `Api` declared a *publish* handle for body
-/// `B` (D44). Emitted by `#[derive(phoxal::Api)]` for each `Publisher<B>`
-/// field (including `Vec`/`BTreeMap`/`HashMap` of one). [`SetupContextApiExt::publisher`]
+/// `B` (D44). Emitted by `#[derive(phoxal::Api)]` for each role-gated publisher
+/// field (including `Vec`/`BTreeMap`/`HashMap` of one). Every publisher builder
 /// carries `where R::Api: DeclaresPublish<B>`, so building a publisher for a
 /// family the `Api` struct never declared as a field is a compile error -
 /// this is what makes [`ParticipantApi::CONTRACTS`] a guaranteed-complete
@@ -525,14 +529,45 @@ impl<Req, Resp> Copy for Server<Req, Resp> {}
 /// itself. Bring it into scope with `use phoxal::prelude::*;`.
 #[allow(async_fn_in_trait)]
 pub trait SetupContextApiExt<R: Participant> {
-    /// Build a publisher for `B` (any version - no per-participant API
-    /// version ceiling). `R::Api: DeclaresPublish<B>` (D44): building a
-    /// publisher for a contract the `Api` struct did not declare as a
-    /// `Publisher<B>` field is a compile error.
-    async fn publisher<B: ContractBody>(
+    /// Build a state publisher for `B`. `B: StateContract` (#952 section D):
+    /// only a contract declared `state` in the api tree can be published at a
+    /// logical step. `R::Api: DeclaresPublish<B>` (D44): building a publisher
+    /// for a contract the `Api` struct did not declare as a field is a compile
+    /// error.
+    async fn state_publisher<B: StateContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<Publisher<B>>
+    ) -> crate::Result<StatePublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>;
+
+    /// Build a measurement publisher for `B`. `B: MeasurementContract`: only a
+    /// contract declared `measurement` in the api tree can carry a capture
+    /// stamp.
+    async fn measurement_publisher<B: MeasurementContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<MeasurementPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>;
+
+    /// Build a command publisher for `B`. `B: CommandContract`: only a contract
+    /// declared `command` in the api tree can be sent as a request expressing
+    /// no robot time.
+    async fn command_publisher<B: CommandContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<CommandPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>;
+
+    /// Build a diagnostic publisher for `B`. `B: DiagnosticContract`: only a
+    /// contract declared `diagnostic` in the api tree describes the participant
+    /// rather than the world.
+    async fn diagnostic_publisher<B: DiagnosticContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<DiagnosticPublisher<B>>
     where
         R::Api: DeclaresPublish<B>;
 
@@ -580,7 +615,7 @@ pub trait SetupContextApiExt<R: Participant> {
     /// ```ignore
     /// let cap = ctx.owner_capability();
     /// let state = ctx
-    ///     .publisher(api::topic::internal::new(cap).drive().state())
+    ///     .state_publisher(api::topic::internal::new(cap).drive().state())
     ///     .await?;
     /// ```
     ///
@@ -599,14 +634,44 @@ pub trait SetupContextApiExt<R: Participant> {
 }
 
 impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
-    async fn publisher<B: ContractBody>(
+    async fn state_publisher<B: StateContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<Publisher<B>>
+    ) -> crate::Result<StatePublisher<B>>
     where
         R::Api: DeclaresPublish<B>,
     {
-        Ok(Publisher::new(self.bus().clone(), &topic)?)
+        Ok(StatePublisher::new(self.bus().clone(), &topic)?)
+    }
+
+    async fn measurement_publisher<B: MeasurementContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<MeasurementPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>,
+    {
+        Ok(MeasurementPublisher::new(self.bus().clone(), &topic)?)
+    }
+
+    async fn command_publisher<B: CommandContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<CommandPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>,
+    {
+        Ok(CommandPublisher::new(self.bus().clone(), &topic)?)
+    }
+
+    async fn diagnostic_publisher<B: DiagnosticContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<DiagnosticPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>,
+    {
+        Ok(DiagnosticPublisher::new(self.bus().clone(), &topic)?)
     }
 
     async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>) -> crate::Result<Latest<B>>
@@ -720,19 +785,23 @@ impl<R: Participant + IsSimulator> SetupContextSimulatorExt for SetupContext<R> 
 }
 
 /// Tool-only `SetupContext` accessor (`R: Participant + IsTool`). Tools stay
-/// raw-bus only (decided 2026-07-09), so this is their sole IO seam. Tools do
-/// not receive the runner clock: host timers and [`crate::raw::host_time`] keep
-/// them outside robot logical/simulation time.
+/// raw-bus only (decided 2026-07-09), so this is their sole IO seam.
+///
+/// A tool joins the *execution*, not the clock (#952 section B): it carries the
+/// [`ExecutionId`] because every bus participant does, and it can obtain no
+/// [`RobotInstant`](crate::bus::RobotInstant) at all. The raw bus it gets is an
+/// observer surface - it can subscribe and query, and it can publish commands
+/// and diagnostics, but there is no publisher on it that expresses robot time,
+/// because minting a [`StepToken`](crate::bus::StepToken) is impossible outside
+/// the runner.
 pub trait SetupContextToolExt {
     /// Clone the runner-owned raw bus for privileged tool internals. The bus is
     /// already open from the launch contract, so a tool does not reparse launch
     /// env or open an unrelated session.
     fn raw_bus(&self) -> Bus;
 
-    /// Read the bounded project/deployment identity supplied by the
-    /// supervisor. `tool-device` requires this value; it is optional in the
-    /// generic launch record so unrelated tools do not need a meaningless id.
-    fn execution_device_id(&self) -> crate::Result<&crate::participant::ExecutionDeviceId>;
+    /// The supervised run this tool joined.
+    fn execution(&self) -> crate::bus::ExecutionId;
 }
 
 impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
@@ -740,12 +809,7 @@ impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
         self.bus().clone()
     }
 
-    fn execution_device_id(&self) -> crate::Result<&crate::participant::ExecutionDeviceId> {
-        self.execution_device_id_ref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} is required for this tool",
-                crate::participant::launch::env::EXECUTION_DEVICE_ID
-            )
-        })
+    fn execution(&self) -> crate::bus::ExecutionId {
+        self.bus().execution()
     }
 }

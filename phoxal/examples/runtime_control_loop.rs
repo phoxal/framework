@@ -19,7 +19,7 @@ struct Api {
     // Keep-last-1 view of the observed drive state.
     state: Latest<api::drive::State>,
     // Publishes the commanded target.
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "avoid-obstacles")]
@@ -34,15 +34,15 @@ impl AvoidObstacles {
             Self::Api {
                 // Api-local topic builders bind each handle's body to its version.
                 state: ctx.latest(api::topic::new().drive().state()).await?,
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx
+                    .command_publisher(api::topic::new().drive().target())
+                    .await?,
             },
         ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let now = step.time();
-
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
         // Trivial policy: creep forward once we have observed a drive state,
         // otherwise hold still. Real runtimes would fuse perception here.
         let target = match api.state.latest() {
@@ -58,7 +58,7 @@ impl AvoidObstacles {
             },
         };
 
-        api.target.publish_at(now, target).await?;
+        api.target.send(target)?;
         Ok(())
     }
 

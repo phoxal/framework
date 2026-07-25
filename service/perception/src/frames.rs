@@ -4,7 +4,7 @@
 //! transform when localization is fresh and confident).
 
 use phoxal::api;
-use phoxal::bus::LogicalTime;
+use phoxal::bus::{RobotInstant, TimeWindow};
 
 use crate::detector::RawDetection;
 use crate::sensors::SensorBinding;
@@ -12,7 +12,7 @@ use crate::sensors::SensorBinding;
 #[derive(Clone)]
 pub(crate) struct FrameSample<B> {
     pub(crate) body: B,
-    pub(crate) at: LogicalTime,
+    pub(crate) at: RobotInstant,
 }
 
 #[derive(Default)]
@@ -36,15 +36,15 @@ impl HealthState {
 
 pub(crate) fn latest_fresh_camera_index<B>(
     samples: &[Option<FrameSample<B>>],
-    now: LogicalTime,
-    stale_ns: u64,
+    now: RobotInstant,
+    stale: std::time::Duration,
 ) -> Option<usize> {
     samples
         .iter()
         .enumerate()
         .filter_map(|(index, sample)| sample.as_ref().map(|sample| (index, sample)))
-        .filter(|(_, sample)| sample_is_fresh(sample, now, stale_ns))
-        .max_by_key(|(_, sample)| sample.at.time_ns())
+        .filter(|(_, sample)| sample_is_fresh(sample, now, stale))
+        .max_by_key(|(_, sample)| sample.at.ticks())
         .map(|(index, _)| index)
 }
 
@@ -52,36 +52,43 @@ pub(crate) fn latest_matching_depth(
     depth_sources: &[SensorBinding],
     samples: &[Option<FrameSample<api::component::depth::Frame>>],
     component_id: &str,
-    now: LogicalTime,
-    depth_stale_ns: u64,
+    now: RobotInstant,
+    depth_stale: std::time::Duration,
 ) -> Option<FrameSample<api::component::depth::Frame>> {
     depth_sources
         .iter()
         .zip(samples)
         .filter(|(source, _)| source.component_id == component_id)
         .filter_map(|(_, sample)| sample.as_ref())
-        .filter(|sample| sample_is_fresh(sample, now, depth_stale_ns))
-        .max_by_key(|sample| sample.at.time_ns())
+        .filter(|sample| sample_is_fresh(sample, now, depth_stale))
+        .max_by_key(|sample| sample.at.ticks())
         .cloned()
 }
 
 pub(crate) fn fresh_localization(
     sample: &Option<FrameSample<api::localize::LocalizationState>>,
-    now: LogicalTime,
-    localization_stale_ns: u64,
+    now: RobotInstant,
+    localization_stale: std::time::Duration,
     min_localization_confidence: f32,
 ) -> Option<&api::localize::LocalizationState> {
     let sample = sample.as_ref()?;
-    if !sample_is_fresh(sample, now, localization_stale_ns) {
+    if !sample_is_fresh(sample, now, localization_stale) {
         return None;
     }
     (sample.body.confidence >= min_localization_confidence).then_some(&sample.body)
 }
 
-fn sample_is_fresh<B>(sample: &FrameSample<B>, now: LogicalTime, stale_ns: u64) -> bool {
-    sample.at.epoch() == now.epoch()
-        && sample.at.time_ns() <= now.time_ns()
-        && now.time_ns().saturating_sub(sample.at.time_ns()) <= stale_ns
+/// A sample is fresh only if it belongs to this step's world history, is not in
+/// its future, and is within the bound. A cross-timeline comparison is a
+/// checked error, so it can never silently pass.
+fn sample_is_fresh<B>(
+    sample: &FrameSample<B>,
+    now: RobotInstant,
+    stale: std::time::Duration,
+) -> bool {
+    TimeWindow::exact(sample.at)
+        .possibly_fresh_within(now, stale)
+        .unwrap_or(false)
 }
 
 pub(crate) fn detection_from_raw(

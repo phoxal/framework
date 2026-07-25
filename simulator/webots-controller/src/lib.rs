@@ -4,7 +4,7 @@
 //! a robot's component capabilities (motor, encoder, IMU, accelerometer,
 //! gyroscope, range, camera, depth, GNSS) and publishes/subscribes exactly the
 //! `component::*` contracts those capabilities need. The process bootstraps the
-//! normal framework runner, mints one opaque nonzero epoch, and runs only the
+//! normal framework runner, mints one opaque timeline, and runs only the
 //! external Webots step loop. Each step publishes all component outputs and
 //! then the matching `simulation::Clock`.
 
@@ -12,6 +12,7 @@ mod capabilities;
 
 use phoxal::api;
 use phoxal::bus::ContractBody;
+use phoxal::bus::{StepStamp, TimelineAuthority, TimelineId, WorldStepToken};
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::simulation::Simulation as SimulationFile;
 use phoxal::model::simulation::v0::Simulation as SimulationSpec;
@@ -38,7 +39,7 @@ use capabilities::range::{NativeRange, RangeSpec};
 const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
-const BATTERY_PUBLISH_NS: u64 = 1_000_000_000;
+const BATTERY_PUBLISH: Duration = Duration::from_nanos(1_000_000_000);
 const FULL_VOLTAGE_V: f64 = 16.8;
 const EMPTY_VOLTAGE_V: f64 = 12.0;
 const DRAW_CURRENT_A: f64 = 2.0;
@@ -69,18 +70,18 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    clock: Publisher<api::simulation::Clock>,
+    clock: StatePublisher<api::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
-    encoders: Vec<Publisher<api::component::encoder::Sample>>,
-    imus: Vec<Publisher<api::component::imu::Sample>>,
-    accelerometers: Vec<Publisher<api::component::accelerometer::Sample>>,
-    gyroscopes: Vec<Publisher<api::component::gyroscope::Sample>>,
-    ranges: Vec<Publisher<api::component::range::Sample>>,
-    cameras: Vec<Publisher<api::component::camera::Frame>>,
-    depths: Vec<Publisher<api::component::depth::Frame>>,
-    gnss: Vec<Publisher<api::component::gnss::Sample>>,
-    emergency_stops: Vec<Publisher<api::component::emergency_stop::State>>,
-    battery: Publisher<api::battery::State>,
+    encoders: Vec<MeasurementPublisher<api::component::encoder::Sample>>,
+    imus: Vec<MeasurementPublisher<api::component::imu::Sample>>,
+    accelerometers: Vec<MeasurementPublisher<api::component::accelerometer::Sample>>,
+    gyroscopes: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
+    ranges: Vec<MeasurementPublisher<api::component::range::Sample>>,
+    cameras: Vec<MeasurementPublisher<api::component::camera::Frame>>,
+    depths: Vec<MeasurementPublisher<api::component::depth::Frame>>,
+    gnss: Vec<MeasurementPublisher<api::component::gnss::Sample>>,
+    emergency_stops: Vec<StatePublisher<api::component::emergency_stop::State>>,
+    battery: StatePublisher<api::battery::State>,
 }
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
@@ -89,13 +90,15 @@ pub struct WebotsControllerSimulator {
 }
 
 struct ControllerRuntime {
-    epoch: u64,
+    /// This controller's exclusive ownership of the world's timeline. It is
+    /// the only way anything in this process can express a robot instant.
+    authority: TimelineAuthority,
     step_index: u64,
     backend: SharedBackend,
     emergency_stop_states: Vec<bool>,
     battery_charge_ratio: f64,
-    last_battery_update: Option<LogicalTime>,
-    last_battery_publish: Option<LogicalTime>,
+    last_battery_update: Option<RobotInstant>,
+    last_battery_publish: Option<RobotInstant>,
 }
 
 type SharedBackend = Arc<Mutex<BackendControl>>;
@@ -112,56 +115,30 @@ struct BlockingStep {
     is_stub: bool,
 }
 
-trait EpochSource {
-    fn next_candidate(&mut self) -> Result<u64>;
-}
-
-struct SystemEpochSource;
-
-impl EpochSource for SystemEpochSource {
-    fn next_candidate(&mut self) -> Result<u64> {
-        let mut bytes = [0u8; std::mem::size_of::<u64>()];
-        getrandom::fill(&mut bytes).context("failed to generate simulation epoch")?;
-        Ok(u64::from_ne_bytes(bytes))
-    }
-}
-
-fn mint_epoch(source: &mut impl EpochSource) -> Result<u64> {
-    loop {
-        let epoch = source.next_candidate()?;
-        if epoch != 0 {
-            return Ok(epoch);
-        }
-    }
-}
-
-/// Bootstrap the Webots-owned controller with a process-local nonzero
-/// incarnation. Stable project arguments may configure routing/model inputs,
-/// but lifecycle identity is never supplied by the CLI.
+/// Bootstrap the Webots-owned controller.
+///
+/// The controller joins the supervised run through `PHOXAL_EXECUTION_ID`, which
+/// the supervisor puts in the Webots application's environment and Webots
+/// passes through to this child process. It mints its own [`ProducerId`] if the
+/// supervisor did not pre-mint one, and it always mints its own timeline: a
+/// world history belongs to the controller process that runs it, never to the
+/// CLI (#952 section B).
 pub fn run() -> Result<()> {
-    if has_explicit_incarnation_arg(std::env::args_os()) {
+    if has_explicit_producer_arg(std::env::args_os()) {
         bail!(
-            "--incarnation is not accepted by the Webots-owned controller; it mints its own process identity"
-        );
-    }
-    let incarnation = mint_epoch(&mut SystemEpochSource)?;
-    // SAFETY: this is the binary's single-threaded entrypoint, before the
-    // framework constructs its Tokio runtime or any other thread.
-    unsafe {
-        std::env::set_var(
-            phoxal::participant::launch::env::INCARNATION,
-            incarnation.to_string(),
+            "--producer-id is not accepted by the Webots-owned controller; it mints its own \
+             process identity"
         );
     }
     phoxal::run::<WebotsControllerSimulator>()
 }
 
-fn has_explicit_incarnation_arg(args: impl IntoIterator<Item = OsString>) -> bool {
+fn has_explicit_producer_arg(args: impl IntoIterator<Item = OsString>) -> bool {
     args.into_iter().any(|arg| {
-        arg == "--incarnation"
+        arg == "--producer-id"
             || arg
                 .to_str()
-                .is_some_and(|arg| arg.starts_with("--incarnation="))
+                .is_some_and(|arg| arg.starts_with("--producer-id="))
     })
 }
 
@@ -178,10 +155,10 @@ impl WebotsControllerSimulator {
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let clock = ctx
-            .publisher(api::topic::internal::new(cap).simulation().clock())
+            .state_publisher(api::topic::internal::new(cap).simulation().clock())
             .await?;
         let battery = ctx
-            .publisher(api::topic::internal::new(cap).battery().state())
+            .state_publisher(api::topic::internal::new(cap).battery().state())
             .await?;
 
         let mut motor_commands = Vec::new();
@@ -201,7 +178,7 @@ impl WebotsControllerSimulator {
         let mut encoders = Vec::new();
         for spec in &catalog.encoders {
             encoders.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.reference.component_id)
                         .encoder(&spec.reference.capability_id)
@@ -214,7 +191,7 @@ impl WebotsControllerSimulator {
         let mut imus = Vec::new();
         for spec in &catalog.imus {
             imus.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.reference.component_id)
                         .imu(&spec.reference.capability_id)
@@ -227,7 +204,7 @@ impl WebotsControllerSimulator {
         let mut accelerometers = Vec::new();
         for spec in &catalog.accelerometers {
             accelerometers.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.reference.component_id)
                         .accelerometer(&spec.reference.capability_id)
@@ -240,7 +217,7 @@ impl WebotsControllerSimulator {
         let mut gyroscopes = Vec::new();
         for spec in &catalog.gyroscopes {
             gyroscopes.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.reference.component_id)
                         .gyroscope(&spec.reference.capability_id)
@@ -253,7 +230,7 @@ impl WebotsControllerSimulator {
         let mut ranges = Vec::new();
         for spec in &catalog.ranges {
             ranges.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.sampled.reference.component_id)
                         .range(&spec.sampled.reference.capability_id)
@@ -266,7 +243,7 @@ impl WebotsControllerSimulator {
         let mut cameras = Vec::new();
         for spec in &catalog.cameras {
             cameras.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.sampled.reference.component_id)
                         .camera(&spec.sampled.reference.capability_id)
@@ -279,7 +256,7 @@ impl WebotsControllerSimulator {
         let mut depths = Vec::new();
         for spec in &catalog.depths {
             depths.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.sampled.reference.component_id)
                         .depth(&spec.sampled.reference.capability_id)
@@ -292,7 +269,7 @@ impl WebotsControllerSimulator {
         let mut gnss = Vec::new();
         for spec in &catalog.gnss {
             gnss.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.sampled.reference.component_id)
                         .gnss(&spec.sampled.reference.capability_id)
@@ -305,7 +282,7 @@ impl WebotsControllerSimulator {
         let mut emergency_stops = Vec::new();
         for spec in &catalog.emergency_stops {
             emergency_stops.push(
-                ctx.publisher(
+                ctx.state_publisher(
                     api::topic::internal::new(cap)
                         .component(&spec.reference.component_id)
                         .emergency_stop(&spec.reference.capability_id)
@@ -353,9 +330,9 @@ impl WebotsControllerSimulator {
             emergency_stops,
             battery,
         };
-        let mut epoch_source = SystemEpochSource;
+
         let runtime = ControllerRuntime {
-            epoch: mint_epoch(&mut epoch_source)?,
+            authority: TimelineAuthority::__mint(TimelineId::mint())?,
             step_index: 0,
             backend: Arc::clone(&backend),
             emergency_stop_states,
@@ -422,24 +399,19 @@ impl ControllerRuntime {
         .await
         .context("Webots step worker failed to join")??;
 
-        let at = LogicalTime::new(self.epoch, step.now_ns);
-        self.publish_outputs(api, at, step.outputs).await?;
+        // One completed world advance mints one token, and every output of
+        // that advance is stamped with it. There is no other way for this
+        // process to express a robot instant.
+        let world_step = self.authority.completed_step(step.now_ns);
+        self.publish_outputs(api, &world_step, step.outputs)?;
         api.clock
-            .publish_at(
-                at,
-                api::simulation::Clock {
-                    epoch: self.epoch,
-                    now_ns: step.now_ns,
-                    step: next_step,
-                },
-            )
-            .await?;
+            .publish(&world_step, api::simulation::Clock { step: next_step })?;
         self.step_index = next_step;
         tracing::trace!(
             target: "simulator_webots_controller",
-            epoch = self.epoch,
+            timeline = %self.authority.timeline(),
             step = self.step_index,
-            time_ns = step.now_ns,
+            ticks = step.now_ns,
             "external Webots step committed"
         );
         if step.is_stub {
@@ -452,90 +424,100 @@ impl ControllerRuntime {
         api.motor_commands.iter().map(drain_latest).collect()
     }
 
-    async fn publish_outputs(
+    fn publish_outputs(
         &mut self,
         api: &Api,
-        at: LogicalTime,
+        world_step: &WorldStepToken,
         outputs: BackendOutput,
     ) -> Result<()> {
+        // Simulated sensors read the world at exactly the instant the world
+        // advanced to, so their capture is exact rather than uncertain.
+        let captured_at = CaptureStamp::exact(world_step.instant());
         for (publisher, sample) in api.encoders.iter().zip(outputs.encoders) {
             if let Some(sample) = sample {
-                publisher.publish_at(at, sample).await?;
+                publisher.publish(captured_at, sample)?;
             }
         }
         for (publisher, sample) in api.imus.iter().zip(outputs.imus) {
             if let Some(sample) = sample {
-                publisher.publish_at(at, sample).await?;
+                publisher.publish(captured_at, sample)?;
             }
         }
         for (publisher, sample) in api.accelerometers.iter().zip(outputs.accelerometers) {
             if let Some(sample) = sample {
-                publisher.publish_at(at, sample).await?;
+                publisher.publish(captured_at, sample)?;
             }
         }
         for (publisher, sample) in api.gyroscopes.iter().zip(outputs.gyroscopes) {
             if let Some(sample) = sample {
-                publisher.publish_at(at, sample).await?;
+                publisher.publish(captured_at, sample)?;
             }
         }
         for (publisher, sample) in api.ranges.iter().zip(outputs.ranges) {
             if let Some(sample) = sample {
-                publisher.publish_at(at, sample).await?;
+                publisher.publish(captured_at, sample)?;
             }
         }
         for (publisher, frame) in api.cameras.iter().zip(outputs.cameras) {
             if let Some(frame) = frame {
-                publisher.publish_at(at, frame).await?;
+                publisher.publish(captured_at, frame)?;
             }
         }
         for (publisher, frame) in api.depths.iter().zip(outputs.depths) {
             if let Some(frame) = frame {
-                publisher.publish_at(at, frame).await?;
+                publisher.publish(captured_at, frame)?;
             }
         }
         for (publisher, sample) in api.gnss.iter().zip(outputs.gnss) {
             if let Some(sample) = sample {
-                publisher.publish_at(at, sample).await?;
+                publisher.publish(captured_at, sample)?;
             }
         }
+        // The emergency-stop component publishes `state`, so it is stamped
+        // with the world step like any other state - no privileged path.
         for (publisher, engaged) in api.emergency_stops.iter().zip(&self.emergency_stop_states) {
-            publisher
-                .publish_at(
-                    at,
-                    api::component::emergency_stop::State { engaged: *engaged },
-                )
-                .await?;
+            publisher.publish(
+                world_step,
+                api::component::emergency_stop::State { engaged: *engaged },
+            )?;
         }
-        if let Some(state) = self.battery_state(at) {
-            api.battery.publish_at(at, state).await?;
+        if let Some(state) = self.battery_state(world_step.instant()) {
+            api.battery.publish(world_step, state)?;
         }
         Ok(())
     }
 
-    fn battery_state(&mut self, at: LogicalTime) -> Option<api::battery::State> {
-        if self
+    fn battery_state(&mut self, at: RobotInstant) -> Option<api::battery::State> {
+        // A replaced world starts from a full battery: the previous world's
+        // discharge describes a history that no longer exists. `duration_since`
+        // returning an error is exactly that signal.
+        let elapsed = self
             .last_battery_update
-            .is_some_and(|previous| previous.epoch() != at.epoch())
-        {
-            self.battery_charge_ratio = 1.0;
-            self.last_battery_publish = None;
-        }
-        if let Some(previous) = self.last_battery_update
-            && at.epoch() == previous.epoch()
-            && at.time_ns() >= previous.time_ns()
-        {
-            self.battery_charge_ratio = discharge(
-                self.battery_charge_ratio,
-                DRAW_CURRENT_A,
-                (at.time_ns() - previous.time_ns()) as f64 / 1_000_000_000.0,
-                CAPACITY_AH,
-            );
+            .map(|previous| at.duration_since(previous));
+        match elapsed {
+            Some(Err(_)) => {
+                self.battery_charge_ratio = 1.0;
+                self.last_battery_publish = None;
+            }
+            Some(Ok(elapsed)) => {
+                self.battery_charge_ratio = discharge(
+                    self.battery_charge_ratio,
+                    DRAW_CURRENT_A,
+                    elapsed.as_secs_f64(),
+                    CAPACITY_AH,
+                );
+            }
+            None => {}
         }
         self.last_battery_update = Some(at);
 
+        // A replaced world already cleared `last_battery_publish` above, so a
+        // cross-timeline `duration_since` cannot reach this point; treating an
+        // error as "not due" is therefore unreachable rather than a silent
+        // suppression.
         let due = self.last_battery_publish.is_none_or(|previous| {
-            previous.epoch() != at.epoch()
-                || at.time_ns().saturating_sub(previous.time_ns()) >= BATTERY_PUBLISH_NS
+            at.duration_since(previous)
+                .is_ok_and(|elapsed| elapsed >= BATTERY_PUBLISH)
         });
         if !due {
             return None;
@@ -1012,6 +994,8 @@ impl NativeBackend {
         }
 
         Ok(BackendOutput {
+            // The encoder is the one sensor that still needs the instant: it
+            // differentiates position over the step to report velocity.
             encoders: self
                 .encoders
                 .iter_mut()
@@ -1020,7 +1004,7 @@ impl NativeBackend {
             imus: self
                 .imus
                 .iter()
-                .map(|sensor| sensor.read_if_due(step_index, time_ns))
+                .map(|sensor| sensor.read_if_due(step_index))
                 .collect::<Result<_>>()?,
             accelerometers: self
                 .accelerometers
@@ -1035,17 +1019,17 @@ impl NativeBackend {
             ranges: self
                 .ranges
                 .iter()
-                .map(|sensor| sensor.read_if_due(step_index, time_ns))
+                .map(|sensor| sensor.read_if_due(step_index))
                 .collect::<Result<_>>()?,
             cameras: self
                 .cameras
                 .iter()
-                .map(|sensor| sensor.read_if_due(step_index, time_ns))
+                .map(|sensor| sensor.read_if_due(step_index))
                 .collect::<Result<_>>()?,
             depths: self
                 .depths
                 .iter()
-                .map(|sensor| sensor.read_if_due(step_index, time_ns))
+                .map(|sensor| sensor.read_if_due(step_index))
                 .collect::<Result<_>>()?,
             gnss: self
                 .gnss
@@ -1166,21 +1150,8 @@ fn mapping<B: ContractBody>(role: phoxal::participant::ContractRole) -> Contract
 mod tests {
     use super::*;
     use phoxal::participant::{Participant, ParticipantApi, ParticipantLifecycle};
-    use phoxal::raw::{Bus, BusConfig, OwnerCap, Publisher, Subscriber};
-    use std::collections::VecDeque;
+    use phoxal::raw::{Bus, BusConfig, OwnerCap, StatePublisher, Subscriber};
     use std::time::Duration;
-
-    struct SequenceEpochSource {
-        candidates: VecDeque<u64>,
-    }
-
-    impl EpochSource for SequenceEpochSource {
-        fn next_candidate(&mut self) -> Result<u64> {
-            self.candidates
-                .pop_front()
-                .context("test epoch sequence exhausted")
-        }
-    }
 
     #[test]
     fn api_declares_clock_component_and_battery_contracts() {
@@ -1255,30 +1226,17 @@ mod tests {
     }
 
     #[test]
-    fn epoch_minting_rejects_zero_and_keeps_process_and_simulation_identity_independent() {
-        let mut source = SequenceEpochSource {
-            candidates: VecDeque::from([41, 0, 52]),
-        };
-
-        let incarnation = mint_epoch(&mut source).expect("process incarnation should mint");
-        let simulation_epoch = mint_epoch(&mut source).expect("simulation epoch should mint");
-        assert_eq!(incarnation, 41);
-        assert_eq!(simulation_epoch, 52);
-        assert_ne!(incarnation, simulation_epoch);
-    }
-
-    #[test]
-    fn controller_rejects_cli_incarnation_overrides() {
-        assert!(has_explicit_incarnation_arg([
+    fn controller_rejects_cli_producer_overrides() {
+        assert!(has_explicit_producer_arg([
             OsString::from("webots-controller"),
-            OsString::from("--incarnation"),
-            OsString::from("42"),
+            OsString::from("--producer-id"),
+            OsString::from("00112233445566778899aabbccddeeff"),
         ]));
-        assert!(has_explicit_incarnation_arg([
+        assert!(has_explicit_producer_arg([
             OsString::from("webots-controller"),
-            OsString::from("--incarnation=42"),
+            OsString::from("--producer-id=00112233445566778899aabbccddeeff"),
         ]));
-        assert!(!has_explicit_incarnation_arg([
+        assert!(!has_explicit_producer_arg([
             OsString::from("webots-controller"),
             OsString::from("--robot-id"),
             OsString::from("rover"),
@@ -1297,7 +1255,10 @@ mod tests {
         let namespace = format!(
             "test/webots-controller-order/{}/{}",
             std::process::id(),
-            phoxal::raw::host_time().time_ns()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|since| since.as_nanos())
+                .unwrap_or_default()
         );
         let bus = Bus::open(BusConfig::in_process(namespace, "robot"))
             .await
@@ -1315,7 +1276,7 @@ mod tests {
                 .await
                 .expect("battery subscriber should attach");
         let api = Api {
-            clock: Publisher::new(
+            clock: StatePublisher::new(
                 bus.clone(),
                 &api::topic::internal::new(cap).simulation().clock(),
             )
@@ -1330,14 +1291,15 @@ mod tests {
             depths: Vec::new(),
             gnss: Vec::new(),
             emergency_stops: Vec::new(),
-            battery: Publisher::new(
+            battery: StatePublisher::new(
                 bus.clone(),
                 &api::topic::internal::new(cap).battery().state(),
             )
             .expect("battery publisher should attach"),
         };
+        let timeline = TimelineId::from_raw(77).expect("test timeline must be nonzero");
         let mut runtime = ControllerRuntime {
-            epoch: 77,
+            authority: TimelineAuthority::__mint(timeline).expect("authority should mint"),
             step_index: 0,
             backend: Arc::new(Mutex::new(BackendControl {
                 backend: Backend::Stub(StubBackend::new(&CapabilityCatalog::default())),
@@ -1362,15 +1324,14 @@ mod tests {
             .expect("clock should arrive")
             .expect("clock should decode");
 
-        assert_eq!(battery.metadata.epoch, 77);
-        assert_eq!(battery.metadata.produced_at_ns, 10_000_000);
-        assert_eq!(clock.metadata.epoch, 77);
-        assert_eq!(clock.metadata.produced_at_ns, 10_000_000);
-        assert_eq!(clock.body.epoch, 77);
-        assert_eq!(clock.body.now_ns, 10_000_000);
+        // Every output of one completed world step shares that step's exact
+        // instant, and it rides in the envelope rather than in any body.
+        let expected = RobotInstant::new(timeline, 10_000_000);
+        assert_eq!(battery.metadata.produced_exactly_at(), Some(expected));
+        assert_eq!(clock.metadata.produced_exactly_at(), Some(expected));
         assert_eq!(clock.body.step, 1);
         assert!(
-            battery.metadata.source.sequence < clock.metadata.source.sequence,
+            battery.metadata.sequence < clock.metadata.sequence,
             "all completed-world outputs must enqueue before the matching clock"
         );
         assert_eq!(runtime.step_index, 1);

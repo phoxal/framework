@@ -14,7 +14,7 @@ struct Config {}
 #[derive(phoxal::Api)]
 struct Api {
     // On-robot counterparts: checked normally.
-    state: Publisher<api::drive::State>,
+    state: StatePublisher<api::drive::State>,
 
     // The publisher of drive::Target is the operator app (off-robot); in a
     // teleop-only robot.yaml no pinned participant publishes it. `external`
@@ -37,7 +37,7 @@ impl ExternalOnSubscribe {
             Self,
             Self::Api {
                 state: ctx
-                    .publisher(api::topic::internal::new(cap).drive().state())
+                    .state_publisher(api::topic::internal::new(cap).drive().state())
                     .await?,
                 target: ctx
                     .latest(api::topic::internal::new(cap).drive().target())

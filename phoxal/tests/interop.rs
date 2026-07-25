@@ -23,7 +23,7 @@ const TARGET_LINEAR_MPS: f32 = 0.5;
 
 #[derive(phoxal::Api)]
 struct ProducerApi {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 /// Publishes a fixed `drive/target` every step.
@@ -37,23 +37,20 @@ impl Producer {
         Ok((
             Self,
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx
+                    .command_publisher(api::topic::new().drive().target())
+                    .await?,
             },
         ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        api.target
-            .publish_at(
-                step.time(),
-                api::drive::Target {
-                    linear_x_mps: TARGET_LINEAR_MPS,
-                    angular_z_radps: 0.0,
-                    curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
+        api.target.send(api::drive::Target {
+            linear_x_mps: TARGET_LINEAR_MPS,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        })?;
         Ok(())
     }
 }

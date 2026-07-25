@@ -27,6 +27,7 @@ clap = { workspace = true, features = ["derive", "env"] }
 const_format = { workspace = true }
 derive-new = { workspace = true }
 dotenvy = { workspace = true }
+libc = { workspace = true }
 nalgebra = { workspace = true }
 rmp-serde = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

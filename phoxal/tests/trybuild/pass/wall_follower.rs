@@ -22,12 +22,12 @@ struct Config {
 
 #[derive(phoxal::Api)]
 struct Api {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
     // OWNER-side publish of `drive/state`, built below from an owner-capability
     // internal topic (`topic::internal::new(cap)`), so this fixture exercises
     // the owner-cap path P-convert (battery, shared state, …) starts every real
     // participant with - not just the public client topics.
-    state: Publisher<api::drive::State>,
+    state: StatePublisher<api::drive::State>,
     odometry: Latest<api::drive::State>,
     lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
@@ -54,9 +54,9 @@ impl WallFollower {
         Ok((
             Self { last_error: 0.0 },
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
                 state: ctx
-                    .publisher(api::topic::internal::new(cap).drive().state())
+                    .state_publisher(api::topic::internal::new(cap).drive().state())
                     .await?,
                 odometry: ctx.latest(api::topic::new().drive().state()).await?,
                 lookup: ctx.server(api::topic::new().frame().lookup()).await?,
@@ -71,30 +71,19 @@ impl WallFollower {
             return Ok(());
         };
         self.last_error = odometry.target.linear_x_mps;
-        api.target
-            .publish_at(
-                step.time(),
-                api::drive::Target {
+        api.target.send(api::drive::Target {
                     linear_x_mps: 0.2,
                     angular_z_radps: 0.0,
                     curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+                })?;
         // Owner-side publish of the drive state, over the internal topic bound
         // in `#[setup]`.
-        api.state
-            .publish_at(
-                step.time(),
-                api::drive::State {
+        api.state.publish(step.token(), api::drive::State {
                     target: odometry.target.clone(),
                     limited_target: odometry.target,
                     actuator_authority: api::drive::ActuatorAuthority::Active,
                     stop_reason: None,
-                    target_age_ns: Some(0),
-                },
-            )
-            .await?;
+                })?;
         Ok(())
     }
 
@@ -131,16 +120,11 @@ impl WallFollower {
     #[shutdown]
     async fn shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> Result<()> {
         let _ = ctx;
-        api.target
-            .publish_at(
-                LogicalTime::new(0, 0),
-                api::drive::Target {
+        api.target.send(api::drive::Target {
                     linear_x_mps: 0.0,
                     angular_z_radps: 0.0,
                     curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+                })?;
         Ok(())
     }
 }

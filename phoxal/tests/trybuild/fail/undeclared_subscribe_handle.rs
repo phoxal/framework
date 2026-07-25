@@ -1,6 +1,6 @@
 // D44: `SetupContext` builders reject building a handle for a contract the
 // `Api` struct never declared as a field. This `Api` declares only a
-// `Publisher<drive::Target>` (no `Subscriber<drive::State>`/`Latest<drive::State>`
+// `CommandPublisher<drive::Target>` (no `Subscriber<drive::State>`/`Latest<drive::State>`
 // field), so `Self::Api: DeclaresSubscribe<drive::State>` does not hold and
 // `ctx.latest(...)` for that contract must fail to compile - exactly the gap
 // `Declares*<B>` gating closes (`ParticipantApi::CONTRACTS` is now a
@@ -16,7 +16,7 @@ struct Config {}
 
 #[derive(phoxal::Api)]
 struct Api {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "undeclared-subscribe")]
@@ -31,7 +31,7 @@ impl UndeclaredSubscribe {
         Ok((
             Self,
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
             },
         ))
     }

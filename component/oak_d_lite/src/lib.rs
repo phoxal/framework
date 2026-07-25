@@ -9,11 +9,11 @@ const STEP_HZ: f64 = 100.0;
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    camera: Vec<Publisher<api::component::camera::Frame>>,
-    depth: Vec<Publisher<api::component::depth::Frame>>,
-    imu: Vec<Publisher<api::component::imu::Sample>>,
-    accelerometer: Vec<Publisher<api::component::accelerometer::Sample>>,
-    gyroscope: Vec<Publisher<api::component::gyroscope::Sample>>,
+    camera: Vec<MeasurementPublisher<api::component::camera::Frame>>,
+    depth: Vec<MeasurementPublisher<api::component::depth::Frame>>,
+    imu: Vec<MeasurementPublisher<api::component::imu::Sample>>,
+    accelerometer: Vec<MeasurementPublisher<api::component::accelerometer::Sample>>,
+    gyroscope: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
 }
 
 #[phoxal::driver(id = "oak_d_lite", config = ())]
@@ -154,7 +154,7 @@ impl OakDLite {
         let mut camera_specs = Vec::new();
         for slot in camera_slots {
             camera.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .camera(&slot.capability_id)
@@ -169,7 +169,7 @@ impl OakDLite {
         let mut depth_specs = Vec::new();
         for slot in depth_slots {
             depth.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .depth(&slot.capability_id)
@@ -184,7 +184,7 @@ impl OakDLite {
         let mut imu_divisors = Vec::new();
         for slot in imu_slots {
             imu.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .imu(&slot.capability_id)
@@ -199,7 +199,7 @@ impl OakDLite {
         let mut accelerometer_divisors = Vec::new();
         for slot in accelerometer_slots {
             accelerometer.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .accelerometer(&slot.capability_id)
@@ -214,7 +214,7 @@ impl OakDLite {
         let mut gyroscope_divisors = Vec::new();
         for slot in gyroscope_slots {
             gyroscope.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .gyroscope(&slot.capability_id)
@@ -245,36 +245,36 @@ impl OakDLite {
 
     #[step(hz = 100)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let at = step.time();
+        let at = step.now();
         let step_index = step.step_index();
 
         for (publisher, spec) in api.camera.iter().zip(&self.camera_specs) {
             if is_due(step_index, spec.divisor) {
-                publisher.publish_at(at, camera_frame(spec)).await?;
+                publisher.publish(CaptureStamp::exact(at), camera_frame(spec))?;
             }
         }
 
         for (publisher, spec) in api.depth.iter().zip(&self.depth_specs) {
             if is_due(step_index, spec.divisor) {
-                publisher.publish_at(at, depth_frame(spec)).await?;
+                publisher.publish(CaptureStamp::exact(at), depth_frame(spec))?;
             }
         }
 
         for (publisher, divisor) in api.imu.iter().zip(&self.imu_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, imu_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), imu_sample())?;
             }
         }
 
         for (publisher, divisor) in api.accelerometer.iter().zip(&self.accelerometer_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, accelerometer_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), accelerometer_sample())?;
             }
         }
 
         for (publisher, divisor) in api.gyroscope.iter().zip(&self.gyroscope_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, gyroscope_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), gyroscope_sample())?;
             }
         }
 
@@ -345,7 +345,6 @@ fn camera_frame(spec: &CameraSpec) -> api::component::camera::Frame {
         intrinsics: None,
         distortion: None,
         exposure: None,
-        measured_at_ns: None,
         calibration: None,
         data: vec![0u8; spec.data_len],
     }
@@ -361,7 +360,6 @@ fn depth_frame(spec: &DepthSpec) -> api::component::depth::Frame {
         intrinsics: None,
         distortion: None,
         exposure: None,
-        measured_at_ns: None,
         calibration: None,
     }
 }
@@ -374,7 +372,6 @@ fn imu_sample() -> api::component::imu::Sample {
         covariance: None,
         noise_density: None,
         sensor_frame_id: None,
-        measured_at_ns: None,
         health: api::component::imu::SensorHealth::Nominal,
         bias: None,
     }

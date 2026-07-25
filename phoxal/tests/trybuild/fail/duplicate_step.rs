@@ -7,7 +7,7 @@ struct Config {}
 
 #[derive(phoxal::Api)]
 struct Api {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "dup-step")]
@@ -20,7 +20,7 @@ impl DupStep {
         Ok((
             Self,
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
             },
         ))
     }

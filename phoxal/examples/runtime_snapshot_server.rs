@@ -45,7 +45,7 @@ struct Config {}
 #[derive(phoxal::Api)]
 struct Api {
     localize: Latest<api::localize::LocalizationState>,
-    revision: Publisher<api::map::Revision>,
+    revision: StatePublisher<api::map::Revision>,
     get_asset: Server<api::asset::GetRequest, api::asset::GetResponse>,
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
@@ -74,7 +74,7 @@ impl SnapshotMap {
                 // serves below, so they go through the owner (`internal`)
                 // builder; `localize/state` is consumed via the public builder.
                 revision: ctx
-                    .publisher(api::topic::internal::new(cap).map().revision())
+                    .state_publisher(api::topic::internal::new(cap).map().revision())
                     .await?,
                 get_asset: ctx.server(api::topic::new().asset().get()).await?,
                 submap: ctx.server(api::topic::new().map().submap()).await?,
@@ -87,15 +87,13 @@ impl SnapshotMap {
         if api.localize.latest().is_some() {
             self.rev = self.rev.saturating_add(1);
         }
-        api.revision
-            .publish_at(
-                step.time(),
-                api::map::Revision {
-                    revision: self.rev,
-                    resolution_m: self.grid.resolution_m,
-                },
-            )
-            .await?;
+        api.revision.publish(
+            step.token(),
+            api::map::Revision {
+                revision: self.rev,
+                resolution_m: self.grid.resolution_m,
+            },
+        )?;
         Ok(())
     }
 

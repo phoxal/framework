@@ -24,11 +24,11 @@ pub use api::{
     Participant, ParticipantApi, ParticipantConfig, ParticipantLifecycle, Server,
     SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
 };
-pub use clock::{ClockSource, RealClock, TestClock};
-pub use context::{ResetContext, SetupContext, ShutdownContext, StepContext};
-pub use launch::{
-    BusProfile, ClockMode, ExecutionDeviceId, MAX_EXECUTION_DEVICE_ID_BYTES, ParticipantLaunch,
+pub use clock::{
+    BootId, ClockReading, ClockSource, ExecutionOrigin, RealClock, TestClock, TimeUnsynchronized,
 };
+pub use context::{ResetContext, SetupContext, ShutdownContext, StepContext};
+pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use managed::ManagedTaskPolicy;
 pub use runner::{run, run_async, run_with};
 pub use scheduler::{
@@ -37,10 +37,6 @@ pub use scheduler::{
 };
 pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{IsDriver, IsSimulator, IsTool, MissedTick, StepSchedule, TypedGraphSurface};
-
-/// Re-exported so authoring code can name logical time without reaching into
-/// `bus` (the prelude re-exports this).
-pub use crate::bus::LogicalTime;
 
 #[cfg(test)]
 mod tests;

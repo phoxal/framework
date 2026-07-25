@@ -21,7 +21,7 @@ use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 
-const CAMERA_STALE_NS: u64 = 1_000_000_000;
+const CAMERA_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone)]
 struct VideoSource {
@@ -76,7 +76,7 @@ use api::video::stream::{StreamPhase, StreamState};
 #[derive(phoxal::Api)]
 pub struct Api {
     cameras: Vec<Subscriber<api::component::camera::Frame>>,
-    states: Vec<Publisher<StreamState>>,
+    states: Vec<StatePublisher<StreamState>>,
     open: Server<api::video::OpenRequest, api::video::OpenResponse>,
 }
 
@@ -87,8 +87,7 @@ pub struct Video {
     active: Vec<bool>,
     phase: Vec<StreamPhase>,
     frames_seen: Vec<u64>,
-    last_frame: Vec<Option<LogicalTime>>,
-    last_time: LogicalTime,
+    last_frame: Vec<Option<TimeWindow>>,
 }
 
 impl Video {
@@ -97,17 +96,15 @@ impl Video {
         &mut self,
         api: &mut Api,
         index: usize,
-        time: LogicalTime,
+        step: StepContext,
     ) -> Result<()> {
-        api.states[index]
-            .publish_at(
-                time,
-                StreamState {
-                    phase: self.phase[index],
-                    frames_seen: self.frames_seen[index],
-                },
-            )
-            .await?;
+        api.states[index].publish(
+            step.token(),
+            StreamState {
+                phase: self.phase[index],
+                frames_seen: self.frames_seen[index],
+            },
+        )?;
         Ok(())
     }
 }
@@ -125,7 +122,7 @@ impl Video {
         let mut states = Vec::with_capacity(sources.len());
         for source in &sources {
             cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
-            states.push(ctx.publisher(source.state_topic(cap)).await?);
+            states.push(ctx.state_publisher(source.state_topic(cap)).await?);
         }
         let open = ctx.server(api::topic::new().video().open()).await?;
 
@@ -135,7 +132,6 @@ impl Video {
                 phase: vec![StreamPhase::Stopped; sources.len()],
                 frames_seen: vec![0; sources.len()],
                 last_frame: vec![None; sources.len()],
-                last_time: LogicalTime::new(0, 0),
                 sources,
             },
             Self::Api {
@@ -147,7 +143,7 @@ impl Video {
     }
 
     #[reset]
-    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
         for (active, phase) in self.active.iter().zip(&mut self.phase) {
             *phase = if *active {
                 StreamPhase::Starting
@@ -157,51 +153,38 @@ impl Video {
         }
         self.frames_seen.fill(0);
         self.last_frame.fill(None);
-        self.last_time = LogicalTime::new(ctx.new_epoch(), 0);
         Ok(())
     }
 
     #[step(hz = 30)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        self.last_time = step.time();
         for index in 0..api.cameras.len() {
             let mut saw_frame = false;
-            while let Some(received) = api.cameras[index].try_recv() {
-                let _raw_frame_identity = (
-                    received.body.width,
-                    received.body.height,
-                    received.body.encoding,
-                    received.body.measured_at_ns,
-                );
+            while let Some(observed) = api.cameras[index].try_recv() {
+                let captured_at = observed.metadata.produced_at;
                 if !self.active[index] {
-                    self.last_frame[index] = Some(LogicalTime::new(
-                        received.metadata.epoch,
-                        received.metadata.produced_at_ns,
-                    ));
+                    self.last_frame[index] = captured_at;
                     continue;
                 }
                 self.frames_seen[index] = self.frames_seen[index].saturating_add(1);
-                self.last_frame[index] = Some(LogicalTime::new(
-                    received.metadata.epoch,
-                    received.metadata.produced_at_ns,
-                ));
+                self.last_frame[index] = captured_at;
                 saw_frame = true;
             }
             if saw_frame {
-                self.publish_state(api, index, step.time()).await?;
+                self.publish_state(api, index, step).await?;
             }
         }
 
         for index in 0..self.sources.len() {
             if self.active[index] {
-                let next = if frame_is_fresh(self.last_frame[index], step.time()) {
+                let next = if frame_is_fresh(self.last_frame[index], step.now()) {
                     StreamPhase::Active
                 } else {
                     StreamPhase::Starting
                 };
                 if self.phase[index] != next {
                     self.phase[index] = next;
-                    self.publish_state(api, index, step.time()).await?;
+                    self.publish_state(api, index, step).await?;
                 }
             }
         }
@@ -227,22 +210,27 @@ impl Video {
 
     #[shutdown]
     async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
+        // Shutdown is outside every step, so there is no instant to publish a
+        // final `StreamState` at. Marking the streams stopped locally is the
+        // whole obligation: consumers see the stream go silent, which is the
+        // same signal a killed process gives.
+        let _ = api;
         for index in 0..self.sources.len() {
-            if self.active[index] || self.phase[index] != StreamPhase::Stopped {
-                self.phase[index] = StreamPhase::Stopped;
-                let _ = self.publish_state(api, index, self.last_time).await;
-            }
+            self.phase[index] = StreamPhase::Stopped;
             self.active[index] = false;
         }
         Ok(())
     }
 }
 
-fn frame_is_fresh(at: Option<LogicalTime>, now: LogicalTime) -> bool {
-    at.is_some_and(|at| {
-        at.epoch() == now.epoch()
-            && at.time_ns() <= now.time_ns()
-            && now.time_ns().saturating_sub(at.time_ns()) <= CAMERA_STALE_NS
+/// Whether the newest camera capture is recent enough to call the stream
+/// active. A capture the driver could not translate into robot time, or one
+/// from a replaced world, is never fresh.
+fn frame_is_fresh(captured_at: Option<TimeWindow>, now: RobotInstant) -> bool {
+    captured_at.is_some_and(|captured_at| {
+        captured_at
+            .possibly_fresh_within(now, CAMERA_STALE)
+            .unwrap_or(false)
     })
 }
 
@@ -375,7 +363,7 @@ mod tests {
         assert_eq!(rgb.stream_id, "front_camera_rgb");
         assert_eq!(
             rgb.camera_topic().key(),
-            "v0.2/component/front_camera/camera/rgb/frame"
+            "v0.1/component/front_camera/camera/rgb/frame"
         );
         // The owner topic builder requires the runner-minted `OwnerCap` (L2); the
         // test mints one directly via the doc-hidden `__mint`, standing in for the
@@ -383,7 +371,7 @@ mod tests {
         let cap = phoxal::bus::OwnerCap::__mint();
         assert_eq!(
             rgb.state_topic(cap).key(),
-            "v0.2/video/stream/front_camera_rgb/state"
+            "v0.1/video/stream/front_camera_rgb/state"
         );
     }
 

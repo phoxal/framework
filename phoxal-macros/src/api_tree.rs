@@ -146,6 +146,8 @@ mod kw {
     syn::custom_keyword!(topic);
     syn::custom_keyword!(command);
     syn::custom_keyword!(state);
+    syn::custom_keyword!(measurement);
+    syn::custom_keyword!(diagnostic);
     syn::custom_keyword!(query);
 }
 
@@ -200,14 +202,16 @@ struct TopicDef {
     replace: bool,
     leaf: TopicLeaf,
     kind: TopicKind,
-    /// The semantic role declared by the topic's role keyword (`command` /
-    /// `state` / `query`). `command` and `state` both produce a [`TopicKind::PubSub`]
-    /// on the wire, while `query` produces a [`TopicKind::Query`]. The role selects
-    /// the SIDE BRAND in the generated builders (L1): per (role, side) a leaf
-    /// returns `Publish` / `Subscribe` / `AskQuery` / `ServeQuery`, so the public
-    /// (client) and `internal` (owner) builders return different branded topics.
-    /// The role is also emitted as a `ROLE` const on each body; it is not yet
-    /// surfaced by `emit-apis` (a later increment of plan #00).
+    /// The semantic and temporal role declared by the topic's role keyword.
+    /// `command`, `state`, `measurement`, and `diagnostic` all produce a
+    /// [`TopicKind::PubSub`] on the wire, while `query` produces a
+    /// [`TopicKind::Query`]. The role selects the SIDE BRAND in the generated
+    /// builders (L1): per (role, side) a leaf returns `Publish` / `Subscribe` /
+    /// `AskQuery` / `ServeQuery`, so the public (client) and `internal` (owner)
+    /// builders return different branded topics. It is also emitted as
+    /// `ContractBody::ROLE` plus the matching temporal-role marker impl, which
+    /// is what fixes the robot time a publisher of the body can express (#952
+    /// section D).
     role: TopicRole,
 }
 
@@ -231,12 +235,15 @@ impl TopicLeaf {
     }
 }
 
-/// The semantic role of a topic, mirroring `phoxal_bus::TopicRole`. Parsed from
-/// the role keyword and threaded into the generated `ROLE` const.
-#[derive(Clone, Copy)]
+/// The semantic and temporal role of a topic, mirroring `phoxal_bus::TopicRole`.
+/// Parsed from the role keyword and threaded into the generated
+/// `ContractBody::ROLE` const and temporal-role marker impl.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum TopicRole {
     Command,
     State,
+    Measurement,
+    Diagnostic,
     Query,
 }
 
@@ -246,8 +253,29 @@ impl TopicRole {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::TopicRole::Command },
             TopicRole::State => quote! { ::phoxal_bus::TopicRole::State },
+            TopicRole::Measurement => quote! { ::phoxal_bus::TopicRole::Measurement },
+            TopicRole::Diagnostic => quote! { ::phoxal_bus::TopicRole::Diagnostic },
             TopicRole::Query => quote! { ::phoxal_bus::TopicRole::Query },
         }
+    }
+
+    /// The temporal-role marker trait a body of this role implements. `query`
+    /// has none: a request/response leg expresses no robot time and is served
+    /// through the runner, not a publisher handle.
+    fn marker_trait(self) -> Option<TokenStream> {
+        match self {
+            TopicRole::Command => Some(quote! { ::phoxal_bus::CommandContract }),
+            TopicRole::State => Some(quote! { ::phoxal_bus::StateContract }),
+            TopicRole::Measurement => Some(quote! { ::phoxal_bus::MeasurementContract }),
+            TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
+            TopicRole::Query => None,
+        }
+    }
+
+    /// Whether the owning participant publishes this role (as opposed to
+    /// subscribing it).
+    fn owner_publishes(self) -> bool {
+        !matches!(self, TopicRole::Command)
     }
 }
 
@@ -464,11 +492,12 @@ impl Parse for TopicDef {
             TopicLeaf::Named(input.parse()?)
         };
         input.parse::<Token![:]>()?;
-        // Every topic declares a role. `command`/`state` carry a single pub/sub
-        // body and differ by role; `query` carries request/response. The role
-        // rides alongside the kind and selects the side brand in the generated
-        // builders (L1): a `command` leaf is `Publish` on the public builder and
-        // `Subscribe` on `internal`; a `state` leaf is the reverse.
+        // Every topic declares a role. `command`, `state`, `measurement`, and
+        // `diagnostic` carry a single pub/sub body and differ by role; `query`
+        // carries request/response. The role rides alongside the kind and
+        // selects the side brand in the generated builders (L1): a `command`
+        // leaf is `Publish` on the public builder and `Subscribe` on
+        // `internal`; every owner-published role is the reverse.
         let (kind, role) = if input.peek(kw::command) {
             input.parse::<kw::command>()?;
             let body: Ident = input.parse()?;
@@ -477,6 +506,14 @@ impl Parse for TopicDef {
             input.parse::<kw::state>()?;
             let body: Ident = input.parse()?;
             (TopicKind::PubSub(body), TopicRole::State)
+        } else if input.peek(kw::measurement) {
+            input.parse::<kw::measurement>()?;
+            let body: Ident = input.parse()?;
+            (TopicKind::PubSub(body), TopicRole::Measurement)
+        } else if input.peek(kw::diagnostic) {
+            input.parse::<kw::diagnostic>()?;
+            let body: Ident = input.parse()?;
+            (TopicKind::PubSub(body), TopicRole::Diagnostic)
         } else if input.peek(kw::query) {
             input.parse::<kw::query>()?;
             let request: Ident = input.parse()?;
@@ -485,7 +522,8 @@ impl Parse for TopicDef {
             (TopicKind::Query { request, response }, TopicRole::Query)
         } else {
             return Err(input.error(
-                "expected a topic role: `command <Body>`, `state <Body>`, or \
+                "expected a topic role: `command <Body>`, `state <Body>`, \
+                 `measurement <Body>`, `diagnostic <Body>`, or \
                  `query <Req> => <Resp>`",
             ));
         };
@@ -1057,9 +1095,13 @@ fn expand_node_module(
                 let contract = contract_for(body);
                 // The role rides as an inherent `#[doc(hidden)] pub const ROLE` on
                 // the body: additive surface that does not touch `ContractBody`.
-                // The side-branded builders are what enforce owner/client (L1);
-                // the role is not yet emitted by `emit-apis` (a later increment of
-                // plan #00).
+                // The side-branded builders enforce owner/client (L1); the
+                // temporal-role marker enforces which publisher handle - and so
+                // which robot time - this body admits (#952 section D).
+                let marker = topic
+                    .role
+                    .marker_trait()
+                    .map(|marker| quote! { impl #marker for #body {} });
                 impls.extend(quote! {
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = self::__PhoxalApiMarker;
@@ -1067,12 +1109,9 @@ fn expand_node_module(
                         const VERSION: &'static str = #version;
                         const CONTRACT: &'static str = #contract;
                         const TOPIC: &'static str = #key;
+                        const ROLE: ::phoxal_bus::TopicRole = #role;
                     }
-                    impl #body {
-                        /// The topic role recorded by `phoxal_api_tree!` (D63).
-                        #[doc(hidden)]
-                        pub const ROLE: ::phoxal_bus::TopicRole = #role;
-                    }
+                    #marker
                 });
             }
             TopicKind::Query { request, response } => {
@@ -1087,6 +1126,7 @@ fn expand_node_module(
                         const VERSION: &'static str = #version;
                         const CONTRACT: &'static str = #request_contract;
                         const TOPIC: &'static str = #key;
+                        const ROLE: ::phoxal_bus::TopicRole = #role;
                     }
                     impl ::phoxal_bus::ContractBody for #response {
                         type Api = self::__PhoxalApiMarker;
@@ -1094,16 +1134,7 @@ fn expand_node_module(
                         const VERSION: &'static str = #version;
                         const CONTRACT: &'static str = #response_contract;
                         const TOPIC: &'static str = #key;
-                    }
-                    impl #request {
-                        /// The topic role recorded by `phoxal_api_tree!` (D63).
-                        #[doc(hidden)]
-                        pub const ROLE: ::phoxal_bus::TopicRole = #role;
-                    }
-                    impl #response {
-                        /// The topic role recorded by `phoxal_api_tree!` (D63).
-                        #[doc(hidden)]
-                        pub const ROLE: ::phoxal_bus::TopicRole = #role;
+                        const ROLE: ::phoxal_bus::TopicRole = #role;
                     }
                 });
             }
@@ -1510,7 +1541,8 @@ fn expand_builder_module(
 /// The brand is picked from `(role, side)`:
 ///
 /// - `command`: client publishes (`Publish`), owner subscribes (`Subscribe`).
-/// - `state`: client subscribes (`Subscribe`), owner publishes (`Publish`).
+/// - `state` / `measurement` / `diagnostic`: client subscribes (`Subscribe`),
+///   owner publishes (`Publish`).
 /// - `query`: client asks (`AskQuery`), owner serves (`ServeQuery`).
 fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], side: Side) -> TokenStream {
     // `path[0]` is the top-level node - exactly what `__phoxal_type_root` already
@@ -1520,18 +1552,16 @@ fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], side: Side) -> TokenStr
     match &topic.kind {
         TopicKind::PubSub(body) => {
             let b = body_path(body);
-            // `command` and `state` share the pub/sub wire shape but invert which
-            // side publishes vs subscribes; the role + side pick the brand.
-            match (topic.role, side) {
-                (TopicRole::Command, Side::Client) | (TopicRole::State, Side::Owner) => {
-                    quote! { ::phoxal_bus::Publish<#b> }
-                }
-                (TopicRole::State, Side::Client) | (TopicRole::Command, Side::Owner) => {
-                    quote! { ::phoxal_bus::Subscribe<#b> }
-                }
-                // A `query` role never carries a `PubSub` kind (the parser pairs
-                // `query` with `TopicKind::Query`); fall back to the client view.
-                (TopicRole::Query, _) => quote! { ::phoxal_bus::Subscribe<#b> },
+            // Every pub/sub role shares the wire shape and differs only in
+            // which side publishes; the role + side pick the brand. (A `query`
+            // role never carries a `PubSub` kind - the parser pairs it with
+            // `TopicKind::Query` - and `owner_publishes` treats it like an
+            // owner-published role, which is unreachable but harmless.)
+            let owner_publishes = topic.role.owner_publishes();
+            match side {
+                Side::Owner if owner_publishes => quote! { ::phoxal_bus::Publish<#b> },
+                Side::Client if !owner_publishes => quote! { ::phoxal_bus::Publish<#b> },
+                _ => quote! { ::phoxal_bus::Subscribe<#b> },
             }
         }
         TopicKind::Query { request, response } => {
@@ -1839,7 +1869,7 @@ mod tests {
             "manifest family is the version-qualified contract identity (D1): {expanded}"
         );
         assert!(
-            expanded.contains("topic : \"v0.1/sample/body\""),
+            expanded.contains("topic : \"v0.2/sample/body\""),
             "manifest topic is the version-qualified wire key (D1): {expanded}"
         );
         assert!(

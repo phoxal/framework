@@ -1,0 +1,197 @@
+error[E0277]: the trait bound `phoxal::api::drive::Target: StateContract` is not satisfied
+  --> tests/trybuild/fail/wrong_temporal_publisher.rs:13:13
+   |
+13 |     target: StatePublisher<api::drive::Target>,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StateContract` is not implemented for `phoxal::api::drive::Target`
+   |
+   = help: the following other types implement trait `StateContract`:
+             Candidate
+             Clock
+             Detections
+             JointState
+             LocalizationState
+             MotionConstraints
+             Progress
+             Revision
+           and $N others
+note: required by a bound in `phoxal::bus::StatePublisher`
+  --> $WORKSPACE/phoxal-bus/src/handle.rs
+   |
+   |           pub struct $name<B: $bound>(Outbox<B>);
+   |                               ^^^^^^ required by this bound in `StatePublisher`
+...
+   | / role_publisher!(
+   | |     StatePublisher,
+   | |     -------------- required by a bound in this struct
+   | |     StateContract,
+   | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
+...  |
+   | |      safe to call from the step loop (D35/D43e)."
+   | | );
+   | |_- in this macro invocation
+   = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `phoxal::api::drive::State: CommandContract` is not satisfied
+  --> tests/trybuild/fail/wrong_temporal_publisher.rs:16:12
+   |
+16 |     state: CommandPublisher<api::drive::State>,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `CommandContract` is not implemented for `phoxal::api::drive::State`
+   |
+   = help: the following other types implement trait `CommandContract`:
+             ManualCommand
+             Rescan
+             SetEnabled
+             phoxal::api::behavior::Command
+             phoxal::api::behavior::Request
+             phoxal::api::component::led::Command
+             phoxal::api::component::motor::Command
+             phoxal::api::drive::Target
+           and $N others
+note: required by a bound in `phoxal::bus::CommandPublisher`
+  --> $WORKSPACE/phoxal-bus/src/handle.rs
+   |
+   |           pub struct $name<B: $bound>(Outbox<B>);
+   |                               ^^^^^^ required by this bound in `CommandPublisher`
+...
+   | / role_publisher!(
+   | |     CommandPublisher,
+   | |     ---------------- required by a bound in this struct
+   | |     CommandContract,
+   | |     "Sends a command.\n\nA command is a request, not an observation: it \
+   | |      expresses no robot time. The owning service stamps its own observation and \
+   | |      applies the result at a logical step."
+   | | );
+   | |_- in this macro invocation
+   = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `phoxal::api::component::imu::Sample: StateContract` is not satisfied
+  --> tests/trybuild/fail/wrong_temporal_publisher.rs:19:10
+   |
+19 |     imu: StatePublisher<api::component::imu::Sample>,
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StateContract` is not implemented for `phoxal::api::component::imu::Sample`
+   |
+   = help: the following other types implement trait `StateContract`:
+             Candidate
+             Clock
+             Detections
+             JointState
+             LocalizationState
+             MotionConstraints
+             Progress
+             Revision
+           and $N others
+note: required by a bound in `phoxal::bus::StatePublisher`
+  --> $WORKSPACE/phoxal-bus/src/handle.rs
+   |
+   |           pub struct $name<B: $bound>(Outbox<B>);
+   |                               ^^^^^^ required by this bound in `StatePublisher`
+...
+   | / role_publisher!(
+   | |     StatePublisher,
+   | |     -------------- required by a bound in this struct
+   | |     StateContract,
+   | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
+...  |
+   | |      safe to call from the step loop (D35/D43e)."
+   | | );
+   | |_- in this macro invocation
+   = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `phoxal::api::drive::Target: StateContract` is not satisfied
+ --> tests/trybuild/fail/wrong_temporal_publisher.rs:9:10
+  |
+9 | #[derive(phoxal::Api)]
+  |          ^^^^^^^^^^^ the trait `StateContract` is not implemented for `phoxal::api::drive::Target`
+  |
+  = help: the following other types implement trait `StateContract`:
+            Candidate
+            Clock
+            Detections
+            JointState
+            LocalizationState
+            MotionConstraints
+            Progress
+            Revision
+          and $N others
+note: required by a bound in `phoxal::bus::StatePublisher`
+ --> $WORKSPACE/phoxal-bus/src/handle.rs
+  |
+  |           pub struct $name<B: $bound>(Outbox<B>);
+  |                               ^^^^^^ required by this bound in `StatePublisher`
+...
+  | / role_publisher!(
+  | |     StatePublisher,
+  | |     -------------- required by a bound in this struct
+  | |     StateContract,
+  | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
+... |
+  | |      safe to call from the step loop (D35/D43e)."
+  | | );
+  | |_- in this macro invocation
+  = note: this error originates in the derive macro `phoxal::Api` which comes from the expansion of the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `phoxal::api::drive::State: CommandContract` is not satisfied
+ --> tests/trybuild/fail/wrong_temporal_publisher.rs:9:10
+  |
+9 | #[derive(phoxal::Api)]
+  |          ^^^^^^^^^^^ the trait `CommandContract` is not implemented for `phoxal::api::drive::State`
+  |
+  = help: the following other types implement trait `CommandContract`:
+            ManualCommand
+            Rescan
+            SetEnabled
+            phoxal::api::behavior::Command
+            phoxal::api::behavior::Request
+            phoxal::api::component::led::Command
+            phoxal::api::component::motor::Command
+            phoxal::api::drive::Target
+          and $N others
+note: required by a bound in `phoxal::bus::CommandPublisher`
+ --> $WORKSPACE/phoxal-bus/src/handle.rs
+  |
+  |           pub struct $name<B: $bound>(Outbox<B>);
+  |                               ^^^^^^ required by this bound in `CommandPublisher`
+...
+  | / role_publisher!(
+  | |     CommandPublisher,
+  | |     ---------------- required by a bound in this struct
+  | |     CommandContract,
+  | |     "Sends a command.\n\nA command is a request, not an observation: it \
+  | |      expresses no robot time. The owning service stamps its own observation and \
+  | |      applies the result at a logical step."
+  | | );
+  | |_- in this macro invocation
+  = note: this error originates in the derive macro `phoxal::Api` which comes from the expansion of the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `phoxal::api::component::imu::Sample: StateContract` is not satisfied
+ --> tests/trybuild/fail/wrong_temporal_publisher.rs:9:10
+  |
+9 | #[derive(phoxal::Api)]
+  |          ^^^^^^^^^^^ the trait `StateContract` is not implemented for `phoxal::api::component::imu::Sample`
+  |
+  = help: the following other types implement trait `StateContract`:
+            Candidate
+            Clock
+            Detections
+            JointState
+            LocalizationState
+            MotionConstraints
+            Progress
+            Revision
+          and $N others
+note: required by a bound in `phoxal::bus::StatePublisher`
+ --> $WORKSPACE/phoxal-bus/src/handle.rs
+  |
+  |           pub struct $name<B: $bound>(Outbox<B>);
+  |                               ^^^^^^ required by this bound in `StatePublisher`
+...
+  | / role_publisher!(
+  | |     StatePublisher,
+  | |     -------------- required by a bound in this struct
+  | |     StateContract,
+  | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
+... |
+  | |      safe to call from the step loop (D35/D43e)."
+  | | );
+  | |_- in this macro invocation
+  = note: this error originates in the derive macro `phoxal::Api` which comes from the expansion of the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)

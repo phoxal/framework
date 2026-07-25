@@ -24,7 +24,7 @@ use phoxal::prelude::*;
 /// stops drifting) rather than integrating a frozen velocity forever. The drivers
 /// publish encoder samples well above this rate (`ddsm115` at 100 Hz), so this only
 /// trips on a genuinely silent encoder. Mirrors `drive`'s stale-target guard.
-const ENCODER_STALE_NS: u64 = 200_000_000; // 0.2 s
+const ENCODER_STALE: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// One encoder binding resolved from the robot model.
 #[derive(Clone)]
@@ -109,7 +109,7 @@ impl OdometryConfig {
 pub struct Api {
     left_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
     right_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    state: Publisher<api::odometry::State>,
+    state: StatePublisher<api::odometry::State>,
 }
 
 #[phoxal::service(id = "odometry", config = ())]
@@ -121,8 +121,8 @@ pub struct Odometry {
     yaw_rad: f64,
     left_velocity_radps: Vec<f64>,
     right_velocity_radps: Vec<f64>,
-    left_sample_at: Vec<Option<LogicalTime>>,
-    right_sample_at: Vec<Option<LogicalTime>>,
+    left_sample_at: Vec<Option<RobotInstant>>,
+    right_sample_at: Vec<Option<RobotInstant>>,
 }
 
 #[phoxal::behavior]
@@ -143,7 +143,7 @@ impl Odometry {
             right_encoders.push(ctx.subscriber(binding.topic(), 32).await?);
         }
         let state = ctx
-            .publisher(api::topic::internal::new(cap).odometry().state())
+            .state_publisher(api::topic::internal::new(cap).odometry().state())
             .await?;
 
         Ok((
@@ -195,7 +195,7 @@ impl Odometry {
             &mut self.right_sample_at,
         );
 
-        let now = step.time();
+        let now = step.now();
         let left_radps = average_side(&self.left_velocity_radps, &self.left_sample_at, now);
         let right_radps = average_side(&self.right_velocity_radps, &self.right_sample_at, now);
         let (Some(left_radps), Some(right_radps)) = (left_radps, right_radps) else {
@@ -220,18 +220,16 @@ impl Odometry {
         self.y_m = y_m;
         self.yaw_rad = yaw_rad;
 
-        api.state
-            .publish_at(
-                step.time(),
-                api::odometry::State {
-                    x_m: self.x_m,
-                    y_m: self.y_m,
-                    yaw_rad: self.yaw_rad,
-                    linear_x_mps: linear_x_mps as f32,
-                    angular_z_radps: angular_z_radps as f32,
-                },
-            )
-            .await?;
+        api.state.publish(
+            step.token(),
+            api::odometry::State {
+                x_m: self.x_m,
+                y_m: self.y_m,
+                yaw_rad: self.yaw_rad,
+                linear_x_mps: linear_x_mps as f32,
+                angular_z_radps: angular_z_radps as f32,
+            },
+        )?;
         Ok(())
     }
 }
@@ -240,7 +238,7 @@ fn drain_encoders(
     subscribers: &mut [Subscriber<api::component::encoder::Sample>],
     bindings: &[EncoderBinding],
     velocities: &mut [f64],
-    sample_at: &mut [Option<LogicalTime>],
+    sample_at: &mut [Option<RobotInstant>],
 ) {
     for (((subscriber, binding), velocity), seen_at) in subscribers
         .iter_mut()
@@ -250,30 +248,27 @@ fn drain_encoders(
     {
         while let Some(sample) = subscriber.try_recv() {
             *velocity = f64::from(sample.body.velocity_radps) * f64::from(binding.direction_sign);
-            *seen_at = Some(LogicalTime::new(
-                sample.metadata.epoch,
-                sample.metadata.produced_at_ns,
-            ));
+            *seen_at = sample.metadata.produced_exactly_at();
         }
     }
 }
 
 /// Mean angular velocity of the wheels on one side, counting only wheels with a
-/// fresh sample (seen at least once and not older than [`ENCODER_STALE_NS`]). A
+/// fresh sample (seen at least once and not older than [`ENCODER_STALE`]). A
 /// side with no fresh wheel reads as stationary, so a dead encoder cannot keep
 /// the pose drifting on a frozen velocity.
 fn average_side(
     velocities: &[f64],
-    sample_at: &[Option<LogicalTime>],
-    now: LogicalTime,
+    sample_at: &[Option<RobotInstant>],
+    now: RobotInstant,
 ) -> Option<f64> {
     let mut sum = 0.0;
     let mut fresh = 0u32;
     for (velocity, seen_at) in velocities.iter().zip(sample_at) {
         if seen_at.is_some_and(|at| {
-            at.epoch() == now.epoch()
-                && at.time_ns() <= now.time_ns()
-                && now.time_ns().saturating_sub(at.time_ns()) <= ENCODER_STALE_NS
+            TimeWindow::exact(at)
+                .possibly_fresh_within(now, ENCODER_STALE)
+                .unwrap_or(false)
         }) && velocity.is_finite()
         {
             sum += *velocity;
@@ -322,11 +317,11 @@ mod tests {
 
     use phoxal::api;
     use phoxal::bus::ContractBody;
-    use phoxal::bus::LogicalTime;
+    use phoxal::bus::{RobotInstant, TimelineId};
     use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::{
-        ENCODER_STALE_NS, Odometry, OdometryConfig, average_side, forward, integrate_pose,
+        ENCODER_STALE, Odometry, OdometryConfig, average_side, forward, integrate_pose,
         normalize_yaw,
     };
 
@@ -377,18 +372,20 @@ mod tests {
 
     #[test]
     fn average_side_counts_only_fresh_wheels() {
-        let now_ns = 10 * ENCODER_STALE_NS;
-        let now = LogicalTime::new(2, now_ns);
+        let line = TimelineId::mint();
+        let stale_ns = u64::try_from(ENCODER_STALE.as_nanos()).unwrap();
+        let now_ns = 10 * stale_ns;
+        let now = RobotInstant::new(line, now_ns);
         // No wheel ever sampled → stationary.
         assert_eq!(average_side(&[3.0, 5.0], &[None, None], now), None);
         // Both fresh → plain mean.
-        let fresh = Some(LogicalTime::new(2, now_ns - 1));
+        let fresh = Some(RobotInstant::new(line, now_ns - 1));
         assert_close(
             average_side(&[3.0, 5.0], &[fresh, fresh], now).unwrap(),
             4.0,
         );
         // One wheel went silent (stale) → average over the fresh wheel only.
-        let stale = Some(LogicalTime::new(2, now_ns - ENCODER_STALE_NS - 1));
+        let stale = Some(RobotInstant::new(line, now_ns - stale_ns - 1));
         assert_close(
             average_side(&[3.0, 5.0], &[fresh, stale], now).unwrap(),
             3.0,
@@ -400,13 +397,14 @@ mod tests {
             Some(5.0)
         );
         assert_eq!(average_side(&[f64::INFINITY], &[fresh], now), None);
-        // Future and old-epoch samples must not resurrect after a reset.
+        // Samples from this step's future, and from a replaced world, must not
+        // resurrect after a reset.
         assert_eq!(
             average_side(
                 &[3.0, 5.0],
                 &[
-                    Some(LogicalTime::new(2, now_ns + 1)),
-                    Some(LogicalTime::new(1, now_ns)),
+                    Some(RobotInstant::new(line, now_ns + 1)),
+                    Some(RobotInstant::new(TimelineId::mint(), now_ns)),
                 ],
                 now,
             ),
@@ -425,7 +423,7 @@ mod tests {
 
         for binding in config.left.iter().chain(&config.right) {
             let topic = binding.topic();
-            assert!(topic.key().starts_with("v0.2/component/"));
+            assert!(topic.key().starts_with("v0.1/component/"));
             assert!(topic.key().ends_with("/sample"));
         }
     }

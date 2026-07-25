@@ -10,7 +10,7 @@ struct Config {}
 #[derive(phoxal::Api)]
 struct Api {
     #[phoxal(external)]
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "external-on-publish")]

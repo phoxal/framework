@@ -9,7 +9,7 @@ const STEP_HZ: f64 = 10.0;
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    gnss: Vec<Publisher<api::component::gnss::Sample>>,
+    gnss: Vec<MeasurementPublisher<api::component::gnss::Sample>>,
 }
 
 #[phoxal::driver(id = "zed_f9p", config = ())]
@@ -58,7 +58,7 @@ impl ZedF9p {
         let mut gnss_divisors = Vec::new();
         for slot in slots {
             gnss.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .gnss(&slot.capability_id)
@@ -74,12 +74,12 @@ impl ZedF9p {
 
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let at = step.time();
+        let at = step.now();
         let step_index = step.step_index();
 
         for (publisher, divisor) in api.gnss.iter().zip(&self.gnss_divisors) {
             if is_due(step_index, *divisor) {
-                publisher.publish_at(at, gnss_sample()).await?;
+                publisher.publish(CaptureStamp::exact(at), gnss_sample())?;
             }
         }
 
