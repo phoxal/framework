@@ -4,7 +4,6 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use cargo_metadata::{MetadataCommand, TargetKind};
-use phoxal::suite::v1::{ActivationCriticality, ActivationScope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -104,24 +103,6 @@ pub struct PhoxalPackageMetadata {
     /// name an exact triple.
     #[serde(default, rename = "unsupported-targets")]
     pub unsupported_targets: Vec<String>,
-    /// Framework-owned launch policy for official autostart artifacts.
-    #[serde(default)]
-    pub activation: Option<ArtifactActivationMetadata>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactActivationMetadata {
-    pub profiles: Vec<LaunchProfile>,
-    pub scope: ActivationScope,
-    pub criticality: ActivationCriticality,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LaunchProfile {
-    Native,
-    Webots,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -545,24 +526,6 @@ fn parse_phoxal_metadata(package_name: &str, metadata: &Value) -> Result<PhoxalP
         }
     }
     parsed.unsupported_targets.sort();
-    if let Some(activation) = &mut parsed.activation {
-        if activation.profiles.is_empty() {
-            bail!("{package_name} [package.metadata.phoxal.activation] profiles must not be empty");
-        }
-        seen.clear();
-        for profile in &activation.profiles {
-            if !seen.insert(format!("{profile:?}")) {
-                bail!(
-                    "{package_name} [package.metadata.phoxal.activation] profiles contains duplicate {}",
-                    match profile {
-                        LaunchProfile::Native => "native",
-                        LaunchProfile::Webots => "webots",
-                    }
-                );
-            }
-        }
-        activation.profiles.sort();
-    }
     Ok(parsed)
 }
 
@@ -881,67 +844,6 @@ mod tests {
             vec!["aarch64-apple-darwin", "x86_64-apple-darwin"]
         );
         Ok(())
-    }
-
-    #[test]
-    fn metadata_phoxal_accepts_strict_launch_activation() -> Result<()> {
-        let metadata = parse_phoxal_metadata(
-            "phoxal-tool-log",
-            &json!({
-                "phoxal": {
-                    "activation": {
-                        "profiles": ["webots", "native"],
-                        "scope": "per_robot",
-                        "criticality": "optional"
-                    }
-                }
-            }),
-        )?;
-        let activation = metadata.activation.context("activation metadata")?;
-        assert_eq!(
-            activation.profiles,
-            vec![LaunchProfile::Native, LaunchProfile::Webots]
-        );
-        assert_eq!(activation.scope, ActivationScope::PerRobot);
-        assert_eq!(activation.criticality, ActivationCriticality::Optional);
-        Ok(())
-    }
-
-    #[test]
-    fn metadata_phoxal_rejects_unknown_and_duplicate_activation_fields() {
-        let unknown = parse_phoxal_metadata(
-            "phoxal-tool-log",
-            &json!({
-                "phoxal": {
-                    "activation": {
-                        "profiles": ["native"],
-                        "scope": "per_robot",
-                        "criticality": "optional",
-                        "failure_policy": "keep_project_degraded"
-                    }
-                }
-            }),
-        )
-        .unwrap_err();
-        assert!(unknown.to_string().contains("invalid"), "{unknown}");
-
-        let duplicate = parse_phoxal_metadata(
-            "phoxal-tool-log",
-            &json!({
-                "phoxal": {
-                    "activation": {
-                        "profiles": ["native", "native"],
-                        "scope": "per_robot",
-                        "criticality": "optional"
-                    }
-                }
-            }),
-        )
-        .unwrap_err();
-        assert!(
-            duplicate.to_string().contains("duplicate native"),
-            "{duplicate}"
-        );
     }
 
     #[test]
