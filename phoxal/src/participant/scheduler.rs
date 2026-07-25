@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use crate::bus::{RobotInstant, TimelineId};
+use crate::bus::{LocalInstant, RobotInstant, TimelineId};
 use crate::participant::spec::MissedTick;
 use phoxal_bus::RetiredTimelines;
 
@@ -77,10 +77,12 @@ pub trait StepScheduler: Send + Sync + 'static {
 /// exactly - real mode is not allowed to regress.
 ///
 /// A [`RobotInstant`] carries no wall-clock unit of its own, so
-/// [`RealScheduler`] tracks the deadline internally as a
-/// [`tokio::time::Instant`] and only translates at the edges (`wait_until`'s
-/// `target`/`fired_at`, `now()`). Real cadence therefore never waits on a bus
-/// message (#952 section I).
+/// [`RealScheduler`] sleeps on Tokio's timer but never *reads* time from it:
+/// the timer decides when to wake, and the host's suspend-aware boot clock
+/// ([`LocalInstant`]) decides what instant was actually reached. A host that
+/// suspends for an hour therefore resumes with an hour of missed periods, not
+/// with an hour that never happened. Real cadence never waits on a bus message
+/// (#952 section I).
 pub struct RealScheduler {
     missed_tick: MissedTick,
     /// The nominal step period, needed to collapse a multi-period overrun
@@ -88,7 +90,11 @@ pub struct RealScheduler {
     /// participant has no `#[step]` schedule at all.
     period: Option<Duration>,
     timeline: TimelineId,
-    started_at: tokio::time::Instant,
+    /// The timer anchor. Tokio's timer runs on the *stopping* clock, so this
+    /// decides only when to wake up, never what time it is.
+    started_timer: tokio::time::Instant,
+    /// The boot-clock anchor every released tick is measured against.
+    started_boot: LocalInstant,
     started_ticks: u64,
 }
 
@@ -102,60 +108,88 @@ impl RealScheduler {
             missed_tick,
             period,
             timeline: now.timeline(),
-            started_at: tokio::time::Instant::now(),
+            started_timer: tokio::time::Instant::now(),
+            started_boot: LocalInstant::now(),
             started_ticks: now.ticks(),
         }
     }
 
     /// Convert an instant on this scheduler's timeline to the equivalent host
-    /// `Instant`, anchored at construction.
-    fn instant_for(&self, target: RobotInstant) -> tokio::time::Instant {
+    /// timer deadline, anchored at construction.
+    fn timer_deadline_for(&self, target: RobotInstant) -> tokio::time::Instant {
         let delta_ns = target.ticks().saturating_sub(self.started_ticks);
-        self.started_at + Duration::from_nanos(delta_ns)
+        self.started_timer + Duration::from_nanos(delta_ns)
     }
 
-    /// Convert a host `Instant` back onto this scheduler's timeline.
-    fn robot_instant_for(&self, instant: tokio::time::Instant) -> RobotInstant {
-        let elapsed = instant.saturating_duration_since(self.started_at);
-        RobotInstant::new(
-            self.timeline,
-            self.started_ticks
-                .saturating_add(duration_to_nanos_saturating(elapsed)),
-        )
+    /// How far the boot clock has moved since this scheduler was anchored.
+    fn boot_elapsed(&self) -> Duration {
+        LocalInstant::now().saturating_duration_since(self.started_boot)
     }
+}
+
+/// Resolve a released tick from the boot clock, independent of the timer that
+/// woke the task.
+///
+/// Splitting this out keeps the only arithmetic that matters testable without
+/// a host suspend: `elapsed` is a boot-clock measurement, so a test supplies
+/// the suspend directly.
+///
+/// There is no early-wake case to defend against. If the timer's clock stops
+/// during suspend while the boot clock keeps counting, the wake is *late* in
+/// boot terms; if both count, they move together; and while the host is awake a
+/// monotonic timer cannot fire before its own deadline. So one boot-clock read
+/// after the wake is enough - no re-sleep loop.
+fn resolve_tick(
+    started_ticks: u64,
+    elapsed: Duration,
+    target_ticks: u64,
+    period: Option<Duration>,
+    missed_tick: MissedTick,
+) -> (u64, u32) {
+    let fired_ticks = started_ticks.saturating_add(duration_to_nanos_saturating(elapsed));
+    // Collapse policy (D34, the v1 default): after an overrun, fire once
+    // and record how many periods were skipped rather than replaying each
+    // missed tick back-to-back (no catch-up storm). `CatchUp` is reserved
+    // for offline replay and is not driven by this scheduler (#09 scope:
+    // real + simulation only) - it resolves at `target` with no
+    // collapsing, i.e. `missed_ticks` is always 0.
+    let mut missed_ticks = 0u32;
+    if missed_tick == MissedTick::Collapse
+        && let Some(period) = period.filter(|period| !period.is_zero())
+    {
+        let period_ns = duration_to_nanos_saturating(period);
+        let mut next = target_ticks;
+        while next.saturating_add(period_ns) <= fired_ticks {
+            next = next.saturating_add(period_ns);
+            missed_ticks = missed_ticks.saturating_add(1);
+        }
+    }
+    (fired_ticks, missed_ticks)
 }
 
 impl StepScheduler for RealScheduler {
     async fn wait_until(&self, target: RobotInstant) -> SchedulerTick {
-        let deadline = self.instant_for(target);
-        tokio::time::sleep_until(deadline).await;
+        tokio::time::sleep_until(self.timer_deadline_for(target)).await;
 
-        // Collapse policy (D34, the v1 default): after an overrun, fire once
-        // and record how many periods were skipped rather than replaying each
-        // missed tick back-to-back (no catch-up storm). `CatchUp` is reserved
-        // for offline replay and is not driven by this scheduler (#09 scope:
-        // real + simulation only) - it resolves at `target` with no
-        // collapsing, i.e. `missed_ticks` is always 0.
-        let mut missed_ticks = 0u32;
-        if self.missed_tick == MissedTick::Collapse {
-            if let Some(period) = self.period.filter(|period| !period.is_zero()) {
-                let real_now = tokio::time::Instant::now();
-                let mut next_deadline = deadline;
-                while next_deadline + period <= real_now {
-                    next_deadline += period;
-                    missed_ticks = missed_ticks.saturating_add(1);
-                }
-            }
-        }
-
+        let (fired_ticks, missed_ticks) = resolve_tick(
+            self.started_ticks,
+            self.boot_elapsed(),
+            target.ticks(),
+            self.period,
+            self.missed_tick,
+        );
         SchedulerTick {
-            fired_at: self.robot_instant_for(tokio::time::Instant::now()),
+            fired_at: RobotInstant::new(self.timeline, fired_ticks),
             missed_ticks,
         }
     }
 
     fn now(&self) -> Option<RobotInstant> {
-        Some(self.robot_instant_for(tokio::time::Instant::now()))
+        Some(RobotInstant::new(
+            self.timeline,
+            self.started_ticks
+                .saturating_add(duration_to_nanos_saturating(self.boot_elapsed())),
+        ))
     }
 }
 
@@ -406,8 +440,10 @@ mod tests {
         )
     }
 
-    /// The nominal step period for `RealScheduler` tests, which sleep on real
-    /// (paused/advanced) Tokio time.
+    /// The nominal step period for `RealScheduler` tests. They sleep on real
+    /// time: Tokio's paused clock and the host boot clock are different clocks
+    /// now, so `start_paused` would advance the timer while the instant the
+    /// scheduler reports stayed put.
     const PERIOD: Duration = Duration::from_millis(10);
 
     /// The nominal step period for `SimulationScheduler` tests, expressed in
@@ -415,7 +451,7 @@ mod tests {
     /// clock, so the scale is arbitrary).
     const SIM_PERIOD: Duration = Duration::from_nanos(10);
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn real_scheduler_wakes_at_target_and_reports_no_miss_when_on_time() {
         let start = tokio::time::Instant::now();
         let scheduler = RealScheduler::new(MissedTick::Collapse, Some(PERIOD), lt(0));
@@ -428,24 +464,79 @@ mod tests {
         assert!(start.elapsed() >= PERIOD);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn real_scheduler_collapses_a_missed_tick_instead_of_bursting() {
-        let scheduler = RealScheduler::new(MissedTick::Collapse, Some(PERIOD), lt(0));
-
-        // Advance real time far past the target before ever polling
-        // `wait_until`, simulating an overrun step.
-        tokio::time::advance(Duration::from_millis(50)).await;
-
+    #[test]
+    fn real_cadence_collapses_a_missed_tick_instead_of_bursting() {
         let period_ns = PERIOD.as_nanos() as u64;
-        let tick = scheduler.wait_until(lt(period_ns)).await;
-
-        // 50ms elapsed against a 10ms period, one period already consumed by
-        // the `sleep_until(target)` itself: 4 further whole periods are
+        // 50ms of boot clock against a 10ms period, one period already
+        // consumed by the sleep to `target` itself: 4 further whole periods are
         // skipped, collapsed into this single released tick (no burst of 4
         // separate steps).
+        let (fired, missed) = resolve_tick(
+            0,
+            Duration::from_millis(50),
+            period_ns,
+            Some(PERIOD),
+            MissedTick::Collapse,
+        );
+        assert_eq!(fired, 50_000_000);
         assert_eq!(
-            tick.missed_ticks, 4,
+            missed, 4,
             "a multi-period overrun collapses to one tick, reporting the skipped count"
+        );
+    }
+
+    /// The suspend case, which is the whole reason cadence is resolved from the
+    /// boot clock: Tokio's timer stops while the host sleeps, so it reports a
+    /// tick that fired "on time" after an hour of nothing. The boot clock does
+    /// not, and every skipped period is accounted for.
+    #[test]
+    fn a_host_suspend_counts_as_missed_periods_rather_than_time_that_never_happened() {
+        let period_ns = PERIOD.as_nanos() as u64;
+        let (fired, missed) = resolve_tick(
+            0,
+            Duration::from_secs(1),
+            period_ns,
+            Some(PERIOD),
+            MissedTick::Collapse,
+        );
+        assert_eq!(
+            fired, 1_000_000_000,
+            "the released tick is where the host is"
+        );
+        assert_eq!(
+            missed, 99,
+            "one second of suspend is 99 further 10ms periods"
+        );
+    }
+
+    #[test]
+    fn a_tick_that_fires_on_time_reports_no_miss_and_no_period_means_no_collapse() {
+        let period_ns = PERIOD.as_nanos() as u64;
+        assert_eq!(
+            resolve_tick(0, PERIOD, period_ns, Some(PERIOD), MissedTick::Collapse),
+            (period_ns, 0)
+        );
+        assert_eq!(
+            resolve_tick(
+                0,
+                Duration::from_millis(50),
+                period_ns,
+                None,
+                MissedTick::Collapse
+            ),
+            (50_000_000, 0),
+            "a step-less participant has no period to collapse against"
+        );
+        assert_eq!(
+            resolve_tick(
+                0,
+                Duration::from_millis(50),
+                period_ns,
+                Some(PERIOD),
+                MissedTick::CatchUp
+            ),
+            (50_000_000, 0),
+            "catch-up replays each tick elsewhere; it never collapses here"
         );
     }
 

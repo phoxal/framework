@@ -5,7 +5,12 @@
 use crate::v0_1;
 use crate::v0_1 as api;
 use crate::{ApiVersion, ContractBody};
-use phoxal_bus::TopicRole;
+use phoxal_bus::{RobotInstant, TimelineId, TopicRole};
+
+/// A same-timeline instant for round-trip fixtures.
+fn instant(ticks: u64) -> RobotInstant {
+    RobotInstant::new(TimelineId::from_raw(1).unwrap(), ticks)
+}
 
 #[test]
 fn v0_1_is_the_single_train_selected_revision() {
@@ -353,8 +358,8 @@ fn behavior_navigation_and_safety_wire_shapes_are_golden() {
         max_linear_speed_mps: None,
         max_angular_speed_radps: None,
         observed_value: Some(0.1),
-        valid_from_ns: 100,
-        expires_at_ns: 400,
+        valid_from: instant(100),
+        expires_at: instant(400),
     };
     let safety = api::safety::MotionConstraints {
         sequence: 3,
@@ -362,7 +367,7 @@ fn behavior_navigation_and_safety_wire_shapes_are_golden() {
         max_linear_speed_mps: None,
         max_angular_speed_radps: None,
         constraints: vec![constraint],
-        expires_at_ns: 400,
+        expires_at: instant(400),
     };
     let safety_json = serde_json::to_value(&safety).unwrap();
     assert_eq!(
@@ -442,10 +447,10 @@ fn domain_bodies_round_trip_through_messagepack() {
             max_linear_speed_mps: Some(0.0),
             max_angular_speed_radps: Some(0.0),
             observed_value: Some(0.1),
-            valid_from_ns: 10,
-            expires_at_ns: 310,
+            valid_from: instant(10),
+            expires_at: instant(310),
         }],
-        expires_at_ns: 310,
+        expires_at: instant(310),
     });
     round_trip(&api::logs::Event {
         seq: 7,

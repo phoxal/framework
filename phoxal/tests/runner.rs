@@ -35,7 +35,7 @@ use phoxal::bus::{
     CommandPublisher, DEFAULT_QUERY_TIMEOUT, Latest, OwnerCap, Querier, RobotInstant,
     StatePublisher, StepToken, TimelineAuthority, TimelineId,
 };
-use phoxal::participant::{ClockMode, ParticipantLaunch, TestClock};
+use phoxal::participant::{ClockMode, ParticipantLaunch, TestClock, TimeUnsynchronized};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus, run_with_bus_clock};
 
@@ -904,6 +904,68 @@ async fn runner_runs_steps_then_shuts_down_cleanly() {
     assert!(
         SHUTDOWN_CALLED.load(Ordering::Relaxed),
         "the #[shutdown] hook should have run"
+    );
+}
+
+/// #952 section J: losing clock discipline is ordinary failure, not a freeze
+/// and not a wait. The participant stops at the first step it cannot time, the
+/// reason travels in the error the supervisor records, and teardown still runs
+/// so the `#[shutdown]` hook parks the hardware.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn losing_clock_discipline_fails_the_participant_and_still_runs_teardown() {
+    SHUTDOWN_CALLED.store(false, Ordering::Relaxed);
+    let namespace = unique_namespace("clock-discipline");
+    let bus = Bus::open(BusConfig::in_process(namespace.clone(), "robot"))
+        .await
+        .expect("bus should open");
+    let mut launch = ParticipantLaunch::local("counter-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
+    launch.namespace = namespace;
+
+    let clock = TestClock::new();
+    let losing = clock.clone();
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        run_with_bus_clock::<Counter, _, _>(&bus, launch, clock, async move {
+            // Run normally first, so the failure is a *loss* of discipline
+            // rather than a participant that never started.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            losing.set_unsynchronized(TimeUnsynchronized::ClockFault);
+            std::future::pending::<()>().await;
+        }),
+    )
+    .await
+    .expect("an unsynchronized clock must terminate the runner promptly")
+    .expect_err("an unsynchronized clock must fault the participant");
+
+    assert!(
+        error.to_string().contains("clock discipline lost"),
+        "the failure must name the trigger the supervisor records: {error:#}"
+    );
+    assert!(
+        SHUTDOWN_CALLED.load(Ordering::Relaxed),
+        "teardown must still park the hardware when the clock is lost"
+    );
+    bus.close().await.expect("bus should close");
+}
+
+/// The same rule at startup: a real participant with no execution origin has
+/// nothing to anchor its cadence on, so it never reaches a first step. The
+/// alternative - anchoring on an invented timeline - would publish a world
+/// history nobody authored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_real_participant_without_an_execution_origin_does_not_start() {
+    let launch = ParticipantLaunch::local("counter-1", "robot");
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        phoxal::participant::run_with::<Counter, _>(launch, std::future::pending()),
+    )
+    .await
+    .expect("a missing origin must fail immediately, not hang")
+    .expect_err("a missing execution origin must fail the participant");
+    assert!(
+        error.to_string().contains("clock discipline lost"),
+        "unexpected startup error: {error:#}"
     );
 }
 

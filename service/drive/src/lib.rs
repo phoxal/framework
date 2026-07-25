@@ -179,7 +179,7 @@ impl Drive {
         Ok((
             Self {
                 config,
-                target: Lease::new(TARGET_SILENCE, TARGET_HOLD),
+                target: Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD),
             },
             Self::Api {
                 target,
@@ -452,7 +452,7 @@ mod tests {
         let host_start = LocalInstant::from_boot_ns(0);
         let robot_start = RobotInstant::new(line, 0);
 
-        let mut silent = Lease::new(TARGET_SILENCE, TARGET_HOLD);
+        let mut silent = Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD);
         silent.offer(producer, 1, host_start, requested.clone());
         assert!(silent.live(host_start, robot_start).is_some());
         let past_silence = host_start.saturating_add(TARGET_SILENCE + Duration::from_millis(1));
@@ -461,7 +461,7 @@ mod tests {
             "host silence expires the lease even while robot time stands still"
         );
 
-        let mut held = Lease::new(TARGET_SILENCE, TARGET_HOLD);
+        let mut held = Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD);
         held.offer(producer, 1, host_start, requested);
         assert!(held.live(host_start, robot_start).is_some());
         let past_hold = robot_start.saturating_add(TARGET_HOLD + Duration::from_millis(1));
@@ -486,7 +486,7 @@ mod tests {
         let host_now = LocalInstant::from_boot_ns(0);
         let now = RobotInstant::new(TimelineId::mint(), 0);
 
-        let mut lease = Lease::new(TARGET_SILENCE, TARGET_HOLD);
+        let mut lease = Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD);
         lease.offer(first, 9, host_now, target(0.1));
         assert!(matches!(
             lease.offer(second, 0, host_now, target(0.2)),

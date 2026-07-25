@@ -17,7 +17,7 @@ use phoxal::prelude::*;
 
 const INPUT_STALE: Duration = Duration::from_nanos(1_000_000_000);
 const MAP_STALE: Duration = Duration::from_nanos(600_000_000);
-const CONSTRAINT_TTL_NS: u64 = 300_000_000;
+const CONSTRAINT_TTL: Duration = Duration::from_millis(300);
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 const PROTECTIVE_STOP_DISTANCE_M: f32 = 0.25;
 const PROXIMITY_LIMIT_DISTANCE_M: f32 = 0.60;
@@ -204,7 +204,7 @@ fn assess(
     sequence: u64,
     now: RobotInstant,
 ) -> Result<api::safety::MotionConstraints> {
-    let expires_at_ns = now.ticks().saturating_add(CONSTRAINT_TTL_NS);
+    let expires_at = now.saturating_add(CONSTRAINT_TTL);
     let mut constraints = Vec::new();
 
     match usable(world.localization.as_ref(), now, INPUT_STALE) {
@@ -213,7 +213,7 @@ fn assess(
             source(api::safety::ConstraintSourceKind::Localization, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         )),
         Some(localization) => {
             if !(localization.x_m.is_finite()
@@ -229,7 +229,7 @@ fn assess(
                     source(api::safety::ConstraintSourceKind::Localization, None),
                     Some(localization.confidence),
                     now,
-                    expires_at_ns,
+                    expires_at,
                 ));
             }
         }
@@ -241,7 +241,7 @@ fn assess(
             source(api::safety::ConstraintSourceKind::Map, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         ));
     }
 
@@ -251,14 +251,14 @@ fn assess(
             source(api::safety::ConstraintSourceKind::WorldModel, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         )),
         Some(false) => constraints.push(stop_constraint(
             api::safety::ConstraintReason::DrivableSpaceUnavailable,
             source(api::safety::ConstraintSourceKind::WorldModel, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         )),
         Some(true) => {}
     }
@@ -271,7 +271,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Range, Some(binding)),
                 None,
                 now,
-                expires_at_ns,
+                expires_at,
             ));
             continue;
         };
@@ -287,7 +287,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Range, Some(binding)),
                 Some(sample.distance_m),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
             continue;
         }
@@ -303,7 +303,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Range, Some(binding)),
                 Some(distance),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         } else if distance <= PROXIMITY_LIMIT_DISTANCE_M {
             constraints.push(limit_constraint(
@@ -312,7 +312,7 @@ fn assess(
                 PROXIMITY_LINEAR_LIMIT_MPS,
                 Some(distance),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         }
     }
@@ -328,7 +328,7 @@ fn assess(
             source(api::safety::ConstraintSourceKind::Drive, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         ));
     }
 
@@ -342,7 +342,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Battery, None),
                 Some(battery.charge_ratio),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         } else if battery.charge_ratio <= 0.15 {
             constraints.push(limit_constraint(
@@ -351,7 +351,7 @@ fn assess(
                 PROXIMITY_LINEAR_LIMIT_MPS,
                 Some(battery.charge_ratio),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         }
     }
@@ -371,7 +371,7 @@ fn assess(
         max_linear_speed_mps,
         max_angular_speed_radps,
         constraints,
-        expires_at_ns,
+        expires_at,
     })
 }
 
@@ -423,7 +423,7 @@ fn stop_constraint(
     source: api::safety::ConstraintSource,
     observed_value: Option<f32>,
     now: RobotInstant,
-    expires_at_ns: u64,
+    expires_at: RobotInstant,
 ) -> api::safety::Constraint {
     api::safety::Constraint {
         reason,
@@ -432,8 +432,8 @@ fn stop_constraint(
         max_linear_speed_mps: Some(0.0),
         max_angular_speed_radps: Some(0.0),
         observed_value,
-        valid_from_ns: now.ticks(),
-        expires_at_ns,
+        valid_from: now,
+        expires_at,
     }
 }
 
@@ -443,7 +443,7 @@ fn limit_constraint(
     max_linear_speed_mps: f32,
     observed_value: Option<f32>,
     now: RobotInstant,
-    expires_at_ns: u64,
+    expires_at: RobotInstant,
 ) -> api::safety::Constraint {
     api::safety::Constraint {
         reason,
@@ -452,8 +452,8 @@ fn limit_constraint(
         max_linear_speed_mps: Some(max_linear_speed_mps),
         max_angular_speed_radps: None,
         observed_value,
-        valid_from_ns: now.ticks(),
-        expires_at_ns,
+        valid_from: now,
+        expires_at,
     }
 }
 
@@ -565,7 +565,10 @@ mod tests {
         assert!(!result.stop);
         assert!(result.constraints.is_empty());
         assert_eq!(result.sequence, 7);
-        assert_eq!(result.expires_at_ns - now().ticks(), CONSTRAINT_TTL_NS);
+        assert_eq!(
+            result.expires_at.duration_since(now()).unwrap(),
+            CONSTRAINT_TTL
+        );
     }
 
     #[test]

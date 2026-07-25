@@ -146,7 +146,7 @@ impl Motion {
         Ok((
             Self {
                 limits,
-                manual: Lease::new(MANUAL_SILENCE, MANUAL_HOLD),
+                manual: Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
                 last_autonomous: None,
                 estop: EmergencyStopLatch::new(estop_bindings.len()),
@@ -179,9 +179,14 @@ impl Motion {
         self.last_safety_constraints = None;
         self.estop.reset_timeline();
         // The manual command is a clockless operator input sampled at a logical
-        // step, not state derived from the replaced world. Its lease keeps
-        // ageing on the host clock across the boundary, and its logical hold
-        // horizon re-anchors on the first step of the new timeline.
+        // step, not state derived from the replaced world, so the lease is not
+        // cleared here and keeps ageing on the host clock across the boundary.
+        // What happens to a held command depends on whether it had already been
+        // applied: one anchored on the retired timeline is dropped at the first
+        // step of the replacement, because its horizon cannot be measured
+        // across worlds; one that arrived but has not yet been applied anchors
+        // on that first step instead. Either way the machine keeps moving only
+        // while the operator keeps publishing.
         Ok(())
     }
 
@@ -390,7 +395,7 @@ mod tests {
         let producer = ProducerId::mint();
         let host_start = LocalInstant::from_boot_ns(0);
 
-        let mut silent = Lease::new(MANUAL_SILENCE, MANUAL_HOLD);
+        let mut silent = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         silent.offer(producer, 1, host_start, command.clone());
         assert!(silent.live(host_start, at(0)).is_some());
         assert!(
@@ -402,7 +407,7 @@ mod tests {
                 .is_none()
         );
 
-        let mut held = Lease::new(MANUAL_SILENCE, MANUAL_HOLD);
+        let mut held = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         held.offer(producer, 1, host_start, command);
         assert!(held.live(host_start, at(0)).is_some());
         let past_hold = u64::try_from(MANUAL_HOLD.as_nanos()).unwrap() + 1;
@@ -415,7 +420,7 @@ mod tests {
     fn a_lease_expired_while_paused_does_not_apply_on_the_first_resumed_step() {
         let producer = ProducerId::mint();
         let host_start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new(MANUAL_SILENCE, MANUAL_HOLD);
+        let mut lease = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         lease.offer(
             producer,
             1,

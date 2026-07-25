@@ -357,19 +357,23 @@ phoxal_api_tree! {
                 max_linear_speed_mps: Option<f32>,
                 max_angular_speed_radps: Option<f32>,
                 observed_value: Option<f32>,
-                valid_from_ns: u64,
-                expires_at_ns: u64,
+                /// The instant this constraint starts applying, on the
+                /// publisher's timeline. A consumer on another timeline gets a
+                /// checked error, never a silently wrong comparison.
+                valid_from: ::phoxal_bus::RobotInstant,
+                /// The instant this constraint stops applying.
+                expires_at: ::phoxal_bus::RobotInstant,
             }
 
             /// The sole safety-to-motion control product. Motion accepts it only
-            /// in the same epoch and before `expires_at_ns`.
+            /// on the same timeline and before `expires_at`.
             struct MotionConstraints {
                 sequence: u64,
                 stop: bool,
                 max_linear_speed_mps: Option<f32>,
                 max_angular_speed_radps: Option<f32>,
                 constraints: Vec<Constraint>,
-                expires_at_ns: u64,
+                expires_at: ::phoxal_bus::RobotInstant,
             }
 
             /// Operator-facing state mirrors the exact product consumed by motion.
@@ -597,8 +601,10 @@ phoxal_api_tree! {
                 active_node_path: Option<String>,
                 blackboard: ::std::collections::BTreeMap<String, Value>,
                 args: ::std::collections::BTreeMap<String, Value>,
-                started_at_ns: Option<u64>,
-                updated_at_ns: u64,
+                /// When the active execution started, on the publisher's
+                /// timeline. The envelope carries when this snapshot was
+                /// produced; that instant is never duplicated here.
+                started_at: Option<::phoxal_bus::RobotInstant>,
                 failure: Option<Failure>,
             }
 
@@ -625,7 +631,6 @@ phoxal_api_tree! {
                 kind: EventKind,
                 failure: Option<Failure>,
                 participant_id: String,
-                logical_time_ns: u64,
             }
 
             topic command: command Command;

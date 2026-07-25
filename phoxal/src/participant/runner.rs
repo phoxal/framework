@@ -89,6 +89,7 @@ use crate::participant::scheduler::{
     SimulationScheduler, StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::StepSchedule;
+use anyhow::Context as _;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
 const RUNTIME_PERFORMANCE_TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -131,19 +132,21 @@ pub(crate) fn step_scheduler_for(
     clock_mode: ClockMode,
     schedule: Option<StepSchedule>,
     now: Option<RobotInstant>,
-) -> (AnyStepScheduler, Option<SimulationClockHandle>) {
+) -> crate::Result<(AnyStepScheduler, Option<SimulationClockHandle>)> {
     let missed_tick = schedule
         .map(|s| s.missed_tick)
         .unwrap_or(crate::participant::spec::MissedTick::Collapse);
     let period = schedule.map(|s| s.period());
-    match clock_mode {
+    Ok(match clock_mode {
         ClockMode::Real => {
-            // A real participant whose clock is already unsynchronized has no
-            // instant to anchor the cadence on. It still runs - freezing the
-            // steps is the failure mode this train exists to delete - so anchor
-            // it on the execution's own timeline at tick zero and let the
-            // per-step clock read report the fault.
-            let now = now.unwrap_or_else(|| RobotInstant::new(TimelineId::mint(), 0));
+            // A real participant has no instant to anchor its cadence on until
+            // the clock is trustworthy. Anchoring on an invented timeline would
+            // publish a world history nobody authored, so the participant does
+            // not start at all - which is the ordinary failure the supervisor
+            // already knows how to handle.
+            let now = now.context(
+                "a real participant cannot anchor its cadence without a synchronized clock",
+            )?;
             (
                 AnyStepScheduler::Real(RealScheduler::new(missed_tick, period, now)),
                 None,
@@ -156,7 +159,7 @@ pub(crate) fn step_scheduler_for(
             let (scheduler, handle) = SimulationScheduler::new(missed_tick, period);
             (AnyStepScheduler::Simulation(scheduler), Some(handle))
         }
-    }
+    })
 }
 
 /// Subscribe the authoritative `simulation/clock` feed (published by the
@@ -343,8 +346,17 @@ where
 {
     let schedule = R::__step_schedule();
     let clock_mode = R::LaunchPolicy::clock_mode(&launch);
-    let (scheduler, clock_handle) =
-        step_scheduler_for(clock_mode, schedule, clock.read().instant());
+    let reading = clock.read();
+    if clock_mode == ClockMode::Real
+        && let ClockReading::Unsynchronized(reason) = reading
+    {
+        // Starting a real participant on an untrustworthy clock would mean
+        // every deadline it owns is measured against a number it cannot
+        // defend. This is ordinary failure, so the supervisor's restart and
+        // start-limit policy decides what happens next (#952 section J).
+        return Err(clock_discipline_error(reason));
+    }
+    let (scheduler, clock_handle) = step_scheduler_for(clock_mode, schedule, reading.instant())?;
     let effective_clock = Arc::new(match &scheduler {
         AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
         AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
@@ -575,7 +587,7 @@ where
 
     let fault = loop_result?;
     if let Some(fault) = fault {
-        return Err(managed_task_fault_error(&fault));
+        return Err(fault.into_error());
     }
     Ok(())
 }
@@ -636,6 +648,37 @@ async fn teardown_lifecycle<R>(
 
 /// Build the runtime-fault error for an unexpected `FaultOnExit` managed task
 /// exit. Returned from `run_lifecycle_inner` through the participant result.
+/// Why the main loop stopped without being asked to.
+///
+/// Both variants mean the same thing to the caller: run the ordinary teardown -
+/// which parks the hardware through `#[shutdown]` - and then report a failure,
+/// so the supervisor's restart and start-limit policy decides what happens next.
+/// Neither is a distinct "failure mode" the participant handles itself.
+pub(crate) enum LoopFault {
+    /// A task the participant declared as fault-on-exit went away.
+    ManagedTask(ManagedTaskExit),
+    /// The clock stopped being trustworthy, so no further step could be timed.
+    ClockDiscipline(TimeUnsynchronized),
+}
+
+impl LoopFault {
+    fn into_error(self) -> anyhow::Error {
+        match self {
+            LoopFault::ManagedTask(exit) => managed_task_fault_error(&exit),
+            LoopFault::ClockDiscipline(reason) => clock_discipline_error(reason),
+        }
+    }
+}
+
+/// The failure a participant reports when it cannot trust its own clock.
+///
+/// The reason is in the message because it is the operator's only handle on
+/// which trigger fired: the supervisor captures this on the failing process and
+/// keeps it in the failure evidence.
+pub(crate) fn clock_discipline_error(reason: TimeUnsynchronized) -> anyhow::Error {
+    anyhow::anyhow!("clock discipline lost: {reason}")
+}
+
 pub(crate) fn managed_task_fault_error(exit: &ManagedTaskExit) -> anyhow::Error {
     match &exit.panic_message {
         Some(message) => anyhow::anyhow!("managed task \"{}\" panicked: {message}", exit.name),
@@ -668,7 +711,7 @@ async fn main_loop<R, C, S>(
     runtime_performance_publisher: &RuntimePerformancePublisher,
     runtime_performance: &mut RuntimePerformance,
     managed_tasks: &mut ManagedTasks,
-) -> crate::Result<Option<ManagedTaskExit>>
+) -> crate::Result<Option<LoopFault>>
 where
     R: ParticipantLifecycle,
     C: ClockSource,
@@ -696,7 +739,6 @@ where
     let mut next_step_target =
         initial_time.and_then(|at| period.map(|period| advance_step_deadline(at, period, 0)));
     let mut next_runtime_performance_tick = tokio::time::Instant::now();
-    let mut unsynchronized: Option<TimeUnsynchronized> = None;
 
     loop {
         tokio::select! {
@@ -717,7 +759,7 @@ where
                     panic = exit.panic_message.as_deref(),
                     "managed task exited unexpectedly; faulting the participant"
                 );
-                return Ok(Some(exit));
+                return Ok(Some(LoopFault::ManagedTask(exit)));
             }
             fired_at = simulation_time_change(&mut simulation_time_rx) => {
                 if active_timeline == Some(fired_at.timeline()) {
@@ -769,23 +811,7 @@ where
                 next_step_target = Some(advance_step_deadline(target, period, missed_ticks));
 
                 let now = match clock.read() {
-                    ClockReading::Synchronized(now) if now.timeline() == target.timeline() => {
-                        if unsynchronized.take().is_some() {
-                            // Recovery: retained state derived from an
-                            // untrustworthy clock must be revalidated before
-                            // publication or actuation resumes, so run the same
-                            // reset the participant uses for a replaced world.
-                            participant
-                                .__reset(api, ResetContext::new(now.timeline(), now.timeline()))
-                                .await?;
-                            commit_snapshot::<R>(participant, committed);
-                            tracing::info!(
-                                target: "phoxal.runtime",
-                                "clock discipline recovered; retained state flushed before resuming"
-                            );
-                        }
-                        now
-                    }
+                    ClockReading::Synchronized(now) if now.timeline() == target.timeline() => now,
                     ClockReading::Synchronized(_) => {
                         // The clock feed can replace the world history after the
                         // scheduler resolves but before this read. Let the
@@ -795,19 +821,19 @@ where
                         continue;
                     }
                     ClockReading::Unsynchronized(reason) => {
-                        // Do not freeze: a frozen participant is what leaves an
-                        // actuator commanded. The step is skipped, so nothing
-                        // time-sensitive is published and no lease is renewed;
-                        // the driver-local watchdogs then stop the machine
+                        // Do not freeze, and do not hold on hoping it comes
+                        // back: a frozen participant is what leaves an actuator
+                        // commanded, and there is no uncertainty estimator that
+                        // could justify a grace window. The participant fails
+                        // now, teardown parks the hardware, and the supervisor's
+                        // ordinary restart policy decides what happens next
                         // (#952 section J).
-                        if unsynchronized.replace(reason) != Some(reason) {
-                            tracing::error!(
-                                target: "phoxal.runtime",
-                                error = %reason,
-                                "clock discipline lost; suspending time-sensitive publication"
-                            );
-                        }
-                        continue;
+                        tracing::error!(
+                            target: "phoxal.runtime",
+                            error = %reason,
+                            "clock discipline lost; failing the participant"
+                        );
+                        return Ok(Some(LoopFault::ClockDiscipline(reason)));
                     }
                 };
                 let dt = last_step_at
@@ -1063,7 +1089,8 @@ mod tests {
     fn step_scheduler_for_selects_real_or_simulation_by_clock_mode() {
         let schedule = Some(StepSchedule::hz(100.0));
 
-        let (real, real_handle) = step_scheduler_for(ClockMode::Real, schedule, Some(at(1, 0)));
+        let (real, real_handle) =
+            step_scheduler_for(ClockMode::Real, schedule, Some(at(1, 0))).expect("real scheduler");
         assert!(matches!(real, AnyStepScheduler::Real(_)));
         assert!(
             real_handle.is_none(),
@@ -1071,7 +1098,8 @@ mod tests {
         );
 
         let (simulation, simulation_handle) =
-            step_scheduler_for(ClockMode::Simulation, schedule, None);
+            step_scheduler_for(ClockMode::Simulation, schedule, None)
+                .expect("simulation scheduler");
         assert!(matches!(simulation, AnyStepScheduler::Simulation(_)));
         assert!(
             simulation_handle.is_some(),
@@ -1085,13 +1113,11 @@ mod tests {
     }
 
     #[test]
-    fn a_real_participant_with_no_origin_still_gets_a_cadence_anchor() {
-        // Losing clock discipline must not freeze the participant, so the
-        // scheduler is still built; the per-step clock read is what reports the
-        // fault and suppresses time-sensitive publication.
-        let (scheduler, _) =
-            step_scheduler_for(ClockMode::Real, Some(StepSchedule::hz(50.0)), None);
-        assert!(scheduler.now().is_some());
+    fn a_real_participant_with_no_trustworthy_clock_does_not_get_a_cadence_at_all() {
+        // The alternative was anchoring the cadence on an invented timeline at
+        // tick zero, which publishes a world history nobody authored. Refusing
+        // to start is the ordinary failure the supervisor already handles.
+        assert!(step_scheduler_for(ClockMode::Real, Some(StepSchedule::hz(50.0)), None).is_err());
     }
 
     #[test]
@@ -1119,7 +1145,8 @@ mod tests {
         let schedule = StepSchedule::hz(10.0); // 100ms period
         let period_ns = duration_to_nanos_saturating(schedule.period());
 
-        let (scheduler, handle) = step_scheduler_for(ClockMode::Simulation, Some(schedule), None);
+        let (scheduler, handle) = step_scheduler_for(ClockMode::Simulation, Some(schedule), None)
+            .expect("simulation scheduler");
         let handle = handle.expect("simulation mode must hand back a driving handle");
 
         let mut fired = Vec::new();

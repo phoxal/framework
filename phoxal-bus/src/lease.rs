@@ -163,36 +163,68 @@ impl ProducerFence {
     }
 }
 
+/// The tracing target every lease decision is emitted on.
+///
+/// It is deliberately outside the `phoxal_bus` / `phoxal.bus` prefixes the bus
+/// log layer filters, so the decision trace reaches the bus and any recorder
+/// subscribed to it. Renewals are `DEBUG` and every transition is `INFO`, so an
+/// operator running at the default level sees each change of authority and each
+/// expiry, and raising the level to `DEBUG` yields the complete per-command
+/// trace.
+pub const LEASE_TRACE_TARGET: &str = "phoxal.lease";
+
 /// A receiver-owned command lease with two independent expiry conditions.
 ///
 /// The lease holds the last accepted command body plus both deadlines. It is
 /// the owning service's own state, renewed only by commands the service itself
 /// admitted, and read at a logical step.
+///
+/// Every decision it takes - renewal, replacement, rejection, and each expiry -
+/// is emitted on [`LEASE_TRACE_TARGET`] with the producer, the sender's
+/// sequence, this receiver's own observation ordinal, and the logical step the
+/// command was applied at. That trace is the acceptance evidence; the lease
+/// keeps no private history of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Lease<B> {
+    input: &'static str,
     silence: Duration,
     hold: Duration,
     fence: ProducerFence,
     held: Option<Held<B>>,
+    observations: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Held<B> {
     body: B,
     observed_at: LocalInstant,
+    observation: u64,
     accepted_at: Option<RobotInstant>,
 }
 
 impl<B> Lease<B> {
     /// A lease that expires after `silence` of host-monotonic quiet, or after
     /// `hold` of robot time since the command was applied.
-    pub const fn new(silence: Duration, hold: Duration) -> Self {
+    ///
+    /// `input` names the command input this lease owns (`"motion/manual"`,
+    /// `"drive/target"`); it labels every decision this lease emits.
+    pub const fn new(input: &'static str, silence: Duration, hold: Duration) -> Self {
         Lease {
+            input,
             silence,
             hold,
             fence: ProducerFence::new(),
             held: None,
+            observations: 0,
         }
+    }
+
+    /// How many commands this receiver has observed on this input.
+    ///
+    /// This is the receiver's own arrival order, not anything the sender
+    /// supplied, and it is the ordinate of the decision trace.
+    pub const fn observations(&self) -> u64 {
+        self.observations
     }
 
     /// The host-monotonic silence deadline this lease enforces.
@@ -222,11 +254,51 @@ impl<B> Lease<B> {
         body: B,
     ) -> LeaseDecision {
         let decision = self.fence.admit(producer, sequence);
+        self.observations = self.observations.saturating_add(1);
+        let observation = self.observations;
+        match decision {
+            LeaseDecision::Renewed => {
+                tracing::debug!(
+                    target: LEASE_TRACE_TARGET,
+                    input = self.input,
+                    producer = %producer,
+                    sequence,
+                    observation,
+                    decision = "renewed",
+                    "command renewed the lease"
+                );
+            }
+            LeaseDecision::ProducerReplaced { superseded } => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input = self.input,
+                    producer = %producer,
+                    sequence,
+                    observation,
+                    superseded = %superseded,
+                    decision = "producer_replaced",
+                    "a replacement producer took the lease; the previous one is fenced"
+                );
+            }
+            LeaseDecision::Rejected(rejection) => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input = self.input,
+                    producer = %producer,
+                    sequence,
+                    observation,
+                    decision = "rejected",
+                    reason = %rejection,
+                    "command rejected"
+                );
+            }
+        }
         match decision {
             LeaseDecision::Renewed | LeaseDecision::ProducerReplaced { .. } => {
                 self.held = Some(Held {
                     body,
                     observed_at,
+                    observation,
                     // A renewal restarts the logical horizon at the next step
                     // that applies it; until then it has not been applied at
                     // any robot instant.
@@ -248,16 +320,65 @@ impl<B> Lease<B> {
     ///
     /// A cross-timeline anchor is not a silently wrong number: it means the
     /// world was replaced under a held command, so the command is dropped.
+    ///
+    /// Both deadlines are reached *at* the deadline, not after it: a command
+    /// whose silence or hold has run exactly to its bound is already expired.
+    /// The actuator permit ages the same way, so no boundary sample is live in
+    /// one layer and dead in the next.
     pub fn live(&mut self, now: LocalInstant, step: RobotInstant) -> Option<&B> {
+        let input = self.input;
+        let silence = self.silence;
+        let hold = self.hold;
         let held = self.held.as_mut()?;
-        if now.saturating_duration_since(held.observed_at) > self.silence {
+        let observation = held.observation;
+        if now.saturating_duration_since(held.observed_at) >= silence {
+            tracing::info!(
+                target: LEASE_TRACE_TARGET,
+                input,
+                observation,
+                decision = "expired_silence",
+                "the lease expired on host-monotonic silence"
+            );
             self.held = None;
             return None;
         }
-        let anchor = *held.accepted_at.get_or_insert(step);
+        let anchor = match held.accepted_at {
+            Some(anchor) => anchor,
+            None => {
+                tracing::debug!(
+                    target: LEASE_TRACE_TARGET,
+                    input,
+                    observation,
+                    step = %step,
+                    decision = "applied",
+                    "the held command was applied at this step and anchors the hold horizon"
+                );
+                *held.accepted_at.insert(step)
+            }
+        };
         match step.duration_since(anchor) {
-            Ok(elapsed) if elapsed <= self.hold => Some(&self.held.as_ref()?.body),
-            Ok(_) | Err(TimelineMismatch { .. }) => {
+            Ok(elapsed) if elapsed < hold => Some(&self.held.as_ref()?.body),
+            Ok(_) => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input,
+                    observation,
+                    step = %step,
+                    decision = "expired_hold",
+                    "the lease expired on its logical hold horizon"
+                );
+                self.held = None;
+                None
+            }
+            Err(TimelineMismatch { .. }) => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input,
+                    observation,
+                    step = %step,
+                    decision = "timeline_replaced",
+                    "the world was replaced under the held command, so it was dropped"
+                );
                 self.held = None;
                 None
             }
@@ -291,7 +412,7 @@ mod tests {
     fn a_sequence_that_does_not_increase_is_rejected_without_touching_the_lease() {
         let producer = ProducerId::mint();
         let start = LocalInstant::from_boot_ns(1_000);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
 
         assert_eq!(
             lease.offer(producer, 1, start, "go"),
@@ -321,7 +442,7 @@ mod tests {
         let first = ProducerId::mint();
         let second = ProducerId::mint();
         let start = LocalInstant::from_boot_ns(1_000);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
 
         lease.offer(first, 9, start, "old");
         // A restarted publisher is a fresh producer whose sequence restarts at
@@ -357,7 +478,7 @@ mod tests {
         let first = ProducerId::mint();
         let second = ProducerId::mint();
         let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
 
         lease.offer(first, 1, start, "old");
         lease.offer(second, 0, start, "new");
@@ -401,13 +522,13 @@ mod tests {
         let producer = ProducerId::mint();
         let line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
         lease.offer(producer, 1, start, "go");
 
         // Logical time is frozen (a paused or slowed simulation), yet host
         // silence still expires the command: operator presence is a human-time
         // requirement.
-        let quiet = start.saturating_add(SILENCE + Duration::from_millis(1));
+        let quiet = start.saturating_add(SILENCE);
         assert_eq!(lease.live(quiet, step(line, 0)), None);
         assert_eq!(
             lease.live(start, step(line, 0)),
@@ -421,14 +542,16 @@ mod tests {
         let producer = ProducerId::mint();
         let line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
         lease.offer(producer, 1, start, "go");
 
         // Host time is still (an accelerated simulation), yet simulated travel
         // is bounded.
         assert_eq!(lease.live(start, step(line, 0)), Some(&"go"));
-        assert_eq!(lease.live(start, step(line, ms(500))), Some(&"go"));
-        assert_eq!(lease.live(start, step(line, ms(501))), None);
+        assert_eq!(lease.live(start, step(line, ms(499))), Some(&"go"));
+        // The horizon is reached *at* the bound, matching how the actuator
+        // permit ages: no sample is live in one layer and dead in the next.
+        assert_eq!(lease.live(start, step(line, ms(500))), None);
     }
 
     #[test]
@@ -436,14 +559,14 @@ mod tests {
         let producer = ProducerId::mint();
         let line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
         lease.offer(producer, 1, start, "go");
         assert_eq!(lease.live(start, step(line, 0)), Some(&"go"));
 
         // The world is paused: no steps happen, but host time keeps running
         // past the silence deadline. The first resumed arbitration step must
         // not apply the retained command.
-        let resumed = start.saturating_add(SILENCE + Duration::from_millis(1));
+        let resumed = start.saturating_add(SILENCE);
         assert_eq!(lease.live(resumed, step(line, 1)), None);
     }
 
@@ -453,7 +576,7 @@ mod tests {
         let first_line = TimelineId::mint();
         let second_line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new(SILENCE, HOLD);
+        let mut lease = Lease::new("test/input", SILENCE, HOLD);
         lease.offer(producer, 1, start, "go");
         assert_eq!(lease.live(start, step(first_line, 0)), Some(&"go"));
         assert_eq!(lease.live(start, step(second_line, 0)), None);

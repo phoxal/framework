@@ -52,7 +52,7 @@ pub use handle::{
     WorldStepToken,
 };
 pub use identity::{ExecutionId, InvalidIdentity, ProducerId, TimelineId};
-pub use lease::{Lease, LeaseDecision, LeaseRejection, ProducerFence};
+pub use lease::{LEASE_TRACE_TARGET, Lease, LeaseDecision, LeaseRejection, ProducerFence};
 pub use liveliness::{
     ParticipantLivelinessEvent, ParticipantLivelinessKey, ParticipantLivelinessObserver,
     ParticipantLivelinessStatus, ParticipantLivelinessToken,

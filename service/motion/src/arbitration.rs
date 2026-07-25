@@ -94,6 +94,17 @@ pub(crate) fn arbitrate(
     zero(None, reason)
 }
 
+/// `later` is at or after `earlier` on the same timeline.
+///
+/// A cross-timeline pair is not "later" and not "earlier"; it is
+/// incomparable, and every caller here reads that as unusable, so a deadline
+/// carried from a replaced timeline fails closed instead of silently passing.
+fn at_or_after(later: RobotInstant, earlier: RobotInstant) -> bool {
+    later
+        .checked_cmp(earlier)
+        .is_ok_and(|order| order != std::cmp::Ordering::Less)
+}
+
 pub(crate) fn safety_is_usable(
     constraints: &Timed<api::safety::MotionConstraints>,
     now: RobotInstant,
@@ -113,8 +124,8 @@ pub(crate) fn safety_is_usable(
     TimeWindow::exact(constraints.at)
         .possibly_fresh_within(now, Duration::MAX)
         .unwrap_or(false)
-        && body.expires_at_ns >= now.ticks()
-        && body.expires_at_ns >= constraints.at.ticks()
+        && at_or_after(body.expires_at, now)
+        && at_or_after(body.expires_at, constraints.at)
         && body.stop == entry_stop
         && body.max_linear_speed_mps == entry_linear
         && body.max_angular_speed_radps == entry_angular
@@ -125,10 +136,10 @@ pub(crate) fn safety_is_usable(
             .max_angular_speed_radps
             .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
         && body.constraints.iter().all(|constraint| {
-            constraint.valid_from_ns <= now.ticks()
-                && constraint.expires_at_ns >= now.ticks()
-                && constraint.expires_at_ns <= body.expires_at_ns
-                && constraint.expires_at_ns >= constraint.valid_from_ns
+            at_or_after(now, constraint.valid_from)
+                && at_or_after(constraint.expires_at, now)
+                && at_or_after(body.expires_at, constraint.expires_at)
+                && at_or_after(constraint.expires_at, constraint.valid_from)
                 && constraint
                     .max_linear_speed_mps
                     .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
@@ -268,7 +279,7 @@ mod tests {
                 max_linear_speed_mps: None,
                 max_angular_speed_radps: None,
                 constraints: Vec::new(),
-                expires_at_ns: NOW_NS + 1,
+                expires_at: RobotInstant::new(line(), NOW_NS + 1),
             },
             at: now(),
         }
@@ -287,8 +298,8 @@ mod tests {
             max_linear_speed_mps: None,
             max_angular_speed_radps: None,
             observed_value: Some(0.1),
-            valid_from_ns: NOW_NS,
-            expires_at_ns: NOW_NS + 1,
+            valid_from: RobotInstant::new(line(), NOW_NS),
+            expires_at: RobotInstant::new(line(), NOW_NS + 1),
         }
     }
 
@@ -321,10 +332,10 @@ mod tests {
     fn future_expired_and_non_finite_nested_constraints_fail_closed() {
         for mutate in [
             |constraint: &mut api::safety::Constraint| {
-                constraint.valid_from_ns = NOW_NS + 1;
+                constraint.valid_from = RobotInstant::new(line(), NOW_NS + 1);
             },
             |constraint: &mut api::safety::Constraint| {
-                constraint.expires_at_ns = NOW_NS - 1;
+                constraint.expires_at = RobotInstant::new(line(), NOW_NS - 1);
             },
             |constraint: &mut api::safety::Constraint| {
                 constraint.observed_value = Some(f32::NAN);

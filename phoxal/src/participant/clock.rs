@@ -16,13 +16,24 @@
 //!
 //! # Losing clock discipline (#952 section J)
 //!
-//! A participant that cannot trust its clock does **not** freeze. Freezing the
-//! steps is exactly the failure mode that leaves an actuator commanded. Instead
-//! the clock reports [`ClockReading::Unsynchronized`], the runner invalidates
-//! the capability to publish time-sensitive state, stops renewing actuator
-//! leases so the local and hardware watchdogs stop the machine, marks the
-//! participant unsynchronized, and enters ordinary failure and restart policy.
-//! Recovery flushes retained state before publication resumes.
+//! A participant that cannot trust its clock does **not** freeze, and does not
+//! wait to see whether the clock comes back. Freezing the steps is exactly the
+//! failure mode that leaves an actuator commanded, and a grace window would be
+//! an invented uncertainty bound: nothing in this design estimates how wrong an
+//! untrustworthy clock is, so there is no honest threshold to wait out.
+//!
+//! Instead the clock reports [`ClockReading::Unsynchronized`] and the runner
+//! fails the participant immediately. Teardown runs, so `#[shutdown]` parks the
+//! hardware; time-sensitive publication stops because the process stops; leases
+//! and actuator permits stop being renewed, so the receiver-side deadlines and
+//! the driver-local watchdogs stop the machine on their own clocks. The reason
+//! travels in the failure, and the supervisor's ordinary restart and
+//! start-limit policy decides what happens next - a transient fault recovers by
+//! restarting with no retained state at all, and a persistently broken host
+//! clock exhausts the start limit and stops the graph.
+//!
+//! A real participant whose clock is already untrustworthy at startup never
+//! reaches its first step: it fails there, for the same reason.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -201,8 +212,13 @@ impl ClockSource for RealClock {
             Ok(origin) => origin,
             Err(reason) => return ClockReading::Unsynchronized(reason),
         };
-        let now = LocalInstant::now();
-        if now.boot_ns() == 0 {
+        let Some(now) = LocalInstant::try_now() else {
+            return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
+        };
+        if now < origin.started_at() {
+            // The execution cannot have started after now on a clock that only
+            // moves forward. Saturating to tick zero would silently place every
+            // instant of this execution before its own origin.
             return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
         }
         let ticks = u64::try_from(
@@ -263,6 +279,7 @@ impl ClockSource for SimulationClock {
 #[derive(Clone)]
 pub struct TestClock {
     state: Arc<Mutex<(TimelineId, u64)>>,
+    unsynchronized: Arc<Mutex<Option<TimeUnsynchronized>>>,
 }
 
 impl TestClock {
@@ -270,12 +287,19 @@ impl TestClock {
     pub fn new() -> Self {
         TestClock {
             state: Arc::new(Mutex::new((TimelineId::mint(), 0))),
+            unsynchronized: Arc::new(Mutex::new(None)),
         }
     }
 
     /// The timeline this clock is currently on.
     pub fn timeline(&self) -> TimelineId {
         self.state.lock().expect("test clock poisoned").0
+    }
+
+    /// Make every subsequent read report lost clock discipline, so a test can
+    /// drive the failure path a real host only reaches by misbehaving.
+    pub fn set_unsynchronized(&self, reason: TimeUnsynchronized) {
+        *self.unsynchronized.lock().expect("test clock poisoned") = Some(reason);
     }
 
     /// Advance the current time by `delta`.
@@ -302,6 +326,9 @@ impl Default for TestClock {
 
 impl ClockSource for TestClock {
     fn read(&self) -> ClockReading {
+        if let Some(reason) = *self.unsynchronized.lock().expect("test clock poisoned") {
+            return ClockReading::Unsynchronized(reason);
+        }
         let state = self.state.lock().expect("test clock poisoned");
         ClockReading::Synchronized(RobotInstant::new(state.0, state.1))
     }

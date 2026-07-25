@@ -186,12 +186,12 @@ pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
         CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
-        DiagnosticPublisher, ExecutionId, Latest, Lease, LeaseDecision, LeaseRejection,
-        LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack, Observed, OwnerCap,
-        ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure, Result,
-        RobotInstant, ServeQuery, ServerResult, StateContract, StatePublisher, StepStamp,
-        StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority, TimelineId,
-        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
+        LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
+        Observed, OwnerCap, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError,
+        QueryFailure, Result, RobotInstant, ServeQuery, ServerResult, StateContract,
+        StatePublisher, StepStamp, StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority,
+        TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
         WorldStepToken, encoding_string,
     };
 }

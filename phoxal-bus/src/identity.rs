@@ -34,7 +34,7 @@ const OPAQUE_BYTES: usize = 16;
 /// traffic is not observed as current" from an operational assumption into a
 /// structural property. It is transport scoping and never part of a contract
 /// name.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExecutionId([u8; OPAQUE_BYTES]);
 
 impl ExecutionId {
@@ -93,7 +93,7 @@ impl<'de> Deserialize<'de> for ExecutionId {
 /// publisher mints its own. Because it is fresh per process, repeated ad hoc
 /// invocations never collide under strict per-producer sequence rejection, and
 /// a restarted participant is structurally a different producer.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProducerId([u8; OPAQUE_BYTES]);
 
 impl ProducerId {
@@ -146,7 +146,7 @@ impl<'de> Deserialize<'de> for ProducerId {
 /// a replacement timeline is not "newer", it is simply different, and any
 /// instant from a different timeline is incomparable. Zero is not a timeline -
 /// absence is `Option::None`, never a sentinel value.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TimelineId(NonZeroU64);
 
@@ -262,8 +262,8 @@ mod tests {
         let timeline = TimelineId::mint();
         assert_eq!(TimelineId::from_raw(timeline.get()), Some(timeline));
         // Equality is the only meaning: a replacement timeline is different,
-        // not newer. (The `Ord` impl exists solely so identities can key a
-        // `BTreeMap`; nothing in the model reads it as time order.)
+        // not newer. None of the three identities implements ordering, so no
+        // caller can read one as a generation counter.
         assert_ne!(timeline, TimelineId::mint());
     }
 }

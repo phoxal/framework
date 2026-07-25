@@ -33,7 +33,7 @@ use anyhow::Result;
 use phoxal::api;
 #[cfg(test)]
 use phoxal::bus::ProducerId;
-use phoxal::bus::{Observed, ProducerFence};
+use phoxal::bus::{LEASE_TRACE_TARGET, Observed, ProducerFence};
 use phoxal::prelude::*;
 
 /// The motor / encoder capability names on a ddsm115 component instance
@@ -56,6 +56,9 @@ const PERMIT_TICK: Duration = Duration::from_millis(20);
 /// grants a permit; both sides enforce it.
 #[derive(Debug, Default)]
 struct Motor {
+    /// The component instance this motor belongs to, so its decisions are
+    /// attributable on a robot with several wheels.
+    instance: String,
     velocity_radps: f32,
     /// When the current non-zero velocity stops being permitted. `None` means
     /// the motor is already stopped and needs no permit.
@@ -68,6 +71,13 @@ struct Motor {
 }
 
 impl Motor {
+    fn new(instance: String) -> Self {
+        Motor {
+            instance,
+            ..Motor::default()
+        }
+    }
+
     /// Admit an observed command, granting a permit only if the producer still
     /// holds authority and its sequence advanced.
     ///
@@ -76,14 +86,47 @@ impl Motor {
     /// drain time would hand a fresh permit to a sample that sat in the ring
     /// across a scheduler stall or a host suspend.
     fn admit(&mut self, observed: Observed<api::component::motor::Command>) -> LeaseDecision {
-        let decision = self
-            .fence
-            .admit(observed.metadata.producer, observed.metadata.sequence);
+        let producer = observed.metadata.producer;
+        let sequence = observed.metadata.sequence;
+        let decision = self.fence.admit(producer, sequence);
         match decision {
-            LeaseDecision::Renewed | LeaseDecision::ProducerReplaced { .. } => {
+            LeaseDecision::Renewed => {
+                tracing::debug!(
+                    target: LEASE_TRACE_TARGET,
+                    input = "component/motor/command",
+                    instance = self.instance,
+                    producer = %producer,
+                    sequence,
+                    decision = "renewed",
+                    "command renewed the actuator permit"
+                );
                 self.apply(observed.body, observed.observed_at);
             }
-            LeaseDecision::Rejected(_) => {}
+            LeaseDecision::ProducerReplaced { superseded } => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input = "component/motor/command",
+                    instance = self.instance,
+                    producer = %producer,
+                    sequence,
+                    superseded = %superseded,
+                    decision = "producer_replaced",
+                    "a replacement producer took actuation authority"
+                );
+                self.apply(observed.body, observed.observed_at);
+            }
+            LeaseDecision::Rejected(rejection) => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input = "component/motor/command",
+                    instance = self.instance,
+                    producer = %producer,
+                    sequence,
+                    decision = "rejected",
+                    reason = %rejection,
+                    "motor command rejected; the permit was not renewed"
+                );
+            }
         }
         decision
     }
@@ -107,7 +150,16 @@ impl Motor {
     /// Stop the motor if its permit has lapsed. Returns the effective velocity.
     fn enforce(&mut self, now: LocalInstant) -> f32 {
         match self.permitted_until {
-            Some(deadline) if now.reached(deadline) => self.stop(),
+            Some(deadline) if now.reached(deadline) => {
+                tracing::info!(
+                    target: LEASE_TRACE_TARGET,
+                    input = "component/motor/command",
+                    instance = self.instance,
+                    decision = "permit_lapsed",
+                    "the actuator permit lapsed; stopping the motor"
+                );
+                self.stop();
+            }
             None => self.stop(),
             Some(_) => {}
         }
@@ -187,7 +239,7 @@ impl Ddsm115 {
             )
             .await?;
 
-        let motor = Arc::new(Mutex::new(Motor::default()));
+        let motor = Arc::new(Mutex::new(Motor::new(instance.clone())));
         let permit_commands = command.clone();
         let permit_motor = Arc::clone(&motor);
         ctx.spawn_managed("motor-permit", async move {
@@ -251,13 +303,7 @@ async fn hold_permit_forever(
         tokio::select! {
             observed = commands.recv() => {
                 let Ok(observed) = observed else { break };
-                if let LeaseDecision::Rejected(rejection) = lock(&motor).admit(observed) {
-                    tracing::warn!(
-                        target: "phoxal.ddsm115",
-                        error = %rejection,
-                        "rejected motor command"
-                    );
-                }
+                lock(&motor).admit(observed);
             }
             _ = tick.tick() => {
                 lock(&motor).enforce(LocalInstant::now());
@@ -447,7 +493,7 @@ mod tests {
     /// without any step ever running.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn halting_logical_time_cannot_leave_the_actuator_commanded() {
-        let motor = Arc::new(Mutex::new(Motor::default()));
+        let motor = Arc::new(Mutex::new(Motor::new("left".to_string())));
         lock(&motor).apply(
             api::component::motor::Command::Velocity(3.0),
             LocalInstant::now(),

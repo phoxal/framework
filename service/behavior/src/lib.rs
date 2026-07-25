@@ -36,7 +36,7 @@ struct Execution {
     root_id: String,
     args: BTreeMap<String, api::behavior::Value>,
     status: api::behavior::ExecutionStatus,
-    started_at_ns: u64,
+    started_at: RobotInstant,
     node_statuses: BTreeMap<String, api::behavior::NodeStatus>,
     node_started_at_ns: BTreeMap<String, u64>,
     retry_counts: BTreeMap<String, u32>,
@@ -481,7 +481,7 @@ impl BehaviorService {
             root_id: behavior_id,
             args,
             status: api::behavior::ExecutionStatus::Running,
-            started_at_ns: step.now().ticks(),
+            started_at: step.now(),
             node_statuses: BTreeMap::new(),
             node_started_at_ns: BTreeMap::new(),
             retry_counts: BTreeMap::new(),
@@ -641,8 +641,7 @@ impl BehaviorService {
                     || execution.map_or_else(BTreeMap::new, |execution| execution.args.clone()),
                     |active| active.args.clone(),
                 ),
-                started_at_ns: execution.map(|execution| execution.started_at_ns),
-                updated_at_ns: step.now().ticks(),
+                started_at: execution.map(|execution| execution.started_at),
                 failure: execution.and_then(|execution| execution.failure.clone()),
             },
         )?;
@@ -673,7 +672,6 @@ impl BehaviorService {
                 kind,
                 failure,
                 participant_id: "behavior".to_string(),
-                logical_time_ns: step.now().ticks(),
             },
         )?;
         Ok(())
@@ -749,7 +747,6 @@ impl BehaviorService {
                 kind,
                 failure,
                 participant_id: "behavior".to_string(),
-                logical_time_ns: step.now().ticks(),
             },
         )?;
         Ok(())
@@ -1303,6 +1300,8 @@ fn sanitize(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use phoxal::bus::TimelineId;
+
     use super::*;
 
     fn catalog(yaml: &str) -> (tempfile::TempDir, BehaviorCatalog) {
@@ -1320,7 +1319,7 @@ mod tests {
             root_id: root_id.to_string(),
             args: BTreeMap::new(),
             status: api::behavior::ExecutionStatus::Running,
-            started_at_ns: 0,
+            started_at: RobotInstant::new(TimelineId::mint(), 0),
             node_statuses: BTreeMap::new(),
             node_started_at_ns: BTreeMap::new(),
             retry_counts: BTreeMap::new(),

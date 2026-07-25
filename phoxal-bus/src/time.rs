@@ -63,10 +63,24 @@ pub struct LocalInstant {
 
 impl LocalInstant {
     /// Read the host's suspend-aware monotonic boot clock.
+    ///
+    /// A failed read saturates to the end of the domain rather than to zero,
+    /// so every deadline built from it fails *closed*: a lease looks silent, a
+    /// permit looks lapsed, and the machine stops. Zero would have done the
+    /// opposite and made every retained command look freshly observed.
+    ///
+    /// The saturated value is a stopgap for the microseconds before the fault
+    /// is reported: [`try_now`](Self::try_now) is what the clock driver reads,
+    /// and a failed read there fails the participant outright.
     pub fn now() -> Self {
         LocalInstant {
-            boot_ns: boot_clock_ns(),
+            boot_ns: read_boot_clock_ns().unwrap_or(u64::MAX),
         }
+    }
+
+    /// Read the boot clock, reporting a failed read instead of hiding it.
+    pub fn try_now() -> Option<Self> {
+        read_boot_clock_ns().map(|boot_ns| LocalInstant { boot_ns })
     }
 
     /// Nanoseconds since host boot.
@@ -382,12 +396,15 @@ impl fmt::Display for WallTimestamp {
 /// Read the suspend-aware monotonic boot clock, in nanoseconds since boot.
 ///
 /// Linux `CLOCK_BOOTTIME` and Darwin `CLOCK_MONOTONIC` are the continuous
-/// clocks that keep counting across system suspend. A failed read is a clock
-/// fault the caller cannot paper over, but returning an error from
-/// `LocalInstant::now()` would poison every call site; the clock-discipline
-/// supervisor detects a stuck clock instead (see the `TimeUnsynchronized`
-/// triggers), so this saturates rather than panicking.
-fn boot_clock_ns() -> u64 {
+/// clocks that keep counting across system suspend. Darwin's naming is the
+/// trap: its `clock_gettime(3)` documents `CLOCK_MONOTONIC` as continuing to
+/// increment while the system is asleep, and it is `CLOCK_UPTIME_RAW` - the
+/// `mach_absolute_time` clock that `std::time::Instant` reads - that stops.
+///
+/// `None` means the read failed. Nothing in the framework converts that into an
+/// instant: the clock driver reports it as a clock fault and the participant
+/// fails.
+fn read_boot_clock_ns() -> Option<u64> {
     #[cfg(target_os = "linux")]
     const CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
     #[cfg(not(target_os = "linux"))]
@@ -402,12 +419,14 @@ fn boot_clock_ns() -> u64 {
     // their respective targets.
     let outcome = unsafe { libc::clock_gettime(CLOCK, &raw mut timespec) };
     if outcome != 0 {
-        return 0;
+        return None;
     }
-    u64::try_from(timespec.tv_sec)
-        .unwrap_or(0)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(u64::try_from(timespec.tv_nsec).unwrap_or(0))
+    Some(
+        u64::try_from(timespec.tv_sec)
+            .ok()?
+            .saturating_mul(1_000_000_000)
+            .saturating_add(u64::try_from(timespec.tv_nsec).ok()?),
+    )
 }
 
 #[cfg(test)]
