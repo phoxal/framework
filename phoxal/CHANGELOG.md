@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.2](https://github.com/phoxal/framework/compare/phoxal-v0.40.1...phoxal-v0.40.2) - 2026-07-25
+
+### Added
+
+- *(simulation)* reset state across Webots epochs ([#315](https://github.com/phoxal/framework/pull/315))
+
 ## [0.40.1](https://github.com/phoxal/framework/compare/phoxal-v0.40.0...phoxal-v0.40.1) - 2026-07-25
 
 ### Other
