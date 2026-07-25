@@ -89,6 +89,13 @@ impl EmergencyStopLatch {
     fn finish_cycle(&mut self) {
         self.engage_seen_this_cycle = false;
     }
+
+    fn reset_simulation_epoch(&mut self) {
+        // Component samples describe the replaced simulated world. Software
+        // state and its one-cycle engage latch are host/operator input and
+        // survive the boundary.
+        self.component_state.fill(None);
+    }
 }
 
 #[derive(phoxal::Api)]
@@ -96,8 +103,10 @@ pub struct Api {
     // Declares the typed graph subscription. The managed receiver owns the
     // only draining clone so logical-step pauses cannot accumulate a replay
     // backlog in this handle.
+    #[phoxal(epoch_agnostic)]
     manual: Subscriber<api::motion::ManualCommand>,
     autonomous: Subscriber<api::navigation::Candidate>,
+    #[phoxal(epoch_agnostic)]
     software_estop: Subscriber<api::motion::EmergencyStopRequest>,
     component_estops: Vec<Subscriber<api::component::emergency_stop::State>>,
     safety_constraints: Subscriber<api::safety::MotionConstraints>,
@@ -172,6 +181,17 @@ impl Motion {
                     .await?,
             },
         ))
+    }
+
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.last_autonomous = None;
+        self.last_safety_constraints = None;
+        self.estop.reset_simulation_epoch();
+        // Manual input is a clockless host/event-driven command sampled at a
+        // logical step, and the software e-stop is a host/operator safety
+        // latch. Neither is state derived from the prior simulated world.
+        Ok(())
     }
 
     #[step(hz = 20)]
@@ -489,6 +509,27 @@ mod tests {
         latch.set_component(1, false, now);
         latch.finish_cycle();
         assert!(!latch.engaged(now));
+    }
+
+    #[test]
+    fn epoch_reset_preserves_software_estop_and_one_cycle_engage_latch() {
+        let now = LogicalTime::new(9, 100);
+
+        let mut engaged = EmergencyStopLatch::new(0);
+        engaged.set_software(true);
+        engaged.reset_simulation_epoch();
+        assert!(engaged.engaged(now));
+
+        let mut engaged_then_released = EmergencyStopLatch::new(0);
+        engaged_then_released.set_software(true);
+        engaged_then_released.set_software(false);
+        engaged_then_released.reset_simulation_epoch();
+        assert!(
+            engaged_then_released.engaged(now),
+            "an engage observed before reset must remain fail-safe for one cycle"
+        );
+        engaged_then_released.finish_cycle();
+        assert!(!engaged_then_released.engaged(now));
     }
 
     #[test]

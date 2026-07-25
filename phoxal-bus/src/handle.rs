@@ -30,7 +30,9 @@
 //! into `<Body as ContractBody>::TOPIC`), so a receiver's per-key subscription
 //! is the fast-reject; the decode path only still validates the codec before
 //! touching the payload. A decode failure is counted (`decode_errors`) + logged
-//! as a health signal, never a silent accept.
+//! as a health signal, never a silent accept. Epoch-aware handles separately
+//! count purged or retired-execution samples in `epoch_filtered`, so quarantine
+//! churn is not confused with active-buffer loss.
 
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -38,14 +40,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use zenoh::bytes::Encoding;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::Sample;
 
-use crate::LogicalTime;
 use crate::abi::{CodecId, encoding_string, parse_encoding_string};
 use crate::codec::{Codec, MessagePack};
 use crate::contract::ContractBody;
@@ -56,9 +56,15 @@ use crate::runtime_metrics::RuntimeMetricHandle;
 use crate::session::Bus;
 use crate::session::OUTBOUND_CAPACITY;
 use crate::topic::{AskQuery, Publish, Subscribe, Topic};
+use crate::{LogicalTime, RetiredEpochs};
 
 /// The Phoxal-pinned finite query timeout (D31) - not Zenoh's 10 s default.
 pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Foreign-epoch samples are quarantined for a small number of possible next
+/// executions. Each epoch remains bounded by the receiving handle's ordinary
+/// capacity, and active-epoch data always has its own independent storage.
+const PENDING_EPOCH_CAPACITY: usize = 4;
 
 /// Publishes plain bodies of `B` on `B`'s version-qualified key (D1); the
 /// [`BusMetadata`] attachment carries only provenance (source + logical time)
@@ -305,10 +311,111 @@ pub struct Received<B> {
 /// reader always sees current state and never a backlog. Use this when only the
 /// latest value matters (the common case for periodic state); reach for
 /// [`Subscriber`] when a bounded history is needed. Decode failures are counted
-/// + logged, not stored. The subscription lives until the `Latest` is dropped.
+/// and logged, not stored. Once an epoch barrier is active, possible replacement
+/// epochs are kept in a separate bounded quarantine and remain invisible until
+/// their matching epoch is activated. The subscription lives until the
+/// `Latest` is dropped.
 pub struct Latest<B> {
-    slot: Arc<ArcSwapOption<B>>,
+    state: Arc<Mutex<LatestState<B>>>,
+    metric: RuntimeMetricHandle,
     _guard: Arc<SubscriptionGuard>,
+}
+
+struct LatestState<B> {
+    active_epoch: Option<u64>,
+    received: Option<Arc<Received<B>>>,
+    pending: VecDeque<Arc<Received<B>>>,
+    retired_epochs: RetiredEpochs,
+}
+
+enum LatestIngest {
+    Active {
+        overwrote: bool,
+    },
+    Pending {
+        epoch: u64,
+        new_epoch: bool,
+        filtered: u64,
+    },
+    Filtered,
+}
+
+impl<B> LatestState<B> {
+    fn ingest(&mut self, received: Received<B>) -> LatestIngest {
+        let epoch = received.metadata.epoch;
+        let received = Arc::new(received);
+        let Some(active_epoch) = self.active_epoch else {
+            return LatestIngest::Active {
+                overwrote: self.received.replace(received).is_some(),
+            };
+        };
+        if epoch == active_epoch {
+            return LatestIngest::Active {
+                overwrote: self.received.replace(received).is_some(),
+            };
+        }
+        if self.retired_epochs.contains(epoch) {
+            return LatestIngest::Filtered;
+        }
+
+        if let Some(candidate) = self
+            .pending
+            .iter_mut()
+            .find(|candidate| candidate.metadata.epoch == epoch)
+        {
+            *candidate = received;
+            return LatestIngest::Pending {
+                epoch,
+                new_epoch: false,
+                filtered: 1,
+            };
+        }
+
+        let filtered = if self.pending.len() == PENDING_EPOCH_CAPACITY {
+            self.pending.pop_front();
+            1
+        } else {
+            0
+        };
+        self.pending.push_back(received);
+        LatestIngest::Pending {
+            epoch,
+            new_epoch: true,
+            filtered,
+        }
+    }
+
+    fn retain_epoch(&mut self, epoch: u64) -> (u64, bool) {
+        if self.active_epoch == Some(epoch) {
+            return (0, self.received.is_some());
+        }
+
+        if let Some(previous) = self.active_epoch.replace(epoch) {
+            self.retired_epochs.retire(previous);
+        }
+        self.retired_epochs.activate(epoch);
+
+        let mut filtered = 0_u64;
+        let active = self
+            .received
+            .take()
+            .filter(|received| {
+                let keep = received.metadata.epoch == epoch;
+                filtered += u64::from(!keep);
+                keep
+            })
+            .or_else(|| {
+                let index = self
+                    .pending
+                    .iter()
+                    .position(|received| received.metadata.epoch == epoch)?;
+                self.pending.remove(index)
+            });
+        filtered = filtered.saturating_add(u64::try_from(self.pending.len()).unwrap_or(u64::MAX));
+        self.pending.clear();
+        self.received = active;
+        (filtered, self.received.is_some())
+    }
 }
 
 // Manual, unbounded on `B` (mirrors `Publisher`'s reasoning). `slot` is
@@ -321,7 +428,8 @@ pub struct Latest<B> {
 impl<B> Clone for Latest<B> {
     fn clone(&self) -> Self {
         Latest {
-            slot: Arc::clone(&self.slot),
+            state: Arc::clone(&self.state),
+            metric: self.metric.clone(),
             _guard: Arc::clone(&self._guard),
         }
     }
@@ -332,29 +440,72 @@ impl<B: ContractBody> Latest<B> {
     /// The author-facing path is `ctx.subscribe(...).latest()` in `#[setup]`. `#[doc(hidden)]`.
     #[doc(hidden)]
     pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>) -> Result<Self> {
-        let slot: Arc<ArcSwapOption<B>> = Arc::new(ArcSwapOption::from(None));
-        let store = Arc::clone(&slot);
+        let state = Arc::new(Mutex::new(LatestState {
+            active_epoch: None,
+            received: None,
+            pending: VecDeque::with_capacity(PENDING_EPOCH_CAPACITY),
+            retired_epochs: RetiredEpochs::default(),
+        }));
+        let store = Arc::clone(&state);
         let metric = bus.runtime_metrics().register_latest(topic.key());
         let observe = metric.clone();
+        let topic_owned = topic.key().to_string();
         let guard = spawn_subscription::<B, _>(
             bus,
             topic.key(),
-            move |body, _meta| {
-                let overwrote = store.swap(Some(Arc::new(body))).is_some();
-                observe.record_latest(overwrote);
+            move |body, metadata| {
+                let mut state = store.lock().expect("latest mutex poisoned");
+                match state.ingest(Received { body, metadata }) {
+                    LatestIngest::Active { overwrote } => observe.record_latest(overwrote),
+                    LatestIngest::Pending {
+                        epoch,
+                        new_epoch,
+                        filtered,
+                    } => {
+                        observe.record_pending_latest();
+                        observe.record_epoch_filtered(filtered);
+                        if new_epoch {
+                            tracing::warn!(
+                                target: "phoxal.bus",
+                                topic = %topic_owned,
+                                epoch,
+                                "quarantining sample from a foreign simulation epoch pending its clock"
+                            );
+                        }
+                    }
+                    LatestIngest::Filtered => observe.record_epoch_filtered(1),
+                }
             },
-            metric,
+            metric.clone(),
         )
         .await?;
         Ok(Latest {
-            slot,
+            state,
+            metric,
             _guard: Arc::new(guard),
         })
     }
 
     /// The most recent decoded body, or `None` if nothing has arrived yet.
     pub fn latest(&self) -> Option<B> {
-        self.slot.load_full().map(|arc| (*arc).clone())
+        let received = self
+            .state
+            .lock()
+            .expect("latest mutex poisoned")
+            .received
+            .clone();
+        received.map(|received| received.body.clone())
+    }
+
+    /// Framework lifecycle hook: discard a retained value from another
+    /// simulation execution while preserving a value already received for
+    /// `epoch`.
+    #[doc(hidden)]
+    pub fn __retain_epoch(&self, epoch: u64) {
+        let mut state = self.state.lock().expect("latest mutex poisoned");
+        let (filtered, occupied) = state.retain_epoch(epoch);
+        self.metric.record_epoch_filtered(filtered);
+        self.metric.record_latest_depth(occupied);
     }
 }
 
@@ -365,8 +516,10 @@ impl<B: ContractBody> Latest<B> {
 /// buffered sample is evicted and `inbound_drops` is bumped - the newest sample
 /// always wins, the backlog never grows without bound. Use this when a short
 /// history is useful; reach for [`Latest`] when only current state matters.
-/// Decode failures are counted + logged, not buffered. The subscription lives
-/// until the last clone of the `Subscriber` is dropped.
+/// Decode failures are counted + logged, not buffered. Once an epoch barrier is
+/// active, possible replacement epochs are kept in separate bounded rings and
+/// remain invisible until their matching epoch is activated. The subscription
+/// lives until the last clone of the `Subscriber` is dropped.
 ///
 /// # Cloning shares one queue - `recv`/`try_recv` compete
 ///
@@ -387,8 +540,9 @@ impl<B: ContractBody> Latest<B> {
 /// **read committed `Snapshot` state, never `recv` a `Subscriber`**, or it
 /// would steal samples from the `#[step]`/exclusive-server side that owns the
 /// subscription. Prefer [`Latest`] whenever a value needs to be read from more
-/// than one place (its `.latest()` is a non-destructive `ArcSwapOption` load,
-/// so every clone always sees the current value); reserve sharing a
+/// than one place (its `.latest()` is a non-destructive clone from one
+/// mutex-serialized retained slot, so every clone sees the same current
+/// value); reserve sharing a
 /// `Subscriber` clone for a deliberate "first clone to poll wins" work-queue
 /// fan-out.
 pub struct Subscriber<B> {
@@ -420,12 +574,24 @@ impl<B: ContractBody> Subscriber<B> {
         let ring = Arc::new(Ring::new(depth, metric.clone()));
         let push = Arc::clone(&ring);
         let drops = bus.clone();
+        let topic_owned = topic.key().to_string();
         let guard = spawn_subscription::<B, _>(
             bus,
             topic.key(),
             move |body, metadata| {
-                let (evicted, _current_depth) = push.push(Received { body, metadata });
-                if evicted {
+                let outcome = push.push(Received { body, metadata });
+                if !outcome.accepted {
+                    return;
+                }
+                if let Some(epoch) = outcome.new_pending_epoch {
+                    tracing::warn!(
+                        target: "phoxal.bus",
+                        topic = %topic_owned,
+                        epoch,
+                        "quarantining samples from a foreign simulation epoch pending its clock"
+                    );
+                }
+                if outcome.evicted {
                     drops.health().inbound_drops.fetch_add(1, Ordering::Relaxed);
                 }
             },
@@ -469,20 +635,50 @@ impl<B: ContractBody> Subscriber<B> {
     pub fn dropped(&self) -> u64 {
         self.ring.dropped.load(Ordering::Relaxed)
     }
+
+    /// Framework lifecycle hook: discard queued samples from other simulation
+    /// executions while preserving samples already received for `epoch`.
+    #[doc(hidden)]
+    pub fn __retain_epoch(&self, epoch: u64) {
+        self.ring.retain_epoch(epoch);
+    }
 }
 
 struct Ring<B> {
-    buf: Mutex<VecDeque<Received<B>>>,
+    state: Mutex<RingState<B>>,
     notify: Notify,
     cap: usize,
     dropped: AtomicU64,
     metric: RuntimeMetricHandle,
 }
 
+struct RingState<B> {
+    active_epoch: Option<u64>,
+    buf: VecDeque<Received<B>>,
+    pending: VecDeque<PendingEpoch<B>>,
+    retired_epochs: RetiredEpochs,
+}
+
+struct PendingEpoch<B> {
+    epoch: u64,
+    buf: VecDeque<Received<B>>,
+}
+
+struct RingPush {
+    accepted: bool,
+    evicted: bool,
+    new_pending_epoch: Option<u64>,
+}
+
 impl<B> Ring<B> {
     fn new(cap: usize, metric: RuntimeMetricHandle) -> Self {
         Ring {
-            buf: Mutex::new(VecDeque::with_capacity(cap)),
+            state: Mutex::new(RingState {
+                active_epoch: None,
+                buf: VecDeque::with_capacity(cap),
+                pending: VecDeque::with_capacity(PENDING_EPOCH_CAPACITY),
+                retired_epochs: RetiredEpochs::default(),
+            }),
             notify: Notify::new(),
             cap,
             dropped: AtomicU64::new(0),
@@ -490,31 +686,152 @@ impl<B> Ring<B> {
         }
     }
 
-    /// Push, dropping the oldest if full. Returns eviction + resulting depth.
-    fn push(&self, item: Received<B>) -> (bool, usize) {
+    /// Push into the active queue or a bounded foreign-epoch quarantine.
+    fn push(&self, item: Received<B>) -> RingPush {
         let mut dropped = false;
-        let mut buf = self.buf.lock().expect("ring mutex poisoned");
-        if buf.len() == self.cap {
-            buf.pop_front();
+        let mut state = self.state.lock().expect("ring mutex poisoned");
+        let Some(active_epoch) = state.active_epoch else {
+            if state.buf.len() == self.cap {
+                state.buf.pop_front();
+                dropped = true;
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            state.buf.push_back(item);
+            let depth = state.buf.len();
+            self.metric.record_subscriber(dropped, depth);
+            drop(state);
+            self.notify.notify_one();
+            return RingPush {
+                accepted: true,
+                evicted: dropped,
+                new_pending_epoch: None,
+            };
+        };
+
+        let epoch = item.metadata.epoch;
+        if epoch != active_epoch {
+            if state.retired_epochs.contains(epoch) {
+                self.metric.record_epoch_filtered(1);
+                return RingPush {
+                    accepted: false,
+                    evicted: false,
+                    new_pending_epoch: None,
+                };
+            }
+
+            let mut new_pending_epoch = None;
+            let pending_index = state
+                .pending
+                .iter()
+                .position(|pending| pending.epoch == epoch);
+            let pending_index = match pending_index {
+                Some(index) => index,
+                None => {
+                    if state.pending.len() == PENDING_EPOCH_CAPACITY {
+                        if let Some(removed) = state.pending.pop_front() {
+                            self.metric.record_epoch_filtered(
+                                u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
+                            );
+                        }
+                    }
+                    state.pending.push_back(PendingEpoch {
+                        epoch,
+                        buf: VecDeque::with_capacity(self.cap),
+                    });
+                    new_pending_epoch = Some(epoch);
+                    state.pending.len() - 1
+                }
+            };
+            let pending = &mut state.pending[pending_index];
+            if pending.buf.len() == self.cap {
+                pending.buf.pop_front();
+                self.metric.record_epoch_filtered(1);
+            }
+            pending.buf.push_back(item);
+            self.metric.record_pending_subscriber();
+            return RingPush {
+                accepted: true,
+                evicted: false,
+                new_pending_epoch,
+            };
+        }
+
+        if state.buf.len() == self.cap {
+            state.buf.pop_front();
             dropped = true;
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        buf.push_back(item);
-        let depth = buf.len();
+        state.buf.push_back(item);
+        let depth = state.buf.len();
         // Serialize the local depth gauge with the queue mutation. Updating it
         // after unlocking permits an older pop to overwrite a newer push.
         self.metric.record_subscriber(dropped, depth);
-        drop(buf);
+        drop(state);
         self.notify.notify_one();
-        (dropped, depth)
+        RingPush {
+            accepted: true,
+            evicted: dropped,
+            new_pending_epoch: None,
+        }
     }
 
     fn try_pop(&self) -> Option<(Received<B>, usize)> {
-        let mut buf = self.buf.lock().expect("ring mutex poisoned");
-        let item = buf.pop_front()?;
-        let depth = buf.len();
+        let mut state = self.state.lock().expect("ring mutex poisoned");
+        let item = state.buf.pop_front()?;
+        let depth = state.buf.len();
         self.metric.record_subscriber_pop(depth);
         Some((item, depth))
+    }
+
+    fn retain_epoch(&self, epoch: u64) {
+        let mut state = self.state.lock().expect("ring mutex poisoned");
+        if state.active_epoch == Some(epoch) {
+            return;
+        }
+        if let Some(previous) = state.active_epoch.replace(epoch) {
+            state.retired_epochs.retire(previous);
+        }
+        state.retired_epochs.activate(epoch);
+
+        let mut filtered = 0_u64;
+        state.buf.retain(|received| {
+            let keep = received.metadata.epoch == epoch;
+            filtered += u64::from(!keep);
+            keep
+        });
+        if let Some(index) = state
+            .pending
+            .iter()
+            .position(|pending| pending.epoch == epoch)
+        {
+            let mut promoted = state
+                .pending
+                .remove(index)
+                .expect("pending epoch index must remain valid")
+                .buf;
+            if state.buf.is_empty() {
+                state.buf = promoted;
+            } else {
+                while let Some(item) = promoted.pop_front() {
+                    if state.buf.len() == self.cap {
+                        state.buf.pop_front();
+                        filtered = filtered.saturating_add(1);
+                    }
+                    state.buf.push_back(item);
+                }
+            }
+        }
+        filtered = filtered.saturating_add(state.pending.iter().fold(0_u64, |total, pending| {
+            total.saturating_add(u64::try_from(pending.buf.len()).unwrap_or(u64::MAX))
+        }));
+        state.pending.clear();
+        self.metric.record_epoch_filtered(filtered);
+        self.metric.record_subscriber_pop(state.buf.len());
+        let notify = !state.buf.is_empty();
+        drop(state);
+        if notify {
+            self.notify.notify_waiters();
+        }
     }
 
     async fn recv(&self) -> (Received<B>, usize) {
@@ -647,14 +964,15 @@ pub(crate) fn decode_sample<B: ContractBody>(
 #[cfg(test)]
 mod subscriber_ring_tests {
     use super::*;
+    use std::sync::Barrier;
 
-    fn received(body: u8) -> Received<u8> {
+    fn received(body: u8, epoch: u64) -> Received<u8> {
         Received {
             body,
             metadata: BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),
                 produced_at_ns: 0,
-                epoch: 0,
+                epoch,
                 source: Source {
                     participant: "test".to_string(),
                     incarnation: 0,
@@ -669,9 +987,15 @@ mod subscriber_ring_tests {
         let metrics = crate::runtime_metrics::RuntimeMetrics::default();
         let metric = metrics.register_subscriber("v0.1/test/state", 1);
         let ring = Ring::new(1, metric);
-        assert_eq!(ring.push(received(1)), (false, 1));
-        assert_eq!(ring.push(received(2)), (true, 1));
-        assert_eq!(ring.push(received(3)), (true, 1));
+        let first = ring.push(received(1, 0));
+        assert!(first.accepted);
+        assert!(!first.evicted);
+        let second = ring.push(received(2, 0));
+        assert!(second.accepted);
+        assert!(second.evicted);
+        let third = ring.push(received(3, 0));
+        assert!(third.accepted);
+        assert!(third.evicted);
         assert_eq!(ring.dropped.load(Ordering::Relaxed), 2);
         let (received, depth) = ring.try_pop().unwrap();
         assert_eq!(received.body, 3);
@@ -682,5 +1006,111 @@ mod subscriber_ring_tests {
         assert_eq!(row.bounded_evictions, 2);
         assert_eq!(row.current_depth, 0);
         assert_eq!(row.high_water_depth, 1);
+    }
+
+    #[test]
+    fn latest_quarantines_replacement_epoch_until_atomic_activation() {
+        let mut state = LatestState {
+            active_epoch: None,
+            received: None,
+            pending: VecDeque::with_capacity(PENDING_EPOCH_CAPACITY),
+            retired_epochs: RetiredEpochs::default(),
+        };
+        assert!(matches!(
+            state.ingest(received(1, 1)),
+            LatestIngest::Active { overwrote: false }
+        ));
+        assert_eq!(state.retain_epoch(1), (0, true));
+
+        assert!(matches!(
+            state.ingest(received(2, 2)),
+            LatestIngest::Pending {
+                epoch: 2,
+                new_epoch: true,
+                filtered: 0
+            }
+        ));
+        assert_eq!(state.received.as_ref().map(|sample| sample.body), Some(1));
+        assert_eq!(state.retain_epoch(2), (1, true));
+        assert_eq!(state.received.as_ref().map(|sample| sample.body), Some(2));
+        assert!(matches!(
+            state.ingest(received(3, 1)),
+            LatestIngest::Filtered
+        ));
+        assert_eq!(state.received.as_ref().map(|sample| sample.body), Some(2));
+    }
+
+    #[test]
+    fn latest_activation_is_safe_when_replacement_ingress_races_the_clock() {
+        let state = Arc::new(Mutex::new(LatestState {
+            active_epoch: Some(1),
+            received: Some(Arc::new(received(1, 1))),
+            pending: VecDeque::with_capacity(PENDING_EPOCH_CAPACITY),
+            retired_epochs: RetiredEpochs::default(),
+        }));
+        let barrier = Arc::new(Barrier::new(3));
+
+        let ingress_state = Arc::clone(&state);
+        let ingress_barrier = Arc::clone(&barrier);
+        let ingress = std::thread::spawn(move || {
+            ingress_barrier.wait();
+            ingress_state
+                .lock()
+                .expect("latest mutex poisoned")
+                .ingest(received(2, 2));
+        });
+        let clock_state = Arc::clone(&state);
+        let clock_barrier = Arc::clone(&barrier);
+        let clock = std::thread::spawn(move || {
+            clock_barrier.wait();
+            clock_state
+                .lock()
+                .expect("latest mutex poisoned")
+                .retain_epoch(2);
+        });
+        barrier.wait();
+        ingress.join().expect("ingress thread should join");
+        clock.join().expect("clock thread should join");
+
+        let mut state = state.lock().expect("latest mutex poisoned");
+        assert_eq!(state.active_epoch, Some(2));
+        assert_eq!(state.received.as_ref().map(|sample| sample.body), Some(2));
+        assert!(matches!(
+            state.ingest(received(3, 1)),
+            LatestIngest::Filtered
+        ));
+        assert_eq!(state.received.as_ref().map(|sample| sample.body), Some(2));
+    }
+
+    #[test]
+    fn subscriber_activation_is_safe_when_replacement_ingress_races_the_clock() {
+        let metrics = crate::runtime_metrics::RuntimeMetrics::default();
+        let metric = metrics.register_subscriber("v0.1/test/state", 4);
+        let ring = Arc::new(Ring::new(4, metric));
+        assert!(ring.push(received(1, 1)).accepted);
+        ring.retain_epoch(1);
+        assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(1));
+
+        let barrier = Arc::new(Barrier::new(3));
+        let ingress_ring = Arc::clone(&ring);
+        let ingress_barrier = Arc::clone(&barrier);
+        let ingress = std::thread::spawn(move || {
+            ingress_barrier.wait();
+            assert!(ingress_ring.push(received(2, 2)).accepted);
+        });
+        let clock_ring = Arc::clone(&ring);
+        let clock_barrier = Arc::clone(&barrier);
+        let clock = std::thread::spawn(move || {
+            clock_barrier.wait();
+            clock_ring.retain_epoch(2);
+        });
+        barrier.wait();
+        ingress.join().expect("ingress thread should join");
+        clock.join().expect("clock thread should join");
+
+        assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(2));
+        assert!(!ring.push(received(3, 1)).accepted);
+        assert!(ring.try_pop().is_none());
+        assert_eq!(metrics.take().pop().unwrap().epoch_filtered, 1);
     }
 }

@@ -24,6 +24,8 @@ serde = { workspace = true, features = ["derive"] }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }
 webots-rs = { workspace = true }
+getrandom = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

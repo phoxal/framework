@@ -1,13 +1,12 @@
 //! Webots controller simulator artifact.
 //!
-//! The per-robot substitution provider: binds one Webots controller process to
+//! Binds one Webots-owned controller process to
 //! a robot's component capabilities (motor, encoder, IMU, accelerometer,
 //! gyroscope, range, camera, depth, GNSS) and publishes/subscribes exactly the
-//! `component::*` contracts those capabilities need. It observes the
-//! supervisor's full `simulation/clock` time for coherent sensor timestamps,
-//! but never publishes `simulation::*` topics. Clock authority stays with
-//! `phoxal-simulator-webots-supervisor` (see
-//! `simulator/webots-supervisor`).
+//! `component::*` contracts those capabilities need. The process bootstraps the
+//! normal framework runner, mints one opaque nonzero epoch, and runs only the
+//! external Webots step loop. Each step publishes all component outputs and
+//! then the matching `simulation::Clock`.
 
 mod capabilities;
 
@@ -19,7 +18,10 @@ use phoxal::model::simulation::v0::Simulation as SimulationSpec;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -67,7 +69,7 @@ fn default_require_native() -> bool {
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    simulation_clock: Subscriber<api::simulation::Clock>,
+    clock: Publisher<api::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
     encoders: Vec<Publisher<api::component::encoder::Sample>>,
     imus: Vec<Publisher<api::component::imu::Sample>>,
@@ -83,15 +85,84 @@ pub struct Api {
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
 pub struct WebotsControllerSimulator {
-    authoritative_time: Option<LogicalTime>,
-    last_published_time: Option<LogicalTime>,
+    backend: SharedBackend,
+}
+
+struct ControllerRuntime {
+    epoch: u64,
     step_index: u64,
-    backend: Backend,
-    motor_specs: Vec<MotorSpec>,
+    backend: SharedBackend,
     emergency_stop_states: Vec<bool>,
     battery_charge_ratio: f64,
     last_battery_update: Option<LogicalTime>,
     last_battery_publish: Option<LogicalTime>,
+}
+
+type SharedBackend = Arc<Mutex<BackendControl>>;
+
+struct BackendControl {
+    backend: Backend,
+    motor_specs: Vec<MotorSpec>,
+}
+
+struct BlockingStep {
+    step_ns: u64,
+    now_ns: u64,
+    outputs: BackendOutput,
+    is_stub: bool,
+}
+
+trait EpochSource {
+    fn next_candidate(&mut self) -> Result<u64>;
+}
+
+struct SystemEpochSource;
+
+impl EpochSource for SystemEpochSource {
+    fn next_candidate(&mut self) -> Result<u64> {
+        let mut bytes = [0u8; std::mem::size_of::<u64>()];
+        getrandom::fill(&mut bytes).context("failed to generate simulation epoch")?;
+        Ok(u64::from_ne_bytes(bytes))
+    }
+}
+
+fn mint_epoch(source: &mut impl EpochSource) -> Result<u64> {
+    loop {
+        let epoch = source.next_candidate()?;
+        if epoch != 0 {
+            return Ok(epoch);
+        }
+    }
+}
+
+/// Bootstrap the Webots-owned controller with a process-local nonzero
+/// incarnation. Stable project arguments may configure routing/model inputs,
+/// but lifecycle identity is never supplied by the CLI.
+pub fn run() -> Result<()> {
+    if has_explicit_incarnation_arg(std::env::args_os()) {
+        bail!(
+            "--incarnation is not accepted by the Webots-owned controller; it mints its own process identity"
+        );
+    }
+    let incarnation = mint_epoch(&mut SystemEpochSource)?;
+    // SAFETY: this is the binary's single-threaded entrypoint, before the
+    // framework constructs its Tokio runtime or any other thread.
+    unsafe {
+        std::env::set_var(
+            phoxal::participant::launch::env::INCARNATION,
+            incarnation.to_string(),
+        );
+    }
+    phoxal::run::<WebotsControllerSimulator>()
+}
+
+fn has_explicit_incarnation_arg(args: impl IntoIterator<Item = OsString>) -> bool {
+    args.into_iter().any(|arg| {
+        arg == "--incarnation"
+            || arg
+                .to_str()
+                .is_some_and(|arg| arg.starts_with("--incarnation="))
+    })
 }
 
 #[phoxal::behavior]
@@ -106,8 +177,8 @@ impl WebotsControllerSimulator {
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
-        let simulation_clock = ctx
-            .subscriber(api::topic::new().simulation().clock(), 4)
+        let clock = ctx
+            .publisher(api::topic::internal::new(cap).simulation().clock())
             .await?;
         let battery = ctx
             .publisher(api::topic::internal::new(cap).battery().state())
@@ -244,7 +315,10 @@ impl WebotsControllerSimulator {
             );
         }
 
-        let backend = Backend::open(&config, &catalog)?;
+        let backend = Arc::new(Mutex::new(BackendControl {
+            backend: Backend::open(&config, &catalog)?,
+            motor_specs: catalog.motors.clone(),
+        }));
         let emergency_stop_states = catalog
             .emergency_stops
             .iter()
@@ -265,91 +339,113 @@ impl WebotsControllerSimulator {
             "webots controller simulator ready"
         );
 
-        Ok((
-            Self {
-                authoritative_time: None,
-                last_published_time: None,
-                step_index: 0,
-                backend,
-                motor_specs: catalog.motors,
-                emergency_stop_states,
-                battery_charge_ratio: 1.0,
-                last_battery_update: None,
-                last_battery_publish: None,
-            },
-            Self::Api {
-                simulation_clock,
-                motor_commands,
-                encoders,
-                imus,
-                accelerometers,
-                gyroscopes,
-                ranges,
-                cameras,
-                depths,
-                gnss,
-                emergency_stops,
-                battery,
-            },
-        ))
-    }
+        let api = Self::Api {
+            clock,
+            motor_commands,
+            encoders,
+            imus,
+            accelerometers,
+            gyroscopes,
+            ranges,
+            cameras,
+            depths,
+            gnss,
+            emergency_stops,
+            battery,
+        };
+        let mut epoch_source = SystemEpochSource;
+        let runtime = ControllerRuntime {
+            epoch: mint_epoch(&mut epoch_source)?,
+            step_index: 0,
+            backend: Arc::clone(&backend),
+            emergency_stop_states,
+            battery_charge_ratio: 1.0,
+            last_battery_update: None,
+            last_battery_publish: None,
+        };
+        let loop_api = api.clone();
+        ctx.spawn_managed("webots-step-loop", async move {
+            if let Err(error) = runtime.run(loop_api).await {
+                tracing::error!(
+                    target: "simulator_webots_controller",
+                    error = %error,
+                    "external Webots step loop stopped"
+                );
+            }
+        });
 
-    #[step(hz = 100)]
-    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
-        self.observe_authoritative_time(api);
-        let commands = self.latest_motor_commands(api);
-        let time_ns = self.authoritative_time.map_or(0, |time| time.time_ns());
-        let outputs = self.backend.advance(self.step_index, time_ns, &commands)?;
-        self.step_index = self.step_index.saturating_add(1);
-
-        if let Some(at) = self.authoritative_time
-            && self.last_published_time.is_none_or(|last| at > last)
-        {
-            self.publish_outputs(api, at, outputs).await?;
-            self.last_published_time = Some(at);
-            tracing::trace!(target: "simulator_webots_controller", epoch = at.epoch(), time_ns = at.time_ns(), "controller step complete");
-        } else {
-            tracing::trace!(target: "simulator_webots_controller", "waiting for authoritative simulation clock advance");
-        }
-        Ok(())
+        Ok((Self { backend }, api))
     }
 
     #[shutdown]
-    async fn shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> Result<()> {
-        let _ = ctx;
-        for (subscriber, spec) in api.motor_commands.iter().zip(&self.motor_specs) {
+    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
+        for subscriber in &api.motor_commands {
             let _latest = drain_latest(subscriber);
-            let stop = api::component::motor::Command::Stop;
-            if let Err(error) = self.backend.apply_motor_command(spec, &stop) {
-                tracing::warn!(
-                    target: "simulator_webots_controller",
-                    capability = %spec.reference,
-                    error = %error,
-                    "failed to park motor on shutdown"
-                );
-            }
         }
-        Ok(())
+        park_backend(Arc::clone(&self.backend)).await
     }
 }
 
-impl WebotsControllerSimulator {
-    fn observe_authoritative_time(&mut self, api: &Api) {
-        let mut latest = None;
-        while let Some(received) = api.simulation_clock.try_recv() {
-            latest = Some(LogicalTime::new(
-                received.metadata.epoch,
-                received.body.now_ns,
-            ));
-        }
-        if let Some(time) = latest {
-            let previous_epoch = self.authoritative_time.map(|current| current.epoch());
-            if advance_authoritative_time(&mut self.authoritative_time, time)
-                && previous_epoch != Some(time.epoch())
-            {
-                self.step_index = 0;
+impl ControllerRuntime {
+    async fn run(mut self, api: Api) -> Result<()> {
+        loop {
+            if let Err(error) = self.step_once(&api).await {
+                if let Err(park_error) = park_backend(Arc::clone(&self.backend)).await {
+                    tracing::warn!(
+                        target: "simulator_webots_controller",
+                        error = %park_error,
+                        "failed to park motors after the Webots step loop stopped"
+                    );
+                }
+                return Err(error);
             }
         }
+    }
+
+    async fn step_once(&mut self, api: &Api) -> Result<()> {
+        let commands = self.latest_motor_commands(api);
+        let next_step = self.step_index.saturating_add(1);
+        let step_index = self.step_index;
+        let backend = Arc::clone(&self.backend);
+        let step = tokio::task::spawn_blocking(move || {
+            let mut control = lock_backend(&backend)?;
+            let step_ns = control.backend.step_ns()?;
+            let now_ns = next_step.saturating_mul(step_ns);
+            let outputs = control.backend.advance(step_index, now_ns, &commands)?;
+            Ok::<_, anyhow::Error>(BlockingStep {
+                step_ns,
+                now_ns,
+                outputs,
+                is_stub: control.backend.is_stub(),
+            })
+        })
+        .await
+        .context("Webots step worker failed to join")??;
+
+        let at = LogicalTime::new(self.epoch, step.now_ns);
+        self.publish_outputs(api, at, step.outputs).await?;
+        api.clock
+            .publish_at(
+                at,
+                api::simulation::Clock {
+                    epoch: self.epoch,
+                    now_ns: step.now_ns,
+                    step: next_step,
+                },
+            )
+            .await?;
+        self.step_index = next_step;
+        tracing::trace!(
+            target: "simulator_webots_controller",
+            epoch = self.epoch,
+            step = self.step_index,
+            time_ns = step.now_ns,
+            "external Webots step committed"
+        );
+        if step.is_stub {
+            tokio::time::sleep(Duration::from_nanos(step.step_ns)).await;
+        }
+        Ok(())
     }
 
     fn latest_motor_commands(&self, api: &Api) -> Vec<Option<api::component::motor::Command>> {
@@ -425,8 +521,8 @@ impl WebotsControllerSimulator {
             self.last_battery_publish = None;
         }
         if let Some(previous) = self.last_battery_update
-            && at >= previous
             && at.epoch() == previous.epoch()
+            && at.time_ns() >= previous.time_ns()
         {
             self.battery_charge_ratio = discharge(
                 self.battery_charge_ratio,
@@ -469,21 +565,24 @@ fn voltage_for(ratio: f64, empty_v: f64, full_v: f64) -> f64 {
     empty_v + (full_v - empty_v) * ratio.clamp(0.0, 1.0)
 }
 
-fn advance_authoritative_time(current: &mut Option<LogicalTime>, candidate: LogicalTime) -> bool {
-    if current.is_none_or(|time| candidate > time) {
-        *current = Some(candidate);
-        true
-    } else {
-        false
-    }
-}
-
 fn drain_latest<B: ContractBody>(subscriber: &Subscriber<B>) -> Option<B> {
     let mut latest = None;
     while let Some(received) = subscriber.try_recv() {
         latest = Some(received.body);
     }
     latest
+}
+
+fn lock_backend(backend: &SharedBackend) -> Result<std::sync::MutexGuard<'_, BackendControl>> {
+    backend
+        .lock()
+        .map_err(|_| anyhow!("Webots backend mutex is poisoned"))
+}
+
+async fn park_backend(backend: SharedBackend) -> Result<()> {
+    tokio::task::spawn_blocking(move || lock_backend(&backend)?.park_motors())
+        .await
+        .context("Webots motor parking worker failed to join")?
 }
 
 /// The set of component-capability specs this robot's Webots model exposes,
@@ -709,6 +808,27 @@ enum Backend {
     Stub(StubBackend),
 }
 
+impl BackendControl {
+    fn park_motors(&mut self) -> Result<()> {
+        let mut first_error = None;
+        for spec in &self.motor_specs {
+            if let Err(error) = self
+                .backend
+                .apply_motor_command(spec, &api::component::motor::Command::Stop)
+            {
+                tracing::warn!(
+                    target: "simulator_webots_controller",
+                    capability = %spec.reference,
+                    error = %error,
+                    "failed to park motor while stopping"
+                );
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
 impl Backend {
     fn open(config: &WebotsControllerConfig, catalog: &CapabilityCatalog) -> Result<Self> {
         if webots_rs::WEBOTS_RUNTIME_LINKED {
@@ -736,6 +856,17 @@ impl Backend {
         }
     }
 
+    fn step_ns(&self) -> Result<u64> {
+        match self {
+            Self::Native(backend) => step_ns_from_ms(backend.step_ms),
+            Self::Stub(_) => Ok(10_000_000),
+        }
+    }
+
+    fn is_stub(&self) -> bool {
+        matches!(self, Self::Stub(_))
+    }
+
     fn apply_motor_command(
         &mut self,
         spec: &MotorSpec,
@@ -746,6 +877,17 @@ impl Backend {
             Self::Stub(_) => Ok(()),
         }
     }
+}
+
+fn step_ns_from_ms(step_ms: i32) -> Result<u64> {
+    let step_ms =
+        u64::try_from(step_ms).context("Webots basicTimeStep must be a positive integer")?;
+    if step_ms == 0 {
+        bail!("Webots basicTimeStep must be > 0");
+    }
+    step_ms
+        .checked_mul(1_000_000)
+        .context("Webots basicTimeStep overflows nanoseconds")
 }
 
 struct StubBackend {
@@ -769,10 +911,9 @@ impl StubBackend {
     }
 }
 
-/// Owns the Webots controller-process handle: base handle open, per-step
-/// `webots.step()`, and every component device wrapper. This crate never
-/// opens a `webots_rs::Supervisor` - see `phoxal-simulator-webots-supervisor`
-/// for the world/session authority half of the old monolith.
+/// Owns the Webots controller-process handle: base handle open, the sole
+/// `webots.step()` loop, and every component device wrapper. This crate never
+/// opens a `webots_rs::Supervisor`.
 struct NativeBackend {
     webots: webots_rs::Webots,
     step_ms: i32,
@@ -998,7 +1139,7 @@ struct ContractMapping {
 fn contract_mappings() -> Vec<ContractMapping> {
     use phoxal::participant::ContractRole;
     vec![
-        mapping::<api::simulation::Clock>(ContractRole::Subscribe),
+        mapping::<api::simulation::Clock>(ContractRole::Publish),
         mapping::<api::component::motor::Command>(ContractRole::Subscribe),
         mapping::<api::component::encoder::Sample>(ContractRole::Publish),
         mapping::<api::component::imu::Sample>(ContractRole::Publish),
@@ -1024,7 +1165,22 @@ fn mapping<B: ContractBody>(role: phoxal::participant::ContractRole) -> Contract
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::participant::{Participant, ParticipantApi};
+    use phoxal::participant::{Participant, ParticipantApi, ParticipantLifecycle};
+    use phoxal::raw::{Bus, BusConfig, OwnerCap, Publisher, Subscriber};
+    use std::collections::VecDeque;
+    use std::time::Duration;
+
+    struct SequenceEpochSource {
+        candidates: VecDeque<u64>,
+    }
+
+    impl EpochSource for SequenceEpochSource {
+        fn next_candidate(&mut self) -> Result<u64> {
+            self.candidates
+                .pop_front()
+                .context("test epoch sequence exhausted")
+        }
+    }
 
     #[test]
     fn api_declares_clock_component_and_battery_contracts() {
@@ -1048,7 +1204,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             expected.len(),
-            "controller must declare one clock input, 9 component contracts, and battery state, got {contracts:?}"
+            "controller must declare one clock output, 9 component contracts, and battery state, got {contracts:?}"
         );
         for mapping in &expected {
             assert!(
@@ -1061,16 +1217,20 @@ mod tests {
             );
         }
 
-        // The controller observes the clock but never takes simulation authority.
+        // The controller owns the only simulation clock in this process.
         assert!(
             contracts
                 .iter()
                 .filter(|c| c.topic.contains("/simulation/"))
                 .all(|c| {
                     c.topic == api::simulation::Clock::TOPIC
-                        && c.role == phoxal::participant::ContractRole::Subscribe
+                        && c.role == phoxal::participant::ContractRole::Publish
                 }),
-            "controller may only subscribe to simulation/clock: {contracts:?}"
+            "controller may only publish simulation/clock: {contracts:?}"
+        );
+        assert!(
+            <WebotsControllerSimulator as ParticipantLifecycle>::__step_schedule().is_none(),
+            "the controller must not wrap Webots in a framework #[step] loop"
         );
     }
 
@@ -1095,31 +1255,126 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_time_advances_within_an_epoch_and_across_reset() {
-        let mut current = None;
+    fn epoch_minting_rejects_zero_and_keeps_process_and_simulation_identity_independent() {
+        let mut source = SequenceEpochSource {
+            candidates: VecDeque::from([41, 0, 52]),
+        };
 
-        assert!(advance_authoritative_time(
-            &mut current,
-            LogicalTime::new(0, 10)
-        ));
-        assert_eq!(current, Some(LogicalTime::new(0, 10)));
-        assert!(!advance_authoritative_time(
-            &mut current,
-            LogicalTime::new(0, 5)
-        ));
-        assert!(!advance_authoritative_time(
-            &mut current,
-            LogicalTime::new(0, 10)
-        ));
-        assert!(advance_authoritative_time(
-            &mut current,
-            LogicalTime::new(0, 20)
-        ));
-        assert!(advance_authoritative_time(
-            &mut current,
-            LogicalTime::new(1, 0)
-        ));
-        assert_eq!(current, Some(LogicalTime::new(1, 0)));
+        let incarnation = mint_epoch(&mut source).expect("process incarnation should mint");
+        let simulation_epoch = mint_epoch(&mut source).expect("simulation epoch should mint");
+        assert_eq!(incarnation, 41);
+        assert_eq!(simulation_epoch, 52);
+        assert_ne!(incarnation, simulation_epoch);
+    }
+
+    #[test]
+    fn controller_rejects_cli_incarnation_overrides() {
+        assert!(has_explicit_incarnation_arg([
+            OsString::from("webots-controller"),
+            OsString::from("--incarnation"),
+            OsString::from("42"),
+        ]));
+        assert!(has_explicit_incarnation_arg([
+            OsString::from("webots-controller"),
+            OsString::from("--incarnation=42"),
+        ]));
+        assert!(!has_explicit_incarnation_arg([
+            OsString::from("webots-controller"),
+            OsString::from("--robot-id"),
+            OsString::from("rover"),
+        ]));
+    }
+
+    #[test]
+    fn webots_step_duration_must_be_positive() {
+        assert_eq!(step_ns_from_ms(10).expect("10 ms is valid"), 10_000_000);
+        assert!(step_ns_from_ms(0).is_err());
+        assert!(step_ns_from_ms(-1).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controller_publishes_outputs_before_matching_clock() {
+        let namespace = format!(
+            "test/webots-controller-order/{}/{}",
+            std::process::id(),
+            phoxal::raw::host_time().time_ns()
+        );
+        let bus = Bus::open(BusConfig::in_process(namespace, "robot"))
+            .await
+            .expect("bus should open");
+        let cap = OwnerCap::__mint();
+        let clock_subscriber = Subscriber::<api::simulation::Clock>::new(
+            &bus,
+            &api::topic::new().simulation().clock(),
+            1,
+        )
+        .await
+        .expect("clock subscriber should attach");
+        let battery_subscriber =
+            Subscriber::<api::battery::State>::new(&bus, &api::topic::new().battery().state(), 1)
+                .await
+                .expect("battery subscriber should attach");
+        let api = Api {
+            clock: Publisher::new(
+                bus.clone(),
+                &api::topic::internal::new(cap).simulation().clock(),
+            )
+            .expect("clock publisher should attach"),
+            motor_commands: Vec::new(),
+            encoders: Vec::new(),
+            imus: Vec::new(),
+            accelerometers: Vec::new(),
+            gyroscopes: Vec::new(),
+            ranges: Vec::new(),
+            cameras: Vec::new(),
+            depths: Vec::new(),
+            gnss: Vec::new(),
+            emergency_stops: Vec::new(),
+            battery: Publisher::new(
+                bus.clone(),
+                &api::topic::internal::new(cap).battery().state(),
+            )
+            .expect("battery publisher should attach"),
+        };
+        let mut runtime = ControllerRuntime {
+            epoch: 77,
+            step_index: 0,
+            backend: Arc::new(Mutex::new(BackendControl {
+                backend: Backend::Stub(StubBackend::new(&CapabilityCatalog::default())),
+                motor_specs: Vec::new(),
+            })),
+            emergency_stop_states: Vec::new(),
+            battery_charge_ratio: 1.0,
+            last_battery_update: None,
+            last_battery_publish: None,
+        };
+
+        runtime
+            .step_once(&api)
+            .await
+            .expect("stub step should complete");
+        let battery = tokio::time::timeout(Duration::from_secs(2), battery_subscriber.recv())
+            .await
+            .expect("battery output should arrive")
+            .expect("battery output should decode");
+        let clock = tokio::time::timeout(Duration::from_secs(2), clock_subscriber.recv())
+            .await
+            .expect("clock should arrive")
+            .expect("clock should decode");
+
+        assert_eq!(battery.metadata.epoch, 77);
+        assert_eq!(battery.metadata.produced_at_ns, 10_000_000);
+        assert_eq!(clock.metadata.epoch, 77);
+        assert_eq!(clock.metadata.produced_at_ns, 10_000_000);
+        assert_eq!(clock.body.epoch, 77);
+        assert_eq!(clock.body.now_ns, 10_000_000);
+        assert_eq!(clock.body.step, 1);
+        assert!(
+            battery.metadata.source.sequence < clock.metadata.source.sequence,
+            "all completed-world outputs must enqueue before the matching clock"
+        );
+        assert_eq!(runtime.step_index, 1);
+        bus.close().await.expect("bus should close");
     }
 
     #[test]

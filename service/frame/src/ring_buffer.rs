@@ -34,6 +34,10 @@ impl<T> RingBuffer<T> {
         self.entries.push_back((timestamp_ns, value));
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()

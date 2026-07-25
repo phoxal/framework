@@ -19,6 +19,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(phoxal::Api)]
 pub struct Api {
+    #[phoxal(epoch_agnostic)]
     commands: Subscriber<api::power::Command>,
     state: Publisher<api::power::State>,
 }
@@ -49,6 +50,12 @@ impl Power {
                     .await?,
             },
         ))
+    }
+
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        // Host lifecycle state is independent of the simulated world.
+        Ok(())
     }
 
     #[step(hz = 1)]

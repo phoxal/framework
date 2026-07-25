@@ -175,6 +175,12 @@ impl Drive {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.last_target = None;
+        Ok(())
+    }
+
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let now = step.time();

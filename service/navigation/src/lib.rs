@@ -97,6 +97,17 @@ impl Navigation {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+        self.active = None;
+        self.last_localize = None;
+        self.last_map_revision = None;
+        self.completed.clear();
+        self.completion_order.clear();
+        self.last_time = LogicalTime::new(ctx.new_epoch(), 0);
+        Ok(())
+    }
+
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.last_time = step.time();

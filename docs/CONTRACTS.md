@@ -178,9 +178,11 @@ publisher profile, never inflating a control-state topic.
 
 ## API evolution
 
-Published concrete revisions are immutable. Breaking changes create a new
-major/minor revision extending one earlier parent; the development branch and
-pull request are the only preview boundary.
+From 1.0, published concrete revisions are immutable and breaking changes
+create a new major/minor revision extending one earlier parent. Before 1.0,
+approved breaking changes may edit a concrete revision in place without a shim;
+mixed framework trains on one robot are unsupported, so the complete graph
+upgrades together.
 
 There are no per-service independent semver tracks for contracts and
 no mixed-version *decoding* on one topic: a shared topic's key is
@@ -188,7 +190,9 @@ version-qualified, so producers and consumers on it already use the exact same
 name.
 
 A subscriber fails loud on a body it cannot decode: the sample is counted
-(`decode_errors`) and logged as a health signal, never silently accepted
+(`decode_errors`) and logged as a health signal, never silently accepted.
+Epoch-aware inbound handles also disclose samples purged or rejected at an
+execution boundary through `epoch_filtered`
 ([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
 This decode-time loudness is the framework's compatibility backstop - contracts
 are statically known to consumers, and identity lives in the key itself, so

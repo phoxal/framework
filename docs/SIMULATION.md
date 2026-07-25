@@ -1,122 +1,94 @@
 # Simulation
 
-`phoxal-cli simulation run <world>` runs a robot's graph host-natively against
-a live Webots session.
-Everything is a native process; there is no container runtime.
+Phoxal's framework ships one Webots artifact:
 
-## How it works
+```text
+bin/phoxal-simulator-webots-controller
+```
 
-- The CLI resolves the robot graph, checks it, and stages a Webots world under
-  `<project>/.phoxal/webots/`.
-  It copies the authored `<project>/worlds/<world>.wbt`, injects the generated
-  robot PROTO, and declares that PROTO `IMPORTABLE EXTERNPROTO` so the supervisor
-  can instantiate it at runtime.
-- The CLI launches Webots as its only simulator-side child, pointed at the staged
-  world, in `--mode=realtime --batch`.
-  Webots opens a world paused by default, so the explicit run mode is required for
-  the simulation to advance; `--batch` suppresses blocking dialogs so a supervised
-  shutdown is clean.
-- Webots starts the `phoxal-simulator-webots-supervisor` controller.
-  The supervisor is the world/session authority: it imports each robot node
-  (`importMFNodeFromString`), owns the Webots Supervisor API, and publishes the
-  authoritative `simulation/clock`, `robot_pose`, and `contact` feeds.
-- Each imported robot node starts a `phoxal-simulator-webots-controller`
-  controller that binds the robot's devices, publishes component contracts
-  (encoder, imu, camera, range, gnss, ...), and applies actuator commands.
-- The user service graph runs as ordinary bus participants and is driven by the
-  supervisor's `simulation/clock`.
+The CLI stages a complete single-robot Webots project. The world declares this
+binary as the robot controller before Webots opens it. There is no supervisor
+artifact, runtime robot spawning, simulation control protocol, pose/contact
+feed, or dynamic scene mutation.
 
-### Clock domain
+## Controller ownership
 
-The two Webots-linked simulators (supervisor and controllers) are the Webots-side
-clock authority. Their launch contract is structurally clockless: simulator
-binaries expose neither `--clock` nor `PHOXAL_CLOCK`, and callers cannot select
-their runner clock. They self-drive through `wb_robot_step` (both spawn
-`synchronization TRUE`, so Webots does not advance until each has stepped) on the
-fixed host scheduler.
-The supervisor derives logical simulation time from Webots and publishes it on
-the train-selected `v0.2/simulation/clock` contract after each completed world
-step. The
-payload is `{ now_ns, step }`: publication itself is the advancement signal,
-and silence means Webots has not advanced. There is no separate pause flag.
+Webots starts and stops the controller. A world reload, reset, or explicit
+controller restart creates a new process. The controller bootstraps its own
+framework runner, Bus, Liveliness, logs, and random nonzero process
+incarnation. The CLI supplies only stable project/routing/model inputs and does
+not own, observe, restart, or assign an incarnation to the controller.
 
-Clock-selectable robot participants (services, and in a live robot the component
-drivers) run on `ClockMode::Simulation`: their `#[step]` is released by the
-`simulation/clock` feed and its `produced_at_ns` is stamped from the same
-simulation-time source, so cross-participant staleness checks
-compare timestamps in one domain.
-A pure-bus participant seeds its simulation scheduler at logical zero, because the
-feed publishes 0-based simulation time and logical time only advances forward.
+The controller has no framework `#[step]`. Its only cadence is the external
+Webots loop:
 
-## Acceptance record - single robot (2026-07-12)
+1. apply the newest actuator commands;
+2. call the Webots step API;
+3. sample devices;
+4. publish component/sensor outputs at `LogicalTime(epoch, now_ns)`;
+5. publish `simulation::Clock { epoch, now_ns, step }` last at that same
+   logical time.
 
-Command: `phoxal-cli simulation run default` in the `robot-v1` reference
-project, host-native against Webots R2025a on macOS.
+The blocking Webots step and device access run on Tokio's blocking pool rather
+than a participant async worker. The metadata-only stub is paced at its declared
+step duration. On loop failure or graceful shutdown, the controller applies a
+final `Stop` to every bound motor before the bus closes.
 
-Observed over a bus probe of the live session:
+The process mints one collision-resistant nonzero `epoch` on startup. Pause and
+resume retain it because the process stays alive. A replacement process mints
+a different opaque identity. An unexpected controller exit is reported by
+Webots; recovery is a user reset/reload rather than a CLI retry.
 
-- Webots opened the staged world and imported the `RobotV1` PROTO at runtime; the
-  per-robot controller process started (robot present).
-- Exactly one supervisor (`simulator-webots-supervisor`) and one controller
-  (`simulator-webots-controller-robot-v1`) were present.
-- `simulation/clock` advanced in simulation time and every clock-follower stepped
-  in that domain.
-- Component contracts flowed from the Webots controller through consuming
-  participants, e.g. `component/left_drive/encoder` -> odometry ->
-  `odometry/state`; the full sensor set (imu, encoder, camera rgb/depth/mono,
-  every ToF range, gnss) published.
-- The complete autonomy graph produced derived state with no unhealthy
-  participants: asset, drive, frame, joint, localize, map, motion, navigation,
-  odometry, perception, power, presence, and video. Battery telemetry is owned
-  by the simulator controller rather than a platform service.
-- SIGINT shut the session down cleanly with no orphaned processes.
+## Multi-robot status
 
-Observed-readiness and failure propagation (added after the initial record, now
-part of the tested path):
+Multi-robot Webots authority remains deliberately deferred. The current model
+is one Webots-owned controller and clock per robot bus; it does not define a
+world-scoped clock/session authority spanning several robot buses. That product
+decision belongs to a later multi-robot design and is not inferred here.
 
-- Readiness is OBSERVED, not assumed: every participant reaches `Ready` only when
-  its own `presence/heartbeat` is seen going Ready. Startup requires all expected
-  participants Ready; clock telemetry is observational and never gates session
-  readiness. All 39 participants reached Ready this way.
-- Simulation-managed failure is detected and propagated: killing the Webots
-  controller mid-run marked it `Failed` within ~6s (heartbeat staleness), the
-  session tore down automatically, and `simulation run` exited non-zero with
-  `graph ended unhealthy; failed participants: …` - no operator intervention. A
-  crashed-then-restarted service that recovers does not trip this.
+## Epoch and reset boundary
 
-The same single-robot graph also runs on the plain
-`phoxal-cli simulation run default` path (vendored official artifacts plus
-Cargo-discovered project component assets):
-the Webots simulator binaries are built against Webots in release CI, so the
-downloaded controllers are runtime-linked; 39/39 reached Ready in ~12s with a
-clean shutdown.
+Epoch values are equality-only identities. Numeric ordering between different
+epochs has no meaning. Epoch `0` is reserved for the framework's
+not-yet-initialized sentinel and is rejected at clock ingress. Within one
+nonzero epoch, time is monotonic; duplicate or backward clock samples are
+ignored. Recently replaced epochs are remembered in a bounded shared history,
+so an in-flight clock from a retired controller cannot reactivate old state.
+Clock silence means the world is not advancing.
 
-This observed record predates the Zenoh Liveliness cutover. The current design
-uses a stable participant Liveliness key and a nominal three-second link lease;
-equivalent simulation runtime evidence must be recorded after the consumer
-cutover rather than inferred from the historical heartbeat run.
+Clocked services subscribe to `simulation/clock`. The first valid clock selects
+the execution without invoking reset. Any later different epoch:
 
-The framework participant suite and the CLI suite were green at the time of this
-record.
+- gates scheduled work;
+- retains only inbound simulation samples for the new epoch, including samples
+  that arrived before its clock;
+- rejects late samples from other epochs;
+- resets runner cadence, step index, and timing history;
+- serially invokes the optional `#[reset]` hook before the first new-epoch
+  `#[step]`.
 
-## Multi-robot status - deferred, needs a product decision
+`Subscriber` and `Latest` keep active-epoch storage independent from a bounded
+quarantine for possible replacement epochs (at most four epoch identities,
+each using the handle's ordinary depth; `Latest` keeps one candidate per
+identity). This gives active data priority while allowing output-before-clock
+publication. Activation promotes only the matching quarantine, purges the
+others, and reports discarded samples in the runtime row's `epoch_filtered`
+counter.
 
-The framework-rewrite Gate 1 acceptance list included a two-robot smoke (two
-isolated controllers, one supervisor, one clock authority, no participant or topic
-collisions).
-That criterion is **not met and is deliberately deferred**, recorded here rather
-than silently dropped:
+`#[reset]` receives `ResetContext { previous_epoch, new_epoch }`. Standard
+services clear state derived from the prior simulated world while preserving
+immutable configuration, process identity, and explicitly epoch-agnostic
+host/operator inputs. A reset error faults the participant through the ordinary
+process failure policy.
 
-- The public `simulate` path stages a single robot: it builds the launch plan and
-  Webots staging from one robot slice, and the supervisor's launch record is
-  scoped to that robot's id and namespace.
-- The clock-authority topology across multiple robot-scoped bus roots is
-  unresolved: a supervisor connected as one robot cannot publish the authoritative
-  clock into a second robot's bus root.
-  A world-scoped clock/session authority that spans multiple robot buses is the
-  design question to settle before multi-robot simulation is implemented.
+This boundary correlates outputs by `(epoch, now_ns)` but is not an atomic
+cross-topic frame transaction. The bounded nonblocking bus may still drop or
+deliver topics independently; deterministic frame commit/replay is future work.
 
-Single-robot simulation is fully supported and is the tested path.
-Multi-robot simulation requires the topology decision above plus staging and
-launch-plan support for N robots; it is tracked as follow-up work, not as shipped
-behavior.
+## Runtime proof
+
+Automated tests cover clock wire shape, payload/envelope agreement, opaque
+epoch replacement in both numeric directions, reset ordering/failure, inbound
+epoch filtering, controller-owned epoch generation, and output-before-clock
+ordering. Live Webots proof remains a separate GUI/runtime gate and must be
+reported separately when unavailable.

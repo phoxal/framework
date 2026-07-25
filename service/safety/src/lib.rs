@@ -124,6 +124,13 @@ impl Safety {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.inputs = WorldInputs::new(self.bindings.len());
+        self.sequence = 0;
+        Ok(())
+    }
+
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         drain_latest(&mut self.inputs.localization, &api.localization);

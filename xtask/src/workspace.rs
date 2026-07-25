@@ -695,7 +695,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 27);
+        assert_eq!(workspace.official_artifacts().len(), 26);
 
         assert_eq!(
             workspace
@@ -705,6 +705,13 @@ mod tests {
                 .count(),
             14
         );
+        let simulators = workspace
+            .official_artifacts()
+            .iter()
+            .filter(|artifact| artifact.kind == ArtifactKind::Simulator)
+            .map(|artifact| artifact.package.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(simulators, ["phoxal/simulator-webots-controller"]);
         Ok(())
     }
 
@@ -894,8 +901,8 @@ mod tests {
             "phoxal/tool-bus"
         );
         assert_eq!(
-            package_identity(ArtifactKind::Simulator, "webots-supervisor"),
-            "phoxal/simulator-webots-supervisor"
+            package_identity(ArtifactKind::Simulator, "webots-controller"),
+            "phoxal/simulator-webots-controller"
         );
         assert_eq!(
             package_identity(ArtifactKind::Infrastructure, "router"),

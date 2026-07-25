@@ -1,7 +1,7 @@
 //! Static metadata markers the macros target (D50/D59/D60).
 //!
 //! - [`TypedGraphSurface`] is emitted by `#[phoxal::service|driver|simulator]`
-//!   and gates `#[step]` / `#[server]` / `#[server_snapshot]` away from thin
+//!   and gates `#[step]` / `#[reset]` / `#[server]` / `#[server_snapshot]` away from thin
 //!   `#[phoxal::tool]` runners.
 //! - [`IsDriver`]/[`IsSimulator`]/[`IsTool`] are emitted by the matching
 //!   attribute macro and gate the kind-specific `SetupContext` accessors
@@ -14,10 +14,10 @@
 use std::time::Duration;
 
 /// Marker emitted only by checked participant macros that expose the typed graph
-/// surface (`#[step]` / `#[server]` / `#[server_snapshot]`).
+/// surface (`#[step]` / `#[reset]` / `#[server]` / `#[server_snapshot]`).
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is a tool, which is a thin raw-bus runner and has no typed-graph surface",
-    label = "`#[step]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead"
+    label = "`#[step]` / `#[reset]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead"
 )]
 pub trait TypedGraphSurface {}
 

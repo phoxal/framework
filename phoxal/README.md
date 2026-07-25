@@ -77,7 +77,13 @@ Key rules the example shows:
 - `config` is for **user participants only**.
   Official participants take no `config` param and read the robot model through `ctx.robot()`.
 
-The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the scheduled control loop, `#[server]` / `#[server_snapshot]` serve queries, and `#[shutdown]` runs graceful park/stop/flush before the bus closes.
+The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the
+scheduled control loop, optional `#[reset]` clears prior simulation-execution
+state, `#[server]` / `#[server_snapshot]` serve queries, and `#[shutdown]` runs
+graceful park/stop/flush before the bus closes. `#[reset]` is serialized with
+steps and exclusive servers and receives `ResetContext`; host/operator
+`Subscriber` or `Latest` fields that must survive it use
+`#[phoxal(epoch_agnostic)]`.
 For a supervised process, `PHOXAL_INCARNATION` (or `--incarnation`) carries the
 supervisor-minted nonzero `u64` into bus metadata and the participant's exact
 Liveliness key:

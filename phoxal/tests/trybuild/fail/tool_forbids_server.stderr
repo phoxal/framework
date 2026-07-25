@@ -2,7 +2,7 @@ error[E0277]: `ToolForbidsServer` is a tool, which is a thin raw-bus runner and 
   --> tests/trybuild/fail/tool_forbids_server.rs:29:5
    |
 29 |     #[server(api = get)]
-   |     ^ `#[step]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead
+   |     ^ `#[step]` / `#[reset]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead
    |
 help: the trait `TypedGraphSurface` is not implemented for `ToolForbidsServer`
   --> tests/trybuild/fail/tool_forbids_server.rs:15:1

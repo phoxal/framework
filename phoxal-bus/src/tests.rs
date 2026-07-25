@@ -297,6 +297,136 @@ async fn live_publisher_to_latest_round_trip() {
 
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn epoch_barrier_preserves_new_epoch_samples_and_rejects_late_old_samples() {
+    let bus = Bus::open(BusConfig::in_process("dev", "epoch-barrier"))
+        .await
+        .unwrap();
+    let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let publisher = Publisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+    let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+    let subscriber = Subscriber::<Target>::new(&bus, &sub_topic, 1)
+        .await
+        .unwrap();
+
+    let old_epoch = LogicalTime::new(6, 10);
+    publisher
+        .publish_at(
+            old_epoch,
+            Target {
+                linear_x_mps: 6.0,
+                angular_z_radps: 0.0,
+            },
+        )
+        .await
+        .unwrap();
+    for _ in 0..50 {
+        if latest.latest().is_some_and(|body| body.linear_x_mps == 6.0) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    latest.__retain_epoch(old_epoch.epoch());
+    subscriber.__retain_epoch(old_epoch.epoch());
+    assert_eq!(
+        subscriber
+            .try_recv()
+            .map(|received| received.body.linear_x_mps),
+        Some(6.0)
+    );
+
+    // The controller publishes world outputs before its clock. Installing the
+    // replacement clock's epoch barrier must promote those quarantined
+    // new-world samples without ever exposing them under the old epoch.
+    let new_epoch = LogicalTime::new(7, 10);
+    publisher
+        .publish_at(
+            new_epoch,
+            Target {
+                linear_x_mps: 7.0,
+                angular_z_radps: 0.0,
+            },
+        )
+        .await
+        .unwrap();
+    publisher
+        .publish_at(
+            LogicalTime::new(new_epoch.epoch(), 11),
+            Target {
+                linear_x_mps: 8.0,
+                angular_z_radps: 0.0,
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(latest.latest().map(|body| body.linear_x_mps), Some(6.0));
+    assert!(
+        subscriber.try_recv().is_none(),
+        "a foreign-epoch candidate must remain unobservable before its clock"
+    );
+
+    latest.__retain_epoch(new_epoch.epoch());
+    subscriber.__retain_epoch(new_epoch.epoch());
+    assert_eq!(latest.latest().map(|body| body.linear_x_mps), Some(8.0));
+    assert_eq!(
+        subscriber
+            .try_recv()
+            .map(|received| received.body.linear_x_mps),
+        Some(8.0)
+    );
+    assert_eq!(
+        bus.health().inbound_drops.load(Ordering::Relaxed),
+        0,
+        "replacement-epoch quarantine churn is filtering, not active-queue loss"
+    );
+
+    // A one-shot purge is insufficient: a delayed old-world sample can arrive
+    // after reset. The installed barrier rejects it at ingestion.
+    publisher
+        .publish_at(
+            LogicalTime::new(old_epoch.epoch(), 999),
+            Target {
+                linear_x_mps: 6.0,
+                angular_z_radps: 0.0,
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(latest.latest().map(|body| body.linear_x_mps), Some(8.0));
+    assert!(
+        subscriber.try_recv().is_none(),
+        "late samples from a replaced epoch must be rejected"
+    );
+    let metrics = bus.take_runtime_metrics();
+    assert_eq!(
+        metrics
+            .iter()
+            .filter(|row| row.key.direction == RuntimeDirection::Subscribe)
+            .map(|row| row.epoch_filtered)
+            .sum::<u64>(),
+        5,
+        "quarantine replacement, the replaced Latest value, and both handles' late samples must be disclosed"
+    );
+    assert!(
+        metrics
+            .iter()
+            .filter(|row| row.key.direction == RuntimeDirection::Subscribe)
+            .all(|row| row.drops == 0 && row.bounded_evictions == 0),
+        "quarantine churn must not be reported as active-queue drops or bounded evictions"
+    );
+    assert_eq!(
+        bus.health().inbound_drops.load(Ordering::Relaxed),
+        0,
+        "quarantine churn and retired samples must not inflate bus health"
+    );
+
+    bus.close().await.unwrap();
+}
+
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
     let bus = Bus::open(BusConfig::in_process("dev", "metrics"))
         .await

@@ -111,6 +111,16 @@ impl Perception {
         ))
     }
 
+    #[reset]
+    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+        self.latest_cameras.fill(None);
+        self.latest_depths.fill(None);
+        self.latest_localization = None;
+        self.tracker = PointTracker::default();
+        self.health = HealthState::default();
+        Ok(())
+    }
+
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         self.drain_inputs(api);

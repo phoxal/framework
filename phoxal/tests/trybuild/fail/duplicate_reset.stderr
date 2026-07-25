@@ -1,0 +1,13 @@
+error: duplicate #[reset]
+  --> tests/trybuild/fail/duplicate_reset.rs:19:5
+   |
+19 |     async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+   |     ^^^^^
+
+warning: unused import: `phoxal::prelude::*`
+ --> tests/trybuild/fail/duplicate_reset.rs:1:5
+  |
+1 | use phoxal::prelude::*;
+  |     ^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

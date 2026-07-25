@@ -79,7 +79,7 @@ impl ClockSource for RealClock {
 /// module's docs). In [`ClockMode::Simulation`](crate::participant::launch::ClockMode::Simulation)
 /// the runner stamps `StepContext`/`produced_at_ns` from this clock instead of
 /// [`RealClock`], so every simulated participant shares the *simulation* time
-/// domain (0-based, owned by the Webots supervisor) rather than the host UNIX
+/// domain (owned by the Webots controller) rather than the host UNIX
 /// domain. Cross-participant staleness checks (safety/motion/follow) then
 /// compare sensor timestamps against the same sim clock the samples were
 /// produced under; stamping sim participants from the wall clock instead makes

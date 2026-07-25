@@ -1,3 +1,3 @@
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_simulator_webots_controller::WebotsControllerSimulator>()
+    phoxal_simulator_webots_controller::run()
 }

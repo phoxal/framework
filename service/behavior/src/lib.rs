@@ -9,7 +9,9 @@ use phoxal::prelude::*;
 
 #[derive(phoxal::Api)]
 pub struct Api {
+    #[phoxal(epoch_agnostic)]
     command: Subscriber<api::behavior::Command>,
+    #[phoxal(epoch_agnostic)]
     request: Subscriber<api::behavior::Request>,
     navigation_result: Subscriber<api::navigation::Result>,
     localization: Latest<api::localize::LocalizationState>,
@@ -142,6 +144,16 @@ impl BehaviorService {
                 power_command: ctx.publisher(api::topic::new().power().command()).await?,
             },
         ))
+    }
+
+    #[reset]
+    async fn reset(&mut self, ctx: ResetContext) -> Result<()> {
+        self.execution = None;
+        self.navigation_outcomes.clear();
+        // Queued behavior requests and identity counters are host/operator
+        // intent and process identity, not simulated-world projections.
+        self.last_time = LogicalTime::new(ctx.new_epoch(), 0);
+        Ok(())
     }
 
     #[step(hz = 20)]

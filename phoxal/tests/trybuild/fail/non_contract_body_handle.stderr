@@ -12,10 +12,10 @@ help: the trait `ContractBody` is not implemented for `NotABody`
    = help: the following other types implement trait `ContractBody`:
              Candidate
              Clock
-             Contact
-             Control
              Detections
              Devices
              EmergencyStopRequest
              FrontierRequest
+             FrontierResponse
+             GetRequest
            and $N others

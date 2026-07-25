@@ -18,9 +18,13 @@
 //!   serde structs/enums and their [`ContractBody`] impls;
 //! - an api-local `topic` builder rooted at `topic::new()`.
 //!
-//! Published concrete revisions are immutable. A child may extend one earlier
-//! revision; the generator materializes the complete child tree with its own
-//! identity. Exactly one `latest` alias is selected for each framework train.
+//! From 1.0, published concrete revisions are immutable. Before 1.0 the
+//! framework may make an approved in-place breaking edit without adding a shim
+//! or a new revision; every participant on a robot must move as one train
+//! because mixed pre-1.0 framework trains are unsupported. A child may extend
+//! one earlier revision; the generator materializes the complete child tree
+//! with its own identity. Exactly one `latest` alias is selected for each
+//! framework train.
 //!
 //! [`Api`]: v0_2::Api
 //!
@@ -35,8 +39,10 @@
 //! Across the graph, compatibility is **name identity** (D1) - two participants
 //! interoperate on a contract iff they use the exact same version-qualified name
 //! (`v0.1::drive::Target`), which is real on the wire because the revision
-//! is folded into the key ([`ContractBody::TOPIC`]). There is no `schema_id`: a
-//! stable contract type is immutable, so the name alone is the whole identity.
+//! is folded into the key ([`ContractBody::TOPIC`]). There is no `schema_id`:
+//! from 1.0 onward a stable contract type is immutable, so the name alone is
+//! the whole identity. Before 1.0, that identity is train-scoped and an
+//! in-place edit requires the whole robot graph to upgrade together.
 //!
 //! # Plain serde wire bodies, provenance in metadata
 //!
@@ -760,6 +766,10 @@ phoxal_api_tree! {
                 current_depth: u64,
                 high_water_depth: u64,
                 decode_errors: u64,
+                /// Samples discarded because they belonged to a retired
+                /// simulation epoch, or because an unmatched pending epoch
+                /// was purged when another epoch became authoritative.
+                epoch_filtered: u64,
                 overflowed_rows: u32,
             }
 
@@ -1116,56 +1126,16 @@ phoxal_api_tree! {
         }
 
         simulation {
-            /// One robot node that the simulator spawn authority should import.
-            struct RobotSpawn {
-                robot_id: String,
-                node_string: String,
-            }
-
-            /// Requests the current complete robot spawn set.
-            struct SpawnRequest {
-                known_revision: Option<u64>,
-            }
-
-            /// The complete robot spawn set for one simulation world.
-            struct SpawnSet {
-                revision: u64,
-                robots: Vec<RobotSpawn>,
-            }
-
             /// The authoritative advancing simulation clock. Publication means
             /// the world advanced; silence means it did not.
             struct Clock {
+                /// Opaque identity minted once by the controller process.
+                epoch: u64,
                 now_ns: u64,
                 step: u64,
             }
 
-            /// A command to the simulator's run loop.
-            #[derive(Copy, Eq)]
-            enum Control {
-                Pause,
-                Resume,
-                Reset,
-            }
-
-            /// The simulated robot's ground-truth planar pose.
-            struct RobotPose {
-                x_m: f64,
-                y_m: f64,
-                yaw_rad: f64,
-            }
-
-            /// Whether the simulated robot is in contact, with optional detail.
-            struct Contact {
-                in_contact: bool,
-                detail: Option<String>,
-            }
-
-            topic spawn: query SpawnRequest => SpawnSet;
             topic clock: state Clock;
-            topic control: command Control;
-            topic robot_pose: state RobotPose;
-            topic contact: state Contact;
         }
 
         // Per-instance component capabilities (D17/D38: framework participant / driver

@@ -27,6 +27,7 @@ use tokio::sync::watch;
 
 use crate::bus::LogicalTime;
 use crate::participant::spec::MissedTick;
+use phoxal_bus::RetiredEpochs;
 
 pub(crate) fn duration_to_nanos_saturating(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
@@ -168,7 +169,7 @@ impl StepScheduler for RealScheduler {
 ///
 /// # The live seam
 ///
-/// The Webots supervisor is the authoritative owner of the
+/// The Webots controller is the authoritative owner of the
 /// `simulation/clock` state topic.
 /// In simulation mode the participant runner subscribes that topic through
 /// `spawn_simulation_clock_feed` and forwards each observed `LogicalTime` into
@@ -180,8 +181,8 @@ impl StepScheduler for RealScheduler {
 ///
 /// [`SimulationScheduler::wait_until`] never sleeps on a wall-clock timer: it
 /// awaits a [`tokio::sync::watch`] change, so a test drives logical time
-/// forward with [`SimulationClockHandle::advance`]/`pause`/`resume` and gets
-/// deterministic tick order with no real waiting.
+/// forward with [`SimulationClockHandle::advance`] and gets deterministic tick
+/// order with no real waiting. Clock silence is the only pause signal.
 pub struct SimulationScheduler {
     missed_tick: MissedTick,
     /// The nominal step period, used to count how many whole periods a
@@ -194,10 +195,24 @@ pub struct SimulationScheduler {
     /// immediately instead of waiting for logical time.
     _tx_keepalive: watch::Sender<LogicalTime>,
     rx: watch::Receiver<LogicalTime>,
-    paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// A cloneable handle that advances (or pauses/resumes) the logical time a
+struct SimulationClockState {
+    current: LogicalTime,
+    retired_epochs: RetiredEpochs,
+}
+
+/// Result of applying one clock sample to a simulation scheduler.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SimulationClockAdvance {
+    Advanced,
+    DuplicateOrBackward,
+    RetiredEpoch,
+    ReservedEpoch,
+}
+
+/// A cloneable handle that advances the logical time a
 /// [`SimulationScheduler`] observes.
 ///
 /// This is the seam a live `simulation/clock` bus subscription attaches to
@@ -208,43 +223,35 @@ pub struct SimulationScheduler {
 #[derive(Clone)]
 pub struct SimulationClockHandle {
     tx: watch::Sender<LogicalTime>,
-    paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    state: std::sync::Arc<std::sync::Mutex<SimulationClockState>>,
 }
 
 impl SimulationClockHandle {
     /// Advance the observed logical time to `time`. A no-op (time does not
-    /// move backwards) if `time` is not after the last-observed value; pausing
-    /// (see [`Self::pause`]) does not block this call, it only blocks
-    /// [`SimulationScheduler::wait_until`] from releasing a tick until
-    /// [`Self::resume`].
-    pub fn advance(&self, time: LogicalTime) {
-        self.tx.send_if_modified(|current| {
-            if time > *current {
-                *current = time;
-                true
-            } else {
-                false
+    /// move forwards within the active epoch) if `time` is duplicate or
+    /// backwards. Any new opaque epoch replaces the active execution,
+    /// regardless of numeric value; recently retired epochs are ignored so an
+    /// in-flight clock from a dead controller cannot reactivate old state.
+    pub fn advance(&self, time: LogicalTime) -> SimulationClockAdvance {
+        if time.epoch() == 0 {
+            return SimulationClockAdvance::ReservedEpoch;
+        }
+        let mut state = self.state.lock().expect("simulation clock mutex poisoned");
+        if time.epoch() == state.current.epoch() {
+            if time.time_ns() <= state.current.time_ns() {
+                return SimulationClockAdvance::DuplicateOrBackward;
             }
-        });
-    }
-
-    /// Pause tick release: [`SimulationScheduler::wait_until`] will not
-    /// resolve even if logical time reaches (or has already reached) the
-    /// target, until [`Self::resume`] is called. Logical time can still be
-    /// advanced while paused; the advance is only observed once resumed.
-    pub fn pause(&self) {
-        use std::sync::atomic::Ordering;
-        self.paused.store(true, Ordering::SeqCst);
-        // Nudge any waiter so it re-checks the paused flag promptly instead of
-        // only waking on the next `advance`.
-        self.tx.send_modify(|_| {});
-    }
-
-    /// Resume tick release after [`Self::pause`].
-    pub fn resume(&self) {
-        use std::sync::atomic::Ordering;
-        self.paused.store(false, Ordering::SeqCst);
-        self.tx.send_modify(|_| {});
+        } else {
+            if state.retired_epochs.contains(time.epoch()) {
+                return SimulationClockAdvance::RetiredEpoch;
+            }
+            let previous_epoch = state.current.epoch();
+            state.retired_epochs.retire(previous_epoch);
+            state.retired_epochs.activate(time.epoch());
+        }
+        state.current = time;
+        self.tx.send_replace(time);
+        SimulationClockAdvance::Advanced
     }
 }
 
@@ -262,15 +269,19 @@ impl SimulationScheduler {
         start: LogicalTime,
     ) -> (Self, SimulationClockHandle) {
         let (tx, rx) = watch::channel(start);
-        let paused = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let scheduler = SimulationScheduler {
             missed_tick,
             period,
             _tx_keepalive: tx.clone(),
             rx,
-            paused: std::sync::Arc::clone(&paused),
         };
-        let handle = SimulationClockHandle { tx, paused };
+        let handle = SimulationClockHandle {
+            tx,
+            state: std::sync::Arc::new(std::sync::Mutex::new(SimulationClockState {
+                current: start,
+                retired_epochs: RetiredEpochs::default(),
+            })),
+        };
         (scheduler, handle)
     }
 
@@ -282,15 +293,11 @@ impl SimulationScheduler {
         crate::participant::clock::SimulationClock::from_receiver(self.rx.clone())
     }
 
-    fn is_paused(&self) -> bool {
-        self.paused.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
     fn missed_ticks(&self, target: LogicalTime, current: LogicalTime) -> u32 {
         let (MissedTick::Collapse, Some(period)) = (self.missed_tick, self.period) else {
             return 0;
         };
-        if current <= target {
+        if current.epoch() != target.epoch() || current.time_ns() <= target.time_ns() {
             return 0;
         }
 
@@ -309,7 +316,7 @@ impl StepScheduler for SimulationScheduler {
         let mut rx = self.rx.clone();
         loop {
             let current = *rx.borrow_and_update();
-            if current >= target && !self.is_paused() {
+            if current.epoch() != target.epoch() || current.time_ns() >= target.time_ns() {
                 // Collapse policy (D34): when the feed had already advanced
                 // past `target` (by one or more whole periods) before we even
                 // started waiting, fire once and report how many periods were
@@ -355,6 +362,19 @@ pub enum AnyStepScheduler {
     Simulation(SimulationScheduler),
 }
 
+impl AnyStepScheduler {
+    /// Subscribe to logical-time changes when this is a simulation scheduler.
+    ///
+    /// The runner uses this independently of the optional step cadence so
+    /// epoch replacement is still observed by clocked, step-less services.
+    pub(crate) fn simulation_time_receiver(&self) -> Option<watch::Receiver<LogicalTime>> {
+        match self {
+            AnyStepScheduler::Real(_) => None,
+            AnyStepScheduler::Simulation(scheduler) => Some(scheduler.rx.clone()),
+        }
+    }
+}
+
 impl StepScheduler for AnyStepScheduler {
     async fn wait_until(&self, target: LogicalTime) -> SchedulerTick {
         match self {
@@ -376,7 +396,7 @@ mod tests {
     use super::*;
 
     fn lt(ns: u64) -> LogicalTime {
-        LogicalTime::new(0, ns)
+        LogicalTime::new(1, ns)
     }
 
     /// The nominal step period for `RealScheduler` tests, which sleep on real
@@ -441,6 +461,45 @@ mod tests {
         }
 
         assert_eq!(fired, vec![10, 20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn simulation_epoch_replacement_is_equality_only_in_both_numeric_directions() {
+        let (scheduler, handle) = SimulationScheduler::new(
+            MissedTick::Collapse,
+            Some(SIM_PERIOD),
+            LogicalTime::new(5, 100),
+        );
+
+        assert_eq!(
+            handle.advance(LogicalTime::new(2, 0)),
+            SimulationClockAdvance::Advanced
+        );
+        assert_eq!(scheduler.now(), LogicalTime::new(2, 0));
+        assert_eq!(
+            handle.advance(LogicalTime::new(9, 0)),
+            SimulationClockAdvance::Advanced
+        );
+        assert_eq!(scheduler.now(), LogicalTime::new(9, 0));
+
+        assert_eq!(
+            handle.advance(LogicalTime::new(2, 1)),
+            SimulationClockAdvance::RetiredEpoch,
+            "a late clock from the retired execution must not reactivate it"
+        );
+        assert_eq!(
+            handle.advance(LogicalTime::new(9, 0)),
+            SimulationClockAdvance::DuplicateOrBackward
+        );
+        assert_eq!(
+            handle.advance(LogicalTime::new(0, 1)),
+            SimulationClockAdvance::ReservedEpoch
+        );
+        assert_eq!(
+            scheduler.now(),
+            LogicalTime::new(9, 0),
+            "duplicate and same-epoch non-forward samples are ignored"
+        );
     }
 
     #[tokio::test]
@@ -526,37 +585,6 @@ mod tests {
             "a jump past the target collapses to one released tick, reporting all 3 skipped periods"
         );
         assert_eq!(tick.fired_at, lt(40));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn simulation_scheduler_pause_blocks_release_until_resumed() {
-        let (scheduler, handle) =
-            SimulationScheduler::new(MissedTick::Collapse, Some(SIM_PERIOD), lt(0));
-        handle.pause();
-        handle.advance(lt(10));
-
-        let wait = scheduler.wait_until(lt(10));
-        tokio::pin!(wait);
-
-        // Not yet resolved while paused, even though logical time already
-        // reached the target. A single manual poll with a no-op waker is a
-        // deterministic "is it pending right now" check, no race against a
-        // real timeout.
-        assert_eq!(
-            scheduler.now(),
-            lt(10),
-            "paused scheduler still reports the latest observed logical time"
-        );
-        assert!(
-            poll_once(wait.as_mut()).is_none(),
-            "paused scheduler must not release a due tick"
-        );
-
-        handle.resume();
-        let tick = tokio::time::timeout(Duration::from_secs(1), &mut wait)
-            .await
-            .expect("resumed scheduler should release the due tick promptly");
-        assert_eq!(tick.fired_at, lt(10));
     }
 
     /// Poll `fut` exactly once with a no-op waker, returning `Some(output)` if

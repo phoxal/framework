@@ -37,11 +37,13 @@
 //!
 //! For **`Publisher`, `Latest`, `Querier`, and `Server` this is fully sound
 //! AND behaviorally exact**: their operations are non-destructive reads or
-//! fresh-envelope publishes (`Latest::latest()` is an `ArcSwapOption` load,
-//! `Publisher`/`Querier` build a new envelope per call, `Server` carries no
-//! live connection), so `api` and every `api_shared` clone always observe
+//! fresh-envelope publishes (`Latest::latest()` clones the retained `Arc`
+//! under its mutex and clones the body after releasing that lock,
+//! `Publisher`/`Querier` build a new envelope per call, and `Server` carries
+//! no live connection), so `api` and every `api_shared` clone always observe
 //! and produce the identical live state - they can never diverge. That is
-//! D3's "an api snapshot", realized without a lock, a `RwLock`, or `unsafe`.
+//! D3's "an api snapshot", realized through shared handles without wrapping
+//! the whole `Api` in a `RwLock` or using `unsafe`.
 //!
 //! **`Subscriber` is the one exception, and it constrains snapshot-server
 //! code.** A `Subscriber<B>`'s backing `Ring` is a single shared
@@ -75,16 +77,16 @@ use tokio::task::JoinHandle;
 use crate::api;
 use crate::bus::Subscriber;
 use crate::bus::{LogicalTime, QueryFailure};
-use crate::participant::api::ParticipantLifecycle;
+use crate::participant::api::{ParticipantApi, ParticipantLifecycle};
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockSource, RealClock};
-use crate::participant::context::{SetupContext, ShutdownContext, StepContext};
+use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::launch::{ClockMode, ParticipantLaunch, ParticipantLaunchPolicy};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::{
-    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockHandle, SimulationScheduler,
-    StepScheduler, duration_to_nanos_saturating,
+    AnyStepScheduler, RealScheduler, SchedulerTick, SimulationClockAdvance, SimulationClockHandle,
+    SimulationScheduler, StepScheduler, duration_to_nanos_saturating,
 };
 use crate::participant::spec::StepSchedule;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
@@ -158,7 +160,7 @@ pub(crate) fn step_scheduler_for(
 }
 
 /// Subscribe the authoritative `simulation/clock` feed (published by the
-/// `Simulator` kind that owns the world, e.g. the Webots supervisor) and drive
+/// `Simulator` kind that owns the world, e.g. the Webots controller) and drive
 /// `handle` from it for the lifetime of the returned task.
 ///
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
@@ -168,12 +170,10 @@ pub(crate) fn step_scheduler_for(
 /// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
-/// - calls [`SimulationClockHandle::advance`] with the sample's ENVELOPE
-///   logical time (`metadata.epoch` + `metadata.produced_at_ns`), not just the
-///   body's `now_ns` - the envelope carries the supervisor's epoch, so a reset
-///   (epoch bump, `now_ns` back to 0) is conveyed correctly: `LogicalTime`'s
-///   derived `Ord` is lexicographic on `(epoch, time_ns)`, so a bumped epoch
-///   always advances even though `time_ns` drops back to 0.
+/// - verifies the payload and envelope describe the same nonzero epoch and
+///   timestamp, then advances the scheduler with that logical time;
+/// - accepts any new opaque epoch regardless of numeric direction, while
+///   ignoring clocks from recently retired executions.
 ///
 /// Every received sample represents one completed world advance. If the
 /// simulator stops publishing, logical time simply stops advancing; no
@@ -212,8 +212,38 @@ pub(crate) fn spawn_simulation_clock_feed(
             "subscribed the live simulation/clock feed; driving the simulation scheduler from it"
         );
         while let Ok(received) = subscriber.recv().await {
+            if received.body.epoch == 0
+                || received.body.epoch != received.metadata.epoch
+                || received.body.now_ns != received.metadata.produced_at_ns
+            {
+                tracing::warn!(
+                    target: "phoxal.runtime",
+                    payload_epoch = received.body.epoch,
+                    envelope_epoch = received.metadata.epoch,
+                    payload_now_ns = received.body.now_ns,
+                    envelope_now_ns = received.metadata.produced_at_ns,
+                    "discarding invalid simulation clock (epoch zero is reserved and payload/envelope must agree)"
+                );
+                continue;
+            }
             let at = LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns);
-            handle.advance(at);
+            match handle.advance(at) {
+                SimulationClockAdvance::Advanced | SimulationClockAdvance::DuplicateOrBackward => {}
+                SimulationClockAdvance::RetiredEpoch => {
+                    tracing::warn!(
+                        target: "phoxal.runtime",
+                        epoch = at.epoch(),
+                        time_ns = at.time_ns(),
+                        "ignoring late simulation clock from a retired execution"
+                    );
+                }
+                SimulationClockAdvance::ReservedEpoch => {
+                    tracing::warn!(
+                        target: "phoxal.runtime",
+                        "ignoring reserved epoch-zero simulation clock"
+                    );
+                }
+            }
         }
     }))
 }
@@ -525,7 +555,7 @@ where
         }
     };
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
-    let fault = main_loop::<R, _, S>(
+    let loop_result = main_loop::<R, _, S>(
         &mut participant,
         &mut api,
         bus,
@@ -551,6 +581,7 @@ where
     .await;
     drop(liveliness);
 
+    let fault = loop_result?;
     if let Some(fault) = fault {
         return Err(managed_task_fault_error(&fault));
     }
@@ -645,7 +676,7 @@ async fn main_loop<R, C, S>(
     runtime_performance_publisher: &RuntimePerformancePublisher,
     runtime_performance: &mut RuntimePerformance,
     managed_tasks: &mut ManagedTasks,
-) -> Option<ManagedTaskExit>
+) -> crate::Result<Option<ManagedTaskExit>>
 where
     R: ParticipantLifecycle,
     C: ClockSource,
@@ -653,14 +684,25 @@ where
 {
     let period = schedule.map(|s| s.period());
     let mut step_index: u64 = 0;
-    let mut last_time_ns = clock.now().time_ns();
+    let mut active_epoch: Option<u64> = None;
+    let mut simulation_time_rx = scheduler.simulation_time_receiver();
+    // The simulation clock feed starts before `#[setup]`. If setup takes long
+    // enough for the controller's first (mandatorily nonzero) epoch to arrive,
+    // a newly-cloned watch receiver sees that value as its initial state and
+    // has no change notification to deliver. Establish that already-current
+    // execution without invoking reset: there was no prior participant
+    // execution, but its ingress barrier and first cadence still matter.
+    let initial_time = scheduler.now();
+    if simulation_time_rx.is_some() && initial_time.epoch() != 0 {
+        active_epoch = Some(initial_time.epoch());
+        api.__retain_epoch(initial_time.epoch());
+    }
+    let mut last_time_ns = initial_time.time_ns();
     // The next tick's *logical* due time - what the runner asks the scheduler
     // to release at (D34/#09), separate from the wall-clock
     // runtime-performance publication tick below.
-    let mut next_step_target = period.map(|period| {
-        let now = scheduler.now();
-        advance_logical_deadline(now, period, 0)
-    });
+    let mut next_step_target =
+        period.map(|period| advance_logical_deadline(initial_time, period, 0));
     let mut next_runtime_performance_tick = tokio::time::Instant::now();
 
     loop {
@@ -674,7 +716,7 @@ where
             // disables the query branch if the channel ever closes, so it never
             // busy-loops.
             biased;
-            _ = &mut shutdown => return None,
+            _ = &mut shutdown => return Ok(None),
             exit = managed_tasks.next_unexpected_exit() => {
                 tracing::error!(
                     target: "phoxal.runtime",
@@ -682,7 +724,33 @@ where
                     panic = exit.panic_message.as_deref(),
                     "managed task exited unexpectedly; faulting the participant"
                 );
-                return Some(exit);
+                return Ok(Some(exit));
+            }
+            fired_at = simulation_time_change(&mut simulation_time_rx) => {
+                if active_epoch == Some(fired_at.epoch()) {
+                    continue;
+                }
+
+                // Epochs are opaque identities, not ordered generations. Any
+                // different clock establishes a replacement execution. This
+                // branch is independent of `#[step]`, so clocked server-only
+                // services receive the same serialized reset lifecycle.
+                let previous_epoch = active_epoch.replace(fired_at.epoch());
+                api.__retain_epoch(fired_at.epoch());
+                if let Some(previous_epoch) = previous_epoch {
+                    participant
+                        .__reset(
+                            api,
+                            ResetContext::new(previous_epoch, fired_at.epoch()),
+                        )
+                        .await?;
+                    commit_snapshot::<R>(participant, committed);
+                }
+                next_step_target =
+                    period.map(|period| advance_logical_deadline(fired_at, period, 0));
+                step_index = 0;
+                last_time_ns = fired_at.time_ns();
+                runtime_performance.reset(schedule);
             }
             _ = runtime_performance_tick(next_runtime_performance_tick) => {
                 advance_deadline(
@@ -696,20 +764,24 @@ where
             SchedulerTick { fired_at, missed_ticks } = step_tick(scheduler, next_step_target) => {
                 let (Some(period), Some(target)) = (period, next_step_target) else { continue };
 
-                if fired_at.epoch() > target.epoch() {
-                    // An epoch bump resets logical time. The old-epoch target is
-                    // lexicographically before every value in the new epoch, so
-                    // retaining it would make wait_until resolve immediately on
-                    // every loop iteration. Start a fresh cadence from the reset
-                    // sample and do not turn the reset itself into a step.
+                if fired_at.epoch() != target.epoch() {
+                    // The independent simulation-time branch above owns epoch
+                    // replacement. A simultaneously-ready watch notification
+                    // is biased ahead of this branch; this is only defensive
+                    // against a future scheduler implementation.
                     next_step_target = Some(advance_logical_deadline(fired_at, period, 0));
-                    step_index = 0;
-                    last_time_ns = fired_at.time_ns();
                     continue;
                 }
+                active_epoch.get_or_insert(fired_at.epoch());
                 next_step_target = Some(advance_logical_deadline(target, period, missed_ticks));
 
-                let now = clock.now();
+                let Some(now) = step_time_in_active_epoch(target, clock.now()) else {
+                    // The clock feed can replace the execution after the
+                    // scheduler resolves but before this read. Let the
+                    // higher-priority simulation-time arm install the ingress
+                    // barrier and run #[reset] before any new-epoch step.
+                    continue;
+                };
                 let dt_ns = now.time_ns().saturating_sub(last_time_ns);
                 last_time_ns = now.time_ns();
 
@@ -741,6 +813,27 @@ where
                 }
             }
         }
+    }
+}
+
+fn step_time_in_active_epoch(target: LogicalTime, observed: LogicalTime) -> Option<LogicalTime> {
+    (target.epoch() == observed.epoch()).then_some(observed)
+}
+
+pub(crate) async fn simulation_time_change(
+    receiver: &mut Option<tokio::sync::watch::Receiver<LogicalTime>>,
+) -> LogicalTime {
+    let Some(receiver) = receiver else {
+        return std::future::pending().await;
+    };
+    loop {
+        if receiver.changed().await.is_ok() {
+            return *receiver.borrow_and_update();
+        }
+        // A simulation scheduler retains its sender for the runner lifetime.
+        // If a future implementation closes it, disable this branch instead
+        // of spinning.
+        std::future::pending::<()>().await;
     }
 }
 
@@ -950,6 +1043,20 @@ mod tests {
     }
 
     #[test]
+    fn step_context_time_rejects_a_clock_epoch_that_raced_past_the_tick() {
+        let target = LogicalTime::new(11, 20);
+        assert_eq!(
+            step_time_in_active_epoch(target, LogicalTime::new(11, 30)),
+            Some(LogicalTime::new(11, 30))
+        );
+        assert_eq!(
+            step_time_in_active_epoch(target, LogicalTime::new(12, 0)),
+            None,
+            "the replacement epoch must wait for its reset arm before stepping"
+        );
+    }
+
+    #[test]
     fn logical_step_deadline_skips_collapsed_ticks() {
         let next = advance_logical_deadline(LogicalTime::new(0, 10), Duration::from_nanos(10), 3);
 
@@ -982,18 +1089,18 @@ mod tests {
         // wiring included) is covered by `tests/runner.rs`.
         let schedule = StepSchedule::hz(10.0); // 100ms period
         let period_ns = duration_to_nanos_saturating(schedule.period());
-        let start = LogicalTime::new(0, 0);
+        let start = LogicalTime::new(1, 0);
 
         let (scheduler, handle) = step_scheduler_for(ClockMode::Simulation, Some(schedule), start);
         let handle = handle.expect("simulation mode must hand back a driving handle");
 
         let mut fired = Vec::new();
-        let mut target = LogicalTime::new(0, period_ns);
+        let mut target = LogicalTime::new(1, period_ns);
         for _ in 0..3 {
             handle.advance(target);
             let tick = scheduler.wait_until(target).await;
             fired.push(tick.fired_at.time_ns());
-            target = LogicalTime::new(0, target.time_ns() + period_ns);
+            target = LogicalTime::new(1, target.time_ns() + period_ns);
         }
 
         assert_eq!(
@@ -1006,14 +1113,14 @@ mod tests {
     /// Isolation-level proof of [`spawn_simulation_clock_feed`]'s
     /// subscriber -> handle driving, without going through the full
     /// `run_with`/`ClockMode::Simulation` runner path (that full path, plus
-    /// the actual wire-key match with the Webots supervisor's publisher, is
+    /// the actual wire-key match with the Webots controller's publisher, is
     /// covered by `tests/runner.rs`'s
     /// `simulation_mode_step_advances_only_with_the_clock_feed`).
     ///
     /// Publishes synthetic `simulation::Clock` samples directly onto an
-    /// in-process bus (standing in for the Webots supervisor) and asserts:
+    /// in-process bus (standing in for the Webots controller) and asserts:
     /// the scheduler releases a tick per sample, in the published epoch's
-    /// domain (a reset - epoch bump - is observed even though `now_ns` drops
+    /// domain (a replacement epoch is observed even though `now_ns` drops
     /// back to 0), and no further tick releases while no sample is published.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn simulation_clock_feed_drives_the_scheduler_from_published_samples() {
@@ -1043,10 +1150,10 @@ mod tests {
 
         // No sample published yet: the scheduler must not release the first tick.
         let period_ns = duration_to_nanos_saturating(period);
-        let first_target = LogicalTime::new(0, period_ns);
+        let initial_target = LogicalTime::new(0, period_ns);
         let pending = tokio::time::timeout(
             Duration::from_millis(100),
-            scheduler.wait_until(first_target),
+            scheduler.wait_until(initial_target),
         )
         .await;
         assert!(
@@ -1054,25 +1161,73 @@ mod tests {
             "scheduler must not release before any simulation/clock sample arrives"
         );
 
+        // Epoch zero is the scheduler's uninitialized sentinel and must never
+        // be accepted as a simulation execution.
+        clock_publisher
+            .publish_at(
+                initial_target,
+                api::simulation::Clock {
+                    epoch: 0,
+                    now_ns: period_ns,
+                    step: 1,
+                },
+            )
+            .await
+            .expect("reserved clock sample should publish at the bus layer");
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                scheduler.wait_until(initial_target),
+            )
+            .await
+            .is_err(),
+            "epoch zero must not advance simulation time"
+        );
+
+        // A clock whose payload disagrees with its envelope is malformed and
+        // must not advance the scheduler.
+        let first_target = LogicalTime::new(11, period_ns);
+        clock_publisher
+            .publish_at(
+                first_target,
+                api::simulation::Clock {
+                    epoch: first_target.epoch(),
+                    now_ns: period_ns + 1,
+                    step: 1,
+                },
+            )
+            .await
+            .expect("malformed clock sample should publish at the bus layer");
+        let malformed_pending = tokio::time::timeout(
+            Duration::from_millis(100),
+            scheduler.wait_until(initial_target),
+        )
+        .await;
+        assert!(
+            malformed_pending.is_err(),
+            "payload/envelope mismatch must not advance simulation time"
+        );
+
         // Publish an advancing sample; the pending wait should now resolve.
         clock_publisher
             .publish_at(
                 first_target,
                 api::simulation::Clock {
+                    epoch: first_target.epoch(),
                     now_ns: period_ns,
                     step: 1,
                 },
             )
             .await
             .expect("clock sample should publish");
-        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(first_target))
+        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(initial_target))
             .await
             .expect("scheduler should release once the feed advances past the target");
         assert_eq!(tick.fired_at, first_target);
 
         // No new sample means no world advance and therefore no scheduler
         // release.
-        let second_target = LogicalTime::new(0, 2 * period_ns);
+        let second_target = LogicalTime::new(11, 2 * period_ns);
         let still_pending = tokio::time::timeout(
             Duration::from_millis(200),
             scheduler.wait_until(second_target),
@@ -1088,6 +1243,7 @@ mod tests {
             .publish_at(
                 second_target,
                 api::simulation::Clock {
+                    epoch: second_target.epoch(),
                     now_ns: 2 * period_ns,
                     step: 2,
                 },
@@ -1098,6 +1254,45 @@ mod tests {
             .await
             .expect("scheduler should release on the next clock sample");
         assert_eq!(tick.fired_at, second_target);
+
+        // A replacement execution is accepted once. A later in-flight clock
+        // from the retired controller must not reactivate it.
+        let replacement = LogicalTime::new(12, 0);
+        clock_publisher
+            .publish_at(
+                replacement,
+                api::simulation::Clock {
+                    epoch: replacement.epoch(),
+                    now_ns: replacement.time_ns(),
+                    step: 0,
+                },
+            )
+            .await
+            .expect("replacement clock should publish");
+        let old_epoch_target = LogicalTime::new(11, 3 * period_ns);
+        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(old_epoch_target))
+            .await
+            .expect("replacement epoch should reach the scheduler");
+        assert_eq!(tick.fired_at, replacement);
+
+        let late_retired = LogicalTime::new(11, 3 * period_ns);
+        clock_publisher
+            .publish_at(
+                late_retired,
+                api::simulation::Clock {
+                    epoch: late_retired.epoch(),
+                    now_ns: late_retired.time_ns(),
+                    step: 3,
+                },
+            )
+            .await
+            .expect("late retired clock should publish at the bus layer");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            scheduler.now(),
+            replacement,
+            "a retired clock must not roll the scheduler back to an old execution"
+        );
 
         feed_task.abort();
         bus.close().await.expect("bus should close");
