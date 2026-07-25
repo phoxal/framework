@@ -100,9 +100,11 @@ mod sealed {
 
 /// The robot instant a completed step stamps its outputs with.
 ///
-/// Implemented only by [`StepToken`] and [`WorldStepToken`], both of which are
-/// framework-minted: a participant cannot construct one, so it cannot express a
-/// robot instant it did not actually reach.
+/// Implemented only by [`StepToken`] and [`WorldStepToken`], and sealed, so no
+/// other type can ever stamp a checked publication. Both are framework-minted:
+/// in ordinary authoring the only way to hold one is to have actually reached
+/// the step it names (see [`StepToken::__mint`] for the exact strength of that
+/// claim).
 pub trait StepStamp: sealed::Sealed {
     /// The instant this step completed at.
     fn instant(&self) -> RobotInstant;
@@ -112,7 +114,9 @@ pub trait StepStamp: sealed::Sealed {
 ///
 /// The runner is the only minter. Handing it to
 /// [`StatePublisher::publish`](StatePublisher::publish) is the sole way a
-/// service expresses robot time.
+/// service expresses robot time: there is no other constructor a participant
+/// reaches through the ordinary `phoxal::prelude` surface, and the role markers
+/// make handing it to the wrong publisher a compile error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StepToken {
     at: RobotInstant,
@@ -120,6 +124,15 @@ pub struct StepToken {
 
 impl StepToken {
     /// Framework-internal (runner-only) minter. `#[doc(hidden)]`.
+    ///
+    /// This is `pub` because the runner lives in the `phoxal` crate while the
+    /// token lives here, and Rust has no visibility between "this crate" and
+    /// "the world". So the honest statement of the guarantee is: a participant
+    /// cannot express robot time it did not reach *by accident*, and cannot do
+    /// it at all through the documented surface - but a participant that
+    /// deliberately writes `StepToken::__mint` can. Closing that would mean
+    /// merging the api, bus, and runtime crates so this could be
+    /// `pub(crate)`; see `phoxal::raw`'s module docs.
     #[doc(hidden)]
     pub const fn __mint(at: RobotInstant) -> Self {
         StepToken { at }
@@ -158,9 +171,10 @@ impl StepStamp for WorldStepToken {
 /// This is the narrowly scoped answer to "who may say what time it is in a
 /// world nobody schedules". It is minted only for the world-authority
 /// participant (the simulation controller), advances exactly one timeline, and
-/// is unavailable to ordinary services, tools, and external clients. A second
-/// authority in one process is rejected at mint, and the graph checker rejects
-/// a second participant owning the clock contract.
+/// is unavailable to ordinary services, tools, and external clients through any
+/// documented surface. A second authority in one process is rejected at mint,
+/// and the coherence checker rejects a graph in which two participants publish
+/// the clock contract.
 pub struct TimelineAuthority {
     timeline: TimelineId,
 }

@@ -160,6 +160,49 @@ fn folded_contracts_are_available_on_the_first_revision() {
     );
 }
 
+/// #952: every command topic is classified as one-shot, leased, or internal
+/// actuation, and the classification is written down in `docs/CONTRACTS.md`.
+///
+/// This pins the written classification to the api tree itself: adding a
+/// command topic without deciding what kind of command it is fails here, which
+/// is the only way the inventory stays true.
+#[test]
+fn every_command_topic_is_classified() {
+    /// The classification recorded in `docs/CONTRACTS.md`. Keep both in step.
+    const CLASSIFIED: &[(&str, &str)] = &[
+        // Leased: a continuous authority a live sender must keep renewing.
+        ("v0.1::motion::ManualCommand", "leased"),
+        // Internal actuation: produced by an on-robot participant inside the
+        // control chain, and expiring through the receiver's own deadline.
+        ("v0.1::drive::Target", "internal actuation"),
+        ("v0.1::component::motor::Command", "internal actuation"),
+        // One-shot: a single request that either takes effect or does not, and
+        // that nothing has to keep repeating.
+        ("v0.1::power::Command", "one-shot"),
+        ("v0.1::navigation::Request", "one-shot"),
+        ("v0.1::behavior::Command", "one-shot"),
+        ("v0.1::behavior::Request", "one-shot"),
+        ("v0.1::component::led::Command", "one-shot"),
+        ("v0.1::joypad::Select", "one-shot"),
+        ("v0.1::joypad::SetEnabled", "one-shot"),
+        ("v0.1::joypad::Rescan", "one-shot"),
+    ];
+
+    let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .flat_map(|version| version.contracts.iter())
+        .filter(|contract| contract.role == TopicRole::Command)
+        .map(|contract| contract.family)
+        .collect();
+    let classified: std::collections::BTreeSet<&str> =
+        CLASSIFIED.iter().map(|(family, _)| *family).collect();
+
+    assert_eq!(
+        declared, classified,
+        "every command topic must be classified in docs/CONTRACTS.md"
+    );
+}
+
 #[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     let version = crate::API_CONTRACT_MANIFEST

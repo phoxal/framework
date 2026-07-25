@@ -205,19 +205,34 @@ pub mod bus {
 /// graph checker still includes their contracts, but never lets their raw
 /// access satisfy checked topology.
 ///
-/// # This is an observer surface, not an escape hatch for robot time
+/// # Robot time: what the types enforce, and what they do not
 ///
 /// Raw access reaches the session, the subscription handles, the querier, and
 /// the command/diagnostic publishers - everything a tool or bridge needs to
-/// watch a robot and act on it. It does **not** let a caller express robot time
-/// it did not reach: publishing checked state or a measurement needs a
+/// watch a robot and act on it. Commands carry no production instant at all, so
+/// nothing here lets a tool *date* anything by publishing one.
+///
+/// Publishing checked state or a measurement is different: it needs a
 /// [`StepToken`](phoxal_bus::StepToken), a
 /// [`WorldStepToken`](phoxal_bus::WorldStepToken), or a
-/// [`CaptureStamp`](phoxal_bus::CaptureStamp), and the first two can only be
-/// minted by the runner or by a [`TimelineAuthority`](phoxal_bus::TimelineAuthority)
-/// the runner hands to the world-authority participant. Re-exporting the whole
-/// bus crate is therefore safe: the guarantee is in the types, not in the
-/// module boundary (#952 section D).
+/// [`CaptureStamp`](phoxal_bus::CaptureStamp). The runner mints the first from
+/// each step it actually reaches, and the second comes from a
+/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) the world-authority
+/// participant holds. In ordinary authoring there is no way to obtain either
+/// one out of thin air, and the sealed [`StepStamp`](phoxal_bus::StepStamp)
+/// trait plus the role markers make using the wrong one a compile error.
+///
+/// **That is a strong convention, not a sealed boundary, and this module will
+/// not pretend otherwise.** `RobotInstant`, `StepToken`, and the role
+/// publishers are defined in `phoxal-bus` while the runner that mints them
+/// lives here, so their constructors have to be `pub` for the runner to call
+/// them - and Rust has no visibility level between "this crate" and "the
+/// world". They are `#[doc(hidden)]` and named to be conspicuous
+/// (`__mint`), which makes fabricating robot time something a participant can
+/// only do on purpose, in code that says so. The alternative - folding the api,
+/// the bus, and the runtime into one crate so the constructors could be
+/// `pub(crate)` - buys a compiler-enforced guarantee at the cost of the crate
+/// split; it is a deliberate open question, not an oversight (#952 section D).
 pub mod raw {
     pub use crate::participant::runner::{run_with_bus, run_with_bus_clock};
     pub use phoxal_bus::*;

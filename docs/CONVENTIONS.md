@@ -1,6 +1,6 @@
 # Framework Conventions
 
-Engineering conventions for the bus, topics, logical time, participant authoring, and
+Engineering conventions for the bus, topics, time, participant authoring, and
 components inside this workspace.
 Rust style is in the org-level
 [RUST_GUIDELINES](https://github.com/phoxal/organization/blob/master/docs/engineering/RUST_GUIDELINES.md);
@@ -62,9 +62,11 @@ the only source of keys, and the wire body never appears in the key
 ## Pub/sub and telemetry
 
 - A pub/sub body is a plain serde struct/enum.
-  Produce time is **not** a body field; it rides `BusMetadata` and is stamped from
-  the participant's `LogicalTime` via `publisher.publish_at(at, body)`.
-- A publish never blocks the step loop: `publish_at` is a non-blocking enqueue onto
+  Produce time is **not** a body field; it rides `BusMetadata`, stamped from the
+  step token the publish is given (`publisher.publish(&step, body)`). A body
+  that repeats the envelope's instant in a field of its own is a bug, not a
+  convenience.
+- A publish never blocks the step loop: it is a non-blocking enqueue onto
   a bounded outbound queue.
   A saturated queue drops the sample, bumps `outbound_drops`, and returns
   `BusError::Saturated` so the loss is observable - there is no reliable/blocking
@@ -76,41 +78,63 @@ the only source of keys, and the wire body never appears in the key
   primary contract (a closed-set enum + optional `detail`); only promote it to its
   own topic if another service branches on it.
 
-## Logical time
+## Time
 
-- Robot services and drivers track state-transition time, watchdogs, and
-  synchronous-input staleness with **logical time** - never wall time directly.
-  The runner owns one `ClockSource` and stamps every `StepContext` and every
-  `produced_at_ns` from it, so participants in the robot clock share one domain
+There are four time types and they are not interchangeable. Which one a
+decision uses *is* the decision
+([`phoxal-bus/src/time.rs`](../phoxal-bus/src/time.rs)).
+
+- **`RobotInstant`** is an exact instant on one world history: a `TimelineId`
+  plus ticks. It is what a step reaches and what a checked publication is
+  stamped with. Two instants are only meaningful together when their timelines
+  are equal, so comparison and age are checked operations - there is no `Ord`
+  and no `Sub`, and a cross-timeline pair is an error the caller has to answer
+  for rather than a silently wrong number.
+- **`LocalInstant`** is a reading of the host's suspend-aware monotonic boot
+  clock. It is the authority for every *liveness* decision - command silence,
+  actuator permits, bus-stamped observation - because those are human and
+  network facts, not world facts. Suspend counts: `std::time::Instant` reads
+  the clock that stops, so a host that slept for an hour would resume treating
+  a retained command as fresh. It is never serialized; a reading is meaningless
+  on another host.
+- **`TimeWindow`** is a bounded estimate, `[earliest, latest]` on one timeline.
+  Anything that cannot name an exact instant says so with this rather than
+  rounding to a number that looks exact.
+- **`WallTimestamp`** is for diagnostics and human display only. It implements
+  no ordering, no arithmetic, and no freshness interface, and no checked
+  publisher accepts one. It appears in no control decision.
+
+The rest follows from that split.
+
+- The runner owns one `ClockSource` and mints a `StepToken` from each step it
+  actually released; publishing checked state takes that token, so a
+  participant expresses only instants it reached
   ([`phoxal/src/participant/clock.rs`](../phoxal/src/participant/clock.rs)).
-- Tools are outside that clock. Their process launch contract has no `--clock`
-  flag or `PHOXAL_CLOCK` binding, and the normal embedding API accepts no clock
-  argument. They run from external events and host-monotonic timers in every
-  mode. Tool envelope metadata uses `phoxal::raw::host_time()`; the runner never
-  gives tools `StepContext` or enrolls them in logical scheduling. Official tool
-  sources are checked against simulation-clock imports; privileged user-authored
-  raw-bus tools must uphold the same rule and never decide freshness from robot
-  logical time.
-- Simulators are also not clock-selectable participants. Their process launch
-  contract exposes no `--clock` or `PHOXAL_CLOCK`; Webots drives their execution.
-  This does not remove the semantic simulation-time contract: the simulator
-  controller publishes `simulation/clock` after each completed Webots step and
-  clocked robot participants consume it.
-- A logical-time consumer of asynchronous external input owns retention and
-  freshness. Keep only the latest bounded value, record its consumer-local
-  monotonic arrival instant, and sample that value at the logical step. A
-  logical pause must not accumulate a replay backlog.
-- `LogicalTime` is `{ epoch, time_ns }`. Epochs are opaque equality-only
-  execution identities: any different epoch signals replacement, regardless
-  of numeric direction. Within one epoch `time_ns` strictly increases.
-  `RealClock` reads the host-wide UNIX-epoch domain (so cross-process staleness
-  checks are comparable) and latches monotonically; `TestClock` is an injectable
-  fake for tests.
-- In `ClockMode::Simulation`, the runner subscribes to the Webots controller's
-  authoritative version-qualified `simulation/clock` contract. Each received
-  sample advances the
-  scheduler to the envelope's logical time. If Webots does not step, the
-  controller publishes nothing and participant scheduling remains still.
+- Tools are outside the robot clock. Their launch contract has no clock
+  binding, the embedding API accepts no clock argument, and the runner never
+  gives them a `StepContext`. They run from external events and host-monotonic
+  timers in every mode, and they decide freshness from `LocalInstant`, never
+  from robot time.
+- Simulators are not clock-selectable either; Webots drives their execution.
+  The semantic contract stands: the controller publishes `simulation/clock`
+  after each completed Webots step and clocked participants consume it. In
+  `ClockMode::Simulation` each received sample advances the scheduler to the
+  envelope's instant, so when Webots does not step, nothing steps.
+- A consumer of asynchronous external input owns retention and freshness. Keep
+  the latest bounded value with the receiver's own `LocalInstant` observation
+  stamp, and sample it at the logical step. A pause must not accumulate a
+  replay backlog. For a *command* input that is a `Lease`, which enforces both
+  a host-monotonic silence deadline and a logical hold horizon
+  ([`phoxal-bus/src/lease.rs`](../phoxal-bus/src/lease.rs)).
+- A timeline is an opaque equality-only identity: a different one means the
+  world was replaced, regardless of numeric direction, and instants do not
+  compare across it. `RealClock` projects the host boot clock through the
+  supervisor-minted execution origin, so two processes on one host compute the
+  same instant for the same physical moment without exchanging a message;
+  `TestClock` is an injectable fake.
+- Losing clock discipline is ordinary failure, not a freeze and not a wait: the
+  participant fails, teardown parks the hardware, and the supervisor's restart
+  policy decides what happens next.
 
 ## Participant authoring
 
@@ -157,15 +181,14 @@ the only source of keys, and the wire body never appears in the key
   IO.
   Every body must implement `ContractBody`, and the derived `Api` records each
   field's own version-qualified contract identity.
-  Once an epoch is active, inbound buffers expose only its samples. Samples
-  from a possible replacement epoch are quarantined in bounded per-epoch
+  Once a timeline is active, inbound buffers expose only its samples. Samples
+  from a possible replacement timeline are quarantined in bounded per-timeline
   storage so controller outputs published before their matching clock can be
   promoted atomically at the boundary; they never replace active data early.
-  Activation purges unmatched candidates and late samples from a retired epoch
-  remain unobservable. Runtime buffer rows disclose these discards through
-  `epoch_filtered`. A `Subscriber` or `Latest` carrying clockless host/operator
-  intent opts out explicitly with `#[phoxal(epoch_agnostic)]`; producer handles
-  cannot use that marker.
+  Activation purges unmatched candidates, and late samples from a retired
+  timeline remain unobservable. Runtime buffer rows disclose these discards.
+  Command handles need no opt-out: a command carries no production instant, so
+  it belongs to no timeline in the first place.
   A field using the wrong contract type or a setup handle not declared by the
   `Api` struct is a compile error
   ([`phoxal/src/participant/context.rs`](../phoxal/src/participant/context.rs)).

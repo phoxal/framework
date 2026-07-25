@@ -296,6 +296,9 @@ struct ManifestContract {
     family: String,
     /// Version-qualified wire key, e.g. `"v0.1/drive/target"`.
     topic: String,
+    /// The declared role, so a check can enumerate every command topic
+    /// without parsing names (#952: every command is classified).
+    role: TopicRole,
 }
 
 impl Parse for ApiTree {
@@ -882,10 +885,12 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
         let contracts = version.contracts.iter().map(|contract| {
             let family = &contract.family;
             let topic = &contract.topic;
+            let role = contract.role.bus_variant();
             quote! {
                 ApiContractManifestContract {
                     family: #family,
                     topic: #topic,
+                    role: #role,
                 }
             }
         });
@@ -915,6 +920,7 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
         pub struct ApiContractManifestContract {
             pub family: &'static str,
             pub topic: &'static str,
+            pub role: ::phoxal_bus::TopicRole,
         }
 
         /// Generated contract manifest for xtask lifecycle checks.
@@ -957,16 +963,19 @@ fn collect_contract_manifest_entries(
                     contracts.push(ManifestContract {
                         family: format!("{version}::{family_path}::{body}"),
                         topic: topic_key,
+                        role: topic.role,
                     });
                 }
                 TopicKind::Query { request, response } => {
                     contracts.push(ManifestContract {
                         family: format!("{version}::{family_path}::{request}"),
                         topic: topic_key.clone(),
+                        role: topic.role,
                     });
                     contracts.push(ManifestContract {
                         family: format!("{version}::{family_path}::{response}"),
                         topic: topic_key,
+                        role: topic.role,
                     });
                 }
             }

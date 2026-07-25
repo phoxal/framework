@@ -139,6 +139,12 @@ impl RobotInstant {
     /// runner-minted step token or from an observed sample, never by minting
     /// one. `#[doc(hidden)]` keeps it out of the authoring surface while the
     /// clock drivers and the world authority can still construct it.
+    ///
+    /// It cannot be `pub(crate)`: the clock drivers live in the `phoxal` crate
+    /// and the api tree names this type in body fields, so both need to reach
+    /// it. Minting an instant is therefore something a participant can do
+    /// deliberately, but not by accident and not through the documented
+    /// surface - see `phoxal::raw`'s module docs for the full statement.
     #[doc(hidden)]
     pub const fn new(timeline: TimelineId, ticks: u64) -> Self {
         RobotInstant { timeline, ticks }

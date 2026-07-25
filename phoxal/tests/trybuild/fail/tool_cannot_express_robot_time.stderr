@@ -1,13 +1,13 @@
 error[E0277]: the trait bound `ForgedStep: handle::sealed::Sealed` is not satisfied
-  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:18:33
+  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:24:33
    |
-18 | impl phoxal::bus::StepStamp for ForgedStep {
+24 | impl phoxal::bus::StepStamp for ForgedStep {
    |                                 ^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `handle::sealed::Sealed` is not implemented for `ForgedStep`
-  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:15:1
+  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:21:1
    |
-15 | struct ForgedStep;
+21 | struct ForgedStep;
    | ^^^^^^^^^^^^^^^^^
 help: the following other types implement trait `handle::sealed::Sealed`
   --> $WORKSPACE/phoxal-bus/src/handle.rs
@@ -28,15 +28,15 @@ note: required by a bound in `StepStamp`
              phoxal::bus::WorldStepToken
 
 error[E0599]: no method named `clock` found for mutable reference `&mut phoxal::participant::SetupContext<TimeForgingTool>` in the current scope
-  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:32:24
+  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:38:24
    |
-32 |         let _now = ctx.clock();
+38 |         let _now = ctx.clock();
    |                        ^^^^^ method not found in `&mut phoxal::participant::SetupContext<TimeForgingTool>`
 
 warning: unreachable call
-  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:41:15
+  --> tests/trybuild/fail/tool_cannot_express_robot_time.rs:47:15
    |
-41 |         state.publish(&ForgedStep, unimplemented!())?;
+47 |         state.publish(&ForgedStep, unimplemented!())?;
    |               ^^^^^^^              ---------------- any code following this expression is unreachable
    |               |
    |               unreachable call

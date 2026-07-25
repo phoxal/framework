@@ -29,6 +29,12 @@
 //! with no consumer are both legal states on their own - **that open-world
 //! stance stays.**
 //!
+//! It has exactly one exception, and it is a cardinality rule rather than a
+//! topology one: the coherence pass rejects a graph with **more than one
+//! publisher of the world clock**, because two timeline authorities mean two
+//! world histories advancing the same participants (#952 section C). Zero is
+//! still legal - a real robot has no world authority at all.
+//!
 //! What the open-world stance does not cover is a contract that is
 //! demonstrably produced/served in-set at one version while a participant
 //! consumes/asks a *different, disjoint* version of that same logical
@@ -272,6 +278,20 @@ pub enum CoherenceMismatch {
         /// Every version served in-set for `contract` (may be empty).
         served: BTreeSet<String>,
     },
+    /// More than one participant publishes the world clock, so the graph has
+    /// more than one timeline authority (#952 section C).
+    ///
+    /// This is the single closed-world exception on the publish side, and it is
+    /// a cardinality rule rather than a version rule: the world clock is not a
+    /// contract several producers can each contribute a view of. Two authorities
+    /// mean two world histories advancing the same participants, which no
+    /// consumer can reconcile - a subscriber cannot tell which one it is
+    /// stepping on. Zero publishers stays legal, because a real robot has no
+    /// world authority at all.
+    MultipleTimelineAuthorities {
+        /// Every participant publishing the world clock, in set order.
+        participant_ids: BTreeSet<String>,
+    },
 }
 
 /// The outcome of the coherence pass: the mismatches found (empty == coherent).
@@ -310,6 +330,14 @@ impl CoherenceReport {
 /// edge's requirement entirely: it is excluded from `SubP(L)`/`AskP(L)` before
 /// either check runs, so a participant whose only edge for a contract is
 /// marked `external` is never flagged for it.
+/// The contract whose publisher *is* the timeline authority.
+///
+/// Named here rather than derived from the api tree because the rule is about
+/// this one contract's meaning, not about any structural property a checker
+/// could infer: publishing the world clock is what makes a participant the
+/// authority over world history (#952 section C).
+pub const TIMELINE_AUTHORITY_CONTRACT: &str = "simulation::Clock";
+
 #[must_use]
 pub fn check_coherence(participants: &[ParticipantContractSurface]) -> CoherenceReport {
     // Pub(L)/Serve(L), pooled across the whole set (never filtered by
@@ -338,6 +366,22 @@ pub fn check_coherence(participants: &[ParticipantContractSurface]) -> Coherence
     }
 
     let mut mismatches = Vec::new();
+
+    // The one publisher-cardinality rule (see `MultipleTimelineAuthorities`).
+    let authorities: BTreeSet<String> = participants
+        .iter()
+        .filter(|p| {
+            p.contracts
+                .iter()
+                .any(|c| c.role == "publish" && c.contract == TIMELINE_AUTHORITY_CONTRACT)
+        })
+        .map(|p| p.participant_id.clone())
+        .collect();
+    if authorities.len() > 1 {
+        mismatches.push(CoherenceMismatch::MultipleTimelineAuthorities {
+            participant_ids: authorities,
+        });
+    }
 
     for p in participants {
         // Pub/sub: per-participant SubP(L), non-external edges only.
@@ -562,6 +606,52 @@ mod tests {
     #[test]
     fn coherence_empty_participant_set_is_ok() {
         assert!(check_coherence(&[]).is_ok());
+    }
+
+    /// #952 section C: the graph admits exactly one timeline authority. Zero is
+    /// the ordinary case (a real robot), one is a simulation, and two is a
+    /// graph whose participants would be stepped by two different world
+    /// histories at once.
+    #[test]
+    fn coherence_rejects_a_second_timeline_authority_but_allows_none() {
+        let clock = || {
+            vec![meta_contract(
+                "publish",
+                "v0.1",
+                TIMELINE_AUTHORITY_CONTRACT,
+                false,
+            )]
+        };
+        let subscriber = surface(
+            "drive",
+            vec![meta_contract(
+                "subscribe",
+                "v0.1",
+                TIMELINE_AUTHORITY_CONTRACT,
+                false,
+            )],
+        );
+
+        assert!(
+            check_coherence(std::slice::from_ref(&subscriber)).is_ok(),
+            "a real robot has no world authority at all"
+        );
+        assert!(
+            check_coherence(&[surface("webots", clock()), subscriber.clone()]).is_ok(),
+            "exactly one authority is the simulation case"
+        );
+
+        let report = check_coherence(&[
+            surface("webots", clock()),
+            surface("second-controller", clock()),
+            subscriber,
+        ]);
+        assert_eq!(
+            report.mismatches,
+            vec![CoherenceMismatch::MultipleTimelineAuthorities {
+                participant_ids: gens(&["second-controller", "webots"]),
+            }]
+        );
     }
 
     /// §3 worked example 1: "pub `v1`, sub `v2`, nothing else ->

@@ -1,13 +1,19 @@
 // A tool joins the *execution*, not the clock (#952 section B/D). It gets a raw
-// bus, so it can observe and command - but it cannot obtain a `RobotInstant`
-// and it cannot publish checked state, because that needs a step token only the
-// runner or the world authority can mint.
+// bus, so it can observe and command - but there is no route through the
+// authoring surface by which it obtains a `RobotInstant` or publishes checked
+// state, because that needs a step stamp only the runner or the world authority
+// mints.
 //
 // Three independent proofs in one fixture:
 //
 // 1. there is no clock accessor on a tool's `SetupContext`;
 // 2. `StepStamp` is sealed, so a tool cannot invent a step stamp of its own;
 // 3. `StatePublisher::publish` therefore has no argument a tool can supply.
+//
+// What this does NOT prove, and no compile test can: that a tool which reaches
+// for `StepToken::__mint` or `RobotInstant::new` is stopped. Those constructors
+// are `pub` because the runner lives in a different crate than the types; see
+// `phoxal::raw`'s module docs for the honest statement of the boundary.
 
 use phoxal::api;
 use phoxal::prelude::*;
