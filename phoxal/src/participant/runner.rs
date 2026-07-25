@@ -89,7 +89,7 @@ use crate::participant::scheduler::{
 use crate::participant::spec::StepSchedule;
 use phoxal_bus::{Bus, BusConfig, IncomingQuery};
 
-const HEALTH_TICK_INTERVAL: Duration = Duration::from_secs(1);
+const RUNTIME_PERFORMANCE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
@@ -525,8 +525,6 @@ where
         }
     };
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
-    super::sd_notify::ready();
-    let watchdog = super::sd_notify::Watchdog::start();
     let fault = main_loop::<R, _, S>(
         &mut participant,
         &mut api,
@@ -539,11 +537,9 @@ where
         shutdown,
         &runtime_performance_publisher,
         &mut runtime_performance,
-        &watchdog,
         &mut managed_tasks,
     )
     .await;
-    watchdog.shutdown();
     drop(excl_tx);
     teardown_lifecycle(
         &mut participant,
@@ -648,7 +644,6 @@ async fn main_loop<R, C, S>(
     mut shutdown: std::pin::Pin<&mut S>,
     runtime_performance_publisher: &RuntimePerformancePublisher,
     runtime_performance: &mut RuntimePerformance,
-    watchdog: &super::sd_notify::Watchdog,
     managed_tasks: &mut ManagedTasks,
 ) -> Option<ManagedTaskExit>
 where
@@ -660,20 +655,22 @@ where
     let mut step_index: u64 = 0;
     let mut last_time_ns = clock.now().time_ns();
     // The next tick's *logical* due time - what the runner asks the scheduler
-    // to release at (D34/#09), separate from the wall-clock health tick below.
+    // to release at (D34/#09), separate from the wall-clock
+    // runtime-performance publication tick below.
     let mut next_step_target = period.map(|period| {
         let now = scheduler.now();
         advance_logical_deadline(now, period, 0)
     });
-    let mut next_health_tick = tokio::time::Instant::now();
+    let mut next_runtime_performance_tick = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
             // Order matters: shutdown first, then a managed-task fault (both are
             // "stop the loop" events and should preempt routine work), then the
-            // framework health tick, then a *due* step, then server queries.
-            // Health is cheap and must not be starved by an overloaded participant; due
-            // steps still take priority over a steady query backlog. `Some(..)`
+            // runtime-performance publication tick, then a *due* step, then
+            // server queries. Publication is cheap and must not be starved by
+            // an overloaded participant; due steps still take priority over a
+            // steady query backlog. `Some(..)`
             // disables the query branch if the channel ever closes, so it never
             // busy-loops.
             biased;
@@ -687,9 +684,11 @@ where
                 );
                 return Some(exit);
             }
-            _ = health_tick(next_health_tick) => {
-                watchdog.feed();
-                advance_deadline(&mut next_health_tick, HEALTH_TICK_INTERVAL);
+            _ = runtime_performance_tick(next_runtime_performance_tick) => {
+                advance_deadline(
+                    &mut next_runtime_performance_tick,
+                    RUNTIME_PERFORMANCE_TICK_INTERVAL,
+                );
                 if let Some(rollup) = runtime_performance.take_rollup(bus) {
                     runtime_performance_publisher.publish(clock.now(), rollup);
                 }
@@ -733,7 +732,6 @@ where
                     }
                 };
                 runtime_performance.finish_step(observation, success);
-                watchdog.feed();
             }
             Some(incoming) = excl_rx.recv() => {
                 // Commit only if the handler succeeded (D14/D32: retain the prior
@@ -741,7 +739,6 @@ where
                 if serve_exclusive_query::<R>(participant, api, bus, incoming).await {
                     commit_snapshot::<R>(participant, committed);
                 }
-                watchdog.feed();
             }
         }
     }
@@ -762,7 +759,7 @@ pub(crate) fn advance_logical_deadline(
     )
 }
 
-pub(crate) async fn health_tick(next: tokio::time::Instant) {
+pub(crate) async fn runtime_performance_tick(next: tokio::time::Instant) {
     tokio::time::sleep_until(next).await;
 }
 

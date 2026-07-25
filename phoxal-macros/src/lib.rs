@@ -149,7 +149,7 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// `#[snapshot]`, which is inert without a server), but `#[step]`,
 /// `#[server(...)]`, and `#[server_snapshot(...)]` are the typed-graph surface and
 /// are a compile error on a tool: tools are privileged, out-of-band, thin
-/// raw-bus runners (lifecycle + `sd_notify` + `participant_id` + `ctx.robot()` +
+/// raw-bus runners (lifecycle + `participant_id` + `ctx.robot()` +
 /// `phoxal::raw`), not checked participants. A tool that needs a recurring loop
 /// spawns and owns its own task from `#[setup]`.
 #[proc_macro_attribute]

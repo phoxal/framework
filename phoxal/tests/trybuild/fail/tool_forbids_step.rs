@@ -1,5 +1,5 @@
-// Plan #15: a tool is a thin raw-bus runner (lifecycle + `sd_notify` +
-// `participant_id` + `ctx.robot()` + `phoxal::raw`), not a typed-graph
+// Plan #15: a tool is a thin raw-bus runner (lifecycle + `participant_id` +
+// `ctx.robot()` + `phoxal::raw`), not a typed-graph
 // participant, so `#[step]` is not allowed on it.
 use phoxal::prelude::*;
 
