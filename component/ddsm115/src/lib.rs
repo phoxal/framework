@@ -164,10 +164,14 @@ impl Motor {
         match LocalInstant::try_now() {
             Some(now) => self.enforce(now),
             None => {
+                let granted = self.permitted_by;
                 tracing::error!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
                     instance = self.instance,
+                    producer = granted.map(|(producer, _, _)| producer.to_string()),
+                    sequence = granted.map(|(_, sequence, _)| sequence),
+                    observation = granted.map(|(_, _, observation)| observation),
                     decision = "permit_unmeasurable",
                     "the host boot clock could not be read; stopping the motor"
                 );

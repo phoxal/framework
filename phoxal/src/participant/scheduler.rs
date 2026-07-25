@@ -417,6 +417,13 @@ pub enum AnyStepScheduler {
     Real(RealScheduler),
     /// Logical-time scheduling, driven by a [`SimulationClockHandle`].
     Simulation(SimulationScheduler),
+    /// No scheduling at all: a participant outside robot time.
+    ///
+    /// Tools and the externally driven simulation controller have no `#[step]`
+    /// (the authoring macros reject one) and no robot time to schedule it
+    /// against. This releases no tick ever, rather than pretending to run a
+    /// cadence nobody drives.
+    Clockless,
 }
 
 impl AnyStepScheduler {
@@ -426,7 +433,7 @@ impl AnyStepScheduler {
     /// timeline replacement is still observed by clocked, step-less services.
     pub(crate) fn simulation_time_receiver(&self) -> Option<watch::Receiver<Option<RobotInstant>>> {
         match self {
-            AnyStepScheduler::Real(_) => None,
+            AnyStepScheduler::Real(_) | AnyStepScheduler::Clockless => None,
             AnyStepScheduler::Simulation(scheduler) => Some(scheduler.rx.clone()),
         }
     }
@@ -437,6 +444,7 @@ impl StepScheduler for AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.wait_until(target).await,
             AnyStepScheduler::Simulation(scheduler) => scheduler.wait_until(target).await,
+            AnyStepScheduler::Clockless => std::future::pending().await,
         }
     }
 
@@ -444,6 +452,7 @@ impl StepScheduler for AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.now(),
             AnyStepScheduler::Simulation(scheduler) => scheduler.now(),
+            AnyStepScheduler::Clockless => None,
         }
     }
 }

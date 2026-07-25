@@ -444,7 +444,7 @@ impl ParticipantLaunchPolicy for ToolParticipantLaunch {
     }
 
     fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
-        ClockMode::Real
+        ClockMode::Clockless
     }
 }
 
@@ -465,7 +465,7 @@ impl ParticipantLaunchPolicy for SimulatorParticipantLaunch {
     }
 
     fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
-        ClockMode::Real
+        ClockMode::Clockless
     }
 }
 
@@ -496,6 +496,15 @@ pub enum ClockMode {
     Real,
     /// Drive scheduled steps from the authoritative `simulation/clock` feed.
     Simulation,
+    /// No robot time at all.
+    ///
+    /// Tools and the externally driven simulation controller join the
+    /// *execution*, not the clock (#952 section B): they are given no execution
+    /// origin, they have no `#[step]` to schedule, and they express no robot
+    /// time. Selecting `Real` for them would demand an origin their launch
+    /// contract deliberately withholds, which is a startup failure rather than
+    /// a safety property.
+    Clockless,
 }
 
 impl std::fmt::Display for ClockMode {
@@ -503,6 +512,7 @@ impl std::fmt::Display for ClockMode {
         match self {
             ClockMode::Real => f.write_str("real"),
             ClockMode::Simulation => f.write_str("simulation"),
+            ClockMode::Clockless => f.write_str("clockless"),
         }
     }
 }
@@ -804,7 +814,8 @@ mod tests {
         programmatic.clock = ClockMode::Simulation;
         assert_eq!(
             ToolParticipantLaunch::clock_mode(&programmatic),
-            ClockMode::Real
+            ClockMode::Clockless,
+            "a tool ignores a requested clock mode: it joins the execution, not the clock"
         );
         assert_eq!(
             ClockedParticipantLaunch::clock_mode(&programmatic),
@@ -846,7 +857,7 @@ mod tests {
         programmatic.clock = ClockMode::Simulation;
         assert_eq!(
             SimulatorParticipantLaunch::clock_mode(&programmatic),
-            ClockMode::Real
+            ClockMode::Clockless
         );
         assert_eq!(
             ClockedParticipantLaunch::clock_mode(&programmatic),

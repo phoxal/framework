@@ -59,9 +59,10 @@ decision belongs to a later multi-robot design and is not inferred here.
 A `TimelineId` is an equality-only identity: a different one means the world
 was replaced, and numeric ordering between two of them means nothing. There is
 no zero - absence is `None`, never a sentinel. Within one timeline, time is
-monotonic; duplicate or backward clock samples are ignored. Recently replaced
-timelines are remembered in a bounded shared history, so an in-flight clock from
-a retired controller cannot reactivate old state. Clock silence means the world
+monotonic; duplicate or backward clock samples are ignored. Replaced timelines are
+remembered for the life of the process, so an in-flight clock from a retired
+controller cannot reactivate old state - and cannot be forgotten later either,
+which a bounded history would eventually do. Clock silence means the world
 is not advancing.
 
 Clocked services subscribe to `simulation/clock`. The first valid clock selects

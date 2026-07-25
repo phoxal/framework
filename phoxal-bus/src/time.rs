@@ -61,7 +61,25 @@ pub struct LocalInstant {
     boot_ns: u64,
 }
 
+/// Set the first time any boot-clock read fails, and never cleared.
+///
+/// A process that has failed to read its own clock once cannot prove that a
+/// later successful read is trustworthy - and the alternative, letting each
+/// call site recover on its own, is exactly the silent same-process recovery
+/// the failure policy forbids. See [`LocalInstant::clock_faulted`].
+static CLOCK_FAULTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl LocalInstant {
+    /// Whether this process has ever failed to read the host boot clock.
+    ///
+    /// Sticky for the life of the process: recovery from a clock fault is a
+    /// fresh process, so the runner turns this into ordinary failure rather
+    /// than letting the participant quietly carry on once reads start working
+    /// again (#952 section J).
+    pub fn clock_faulted() -> bool {
+        CLOCK_FAULTED.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Read the host's suspend-aware monotonic boot clock, reporting a failed
     /// read instead of hiding it.
     ///
@@ -73,7 +91,13 @@ impl LocalInstant {
     /// cannot read the clock does not get an instant - it stops, drops the
     /// sample, or fails, whichever fails closed for that call site.
     pub fn try_now() -> Option<Self> {
-        read_boot_clock_ns().map(|boot_ns| LocalInstant { boot_ns })
+        match read_boot_clock_ns() {
+            Some(boot_ns) => Some(LocalInstant { boot_ns }),
+            None => {
+                CLOCK_FAULTED.store(true, std::sync::atomic::Ordering::Release);
+                None
+            }
+        }
     }
 
     /// Nanoseconds since host boot.

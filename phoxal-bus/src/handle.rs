@@ -113,7 +113,7 @@ pub trait StepStamp: sealed::Sealed {
 
 /// Proof that the runner released a scheduled `#[step]` at a robot instant.
 ///
-/// The runner is the only minter. Handing it to
+/// The runner is the only minter on the documented surface. Handing it to
 /// [`StatePublisher::publish`](StatePublisher::publish) is the sole way a
 /// service expresses robot time: there is no other constructor a participant
 /// reaches through the ordinary `phoxal::prelude` surface, and the role markers
@@ -1131,7 +1131,9 @@ where
             // inventing an instant here is what would let a stale command look
             // freshly observed.
             let Some(observed_at) = LocalInstant::try_now() else {
-                metric.record_decode_error();
+                // Not a decode error - the bytes were fine. The clock fault is
+                // latched process-wide by `try_now`, and the runner turns that
+                // into ordinary failure on its next beat.
                 tracing::error!(
                     target: "phoxal.bus",
                     topic = %topic_owned,

@@ -141,8 +141,9 @@ impl<R> SetupContext<R> {
 /// to publish state at it.
 ///
 /// The [`StepToken`] is what a [`StatePublisher`](crate::bus::StatePublisher)
-/// requires, and only the runner mints one - so a participant publishes state
-/// at the instant it actually reached, or not at all (#952 section D).
+/// requires, and the runner is the only minter on the documented surface - so
+/// a participant publishes state at the instant it actually reached, or not at
+/// all (#952 section D; `phoxal::raw`'s docs state exactly how strong that is).
 #[derive(Clone, Copy, Debug)]
 pub struct StepContext {
     token: StepToken,

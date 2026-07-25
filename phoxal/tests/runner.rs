@@ -949,6 +949,39 @@ async fn losing_clock_discipline_fails_the_participant_and_still_runs_teardown()
     bus.close().await.expect("bus should close");
 }
 
+/// A real participant with no `#[step]` has no step arm to notice a lost clock
+/// in, so its recurring runtime-performance beat carries the same check. Left
+/// out, it would go on answering queries from state it could no longer date.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_less_real_participant_still_notices_a_lost_clock() {
+    let namespace = unique_namespace("clock-discipline-stepless");
+    let bus = Bus::open(BusConfig::in_process(namespace.clone(), "robot"))
+        .await
+        .expect("bus should open");
+    let mut launch = ParticipantLaunch::local("no-step-reset-observer-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
+    launch.namespace = namespace;
+
+    let clock = TestClock::new();
+    let losing = clock.clone();
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_with_bus_clock::<NoStepResetObserver, _, _>(&bus, launch, clock, async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            losing.set_unsynchronized(TimeUnsynchronized::ForeignBoot);
+            std::future::pending::<()>().await;
+        }),
+    )
+    .await
+    .expect("the step-less participant must notice within its own beat")
+    .expect_err("a lost clock must fault a step-less participant too");
+    assert!(
+        error.to_string().contains("clock discipline lost"),
+        "unexpected failure: {error:#}"
+    );
+    bus.close().await.expect("bus should close");
+}
+
 /// The same rule at startup: a real participant with no execution origin has
 /// nothing to anchor its cadence on, so it never reaches a first step. The
 /// alternative - anchoring on an invented timeline - would publish a world

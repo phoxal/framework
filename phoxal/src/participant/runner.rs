@@ -76,7 +76,7 @@ use tokio::task::JoinHandle;
 
 use crate::api;
 use crate::bus::Subscriber;
-use crate::bus::{QueryFailure, RobotInstant, StepToken, TimelineId};
+use crate::bus::{LocalInstant, QueryFailure, RobotInstant, StepToken, TimelineId};
 use crate::participant::api::{ParticipantApi, ParticipantLifecycle};
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockReading, ClockSource, RealClock, TimeUnsynchronized};
@@ -162,6 +162,10 @@ pub(crate) fn step_scheduler_for(
             let (scheduler, handle) = SimulationScheduler::new(missed_tick, period);
             (AnyStepScheduler::Simulation(scheduler), Some(handle))
         }
+        // A clockless participant has no cadence and no clock feed to
+        // subscribe: it is driven by host events or by the simulator that owns
+        // it, and it expresses no robot time.
+        ClockMode::Clockless => (AnyStepScheduler::Clockless, None),
     })
 }
 
@@ -353,6 +357,9 @@ where
     if clock_mode == ClockMode::Real
         && let ClockReading::Unsynchronized(reason) = reading
     {
+        // Only a real participant needs this: a clockless one was never given
+        // an origin, and a simulation one has no world history until the
+        // authority publishes its first step.
         // Starting a real participant on an untrustworthy clock would mean
         // every deadline it owns is measured against a number it cannot
         // defend. This is ordinary failure, so the supervisor's restart and
@@ -362,7 +369,7 @@ where
     let (scheduler, clock_handle) = step_scheduler_for(clock_mode, schedule, reading.instant())?;
     let effective_clock = Arc::new(match &scheduler {
         AnyStepScheduler::Simulation(sim) => RunnerClock::Simulation(sim.simulation_clock()),
-        AnyStepScheduler::Real(_) => RunnerClock::Delegated(clock),
+        AnyStepScheduler::Real(_) | AnyStepScheduler::Clockless => RunnerClock::Delegated(clock),
     });
     // Subscribe before setup so the simulation clock can advance while setup runs.
     let clock_feed = clock_handle
@@ -806,10 +813,16 @@ where
                 // means the world authority has not published a first step yet,
                 // which is a world that has not started rather than a clock
                 // that was lost.
-                if period.is_none()
-                    && matches!(scheduler, AnyStepScheduler::Real(_))
-                    && let ClockReading::Unsynchronized(reason) = clock.read()
-                {
+                let faulted = LocalInstant::clock_faulted()
+                    .then_some(TimeUnsynchronized::ClockFault)
+                    .or_else(|| match (period, scheduler) {
+                        (None, AnyStepScheduler::Real(_)) => match clock.read() {
+                            ClockReading::Unsynchronized(reason) => Some(reason),
+                            ClockReading::Synchronized(_) => None,
+                        },
+                        _ => None,
+                    });
+                if let Some(reason) = faulted {
                     tracing::error!(
                         target: "phoxal.runtime",
                         error = %reason,
@@ -823,6 +836,20 @@ where
             }
             SchedulerTick { fired_at, missed_ticks } = step_tick(scheduler, next_step_target) => {
                 let (Some(period), Some(target)) = (period, next_step_target) else { continue };
+
+                // A boot-clock read failed somewhere in this process - the bus
+                // stamper, a driver's permit, an arbiter's silence deadline.
+                // Each of those failed closed on its own, but a process that
+                // cannot read its own clock does not get to carry on once reads
+                // start working again: recovery is a fresh process.
+                if LocalInstant::clock_faulted() {
+                    tracing::error!(
+                        target: "phoxal.runtime",
+                        error = %TimeUnsynchronized::ClockFault,
+                        "clock discipline lost; failing the participant"
+                    );
+                    return Ok(Some(LoopFault::ClockDiscipline(TimeUnsynchronized::ClockFault)));
+                }
 
                 if fired_at.timeline() != target.timeline() {
                     // The independent simulation-time branch above owns

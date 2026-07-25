@@ -219,6 +219,9 @@ impl RealClock {
 
 impl ClockSource for RealClock {
     fn read(&self) -> ClockReading {
+        if LocalInstant::clock_faulted() {
+            return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
+        }
         let origin = match self.origin {
             Ok(origin) => origin,
             Err(reason) => return ClockReading::Unsynchronized(reason),

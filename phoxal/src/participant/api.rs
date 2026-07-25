@@ -788,12 +788,12 @@ impl<R: Participant + IsSimulator> SetupContextSimulatorExt for SetupContext<R> 
 /// raw-bus only (decided 2026-07-09), so this is their sole IO seam.
 ///
 /// A tool joins the *execution*, not the clock (#952 section B): it carries the
-/// [`ExecutionId`] because every bus participant does, and it can obtain no
-/// [`RobotInstant`](crate::bus::RobotInstant) at all. The raw bus it gets is an
+/// [`ExecutionId`] because every bus participant does, and it runs with no
+/// clock, no cadence, and no execution origin. The raw bus it gets is an
 /// observer surface - it can subscribe and query, and it can publish commands
-/// and diagnostics, but there is no publisher on it that expresses robot time,
-/// because minting a [`StepToken`](crate::bus::StepToken) is impossible outside
-/// the runner.
+/// and diagnostics, none of which express robot time. Nothing on this surface
+/// hands it a [`RobotInstant`](crate::bus::RobotInstant); see `phoxal::raw`'s
+/// docs for where that is a compiler rule and where it is a convention.
 pub trait SetupContextToolExt {
     /// Clone the runner-owned raw bus for privileged tool internals. The bus is
     /// already open from the launch contract, so a tool does not reparse launch
