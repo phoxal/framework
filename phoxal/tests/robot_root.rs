@@ -1,6 +1,7 @@
 //! The runner loads the resolved robot model from a robot root and exposes it to
 //! `#[setup]` via `SetupContext::robot()` / `robot_root()` (D33).
 
+use phoxal::participant::ExecutionOrigin;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -35,6 +36,7 @@ fn fixture_dir() -> PathBuf {
 async fn setup_reads_robot_model_from_the_root() {
     let fixture = fixture_dir();
     let launch = ParticipantLaunch::local("reads-robot-1", "rgbd-imu-diff-drive")
+        .with_execution_origin(ExecutionOrigin::mint())
         .with_robot_root(fixture.clone());
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -54,7 +56,8 @@ async fn setup_reads_robot_model_from_the_root() {
 async fn robot_is_absent_without_a_root() {
     // No robot root means `ctx.robot()` errors, so setup fails and the runner
     // surfaces the error.
-    let launch = ParticipantLaunch::local("reads-robot-2", "robot");
+    let launch = ParticipantLaunch::local("reads-robot-2", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };

@@ -31,6 +31,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 use phoxal::api;
+#[cfg(test)]
+use phoxal::bus::ProducerId;
+use phoxal::bus::{Observed, ProducerFence};
 use phoxal::prelude::*;
 
 /// The motor / encoder capability names on a ddsm115 component instance
@@ -57,9 +60,34 @@ struct Motor {
     /// When the current non-zero velocity stops being permitted. `None` means
     /// the motor is already stopped and needs no permit.
     permitted_until: Option<LocalInstant>,
+    /// Which commanding process holds actuation authority. A superseded
+    /// authority must not be able to renew a permit after a replacement has
+    /// been accepted (#952 section G), and a replayed or reordered sample must
+    /// not renew one either.
+    fence: ProducerFence,
 }
 
 impl Motor {
+    /// Admit an observed command, granting a permit only if the producer still
+    /// holds authority and its sequence advanced.
+    ///
+    /// `observed_at` is the receiver's own stamp - the one the bus took before
+    /// decode - not the instant this task happened to drain the ring. Using the
+    /// drain time would hand a fresh permit to a sample that sat in the ring
+    /// across a scheduler stall or a host suspend.
+    fn admit(&mut self, observed: Observed<api::component::motor::Command>) -> LeaseDecision {
+        let decision = self
+            .fence
+            .admit(observed.metadata.producer, observed.metadata.sequence);
+        match decision {
+            LeaseDecision::Renewed | LeaseDecision::ProducerReplaced { .. } => {
+                self.apply(observed.body, observed.observed_at);
+            }
+            LeaseDecision::Rejected(_) => {}
+        }
+        decision
+    }
+
     /// Apply a command, granting a fresh permit for a non-zero velocity.
     fn apply(&mut self, command: api::component::motor::Command, now: LocalInstant) {
         match command {
@@ -89,6 +117,28 @@ impl Motor {
     fn stop(&mut self) {
         self.velocity_radps = 0.0;
         self.permitted_until = None;
+    }
+}
+
+/// Build an observed command for the permit path. Framework-internal shape used
+/// by the driver's own tests; the live path receives these from the bus.
+#[cfg(test)]
+fn observed_command(
+    producer: ProducerId,
+    sequence: u64,
+    observed_at: LocalInstant,
+    body: api::component::motor::Command,
+) -> Observed<api::component::motor::Command> {
+    Observed {
+        body,
+        metadata: phoxal::bus::BusMetadata {
+            codec: phoxal::bus::CodecId::MessagePack.as_u8(),
+            producer,
+            sequence,
+            produced_at: None,
+            participant: "test".to_string(),
+        },
+        observed_at,
     }
 }
 
@@ -201,7 +251,13 @@ async fn hold_permit_forever(
         tokio::select! {
             observed = commands.recv() => {
                 let Ok(observed) = observed else { break };
-                lock(&motor).apply(observed.body, LocalInstant::now());
+                if let LeaseDecision::Rejected(rejection) = lock(&motor).admit(observed) {
+                    tracing::warn!(
+                        target: "phoxal.ddsm115",
+                        error = %rejection,
+                        "rejected motor command"
+                    );
+                }
             }
             _ = tick.tick() => {
                 lock(&motor).enforce(LocalInstant::now());
@@ -301,6 +357,83 @@ mod tests {
         motor.apply(api::component::motor::Command::Velocity(3.0), renewed_at);
         assert_eq!(motor.enforce(start().saturating_add(PERMIT)), 3.0);
         assert_eq!(motor.enforce(renewed_at.saturating_add(PERMIT)), 0.0);
+    }
+
+    /// The permit is renewed from the *observation* instant the bus stamped,
+    /// not from the moment this task drained the ring. A sample that sat in the
+    /// ring across a stall is already old when it is admitted, so it must not
+    /// buy a full fresh window.
+    #[test]
+    fn a_stale_queued_command_does_not_buy_a_fresh_permit() {
+        let producer = ProducerId::mint();
+        let mut motor = Motor::default();
+        // Observed at `start`, drained a full permit window later.
+        motor.admit(observed_command(
+            producer,
+            1,
+            start(),
+            api::component::motor::Command::Velocity(3.0),
+        ));
+        assert_eq!(
+            motor.enforce(start().saturating_add(PERMIT)),
+            0.0,
+            "the permit ages from when the sample was observed, not when it was drained"
+        );
+    }
+
+    /// A superseded commanding process must not be able to renew the actuator
+    /// after a replacement has been accepted, and a replayed sequence from the
+    /// accepted producer must not renew it either (#952 section G).
+    #[test]
+    fn a_superseded_or_replayed_command_cannot_renew_the_permit() {
+        let first = ProducerId::mint();
+        let second = ProducerId::mint();
+        let mut motor = Motor::default();
+
+        motor.admit(observed_command(
+            first,
+            9,
+            start(),
+            api::component::motor::Command::Velocity(1.0),
+        ));
+        assert!(matches!(
+            motor.admit(observed_command(
+                second,
+                0,
+                start(),
+                api::component::motor::Command::Velocity(2.0),
+            )),
+            LeaseDecision::ProducerReplaced { .. }
+        ));
+        assert_eq!(motor.velocity_radps, 2.0);
+
+        // The replaced authority is fenced for good.
+        assert!(matches!(
+            motor.admit(observed_command(
+                first,
+                10,
+                start(),
+                api::component::motor::Command::Velocity(9.0),
+            )),
+            LeaseDecision::Rejected(_)
+        ));
+        assert_eq!(motor.velocity_radps, 2.0);
+
+        // And a replay from the accepted producer renews nothing.
+        assert!(matches!(
+            motor.admit(observed_command(
+                second,
+                0,
+                start().saturating_add(PERMIT),
+                api::component::motor::Command::Velocity(9.0),
+            )),
+            LeaseDecision::Rejected(_)
+        ));
+        assert_eq!(
+            motor.enforce(start().saturating_add(PERMIT)),
+            0.0,
+            "a replayed sample must not extend the permit"
+        );
     }
 
     #[test]

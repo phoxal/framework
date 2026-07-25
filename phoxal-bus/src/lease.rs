@@ -23,6 +23,7 @@
 //! superseded one is fenced: it cannot renew a lease or an actuator permit
 //! afterwards, even if it is still live.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use crate::identity::ProducerId;
@@ -64,22 +65,35 @@ pub enum LeaseDecision {
     Rejected(LeaseRejection),
 }
 
-/// Tracks which producer currently holds authority over one input.
+/// How many superseded producers stay fenced.
 ///
-/// The replacement policy is deliberately "last accepted wins": a live producer
-/// is authoritative until a *different* producer is accepted, at which point the
-/// previous one is fenced permanently. That is what makes a restart safe (the
-/// replacement takes over immediately) while keeping the old process from
-/// re-asserting itself afterwards.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// A bounded history, like the retired-timeline history: it has to outlast the
+/// in-flight traffic of a replaced producer, not remember every process that
+/// ever spoke.
+const FENCED_PRODUCERS: usize = 8;
+
+/// Tracks which producer holds authority over one input, and which ones have
+/// lost it for good.
+///
+/// The replacement policy is "last accepted wins, and the loser stays fenced":
+/// a live producer is authoritative until a *different* producer is accepted,
+/// at which point the previous one is recorded as superseded and can never
+/// renew again. Remembering only the current producer would let A -> B -> late A
+/// hand authority back to a process the service already replaced, which is the
+/// exact zombie this fence exists to stop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProducerFence {
     accepted: Option<(ProducerId, u64)>,
+    superseded: VecDeque<ProducerId>,
 }
 
 impl ProducerFence {
     /// Nothing accepted yet.
     pub const fn new() -> Self {
-        ProducerFence { accepted: None }
+        ProducerFence {
+            accepted: None,
+            superseded: VecDeque::new(),
+        }
     }
 
     /// The producer currently holding authority, if any.
@@ -90,8 +104,15 @@ impl ProducerFence {
     /// Offer a sample from `producer` at `sequence`.
     ///
     /// A different producer replaces the current one and fences it. The same
-    /// producer must strictly increase its sequence.
+    /// producer must strictly increase its sequence. A producer that was
+    /// already superseded is rejected outright, however live it still is.
     pub fn admit(&mut self, producer: ProducerId, sequence: u64) -> LeaseDecision {
+        if self.superseded.contains(&producer) {
+            return LeaseDecision::Rejected(LeaseRejection::SupersededProducer {
+                superseded: producer,
+                accepted: self.accepted.map_or(producer, |(accepted, _)| accepted),
+            });
+        }
         match self.accepted {
             None => {
                 self.accepted = Some((producer, sequence));
@@ -109,6 +130,7 @@ impl ProducerFence {
                 }
             }
             Some((superseded, _)) => {
+                self.fence(superseded);
                 self.accepted = Some((producer, sequence));
                 LeaseDecision::ProducerReplaced { superseded }
             }
@@ -117,14 +139,27 @@ impl ProducerFence {
 
     /// Whether `producer` may still act, i.e. has not been superseded.
     pub fn permits(&self, producer: ProducerId) -> bool {
-        self.accepted
-            .is_none_or(|(accepted, _)| accepted == producer)
+        !self.superseded.contains(&producer)
+            && self
+                .accepted
+                .is_none_or(|(accepted, _)| accepted == producer)
     }
 
-    /// Forget the accepted producer, so the next sample of any producer starts
-    /// a fresh stream. Used when the owning service resets its derived state.
+    /// Forget the *accepted* producer, so the next sample starts a fresh
+    /// stream. The superseded set deliberately survives: a world replacement
+    /// invalidates derived state, not the fact that a process lost authority.
     pub fn clear(&mut self) {
         self.accepted = None;
+    }
+
+    fn fence(&mut self, producer: ProducerId) {
+        if self.superseded.contains(&producer) {
+            return;
+        }
+        if self.superseded.len() == FENCED_PRODUCERS {
+            self.superseded.pop_front();
+        }
+        self.superseded.push_back(producer);
     }
 }
 
@@ -298,11 +333,43 @@ mod tests {
         assert!(!lease.fence.permits(first));
         assert!(lease.fence.permits(second));
 
-        // The superseded producer cannot renew afterwards, even while live.
+        // The superseded producer cannot renew afterwards, however live it
+        // still is: A -> B -> late A must not hand authority back to A.
         assert_eq!(
             lease.offer(first, 10, start, "zombie"),
-            LeaseDecision::ProducerReplaced { superseded: second },
-            "a third takeover is itself a replacement, not a silent accept"
+            LeaseDecision::Rejected(LeaseRejection::SupersededProducer {
+                superseded: first,
+                accepted: second,
+            })
+        );
+        assert_eq!(lease.producer(), Some(second));
+        assert_eq!(
+            lease.live(start, step(TimelineId::mint(), 0)),
+            Some(&"new"),
+            "the zombie must not have replaced the held command either"
+        );
+    }
+
+    /// A world replacement discards derived state, but it does not rehabilitate
+    /// a process that already lost authority.
+    #[test]
+    fn clearing_a_lease_does_not_unfence_a_superseded_producer() {
+        let first = ProducerId::mint();
+        let second = ProducerId::mint();
+        let start = LocalInstant::from_boot_ns(0);
+        let mut lease = Lease::new(SILENCE, HOLD);
+
+        lease.offer(first, 1, start, "old");
+        lease.offer(second, 0, start, "new");
+        lease.clear();
+
+        assert!(matches!(
+            lease.offer(first, 2, start, "zombie"),
+            LeaseDecision::Rejected(LeaseRejection::SupersededProducer { .. })
+        ));
+        assert_eq!(
+            lease.offer(second, 1, start, "live"),
+            LeaseDecision::Renewed
         );
     }
 
@@ -317,6 +384,15 @@ mod tests {
         assert!(
             !fence.permits(first),
             "the fenced authority must not be able to hold a permit open"
+        );
+        assert!(matches!(
+            fence.admit(first, 2),
+            LeaseDecision::Rejected(LeaseRejection::SupersededProducer { .. })
+        ));
+        assert_eq!(
+            fence.accepted_producer(),
+            Some(second),
+            "a rejected zombie must not become the accepted producer"
         );
     }
 

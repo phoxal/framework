@@ -279,17 +279,22 @@ impl TimeWindow {
     /// Whether *some* instant this estimate admits is within `bound` of
     /// `reference`, and none of them is in `reference`'s future.
     ///
-    /// This is the admissibility question a freshness gate asks: a window that
-    /// straddles the future is not usable as a fresh past observation.
+    /// This is the admissibility question a freshness gate asks. Both halves
+    /// read the bound that actually decides them: "none in the future" is about
+    /// the **latest** instant the window admits, and "some within reach" is
+    /// about that same latest instant, since it is the newest candidate. Asking
+    /// either question of `earliest` gets both wrong - it would admit a window
+    /// straddling the future, and reject a wide window whose newest instant is
+    /// perfectly recent.
     pub fn possibly_fresh_within(
         self,
         reference: RobotInstant,
         bound: Duration,
     ) -> Result<bool, TimelineMismatch> {
-        if self.earliest().checked_cmp(reference)? == std::cmp::Ordering::Greater {
+        if self.latest().checked_cmp(reference)? == std::cmp::Ordering::Greater {
             return Ok(false);
         }
-        Ok(reference.duration_since(self.earliest())? <= bound)
+        Ok(reference.duration_since(self.latest())? <= bound)
     }
 }
 
@@ -502,22 +507,38 @@ mod tests {
                 .unwrap()
         );
 
-        // Possible freshness needs only the earliest bound to be within reach.
+        // Possible freshness is decided by the newest instant the window
+        // admits: `[400,600]` against reference 1000 is 400ns old at best.
         assert!(
             window
-                .possibly_fresh_within(reference, Duration::from_nanos(600))
+                .possibly_fresh_within(reference, Duration::from_nanos(400))
                 .unwrap()
         );
         assert!(
             !window
-                .possibly_fresh_within(reference, Duration::from_nanos(599))
+                .possibly_fresh_within(reference, Duration::from_nanos(399))
                 .unwrap()
         );
 
-        // A window straddling the reference's future is never usable as fresh.
-        let straddling = TimeWindow::bounded(instant(1, 1_001), instant(1, 1_100)).unwrap();
+        // A wide window whose newest instant is recent is still usable; asking
+        // the earliest bound instead would reject it.
+        let wide = TimeWindow::bounded(instant(1, 0), instant(1, 950)).unwrap();
+        assert!(
+            wide.possibly_fresh_within(reference, Duration::from_nanos(100))
+                .unwrap()
+        );
+
+        // A window that straddles the reference's future is never usable as a
+        // fresh past observation, even though its earliest bound is past.
+        let straddling = TimeWindow::bounded(instant(1, 900), instant(1, 1_100)).unwrap();
         assert!(
             !straddling
+                .possibly_fresh_within(reference, Duration::from_secs(1))
+                .unwrap()
+        );
+        let wholly_future = TimeWindow::bounded(instant(1, 1_001), instant(1, 1_100)).unwrap();
+        assert!(
+            !wholly_future
                 .possibly_fresh_within(reference, Duration::from_secs(1))
                 .unwrap()
         );

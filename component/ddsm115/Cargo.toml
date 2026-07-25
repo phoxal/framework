@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [dev-dependencies]

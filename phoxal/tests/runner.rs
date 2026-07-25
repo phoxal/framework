@@ -24,6 +24,7 @@
 //! - `#[shutdown]` publishes through `&mut Self::Api` one last time, observed
 //!   by the companion `Latest` after the runner returns.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -194,7 +195,8 @@ async fn new_model_participant_runs_through_a_real_bus() {
     )
     .expect("build submap querier");
 
-    let launch = ParticipantLaunch::local("wall-follower-1", "robot");
+    let launch = ParticipantLaunch::local("wall-follower-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     let runner = run_with_bus::<WallFollower, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(1_200)).await
     });
@@ -252,7 +254,7 @@ async fn new_model_participant_runs_through_a_real_bus() {
         "the #[step] loop should have run at least once"
     );
 
-    // `publish_at` only enqueues (never blocks/awaits delivery - D35/D43e), so
+    // A publish only enqueues (never blocks/awaits delivery - D35/D43e), so
     // poll briefly for the post-`#[shutdown]` zeroed target to actually
     // arrive rather than asserting immediately.
     let mut zeroed = None;
@@ -447,7 +449,8 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     )
     .expect("build submap querier");
 
-    let launch = ParticipantLaunch::local("drain-proof-1", "robot");
+    let launch = ParticipantLaunch::local("drain-proof-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     let runner = run_with_bus::<Drainer, _>(&bus, launch, async {
         tokio::time::sleep(Duration::from_millis(800)).await
     });
@@ -824,12 +827,14 @@ impl ConfiguredInspector {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configless_tool_accepts_absent_config_but_configured_tool_rejects_it() {
-    let configless = ParticipantLaunch::local("robot-inspector", "robot");
+    let configless = ParticipantLaunch::local("robot-inspector", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     phoxal::participant::run_with::<RobotInspector, _>(configless, async {})
         .await
         .expect("a tool with omitted config type should accept absent PHOXAL_CONFIG");
 
-    let configured = ParticipantLaunch::local("configured-inspector", "robot");
+    let configured = ParticipantLaunch::local("configured-inspector", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     let error = phoxal::participant::run_with::<ConfiguredInspector, _>(configured, async {})
         .await
         .expect_err("a tool with an explicit non-optional config should require PHOXAL_CONFIG");
@@ -852,7 +857,8 @@ async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
         phoxal::raw::CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
             .expect("manual publisher should attach");
 
-    let mut launch = ParticipantLaunch::local(participant_id, "robot");
+    let mut launch = ParticipantLaunch::local(participant_id, "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.namespace = namespace;
     run_with_bus::<HostDrivenTool, _>(&bus, launch, async move {
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -881,7 +887,8 @@ async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runner_runs_steps_then_shuts_down_cleanly() {
-    let launch = ParticipantLaunch::local("counter-1", "robot");
+    let launch = ParticipantLaunch::local("counter-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(200)).await;
     };
@@ -902,7 +909,8 @@ async fn runner_runs_steps_then_shuts_down_cleanly() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_shutdown_hook_is_bounded_by_grace() {
-    let mut launch = ParticipantLaunch::local("slow-shutdown-1", "robot");
+    let mut launch = ParticipantLaunch::local("slow-shutdown-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.shutdown_grace_ms = 100;
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -939,7 +947,7 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 ///
 /// This publishes `simulation::Clock` samples the same way
 /// `simulator/webots-controller/src/lib.rs` does (owner-side publisher over
-/// `api::topic::internal::new(cap).simulation().clock()`, `publish_at` an
+/// `api::topic::internal::new(cap).simulation().clock()`, publishes an
 /// explicit `RobotInstant`), and proves three things the runner's wiring must
 /// get right:
 /// 1. with no clock samples published yet, the participant never steps;
@@ -992,7 +1000,8 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     .await
     .expect("target subscriber should attach");
 
-    let mut launch = ParticipantLaunch::local("sim-clock-stepper-1", "robot");
+    let mut launch = ParticipantLaunch::local("sim-clock-stepper-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.namespace = namespace;
     launch.clock = ClockMode::Simulation;
 
@@ -1308,7 +1317,8 @@ async fn no_step_service_observes_timeline_changes_and_installs_startup_barrier(
             .expect("exclusive query should run after reset completes");
     });
 
-    let mut launch = ParticipantLaunch::local("no-step-reset-observer-1", "robot");
+    let mut launch = ParticipantLaunch::local("no-step-reset-observer-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.namespace = namespace;
     launch.clock = ClockMode::Simulation;
     run_with_bus::<NoStepResetObserver, _>(&bus, launch, async {
@@ -1372,7 +1382,8 @@ async fn reset_error_faults_the_runner_and_still_runs_teardown() {
         }
     });
 
-    let mut launch = ParticipantLaunch::local("reset-failure-1", "robot");
+    let mut launch = ParticipantLaunch::local("reset-failure-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.namespace = namespace;
     launch.clock = ClockMode::Simulation;
     let error = tokio::time::timeout(
@@ -1406,6 +1417,7 @@ fn new_kind_markers_are_emitted() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_reads_its_bound_component_instance() {
     let launch = ParticipantLaunch::local("component-driver-1", "robot")
+        .with_execution_origin(ExecutionOrigin::mint())
         .with_component_instance("tof_front");
     let shutdown = async {
         tokio::time::sleep(Duration::from_millis(50)).await;

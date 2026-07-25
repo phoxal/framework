@@ -7,6 +7,7 @@
 //! exercised end-to-end here - the first test that crosses a participant boundary on a
 //! live bus, rather than driving the bus or a single participant in isolation.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -107,12 +108,14 @@ async fn two_runtimes_exchange_a_contract_on_one_bus() {
     // wall-clock window (enough for the 50 Hz producer to emit many samples).
     let producer = run_with_bus::<Producer, _>(
         &bus,
-        ParticipantLaunch::local("producer-1", "robot"),
+        ParticipantLaunch::local("producer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
     let consumer = run_with_bus::<Consumer, _>(
         &bus,
-        ParticipantLaunch::local("consumer-1", "robot"),
+        ParticipantLaunch::local("consumer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
 

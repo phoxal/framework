@@ -3,6 +3,7 @@
 //! (`ManagedTaskPolicy::FaultOnExit`), leaves `AllowExit` tasks alone, and
 //! cancels + joins every managed task at shutdown within the grace budget.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -17,7 +18,8 @@ fn unique_namespace(label: &str) -> String {
 }
 
 fn local_launch(label: &str, participant_id: &str) -> ParticipantLaunch {
-    let mut launch = ParticipantLaunch::local(participant_id, "robot");
+    let mut launch = ParticipantLaunch::local(participant_id, "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.namespace = unique_namespace(label);
     launch
 }

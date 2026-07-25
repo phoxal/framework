@@ -115,14 +115,22 @@ fn default_grace() -> u64 {
 
 impl ParticipantLaunch {
     /// A default launch for local runs: a freshly minted execution and
-    /// producer, an in-process bus, a real clock anchored now, and the given
-    /// participant id (defaulting the namespace to `dev`, D38).
+    /// producer, an in-process bus, and the given participant id (defaulting
+    /// the namespace to `dev`, D38).
+    ///
+    /// The execution **origin** is deliberately absent. Only a supervisor mints
+    /// one, and inventing a per-process origin here would defeat the
+    /// `TimeUnsynchronized::MissingOrigin` trigger: several participants
+    /// launched without `PHOXAL_EXECUTION_ORIGIN` would each silently run on
+    /// their own timeline instead of reporting that they have no trustworthy
+    /// clock. Use [`with_execution_origin`](Self::with_execution_origin) for a
+    /// test or bench run that wants a real one.
     pub fn local(participant_id: impl Into<String>, robot_id: impl Into<String>) -> Self {
         ParticipantLaunch {
             participant_id: participant_id.into(),
             execution: ExecutionId::mint(),
             producer: ProducerId::mint(),
-            execution_origin: Some(ExecutionOrigin::mint()),
+            execution_origin: None,
             namespace: "dev".to_string(),
             robot_id: robot_id.into(),
             bus: BusProfile::default(),
@@ -149,6 +157,13 @@ impl ParticipantLaunch {
     /// Join an existing supervised run instead of the freshly minted one.
     pub fn in_execution(mut self, execution: ExecutionId) -> Self {
         self.execution = execution;
+        self
+    }
+
+    /// Anchor real robot time at `origin`. A supervisor mints this once per
+    /// run; a bench run that wants a working real clock mints its own.
+    pub fn with_execution_origin(mut self, origin: ExecutionOrigin) -> Self {
+        self.execution_origin = Some(origin);
         self
     }
 }
@@ -731,18 +746,22 @@ mod tests {
 
         // An unmanaged local run has no supervisor to mint identities, so it
         // mints its own rather than defaulting to a shared constant that two
-        // processes would collide on.
+        // processes would collide on - but it does NOT invent an execution
+        // origin, because that would silently defeat the missing-origin
+        // trigger instead of reporting an untrustworthy clock.
         let first = parse_tool_from(&["tool-bin"]).unwrap();
         let second = parse_tool_from(&["tool-bin"]).unwrap();
         assert_ne!(first.execution, second.execution);
         assert_ne!(first.producer, second.producer);
+        assert_eq!(first.execution_origin, None);
         clear_env();
     }
 
     #[test]
     #[serial]
     fn a_launch_record_round_trips_its_identities_and_origin_through_json() {
-        let launch = ParticipantLaunch::local("drive", "robot");
+        let launch = ParticipantLaunch::local("drive", "robot")
+            .with_execution_origin(ExecutionOrigin::mint());
         let encoded = serde_json::to_string(&launch).unwrap();
         let decoded: ParticipantLaunch = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, launch);

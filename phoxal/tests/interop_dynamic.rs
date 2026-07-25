@@ -9,6 +9,7 @@
 //! `component/wheel-0/encoder/encoder/sample`), so a sample routes across the
 //! participant boundary.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -118,12 +119,14 @@ async fn two_runtimes_exchange_a_dynamic_topic_on_one_bus() {
 
     let producer = run_with_bus::<EncoderProducer, _>(
         &bus,
-        ParticipantLaunch::local("encoder-producer-1", "robot"),
+        ParticipantLaunch::local("encoder-producer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
     let consumer = run_with_bus::<EncoderConsumer, _>(
         &bus,
-        ParticipantLaunch::local("encoder-consumer-1", "robot"),
+        ParticipantLaunch::local("encoder-consumer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
 
