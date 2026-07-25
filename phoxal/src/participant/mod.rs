@@ -16,7 +16,6 @@ pub mod metadata;
 pub(crate) mod runner;
 mod runtime_performance;
 pub mod scheduler;
-mod sd_notify;
 pub mod server;
 pub mod spec;
 
