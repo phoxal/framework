@@ -270,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn localization_gate_rejects_unavailable_stale_future_epoch_and_invalid_samples() {
+    fn localization_gate_rejects_unavailable_stale_cross_timeline_and_invalid_samples() {
         let sample = |x_m, timeline, at| {
             (
                 api::localize::LocalizationState {

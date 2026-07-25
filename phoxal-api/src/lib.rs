@@ -767,10 +767,10 @@ phoxal_api_tree! {
                 current_depth: u64,
                 high_water_depth: u64,
                 decode_errors: u64,
-                /// Samples discarded because they belonged to a retired
-                /// simulation epoch, or because an unmatched pending epoch
-                /// was purged when another epoch became authoritative.
-                epoch_filtered: u64,
+                /// Samples discarded because they belonged to a retired world
+                /// history, or because a quarantined candidate timeline was
+                /// purged when a different one became authoritative.
+                timeline_filtered: u64,
                 overflowed_rows: u32,
             }
 

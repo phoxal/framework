@@ -49,7 +49,7 @@ pub struct RuntimeMetricSnapshot {
     pub current_depth: u64,
     pub high_water_depth: u64,
     pub decode_errors: u64,
-    pub epoch_filtered: u64,
+    pub timeline_filtered: u64,
 }
 
 #[derive(Debug, Default)]
@@ -62,7 +62,7 @@ struct Counters {
     current_depth: AtomicU64,
     high_water_depth: AtomicU64,
     decode_errors: AtomicU64,
-    epoch_filtered: AtomicU64,
+    timeline_filtered: AtomicU64,
 }
 
 #[derive(Clone, Debug)]
@@ -87,9 +87,9 @@ impl RuntimeMetricHandle {
         self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_epoch_filtered(&self, count: u64) {
+    pub(crate) fn record_timeline_filtered(&self, count: u64) {
         self.counters
-            .epoch_filtered
+            .timeline_filtered
             .fetch_add(count, Ordering::Relaxed);
     }
 
@@ -254,7 +254,7 @@ impl RuntimeMetrics {
                         .high_water_depth
                         .swap(current_depth, Ordering::Relaxed),
                     decode_errors: counters.decode_errors.swap(0, Ordering::Relaxed),
-                    epoch_filtered: counters.epoch_filtered.swap(0, Ordering::Relaxed),
+                    timeline_filtered: counters.timeline_filtered.swap(0, Ordering::Relaxed),
                 }
             })
             .collect()

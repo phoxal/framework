@@ -31,9 +31,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use phoxal::api;
-#[cfg(test)]
-use phoxal::bus::ProducerId;
-use phoxal::bus::{LEASE_TRACE_TARGET, Observed, ProducerFence};
+use phoxal::bus::{LEASE_TRACE_TARGET, Observed, ProducerFence, ProducerId};
 use phoxal::prelude::*;
 
 /// The motor / encoder capability names on a ddsm115 component instance
@@ -68,6 +66,12 @@ struct Motor {
     /// been accepted (#952 section G), and a replayed or reordered sample must
     /// not renew one either.
     fence: ProducerFence,
+    /// Who granted the permit currently held, what they numbered it, and where
+    /// it sat in this driver's own arrival order - so the lapse event names the
+    /// same command the grant did.
+    permitted_by: Option<(ProducerId, u64, u64)>,
+    /// This driver's own arrival order for motor commands.
+    observations: u64,
 }
 
 impl Motor {
@@ -88,6 +92,8 @@ impl Motor {
     fn admit(&mut self, observed: Observed<api::component::motor::Command>) -> LeaseDecision {
         let producer = observed.metadata.producer;
         let sequence = observed.metadata.sequence;
+        self.observations = self.observations.saturating_add(1);
+        let observation = self.observations;
         let decision = self.fence.admit(producer, sequence);
         match decision {
             LeaseDecision::Renewed => {
@@ -97,9 +103,11 @@ impl Motor {
                     instance = self.instance,
                     producer = %producer,
                     sequence,
+                    observation,
                     decision = "renewed",
                     "command renewed the actuator permit"
                 );
+                self.permitted_by = Some((producer, sequence, observation));
                 self.apply(observed.body, observed.observed_at);
             }
             LeaseDecision::ProducerReplaced { superseded } => {
@@ -109,10 +117,12 @@ impl Motor {
                     instance = self.instance,
                     producer = %producer,
                     sequence,
+                    observation,
                     superseded = %superseded,
                     decision = "producer_replaced",
                     "a replacement producer took actuation authority"
                 );
+                self.permitted_by = Some((producer, sequence, observation));
                 self.apply(observed.body, observed.observed_at);
             }
             LeaseDecision::Rejected(rejection) => {
@@ -122,6 +132,7 @@ impl Motor {
                     instance = self.instance,
                     producer = %producer,
                     sequence,
+                    observation,
                     decision = "rejected",
                     reason = %rejection,
                     "motor command rejected; the permit was not renewed"
@@ -147,14 +158,37 @@ impl Motor {
         }
     }
 
+    /// Stop the motor if its permit has lapsed, or if the host clock cannot be
+    /// read at all - a permit nobody can age is not a permit.
+    fn enforce_now(&mut self) -> f32 {
+        match LocalInstant::try_now() {
+            Some(now) => self.enforce(now),
+            None => {
+                tracing::error!(
+                    target: LEASE_TRACE_TARGET,
+                    input = "component/motor/command",
+                    instance = self.instance,
+                    decision = "permit_unmeasurable",
+                    "the host boot clock could not be read; stopping the motor"
+                );
+                self.stop();
+                self.velocity_radps
+            }
+        }
+    }
+
     /// Stop the motor if its permit has lapsed. Returns the effective velocity.
     fn enforce(&mut self, now: LocalInstant) -> f32 {
         match self.permitted_until {
             Some(deadline) if now.reached(deadline) => {
+                let granted = self.permitted_by;
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
                     instance = self.instance,
+                    producer = granted.map(|(producer, _, _)| producer.to_string()),
+                    sequence = granted.map(|(_, sequence, _)| sequence),
+                    observation = granted.map(|(_, _, observation)| observation),
                     decision = "permit_lapsed",
                     "the actuator permit lapsed; stopping the motor"
                 );
@@ -169,6 +203,7 @@ impl Motor {
     fn stop(&mut self) {
         self.velocity_radps = 0.0;
         self.permitted_until = None;
+        self.permitted_by = None;
     }
 }
 
@@ -260,7 +295,7 @@ impl Ddsm115 {
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         // Read the effective velocity, enforcing the permit here too so a step
         // can never integrate a velocity the permit task would have stopped.
-        let velocity_radps = lock(&self.motor).enforce(LocalInstant::now());
+        let velocity_radps = lock(&self.motor).enforce_now();
 
         // Integrate the wheel position from the effective velocity.
         self.position_rad = integrate(self.position_rad, velocity_radps, step.dt().as_secs_f64());
@@ -306,7 +341,7 @@ async fn hold_permit_forever(
                 lock(&motor).admit(observed);
             }
             _ = tick.tick() => {
-                lock(&motor).enforce(LocalInstant::now());
+                lock(&motor).enforce_now();
             }
         }
     }
@@ -496,7 +531,7 @@ mod tests {
         let motor = Arc::new(Mutex::new(Motor::new("left".to_string())));
         lock(&motor).apply(
             api::component::motor::Command::Velocity(3.0),
-            LocalInstant::now(),
+            LocalInstant::try_now().expect("test host clock"),
         );
 
         let watchdog_motor = Arc::clone(&motor);
@@ -504,7 +539,7 @@ mod tests {
             let mut tick = tokio::time::interval(PERMIT_TICK);
             loop {
                 tick.tick().await;
-                lock(&watchdog_motor).enforce(LocalInstant::now());
+                lock(&watchdog_motor).enforce_now();
             }
         });
 

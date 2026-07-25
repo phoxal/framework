@@ -62,23 +62,16 @@ pub struct LocalInstant {
 }
 
 impl LocalInstant {
-    /// Read the host's suspend-aware monotonic boot clock.
+    /// Read the host's suspend-aware monotonic boot clock, reporting a failed
+    /// read instead of hiding it.
     ///
-    /// A failed read saturates to the end of the domain rather than to zero,
-    /// so every deadline built from it fails *closed*: a lease looks silent, a
-    /// permit looks lapsed, and the machine stops. Zero would have done the
-    /// opposite and made every retained command look freshly observed.
-    ///
-    /// The saturated value is a stopgap for the microseconds before the fault
-    /// is reported: [`try_now`](Self::try_now) is what the clock driver reads,
-    /// and a failed read there fails the participant outright.
-    pub fn now() -> Self {
-        LocalInstant {
-            boot_ns: read_boot_clock_ns().unwrap_or(u64::MAX),
-        }
-    }
-
-    /// Read the boot clock, reporting a failed read instead of hiding it.
+    /// There is deliberately no infallible reader. Any sentinel this could
+    /// return is wrong in one direction or the other: zero makes every
+    /// retained command look freshly observed, and the far end of the domain
+    /// looks fail-closed when it is *checked* but becomes a permanent permit
+    /// when it is the instant a deadline is built *from*. So a caller that
+    /// cannot read the clock does not get an instant - it stops, drops the
+    /// sample, or fails, whichever fails closed for that call site.
     pub fn try_now() -> Option<Self> {
         read_boot_clock_ns().map(|boot_ns| LocalInstant { boot_ns })
     }
@@ -449,8 +442,8 @@ mod tests {
 
     #[test]
     fn local_instant_reads_a_monotonic_host_wide_domain() {
-        let first = LocalInstant::now();
-        let second = LocalInstant::now();
+        let first = LocalInstant::try_now().expect("test host clock");
+        let second = LocalInstant::try_now().expect("test host clock");
         assert!(second >= first);
         assert!(first.boot_ns() > 0, "the boot clock must be readable");
         // Two independently taken readings model two processes on one host:

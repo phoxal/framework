@@ -90,11 +90,13 @@ pub struct RealScheduler {
     /// participant has no `#[step]` schedule at all.
     period: Option<Duration>,
     timeline: TimelineId,
+    /// The boot-clock anchor every released tick is measured against. Sampled
+    /// before `started_timer`, so the timer anchor is never the earlier of the
+    /// two.
+    started_boot: LocalInstant,
     /// The timer anchor. Tokio's timer runs on the *stopping* clock, so this
     /// decides only when to wake up, never what time it is.
     started_timer: tokio::time::Instant,
-    /// The boot-clock anchor every released tick is measured against.
-    started_boot: LocalInstant,
     started_ticks: u64,
 }
 
@@ -103,15 +105,27 @@ impl RealScheduler {
     /// reports at start), running `period` and applying `missed_tick` after an
     /// overrun. `period` is `None` for a step-less participant, in which case
     /// [`Self::wait_until`] is never called by the runner.
-    pub fn new(missed_tick: MissedTick, period: Option<Duration>, now: RobotInstant) -> Self {
-        RealScheduler {
+    /// `None` when the host boot clock cannot be read: without an anchor there
+    /// is no cadence to run, which the caller reports as ordinary failure.
+    pub fn new(
+        missed_tick: MissedTick,
+        period: Option<Duration>,
+        now: RobotInstant,
+    ) -> Option<Self> {
+        // The boot anchor is sampled *first*, so the timer anchor is never
+        // earlier than it. Sampling the other way round leaves the timer able
+        // to reach its deadline while the boot clock has covered slightly less
+        // ground, which would release a tick that reads as earlier than the
+        // target it was released for.
+        let started_boot = LocalInstant::try_now()?;
+        Some(RealScheduler {
             missed_tick,
             period,
             timeline: now.timeline(),
+            started_boot,
             started_timer: tokio::time::Instant::now(),
-            started_boot: LocalInstant::now(),
             started_ticks: now.ticks(),
-        }
+        })
     }
 
     /// Convert an instant on this scheduler's timeline to the equivalent host
@@ -121,9 +135,10 @@ impl RealScheduler {
         self.started_timer + Duration::from_nanos(delta_ns)
     }
 
-    /// How far the boot clock has moved since this scheduler was anchored.
-    fn boot_elapsed(&self) -> Duration {
-        LocalInstant::now().saturating_duration_since(self.started_boot)
+    /// How far the boot clock has moved since this scheduler was anchored, or
+    /// `None` when the clock cannot be read at all.
+    fn boot_elapsed(&self) -> Option<Duration> {
+        Some(LocalInstant::try_now()?.saturating_duration_since(self.started_boot))
     }
 }
 
@@ -146,23 +161,29 @@ fn resolve_tick(
     period: Option<Duration>,
     missed_tick: MissedTick,
 ) -> (u64, u32) {
-    let fired_ticks = started_ticks.saturating_add(duration_to_nanos_saturating(elapsed));
+    // A tick is never released before the instant it was released *for*: the
+    // boot anchor precedes the timer anchor, so this clamp only ever absorbs
+    // that construction skew.
+    let fired_ticks = started_ticks
+        .saturating_add(duration_to_nanos_saturating(elapsed))
+        .max(target_ticks);
     // Collapse policy (D34, the v1 default): after an overrun, fire once
     // and record how many periods were skipped rather than replaying each
     // missed tick back-to-back (no catch-up storm). `CatchUp` is reserved
     // for offline replay and is not driven by this scheduler (#09 scope:
     // real + simulation only) - it resolves at `target` with no
     // collapsing, i.e. `missed_ticks` is always 0.
+    //
+    // The count is arithmetic rather than a period-by-period walk: an overrun
+    // is unbounded in principle (a suspended host), and a loop over it is a
+    // hang rather than a slow answer.
     let mut missed_ticks = 0u32;
     if missed_tick == MissedTick::Collapse
         && let Some(period) = period.filter(|period| !period.is_zero())
     {
         let period_ns = duration_to_nanos_saturating(period);
-        let mut next = target_ticks;
-        while next.saturating_add(period_ns) <= fired_ticks {
-            next = next.saturating_add(period_ns);
-            missed_ticks = missed_ticks.saturating_add(1);
-        }
+        let overrun = fired_ticks.saturating_sub(target_ticks);
+        missed_ticks = u32::try_from(overrun / period_ns).unwrap_or(u32::MAX);
     }
     (fired_ticks, missed_ticks)
 }
@@ -171,9 +192,19 @@ impl StepScheduler for RealScheduler {
     async fn wait_until(&self, target: RobotInstant) -> SchedulerTick {
         tokio::time::sleep_until(self.timer_deadline_for(target)).await;
 
+        // A tick released while the boot clock is unreadable resolves at its
+        // own target and reports no overrun: there is nothing to measure. The
+        // runner reads the clock again before it builds the step context, so
+        // the read failure surfaces there as lost clock discipline.
+        let Some(elapsed) = self.boot_elapsed() else {
+            return SchedulerTick {
+                fired_at: target,
+                missed_ticks: 0,
+            };
+        };
         let (fired_ticks, missed_ticks) = resolve_tick(
             self.started_ticks,
-            self.boot_elapsed(),
+            elapsed,
             target.ticks(),
             self.period,
             self.missed_tick,
@@ -188,7 +219,7 @@ impl StepScheduler for RealScheduler {
         Some(RobotInstant::new(
             self.timeline,
             self.started_ticks
-                .saturating_add(duration_to_nanos_saturating(self.boot_elapsed())),
+                .saturating_add(duration_to_nanos_saturating(self.boot_elapsed()?)),
         ))
     }
 }
@@ -454,7 +485,8 @@ mod tests {
     #[tokio::test]
     async fn real_scheduler_wakes_at_target_and_reports_no_miss_when_on_time() {
         let start = tokio::time::Instant::now();
-        let scheduler = RealScheduler::new(MissedTick::Collapse, Some(PERIOD), lt(0));
+        let scheduler =
+            RealScheduler::new(MissedTick::Collapse, Some(PERIOD), lt(0)).expect("test host clock");
 
         let period_ns = PERIOD.as_nanos() as u64;
         let tick = scheduler.wait_until(lt(period_ns)).await;

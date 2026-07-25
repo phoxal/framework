@@ -575,6 +575,21 @@ mod tests {
              of the same trace"
         );
 
+        let (_, expired) = &decisions[2];
+        assert_eq!(
+            expired.fields.get("producer"),
+            Some(&api::logs::LogValue::String(second.to_string())),
+            "an expiry names the command that died, not just the lease"
+        );
+        assert_eq!(
+            expired.fields.get("sequence"),
+            Some(&api::logs::LogValue::U64(0))
+        );
+        assert_eq!(
+            expired.fields.get("observation"),
+            Some(&api::logs::LogValue::U64(2))
+        );
+
         let (_, replaced) = &decisions[0];
         assert_eq!(
             replaced.fields.get("producer"),

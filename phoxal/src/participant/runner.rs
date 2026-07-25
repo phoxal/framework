@@ -148,7 +148,10 @@ pub(crate) fn step_scheduler_for(
                 "a real participant cannot anchor its cadence without a synchronized clock",
             )?;
             (
-                AnyStepScheduler::Real(RealScheduler::new(missed_tick, period, now)),
+                AnyStepScheduler::Real(
+                    RealScheduler::new(missed_tick, period, now)
+                        .context("the host boot clock could not be read to anchor cadence")?,
+                ),
                 None,
             )
         }

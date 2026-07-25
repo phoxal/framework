@@ -104,12 +104,23 @@ pub struct ExecutionOrigin {
 
 impl ExecutionOrigin {
     /// Mint the origin for a new real execution, now, on this host.
-    pub fn mint() -> Self {
-        ExecutionOrigin {
+    ///
+    /// `None` when the boot clock cannot be read: an execution anchored on an
+    /// instant nobody measured would shift every instant on its timeline.
+    pub fn try_mint() -> Option<Self> {
+        Some(ExecutionOrigin {
             boot: BootId::current(),
-            at: LocalInstant::now(),
+            at: LocalInstant::try_now()?,
             timeline: TimelineId::mint(),
-        }
+        })
+    }
+
+    /// Mint the origin, panicking if this host's boot clock cannot be read.
+    ///
+    /// For tests and for the supervisor's own startup, where a host that
+    /// cannot report its uptime has nothing runnable on it anyway.
+    pub fn mint() -> Self {
+        Self::try_mint().expect("the host boot clock must be readable to start an execution")
     }
 
     /// Rebuild an origin the supervisor passed through the launch contract.
@@ -373,7 +384,9 @@ fn host_boot_identity() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or(0);
-    let uptime = Duration::from_nanos(LocalInstant::now().boot_ns()).as_secs();
+    let uptime = LocalInstant::try_now()
+        .map(|now| Duration::from_nanos(now.boot_ns()).as_secs())
+        .unwrap_or(0);
     fnv1a(&wall.saturating_sub(uptime).to_le_bytes())
 }
 
@@ -434,7 +447,7 @@ mod tests {
 
         let foreign = ExecutionOrigin::new(
             BootId(BootId::current().0 ^ 0xffff),
-            LocalInstant::now(),
+            LocalInstant::try_now().expect("test host clock"),
             TimelineId::mint(),
         );
         assert_eq!(

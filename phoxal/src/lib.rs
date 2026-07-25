@@ -118,8 +118,9 @@
 //!   [`SetupContextApiExt::robot`](participant::SetupContextApiExt::robot).
 //!   Privileged raw-bus access lives under [`raw`] so it is never part of the
 //!   default checked participant surface. A tool joins the execution, not the
-//!   clock: it can observe and command, but cannot obtain a
-//!   [`RobotInstant`](bus::RobotInstant).
+//!   clock: it can observe and command, and nothing on its surface hands it a
+//!   [`RobotInstant`](bus::RobotInstant) - see [`raw`]'s docs for where that
+//!   boundary is a compiler rule and where it is a convention.
 //! - [`macro@simulator`] is a normal participant for simulation-only processes.
 //!   It carries a distinct kind and marker for simulation clock ownership.
 //!

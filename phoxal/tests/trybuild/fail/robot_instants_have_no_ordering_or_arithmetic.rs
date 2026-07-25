@@ -9,7 +9,7 @@ fn main() {
     let timeline = TimelineId::mint();
     let earlier = RobotInstant::new(timeline, 100);
     let later = RobotInstant::new(timeline, 200);
-    let local = LocalInstant::now();
+    let local = LocalInstant::try_now().expect("host clock");
     let wall = WallTimestamp::now();
 
     // No `Ord`: ordering robot instants must go through the checked comparison

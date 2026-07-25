@@ -653,7 +653,7 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         current_depth: 1,
         high_water_depth: 1,
         decode_errors: 0,
-        epoch_filtered: 0,
+        timeline_filtered: 0,
         overflowed_rows: 0,
     };
     let step = api::tool::RuntimeStep {

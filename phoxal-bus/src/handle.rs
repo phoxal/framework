@@ -9,7 +9,8 @@
 //!
 //! - [`StatePublisher<B>`] publishes at a step, and the step instant comes from
 //!   a [`StepToken`] the runner mints or a [`WorldStepToken`] a
-//!   [`TimelineAuthority`] mints. Participant code cannot construct either.
+//!   [`TimelineAuthority`] mints. Neither is reachable through the authoring
+//!   surface; see [`StepToken::__mint`] for the exact strength of that.
 //! - [`MeasurementPublisher<B>`] publishes with a [`CaptureStamp`] the driver
 //!   derived from its device clock, and honestly represents an untranslated
 //!   capture rather than inventing one.
@@ -54,7 +55,7 @@
 //! the fast-reject; the decode path only still validates the codec. A decode
 //! failure is counted (`decode_errors`) + logged as a health signal, never a
 //! silent accept. Timeline-aware handles separately count purged or
-//! retired-timeline samples in `epoch_filtered`, so quarantine churn is not
+//! retired-timeline samples in `timeline_filtered`, so quarantine churn is not
 //! confused with active-buffer loss.
 
 use std::collections::VecDeque;
@@ -703,7 +704,7 @@ impl<B: ContractBody> Latest<B> {
                         filtered,
                     } => {
                         observe.record_pending_latest();
-                        observe.record_epoch_filtered(filtered);
+                        observe.record_timeline_filtered(filtered);
                         if new_timeline {
                             tracing::warn!(
                                 target: "phoxal.bus",
@@ -713,7 +714,7 @@ impl<B: ContractBody> Latest<B> {
                             );
                         }
                     }
-                    LatestIngest::Filtered => observe.record_epoch_filtered(1),
+                    LatestIngest::Filtered => observe.record_timeline_filtered(1),
                 }
             },
             metric.clone(),
@@ -753,7 +754,7 @@ impl<B: ContractBody> Latest<B> {
     pub fn __retain_timeline(&self, timeline: TimelineId) {
         let mut state = self.state.lock().expect("latest mutex poisoned");
         let (filtered, occupied) = state.retain_timeline(timeline);
-        self.metric.record_epoch_filtered(filtered);
+        self.metric.record_timeline_filtered(filtered);
         self.metric.record_latest_depth(occupied);
     }
 }
@@ -944,7 +945,7 @@ impl<B> Ring<B> {
         if let (Some(timeline), Some(active_timeline)) = (timeline, state.active_timeline) {
             if timeline != active_timeline {
                 if state.retired_timelines.contains(timeline) {
-                    self.metric.record_epoch_filtered(1);
+                    self.metric.record_timeline_filtered(1);
                     return RingPush {
                         accepted: false,
                         evicted: false,
@@ -962,7 +963,7 @@ impl<B> Ring<B> {
                     None => {
                         if state.pending.len() == PENDING_TIMELINE_CAPACITY {
                             if let Some(removed) = state.pending.pop_front() {
-                                self.metric.record_epoch_filtered(
+                                self.metric.record_timeline_filtered(
                                     u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
                                 );
                             }
@@ -978,7 +979,7 @@ impl<B> Ring<B> {
                 let pending = &mut state.pending[pending_index];
                 if pending.buf.len() == self.cap {
                     pending.buf.pop_front();
-                    self.metric.record_epoch_filtered(1);
+                    self.metric.record_timeline_filtered(1);
                 }
                 pending.buf.push_back(item);
                 self.metric.record_pending_subscriber();
@@ -1060,7 +1061,7 @@ impl<B> Ring<B> {
             total.saturating_add(u64::try_from(pending.buf.len()).unwrap_or(u64::MAX))
         }));
         state.pending.clear();
-        self.metric.record_epoch_filtered(filtered);
+        self.metric.record_timeline_filtered(filtered);
         self.metric.record_subscriber_pop(state.buf.len());
         let notify = !state.buf.is_empty();
         drop(state);
@@ -1124,7 +1125,20 @@ where
 
     let task = tokio::spawn(async move {
         while let Ok(sample) = subscriber.recv_async().await {
-            let observed_at = LocalInstant::now();
+            // The observation stamp is the receiver's own evidence of when
+            // this arrived, and every freshness decision downstream is
+            // measured from it. A sample that cannot be stamped is dropped:
+            // inventing an instant here is what would let a stale command look
+            // freshly observed.
+            let Some(observed_at) = LocalInstant::try_now() else {
+                metric.record_decode_error();
+                tracing::error!(
+                    target: "phoxal.bus",
+                    topic = %topic_owned,
+                    "dropped inbound sample: the host boot clock could not be read"
+                );
+                continue;
+            };
             match decode_sample::<B>(&sample, &topic_owned) {
                 Ok((body, metadata)) => on_sample(Observed {
                     body,
@@ -1225,7 +1239,7 @@ mod subscriber_ring_tests {
                     .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
                 participant: "test".to_string(),
             },
-            observed_at: LocalInstant::now(),
+            observed_at: LocalInstant::try_now().expect("test host clock"),
         }
     }
 
@@ -1370,7 +1384,7 @@ mod subscriber_ring_tests {
         assert_eq!(ring.try_pop().map(|(sample, _)| sample.body), Some(2));
         assert!(!ring.push(observed(3, Some(1))).accepted);
         assert!(ring.try_pop().is_none());
-        assert_eq!(metrics.take().pop().unwrap().epoch_filtered, 1);
+        assert_eq!(metrics.take().pop().unwrap().timeline_filtered, 1);
     }
 
     #[test]

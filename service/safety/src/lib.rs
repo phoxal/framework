@@ -4,7 +4,7 @@
 //! Emergency stop remains owned by `motion`; safety consumes localization, map,
 //! proximity, drive, and optional battery state and emits one diagnosable
 //! constraint product. Autonomous motion treats a missing, stale, future-dated,
-//! or prior-epoch product as a stop. Manual recovery can operate without that
+//! or retired-timeline product as a stop. Manual recovery can operate without that
 //! product, while any valid protective stop or limit still applies.
 
 use anyhow::{Context, Result, bail};
@@ -616,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn prior_epoch_samples_never_authorize_motion() {
+    fn samples_from_a_retired_world_never_authorize_motion() {
         let (bindings, mut world) = nominal_world();
         world.localization.as_mut().unwrap().at = RobotInstant::new(line(2), now().ticks());
         let result = assess(&world, &bindings, 1, now()).unwrap();

@@ -258,7 +258,7 @@ fn bounded_topics(
         current_depth: 0,
         high_water_depth: 0,
         decode_errors: 0,
-        epoch_filtered: 0,
+        timeline_filtered: 0,
         overflowed_rows: u32::try_from(omitted.len()).unwrap_or(u32::MAX),
     };
     for row in omitted {
@@ -276,7 +276,9 @@ fn bounded_topics(
             .high_water_depth
             .saturating_add(row.high_water_depth);
         overflow.decode_errors = overflow.decode_errors.saturating_add(row.decode_errors);
-        overflow.epoch_filtered = overflow.epoch_filtered.saturating_add(row.epoch_filtered);
+        overflow.timeline_filtered = overflow
+            .timeline_filtered
+            .saturating_add(row.timeline_filtered);
     }
     overflow.rate_hz = rate(overflow.count, elapsed);
     (converted, Some(overflow))
@@ -303,7 +305,7 @@ fn topic_row(row: RuntimeMetricSnapshot, elapsed: Duration) -> api::tool::Runtim
         current_depth: row.current_depth,
         high_water_depth: row.high_water_depth,
         decode_errors: row.decode_errors,
-        epoch_filtered: row.epoch_filtered,
+        timeline_filtered: row.timeline_filtered,
         overflowed_rows: 0,
     }
 }
@@ -347,7 +349,7 @@ mod tests {
             current_depth: 0,
             high_water_depth: 1,
             decode_errors: 0,
-            epoch_filtered: 0,
+            timeline_filtered: 0,
         }
     }
 

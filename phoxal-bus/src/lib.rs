@@ -70,37 +70,36 @@ pub use time::{
 };
 pub use topic::{AskQuery, Publish, ServeQuery, Subscribe, Topic, TopicKind, WildcardPublish};
 
-use std::collections::VecDeque;
+use std::collections::HashSet;
 
-/// Fixed history used wherever replaced timelines are retired.
+/// The world histories this process has seen replaced.
 ///
-/// The bounded history rejects in-flight samples from recently replaced world
-/// histories without imposing an ordering on opaque timeline identities or
-/// growing without bound.
+/// Retirement is permanent for the life of the process. It used to be a
+/// bounded ring, which was wrong in the way that matters: timelines are
+/// equality-only identities with no ordering, so once an identity is evicted
+/// nothing can recognise it as old. A delayed clock from the ninth-oldest
+/// controller would then read as a *new* world and reset every participant back
+/// into a history that had already ended.
+///
+/// The memory is one identity per world replacement - a reset the operator
+/// asked for - so it grows with operator actions, not with traffic.
 #[doc(hidden)]
 #[derive(Debug, Default)]
 pub struct RetiredTimelines {
-    timelines: VecDeque<TimelineId>,
+    timelines: HashSet<TimelineId>,
 }
 
 impl RetiredTimelines {
-    /// The shared retirement-history bound for clock and data paths.
-    pub const CAPACITY: usize = 8;
-
     pub fn contains(&self, timeline: TimelineId) -> bool {
         self.timelines.contains(&timeline)
     }
 
     pub fn retire(&mut self, timeline: TimelineId) {
-        self.timelines.retain(|candidate| *candidate != timeline);
-        if self.timelines.len() == Self::CAPACITY {
-            self.timelines.pop_front();
-        }
-        self.timelines.push_back(timeline);
+        self.timelines.insert(timeline);
     }
 
     pub fn activate(&mut self, timeline: TimelineId) {
-        self.timelines.retain(|candidate| *candidate != timeline);
+        self.timelines.remove(&timeline);
     }
 }
 

@@ -24,7 +24,7 @@ mod arbitration;
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::robot::v0::MotionLimits;
@@ -193,7 +193,13 @@ impl Motion {
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let now = step.now();
-        let host_now = LocalInstant::now();
+        // Without the host clock there is no silence deadline to measure, so
+        // this step decides nothing: it renews no lease and applies no
+        // command, and the leases expire on their own. The runner's own clock
+        // read faults the participant on the same step.
+        let Some(host_now) = LocalInstant::try_now() else {
+            bail!("the host boot clock could not be read");
+        };
 
         while let Some(observed) = api.manual.try_recv() {
             let observed_at = observed.observed_at;

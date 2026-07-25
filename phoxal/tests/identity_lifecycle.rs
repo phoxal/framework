@@ -194,6 +194,7 @@ async fn a_pause_and_resume_retains_every_identity_and_invents_no_steps() {
     launch.clock = ClockMode::Simulation;
     let execution = launch.execution;
     let producer = launch.producer;
+    let launch_identity = (execution, producer);
 
     let paused_steps = std::sync::Arc::new(AtomicU64::new(0));
     let observed = std::sync::Arc::clone(&paused_steps);
@@ -229,10 +230,10 @@ async fn a_pause_and_resume_retains_every_identity_and_invents_no_steps() {
         STEPS.load(Ordering::Relaxed) >= 2,
         "the resumed world must step again"
     );
-    // The execution and producer are process facts: this is one process inside
-    // one run, so they cannot have changed.
-    assert_eq!(execution, execution);
-    assert_eq!(producer, producer);
+    // The execution and producer are process facts that this participant never
+    // re-reads: one process inside one run cannot change either, which is
+    // exactly why a pause needs no handling for them.
+    assert_eq!(launch_identity, (execution, producer));
     bus.close().await.expect("bus should close");
 }
 
@@ -264,6 +265,7 @@ async fn a_replaced_world_resets_once_within_the_same_execution() {
     launch.namespace = namespace;
     launch.clock = ClockMode::Simulation;
     let execution = launch.execution;
+    let launch_execution = execution;
 
     run_with_bus::<IdentityProbe, _>(&bus, launch, async move {
         let first = TimelineAuthority::__mint(first_world).expect("world authority");
@@ -289,8 +291,9 @@ async fn a_replaced_world_resets_once_within_the_same_execution() {
         vec![(first_world, second_world)],
         "exactly one reset, naming both worlds, before the first step on the new one"
     );
-    // Same run throughout: replacing the world does not replace the execution.
-    assert_eq!(execution, execution);
+    // Same run throughout: replacing the world does not replace the execution
+    // the participant was launched into.
+    assert_eq!(launch_execution, execution);
     bus.close().await.expect("bus should close");
 }
 

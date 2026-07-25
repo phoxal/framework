@@ -415,8 +415,8 @@ async fn timeline_barrier_preserves_new_timeline_samples_and_rejects_late_old_sa
     );
 
     // The controller publishes world outputs before its clock. Installing the
-    // replacement clock's epoch barrier must promote those quarantined
-    // new-world samples without ever exposing them under the old epoch.
+    // replacement clock's timeline barrier must promote those quarantined
+    // new-world samples without ever exposing them under the retired one.
     let new_timeline = timeline(7);
     publisher
         .publish(
@@ -480,7 +480,7 @@ async fn timeline_barrier_preserves_new_timeline_samples_and_rejects_late_old_sa
         metrics
             .iter()
             .filter(|row| row.key.direction == RuntimeDirection::Subscribe)
-            .map(|row| row.epoch_filtered)
+            .map(|row| row.timeline_filtered)
             .sum::<u64>(),
         5,
         "quarantine replacement, the replaced Latest value, and both handles' late samples must be disclosed"
@@ -775,4 +775,30 @@ async fn live_query_round_trip_ok_then_error() {
 
     server_task.await.unwrap();
     bus.close().await.unwrap();
+}
+
+/// A retired world history stays retired for the life of the process.
+///
+/// This used to be a bounded ring, which is wrong in a way nothing downstream
+/// could detect: timelines are equality-only identities, so once an old one is
+/// evicted, a delayed clock from that controller reads as a brand-new world and
+/// resets every participant back into a history that had already ended.
+#[test]
+fn retired_timelines_are_never_forgotten() {
+    let mut retired = crate::RetiredTimelines::default();
+    let first = crate::TimelineId::mint();
+    retired.retire(first);
+    for _ in 0..64 {
+        retired.retire(crate::TimelineId::mint());
+    }
+    assert!(
+        retired.contains(first),
+        "an old world must still be recognised as retired after many resets"
+    );
+
+    retired.activate(first);
+    assert!(
+        !retired.contains(first),
+        "a deliberately reactivated timeline is no longer retired"
+    );
 }

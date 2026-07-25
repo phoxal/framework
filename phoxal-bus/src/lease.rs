@@ -23,7 +23,7 @@
 //! superseded one is fenced: it cannot renew a lease or an actuator permit
 //! afterwards, even if it is still live.
 
-use std::collections::VecDeque;
+use std::collections::HashSet;
 use std::time::Duration;
 
 use crate::identity::ProducerId;
@@ -65,13 +65,6 @@ pub enum LeaseDecision {
     Rejected(LeaseRejection),
 }
 
-/// How many superseded producers stay fenced.
-///
-/// A bounded history, like the retired-timeline history: it has to outlast the
-/// in-flight traffic of a replaced producer, not remember every process that
-/// ever spoke.
-const FENCED_PRODUCERS: usize = 8;
-
 /// Tracks which producer holds authority over one input, and which ones have
 /// lost it for good.
 ///
@@ -81,19 +74,22 @@ const FENCED_PRODUCERS: usize = 8;
 /// renew again. Remembering only the current producer would let A -> B -> late A
 /// hand authority back to a process the service already replaced, which is the
 /// exact zombie this fence exists to stop.
+///
+/// "Never" is meant literally, so the fenced set is not bounded. A ring would
+/// hand authority back to the oldest zombie once enough replacements pushed it
+/// out - and producer identities are opaque, so nothing downstream could tell
+/// that had happened. The set grows by one identity per replacement, which is
+/// one process restart, not one message.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProducerFence {
     accepted: Option<(ProducerId, u64)>,
-    superseded: VecDeque<ProducerId>,
+    superseded: HashSet<ProducerId>,
 }
 
 impl ProducerFence {
     /// Nothing accepted yet.
-    pub const fn new() -> Self {
-        ProducerFence {
-            accepted: None,
-            superseded: VecDeque::new(),
-        }
+    pub fn new() -> Self {
+        ProducerFence::default()
     }
 
     /// The producer currently holding authority, if any.
@@ -153,13 +149,7 @@ impl ProducerFence {
     }
 
     fn fence(&mut self, producer: ProducerId) {
-        if self.superseded.contains(&producer) {
-            return;
-        }
-        if self.superseded.len() == FENCED_PRODUCERS {
-            self.superseded.pop_front();
-        }
-        self.superseded.push_back(producer);
+        self.superseded.insert(producer);
     }
 }
 
@@ -198,6 +188,13 @@ pub struct Lease<B> {
 struct Held<B> {
     body: B,
     observed_at: LocalInstant,
+    /// Who sent the held command, what they numbered it, and where it sits in
+    /// this receiver's own arrival order. Every later decision about this
+    /// command - the step it was applied at, the deadline it died on - reports
+    /// the same three, so a trace never has to be joined back to an earlier
+    /// row that may itself have been dropped.
+    producer: ProducerId,
+    sequence: u64,
     observation: u64,
     accepted_at: Option<RobotInstant>,
 }
@@ -208,7 +205,7 @@ impl<B> Lease<B> {
     ///
     /// `input` names the command input this lease owns (`"motion/manual"`,
     /// `"drive/target"`); it labels every decision this lease emits.
-    pub const fn new(input: &'static str, silence: Duration, hold: Duration) -> Self {
+    pub fn new(input: &'static str, silence: Duration, hold: Duration) -> Self {
         Lease {
             input,
             silence,
@@ -298,6 +295,8 @@ impl<B> Lease<B> {
                 self.held = Some(Held {
                     body,
                     observed_at,
+                    producer,
+                    sequence,
                     observation,
                     // A renewal restarts the logical horizon at the next step
                     // that applies it; until then it has not been applied at
@@ -330,11 +329,13 @@ impl<B> Lease<B> {
         let silence = self.silence;
         let hold = self.hold;
         let held = self.held.as_mut()?;
-        let observation = held.observation;
+        let (producer, sequence, observation) = (held.producer, held.sequence, held.observation);
         if now.saturating_duration_since(held.observed_at) >= silence {
             tracing::info!(
                 target: LEASE_TRACE_TARGET,
                 input,
+                producer = %producer,
+                sequence,
                 observation,
                 decision = "expired_silence",
                 "the lease expired on host-monotonic silence"
@@ -348,6 +349,8 @@ impl<B> Lease<B> {
                 tracing::debug!(
                     target: LEASE_TRACE_TARGET,
                     input,
+                    producer = %producer,
+                    sequence,
                     observation,
                     step = %step,
                     decision = "applied",
@@ -362,6 +365,8 @@ impl<B> Lease<B> {
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input,
+                    producer = %producer,
+                    sequence,
                     observation,
                     step = %step,
                     decision = "expired_hold",
@@ -374,6 +379,8 @@ impl<B> Lease<B> {
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input,
+                    producer = %producer,
+                    sequence,
                     observation,
                     step = %step,
                     decision = "timeline_replaced",
@@ -515,6 +522,25 @@ mod tests {
             Some(second),
             "a rejected zombie must not become the accepted producer"
         );
+    }
+
+    /// A ring of fenced producers would hand authority back to the oldest
+    /// zombie once enough replacements pushed it out, and producer identities
+    /// are opaque, so nothing downstream could notice. "Never renews again"
+    /// has to survive an arbitrary number of restarts.
+    #[test]
+    fn a_superseded_producer_stays_fenced_after_many_replacements() {
+        let first = ProducerId::mint();
+        let mut fence = ProducerFence::new();
+        fence.admit(first, 1);
+        for _ in 0..64 {
+            fence.admit(ProducerId::mint(), 0);
+        }
+        assert!(matches!(
+            fence.admit(first, 2),
+            LeaseDecision::Rejected(LeaseRejection::SupersededProducer { .. })
+        ));
+        assert!(!fence.permits(first));
     }
 
     #[test]

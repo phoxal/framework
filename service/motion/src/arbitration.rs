@@ -105,6 +105,18 @@ fn at_or_after(later: RobotInstant, earlier: RobotInstant) -> bool {
         .is_ok_and(|order| order != std::cmp::Ordering::Less)
 }
 
+/// `deadline` is still in the future at `now`, on the same timeline.
+///
+/// Expiry is exclusive: a constraint whose `expires_at` is exactly this step's
+/// instant has expired, matching how the command lease and the actuator permit
+/// treat their own deadlines. The alternative authorizes motion for one more
+/// step on a product that was supposed to be finished.
+fn not_yet_expired(deadline: RobotInstant, now: RobotInstant) -> bool {
+    deadline
+        .checked_cmp(now)
+        .is_ok_and(|order| order == std::cmp::Ordering::Greater)
+}
+
 pub(crate) fn safety_is_usable(
     constraints: &Timed<api::safety::MotionConstraints>,
     now: RobotInstant,
@@ -124,7 +136,7 @@ pub(crate) fn safety_is_usable(
     TimeWindow::exact(constraints.at)
         .possibly_fresh_within(now, Duration::MAX)
         .unwrap_or(false)
-        && at_or_after(body.expires_at, now)
+        && not_yet_expired(body.expires_at, now)
         && at_or_after(body.expires_at, constraints.at)
         && body.stop == entry_stop
         && body.max_linear_speed_mps == entry_linear
@@ -137,7 +149,7 @@ pub(crate) fn safety_is_usable(
             .is_none_or(|limit| limit.is_finite() && limit >= 0.0)
         && body.constraints.iter().all(|constraint| {
             at_or_after(now, constraint.valid_from)
-                && at_or_after(constraint.expires_at, now)
+                && not_yet_expired(constraint.expires_at, now)
                 && at_or_after(body.expires_at, constraint.expires_at)
                 && at_or_after(constraint.expires_at, constraint.valid_from)
                 && constraint
@@ -336,6 +348,11 @@ mod tests {
             },
             |constraint: &mut api::safety::Constraint| {
                 constraint.expires_at = RobotInstant::new(line(), NOW_NS - 1);
+            },
+            // The exact expiry instant is already expired: a constraint is
+            // usable *before* it lapses, never at the moment it does.
+            |constraint: &mut api::safety::Constraint| {
+                constraint.expires_at = RobotInstant::new(line(), NOW_NS);
             },
             |constraint: &mut api::safety::Constraint| {
                 constraint.observed_value = Some(f32::NAN);
