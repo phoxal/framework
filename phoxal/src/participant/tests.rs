@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use crate::api;
-use crate::bus::{Codec, ContractBody, MessagePack, QueryCode};
+use crate::bus::{Codec, MessagePack, QueryCode};
 use crate::participant::ParticipantLifecycle;
 use crate::prelude::*;
 
@@ -64,11 +64,6 @@ async fn exclusive_server_dispatch_ok_error_and_unknown() {
     assert!(AssetTest::__snapshot_server_topics().is_empty());
     AssetTest::__validate_server_topics().unwrap();
     assert!(!AssetTest::HAS_SNAPSHOT);
-    assert!(
-        AssetTest::SERVER_CONTRACTS
-            .iter()
-            .any(|c| c.topic == <api::asset::GetRequest as ContractBody>::TOPIC)
-    );
 
     let request = MessagePack::encode(&api::asset::GetRequest {
         path: "ok".to_string(),

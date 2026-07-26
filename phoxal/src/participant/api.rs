@@ -47,32 +47,28 @@ use std::sync::Arc;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
     DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
-    Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineId, Topic,
+    Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineAuthority,
+    TimelineId, Topic, WorldClockContract, WorldClockPublisher,
 };
 use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
 use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
 use phoxal_bus::Bus;
 
-/// Const-eval plumbing `#[derive(phoxal::Api)]` (`phoxal-macros/src/authoring.rs`)
-/// uses to build a **resolved, version-qualified** contract fragment that the
-/// participant attribute embeds in its linker-section metadata static.
+/// Const-eval plumbing the participant attribute macros
+/// (`phoxal-macros/src/authoring.rs`'s `expand_participant`) use to build the
+/// binary's embedded linker-section metadata static: `{"id", "config_schema"}`.
 ///
-/// The problem this solves: a participant may alias a version module, so a
-/// macro-time string literal of a field's body type as written
-/// (`api::drive::Target`) can have the revision erased and cannot distinguish
-/// a `v0.1` contract from a same-named `v0.2` one.
-/// The version-qualified identity *is* available, but only as
-/// `<Body as ContractBody>::NAME` (`phoxal-bus/src/contract.rs`), an
-/// associated const on a foreign type the proc-macro cannot evaluate at
-/// expansion time - only `rustc`, during the downstream participant crate's
-/// own const-eval, can resolve it. So the derive emits **tokens**, not a
-/// string: a call into [`__concatcp`] splicing `<Body as
-/// ContractBody>::NAME` between macro-time-known JSON literal fragments
-/// (field name, role), which `rustc` const-evaluates in the participant
-/// crate. The participant attribute combines that fragment with its concrete
-/// config schema; [`__bytes_of`] then copies the final string into the fixed
-/// byte array placed in the linker section.
+/// The problem this solves: a config schema is composed recursively from
+/// nested `ParticipantConfig` impls (`Self::SCHEMA_JSON`, itself built the
+/// same way), so the final JSON string is only known after `rustc` const-evals
+/// the whole tree in the downstream participant crate - a proc-macro cannot
+/// pre-resolve it into a literal. So the participant attribute emits
+/// **tokens**, not a string: a call into [`__concatcp`] splicing the
+/// participant id and `<Config as ParticipantConfig>::SCHEMA_JSON` between
+/// macro-time-known JSON literal fragments, which `rustc` const-evaluates in
+/// the participant crate. [`__bytes_of`] then copies the final string into the
+/// fixed byte array placed in the linker section.
 #[doc(hidden)]
 pub mod __meta {
     /// Re-exported so `#[derive(phoxal::Api)]`'s generated code can reach it
@@ -160,33 +156,6 @@ pub mod __meta {
     }
 }
 
-/// The role a [`ParticipantApi`] handle field plays on the bus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ContractRole {
-    /// A role-gated publisher field (or `Vec`/map of one).
-    Publish,
-    /// A `Subscriber<B>`/`Latest<B>` field (or `Vec`/map of one).
-    Subscribe,
-    /// A `Server<Req, Resp>` field (or `Vec`/map of one); contributes one
-    /// entry for `Req` and one for `Resp`.
-    Serve,
-    /// A `Querier<Req, Resp>` field (or `Vec`/map of one) - the CLIENT/asking
-    /// side of a query contract (the counterpart to [`Serve`](Self::Serve));
-    /// contributes one entry for `Req` and one for `Resp`.
-    Ask,
-}
-
-/// One contract a `Api` struct field uses: its version-qualified wire key
-/// (D1) plus the role that field plays. Built by `#[derive(phoxal::Api)]` from
-/// each field's `<Body as ContractBody>::TOPIC`.
-#[derive(Clone, Copy, Debug)]
-pub struct ApiContractUse {
-    /// The version-qualified wire key.
-    pub topic: &'static str,
-    /// The role this field plays for that contract.
-    pub role: ContractRole,
-}
-
 /// Emitted by `#[derive(phoxal::Api)]`: the bus-facing contract surface of a
 /// participant's `Api` handle struct.
 ///
@@ -207,9 +176,6 @@ pub struct ApiContractUse {
 /// two never diverge, so this is exactly D3's "read-only `&Self::Api`, or an
 /// api snapshot" - here realized as a cloned api snapshot.
 pub trait ParticipantApi: Send + Sync + Clone + 'static {
-    /// Every contract this `Api` struct's fields use, deduplicated.
-    const CONTRACTS: &'static [ApiContractUse];
-
     /// Retain only inbound samples belonging to the newly active timeline.
     /// Generated from every subscribe field by `#[derive(Api)]`. Samples that
     /// express no robot time belong to no world history and are never
@@ -221,8 +187,6 @@ pub trait ParticipantApi: Send + Sync + Clone + 'static {
 /// `Api = ()` for participants that opt out of a typed bus surface (tools,
 /// per decision - "Tools stay raw-bus only", `remove-emit-apis-api-authoring/readme.md`).
 impl ParticipantApi for () {
-    const CONTRACTS: &'static [ApiContractUse] = &[];
-
     fn __retain_timeline(&self, _timeline: TimelineId) {}
 }
 
@@ -275,10 +239,7 @@ impl<K, T: TimelineScopedApiField, S> TimelineScopedApiField
 /// `B` (D44). Emitted by `#[derive(phoxal::Api)]` for each role-gated publisher
 /// field (including `Vec`/`BTreeMap`/`HashMap` of one). Every publisher builder
 /// carries `where R::Api: DeclaresPublish<B>`, so building a publisher for a
-/// family the `Api` struct never declared as a field is a compile error -
-/// this is what makes [`ParticipantApi::CONTRACTS`] a guaranteed-complete
-/// picture of the participant's bus surface, not just a lower bound (see the
-/// trait's docs).
+/// family the `Api` struct never declared as a field is a compile error.
 pub trait DeclaresPublish<B: ?Sized> {}
 
 /// Per-`Api`-struct marker: this `Api` declared a *subscribe* handle for body
@@ -407,10 +368,6 @@ pub trait Participant: Sized + Send + 'static {
 ///   docs for why `Arc` is this slice's chosen shape).
 #[allow(async_fn_in_trait)]
 pub trait ParticipantLifecycle: Participant {
-    /// Contracts derived from `#[server]`/`#[server_snapshot]` handler
-    /// signatures.
-    const SERVER_CONTRACTS: &'static [ApiContractUse];
-
     /// The committed-snapshot state type (`()` when there is no
     /// `#[snapshot]`).
     type Snapshot: Send + Sync + 'static;
@@ -473,7 +430,7 @@ pub trait ParticipantLifecycle: Participant {
 }
 
 /// A declared server slot in an `Api` struct (`#[derive(phoxal::Api)]`
-/// recognizes it as a [`ContractRole::Serve`] contract). Unlike
+/// recognizes it and emits a `DeclaresServe<Req, Resp>` marker impl). Unlike
 /// [`Publisher`]/[`Latest`]/[`Subscriber`]/[`Querier`], this carries no live
 /// bus connection: serving is runner-dispatched from the generated
 /// `ParticipantLifecycle::__serve_*` methods keyed on
@@ -740,19 +697,67 @@ impl<R: Participant + IsDriver> SetupContextDriverExt for SetupContext<R> {
 /// [`SetupContextDriverExt`] (see its docs for why the two markers get
 /// separate traits). A simulator that owns a per-component instance reads it
 /// the same way a driver does.
-pub trait SetupContextSimulatorExt {
+///
+/// This is also the only place a participant can express world time (organization#957
+/// leftover, made a compiler rule rather than a doc comment): minting this
+/// process's [`TimelineAuthority`], and building a publisher for the
+/// framework's own world-clock contract, both require `Self: IsSimulator`.
+/// Neither is reachable from [`SetupContextApiExt`], which every participant
+/// gets - see [`timeline_authority`](SetupContextSimulatorExt::timeline_authority)
+/// and [`world_clock_publisher`](SetupContextSimulatorExt::world_clock_publisher).
+#[allow(async_fn_in_trait)]
+pub trait SetupContextSimulatorExt<R: Participant> {
     /// The bound `robot.components` instance, if the simulator was launched
     /// per instance. Errors otherwise.
     fn component(&self) -> crate::Result<&str>;
+
+    /// Mint this process's [`TimelineAuthority`]: exclusive ownership of one
+    /// world-history coordinate (#952 section D). Fails if this process
+    /// already holds one - see [`TimelineAuthority`]'s docs for why that
+    /// per-process check is the runtime backstop, and this method (gated to
+    /// `Self: IsSimulator`) is the compile-time enforcement of "only a
+    /// simulator may mint world steps" the bare `TimelineAuthority::__mint`
+    /// constructor cannot provide on its own (it is `pub` only because the
+    /// bus and participant crates are split, exactly like
+    /// [`StepToken::__mint`](crate::bus::StepToken::__mint)).
+    fn timeline_authority(&self, timeline: TimelineId) -> crate::Result<TimelineAuthority>;
+
+    /// Build the publisher for the framework's own world-clock contract
+    /// (`phoxal::api::simulation::Clock`, declared `world_clock` in the api
+    /// tree). `B: WorldClockContract` - a trait deliberately disjoint from
+    /// `StateContract` - is what makes this the ONLY builder that can produce
+    /// this handle: [`SetupContextApiExt::state_publisher`] cannot, because
+    /// the world clock does not implement `StateContract`. `R::Api:
+    /// DeclaresPublish<B>` (D44) still applies, unchanged.
+    async fn world_clock_publisher<B: WorldClockContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<WorldClockPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>;
 }
 
-impl<R: Participant + IsSimulator> SetupContextSimulatorExt for SetupContext<R> {
+impl<R: Participant + IsSimulator> SetupContextSimulatorExt<R> for SetupContext<R> {
     fn component(&self) -> crate::Result<&str> {
         self.component_instance().ok_or_else(|| {
             anyhow::anyhow!(
                 "no component instance is bound (this simulator was launched without one)"
             )
         })
+    }
+
+    fn timeline_authority(&self, timeline: TimelineId) -> crate::Result<TimelineAuthority> {
+        Ok(TimelineAuthority::__mint(timeline)?)
+    }
+
+    async fn world_clock_publisher<B: WorldClockContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<WorldClockPublisher<B>>
+    where
+        R::Api: DeclaresPublish<B>,
+    {
+        Ok(WorldClockPublisher::new(self.bus().clone(), &topic)?)
     }
 }
 

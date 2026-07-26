@@ -192,7 +192,7 @@ pub mod bus {
         Result, RobotInstant, ServeQuery, ServerResult, StateContract, StatePublisher, StepStamp,
         StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority, TimelineId,
         TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
-        WorldStepToken, encoding_string,
+        WorldClockContract, WorldClockPublisher, WorldStepToken, encoding_string,
     };
 
     /// Bus-ABI golden bindings against the train-selected API tree.
@@ -357,6 +357,7 @@ pub mod prelude {
         CaptureStamp, CommandPublisher, DiagnosticPublisher, Latest, Lease, LeaseDecision,
         LocalInstant, MeasurementPublisher, Observed, ProducerFence, Querier, QueryError,
         RobotInstant, ServerResult, StatePublisher, Subscriber, TimeWindow, TimelineId,
+        WorldClockPublisher,
     };
     pub use crate::participant::{
         ManagedTaskPolicy, ResetContext, Server, SetupContext, SetupContextApiExt,

@@ -10,13 +10,13 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
   ::: src/participant/context.rs
    |
    | pub struct SetupContext<R> {
-   | -------------------------- doesn't satisfy `_: SetupContextDriverExt` or `_: SetupContextSimulatorExt`
+   | -------------------------- doesn't satisfy `_: SetupContextDriverExt` or `_: SetupContextSimulatorExt<ComponentRequiresDriver>`
    |
    = note: the following trait bounds were not satisfied:
            `ComponentRequiresDriver: phoxal::participant::IsDriver`
            which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextDriverExt`
            `ComponentRequiresDriver: phoxal::participant::IsSimulator`
-           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextSimulatorExt`
+           which is required by `phoxal::participant::SetupContext<ComponentRequiresDriver>: phoxal::participant::SetupContextSimulatorExt<ComponentRequiresDriver>`
 note: the traits `phoxal::participant::IsDriver` and `phoxal::participant::IsSimulator` must be implemented
   --> src/participant/spec.rs
    |

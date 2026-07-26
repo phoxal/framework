@@ -18,7 +18,6 @@
 
 use serde::Deserialize;
 
-// design doc §2).
 /// The embedded metadata manifest for one participant. This is a strict
 /// pre-1.0 format whose writer and parsers move in lockstep.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]

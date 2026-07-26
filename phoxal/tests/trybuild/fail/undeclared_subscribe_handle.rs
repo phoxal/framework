@@ -3,9 +3,7 @@
 // `CommandPublisher<drive::Target>` (no `Subscriber<drive::State>`/`Latest<drive::State>`
 // field), so `Self::Api: DeclaresSubscribe<drive::State>` does not hold and
 // `ctx.latest(...)` for that contract must fail to compile - exactly the gap
-// `Declares*<B>` gating closes (`ParticipantApi::CONTRACTS` is now a
-// guaranteed-complete picture of the declared surface, not just a lower
-// bound).
+// the `Declares*<B>` marker impls close.
 //
 // The SOLE error is the unsatisfied `DeclaresSubscribe<drive::State>` bound.
 use phoxal::api as api;
