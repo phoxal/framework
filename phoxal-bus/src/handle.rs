@@ -8,9 +8,14 @@
 //! one is a compile error:
 //!
 //! - [`StatePublisher<B>`] publishes at a step, and the step instant comes from
-//!   a [`StepToken`] the runner mints or a [`WorldStepToken`] a
-//!   [`TimelineAuthority`] mints. Neither is reachable through the authoring
-//!   surface; see [`StepToken::__mint`] for the exact strength of that.
+//!   a [`StepToken`] the runner mints for every scheduled participant, or a
+//!   [`WorldStepToken`] a [`TimelineAuthority`] mints for the world authority
+//!   alone. Neither token type is constructible by writing ordinary code - see
+//!   [`StepToken::__mint`] and [`TimelineAuthority::__mint`] for the exact
+//!   strength of that. The *authority itself* IS reachable through the
+//!   documented authoring surface, but only for a `#[phoxal::simulator]`
+//!   (`SetupContextSimulatorExt::timeline_authority`, `phoxal` crate); every
+//!   other participant kind has no path to one at all.
 //! - [`MeasurementPublisher<B>`] publishes with a [`CaptureStamp`] the driver
 //!   derived from its device clock, and honestly represents an untranslated
 //!   capture rather than inventing one.
@@ -75,6 +80,7 @@ use crate::abi::{CodecId, encoding_string, parse_encoding_string};
 use crate::codec::{Codec, MessagePack};
 use crate::contract::{
     CommandContract, ContractBody, DiagnosticContract, MeasurementContract, StateContract,
+    WorldClockContract,
 };
 use crate::error::{BusError, Result};
 use crate::identity::TimelineId;
@@ -170,13 +176,25 @@ impl StepStamp for WorldStepToken {
 /// Ownership of exactly one timeline's coordinate.
 ///
 /// This is the narrowly scoped answer to "who may say what time it is in a
-/// world nobody schedules". It is minted only for the world-authority
-/// participant (the simulation controller), advances exactly one timeline, and
-/// is unavailable to ordinary services, tools, and external clients through any
-/// documented surface. A second authority in one process is rejected at mint.
-/// Across processes the invariant is a selection-time one: exactly one
-/// simulator participant is launched into a simulation, and only a simulator
-/// can mint world steps.
+/// world nobody schedules". A second authority in one process is rejected at
+/// mint (a per-process runtime backstop, [`TIMELINE_AUTHORITY_HELD`]). Across
+/// processes the invariant is a selection-time one: exactly one simulator
+/// participant is launched into a simulation.
+///
+/// **Only a simulator can mint world steps, and this is now a compiler rule,
+/// not just a doc comment (organization#957 leftover fixed).** The documented
+/// authoring surface a participant actually writes against has exactly one
+/// path to an authority - `SetupContextSimulatorExt::timeline_authority` in
+/// the `phoxal` crate - and that trait's impl requires `Self: IsSimulator`, so
+/// a `#[phoxal::service]` or `#[phoxal::driver]` reaching for it fails to
+/// compile. [`__mint`](Self::__mint) below is `pub` only because the bus crate
+/// (where the token type lives) and the participant crate (where the
+/// `IsSimulator` marker lives) are split, so Rust has no `pub(crate)`-across-
+/// crates visibility to express the real boundary with - exactly the same
+/// constraint [`StepToken::__mint`] documents for the analogous case. A
+/// participant that deliberately bypasses `SetupContextSimulatorExt` and
+/// writes `TimelineAuthority::__mint` directly still can; closing that would
+/// mean merging the bus, api, and participant crates.
 pub struct TimelineAuthority {
     timeline: TimelineId,
 }
@@ -187,8 +205,11 @@ pub struct TimelineAuthority {
 static TIMELINE_AUTHORITY_HELD: AtomicBool = AtomicBool::new(false);
 
 impl TimelineAuthority {
-    /// Framework-internal (runner-only) minter for the world-authority
-    /// participant. Fails if this process already holds one. `#[doc(hidden)]`.
+    /// Framework-internal minter. The author-facing path is
+    /// `SetupContextSimulatorExt::timeline_authority` in `#[setup]` (`Self:
+    /// IsSimulator`-gated - see the struct's docs for the exact strength of
+    /// that guarantee). Fails if this process already holds one.
+    /// `#[doc(hidden)]`.
     #[doc(hidden)]
     pub fn __mint(timeline: TimelineId) -> Result<Self> {
         if TIMELINE_AUTHORITY_HELD.swap(true, Ordering::AcqRel) {
@@ -323,7 +344,9 @@ role_publisher!(
     "Publishes state at a logical step.\n\nThe step instant comes from a \
      framework-minted [`StepToken`] or [`WorldStepToken`], so a participant \
      cannot publish state at a time it did not reach. Non-blocking, so it is \
-     safe to call from the step loop (D35/D43e)."
+     safe to call from the step loop (D35/D43e). The framework's own \
+     world-clock contract is deliberately NOT a `StateContract` and so cannot \
+     be named here; see [`WorldClockPublisher`]."
 );
 
 role_publisher!(
@@ -351,7 +374,27 @@ role_publisher!(
      (health, logs, runtime evidence). It expresses no robot time."
 );
 
+role_publisher!(
+    WorldClockPublisher,
+    WorldClockContract,
+    "Publishes the framework's own world-clock contract at a logical step.\n\n\
+     A near-twin of [`StatePublisher`] - same step-stamped publish path, same \
+     `#[doc(hidden)] new` - kept as its own type rather than folded into \
+     `StatePublisher` precisely so `StatePublisher`'s bound can stay the \
+     precise `StateContract` (see that type's docs). The only documented way \
+     to build one is `SetupContextSimulatorExt::world_clock_publisher` in the \
+     `phoxal` crate (`Self: IsSimulator`-gated) - organization#957's leftover, \
+     now a compiler rule."
+);
+
 impl<B: StateContract> StatePublisher<B> {
+    /// Publish `body` as the state this step produced.
+    pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
+        self.0.emit(Some(TimeWindow::exact(step.instant())), body)
+    }
+}
+
+impl<B: WorldClockContract> WorldClockPublisher<B> {
     /// Publish `body` as the state this step produced.
     pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)

@@ -12,7 +12,6 @@ use heck::{ToKebabCase, ToShoutySnakeCase};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::parse::Parser;
-use syn::spanned::Spanned;
 use syn::{
     Data, DeriveInput, Fields, FieldsNamed, GenericArgument, Ident, LitStr, PathArguments, Type,
     TypePath,
@@ -43,11 +42,16 @@ fn classify_api_field(ty: &Type) -> Option<Vec<ApiDecl>> {
     let name = seg.ident.to_string();
 
     match name.as_str() {
-        // The four publisher handles differ in the robot time they may express
-        // (#952 section D); all four declare the same publish contract role.
-        "StatePublisher" | "MeasurementPublisher" | "CommandPublisher" | "DiagnosticPublisher" => {
-            Some(vec![ApiDecl::Publish(generic_type(seg, 0)?)])
-        }
+        // The publisher handles differ in the robot time they may express
+        // (#952 section D); all of them declare the same publish contract
+        // role. `WorldClockPublisher` is `StatePublisher`'s near-twin for the
+        // framework's own world-clock contract (organization#957 leftover;
+        // see `phoxal_bus::WorldClockContract`'s docs) - same role here.
+        "StatePublisher"
+        | "MeasurementPublisher"
+        | "CommandPublisher"
+        | "DiagnosticPublisher"
+        | "WorldClockPublisher" => Some(vec![ApiDecl::Publish(generic_type(seg, 0)?)]),
         "Subscriber" | "Latest" => Some(vec![ApiDecl::Subscribe(generic_type(seg, 0)?)]),
         "Server" => Some(vec![ApiDecl::Serve {
             req: generic_type(seg, 0)?,
@@ -102,20 +106,22 @@ fn named_fields<'a>(input: &'a DeriveInput, derive_path: &str) -> syn::Result<&'
 }
 
 /// The cross-platform `#[link_section]` pair a metadata static is placed
-/// under (cargo-auditable's embedding pattern, RECONCILIATION's confirmed
-/// prior art at `xtask/src/release/package.rs:345-355`): `__DATA,__phoxal_meta`
+/// under (cargo-auditable's embedding pattern): `__DATA,__phoxal_meta`
 /// on Mach-O (macOS; segment,section syntax, section name <=16 bytes), and
-/// `.phoxal_api_meta` everywhere else (ELF and other platforms this
-/// framework targets - Linux robots, primarily). `#[used]` keeps the linker
-/// from discarding a static nothing else in the binary references, which is
-/// the whole point: the section's *bytes*, not the symbol, are the payload a
-/// later xtask reads straight out of the built artifact file (never by
-/// executing it).
+/// `.phoxal_meta` everywhere else (ELF and other platforms this
+/// framework targets - Linux robots, primarily). Named `.phoxal_meta`, not
+/// `.phoxal_api_meta`: the section carries only `{id, config_schema}` (the
+/// API-coherence contract inventory it used to also carry is gone,
+/// organization#957), so the name no longer claims "api". `#[used]` keeps the
+/// linker from discarding a static nothing else in the binary references,
+/// which is the whole point: the section's *bytes*, not the symbol, are the
+/// payload a reader (today `phoxal-cli`'s config-schema validation) lifts
+/// straight out of the built artifact file, never by executing it.
 fn link_section_attrs() -> TokenStream {
     quote! {
         #[used]
         #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_meta"))]
-        #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_api_meta"))]
+        #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_meta"))]
     }
 }
 
@@ -126,21 +132,18 @@ fn link_section_attrs() -> TokenStream {
 /// Derive [`ParticipantApi`](phoxal::participant::api::ParticipantApi) from an
 /// `Api` handle struct.
 ///
-/// Emits `CONTRACTS`: one `ApiContractUse` per recognized field, carrying the
-/// role and the resolved `<Body as ContractBody>::TOPIC` wire key. `rustc`
-/// resolves that expression - the proc-macro never evaluates it as a string.
-///
-/// It also emits one `impl Declares*<..> for #struct_name {}` per distinct
-/// declared family (D44 - `DeclaresPublish`/`DeclaresSubscribe` per body,
+/// Emits one `impl Declares*<..> for #struct_name {}` per distinct declared
+/// family (D44 - `DeclaresPublish`/`DeclaresSubscribe` per body,
 /// `DeclaresAsk`/`DeclaresServe` per `(Req, Resp)` pair). That is what lets the
 /// `SetupContext` builders (`SetupContextApiExt`) reject, at compile time, a
 /// handle for a contract this `Api` struct never declared as a field.
 ///
-/// It no longer emits a JSON contract inventory or an API type name. Those fed
-/// the API-coherence pass, which is gone (organization#957): the exact
-/// framework train is the compatibility boundary, so a per-binary record of
-/// which contracts a participant uses has no reader. `#[phoxal(external)]` went
-/// with it - it existed only to excuse a coherence mismatch.
+/// It does not emit a JSON contract inventory, a per-participant contract list,
+/// or an API type name. Those fed the API-coherence pass, which is gone
+/// (organization#957): the exact framework train is the compatibility
+/// boundary, so a per-binary record of which contracts a participant uses has
+/// no reader. `#[phoxal(external)]` went with it - it existed only to excuse a
+/// coherence mismatch.
 pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
     let struct_name = &input.ident;
@@ -154,38 +157,10 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
 
     let fields = named_fields(&input, "#[derive(phoxal::Api)]")?;
 
-    // Deduplicate the emitted contracts by (contract type as written, role),
-    // in first-seen field order, so `CONTRACTS` is the participant's true
-    // compatibility surface (two fields naming the same contract in the same
-    // role - e.g. a `Publisher<X>` and a `Vec<Publisher<X>>` - collapse to one
-    // entry) rather than a per-field multiset. The linker-section JSON is
-    // deduplicated on the same key. Dedup keys off the type as written (a
-    // macro-time string) purely to collapse syntactic repeats of the same
-    // field type. `CONTRACTS` is what survives: it feeds the `Declares*`
-    // compile-time handle gating and the participants' own tests. The embedded
-    // JSON contract inventory this used to build alongside it went with the
-    // coherence system (organization#957).
-    let mut seen = std::collections::BTreeSet::<String>::new();
-    let mut contract_entries = Vec::new();
-    let mut push = |_field_span: proc_macro2::Span,
-                    role_snake: &str,
-                    role_pascal: &str,
-                    body: &Type|
-     -> syn::Result<()> {
-        let body_str = normalized_body_key(body);
-        if !seen.insert(format!("{role_snake}:{body_str}")) {
-            return Ok(());
-        }
-        contract_entries.push(contract_use_entry(body, role_pascal));
-        Ok(())
-    };
-
     // `Declares*<B>` marker impls (D44): one per distinct (family, body-or-pair)
-    // this `Api` struct declares, deduplicated separately from `push` above
-    // because a query/serve declaration is keyed on the (Req, Resp) PAIR here
-    // (matching the two-type-parameter `DeclaresAsk`/`DeclaresServe` traits),
-    // not on the two split CONTRACTS entries `push` records for `Req` and
-    // `Resp` individually.
+    // this `Api` struct declares. A query/serve declaration is keyed on the
+    // (Req, Resp) PAIR (matching the two-type-parameter
+    // `DeclaresAsk`/`DeclaresServe` traits), not on `Req`/`Resp` individually.
     let mut seen_declares = std::collections::BTreeSet::<String>::new();
     let mut declare_impls = Vec::new();
     let mut subscribe_field_names = Vec::new();
@@ -202,10 +177,9 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
         let Some(decls) = classify_api_field(&field.ty) else {
             return Err(syn::Error::new_spanned(
                 &field.ty,
-                "unsupported #[derive(phoxal::Api)] field type; expected StatePublisher, MeasurementPublisher, CommandPublisher, DiagnosticPublisher, Subscriber, Latest, Querier, Server, or a supported collection wrapper",
+                "unsupported #[derive(phoxal::Api)] field type; expected StatePublisher, MeasurementPublisher, CommandPublisher, DiagnosticPublisher, WorldClockPublisher, Subscriber, Latest, Querier, Server, or a supported collection wrapper",
             ));
         };
-        let field_span = field.span();
         if decls
             .iter()
             .any(|decl| matches!(decl, ApiDecl::Subscribe(_)))
@@ -220,7 +194,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
         for decl in decls {
             match decl {
                 ApiDecl::Publish(body) => {
-                    push(field_span, "publish", "Publish", &body)?;
                     let key = format!("declpub:{}", normalized_body_key(&body));
                     declare(
                         key,
@@ -230,7 +203,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                     );
                 }
                 ApiDecl::Subscribe(body) => {
-                    push(field_span, "subscribe", "Subscribe", &body)?;
                     let key = format!("declsub:{}", normalized_body_key(&body));
                     declare(
                         key,
@@ -240,8 +212,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                     );
                 }
                 ApiDecl::Serve { req, resp } => {
-                    push(field_span, "serve", "Serve", &req)?;
-                    push(field_span, "serve", "Serve", &resp)?;
                     let key = format!(
                         "declserve:{}=>{}",
                         normalized_body_key(&req),
@@ -255,8 +225,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
                     );
                 }
                 ApiDecl::Ask { req, resp } => {
-                    push(field_span, "ask", "Ask", &req)?;
-                    push(field_span, "ask", "Ask", &resp)?;
                     let key = format!(
                         "declask:{}=>{}",
                         normalized_body_key(&req),
@@ -293,10 +261,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl #phoxal::participant::ParticipantApi for #struct_name {
-            const CONTRACTS: &'static [#phoxal::participant::ApiContractUse] = &[
-                #(#contract_entries),*
-            ];
-
             fn __retain_timeline(&self, timeline: #phoxal::bus::TimelineId) {
                 let _ = timeline;
                 #(
@@ -320,17 +284,6 @@ pub fn expand_api(input: TokenStream) -> syn::Result<TokenStream> {
     })
 }
 
-fn contract_use_entry(body: &Type, role: &str) -> TokenStream {
-    let phoxal = phoxal();
-    let role_ident = Ident::new(role, proc_macro2::Span::call_site());
-    quote! {
-        #phoxal::participant::ApiContractUse {
-            topic: <#body as #phoxal::bus::ContractBody>::TOPIC,
-            role: #phoxal::participant::ContractRole::#role_ident,
-        }
-    }
-}
-
 /// A `syn::LitStr` token for a JSON literal fragment used as a
 /// `__concatcp!`/`concat!`-style macro argument. Used by the config-schema
 /// derive to splice literal JSON around resolved schema consts.
@@ -341,13 +294,12 @@ fn json_lit(s: &str) -> TokenStream {
 
 /// The contract type key used ONLY for macro-time dedup (collapsing two
 /// fields that name the same contract in the same role - e.g. a
-/// `Publisher<X>` and a `Vec<Publisher<X>>` - to one `CONTRACTS`
-/// entry): the body type exactly as written, whitespace-stripped (e.g.
-/// `api::drive::Target`). This is a syntactic key only; it is never the
-/// *value* recorded for a contract's identity (that is the resolved `NAME`,
-/// spliced in as tokens by `manifest_entry_tokens_for` - see
-/// `phoxal::participant::api::__meta`'s docs for why the macro cannot resolve
-/// it directly).
+/// `Publisher<X>` and a `Vec<Publisher<X>>` - to one `Declares*<X>` impl): the
+/// body type exactly as written, whitespace-stripped (e.g.
+/// `api::drive::Target`). This is a syntactic key only, never spliced into
+/// generated output - the emitted `impl Declares*<#body> for #struct_name {}`
+/// names the body type directly, so `rustc` (not this macro) is what resolves
+/// its real identity.
 fn normalized_body_key(body: &Type) -> String {
     quote!(#body).to_string().replace(' ', "")
 }
@@ -621,6 +573,45 @@ impl ParticipantKind {
     }
 }
 
+/// Reject a participant id outside the grammar the rest of the framework
+/// already assumes for identity tokens.
+///
+/// An `id` ends up in two places that both require this: it is spliced
+/// directly between JSON quotes in the embedded linker-section metadata
+/// (`expand_participant`'s `#metadata_const_ident`, via `__concatcp!`, which
+/// concatenates raw `&str` values with no escaping), and it is used as a
+/// literal Zenoh key segment (a Liveliness token's participant segment,
+/// `phoxal-bus/src/liveliness.rs`'s `validate_participant`; a dynamic
+/// `{participant_id}` topic var, e.g. `phoxal/src/participant/bus_log.rs`'s
+/// `logs(&participant_id)`). A `"`, `\`, control character, or `/` in the id
+/// would corrupt the JSON or split the key, so this rejects at compile time
+/// rather than leaving either to a runtime surprise.
+///
+/// The character set mirrors the framework's other identity-token grammar
+/// (`phoxal::model::component::v0::is_valid_token`, used for component and
+/// capability ids): non-empty, lowercase ASCII letters, digits, `_`, or `-`
+/// only - exactly what `to_kebab_case()` (the default when `id = "…"` is
+/// omitted) produces, so an explicit id follows the same shape as the
+/// default.
+fn validate_participant_id(value: &LitStr) -> syn::Result<()> {
+    let id = value.value();
+    let is_valid = !id.is_empty()
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'));
+    if is_valid {
+        Ok(())
+    } else {
+        Err(syn::Error::new_spanned(
+            value,
+            format!(
+                "invalid participant id '{id}': must be non-empty and contain only lowercase \
+                 ASCII letters, digits, '_' or '-'"
+            ),
+        ))
+    }
+}
+
 #[derive(Default)]
 struct ParticipantArgs {
     id: Option<String>,
@@ -634,6 +625,7 @@ impl ParticipantArgs {
         let parser = syn::meta::parser(|meta: syn::meta::ParseNestedMeta| {
             if meta.path.is_ident("id") {
                 let value: LitStr = meta.value()?.parse()?;
+                validate_participant_id(&value)?;
                 args.id = Some(value.value());
                 Ok(())
             } else if meta.path.is_ident("config") {

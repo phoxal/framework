@@ -17,6 +17,16 @@
 //! `topic self: state <Body>;` binds the body to the node path itself instead of
 //! appending a leaf segment, for framework infrastructure topics such as
 //! `logs/{participant_id}`.
+//!
+//! `topic <leaf>: world_clock <Body>;` is a fifth, framework-reserved role: it
+//! wire-brands and reports `ROLE` exactly like `state` (owner publishes, client
+//! subscribes), but the generated body implements `WorldClockContract` instead
+//! of `StateContract`, so only the world-authority participant
+//! (`#[phoxal::simulator]`) can build a publisher for it
+//! (`phoxal::participant::api::SetupContextSimulatorExt::world_clock_publisher`).
+//! There is exactly one production use - `simulation::Clock` - and no reason for
+//! a second; this role exists to make "only a simulator may mint world time" a
+//! compiler rule rather than a doc comment (organization#957 leftover).
 //! A revision may extend exactly one earlier revision. The child is materialized
 //! as a complete concrete tree; inherited definitions are regenerated under the
 //! child's identity, while `replace` and `remove` make deltas explicit. Exactly
@@ -148,6 +158,7 @@ mod kw {
     syn::custom_keyword!(measurement);
     syn::custom_keyword!(diagnostic);
     syn::custom_keyword!(query);
+    syn::custom_keyword!(world_clock);
 }
 
 pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
@@ -237,6 +248,13 @@ impl TopicLeaf {
 /// The semantic and temporal role of a topic, mirroring `phoxal_bus::TopicRole`.
 /// Parsed from the role keyword and threaded into the generated
 /// `ContractBody::ROLE` const and temporal-role marker impl.
+///
+/// `WorldClock` is a macro-internal refinement with no `phoxal_bus::TopicRole`
+/// variant of its own: `bus_variant` reports `TopicRole::State` for it exactly
+/// like `State`, but `marker_trait` emits the disjoint `WorldClockContract`
+/// instead of `StateContract`, which is what makes the world clock reject the
+/// ordinary, unrestricted publisher builder at compile time (see
+/// `phoxal_bus::contract::WorldClockContract`'s docs).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TopicRole {
     Command,
@@ -244,6 +262,7 @@ enum TopicRole {
     Measurement,
     Diagnostic,
     Query,
+    WorldClock,
 }
 
 impl TopicRole {
@@ -251,7 +270,7 @@ impl TopicRole {
     fn bus_variant(self) -> TokenStream {
         match self {
             TopicRole::Command => quote! { ::phoxal_bus::TopicRole::Command },
-            TopicRole::State => quote! { ::phoxal_bus::TopicRole::State },
+            TopicRole::State | TopicRole::WorldClock => quote! { ::phoxal_bus::TopicRole::State },
             TopicRole::Measurement => quote! { ::phoxal_bus::TopicRole::Measurement },
             TopicRole::Diagnostic => quote! { ::phoxal_bus::TopicRole::Diagnostic },
             TopicRole::Query => quote! { ::phoxal_bus::TopicRole::Query },
@@ -267,6 +286,7 @@ impl TopicRole {
             TopicRole::State => Some(quote! { ::phoxal_bus::StateContract }),
             TopicRole::Measurement => Some(quote! { ::phoxal_bus::MeasurementContract }),
             TopicRole::Diagnostic => Some(quote! { ::phoxal_bus::DiagnosticContract }),
+            TopicRole::WorldClock => Some(quote! { ::phoxal_bus::WorldClockContract }),
             TopicRole::Query => None,
         }
     }
@@ -522,11 +542,18 @@ impl Parse for TopicDef {
             input.parse::<Token![=>]>()?;
             let response: Ident = input.parse()?;
             (TopicKind::Query { request, response }, TopicRole::Query)
+        } else if input.peek(kw::world_clock) {
+            // Framework-reserved: see `TopicRole::WorldClock`'s docs. There is
+            // exactly one production use (`simulation::Clock` in
+            // `phoxal-api/src/lib.rs`) and no reason for a second.
+            input.parse::<kw::world_clock>()?;
+            let body: Ident = input.parse()?;
+            (TopicKind::PubSub(body), TopicRole::WorldClock)
         } else {
             return Err(input.error(
                 "expected a topic role: `command <Body>`, `state <Body>`, \
-                 `measurement <Body>`, `diagnostic <Body>`, or \
-                 `query <Req> => <Resp>`",
+                 `measurement <Body>`, `diagnostic <Body>`, `world_clock <Body>` \
+                 (framework-reserved), or `query <Req> => <Resp>`",
             ));
         };
         input.parse::<Token![;]>()?;
@@ -903,6 +930,13 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
 
     quote! {
         /// One generated API version in the contract manifest.
+        ///
+        /// `#[cfg(test)]`-only (organization#957): this is the tree's own
+        /// self-enumeration, which backs `phoxal-api`'s curation tests (every
+        /// command topic is deliberately classified, every wire key composes
+        /// as intended) - not a per-participant contract surface, and not
+        /// something the shipped `phoxal-api` rlib carries.
+        #[cfg(test)]
         #[doc(hidden)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct ApiContractManifestVersion {
@@ -913,7 +947,9 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
         /// One generated contract in the contract manifest. `family` is the
         /// version-qualified contract identity (D1); `topic` is its
         /// version-qualified wire key. There is no `schema_id`: the name
-        /// itself is the whole identity (D1).
+        /// itself is the whole identity (D1). `#[cfg(test)]`-only - see
+        /// [`ApiContractManifestVersion`]'s docs.
+        #[cfg(test)]
         #[doc(hidden)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub struct ApiContractManifestContract {
@@ -922,7 +958,13 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
             pub role: ::phoxal_bus::TopicRole,
         }
 
-        /// Generated contract manifest for xtask lifecycle checks.
+        /// The tree's own enumeration of every contract it declares, used by
+        /// `phoxal-api`'s curation tests to assert that each command topic is
+        /// deliberately classified and each wire key composes as intended.
+        /// `#[cfg(test)]`-only: the shipped `phoxal-api` rlib carries no
+        /// contract inventory at all (organization#957) - this exists purely
+        /// for the two `#[cfg(test)]` consumers in `phoxal-api/src/tests.rs`.
+        #[cfg(test)]
         #[doc(hidden)]
         pub const API_CONTRACT_MANIFEST: &[ApiContractManifestVersion] = &[#(#version_entries),*];
     }
@@ -1088,8 +1130,8 @@ fn expand_node_module(
         // `::`-joined node path (vars excluded - they are topic params, not
         // type-path segments), then the body's own PascalCase leaf. This is the
         // exact same identity `contract_manifest_entries`' `family` computes for
-        // the xtask manifest, kept in lockstep by construction (both derive it
-        // from `family_path`/`version`). `VERSION`/`CONTRACT` are the split
+        // the generated manifest, kept in lockstep by construction (both derive
+        // it from `family_path`/`version`). `VERSION`/`CONTRACT` are the split
         // form of the same identity: `VERSION`
         // is just `version` (already a plain literal at this point, not spliced
         // per-body), `CONTRACT` is `family_path::body` with the version
@@ -1823,7 +1865,7 @@ mod tests {
     }
 
     #[test]
-    fn expansion_emits_root_contract_manifest_for_xtask() {
+    fn expansion_emits_root_contract_manifest() {
         let expanded = compact_tokens(
             expand(quote! {
                 version v0_1 {
@@ -1846,6 +1888,26 @@ mod tests {
         assert!(
             expanded.contains("pub const API_CONTRACT_MANIFEST"),
             "root manifest const should be emitted: {expanded}"
+        );
+        assert!(
+            expanded.contains("# [cfg (test)] # [doc (hidden)] pub const API_CONTRACT_MANIFEST"),
+            "the manifest const (and its two supporting types) must be \
+             #[cfg(test)]-gated: the shipped phoxal-api rlib carries no \
+             contract inventory (organization#957): {expanded}"
+        );
+        assert!(
+            expanded.contains(
+                "# [cfg (test)] # [doc (hidden)] # [derive (Clone , Copy , Debug , Eq , \
+                 PartialEq)] pub struct ApiContractManifestVersion"
+            ),
+            "ApiContractManifestVersion must be #[cfg(test)]-gated alongside the const: {expanded}"
+        );
+        assert!(
+            expanded.contains(
+                "# [cfg (test)] # [doc (hidden)] # [derive (Clone , Copy , Debug , Eq , \
+                 PartialEq)] pub struct ApiContractManifestContract"
+            ),
+            "ApiContractManifestContract must be #[cfg(test)]-gated alongside the const: {expanded}"
         );
         assert!(
             expanded.contains("name : \"v0.2\""),
