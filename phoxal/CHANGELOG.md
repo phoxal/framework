@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.2](https://github.com/phoxal/framework/compare/phoxal-v0.41.1...phoxal-v0.41.2) - 2026-07-26
+
+### Added
+
+- *(webots)* simulate every component capability but the e-stop ([#326](https://github.com/phoxal/framework/pull/326))
+
+### Other
+
+- *(router)* delegate bootstrap to Zenoh ([#329](https://github.com/phoxal/framework/pull/329))
+- simplify topic ownership API ([#328](https://github.com/phoxal/framework/pull/328))
+
 ## [0.41.1](https://github.com/phoxal/framework/compare/phoxal-v0.41.0...phoxal-v0.41.1) - 2026-07-26
 
 ### Other
