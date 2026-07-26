@@ -1,21 +1,33 @@
-# release-plz changes the one inherited workspace train version and publishes
-# the four crates.io libraries. Official artifact crates are publish=false and
-# are staged together in the matching GitHub train release by xtask.
+# release-plz owns the one inherited workspace train version.
+#
+# Two publication channels share that version:
+#   * the four library crates go to crates.io, published by release-plz itself;
+#   * every executable package goes to the static `phoxal` registry, published
+#     by the release workflow with `cargo package` + `margo add`.
+#
+# Both are listed here. Executables are listed **so their changes cut trains**:
+# a package release-plz cannot see cannot bump the version, which is exactly the
+# defect this configuration fixes (organization#951, Decision 11). A commit
+# touching only `simulator/webots-controller` used to produce no release PR at
+# all.
 [workspace]
 release_always = true
 dependencies_update = false
 pr_name = "chore(release): release v{{ version }}"
 semver_check = false
-# One train version is inherited by every workspace member. release-plz changes
-# the root version once and rewrites exact internal dependency pins together.
 
-# Libraries are crates.io-only. crates.io and `.cargo_vcs_info.json` are their
-# version/current-contract baseline; no library git tag or GitHub release.
+# --- crates.io libraries ----------------------------------------------------
+#
+# crates.io and `.cargo_vcs_info.json` are their version/current-contract
+# baseline. `phoxal` owns the single `v<train>` git tag: this is a virtual
+# workspace, so there is no root package to inherit it, and the tag is the only
+# marker of what a train contained now that there is no GitHub release.
 
 [[package]]
 name = "phoxal"
 version_group = "framework-train"
-git_tag_enable = false
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
 git_release_enable = false
 
 [[package]]
@@ -33,5 +45,227 @@ git_release_enable = false
 [[package]]
 name = "phoxal-macros"
 version_group = "framework-train"
+git_tag_enable = false
+git_release_enable = false
+
+# --- executables, published to the `phoxal` registry ------------------------
+#
+# `publish = false` here suppresses only release-plz's `cargo publish` step; the
+# package still participates in change detection, version bumping, and the
+# version group. Do NOT use `release = false` - that drops the package from
+# processing entirely and silently restores the "executable changes cut no
+# train" defect.
+#
+# `changelog_update = false` because the train's library-side changelog already
+# records what shipped; 26 per-package changelogs would be noise.
+#
+# Cargo-side `publish = ["phoxal"]` in each manifest is the second, independent
+# guard: an ordinary `cargo publish` cannot reach crates.io by accident.
+
+[[package]]
+name = "phoxal-component-bno085"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-ddsm115"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-oak_d_lite"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-vl53l1x"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-component-zed_f9p"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-infrastructure-router"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-asset"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-behavior"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-drive"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-frame"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-joint"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-localize"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-map"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-motion"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-navigation"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-odometry"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-perception"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-power"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-safety"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-service-video"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-simulator-webots-controller"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-bus"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-device"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-joypad"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-log"
+version_group = "framework-train"
+publish = false
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-tool-telemetry"
+version_group = "framework-train"
+publish = false
+changelog_update = false
 git_tag_enable = false
 git_release_enable = false

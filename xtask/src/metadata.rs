@@ -7,9 +7,8 @@
 //! without ever executing the artifact. It is format- and architecture-agnostic
 //! (via the `object` crate), which is load-bearing for its two consumers: the
 //! release-PR coherence gate builds each participant for the host and reads
-//! the section from that debug binary (`package::build_and_extract_metadata`),
-//! while `release package` validates the section on the just-built release
-//! binary for whichever target it is packaging - together covering every
+//! the section from that debug binary (`coherence::build_and_extract_metadata`),
+//! covering every
 //! aarch64/x86_64 ELF and Mach-O shape the framework ships without a fresh
 //! native rebuild per target.
 //!

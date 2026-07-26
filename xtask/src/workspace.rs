@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -10,44 +9,19 @@ use serde_json::Value;
 const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"];
 const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["xtask", "fixture"];
 
-/// The uniform release matrix every binary artifact builds for (design doc
-/// `organization/tmp/ci-release-refactor/design.md` §3/§4.1): no per-kind
-/// target selection - a `Tool` and a `Service` build for exactly the same
-/// triples. `x86_64-apple-darwin` is intentionally absent: GitHub is retiring
-/// its last Intel macOS image (`macos-13`), and it left release build waves
-/// queued indefinitely for a runner that never arrives. Nearly all dev hosts
-/// are Apple Silicon now; an Intel macOS target can be re-added later (as an
-/// ARM-host cross-build) if a user actually needs it.
-const BINARY_TARGETS: [&str; 5] = [
-    "aarch64-apple-darwin",
-    "aarch64-unknown-linux-gnu",
-    "aarch64-unknown-linux-musl",
-    "x86_64-unknown-linux-gnu",
-    "x86_64-unknown-linux-musl",
-];
-
 /// Official Phoxal packages always use this provider segment in their public
 /// `package` identity (`phoxal/<name>`). Third-party suites use their own
 /// provider segment; the grammar has no other official provider today.
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
-/// The assets scope token recorded for a [`ArtifactKind::Component`] package's
-/// asset bundle instead of a real target triple. It is purely an internal
-/// packaging scope sentinel - the suite schema itself stores this output as
-/// `assets: Option<Blob>` with no such key - and [`crate::release::suite`]'s
-/// generator maps a target equal to this sentinel into that `assets` field
-/// rather than into the per-triple `targets` map.
-pub const ASSETS_SCOPE: &str = "assets";
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Service,
-    /// A component crate: ships the driver binary (built for
-    /// [`ASSETS_SCOPE`]'s sibling per-target triples) AND the component's asset
-    /// bundle (`component.yaml`,
-    /// `simulation.yaml`, `structure.urdf`, `meshes/` if present) in one
-    /// crate/release (design doc §9). Discovered from
+    /// A component crate: the driver binary plus the component's assets
+    /// (`component.yaml`, `simulation.yaml`, `structure.urdf`, and `meshes/`
+    /// if present) in one package. `cargo package` picks the assets up by
+    /// default, so they need no inclusion rules. Discovered from
     /// `component/<id>/Cargo.toml`.
     Component,
     Tool,
@@ -69,12 +43,6 @@ impl ArtifactKind {
         }
     }
 
-    /// Whether this kind ships an asset bundle in addition to its per-target
-    /// binary output (design doc §9: every `component/` crate carries both).
-    pub fn ships_assets(self) -> bool {
-        matches!(self, ArtifactKind::Component)
-    }
-
     /// Whether binaries of this kind participate in the API coherence graph.
     pub fn embeds_participant_metadata(self) -> bool {
         !matches!(self, ArtifactKind::Infrastructure)
@@ -89,21 +57,7 @@ impl fmt::Display for ArtifactKind {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct PhoxalPackageMetadata {
-    /// Extra release target triples for genuine per-crate exceptions. The normal
-    /// target matrix is derived from the artifact kind, not copied into manifests.
-    #[serde(
-        default,
-        rename = "extra-target-triples",
-        alias = "extra_target_triples"
-    )]
-    pub extra_target_triples: Vec<String>,
-    /// Target triples this artifact cannot build for. Entries are glob
-    /// patterns, so a package can exclude a target family such as `*-musl` or
-    /// name an exact triple.
-    #[serde(default, rename = "unsupported-targets")]
-    pub unsupported_targets: Vec<String>,
-}
+pub struct PhoxalPackageMetadata {}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OfficialArtifact {
@@ -129,41 +83,6 @@ pub struct OfficialArtifact {
 }
 
 impl OfficialArtifact {
-    /// The full set of release targets this artifact packages for: its
-    /// per-triple binary targets, plus [`ASSETS_SCOPE`] when the kind also
-    /// ships an asset bundle
-    /// ([`ArtifactKind::ships_assets`], design doc §9).
-    pub fn supported_target_triples(&self) -> Vec<String> {
-        // Every discovered artifact starts from the uniform five-target matrix
-        // (#197); a `Component` additionally ships the asset bundle (design
-        // doc §9). Package metadata may add exceptional
-        // targets and subtract targets the artifact cannot build.
-        let mut targets = BINARY_TARGETS
-            .iter()
-            .map(|target| (*target).to_string())
-            .collect::<Vec<_>>();
-        if self.kind.ships_assets() {
-            targets.push(ASSETS_SCOPE.to_string());
-        }
-        targets.extend(self.metadata.extra_target_triples.iter().cloned());
-        targets.retain(|target| {
-            !self.metadata.unsupported_targets.iter().any(|pattern| {
-                glob::Pattern::new(pattern)
-                    .expect("unsupported-targets patterns are validated during discovery")
-                    .matches(target)
-            })
-        });
-        targets.sort();
-        targets.dedup();
-        targets
-    }
-
-    pub fn supports_target(&self, target: &str) -> bool {
-        self.supported_target_triples()
-            .iter()
-            .any(|candidate| candidate == target)
-    }
-
     /// The Cargo crate name, or an error naming the package if it has none.
     pub fn require_package_name(&self) -> Result<&str> {
         self.package_name.as_deref().with_context(|| {
@@ -186,13 +105,6 @@ impl OfficialArtifact {
             )
         })
     }
-}
-
-/// Projects a provider-qualified `package` (`phoxal/component-ddsm115`)
-/// to its filesystem-safe form (`phoxal-component-ddsm115`) for asset
-/// filenames.
-pub fn filesystem_safe_package(package: &str) -> String {
-    package.replace('/', "-")
 }
 
 #[derive(Debug)]
@@ -298,23 +210,6 @@ impl Workspace {
 
     pub fn official_artifacts(&self) -> &[OfficialArtifact] {
         &self.official_artifacts
-    }
-
-    pub fn official_artifact(&self, package: &str) -> Result<&OfficialArtifact> {
-        self.official_artifacts
-            .iter()
-            .find(|artifact| {
-                artifact.package == package || artifact.package_name.as_deref() == Some(package)
-            })
-            .with_context(|| {
-                let known = self
-                    .official_artifacts
-                    .iter()
-                    .map(|artifact| artifact.package.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("unknown official artifact package {package}; known packages: {known}")
-            })
     }
 }
 
@@ -425,19 +320,32 @@ fn validate_package_name(
     Ok(())
 }
 
+/// Every official executable publishes to the `phoxal` registry and only there.
+///
+/// This is the Cargo-side guard against an accidental crates.io publication
+/// (organization#951, Decision 2). It is also what keeps release-plz able to
+/// see these packages at all: a `publish = false` package is invisible to it,
+/// and an invisible package cannot bump the train when it changes - the defect
+/// Decision 11 exists to fix.
 fn validate_artifact_publish(
     package_name: &str,
     publish: Option<&[String]>,
     root: &Path,
     manifest_path: &Path,
 ) -> Result<()> {
-    if !publish.is_some_and(|registries| registries.is_empty()) {
+    let declared = publish.unwrap_or_default();
+    if declared != [PHOXAL_PROVIDER] {
         bail!(
-            "{package_name} is an official artifact but {} does not set publish = false; \
-             artifacts stay outside release-plz and crates.io - the release workflow builds \
-             and packages them with xtask and stages them into the GitHub train release. \
-             Set publish = false",
-            relative_display(root, manifest_path)
+            "{package_name} is an official executable but {} does not set \
+             publish = [\"{PHOXAL_PROVIDER}\"]; executables publish to the static \
+             {PHOXAL_PROVIDER} registry and never to crates.io, and release-plz must be able \
+             to see them so their changes cut trains. Found: {}",
+            relative_display(root, manifest_path),
+            if publish.is_none() {
+                "no publish field (defaults to crates.io)".to_string()
+            } else {
+                format!("publish = {declared:?}")
+            }
         );
     }
     Ok(())
@@ -491,41 +399,8 @@ fn parse_phoxal_metadata(package_name: &str, metadata: &Value) -> Result<PhoxalP
         );
     }
 
-    let mut parsed: PhoxalPackageMetadata = serde_json::from_value(phoxal_metadata.clone())
+    let parsed: PhoxalPackageMetadata = serde_json::from_value(phoxal_metadata.clone())
         .with_context(|| format!("{package_name} has invalid [package.metadata.phoxal]"))?;
-    let mut seen = BTreeSet::new();
-    for triple in &parsed.extra_target_triples {
-        if triple.trim().is_empty() {
-            bail!(
-                "{package_name} [package.metadata.phoxal] extra-target-triples contains an empty triple"
-            );
-        }
-        if !seen.insert(triple.clone()) {
-            bail!(
-                "{package_name} [package.metadata.phoxal] extra-target-triples contains duplicate {triple}"
-            );
-        }
-    }
-    parsed.extra_target_triples.sort();
-    seen.clear();
-    for pattern in &parsed.unsupported_targets {
-        if pattern.trim().is_empty() {
-            bail!(
-                "{package_name} [package.metadata.phoxal] unsupported-targets contains an empty pattern"
-            );
-        }
-        glob::Pattern::new(pattern).with_context(|| {
-            format!(
-                "{package_name} [package.metadata.phoxal] unsupported-targets contains invalid glob {pattern}"
-            )
-        })?;
-        if !seen.insert(pattern.clone()) {
-            bail!(
-                "{package_name} [package.metadata.phoxal] unsupported-targets contains duplicate {pattern}"
-            );
-        }
-    }
-    parsed.unsupported_targets.sort();
     Ok(parsed)
 }
 
@@ -534,13 +409,6 @@ fn relative_display(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
-}
-
-pub fn require_nonempty_artifacts(artifacts: &[OfficialArtifact]) -> Result<()> {
-    if artifacts.is_empty() {
-        bail!("no official release artifacts were discovered");
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -719,27 +587,48 @@ mod tests {
         Ok(())
     }
 
+    /// An executable publishes to the `phoxal` registry and nowhere else. The
+    /// two rejected cases are the two ways to get this wrong: `publish = false`
+    /// hides the package from release-plz so its changes stop cutting trains,
+    /// and anything naming crates.io (explicitly or by omission) points the
+    /// executables at the wrong channel entirely.
     #[test]
-    fn artifact_publish_true_is_an_error() {
-        let manifest = root().join("simulator/webots/Cargo.toml");
+    fn an_executable_publishes_only_to_the_phoxal_registry() {
+        let manifest = root().join("simulator/webots-controller/Cargo.toml");
+        let check = |publish: Option<&[String]>| {
+            validate_artifact_publish(
+                "phoxal-simulator-webots-controller",
+                publish,
+                &root(),
+                &manifest,
+            )
+        };
 
-        validate_artifact_publish("phoxal-simulator-webots", Some(&[]), &root(), &manifest).expect(
-            "publish = false is valid: the release workflow builds and packages artifacts \
-             with xtask and stages them into the train release",
+        check(Some(&["phoxal".to_string()])).expect("publish = [\"phoxal\"] is the one valid form");
+
+        let error = check(Some(&[])).unwrap_err();
+        assert!(
+            error.to_string().contains("publish = [\"phoxal\"]"),
+            "publish = false must be rejected: {error}"
         );
 
-        let error = validate_artifact_publish("phoxal-simulator-webots", None, &root(), &manifest)
-            .unwrap_err();
-        assert!(error.to_string().contains("publish = false"), "{error}");
+        let error = check(None).unwrap_err();
+        assert!(
+            error.to_string().contains("defaults to crates.io"),
+            "an absent publish field must be rejected: {error}"
+        );
 
-        let error = validate_artifact_publish(
-            "phoxal-simulator-webots",
-            Some(&["crates-io".to_string()]),
-            &root(),
-            &manifest,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("publish = false"), "{error}");
+        let error = check(Some(&["crates-io".to_string()])).unwrap_err();
+        assert!(
+            error.to_string().contains("never to crates.io"),
+            "crates.io must be rejected: {error}"
+        );
+
+        let error = check(Some(&["phoxal".to_string(), "crates-io".to_string()])).unwrap_err();
+        assert!(
+            error.to_string().contains("publish = [\"phoxal\"]"),
+            "a second registry alongside phoxal must be rejected: {error}"
+        );
     }
 
     #[test]
@@ -838,59 +727,6 @@ mod tests {
     }
 
     #[test]
-    fn metadata_phoxal_accepts_extra_target_triples() -> Result<()> {
-        let metadata = parse_phoxal_metadata(
-            "phoxal-service-drive",
-            &json!({
-                "phoxal": {
-                    "extra-target-triples": [
-                        "x86_64-apple-darwin",
-                        "aarch64-apple-darwin"
-                    ]
-                }
-            }),
-        )?;
-        assert_eq!(
-            metadata.extra_target_triples,
-            vec!["aarch64-apple-darwin", "x86_64-apple-darwin"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn artifact_target_exclusions_support_globs_and_exact_triples() -> Result<()> {
-        let metadata = parse_phoxal_metadata(
-            "phoxal-tool-joypad",
-            &json!({
-                "phoxal": {
-                    "extra-target-triples": ["riscv64gc-unknown-linux-gnu"],
-                    "unsupported-targets": ["*-musl", "aarch64-apple-darwin"]
-                }
-            }),
-        )?;
-        let artifact = OfficialArtifact {
-            package: "phoxal/tool-joypad".to_string(),
-            package_name: Some("phoxal-tool-joypad".to_string()),
-            kind: ArtifactKind::Tool,
-            version: "0.1.6".to_string(),
-            crate_dir: PathBuf::from("tool/joypad"),
-            bin_name: Some("phoxal-tool-joypad".to_string()),
-            id: "joypad".to_string(),
-            metadata,
-        };
-
-        assert_eq!(
-            artifact.supported_target_triples(),
-            vec![
-                "aarch64-unknown-linux-gnu",
-                "riscv64gc-unknown-linux-gnu",
-                "x86_64-unknown-linux-gnu",
-            ]
-        );
-        Ok(())
-    }
-
-    #[test]
     fn package_identity_is_provider_qualified() {
         assert_eq!(
             package_identity(ArtifactKind::Service, "drive"),
@@ -912,34 +748,5 @@ mod tests {
             package_identity(ArtifactKind::Infrastructure, "router"),
             "phoxal/infrastructure-router"
         );
-    }
-
-    #[test]
-    fn component_supports_its_binary_targets_and_the_assets_scope() {
-        let artifact = OfficialArtifact {
-            package: "phoxal/component-ddsm115".to_string(),
-            package_name: Some("phoxal-component-ddsm115".to_string()),
-            kind: ArtifactKind::Component,
-            version: "0.1.0".to_string(),
-            crate_dir: PathBuf::from("component/ddsm115"),
-            bin_name: Some("phoxal-component-ddsm115".to_string()),
-            id: "ddsm115".to_string(),
-            metadata: PhoxalPackageMetadata::default(),
-        };
-        assert_eq!(
-            artifact.supported_target_triples(),
-            vec![
-                "aarch64-apple-darwin".to_string(),
-                "aarch64-unknown-linux-gnu".to_string(),
-                "aarch64-unknown-linux-musl".to_string(),
-                ASSETS_SCOPE.to_string(),
-                "x86_64-unknown-linux-gnu".to_string(),
-                "x86_64-unknown-linux-musl".to_string(),
-            ]
-        );
-        assert!(artifact.supports_target(ASSETS_SCOPE));
-        assert!(artifact.supports_target("x86_64-unknown-linux-gnu"));
-        // A component builds the darwin (Apple Silicon) and musl triples too.
-        assert!(artifact.supports_target("aarch64-apple-darwin"));
     }
 }
