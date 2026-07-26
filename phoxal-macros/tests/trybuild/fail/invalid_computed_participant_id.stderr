@@ -1,0 +1,5 @@
+error: computed participant id '' (kebab-cased from the struct name `__`) is invalid: must be non-empty and contain only lowercase ASCII letters, digits, '_' or '-' - pass an explicit id = "..." instead
+  --> tests/trybuild/fail/invalid_computed_participant_id.rs:11:8
+   |
+11 | struct __;
+   |        ^^

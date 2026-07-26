@@ -605,16 +605,27 @@ impl ParticipantKind {
 /// The character set mirrors the framework's other identity-token grammar
 /// (`phoxal::model::component::v0::is_valid_token`, used for component and
 /// capability ids): non-empty, lowercase ASCII letters, digits, `_`, or `-`
-/// only - exactly what `to_kebab_case()` (the default when `id = "…"` is
-/// omitted) produces, so an explicit id follows the same shape as the
-/// default.
-fn validate_participant_id(value: &LitStr) -> syn::Result<()> {
-    let id = value.value();
-    let is_valid = !id.is_empty()
+/// only. This is also the grammar `to_kebab_case()` (the default when
+/// `id = "…"` is omitted, in `expand_participant`) is *expected* to produce -
+/// but `to_kebab_case` only transforms ASCII case boundaries and passes
+/// everything else through unchanged, so a struct name containing a Unicode
+/// identifier character (stable Rust allows non-ASCII identifiers) or a
+/// digit-only/underscore-only name can still come out the other side
+/// violating this grammar. `validate_participant_id` checks an explicit
+/// `id = "…"` at parse time; `expand_participant` applies
+/// `is_valid_participant_id` to the *computed* id too, whichever way it was
+/// produced, so the invariant actually holds for every participant rather
+/// than just the ones that spelled it out.
+fn is_valid_participant_id(id: &str) -> bool {
+    !id.is_empty()
         && id
             .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'));
-    if is_valid {
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '_' | '-'))
+}
+
+fn validate_participant_id(value: &LitStr) -> syn::Result<()> {
+    let id = value.value();
+    if is_valid_participant_id(&id) {
         Ok(())
     } else {
         Err(syn::Error::new_spanned(
@@ -683,9 +694,26 @@ pub fn expand_participant(
     }
 
     let args = ParticipantArgs::parse(attr, attr_name)?;
-    let id = args
-        .id
-        .unwrap_or_else(|| struct_name.to_string().to_kebab_case());
+    let id = match args.id {
+        // Already validated against the identity-token grammar at parse time
+        // (`ParticipantArgs::parse`), against the literal's own span.
+        Some(id) => id,
+        None => {
+            let computed = struct_name.to_string().to_kebab_case();
+            if !is_valid_participant_id(&computed) {
+                return Err(syn::Error::new_spanned(
+                    struct_name,
+                    format!(
+                        "computed participant id '{computed}' (kebab-cased from the struct name \
+                         `{struct_name}`) is invalid: must be non-empty and contain only \
+                         lowercase ASCII letters, digits, '_' or '-' - pass an explicit \
+                         id = \"...\" instead"
+                    ),
+                ));
+            }
+            computed
+        }
+    };
     let config_ty: Type = args.config.unwrap_or_else(|| kind.default_config());
     let api_ty: Type = args.api.unwrap_or_else(|| kind.default_api());
 
