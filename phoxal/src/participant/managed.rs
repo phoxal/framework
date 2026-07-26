@@ -197,3 +197,167 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         "managed task panicked with a non-string payload".to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ManagedTaskPolicy, ManagedTasks};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    /// Long enough that a correct implementation never reaches it, and
+    /// instantaneous under a paused clock.
+    const NEVER: Duration = Duration::from_secs(3600);
+
+    /// A task ending on its own under the default policy is a fault, and the
+    /// runner learns which task it was.
+    #[tokio::test(start_paused = true)]
+    async fn an_early_return_faults_and_names_the_task() {
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("sensor-loop", ManagedTaskPolicy::FaultOnExit, async {});
+
+        let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
+            .await
+            .expect("a FaultOnExit task that returns must be reported");
+        assert_eq!(exit.name, "sensor-loop");
+        assert_eq!(
+            exit.panic_message, None,
+            "a normal return is an unexpected exit, not a panic"
+        );
+    }
+
+    /// A panic is reported with its message, so the participant's failure says
+    /// what actually broke.
+    #[tokio::test(start_paused = true)]
+    async fn a_panic_is_reported_with_its_message() {
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("io-pump", ManagedTaskPolicy::FaultOnExit, async {
+            panic!("serial port vanished");
+        });
+
+        let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
+            .await
+            .expect("a panicking FaultOnExit task must be reported");
+        assert_eq!(exit.name, "io-pump");
+        assert_eq!(exit.panic_message.as_deref(), Some("serial port vanished"));
+    }
+
+    /// `AllowExit` is the whole point of the policy: neither a clean return nor
+    /// a panic may fault the participant, and with nothing left to watch the
+    /// future stays pending rather than resolving spuriously.
+    #[tokio::test(start_paused = true)]
+    async fn allow_exit_suppresses_both_a_return_and_a_panic() {
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("cache-prime", ManagedTaskPolicy::AllowExit, async {});
+        tasks.spawn("warm-up", ManagedTaskPolicy::AllowExit, async {
+            panic!("best-effort work failed");
+        });
+
+        assert!(
+            tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
+                .await
+                .is_err(),
+            "AllowExit completions must never surface as unexpected exits"
+        );
+    }
+
+    /// A `FaultOnExit` task is still watched while `AllowExit` siblings come and
+    /// go, so a real fault is not masked by the ones being skipped.
+    #[tokio::test(start_paused = true)]
+    async fn a_real_fault_is_not_masked_by_allow_exit_siblings() {
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("cache-prime", ManagedTaskPolicy::AllowExit, async {});
+        tasks.spawn("watchdog", ManagedTaskPolicy::FaultOnExit, async {
+            tokio::task::yield_now().await;
+        });
+
+        let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
+            .await
+            .expect("the FaultOnExit task must still be reported");
+        assert_eq!(exit.name, "watchdog");
+    }
+
+    /// Shutdown cancels every remaining task and joins it, reporting nothing
+    /// unjoined. Cancellation is observable by the task itself.
+    #[tokio::test]
+    async fn shutdown_cancels_and_joins_every_task() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&cancelled);
+        let started = Arc::new(AtomicBool::new(false));
+        let running = Arc::clone(&started);
+
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn("forever", ManagedTaskPolicy::FaultOnExit, async move {
+            struct OnCancel(Arc<AtomicBool>);
+            impl Drop for OnCancel {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+            let _guard = OnCancel(observed);
+            running.store(true, Ordering::Relaxed);
+            std::future::pending::<()>().await;
+        });
+
+        while !started.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+
+        let unjoined = tasks.shutdown_within(Duration::from_secs(5)).await;
+        assert!(
+            unjoined.is_empty(),
+            "a cancellable task must join: {unjoined:?}"
+        );
+        assert!(
+            cancelled.load(Ordering::Relaxed),
+            "the task must observe cancellation"
+        );
+    }
+
+    /// A task inside a synchronous section cannot observe cancellation, so it
+    /// must not be allowed to extend the shutdown deadline: the grace elapses,
+    /// the task is reported by name, and shutdown returns anyway.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_uncancellable_task_is_reported_rather_than_waited_for() {
+        let started = Arc::new(AtomicBool::new(false));
+        let running = Arc::clone(&started);
+        let finished = Arc::new(AtomicBool::new(false));
+        let completed = Arc::clone(&finished);
+
+        let mut tasks = ManagedTasks::default();
+        tasks.spawn(
+            "uncancellable",
+            ManagedTaskPolicy::FaultOnExit,
+            async move {
+                running.store(true, Ordering::Relaxed);
+                // Synchronous work cannot observe Tokio cancellation until it
+                // returns to the scheduler. Kept finite so the test runtime still
+                // shuts down promptly once the assertions below have run.
+                std::thread::sleep(Duration::from_millis(1500));
+                completed.store(true, Ordering::Relaxed);
+            },
+        );
+
+        while !started.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+
+        let began = std::time::Instant::now();
+        let unjoined = tasks.shutdown_within(Duration::from_millis(150)).await;
+        let elapsed = began.elapsed();
+
+        assert_eq!(
+            unjoined,
+            vec!["uncancellable".to_string()],
+            "a task still running at the grace deadline is reported by name"
+        );
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "shutdown must be bounded by the grace budget, took {elapsed:?}"
+        );
+        assert!(
+            !finished.load(Ordering::Relaxed),
+            "shutdown must return before a cancellation-ignoring task finishes"
+        );
+    }
+}
