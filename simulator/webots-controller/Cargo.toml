@@ -13,6 +13,11 @@ repository.workspace = true
 [package.metadata.phoxal]
 unsupported-targets = ["*-musl", "aarch64-unknown-linux-gnu"]
 
+[features]
+# Release packaging enables this feature so a missing native Webots runtime is
+# a build failure instead of silently producing a metadata-only controller.
+native-required = []
+
 [[bin]]
 name = "phoxal-simulator-webots-controller"
 path = "src/main.rs"

@@ -101,9 +101,29 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libudev-dev musl-tools
           cargo install cargo-auditable --locked
+      - name: Install Webots runtime for Linux controller packaging
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2 \
+            --output "$RUNNER_TEMP/webots.tar.bz2"
+          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
+          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
       - name: Install macOS packaging dependencies
         if: runner.os == 'macOS'
-        run: cargo install cargo-auditable --locked
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-auditable --locked
+          curl --fail --location \
+            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a.dmg \
+            --output "$RUNNER_TEMP/webots.dmg"
+          mkdir "$RUNNER_TEMP/webots-volume"
+          hdiutil attach "$RUNNER_TEMP/webots.dmg" \
+            -nobrowse -quiet -mountpoint "$RUNNER_TEMP/webots-volume"
+          echo "WEBOTS_HOME=$RUNNER_TEMP/webots-volume/Webots.app/Contents" >> "$GITHUB_ENV"
       - run: cargo xtask release package --all --target "${{ matrix.target }}"
       - uses: actions/upload-artifact@v6
         with:
