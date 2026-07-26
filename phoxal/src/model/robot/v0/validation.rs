@@ -311,3 +311,78 @@ fn invalid_kinematic(field: &str, message: &str) -> ValidationError {
         message: message.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ValidationError;
+    use crate::model::robot::v0::Robot;
+
+    /// A manifest whose single component declares role hints for two
+    /// capabilities. `extra_roles` is spliced in as further `depth:` entries.
+    fn manifest_with_depth_roles(depth_roles: &str) -> String {
+        format!(
+            r#"
+schema: robot/v0
+robot:
+  id: test-bot
+  namespace: dev
+  motion_limits:
+    max_linear_speed_mps: 0.6
+    max_angular_speed_radps: 2.0
+  kinematic:
+    kind: omnidirectional
+    actuators: [drive.motor]
+    encoders: []
+  components:
+    front_camera:
+      component: oak_d_lite
+      mount_link: front_camera_mount
+      driver:
+        connection: {{ type: usb }}
+      roles:
+        rgb: [localization]
+        depth: {depth_roles}
+"#
+        )
+    }
+
+    #[test]
+    fn distinct_role_hints_for_one_capability_validate() {
+        let robot = Robot::parse_from_string(&manifest_with_depth_roles("[localization, mapping]"))
+            .unwrap();
+        robot
+            .validate()
+            .expect("distinct roles on one capability are legal");
+    }
+
+    #[test]
+    fn an_empty_role_list_is_a_validation_error() {
+        let robot = Robot::parse_from_string(&manifest_with_depth_roles("[]")).unwrap();
+        let errors = robot.validate().expect_err("an empty role list is invalid");
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::EmptyRoleList { instance, capability }
+                    if instance == "front_camera" && capability == "depth"
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_role_names_the_capability_and_the_role() {
+        let robot =
+            Robot::parse_from_string(&manifest_with_depth_roles("[mapping, mapping]")).unwrap();
+        let errors = robot.validate().expect_err("a repeated role is invalid");
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                ValidationError::RepeatedRole { instance, capability, role }
+                    if instance == "front_camera"
+                        && capability == "depth"
+                        && role.as_str() == "mapping"
+            )),
+            "{errors:?}"
+        );
+    }
+}

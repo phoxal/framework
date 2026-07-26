@@ -193,17 +193,6 @@ impl Robot {
         validation_result(errors)
     }
 
-    /// Historical entry point kept for callers that used to validate against
-    /// a platform-participant allowlist. The `phoxal_participants.images`
-    /// concept this guarded is gone from the grammar, so this now behaves
-    /// identically to [`Robot::validate`].
-    pub fn validate_with(
-        &self,
-        _platform_participant_names: &[&str],
-    ) -> std::result::Result<(), Vec<ValidationError>> {
-        self.validate()
-    }
-
     #[must_use]
     pub fn robot_id(&self) -> &str {
         &self.robot.id
