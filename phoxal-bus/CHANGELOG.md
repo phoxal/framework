@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.3](https://github.com/phoxal/framework/compare/phoxal-bus-v0.41.2...phoxal-bus-v0.41.3) - 2026-07-26
+
+### Other
+
+- cover the runtime behaviour the deleted suites proved ([#333](https://github.com/phoxal/framework/pull/333))
+
 ## [0.41.2](https://github.com/phoxal/framework/compare/phoxal-bus-v0.41.1...phoxal-bus-v0.41.2) - 2026-07-26
 
 ### Other
