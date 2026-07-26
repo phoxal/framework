@@ -1,14 +1,16 @@
-//! Participant classification and graph validation for Phoxal robot graphs
-//! (D59/D63/D1).
+//! Participant classification and graph-report vocabulary for Phoxal robot
+//! graphs (D59/D63/D1).
 //!
-//! This is the pure core: given a reduced report of every participant in a
-//! robot graph (`phoxal-cli` resolves those reports from images or local
-//! binaries and this module never depends on how), it is fully unit-testable
-//! without Docker or a registry. [`ParticipantKind`], [`ParticipantClass`], and
-//! [`ParticipantScope`] are the classification vocabulary callers key graph
-//! wiring on - which participant stands in for which during simulation
-//! substitution, and which participants share a component-instance scope; they
-//! are not themselves gated here.
+//! This module carries no graph *validator* of its own - there is nothing
+//! left that needs one (see below) - only the shared vocabulary a caller
+//! (`phoxal-cli`, resolving reports from images or local binaries; this
+//! module never depends on how) uses to describe a graph and assemble its own
+//! report. [`ParticipantKind`], [`ParticipantClass`], and [`ParticipantScope`]
+//! are the classification vocabulary callers key graph wiring on - which
+//! participant stands in for which during simulation substitution, and which
+//! participants share a component-instance scope. [`ParticipantApis`] is one
+//! participant's reduced report; [`Problem`] and [`Report`] are the shared
+//! outcome shape a caller fills in.
 //!
 //! **There is no interop gate on contract identity (D1).** Two participants
 //! naming the same version-qualified contract are compatible by construction
@@ -19,12 +21,11 @@
 //! (organization#957): the exact framework train, plus the train-selected
 //! `phoxal::api` facade, is the entire API compatibility boundary, so a
 //! version disagreement between two participants on one robot is not
-//! expressible. [`check_graph`] therefore reports only [`Problem::InvalidConfig`],
-//! the one thing that *is* still a real runtime hazard: a user runtime's
-//! manifest config not matching its emitted JSON Schema. Constructing that
-//! problem is the caller's job (config-schema validation lives with the
-//! caller that resolved the schema); this module carries the vehicle, not the
-//! validator.
+//! expressible. The one thing that *is* still a real runtime hazard - a user
+//! runtime's manifest config not matching its emitted JSON Schema - is
+//! [`Problem::InvalidConfig`], constructed and checked entirely by the caller
+//! that resolved both the manifest and the schema; this module supplies only
+//! the vehicle those problems travel in, not a validator that runs them.
 //!
 //! Nothing about pub/sub topology or query responder counts is checked here. A
 //! robot legitimately consumes commands whose sender is external to the checked
@@ -43,7 +44,7 @@
 //! contracts by construction. There is no separate substitution concept, no
 //! completeness gate, and no missing-producer diagnostic here - whether a
 //! contract has a producer is a caller/deployment choice, not something this
-//! checker judges.
+//! module judges.
 
 /// One participant's reduced report, carrying what graph classification and
 /// config validation need.
@@ -169,46 +170,9 @@ impl Report {
     }
 }
 
-/// Validate a robot graph.
-///
-/// `participants` is every normal participant's reduced report. There is no
-/// contract-agreement axis left to check (D1: name identity alone guarantees
-/// compatibility) - this is a thin, stable entry point for callers, kept for
-/// config validation to grow into. It does not itself resolve or validate
-/// `config_schema` against a manifest; a caller that has both in hand
-/// constructs [`Problem::InvalidConfig`] and this stays the shared report
-/// vehicle both sides agree on.
-#[must_use]
-pub fn check_graph(participants: &[ParticipantApis]) -> Report {
-    let _ = participants;
-    Report::default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn participant(id: &str) -> ParticipantApis {
-        ParticipantApis {
-            participant_id: id.to_string(),
-            artifact_id: id.to_string(),
-            participant_kind: ParticipantKind::Service,
-            participant_class: ParticipantClass::Checked,
-            config_schema: None,
-            scope: ParticipantScope::Graph,
-        }
-    }
-
-    fn privileged_participant(id: &str) -> ParticipantApis {
-        ParticipantApis {
-            participant_id: id.to_string(),
-            artifact_id: id.to_string(),
-            participant_kind: ParticipantKind::Tool,
-            participant_class: ParticipantClass::Privileged,
-            config_schema: None,
-            scope: ParticipantScope::Graph,
-        }
-    }
 
     #[test]
     fn participant_kind_parse_preserves_unknown_kinds() {
@@ -235,27 +199,5 @@ mod tests {
             Some(ParticipantClass::Privileged)
         );
         assert_eq!(ParticipantClass::parse("service"), None);
-    }
-
-    #[test]
-    fn healthy_graph_has_no_problems() {
-        let graph = vec![participant("mission"), participant("drive")];
-        assert!(check_graph(&graph).is_ok());
-    }
-
-    #[test]
-    fn tool_kind_participants_do_not_gate_the_graph() {
-        let graph = vec![
-            participant("mission"),
-            participant("drive"),
-            privileged_participant("inspector"),
-        ];
-
-        assert!(check_graph(&graph).is_ok());
-    }
-
-    #[test]
-    fn empty_graph_is_ok() {
-        assert!(check_graph(&[]).is_ok());
     }
 }
