@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Re-run only while a prepared release commit remains at main HEAD
+        description: Re-run an unpublished prepared train from main
         required: false
         default: false
         type: boolean
@@ -54,8 +54,23 @@ jobs:
               echo "manual publication must run from main" >&2
               exit 1
             }
-            [[ "$subject" == "chore(release): release v"* ]] || {
-              echo "manual publication requires a versioned chore(release): release commit" >&2
+            release_subject="chore(release): release $tag"
+            release_commit="$(git log -1 --format=%H --fixed-strings --grep="$release_subject")"
+            [[ -n "$release_commit" ]] || {
+              echo "manual publication requires an exact $release_subject ancestor" >&2
+              exit 1
+            }
+            git merge-base --is-ancestor "$release_commit" HEAD || {
+              echo "prepared release commit $release_commit is not an ancestor of main" >&2
+              exit 1
+            }
+            git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null && {
+              echo "tag $tag already exists; refusing to republish" >&2
+              exit 1
+            }
+            git diff --quiet "$release_commit"..HEAD -- \
+              Cargo.toml Cargo.lock phoxal phoxal-api phoxal-bus phoxal-macros || {
+              echo "published crate inputs changed after $release_subject; prepare a new train" >&2
               exit 1
             }
             echo "publish=true" >> "$GITHUB_OUTPUT"
