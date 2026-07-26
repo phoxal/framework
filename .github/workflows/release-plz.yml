@@ -44,8 +44,9 @@ jobs:
         run: |
           set -euo pipefail
           version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "phoxal") | .version')"
+          tag="v$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           subject="$(git log -1 --pretty=%s)"
           if [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
