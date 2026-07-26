@@ -1,22 +1,20 @@
-//! Shared deserialization of the participant linker-section
-//! metadata JSON (coherence-gate design doc §2/§5).
+//! Shared deserialization of the participant linker-section metadata JSON.
 //!
 //! A participant attribute (`phoxal-macros/src/authoring.rs`) embeds one JSON
-//! manifest per participant binary in a dedicated linker section - see
+//! object per participant binary in a dedicated linker section - see
 //! `phoxal::participant::api::__meta` for the const-eval mechanism that
-//! resolves it. The entry shape is `{"role","version","contract","external"}`:
-//! version and contract are recorded as SEPARATE fields (never a joined
-//! name a reader would have to parse). The shape is strict: this pre-1.0
-//! writer/parser cut has no compatibility fallback.
+//! resolves it. The shape is `{"id", "config_schema"}`: which participant this
+//! binary implements, and the configuration it accepts. It is strict; this
+//! pre-1.0 writer/parser cut has no compatibility fallback, so a binary still
+//! carrying the retired contract inventory is rejected rather than partially
+//! understood.
 //!
 //! This module owns ONLY the JSON shape, not the object-file section-BYTES
 //! extraction, which stays host-specific (an `object`-crate walk over an
-//! ELF/Mach-O binary or a release tarball) in each consumer:
-//! `xtask/src/release/metadata.rs` for release packaging and suite generation,
-//! and `phoxal-cli`'s own `participant_metadata.rs` for the CLI. Both extract
-//! the section's raw bytes their own way, then hand them to
-//! [`parse_participant_metadata`] here so the JSON shape has exactly one
-//! definition shared by every reader.
+//! ELF/Mach-O binary) in the consumer: `phoxal-cli`'s own
+//! `participant_metadata.rs`. It extracts the section's raw bytes its own way,
+//! then hands them to [`parse_participant_metadata`] here so the JSON shape has
+//! exactly one definition.
 
 use serde::Deserialize;
 

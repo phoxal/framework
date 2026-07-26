@@ -173,16 +173,17 @@ impl StepStamp for WorldStepToken {
 /// world nobody schedules". It is minted only for the world-authority
 /// participant (the simulation controller), advances exactly one timeline, and
 /// is unavailable to ordinary services, tools, and external clients through any
-/// documented surface. A second authority in one process is rejected at mint,
-/// and the coherence checker rejects a graph in which two participants publish
-/// the clock contract.
+/// documented surface. A second authority in one process is rejected at mint.
+/// Across processes the invariant is a selection-time one: exactly one
+/// simulator participant is launched into a simulation, and only a simulator
+/// can mint world steps.
 pub struct TimelineAuthority {
     timeline: TimelineId,
 }
 
-/// One authority per process. The graph-level "exactly one authority per
-/// timeline" rule is enforced by the checker's exclusive-owner rule on the
-/// clock contract; this is the runtime backstop inside one process.
+/// One authority per process: the runtime backstop. The cross-process "exactly
+/// one authority" rule is a selection-time property of which participants are
+/// launched, not something this process can observe.
 static TIMELINE_AUTHORITY_HELD: AtomicBool = AtomicBool::new(false);
 
 impl TimelineAuthority {

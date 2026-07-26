@@ -146,17 +146,16 @@ pub trait ContractBody:
     /// [`VERSION`](ContractBody::VERSION) and
     /// [`CONTRACT`](ContractBody::CONTRACT); it stays available for callers
     /// that want the whole identity as one string (e.g. display), while
-    /// metadata recording splices the two split consts instead (coherence-gate
-    /// design doc §2 - a joined name is not machine-parseable without
-    /// assuming the version naming scheme).
+    /// consumers that must reason about the revision and the contract
+    /// independently use the two split consts instead - a joined name is not
+    /// machine-parseable without assuming the version naming scheme.
     const NAME: &'static str;
     /// This body's dotted wire revision alone, e.g. `"v0.1"` - equal to
     /// `<Self::Api as ApiVersion>::ID`, but exposed directly on the body so a
     /// metadata recorder (`#[derive(phoxal::Api)]`'s linker-section
     /// splicing) can const-splice it without routing through `Self::Api`.
-    /// Split from [`CONTRACT`](ContractBody::CONTRACT) so consumers (the
-    /// coherence gate and suite generator) record revision and contract as two
-    /// separate fields rather than parsing a joined name.
+    /// Split from [`CONTRACT`](ContractBody::CONTRACT) so a consumer can read
+    /// the revision without parsing a joined name.
     const VERSION: &'static str;
     /// This body's contract path within its own version: the `::`-joined
     /// node path (dynamic-node vars excluded, as with `NAME`) plus the

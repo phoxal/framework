@@ -1090,7 +1090,7 @@ fn expand_node_module(
         // exact same identity `contract_manifest_entries`' `family` computes for
         // the xtask manifest, kept in lockstep by construction (both derive it
         // from `family_path`/`version`). `VERSION`/`CONTRACT` are the split
-        // form of the same identity (coherence-gate design doc §2): `VERSION`
+        // form of the same identity: `VERSION`
         // is just `version` (already a plain literal at this point, not spliced
         // per-body), `CONTRACT` is `family_path::body` with the version
         // dropped - `NAME == VERSION + "::" + CONTRACT` by construction.
@@ -1645,7 +1645,7 @@ mod tests {
         );
         assert!(
             expanded.contains("const VERSION : & 'static str = \"v0.1\""),
-            "VERSION must be the bare version, split from CONTRACT (coherence-gate \
+            "VERSION must be the bare version, split from CONTRACT (\
              design §2): {expanded}"
         );
         assert!(
