@@ -55,7 +55,6 @@ jobs:
       publish: ${{ steps.train.outputs.publish }}
       crates: ${{ steps.train.outputs.crates }}
       source: ${{ steps.train.outputs.source }}
-      require-started: ${{ steps.train.outputs.require_started }}
       restore-tag: ${{ steps.train.outputs.restore_tag }}
       version: ${{ steps.train.outputs.version }}
       tag: ${{ steps.train.outputs.tag }}
@@ -104,27 +103,38 @@ jobs:
             # to be when release-plz ran - `v0.41.2` points at 3433a6c, three
             # commits past its own release commit - so only the release commit
             # identifies the source these versions describe.
+            # Match the SUBJECT, not the message. `--grep` searches the whole
+            # commit body and returns the newest hit, so any later commit that
+            # merely mentions this release in its body would win and be packaged
+            # in place of the real one.
             release_subject="chore(release): release $tag"
-            source="$(git log --format=%H --fixed-strings --grep="$release_subject" | head -1)"
+            source=""
+            while read -r sha subject; do
+              # GitHub squash-merges append " (#123)" to the subject.
+              if [[ "$subject" == "$release_subject" ]] \
+                || [[ "$subject" =~ ^"$release_subject"\ \(#[0-9]+\)$ ]]; then
+                source="$sha"
+                break
+              fi
+            done < <(git log --format='%H %s')
             [[ -n "$source" ]] || {
-              echo "no $release_subject commit found; nothing to resume" >&2
+              echo "no commit whose subject is exactly '$release_subject'; nothing to resume" >&2
               exit 1
             }
             git merge-base --is-ancestor "$source" HEAD || {
               echo "$release_subject is not an ancestor of main" >&2
               exit 1
             }
+            # A missing tag means release-plz died between publishing the last
+            # library and tagging - a state rerunning it cannot repair, because
+            # its already-published path returns before tagging. The tag is
+            # restored at the end, once the registry push has actually
+            # succeeded; doing it up front would turn this recoverable state
+            # into the harder "tag present, registry empty" one on any later
+            # failure.
             if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
-              # The tag exists, so the crates.io leg completed normally. Only a
-              # publication that actually STARTED may be resumed - otherwise
-              # this mode would happily publish a brand-new first train at an
-              # already-tagged version. The registry leg enforces that.
-              echo "require_started=true" >> "$GITHUB_OUTPUT"
+              echo "restore_tag=false" >> "$GITHUB_OUTPUT"
             else
-              # Libraries live but no tag: release-plz died between publishing
-              # and tagging. That state cannot be reached by rerunning it, so
-              # recreate the tag at the release commit and carry on.
-              echo "require_started=false" >> "$GITHUB_OUTPUT"
               echo "restore_tag=true" >> "$GITHUB_OUTPUT"
             fi
             echo "resuming the registry leg for $tag from $source"
@@ -221,6 +231,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TRAIN: ${{ needs.prepare.outputs.version }}
+      PHOXAL_REGISTRY: phoxal
     steps:
       # On a resume this is the prepared release commit, so the packaged bytes
       # describe the version being published. On a normal train it is the ref
@@ -238,6 +249,34 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libudev-dev
+
+      # The checked-out source must actually BE this train. This is what stops
+      # a resume publishing someone else's version: an old release commit
+      # predating the registry model selects no packages at all, and any commit
+      # carrying a different version is refused outright.
+      - name: Verify the checked-out source is this train
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrong=0
+          found=0
+          while read -r package version; do
+            found=$((found + 1))
+            if [[ "$version" != "$TRAIN" ]]; then
+              echo "::error::${package} is ${version} in this source, not ${TRAIN}"
+              wrong=1
+            fi
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
+          )
+          if [[ "$found" == "0" ]]; then
+            echo "::error::This source declares no packages for the ${PHOXAL_REGISTRY} registry."
+            echo "::error::It predates the registry release model, so it cannot be this train."
+            exit 1
+          fi
+          [[ "$wrong" == "0" ]] || exit 1
+          echo "all ${found} package(s) are ${TRAIN}"
 
       - name: Package every executable
         shell: bash
@@ -286,37 +325,6 @@ jobs:
       # Immutability is the registry's whole contract, so drop anything already
       # published rather than asking margo to overwrite it. A partly-published
       # train then resumes cleanly instead of failing.
-      - name: Refuse to "resume" a publication that never started
-        if: needs.prepare.outputs.require-started == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          started=0
-          for candidate in registry/crates/*/*/*/"${TRAIN}".crate; do
-            [[ -f "$candidate" ]] && { started=1; break; }
-          done
-          if [[ "$started" == "0" ]]; then
-            echo "::error::No package for ${TRAIN} exists in the registry, so there is"
-            echo "::error::nothing to resume. A first publication must go through the"
-            echo "::error::normal release path, which cuts a fresh version."
-            exit 1
-          fi
-          echo "found an existing ${TRAIN} package; resuming"
-
-      - name: Restore the missing train tag
-        if: needs.prepare.outputs.restore-tag == 'true'
-        shell: bash
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
-          SOURCE: ${{ needs.prepare.outputs.source }}
-        run: |
-          set -euo pipefail
-          git config user.name "phoxal-release-bot"
-          git config user.email "release-bot@phoxal.com"
-          git tag -a "$TAG" "$SOURCE" -m "Framework train $TAG"
-          git push origin "$TAG"
-          echo "recreated $TAG at the prepared release commit"
-
       - name: Drop already-published versions
         shell: bash
         run: |
@@ -428,6 +436,22 @@ jobs:
         working-directory: registry
         shell: bash
         run: git push origin main
+
+      # Last, deliberately: until the registry has landed there is nothing for
+      # the tag to describe, and an early tag would strand the next resume.
+      - name: Restore the missing train tag
+        if: needs.prepare.outputs.restore-tag == 'true'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE: ${{ needs.prepare.outputs.source }}
+        run: |
+          set -euo pipefail
+          git config user.name "phoxal-release-bot"
+          git config user.email "release-bot@phoxal.com"
+          git tag -a "$TAG" "$SOURCE" -m "Framework train $TAG"
+          git push origin "$TAG"
+          echo "recreated $TAG at the prepared release commit"
 
   release-plz-pr:
     name: prepare grouped release PR
