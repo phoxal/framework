@@ -559,8 +559,9 @@ impl ParticipantKind {
     /// sealing impl. `IsDriver`/`IsSimulator`/`IsTool` are sealed
     /// (`phoxal::participant::spec::sealing::Sealed`, organization#957) so
     /// that writing `impl IsSimulator for MyType` by hand - without going
-    /// through this macro - does not compile; only this expansion, which
-    /// names the hidden sealing path directly, can satisfy both bounds. See
+    /// through this macro - does not compile: the sealing bound is left
+    /// unsatisfied, and this expansion is the only thing that names the hidden
+    /// sealing path as a matter of course. See
     /// `phoxal::participant::spec::sealing`'s docs for the exact strength of
     /// that seal (it closes the accidental route, not a capability
     /// boundary - the sealing path is `#[doc(hidden)]`, not private, because

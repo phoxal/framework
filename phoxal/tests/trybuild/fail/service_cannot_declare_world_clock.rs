@@ -18,9 +18,10 @@
 //   `Self: IsSimulator`.
 // - `IsSimulator` itself is now a sealed marker
 //   (`phoxal::participant::spec::sealing::Sealed`), so a participant cannot
-//   unlock that gate by writing `impl IsSimulator for MyType` directly - the
-//   only impls that satisfy the seal are the ones `#[phoxal::simulator]`'s
-//   own macro expansion emits.
+//   unlock that gate by writing `impl IsSimulator for MyType` directly - that
+//   leaves the sealing bound unsatisfied. Satisfying it means also naming the
+//   hidden sealing path by hand, which is a deliberate act rather than
+//   something a participant does by accident.
 //
 // None of this makes the capability a sealed boundary in the absolute sense -
 // see `TimelineAuthority`'s and `IsSimulator`'s doc comments for the exact,

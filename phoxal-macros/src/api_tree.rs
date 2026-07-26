@@ -21,12 +21,14 @@
 //! `topic <leaf>: world_clock <Body>;` is a fifth, framework-reserved role: it
 //! wire-brands and reports `ROLE` exactly like `state` (owner publishes, client
 //! subscribes), but the generated body implements `WorldClockContract` instead
-//! of `StateContract`, so only the world-authority participant
-//! (`#[phoxal::simulator]`) can build a publisher for it
-//! (`phoxal::participant::api::SetupContextSimulatorExt::world_clock_publisher`).
-//! There is exactly one production use - `simulation::Clock` - and no reason for
-//! a second; this role exists to make "only a simulator may mint world time" a
-//! compiler rule rather than a doc comment (organization#957 leftover).
+//! of `StateContract`, so the ordinary `state_publisher` builder every
+//! participant has cannot name it; the only documented builder is
+//! `phoxal::participant::api::SetupContextSimulatorExt::world_clock_publisher`,
+//! gated on the `IsSimulator` marker. There is exactly one production use -
+//! `simulation::Clock` - and no reason for a second. This role exists to close
+//! the accidental route to minting world time; it is not an absolute seal, and
+//! `TimelineAuthority`'s docs state the exact strength of the guarantee
+//! (organization#957 leftover).
 //! A revision may extend exactly one earlier revision. The child is materialized
 //! as a complete concrete tree; inherited definitions are regenerated under the
 //! child's identity, while `replace` and `remove` make deltas explicit. Exactly

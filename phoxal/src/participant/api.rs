@@ -707,8 +707,9 @@ impl<R: Participant + IsDriver> SetupContextDriverExt for SetupContext<R> {
 /// This is also the only place in the documented authoring surface a
 /// participant can express world time (organization#957): minting this
 /// process's [`TimelineAuthority`], and building a publisher for the
-/// framework's own world-clock contract, both require `Self: IsSimulator`, a
-/// sealed marker only `#[phoxal::simulator]`'s macro expansion can implement.
+/// framework's own world-clock contract, both require `Self: IsSimulator`,
+/// which is sealed behind a supertrait the role macros emit - so `impl
+/// IsSimulator` alone does not unlock them.
 /// Neither is reachable from [`SetupContextApiExt`], which every participant
 /// gets - see [`timeline_authority`](SetupContextSimulatorExt::timeline_authority)
 /// and [`world_clock_publisher`](SetupContextSimulatorExt::world_clock_publisher).

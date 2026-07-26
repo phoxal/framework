@@ -187,9 +187,10 @@ impl StepStamp for WorldStepToken {
 /// (organization#957).** The documented authoring surface a participant
 /// writes against has exactly one path to an authority -
 /// `SetupContextSimulatorExt::timeline_authority` in the `phoxal` crate - and
-/// that trait's impl requires `Self: IsSimulator`, a sealed marker that only
-/// `#[phoxal::simulator]`'s macro expansion can implement (ordinary code
-/// cannot write `impl IsSimulator for MyType` any more). A
+/// that trait's impl requires `Self: IsSimulator`, which is sealed behind a
+/// supertrait the role macros emit: `impl IsSimulator for MyType` on its own
+/// no longer compiles, and satisfying the seal means deliberately implementing
+/// a second, hidden trait that exists only to be that barrier. A
 /// `#[phoxal::service]` or `#[phoxal::driver]` reaching for
 /// `ctx.timeline_authority(...)` therefore fails to compile, and this type is
 /// not re-exported from `phoxal::bus` or `phoxal::prelude`, so it never
