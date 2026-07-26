@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.40.2...phoxal-api-v0.41.0) - 2026-07-26
+
+### Added
+
+- [**breaking**] rebuild time, identity, and command liveness
+
 ## [0.40.2](https://github.com/phoxal/framework/compare/phoxal-api-v0.40.1...phoxal-api-v0.40.2) - 2026-07-25
 
 ### Added
