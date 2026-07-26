@@ -1,8 +1,13 @@
+//! `#[derive(phoxal::Config)]` schema tests: the const schema the derive emits
+//! must match a `schemars` oracle over the supported surface, and must accept
+//! exactly the documents `serde` accepts.
+//!
+//! These exercise macro output directly, without a bus or a runner.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
 
-use phoxal::participant::ParticipantConfig;
+use crate::participant::ParticipantConfig;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};

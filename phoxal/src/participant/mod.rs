@@ -39,4 +39,6 @@ pub use server::{ServerOutcome, ServerReply, Snapshot};
 pub use spec::{IsDriver, IsSimulator, IsTool, MissedTick, StepSchedule, TypedGraphSurface};
 
 #[cfg(test)]
+mod config_tests;
+#[cfg(test)]
 mod tests;

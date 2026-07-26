@@ -194,6 +194,68 @@ pub mod bus {
         TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
         WorldStepToken, encoding_string,
     };
+
+    /// Bus-ABI golden bindings against the train-selected API tree.
+    ///
+    /// The pure bus mechanics (encoding-string parsing, the codec fast-reject
+    /// in `decode_sample`, codec round-trips, namespace validation) are unit
+    /// tested in the `phoxal-bus` crate against a hand-written `ContractBody`.
+    /// These pin the *engine-level* binding: that the `phoxal_api_tree!`
+    /// generated `ContractBody`/`ApiVersion` impls for `v0_1` flow through the
+    /// re-exported wire slots above exactly as published, and that `TOPIC` is
+    /// version-qualified (D1).
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            BusMetadata, CodecId, ContractBody, ProducerId, RobotInstant, TimeWindow, TimelineId,
+            encoding_string,
+        };
+        use crate::api;
+
+        #[test]
+        fn encoding_string_carries_only_the_codec() {
+            let enc = encoding_string(CodecId::MessagePack);
+            assert_eq!(enc, "phoxal/v0;codec=1");
+        }
+
+        #[test]
+        fn contract_body_topic_is_version_qualified_on_the_real_tree() {
+            // D1: the revision is folded into the wire key, so a real v0.1
+            // contract publishes on a key that cannot collide with a
+            // hypothetical v0.2 contract of the same leaf name.
+            assert_eq!(
+                <api::drive::Target as ContractBody>::TOPIC,
+                "v0.1/drive/target"
+            );
+            assert_eq!(
+                <api::asset::GetRequest as ContractBody>::TOPIC,
+                "v0.1/asset/get"
+            );
+        }
+
+        #[test]
+        fn bus_metadata_for_a_real_body_round_trips() {
+            let timeline = TimelineId::mint();
+            let meta = BusMetadata {
+                codec: CodecId::MessagePack.as_u8(),
+                producer: ProducerId::mint(),
+                sequence: 9,
+                produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
+                participant: "tester".to_string(),
+            };
+            assert_eq!(BusMetadata::decode(&meta.encode()).unwrap(), meta);
+
+            // A command or diagnostic expresses no robot time, and that absence
+            // round trips as absence rather than as a zero instant.
+            let timeless = BusMetadata {
+                produced_at: None,
+                ..meta
+            };
+            let decoded = BusMetadata::decode(&timeless.encode()).unwrap();
+            assert_eq!(decoded, timeless);
+            assert_eq!(decoded.produced_exactly_at(), None);
+        }
+    }
 }
 
 /// Explicit raw/permissive bus surface for privileged participants, tooling,
