@@ -232,6 +232,8 @@ jobs:
     env:
       TRAIN: ${{ needs.prepare.outputs.version }}
       PHOXAL_REGISTRY: phoxal
+      # Pinned: this registry's margo-config.toml was written by 0.1.7.
+      MARGO_VERSION: "0.1.7"
     steps:
       # On a resume this is the prepared release commit, so the packaged bytes
       # describe the version being published. On a normal train it is the ref
@@ -364,14 +366,40 @@ jobs:
           echo "publishing $remaining package(s), skipped $skipped already-published"
           echo "REMAINING=$remaining" >> "$GITHUB_ENV"
 
+      # margo is called directly rather than through `integer32llc/margo-actions`.
+      # The action looked like the obvious choice, but at its only pinnable ref
+      # its input is `registry-dir`, not the `registry` its README documents -
+      # and an unknown input is silently ignored, so it published into `.` and
+      # failed on a missing margo-config.toml. It also pins margo 0.1.3
+      # internally, while this registry was created by 0.1.7. Two behaviours we
+      # do not control, in exchange for a download and a loop.
+      - name: Install margo
+        if: env.REMAINING != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            "https://github.com/integer32llc/margo/releases/download/${MARGO_VERSION}/margo-linux-x86_64.tar.gz" \
+            --output "$RUNNER_TEMP/margo.tar.gz"
+          tar -xzf "$RUNNER_TEMP/margo.tar.gz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/margo" --help >/dev/null 2>&1 || true
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Add the packages to the registry
         if: env.REMAINING != '0'
-        uses: integer32llc/margo-actions@12d1175e158c2b5640a34e99cf494d0fbebf41b8
-        with:
-          crates: target/package/*.crate
-          registry: registry
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          added=0
+          for crate in target/package/*.crate; do
+            margo add --registry registry "$crate"
+            added=$((added + 1))
+          done
+          echo "added $added package(s) to the registry"
+          [[ "$added" == "$REMAINING" ]] || {
+            echo "::error::added $added but expected $REMAINING"
+            exit 1
+          }
 
       - name: Commit the registry
         if: env.REMAINING != '0'
