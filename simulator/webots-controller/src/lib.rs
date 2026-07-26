@@ -45,6 +45,12 @@ const EMPTY_VOLTAGE_V: f64 = 12.0;
 const DRAW_CURRENT_A: f64 = 2.0;
 const CAPACITY_AH: f64 = 10.0;
 
+#[cfg(feature = "native-required")]
+const _: () = assert!(
+    webots_rs::WEBOTS_RUNTIME_LINKED,
+    "release packaging requires a native Webots runtime"
+);
+
 #[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 pub struct WebotsControllerConfig {

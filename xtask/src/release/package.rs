@@ -368,6 +368,12 @@ fn build_target_package_group(
     for package_name in package_names {
         command.args(["-p", package_name]);
     }
+    if package_names.contains(&"phoxal-simulator-webots-controller") {
+        command.args([
+            "--features",
+            "phoxal-simulator-webots-controller/native-required",
+        ]);
+    }
 
     run_cargo_build_command(
         command,
