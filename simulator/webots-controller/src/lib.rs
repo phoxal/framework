@@ -98,10 +98,7 @@ pub struct Api {
     speaker_streams: Vec<Subscriber<api::component::speaker::Chunk>>,
 }
 
-#[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
-pub struct WebotsControllerSimulator {
-    backend: SharedBackend,
-}
+
 
 struct ControllerRuntime {
     /// This controller's exclusive ownership of the world's timeline. It is
@@ -150,6 +147,11 @@ fn has_explicit_producer_arg(args: impl IntoIterator<Item = OsString>) -> bool {
                 .to_str()
                 .is_some_and(|arg| arg.starts_with("--producer-id="))
     })
+}
+
+#[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
+pub struct WebotsControllerSimulator {
+    backend: SharedBackend,
 }
 
 #[phoxal::behavior]

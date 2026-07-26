@@ -28,7 +28,7 @@ contract discipline is in [CONTRACTS.md](./CONTRACTS.md).
   hash. Only the codec and the produce-time stamp ride bus metadata, never the
   body or the key (see [CONTRACTS.md](./CONTRACTS.md)).
 - Endpoints use Zenoh endpoint syntax directly (`tcp/127.0.0.1:7447`,
-  `tcp/router:7447`); endpoint literals and device paths live in the
+  `tcp/router:7447` or socket); endpoint literals and device paths live in the
   manifest/launch layer, never in service source.
 - By convention each topic has one producer: products (state, telemetry) are read
   via `Subscriber`/`Latest` and commands are sent via `Publisher`, with the opposite
