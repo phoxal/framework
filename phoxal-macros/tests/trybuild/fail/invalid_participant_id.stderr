@@ -1,0 +1,5 @@
+error: invalid participant id 'Not Valid!': must be non-empty and contain only lowercase ASCII letters, digits, '_' or '-'
+ --> tests/trybuild/fail/invalid_participant_id.rs:8:16
+  |
+8 | #[service(id = "Not Valid!")]
+  |                ^^^^^^^^^^^^

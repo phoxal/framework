@@ -80,10 +80,8 @@ fn is_safe_relative(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Asset, is_safe_relative, resolve};
+    use super::{is_safe_relative, resolve};
     use phoxal::api;
-    use phoxal::bus::ContractBody;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     #[test]
     fn rejects_traversal_and_bad_paths() {
@@ -116,20 +114,5 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn api_declares_the_asset_get_serve_contract() {
-        assert_eq!(<Asset as Participant>::ID, "asset");
-
-        let contracts = <<Asset as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::asset::GetRequest as ContractBody>::TOPIC
-                && c.role == ContractRole::Serve
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::asset::GetResponse as ContractBody>::TOPIC
-                && c.role == ContractRole::Serve
-        }));
     }
 }

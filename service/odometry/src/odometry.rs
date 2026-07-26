@@ -312,14 +312,10 @@ mod tests {
     use std::f64::consts::PI;
     use std::path::PathBuf;
 
-    use phoxal::api;
-    use phoxal::bus::ContractBody;
     use phoxal::bus::{RobotInstant, TimelineId};
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::{
-        ENCODER_STALE, Odometry, OdometryConfig, average_side, forward, integrate_pose,
-        normalize_yaw,
+        ENCODER_STALE, OdometryConfig, average_side, forward, integrate_pose, normalize_yaw,
     };
 
     fn fixture() -> PathBuf {
@@ -423,20 +419,5 @@ mod tests {
             assert!(topic.key().starts_with("v0.1/component/"));
             assert!(topic.key().ends_with("/sample"));
         }
-    }
-
-    #[test]
-    fn api_reports_contracts() {
-        assert_eq!(<Odometry as Participant>::ID, "odometry");
-
-        let contracts = <<Odometry as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC
-                && c.role == ContractRole::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::odometry::State as ContractBody>::TOPIC
-                && c.role == ContractRole::Publish
-        }));
     }
 }

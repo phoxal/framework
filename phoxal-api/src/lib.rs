@@ -33,9 +33,10 @@
 //! A participant declares its bus surface with a companion
 //! `#[derive(phoxal::Api)]` handle struct.
 //! Official handle fields name types through the complete train-selected facade.
-//! The derive records each field's resolved [`ContractBody::VERSION`] and
-//! [`ContractBody::CONTRACT`] in the participant's embedded metadata and does
-//! not declare a participant-wide API version.
+//! The derive does not declare a participant-wide API version, or record any
+//! per-field contract identity in the participant's embedded metadata: the
+//! embedded static carries only `{id, config_schema}`, never a contract
+//! inventory (organization#957).
 //! Across the graph, compatibility is **name identity** (D1) - two participants
 //! interoperate on a contract iff they use the exact same version-qualified name
 //! (`v0.1::drive::Target`), which is real on the wire because the revision
@@ -1121,14 +1122,19 @@ phoxal_api_tree! {
             /// the world advanced; silence means it did not.
             ///
             /// The timeline and instant ride in the envelope, like every other
-            /// `state` publication - the world authority stamps them with a
-            /// world step token. The body carries only the step counter, which
+            /// `state`-shaped publication - the world authority stamps them with
+            /// a world step token. The body carries only the step counter, which
             /// is not derivable from the envelope.
             struct Clock {
                 step: u64,
             }
 
-            topic clock: state Clock;
+            // `world_clock`, not `state`: only the world-authority participant
+            // (`#[phoxal::simulator]`) may publish it, enforced at compile time
+            // by the disjoint `WorldClockContract` this role generates instead
+            // of `StateContract` (organization#957 leftover - see
+            // `phoxal_bus::contract::WorldClockContract`'s docs).
+            topic clock: world_clock Clock;
         }
 
         // Per-instance component capabilities (D17/D38: framework participant / driver

@@ -166,16 +166,8 @@ pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// connection, declared for `#[phoxal::behavior]`'s `#[server(api = …)]` /
 /// `#[server_snapshot(api = …)]` to implement. A `Vec`/`BTreeMap`/`HashMap` of a
 /// handle carries the inner handle's declaration. Official participants name
-/// the train-selected complete revision through `phoxal::api`. Also
-/// emits the const contract JSON fragment that the participant attribute puts
-/// in the linker section alongside its config schema.
-///
-/// A `subscribe`/`ask` field may carry `#[phoxal(external)]` (coherence-gate
-/// design doc §1) to mark that its counterpart legitimately lives outside the
-/// checked participant set; it is a compile error on a `publish`/`serve`
-/// field, and a compile error for two fields naming the same `(role,
-/// contract)` to disagree on the marker.
-#[proc_macro_derive(Api, attributes(phoxal))]
+/// the train-selected complete revision through `phoxal::api`.
+#[proc_macro_derive(Api)]
 pub fn derive_api(input: TokenStream) -> TokenStream {
     authoring::expand_api(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)

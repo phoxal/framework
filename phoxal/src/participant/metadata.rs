@@ -1,65 +1,33 @@
-//! Shared deserialization of the participant linker-section
-//! metadata JSON (coherence-gate design doc §2/§5).
+//! Shared deserialization of the participant linker-section metadata JSON.
 //!
 //! A participant attribute (`phoxal-macros/src/authoring.rs`) embeds one JSON
-//! manifest per participant binary in a dedicated linker section - see
+//! object per participant binary in a dedicated linker section - see
 //! `phoxal::participant::api::__meta` for the const-eval mechanism that
-//! resolves it. The entry shape is `{"role","version","contract","external"}`:
-//! version and contract are recorded as SEPARATE fields (never a joined
-//! name a reader would have to parse). The shape is strict: this pre-1.0
-//! writer/parser cut has no compatibility fallback.
+//! resolves it. The shape is `{"id", "config_schema"}`: which participant this
+//! binary implements, and the configuration it accepts. It is strict; this
+//! pre-1.0 writer/parser cut has no compatibility fallback, so a binary still
+//! carrying the retired contract inventory is rejected rather than partially
+//! understood.
 //!
 //! This module owns ONLY the JSON shape, not the object-file section-BYTES
 //! extraction, which stays host-specific (an `object`-crate walk over an
-//! ELF/Mach-O binary or a release tarball) in each consumer:
-//! `xtask/src/release/metadata.rs` for release packaging and suite generation,
-//! and `phoxal-cli`'s own `participant_metadata.rs` for the CLI. Both extract
-//! the section's raw bytes their own way, then hand them to
-//! [`parse_participant_metadata`] here so the JSON shape has exactly one
-//! definition shared by every reader.
+//! ELF/Mach-O binary) in the consumer: `phoxal-cli`'s own
+//! `participant_metadata.rs`. It extracts the section's raw bytes its own way,
+//! then hands them to [`parse_participant_metadata`] here so the JSON shape has
+//! exactly one definition.
 
 use serde::Deserialize;
-
-/// One `{"role","version","contract","external"}` entry from the embedded
-/// manifest: one participant `Api` struct field's role for one contract (a
-/// `Server<Req, Resp>`/`Querier<Req, Resp>` field contributes two entries -
-/// one per side). Deduplicated per `(role, contract)` by the derive
-/// (`phoxal-macros/src/authoring.rs`); there is no `field` key - dedup already
-/// made it name an arbitrary first field, and nothing read it (coherence-gate
-/// design doc §2).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ParticipantMetaContract {
-    /// `"publish"`, `"subscribe"`, `"serve"`, or `"ask"`
-    /// (`phoxal::participant::ContractRole`, snake_case).
-    pub role: String,
-    /// The contract's dotted wire revision, e.g. `"v0.1"`
-    /// (`<Body as phoxal_bus::ContractBody>::VERSION`).
-    pub version: String,
-    /// The contract's path within its version, e.g. `"drive::Target"`
-    /// (`<Body as phoxal_bus::ContractBody>::CONTRACT`). The **logical
-    /// contract** for coherence purposes is this field alone - two entries
-    /// with the same `contract` but different `version` name the same
-    /// logical contract at different versions; the version-qualified
-    /// identity is the `version`/`contract` join.
-    pub contract: String,
-    /// Whether this edge is excused from the coherence check
-    /// (`#[phoxal(external)]`, coherence-gate design doc §1): the counterpart
-    /// is known, at authoring time, to legitimately live outside the checked
-    /// participant set. Only ever `true` for a `subscribe`/`ask` entry - the
-    /// derive rejects the attribute on `publish`/`serve` fields.
-    pub external: bool,
-}
 
 /// The embedded metadata manifest for one participant. This is a strict
 /// pre-1.0 format whose writer and parsers move in lockstep.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantMeta {
-    /// The `Api` struct's type name (e.g. `"Api"`), recorded purely as
-    /// provenance by `#[derive(phoxal::Api)]`.
-    pub participant_api: String,
-    pub contracts: Vec<ParticipantMetaContract>,
+    /// The participant's declared identity - the `id` given to its role
+    /// attribute, e.g. `#[phoxal::service(id = "drive")]`. This is what lets a
+    /// consumer name the participant a binary implements without inferring it
+    /// from a path.
+    pub id: String,
     /// The participant's compile-time Draft 2020-12 config schema.
     pub config_schema: serde_json::Value,
 }
@@ -77,55 +45,20 @@ mod tests {
 
     #[test]
     fn parses_the_current_section_shape() {
-        let json = br#"{"participant_api":"Api","contracts":[
-            {"role":"subscribe","version":"v1","contract":"drive::Target","external":false},
-            {"role":"publish","version":"v1","contract":"drive::State","external":false}
-        ],"config_schema":{"type":"object","properties":{"speed":{"type":"number"}}}}"#;
+        let json = br#"{"id":"drive","config_schema":{"type":"object","properties":{"speed":{"type":"number"}}}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
-        assert_eq!(meta.participant_api, "Api");
+        assert_eq!(meta.id, "drive");
         assert_eq!(meta.config_schema["type"], "object");
-        assert_eq!(
-            meta.contracts,
-            vec![
-                ParticipantMetaContract {
-                    role: "subscribe".to_string(),
-                    version: "v1".to_string(),
-                    contract: "drive::Target".to_string(),
-                    external: false,
-                },
-                ParticipantMetaContract {
-                    role: "publish".to_string(),
-                    version: "v1".to_string(),
-                    contract: "drive::State".to_string(),
-                    external: false,
-                },
-            ]
-        );
     }
 
+    /// A configless participant still names itself. `config = ()` serialises as
+    /// the null schema, so identity is the only field carrying information.
     #[test]
-    fn external_true_is_recorded() {
-        let json = br#"{"participant_api":"Api","contracts":[
-            {"role":"subscribe","version":"v1","contract":"drive::Target","external":true}
-        ],"config_schema":{"type":"null"}}"#;
+    fn a_configless_participant_still_carries_its_id() {
+        let json = br#"{"id":"joypad","config_schema":{"type":"null"}}"#;
         let meta = parse_participant_metadata(json).expect("valid metadata JSON");
-        assert!(meta.contracts[0].external);
-    }
-
-    #[test]
-    fn missing_external_key_is_rejected() {
-        let json = br#"{"participant_api":"Api","contracts":[
-            {"role":"publish","version":"v1","contract":"drive::State"}
-        ],"config_schema":{"type":"null"}}"#;
-        let err = parse_participant_metadata(json).unwrap_err();
-        assert!(err.to_string().contains("external"));
-    }
-
-    #[test]
-    fn empty_contracts_list_parses() {
-        let json = br#"{"participant_api":"()","contracts":[],"config_schema":{"type":"null"}}"#;
-        let meta = parse_participant_metadata(json).expect("valid metadata JSON");
-        assert!(meta.contracts.is_empty());
+        assert_eq!(meta.id, "joypad");
+        assert_eq!(meta.config_schema["type"], "null");
     }
 
     #[test]
@@ -136,8 +69,23 @@ mod tests {
 
     #[test]
     fn missing_config_schema_is_rejected() {
-        let err =
-            parse_participant_metadata(br#"{"participant_api":"Api","contracts":[]}"#).unwrap_err();
+        let err = parse_participant_metadata(br#"{"id":"drive"}"#).unwrap_err();
         assert!(err.to_string().contains("config_schema"));
+    }
+
+    #[test]
+    fn missing_id_is_rejected() {
+        let err = parse_participant_metadata(br#"{"config_schema":{"type":"null"}}"#).unwrap_err();
+        assert!(err.to_string().contains("id"));
+    }
+
+    /// The contract inventory is gone, not optional: a section still carrying
+    /// one is a stale binary, and `deny_unknown_fields` says so rather than
+    /// silently ignoring it (organization#957).
+    #[test]
+    fn a_stale_section_with_a_contract_inventory_is_rejected() {
+        let json = br#"{"id":"drive","contracts":[],"config_schema":{"type":"null"}}"#;
+        let err = parse_participant_metadata(json).unwrap_err();
+        assert!(err.to_string().contains("contracts"), "{err}");
     }
 }

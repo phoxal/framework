@@ -115,10 +115,7 @@ fn gnss_sample() -> api::component::gnss::Sample {
 
 #[cfg(test)]
 mod tests {
-    use super::{ZedF9p, divisor_for_rate, gnss_sample};
-    use phoxal::api;
-    use phoxal::bus::ContractBody;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
+    use super::{divisor_for_rate, gnss_sample};
 
     #[test]
     fn divisor_and_stub_sample_are_stable() {
@@ -128,20 +125,5 @@ mod tests {
         let sample = gnss_sample();
         assert_eq!(sample.latitude, 0.0);
         assert_eq!(sample.position_covariance, [0.0; 9]);
-    }
-
-    #[test]
-    fn api_reports_per_component_contracts() {
-        assert_eq!(<ZedF9p as Participant>::ID, "zed_f9p");
-
-        let contracts = <<ZedF9p as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(
-            contracts.iter().any(|c| {
-                c.topic == <api::component::gnss::Sample as ContractBody>::TOPIC
-                    && c.role == ContractRole::Publish
-            }),
-            "expected a Publish contract for {} in {contracts:?}",
-            <api::component::gnss::Sample as ContractBody>::TOPIC
-        );
     }
 }

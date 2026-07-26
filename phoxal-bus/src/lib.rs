@@ -41,13 +41,13 @@ pub use abi::{CodecId, encoding_string, parse_encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,
-    StateContract, TopicRole,
+    StateContract, TopicRole, WorldClockContract,
 };
 pub use error::{BusError, Result};
 pub use handle::{
     CommandPublisher, DEFAULT_QUERY_TIMEOUT, DiagnosticPublisher, Latest, MeasurementPublisher,
     Observed, Querier, StatePublisher, StepStamp, StepToken, Subscriber, TimelineAuthority,
-    WorldStepToken,
+    WorldClockPublisher, WorldStepToken,
 };
 pub use identity::{ExecutionId, InvalidIdentity, ProducerId, TimelineId};
 pub use lease::{LEASE_TRACE_TARGET, Lease, LeaseDecision, LeaseRejection, ProducerFence};

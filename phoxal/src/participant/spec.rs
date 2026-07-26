@@ -5,13 +5,37 @@
 //!   `#[phoxal::tool]` runners.
 //! - [`IsDriver`]/[`IsSimulator`]/[`IsTool`] are emitted by the matching
 //!   attribute macro and gate the kind-specific `SetupContext` accessors
-//!   (`component()`, `raw_bus()`) in `participant::api`.
+//!   (`component()`, `raw_bus()`, and - for [`IsSimulator`] - world-clock
+//!   authority) in `participant::api`. All three are sealed (see
+//!   [`sealing::Sealed`]): ordinary participant code cannot write
+//!   `impl IsSimulator for MyType` and unlock those accessors on a type the
+//!   matching macro never blessed.
 //! - [`StepSchedule`]/[`MissedTick`] describe a `#[step(hz = …)]` loop's cadence
 //!   and overrun policy; the runner ([`participant::runner`](super::runner))
 //!   reads them from
 //!   [`ParticipantLifecycle::__step_schedule`](super::api::ParticipantLifecycle::__step_schedule).
 
 use std::time::Duration;
+
+/// The sealing boundary for [`IsDriver`]/[`IsSimulator`]/[`IsTool`]
+/// (organization#957).
+///
+/// This module is `pub` - not truly private - because the marker impls it
+/// gates are written by `#[phoxal::driver|simulator|tool]`'s macro expansion,
+/// which runs in the *downstream* participant crate, not this one. Rust has
+/// no visibility level between "this crate" and "the world" that a
+/// cross-crate macro expansion could still reach, so this cannot be a true
+/// `pub(crate)` seal. It is `#[doc(hidden)]` and named so a participant would
+/// have to go out of their way to find and write this exact path; a
+/// participant that does can still `impl sealing::Sealed for MyType {}` and
+/// then `impl IsSimulator for MyType {}` by hand. That closes the
+/// *accidental* route (writing `impl IsSimulator for MyType` alone no longer
+/// compiles), not a sealed capability boundary.
+#[doc(hidden)]
+pub mod sealing {
+    /// See the [module docs](self) for the exact strength of this seal.
+    pub trait Sealed {}
+}
 
 /// Marker emitted only by checked participant macros that expose the typed graph
 /// surface (`#[step]` / `#[reset]` / `#[server]` / `#[server_snapshot]`).
@@ -21,17 +45,21 @@ use std::time::Duration;
 )]
 pub trait TypedGraphSurface {}
 
-/// Marker emitted only by `#[phoxal::driver]`.
+/// Marker emitted only by `#[phoxal::driver]`. Sealed - see [`sealing`].
 #[doc(hidden)]
-pub trait IsDriver {}
+pub trait IsDriver: sealing::Sealed {}
 
-/// Marker emitted only by `#[phoxal::tool]`.
+/// Marker emitted only by `#[phoxal::tool]`. Sealed - see [`sealing`].
 #[doc(hidden)]
-pub trait IsTool {}
+pub trait IsTool: sealing::Sealed {}
 
-/// Marker emitted only by `#[phoxal::simulator]`.
+/// Marker emitted only by `#[phoxal::simulator]`. Sealed - see [`sealing`]:
+/// this is what keeps an arbitrary participant from unlocking the
+/// `SetupContextSimulatorExt` world-clock accessors
+/// (`phoxal::participant::api`) by writing `impl IsSimulator for MyType {}`
+/// on its own.
 #[doc(hidden)]
-pub trait IsSimulator {}
+pub trait IsSimulator: sealing::Sealed {}
 
 /// The cadence + missed-tick policy of a `#[step(hz = …)]` loop (D34).
 #[derive(Clone, Copy, Debug)]

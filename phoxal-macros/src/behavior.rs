@@ -146,7 +146,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let (snapshot_ty, take_snapshot, has_snapshot) = snapshot_items(snapshot.as_ref());
     let exclusive_topics = topic_list(servers.iter().map(|s| &s.req_ty));
     let snapshot_topics = topic_list(snapshot_servers.iter().map(|s| &s.req_ty));
-    let server_contracts = server_contracts(&servers, &snapshot_servers);
     let serve_exclusive = serve_exclusive(&servers);
     let serve_snapshot = serve_snapshot(&snapshot_servers);
     let validate_server_topics = validate_server_topics(&servers, &snapshot_servers);
@@ -230,8 +229,6 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
         #server_field_assertions
 
         impl #phoxal::participant::ParticipantLifecycle for #self_ty {
-            const SERVER_CONTRACTS: &'static [#phoxal::participant::ApiContractUse] = #server_contracts;
-
             type Snapshot = #snapshot_ty;
             const HAS_SNAPSHOT: bool = #has_snapshot;
 
@@ -428,28 +425,6 @@ fn topic_list<'a>(req_tys: impl Iterator<Item = &'a Type>) -> TokenStream {
         const TOPICS: &[&str] = &[ #(#entries),* ];
         TOPICS
     })
-}
-
-fn server_contracts(servers: &[ServerFn], snapshot_servers: &[SnapshotServerFn]) -> TokenStream {
-    let mut entries = Vec::new();
-    for s in servers {
-        entries.push(contract_entry(&s.req_ty));
-        entries.push(contract_entry(&s.resp_ty));
-    }
-    for s in snapshot_servers {
-        entries.push(contract_entry(&s.req_ty));
-        entries.push(contract_entry(&s.resp_ty));
-    }
-    quote!(&[ #(#entries),* ])
-}
-
-fn contract_entry(ty: &Type) -> TokenStream {
-    quote! {
-        ::phoxal::participant::ApiContractUse {
-            topic: <#ty as ::phoxal::bus::ContractBody>::TOPIC,
-            role: ::phoxal::participant::ContractRole::Serve,
-        }
-    }
 }
 
 fn validate_server_topics(

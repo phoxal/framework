@@ -6,13 +6,13 @@ error[E0277]: the trait bound `phoxal::api::drive::Target: StateContract` is not
    |
    = help: the following other types implement trait `StateContract`:
              Candidate
-             Clock
              Detections
              JointState
              LocalizationState
              MotionConstraints
              Progress
              Revision
+             StaticTransforms
            and $N others
 note: required by a bound in `phoxal::bus::StatePublisher`
   --> $WORKSPACE/phoxal-bus/src/handle.rs
@@ -26,7 +26,7 @@ note: required by a bound in `phoxal::bus::StatePublisher`
    | |     StateContract,
    | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
 ...  |
-   | |      safe to call from the step loop (D35/D43e)."
+   | |      be named here; see [`WorldClockPublisher`]."
    | | );
    | |_- in this macro invocation
    = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
@@ -72,13 +72,13 @@ error[E0277]: the trait bound `phoxal::api::component::imu::Sample: StateContrac
    |
    = help: the following other types implement trait `StateContract`:
              Candidate
-             Clock
              Detections
              JointState
              LocalizationState
              MotionConstraints
              Progress
              Revision
+             StaticTransforms
            and $N others
 note: required by a bound in `phoxal::bus::StatePublisher`
   --> $WORKSPACE/phoxal-bus/src/handle.rs
@@ -92,7 +92,7 @@ note: required by a bound in `phoxal::bus::StatePublisher`
    | |     StateContract,
    | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
 ...  |
-   | |      safe to call from the step loop (D35/D43e)."
+   | |      be named here; see [`WorldClockPublisher`]."
    | | );
    | |_- in this macro invocation
    = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
@@ -105,13 +105,13 @@ error[E0277]: the trait bound `phoxal::api::drive::Target: StateContract` is not
   |
   = help: the following other types implement trait `StateContract`:
             Candidate
-            Clock
             Detections
             JointState
             LocalizationState
             MotionConstraints
             Progress
             Revision
+            StaticTransforms
           and $N others
 note: required by a bound in `phoxal::bus::StatePublisher`
  --> $WORKSPACE/phoxal-bus/src/handle.rs
@@ -125,7 +125,7 @@ note: required by a bound in `phoxal::bus::StatePublisher`
   | |     StateContract,
   | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
 ... |
-  | |      safe to call from the step loop (D35/D43e)."
+  | |      be named here; see [`WorldClockPublisher`]."
   | | );
   | |_- in this macro invocation
   = note: this error originates in the derive macro `phoxal::Api` which comes from the expansion of the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
@@ -171,13 +171,13 @@ error[E0277]: the trait bound `phoxal::api::component::imu::Sample: StateContrac
   |
   = help: the following other types implement trait `StateContract`:
             Candidate
-            Clock
             Detections
             JointState
             LocalizationState
             MotionConstraints
             Progress
             Revision
+            StaticTransforms
           and $N others
 note: required by a bound in `phoxal::bus::StatePublisher`
  --> $WORKSPACE/phoxal-bus/src/handle.rs
@@ -191,7 +191,7 @@ note: required by a bound in `phoxal::bus::StatePublisher`
   | |     StateContract,
   | |     "Publishes state at a logical step.\n\nThe step instant comes from a \
 ... |
-  | |      safe to call from the step loop (D35/D43e)."
+  | |      be named here; see [`WorldClockPublisher`]."
   | | );
   | |_- in this macro invocation
   = note: this error originates in the derive macro `phoxal::Api` which comes from the expansion of the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)

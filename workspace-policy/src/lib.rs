@@ -1,3 +1,12 @@
+//! Workspace policy: the rules the framework workspace must obey as a whole,
+//! and the tests that enforce them.
+//!
+//! No single crate owns these facts - that a package's directory, name and
+//! `publish` field agree, that official tools stay off the logical clock, that
+//! the zenoh dependency set keeps transport compression disabled - so they live
+//! here, in a crate whose only purpose is to be a test target under
+//! `cargo test --workspace`.
+
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -7,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"];
-const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["xtask", "fixture"];
+const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["workspace-policy", "fixture"];
 
 /// Official Phoxal packages always use this provider segment in their public
 /// `package` identity (`phoxal/<name>`). Third-party suites use their own
@@ -32,7 +41,7 @@ pub enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    /// The suite's serialized artifact `kind` tag (`xtask/src/suite.rs`).
+    /// The suite's serialized artifact `kind` tag.
     pub fn suite_kind(self) -> &'static str {
         match self {
             ArtifactKind::Service => "service",
@@ -41,11 +50,6 @@ impl ArtifactKind {
             ArtifactKind::Simulator => "simulator",
             ArtifactKind::Infrastructure => "infrastructure",
         }
-    }
-
-    /// Whether binaries of this kind participate in the API coherence graph.
-    pub fn embeds_participant_metadata(self) -> bool {
-        !matches!(self, ArtifactKind::Infrastructure)
     }
 }
 
@@ -445,7 +449,7 @@ mod tests {
     fn official_tools_do_not_import_logical_clock_surfaces() -> Result<()> {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .context("xtask manifest directory has no workspace parent")?;
+            .context("workspace-policy manifest directory has no workspace parent")?;
         let mut sources = Vec::new();
         visit_rust_sources(&workspace_root.join("tool"), &mut sources)?;
         let forbidden = [
@@ -479,7 +483,7 @@ mod tests {
     fn official_periodic_tools_skip_missed_ticks() -> Result<()> {
         let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .context("xtask manifest directory has no workspace parent")?;
+            .context("workspace-policy manifest directory has no workspace parent")?;
         for tool in ["joypad", "bus", "device"] {
             let source = workspace_root
                 .join("tool")
@@ -499,7 +503,7 @@ mod tests {
     fn zenoh_dependency_profiles_keep_transport_compression_disabled() -> Result<()> {
         let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .context("xtask manifest directory has no workspace parent")?
+            .context("workspace-policy manifest directory has no workspace parent")?
             .join("Cargo.toml");
         let document = fs::read_to_string(&workspace_manifest)?
             .parse::<toml_edit::DocumentMut>()
@@ -562,7 +566,7 @@ mod tests {
     fn real_workspace_release_scope_is_valid() -> Result<()> {
         let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .context("xtask manifest directory has no workspace parent")?
+            .context("workspace-policy manifest directory has no workspace parent")?
             .join("Cargo.toml");
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
@@ -687,13 +691,13 @@ mod tests {
     }
 
     #[test]
-    fn library_xtask_and_fixture_paths_are_excluded() -> Result<()> {
+    fn library_policy_and_fixture_paths_are_excluded() -> Result<()> {
         assert_eq!(
             classify("phoxal/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         assert_eq!(
-            classify("xtask/Cargo.toml")?,
+            classify("workspace-policy/Cargo.toml")?,
             ManifestClassification::Excluded
         );
         assert_eq!(

@@ -136,13 +136,9 @@ fn localization_from(
 #[cfg(test)]
 mod tests {
     use phoxal::api;
-    use phoxal::bus::ContractBody;
     use phoxal::bus::{RobotInstant, TimelineId};
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
-    use super::{
-        Duration, LOCALIZE_STALE, Localize, confidence_for, localization_from, odometry_is_usable,
-    };
+    use super::{Duration, LOCALIZE_STALE, confidence_for, localization_from, odometry_is_usable};
 
     #[test]
     fn confidence_decays_with_age() {
@@ -207,20 +203,5 @@ mod tests {
             "a sample from a replaced world is incomparable, never usable"
         );
         assert!(odometry_is_usable(Some(&(state(f64::NAN), at(now.ticks()))), now).is_err());
-    }
-
-    #[test]
-    fn api_reports_contracts() {
-        assert_eq!(<Localize as Participant>::ID, "localize");
-
-        let contracts = <<Localize as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::odometry::State as ContractBody>::TOPIC
-                && c.role == ContractRole::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::localize::LocalizationState as ContractBody>::TOPIC
-                && c.role == ContractRole::Publish
-        }));
     }
 }

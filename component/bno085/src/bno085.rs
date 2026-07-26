@@ -208,10 +208,7 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bno085, divisor_for_rate, is_due};
-    use phoxal::api;
-    use phoxal::bus::ContractBody;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
+    use super::{divisor_for_rate, is_due};
 
     #[test]
     fn divisor_rounds_to_fixed_step_clock() {
@@ -221,24 +218,5 @@ mod tests {
         assert_eq!(divisor_for_rate(100.0, 1000.0), 1);
         assert!(is_due(10, 5));
         assert!(!is_due(11, 5));
-    }
-
-    #[test]
-    fn api_reports_per_component_contracts() {
-        assert_eq!(<Bno085 as Participant>::ID, "bno085");
-
-        let contracts = <<Bno085 as Participant>::Api as ParticipantApi>::CONTRACTS;
-        for family in [
-            <api::component::imu::Sample as ContractBody>::TOPIC,
-            <api::component::accelerometer::Sample as ContractBody>::TOPIC,
-            <api::component::gyroscope::Sample as ContractBody>::TOPIC,
-        ] {
-            assert!(
-                contracts
-                    .iter()
-                    .any(|c| { c.topic == family && c.role == ContractRole::Publish }),
-                "missing Publish contract for {family}"
-            );
-        }
     }
 }
