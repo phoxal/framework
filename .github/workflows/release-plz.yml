@@ -209,15 +209,34 @@ jobs:
         run: |
           set -euo pipefail
           skipped=0
-          for crate in target/package/*.crate; do
-            name="$(basename "$crate")"
-            if [[ -n "$(find registry/crates -name "$name" -print -quit 2>/dev/null)" ]]; then
-              echo "  already published, skipping: $name"
-              rm "$crate"
+          # margo stores an artifact as crates/<prefix>/<prefix>/<name>/<version>.crate,
+          # so the published file is named for the VERSION, not the package. Glob
+          # the prefix directories rather than reimplementing Cargo's prefix rule.
+          while read -r package version; do
+            local_crate="target/package/${package}-${version}.crate"
+            [[ -f "$local_crate" ]] || { echo "::error::expected $local_crate"; exit 1; }
+            published="$(ls registry/crates/*/*/"$package"/"$version".crate 2>/dev/null | head -1 || true)"
+            [[ -n "$published" ]] || continue
+
+            # Same version already in the registry. Resume only if it is the
+            # same artifact: identical content means an earlier run of THIS
+            # train got that far. Different content means the version would
+            # have to change to describe this build, and versions are
+            # immutable - so stop rather than publish a contradiction.
+            if [[ "$(sha256sum < "$local_crate")" == "$(sha256sum < "$published")" ]]; then
+              echo "  already published, skipping: ${package} ${version}"
+              rm "$local_crate"
               skipped=$((skipped + 1))
+            else
+              echo "::error::${package} ${version} is already published with different content."
+              echo "::error::Published versions are immutable; cut a new patch train instead."
+              exit 1
             fi
-          done
-          remaining=$(find target/package -name '*.crate' | wc -l)
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
+          )
+          remaining=$(find target/package -maxdepth 1 -name '*.crate' | wc -l | tr -d ' ')
           echo "publishing $remaining package(s), skipped $skipped already-published"
           echo "REMAINING=$remaining" >> "$GITHUB_ENV"
 
