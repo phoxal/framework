@@ -2,13 +2,13 @@
 # grammar every official package must obey, plus a handful of hygiene guards that
 # assert facts about the workspace as a whole.
 #
-# This crate has no command. It was `cargo xtask`'s home until the API-coherence
-# gate - its last remaining verb - was deleted with the rest of that machinery
-# (organization#957); the release verbs had already gone with the archive release
-# model (organization#951). What is left is a library that exists to be a test
-# target, so `cargo test --workspace` keeps enforcing the policy.
+# This crate has no command, and is deliberately not called `xtask`: that name
+# promises a `cargo xtask` command runner, and the last verb went with the
+# API-coherence gate (organization#957) after the release verbs went with the
+# archive release model (organization#951). What is left is a library that
+# exists to be a test target, so `cargo test --workspace` enforces the policy.
 [package]
-name = "xtask"
+name = "workspace-policy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,3 @@
-[alias]
-xtask = "run --package xtask --"
-
 # The static registry this workspace's executables publish to
 # (organization#951, Decision 2). Committed here rather than passed per
 # invocation because everything that touches this workspace needs it:

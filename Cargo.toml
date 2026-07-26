@@ -46,10 +46,11 @@ members = [
     "tool/bus",
     "tool/device",
     "tool/telemetry",
-    "xtask",
+    "workspace-policy",
 ]
 # Keep the internal automation crate out of plain root cargo builds.
-# Invariant: default-members must contain every workspace member except xtask.
+# Invariant: default-members must contain every workspace member except
+# workspace-policy.
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [
