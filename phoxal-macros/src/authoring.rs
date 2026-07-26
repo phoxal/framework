@@ -555,20 +555,35 @@ impl ParticipantKind {
         }
     }
 
+    /// Emits both the kind marker (`IsDriver`/`IsSimulator`/`IsTool`) and its
+    /// sealing impl. `IsDriver`/`IsSimulator`/`IsTool` are sealed
+    /// (`phoxal::participant::spec::sealing::Sealed`, organization#957) so
+    /// that writing `impl IsSimulator for MyType` by hand - without going
+    /// through this macro - does not compile; only this expansion, which
+    /// names the hidden sealing path directly, can satisfy both bounds. See
+    /// `phoxal::participant::spec::sealing`'s docs for the exact strength of
+    /// that seal (it closes the accidental route, not a capability
+    /// boundary - the sealing path is `#[doc(hidden)]`, not private, because
+    /// this expansion runs in the downstream participant crate).
     fn marker_impl(self, phoxal: &TokenStream, struct_name: &Ident) -> TokenStream {
         match self {
             ParticipantKind::Service => {
                 quote!(impl #phoxal::participant::TypedGraphSurface for #struct_name {})
             }
             ParticipantKind::Driver => quote! {
+                impl #phoxal::participant::spec::sealing::Sealed for #struct_name {}
                 impl #phoxal::participant::IsDriver for #struct_name {}
                 impl #phoxal::participant::TypedGraphSurface for #struct_name {}
             },
             ParticipantKind::Simulator => quote! {
+                impl #phoxal::participant::spec::sealing::Sealed for #struct_name {}
                 impl #phoxal::participant::IsSimulator for #struct_name {}
                 impl #phoxal::participant::TypedGraphSurface for #struct_name {}
             },
-            ParticipantKind::Tool => quote!(impl #phoxal::participant::IsTool for #struct_name {}),
+            ParticipantKind::Tool => quote! {
+                impl #phoxal::participant::spec::sealing::Sealed for #struct_name {}
+                impl #phoxal::participant::IsTool for #struct_name {}
+            },
         }
     }
 }

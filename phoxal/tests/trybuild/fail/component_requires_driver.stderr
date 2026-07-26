@@ -20,8 +20,8 @@ error[E0599]: the method `component` exists for mutable reference `&mut phoxal::
 note: the traits `phoxal::participant::IsDriver` and `phoxal::participant::IsSimulator` must be implemented
   --> src/participant/spec.rs
    |
-   | pub trait IsDriver {}
-   | ^^^^^^^^^^^^^^^^^^
+   | pub trait IsDriver: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ...
-   | pub trait IsSimulator {}
-   | ^^^^^^^^^^^^^^^^^^^^^
+   | pub trait IsSimulator: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

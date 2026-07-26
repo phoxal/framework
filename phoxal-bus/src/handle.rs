@@ -179,22 +179,34 @@ impl StepStamp for WorldStepToken {
 /// world nobody schedules". A second authority in one process is rejected at
 /// mint (a per-process runtime backstop, [`TIMELINE_AUTHORITY_HELD`]). Across
 /// processes the invariant is a selection-time one: exactly one simulator
-/// participant is launched into a simulation.
+/// participant is launched into a simulation, and that selection is enforced
+/// by whatever launches the graph (`phoxal-cli`), not by anything this
+/// process can observe.
 ///
-/// **Only a simulator can mint world steps, and this is now a compiler rule,
-/// not just a doc comment (organization#957 leftover fixed).** The documented
-/// authoring surface a participant actually writes against has exactly one
-/// path to an authority - `SetupContextSimulatorExt::timeline_authority` in
-/// the `phoxal` crate - and that trait's impl requires `Self: IsSimulator`, so
-/// a `#[phoxal::service]` or `#[phoxal::driver]` reaching for it fails to
-/// compile. [`__mint`](Self::__mint) below is `pub` only because the bus crate
-/// (where the token type lives) and the participant crate (where the
-/// `IsSimulator` marker lives) are split, so Rust has no `pub(crate)`-across-
-/// crates visibility to express the real boundary with - exactly the same
-/// constraint [`StepToken::__mint`] documents for the analogous case. A
-/// participant that deliberately bypasses `SetupContextSimulatorExt` and
-/// writes `TimelineAuthority::__mint` directly still can; closing that would
-/// mean merging the bus, api, and participant crates.
+/// **What the type system actually closes, and what it does not
+/// (organization#957).** The documented authoring surface a participant
+/// writes against has exactly one path to an authority -
+/// `SetupContextSimulatorExt::timeline_authority` in the `phoxal` crate - and
+/// that trait's impl requires `Self: IsSimulator`, a sealed marker that only
+/// `#[phoxal::simulator]`'s macro expansion can implement (ordinary code
+/// cannot write `impl IsSimulator for MyType` any more). A
+/// `#[phoxal::service]` or `#[phoxal::driver]` reaching for
+/// `ctx.timeline_authority(...)` therefore fails to compile, and this type is
+/// not re-exported from `phoxal::bus` or `phoxal::prelude`, so it never
+/// appears on the surface an ordinary participant browses. That closes the
+/// *accidental* route.
+///
+/// It is not a sealed capability, and this doc will not claim otherwise:
+/// [`__mint`](Self::__mint) below is `pub` because the bus crate (where this
+/// type lives) and the participant crate (where `IsSimulator` lives) are
+/// split, and Rust has no `pub(crate)`-across-crates visibility to express
+/// the real boundary with - exactly the same constraint [`StepToken::__mint`]
+/// documents for the analogous case. A participant that deliberately imports
+/// `phoxal::raw::TimelineAuthority` and writes `TimelineAuthority::__mint`
+/// directly still can; closing that would mean merging the bus, api, and
+/// participant crates. Cross-process uniqueness (exactly one authority per
+/// simulation) is likewise a selection-time property some launcher enforces,
+/// not something the type system checks.
 pub struct TimelineAuthority {
     timeline: TimelineId,
 }
@@ -374,18 +386,29 @@ role_publisher!(
      (health, logs, runtime evidence). It expresses no robot time."
 );
 
-role_publisher!(
-    WorldClockPublisher,
-    WorldClockContract,
-    "Publishes the framework's own world-clock contract at a logical step.\n\n\
-     A near-twin of [`StatePublisher`] - same step-stamped publish path, same \
-     `#[doc(hidden)] new` - kept as its own type rather than folded into \
-     `StatePublisher` precisely so `StatePublisher`'s bound can stay the \
-     precise `StateContract` (see that type's docs). The only documented way \
-     to build one is `SetupContextSimulatorExt::world_clock_publisher` in the \
-     `phoxal` crate (`Self: IsSimulator`-gated) - organization#957's leftover, \
-     now a compiler rule."
-);
+/// Publishes the framework's own world-clock contract at a logical step.
+///
+/// A near-twin of [`StatePublisher`] - same step-stamped publish path - kept
+/// as its own type rather than folded into `StatePublisher` precisely so
+/// `StatePublisher`'s bound can stay the precise `StateContract` (see that
+/// type's docs).
+///
+/// Unlike the `role_publisher!`-generated handles above, this type is
+/// deliberately *not* built through a plain `new`: the constructor is named
+/// [`__mint`](Self::__mint) - the same convention [`TimelineAuthority::__mint`]
+/// and [`StepToken::__mint`] use - and this type is not re-exported from
+/// `phoxal::bus` or `phoxal::prelude`. The documented way to build one is
+/// `SetupContextSimulatorExt::world_clock_publisher` in the `phoxal` crate
+/// (`Self: IsSimulator`-gated, organization#957). That closes the accidental
+/// route; it is not a sealed capability - see [`TimelineAuthority`]'s docs for
+/// the exact strength of that claim, which applies here identically.
+pub struct WorldClockPublisher<B: WorldClockContract>(Outbox<B>);
+
+impl<B: WorldClockContract> Clone for WorldClockPublisher<B> {
+    fn clone(&self) -> Self {
+        WorldClockPublisher(self.0.clone())
+    }
+}
 
 impl<B: StateContract> StatePublisher<B> {
     /// Publish `body` as the state this step produced.
@@ -395,6 +418,16 @@ impl<B: StateContract> StatePublisher<B> {
 }
 
 impl<B: WorldClockContract> WorldClockPublisher<B> {
+    /// Framework-internal minter. The author-facing path is
+    /// `SetupContextSimulatorExt::world_clock_publisher` in `#[setup]`
+    /// (`Self: IsSimulator`-gated - see [`TimelineAuthority`]'s docs for the
+    /// exact strength of that guarantee, which applies to this constructor
+    /// identically). `#[doc(hidden)]`.
+    #[doc(hidden)]
+    pub fn __mint(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
+        Ok(WorldClockPublisher(Outbox::new(bus, topic)?))
+    }
+
     /// Publish `body` as the state this step produced.
     pub fn publish(&self, step: &impl StepStamp, body: B) -> Result<()> {
         self.0.emit(Some(TimeWindow::exact(step.instant())), body)

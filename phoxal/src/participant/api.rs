@@ -47,13 +47,19 @@ use std::sync::Arc;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
     DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
-    Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineAuthority,
-    TimelineId, Topic, WorldClockContract, WorldClockPublisher,
+    Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineId, Topic,
+    WorldClockContract,
 };
 use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
 use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
-use phoxal_bus::Bus;
+// `TimelineAuthority`/`WorldClockPublisher` are deliberately imported from the
+// bus crate directly rather than through `crate::bus`: they are not part of
+// that ordinary re-export (see its module docs and `crate::raw`'s) precisely
+// so an ordinary participant never sees them just by browsing `phoxal::bus`.
+// This trait is the one place inside the framework that legitimately builds
+// both, gated to `Self: IsSimulator`.
+use phoxal_bus::{Bus, TimelineAuthority, WorldClockPublisher};
 
 /// Const-eval plumbing the participant attribute macros
 /// (`phoxal-macros/src/authoring.rs`'s `expand_participant`) use to build the
@@ -698,13 +704,19 @@ impl<R: Participant + IsDriver> SetupContextDriverExt for SetupContext<R> {
 /// separate traits). A simulator that owns a per-component instance reads it
 /// the same way a driver does.
 ///
-/// This is also the only place a participant can express world time (organization#957
-/// leftover, made a compiler rule rather than a doc comment): minting this
+/// This is also the only place in the documented authoring surface a
+/// participant can express world time (organization#957): minting this
 /// process's [`TimelineAuthority`], and building a publisher for the
-/// framework's own world-clock contract, both require `Self: IsSimulator`.
+/// framework's own world-clock contract, both require `Self: IsSimulator`, a
+/// sealed marker only `#[phoxal::simulator]`'s macro expansion can implement.
 /// Neither is reachable from [`SetupContextApiExt`], which every participant
 /// gets - see [`timeline_authority`](SetupContextSimulatorExt::timeline_authority)
 /// and [`world_clock_publisher`](SetupContextSimulatorExt::world_clock_publisher).
+/// That closes the *accidental* route; it is not a sealed capability, and a
+/// participant that deliberately imports `phoxal::raw::TimelineAuthority` /
+/// `phoxal::raw::WorldClockPublisher` and calls their `__mint` constructors
+/// directly still can - see [`TimelineAuthority`]'s docs for the exact
+/// strength of that claim.
 #[allow(async_fn_in_trait)]
 pub trait SetupContextSimulatorExt<R: Participant> {
     /// The bound `robot.components` instance, if the simulator was launched
@@ -714,11 +726,13 @@ pub trait SetupContextSimulatorExt<R: Participant> {
     /// Mint this process's [`TimelineAuthority`]: exclusive ownership of one
     /// world-history coordinate (#952 section D). Fails if this process
     /// already holds one - see [`TimelineAuthority`]'s docs for why that
-    /// per-process check is the runtime backstop, and this method (gated to
-    /// `Self: IsSimulator`) is the compile-time enforcement of "only a
-    /// simulator may mint world steps" the bare `TimelineAuthority::__mint`
-    /// constructor cannot provide on its own (it is `pub` only because the
-    /// bus and participant crates are split, exactly like
+    /// per-process check is the runtime backstop. This method (gated to
+    /// `Self: IsSimulator`, a sealed marker) is the compile-time-enforced
+    /// *documented* path; it is not compile-time enforcement in the absolute
+    /// sense, because the bare `TimelineAuthority::__mint` constructor
+    /// remains reachable through `phoxal::raw` for a participant that
+    /// deliberately reaches for it (it is `pub` only because the bus and
+    /// participant crates are split, exactly like
     /// [`StepToken::__mint`](crate::bus::StepToken::__mint)).
     fn timeline_authority(&self, timeline: TimelineId) -> crate::Result<TimelineAuthority>;
 
@@ -757,7 +771,7 @@ impl<R: Participant + IsSimulator> SetupContextSimulatorExt<R> for SetupContext<
     where
         R::Api: DeclaresPublish<B>,
     {
-        Ok(WorldClockPublisher::new(self.bus().clone(), &topic)?)
+        Ok(WorldClockPublisher::__mint(self.bus().clone(), &topic)?)
     }
 }
 

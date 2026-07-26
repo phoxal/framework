@@ -16,12 +16,17 @@
 use crate::capabilities;
 use phoxal::api;
 use phoxal::bus::ContractBody;
-use phoxal::bus::{StepStamp, TimelineAuthority, TimelineId, WorldStepToken};
+use phoxal::bus::{StepStamp, TimelineId, WorldStepToken};
 use phoxal::model::component::v0::CapabilityRef;
 use phoxal::model::simulation::Simulation as SimulationFile;
 use phoxal::model::simulation::v0::Simulation as SimulationSpec;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
+// `TimelineAuthority` and `WorldClockPublisher` are deliberately not part of
+// `phoxal::bus`/`phoxal::prelude` (organization#957): they are world-clock-
+// authority types only this simulator legitimately names, so they live behind
+// the explicit `phoxal::raw` opt-in instead - see that module's docs.
+use phoxal::raw::{TimelineAuthority, WorldClockPublisher};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -1334,7 +1339,7 @@ fn none_vec<T>(len: usize) -> Vec<Option<T>> {
 mod tests {
     use super::*;
     use phoxal::participant::{Participant, ParticipantLifecycle};
-    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, Subscriber, WorldClockPublisher};
+    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, Subscriber};
     use std::time::Duration;
 
     #[test]
@@ -1394,7 +1399,7 @@ mod tests {
     }
 
     fn clock_publisher(bus: &Bus) -> WorldClockPublisher<api::simulation::Clock> {
-        WorldClockPublisher::new(bus.clone(), &api::topic::owner().simulation().clock())
+        WorldClockPublisher::__mint(bus.clone(), &api::topic::owner().simulation().clock())
             .expect("clock publisher should attach")
     }
 

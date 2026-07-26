@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:15:12
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:35:12
    |
-15 |     clock: StatePublisher<api::simulation::Clock>,
+35 |     clock: StatePublisher<api::simulation::Clock>,
    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -31,10 +31,27 @@ note: required by a bound in `phoxal::bus::StatePublisher`
    | |_- in this macro invocation
    = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:34:14
+error[E0277]: the trait bound `RogueSimulatorMarker: phoxal::participant::spec::sealing::Sealed` is not satisfied
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:93:43
    |
-34 |             .state_publisher(api::topic::owner().simulation().clock())
+93 | impl phoxal::participant::IsSimulator for RogueSimulatorMarker {}
+   |                                           ^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `phoxal::participant::spec::sealing::Sealed` is not implemented for `RogueSimulatorMarker`
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:89:1
+   |
+89 | struct RogueSimulatorMarker;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `phoxal::participant::IsSimulator`
+  --> src/participant/spec.rs
+   |
+   | pub trait IsSimulator: sealing::Sealed {}
+   |                        ^^^^^^^^^^^^^^^ required by this bound in `IsSimulator`
+
+error[E0277]: the trait bound `Clock: StateContract` is not satisfied
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:54:14
+   |
+54 |             .state_publisher(api::topic::owner().simulation().clock())
    |              ^^^^^^^^^^^^^^^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -54,11 +71,11 @@ note: required by a bound in `<phoxal::participant::SetupContext<R> as phoxal::p
    |                                 ^^^^^^^^^^^^^ required by this bound in `<SetupContext<R> as SetupContextApiExt<R>>::state_publisher`
 
 error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:33:21
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:53:21
    |
-33 |           let clock = ctx
+53 |           let clock = ctx
    |  _____________________^
-34 | |             .state_publisher(api::topic::owner().simulation().clock())
+54 | |             .state_publisher(api::topic::owner().simulation().clock())
    | |______________________________________________________________________^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -78,9 +95,9 @@ note: required by a bound in `<phoxal::participant::SetupContext<R> as phoxal::p
    |                                 ^^^^^^^^^^^^^ required by this bound in `<SetupContext<R> as SetupContextApiExt<R>>::state_publisher`
 
 error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:35:14
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:55:14
    |
-35 |             .await?;
+55 |             .await?;
    |              ^^^^^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -100,12 +117,12 @@ note: required by a bound in `<phoxal::participant::SetupContext<R> as phoxal::p
    |                                 ^^^^^^^^^^^^^ required by this bound in `<SetupContext<R> as SetupContextApiExt<R>>::state_publisher`
 
 error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:33:21
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:53:21
    |
-33 |           let clock = ctx
+53 |           let clock = ctx
    |  _____________________^
-34 | |             .state_publisher(api::topic::owner().simulation().clock())
-35 | |             .await?;
+54 | |             .state_publisher(api::topic::owner().simulation().clock())
+55 | |             .await?;
    | |__________________^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -136,12 +153,12 @@ note: required by a bound in `phoxal::bus::StatePublisher`
    = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:33:21
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:53:21
    |
-33 |           let clock = ctx
+53 |           let clock = ctx
    |  _____________________^
-34 | |             .state_publisher(api::topic::owner().simulation().clock())
-35 | |             .await?;
+54 | |             .state_publisher(api::topic::owner().simulation().clock())
+55 | |             .await?;
    | |___________________^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -172,9 +189,9 @@ note: required by a bound in `phoxal::bus::StatePublisher`
    = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:36:25
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:56:25
    |
-36 |         Ok((Self, Api { clock }))
+56 |         Ok((Self, Api { clock }))
    |                         ^^^^^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:
@@ -204,10 +221,37 @@ note: required by a bound in `phoxal::bus::StatePublisher`
    | |_- in this macro invocation
    = note: this error originates in the macro `role_publisher` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: the trait bound `Clock: StateContract` is not satisfied
-  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:13:10
+error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::participant::SetupContext<RogueRawClockService>`, but its trait bounds were not satisfied
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:81:14
    |
-13 | #[derive(phoxal::Api)]
+71 |   struct RogueRawClockService;
+   |   --------------------------- doesn't satisfy `_: IsSimulator`
+...
+80 |           let clock = ctx
+   |  _____________________-
+81 | |             .world_clock_publisher(api::topic::owner().simulation().clock())
+   | |             -^^^^^^^^^^^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   | |_____________|
+   |
+   |
+  ::: src/participant/context.rs
+   |
+   |   pub struct SetupContext<R> {
+   |   -------------------------- doesn't satisfy `_: SetupContextSimulatorExt<RogueRawClockService>`
+   |
+   = note: the following trait bounds were not satisfied:
+           `RogueRawClockService: phoxal::participant::IsSimulator`
+           which is required by `phoxal::participant::SetupContext<RogueRawClockService>: phoxal::participant::SetupContextSimulatorExt<RogueRawClockService>`
+note: the trait `phoxal::participant::IsSimulator` must be implemented
+  --> src/participant/spec.rs
+   |
+   | pub trait IsSimulator: sealing::Sealed {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `Clock: StateContract` is not satisfied
+  --> tests/trybuild/fail/service_cannot_declare_world_clock.rs:33:10
+   |
+33 | #[derive(phoxal::Api)]
    |          ^^^^^^^^^^^ the trait `StateContract` is not implemented for `Clock`
    |
    = help: the following other types implement trait `StateContract`:

@@ -178,10 +178,17 @@ pub use phoxal_api::latest as api;
 /// Typed contract and handle vocabulary for normal participant authoring.
 ///
 /// This module deliberately excludes the raw session-owning bus types
-/// (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`). Checked
-/// participants build IO through [`participant::SetupContext`] and the api-local
-/// topic builders; privileged tools, bridges, and framework tests that need raw
-/// access use [`raw`] instead.
+/// (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`), and
+/// also [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
+/// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher): both are world-
+/// clock-authority types only a `#[phoxal::simulator]` ever legitimately
+/// names, so keeping them off the surface an ordinary participant browses
+/// closes the accidental route (organization#957) - see
+/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority)'s docs for the exact
+/// strength of that claim. Checked participants build IO through
+/// [`participant::SetupContext`] and the api-local topic builders; privileged
+/// tools, bridges, framework tests, and the one simulator that legitimately
+/// names these two types use [`raw`] instead.
 pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
@@ -190,9 +197,9 @@ pub mod bus {
         LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
         Observed, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure,
         Result, RobotInstant, ServeQuery, ServerResult, StateContract, StatePublisher, StepStamp,
-        StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority, TimelineId,
-        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
-        WorldClockContract, WorldClockPublisher, WorldStepToken, encoding_string,
+        StepToken, Subscribe, Subscriber, TimeWindow, TimelineId, TimelineMismatch, Topic,
+        TopicKind, TopicRole, WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
+        encoding_string,
     };
 
     /// Bus-ABI golden bindings against the train-selected API tree.
@@ -262,10 +269,14 @@ pub mod bus {
 /// bridges, and framework tests.
 ///
 /// Importing this module is the conscious opt-in. The ordinary
-/// `phoxal::prelude::*` and [`bus`] module do not expose raw session/open APIs.
-/// `Tool` participants are emitted as `participant_class = "privileged"`; the
-/// graph checker still includes their contracts, but never lets their raw
-/// access satisfy checked topology.
+/// `phoxal::prelude::*` and [`bus`] module do not expose raw session/open APIs,
+/// and - for the same reason - do not name
+/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) or
+/// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) either; this is
+/// also where the one simulator that legitimately owns the world clock
+/// imports those two from. `Tool` participants are emitted as
+/// `participant_class = "privileged"`; the graph checker still includes their
+/// contracts, but never lets their raw access satisfy checked topology.
 ///
 /// # Robot time: what the types enforce, and what they do not
 ///
@@ -357,7 +368,6 @@ pub mod prelude {
         CaptureStamp, CommandPublisher, DiagnosticPublisher, Latest, Lease, LeaseDecision,
         LocalInstant, MeasurementPublisher, Observed, ProducerFence, Querier, QueryError,
         RobotInstant, ServerResult, StatePublisher, Subscriber, TimeWindow, TimelineId,
-        WorldClockPublisher,
     };
     pub use crate::participant::{
         ManagedTaskPolicy, ResetContext, Server, SetupContext, SetupContextApiExt,
