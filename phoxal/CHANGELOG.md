@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0](https://github.com/phoxal/framework/compare/v0.41.3...v0.42.0) - 2026-07-26
+
+### Other
+
+- [**breaking**] delete the API coherence system ([#336](https://github.com/phoxal/framework/pull/336))
+
 ## [0.41.3](https://github.com/phoxal/framework/compare/v0.41.2...v0.41.3) - 2026-07-26
 
 ### Other
