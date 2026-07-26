@@ -38,6 +38,10 @@ on:
 # here only together with the crate that needs it. tool-joypad's gilrs gamepad
 # backend (libudev-sys) is why `coherence-check` needs libudev-dev to host-build
 # the whole official set (mirrors `ci.yml`'s `rust-ci.yml` system-packages).
+# The official set also includes the Webots controller (a `Simulator`
+# artifact), and webots-rs links libController at build time, so this job
+# installs Webots too before it host-builds every artifact for metadata
+# extraction.
 jobs:
   coherence-check:
     runs-on: ubuntu-latest
@@ -68,6 +72,17 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libudev-dev
+
+      - name: Install Webots runtime for the coherence build
+        if: steps.release-pr.outputs.is_release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2 \
+            --output "$RUNNER_TEMP/webots.tar.bz2"
+          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
+          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
 
       - name: Run coherence check over the whole official set
         if: steps.release-pr.outputs.is_release == 'true'

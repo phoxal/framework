@@ -13,6 +13,9 @@ concurrency:
 # here only together with the crate that needs it, so a service/driver growing
 # a native (-sys/C++) dependency stays visible. Current set:
 #   libudev-dev - tool-joypad's gilrs gamepad backend (libudev-sys) on Linux.
+# webots-rs links libController at build time, so the workspace cannot even be
+# cargo checked without a real Webots installation; the reusable workflow
+# installs it and exports WEBOTS_HOME before the clippy and test jobs build.
 jobs:
   ci:
     if: >-
@@ -21,6 +24,7 @@ jobs:
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
     with:
       system-packages: libudev-dev
+      webots-version: R2025a
     secrets: inherit
 
   # Tier-2 musl targets are not covered by upstream guarantees. Keep this
