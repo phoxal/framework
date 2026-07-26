@@ -10,6 +10,8 @@ The CLI stages a complete single-robot Webots project. The world declares this
 binary as the robot controller before Webots opens it. There is no supervisor
 artifact, runtime robot spawning, simulation control protocol, pose/contact
 feed, or dynamic scene mutation.
+Building this workspace at all requires a local Webots install; see
+[CONTRIBUTING.md](../CONTRIBUTING.md#build-prerequisites).
 
 ## Controller ownership
 
@@ -34,9 +36,8 @@ Webots loop:
    own step counter.
 
 The blocking Webots step and device access run on Tokio's blocking pool rather
-than a participant async worker. The metadata-only stub is paced at its declared
-step duration. On loop failure or graceful shutdown, the controller applies a
-final `Stop` to every bound motor before the bus closes.
+than a participant async worker. On loop failure or graceful shutdown, the
+controller applies a final `Stop` to every bound motor before the bus closes.
 
 The process holds one `TimelineAuthority` - the narrowly scoped right to say
 what time it is in a world nobody schedules - and mints one `TimelineId` on

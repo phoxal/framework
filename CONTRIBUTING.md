@@ -31,6 +31,15 @@ Add it automatically with `git commit -s`.
 Commit messages must follow
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## Build prerequisites
+
+Building this workspace requires Webots R2025a.
+The Webots controller crate links `libController` at build time, so this
+applies to `cargo check` and `cargo clippy` too, not only `cargo test` or a
+release build, since build scripts run on check.
+Install Webots R2025a and either use its default install location or set
+`WEBOTS_HOME` to point at it.
+
 ## Getting started
 
 Open an issue or draft PR early for non-trivial changes — alignment before

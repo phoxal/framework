@@ -26,7 +26,6 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -50,31 +49,6 @@ use crate::capabilities::speaker::{NativeSpeaker, SpeakerSpec};
 const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
-
-#[cfg(phoxal_require_native_webots)]
-const _: () = assert!(
-    webots_rs::WEBOTS_RUNTIME_LINKED,
-    "release packaging requires a native Webots runtime"
-);
-
-#[derive(Clone, Debug, serde::Deserialize, phoxal::Config)]
-#[serde(deny_unknown_fields)]
-pub struct WebotsControllerConfig {
-    #[serde(default = "default_require_native")]
-    require_native: bool,
-}
-
-impl Default for WebotsControllerConfig {
-    fn default() -> Self {
-        Self {
-            require_native: default_require_native(),
-        }
-    }
-}
-
-fn default_require_native() -> bool {
-    true
-}
 
 #[derive(phoxal::Api)]
 pub struct Api {
@@ -113,10 +87,8 @@ struct BackendControl {
 }
 
 struct BlockingStep {
-    step_ns: u64,
     now_ns: u64,
     outputs: BackendOutput,
-    is_stub: bool,
 }
 
 /// Bootstrap the Webots-owned controller.
@@ -146,7 +118,7 @@ fn has_explicit_producer_arg(args: impl IntoIterator<Item = OsString>) -> bool {
     })
 }
 
-#[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
+#[phoxal::simulator(id = "webots-controller", config = ())]
 pub struct WebotsControllerSimulator {
     backend: SharedBackend,
 }
@@ -154,11 +126,7 @@ pub struct WebotsControllerSimulator {
 #[phoxal::behavior]
 impl WebotsControllerSimulator {
     #[setup]
-    async fn setup(
-        ctx: &mut SetupContext<Self>,
-        config: Option<WebotsControllerConfig>,
-    ) -> Result<(Self, Self::Api)> {
-        let config = config.unwrap_or_default();
+    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
@@ -381,12 +349,11 @@ impl WebotsControllerSimulator {
         }
 
         let backend = Arc::new(Mutex::new(BackendControl {
-            backend: Backend::open(&config, &catalog)?,
+            backend: Backend::open(&catalog)?,
             motor_specs: catalog.motors.clone(),
         }));
         tracing::info!(
             target: "simulator_webots_controller",
-            webots_runtime_linked = webots_rs::WEBOTS_RUNTIME_LINKED,
             motors = catalog.motors.len(),
             encoders = catalog.encoders.len(),
             imus = catalog.imus.len(),
@@ -480,12 +447,7 @@ impl ControllerRuntime {
             let step_ns = control.backend.step_ns()?;
             let now_ns = next_step.saturating_mul(step_ns);
             let outputs = control.backend.advance(step_index, now_ns, inputs)?;
-            Ok::<_, anyhow::Error>(BlockingStep {
-                step_ns,
-                now_ns,
-                outputs,
-                is_stub: control.backend.is_stub(),
-            })
+            Ok::<_, anyhow::Error>(BlockingStep { now_ns, outputs })
         })
         .await
         .context("Webots step worker failed to join")??;
@@ -503,9 +465,6 @@ impl ControllerRuntime {
             ticks = step.now_ns,
             "external Webots step committed"
         );
-        if step.is_stub {
-            tokio::time::sleep(Duration::from_nanos(step.step_ns)).await;
-        }
         Ok(())
     }
 }
@@ -900,10 +859,13 @@ fn component_simulation_path(bundle_root: &Path, component_type: &str) -> PathBu
     bundle_root.join(COMPONENTS_DIR).join(component_type)
 }
 
-/// Webots backend selection: native `webots-rs` linkage when the runtime is
-/// present, or a metadata-only stub otherwise (headless `cargo test`/CI).
+/// Native `webots-rs` linkage is the only backend a shipped binary can
+/// construct. The `#[cfg(test)]` stub fakes the simulator runtime (not the
+/// linking) so `step_once`'s clock behavior can be unit-tested without a live
+/// Webots controller process.
 enum Backend {
     Native(Box<NativeBackend>),
+    #[cfg(test)]
     Stub(StubBackend),
 }
 
@@ -939,18 +901,8 @@ impl BackendControl {
 }
 
 impl Backend {
-    fn open(config: &WebotsControllerConfig, catalog: &CapabilityCatalog) -> Result<Self> {
-        if webots_rs::WEBOTS_RUNTIME_LINKED {
-            return Ok(Self::Native(Box::new(NativeBackend::new(catalog)?)));
-        }
-
-        if config.require_native {
-            bail!(
-                "Webots runtime is not linked into this build. Rebuild with WEBOTS_HOME pointing at a Webots installation, or set PHOXAL_CONFIG require_native=false for metadata-only contract tests."
-            );
-        }
-
-        Ok(Self::Stub(StubBackend::new(catalog)))
+    fn open(catalog: &CapabilityCatalog) -> Result<Self> {
+        Ok(Self::Native(Box::new(NativeBackend::new(catalog)?)))
     }
 
     fn advance(
@@ -961,6 +913,7 @@ impl Backend {
     ) -> Result<BackendOutput> {
         match self {
             Self::Native(backend) => backend.advance(step_index, time_ns, inputs),
+            #[cfg(test)]
             Self::Stub(backend) => backend.advance(step_index, time_ns, inputs),
         }
     }
@@ -968,12 +921,9 @@ impl Backend {
     fn step_ns(&self) -> Result<u64> {
         match self {
             Self::Native(backend) => step_ns_from_ms(backend.step_ms),
+            #[cfg(test)]
             Self::Stub(_) => Ok(10_000_000),
         }
-    }
-
-    fn is_stub(&self) -> bool {
-        matches!(self, Self::Stub(_))
     }
 
     fn apply_motor_command(
@@ -983,6 +933,7 @@ impl Backend {
     ) -> Result<()> {
         match self {
             Self::Native(backend) => backend.apply_motor_command(spec, command),
+            #[cfg(test)]
             Self::Stub(_) => Ok(()),
         }
     }
@@ -990,6 +941,7 @@ impl Backend {
     fn silence_speakers(&self) -> Result<()> {
         match self {
             Self::Native(backend) => backend.silence_speakers(),
+            #[cfg(test)]
             Self::Stub(_) => Ok(()),
         }
     }
@@ -1006,10 +958,12 @@ fn step_ns_from_ms(step_ms: i32) -> Result<u64> {
         .context("Webots basicTimeStep overflows nanoseconds")
 }
 
+#[cfg(test)]
 struct StubBackend {
     counts: OutputCounts,
 }
 
+#[cfg(test)]
 impl StubBackend {
     fn new(catalog: &CapabilityCatalog) -> Self {
         Self {
@@ -1295,6 +1249,7 @@ impl NativeBackend {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 struct OutputCounts {
     encoders: usize,
@@ -1312,6 +1267,7 @@ struct OutputCounts {
     batteries: usize,
 }
 
+#[cfg(test)]
 impl OutputCounts {
     fn from_catalog(catalog: &CapabilityCatalog) -> Self {
         Self {
@@ -1348,6 +1304,7 @@ struct BackendOutput {
     batteries: Vec<Option<api::component::battery::State>>,
 }
 
+#[cfg(test)]
 impl BackendOutput {
     fn empty(counts: &OutputCounts) -> Self {
         Self {
@@ -1368,6 +1325,7 @@ impl BackendOutput {
     }
 }
 
+#[cfg(test)]
 fn none_vec<T>(len: usize) -> Vec<Option<T>> {
     std::iter::repeat_with(|| None).take(len).collect()
 }
@@ -1468,26 +1426,6 @@ mod tests {
             <WebotsControllerSimulator as ParticipantLifecycle>::__step_schedule().is_none(),
             "the controller must not wrap Webots in a framework #[step] loop"
         );
-    }
-
-    // The runner deserializes `Self::Config` from JSON `null` when
-    // `PHOXAL_CONFIG` is unset (`ParticipantLaunch::config: Option<Value>` ->
-    // `None` -> `serde_json::from_value(Value::Null)`); `Option<T>: ParticipantConfig`
-    // (the blanket impl in `phoxal::participant::api`) is what makes that a
-    // clean `None` -> `unwrap_or_default()` instead of a deserialize error.
-    #[test]
-    fn config_treats_null_as_absent_and_defaults() {
-        let config: Option<WebotsControllerConfig> =
-            serde_json::from_value(serde_json::Value::Null).unwrap();
-        assert!(config.is_none());
-        assert!(config.unwrap_or_default().require_native);
-    }
-
-    #[test]
-    fn config_deserializes_an_object_as_present() {
-        let config: Option<WebotsControllerConfig> =
-            serde_json::from_value(serde_json::json!({"require_native": false})).unwrap();
-        assert!(!config.unwrap().require_native);
     }
 
     #[test]
