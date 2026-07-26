@@ -430,17 +430,8 @@ where
 {
     R::__validate_server_topics().map_err(anyhow::Error::msg)?;
 
-    let config: R::Config = match &launch.config {
-        Some(value) => serde_json::from_value(value.clone())?,
-        None => serde_json::from_value(serde_json::Value::Null)?,
-    };
-
-    // Load the resolved robot model from the root, if one was provided, so
-    // official participants can read it via `ctx.robot()` (D33).
-    let robot = match &launch.robot_root {
-        Some(root) => Some(Arc::new(crate::model::v0::Robot::read_from_dir(root)?)),
-        None => None,
-    };
+    let config: R::Config = participant_config(launch.config.as_ref())?;
+    let robot = robot_for_launch(launch.robot_root.as_deref())?;
 
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
@@ -673,6 +664,32 @@ impl LoopFault {
             LoopFault::ManagedTask(exit) => managed_task_fault_error(&exit),
             LoopFault::ClockDiscipline(reason) => clock_discipline_error(reason),
         }
+    }
+}
+
+/// Deserialize the participant's `#[setup]` config from the launch.
+///
+/// An absent `PHOXAL_CONFIG` is JSON `null`, not a missing value: that is what
+/// lets a participant declaring `config = ()` or `config = Option<T>` launch
+/// with no configuration at all, while one declaring a required struct fails
+/// with serde's own `invalid type: null` rather than a bespoke error.
+pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
+    config: Option<&serde_json::Value>,
+) -> crate::Result<C> {
+    let value = config.cloned().unwrap_or(serde_json::Value::Null);
+    Ok(serde_json::from_value(value)?)
+}
+
+/// Load the resolved robot model from the launch's robot root, if one was
+/// provided, so official participants can read it via `ctx.robot()` (D33).
+pub(crate) fn robot_for_launch(
+    robot_root: Option<&std::path::Path>,
+) -> crate::Result<Option<Arc<crate::model::v0::Robot>>> {
+    match robot_root {
+        Some(root) => Ok(Some(Arc::new(crate::model::v0::Robot::read_from_dir(
+            root,
+        )?))),
+        None => Ok(None),
     }
 }
 
@@ -1123,7 +1140,6 @@ pub(crate) fn bus_log_state() -> Arc<BusLogState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bus::{StatePublisher, TimelineAuthority};
 
     fn line(value: u64) -> TimelineId {
         TimelineId::from_raw(value).expect("test timeline must be nonzero")
@@ -1188,8 +1204,9 @@ mod tests {
         // `SimulationClockHandle` - no real sleeping, no live bus/Webots feed.
         // This is the deterministic proof that simulation mode schedules ticks
         // from robot time (acceptance criterion); the full
-        // `run_with`/`ClockMode::Simulation` integration path (live feed wiring
-        // included) is covered by `tests/runner.rs`.
+        // `run_with`/`ClockMode::Simulation` path - the live clock feed wiring
+        // and the wire-key match with the simulation controller's publisher -
+        // needs a bus and belongs to the local end-to-end run.
         let schedule = StepSchedule::hz(10.0); // 100ms period
         let period_ns = duration_to_nanos_saturating(schedule.period());
 
@@ -1213,121 +1230,272 @@ mod tests {
         );
     }
 
-    /// Isolation-level proof of [`spawn_simulation_clock_feed`]'s
-    /// subscriber -> handle driving, without going through the full
-    /// `run_with`/`ClockMode::Simulation` runner path (that full path, plus the
-    /// actual wire-key match with the simulation controller's publisher, is
-    /// covered by `tests/runner.rs`'s
-    /// `simulation_mode_step_advances_only_with_the_clock_feed`).
-    ///
-    /// Publishes synthetic `simulation::Clock` samples through a real
-    /// `TimelineAuthority` onto an in-process bus (standing in for the
-    /// controller) and asserts: the scheduler releases a tick per sample, on
-    /// the published timeline (a replacement timeline is observed even though
-    /// its ticks restart at 0), and no further tick releases while no sample is
-    /// published.
+    // -- Teardown: the sequence every fault shares. --------------------------
+    //
+    // `run_lifecycle_inner` runs `teardown_lifecycle` unconditionally before it
+    // converts a `LoopFault` into the returned error, so "the participant still
+    // parks its hardware on the way out" is a property of this function alone.
+    // Its composition with live fault detection in `main_loop` needs a bus and
+    // is proven by the local end-to-end run.
+
+    use crate::participant::ManagedTaskPolicy;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Per-instance so these tests stay independent under the parallel test
+    /// harness; a shared static would make them race.
+    #[derive(Clone, Default)]
+    struct HookTrace {
+        called: Arc<AtomicBool>,
+        completed: Arc<AtomicBool>,
+    }
+
+    /// A participant whose `#[shutdown]` hook never returns, standing in for one
+    /// that hangs parking or flushing hardware.
+    #[phoxal::service(id = "hanging-shutdown", config = (), api = ())]
+    struct HangingShutdown {
+        trace: HookTrace,
+    }
+
+    #[phoxal::behavior]
+    impl HangingShutdown {
+        #[setup]
+        async fn setup(_ctx: &mut SetupContext<Self>) -> crate::Result<(Self, Self::Api)> {
+            Ok((
+                Self {
+                    trace: HookTrace::default(),
+                },
+                (),
+            ))
+        }
+
+        #[shutdown]
+        async fn shutdown(
+            &mut self,
+            _api: &mut Self::Api,
+            _ctx: ShutdownContext,
+        ) -> crate::Result<()> {
+            self.trace.called.store(true, Ordering::Relaxed);
+            std::future::pending::<()>().await;
+            self.trace.completed.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// A hook that fails. Teardown must log it and keep going: the bus still has
+    /// to close, and the participant's own failure is what gets reported.
+    #[phoxal::service(id = "failing-shutdown", config = (), api = ())]
+    struct FailingShutdown {
+        trace: HookTrace,
+    }
+
+    #[phoxal::behavior]
+    impl FailingShutdown {
+        #[setup]
+        async fn setup(_ctx: &mut SetupContext<Self>) -> crate::Result<(Self, Self::Api)> {
+            Ok((
+                Self {
+                    trace: HookTrace::default(),
+                },
+                (),
+            ))
+        }
+
+        #[shutdown]
+        async fn shutdown(
+            &mut self,
+            _api: &mut Self::Api,
+            _ctx: ShutdownContext,
+        ) -> crate::Result<()> {
+            self.trace.called.store(true, Ordering::Relaxed);
+            anyhow::bail!("could not park the wheels")
+        }
+    }
+
+    /// D24/D43i: a hook that hangs cannot hold the process open. Teardown gives
+    /// up at the grace deadline and proceeds, leaving the hook cancelled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn simulation_clock_feed_drives_the_scheduler_from_published_samples() {
-        let bus_config = BusConfig::in_process("test/sim-clock-feed-unit", "robot");
-        let bus = Bus::open(bus_config).await.expect("bus should open");
+    async fn a_hanging_shutdown_hook_is_bounded_by_the_grace_deadline() {
+        let trace = HookTrace::default();
+        let mut participant = HangingShutdown {
+            trace: trace.clone(),
+        };
+        let mut api = ();
 
-        let clock_publisher = StatePublisher::<api::simulation::Clock>::new(
-            bus.clone(),
-            &api::topic::owner().simulation().clock(),
+        let began = std::time::Instant::now();
+        teardown_lifecycle(
+            &mut participant,
+            &mut api,
+            Vec::new(),
+            ManagedTasks::default(),
+            150,
         )
-        .expect("clock publisher should attach");
-        let mut authority =
-            TimelineAuthority::__mint(line(11)).expect("the world authority should mint");
+        .await;
+        let elapsed = began.elapsed();
 
-        let period = Duration::from_millis(10);
-        // Generous hang-guard for the positive release waits below. A correct
-        // feed releases the tick near-instantly once the sample arrives, so
-        // this deadline only trips on a genuine hang; it is sized to tolerate a
-        // starved runner (e.g. emulated musl under CI), not to assert latency.
-        let release_guard = Duration::from_secs(10);
-        let (scheduler, handle) =
-            SimulationScheduler::new(crate::participant::spec::MissedTick::Collapse, Some(period));
-        let feed_task = spawn_simulation_clock_feed(&bus, handle).expect("feed task should spawn");
-
-        // No sample published yet: the scheduler must not release the first tick.
-        let period_ns = duration_to_nanos_saturating(period);
-        let first_target = at(11, period_ns);
+        assert!(trace.called.load(Ordering::Relaxed), "the hook must run");
         assert!(
-            tokio::time::timeout(
-                Duration::from_millis(100),
-                scheduler.wait_until(first_target),
-            )
-            .await
-            .is_err(),
-            "scheduler must not release before any simulation/clock sample arrives"
+            elapsed < Duration::from_millis(700),
+            "teardown must return at the grace deadline, took {elapsed:?}"
+        );
+        assert!(
+            !trace.completed.load(Ordering::Relaxed),
+            "the timed-out hook is dropped, not awaited to completion"
+        );
+    }
+
+    /// A failing hook is not a reason to skip the rest of teardown.
+    #[tokio::test]
+    async fn a_failing_shutdown_hook_does_not_abort_teardown() {
+        let trace = HookTrace::default();
+        let mut participant = FailingShutdown {
+            trace: trace.clone(),
+        };
+        let mut api = ();
+
+        // Returns at all, rather than propagating: teardown has no error path.
+        teardown_lifecycle(
+            &mut participant,
+            &mut api,
+            Vec::new(),
+            ManagedTasks::default(),
+            5_000,
+        )
+        .await;
+
+        assert!(trace.called.load(Ordering::Relaxed));
+    }
+
+    /// The shutdown hook and managed-task joining share one deadline, so a
+    /// managed task cannot buy itself extra time after a slow hook.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_tasks_are_cancelled_and_joined_within_the_same_deadline() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&cancelled);
+        let started = Arc::new(AtomicBool::new(false));
+        let running = Arc::clone(&started);
+
+        let mut managed = ManagedTasks::default();
+        managed.spawn("sensor-loop", ManagedTaskPolicy::FaultOnExit, async move {
+            struct OnCancel(Arc<AtomicBool>);
+            impl Drop for OnCancel {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+            let _guard = OnCancel(observed);
+            running.store(true, Ordering::Relaxed);
+            std::future::pending::<()>().await;
+        });
+        while !started.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+
+        let mut participant = HangingShutdown {
+            trace: HookTrace::default(),
+        };
+        let mut api = ();
+        let began = std::time::Instant::now();
+        teardown_lifecycle(&mut participant, &mut api, Vec::new(), managed, 150).await;
+        let elapsed = began.elapsed();
+
+        assert!(
+            cancelled.load(Ordering::Relaxed),
+            "managed tasks must be cancelled even when the hook consumed the grace"
+        );
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "one deadline covers the hook and the joining, took {elapsed:?}"
+        );
+    }
+
+    /// A participant that declares no config, or an optional one, launches with
+    /// `PHOXAL_CONFIG` absent; one that declares a required config does not, and
+    /// says why in serde's own words.
+    #[test]
+    fn an_absent_config_is_json_null_not_a_missing_value() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Required {
+            #[allow(dead_code)]
+            port: String,
+        }
+
+        participant_config::<()>(None).expect("a configless participant accepts absent config");
+        assert!(
+            participant_config::<Option<Required>>(None)
+                .expect("an optional config accepts absent config")
+                .is_none()
         );
 
-        // Publish an advancing sample; the pending wait should now resolve.
-        clock_publisher
-            .publish(
-                &authority.completed_step(period_ns),
-                api::simulation::Clock { step: 1 },
-            )
-            .expect("clock sample should publish");
-        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(first_target))
-            .await
-            .expect("scheduler should release once the feed advances past the target");
-        assert_eq!(tick.fired_at, first_target);
-
-        // No new sample means no world advance and therefore no scheduler
-        // release.
-        let second_target = at(11, 2 * period_ns);
+        let error = participant_config::<Required>(None)
+            .expect_err("a required config must reject absent config");
         assert!(
-            tokio::time::timeout(
-                Duration::from_millis(200),
-                scheduler.wait_until(second_target),
-            )
-            .await
-            .is_err(),
-            "the scheduler must remain still while no new clock sample arrives"
+            format!("{error}").contains("invalid type: null"),
+            "unexpected absent-config error: {error:#}"
         );
 
-        // The next published world step releases the withheld tick.
-        clock_publisher
-            .publish(
-                &authority.completed_step(2 * period_ns),
-                api::simulation::Clock { step: 2 },
-            )
-            .expect("second clock sample should publish");
-        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(second_target))
-            .await
-            .expect("scheduler should release on the next clock sample");
-        assert_eq!(tick.fired_at, second_target);
+        let supplied = serde_json::json!({ "port": "/dev/ttyUSB0" });
+        participant_config::<Required>(Some(&supplied)).expect("a supplied config deserializes");
+    }
 
-        // A replacement world history is accepted once. A later in-flight clock
-        // from the retired controller must not reactivate it.
-        authority.replace_timeline(line(12));
-        clock_publisher
-            .publish(
-                &authority.completed_step(0),
-                api::simulation::Clock { step: 0 },
-            )
-            .expect("replacement clock should publish");
-        let tick = tokio::time::timeout(release_guard, scheduler.wait_until(at(11, 3 * period_ns)))
-            .await
-            .expect("replacement timeline should reach the scheduler");
-        assert_eq!(tick.fired_at, at(12, 0));
+    /// D33: the launch's robot root is what binds the model a participant reads
+    /// through `ctx.robot()`. No root means no model, which is what makes
+    /// `ctx.robot()` an error rather than a panic.
+    #[test]
+    fn the_robot_model_is_bound_only_when_the_launch_carries_a_root() {
+        assert!(
+            robot_for_launch(None)
+                .expect("no root is not an error")
+                .is_none()
+        );
 
-        authority.replace_timeline(line(11));
-        clock_publisher
-            .publish(
-                &authority.completed_step(3 * period_ns),
-                api::simulation::Clock { step: 3 },
-            )
-            .expect("late retired clock should publish at the bus layer");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixture/robot/rgbd-imu-diff-drive");
+        let robot = robot_for_launch(Some(&fixture))
+            .expect("the fixture root should load")
+            .expect("a root binds a model");
+        assert_eq!(robot.manifest.robot.id, "rgbd-imu-diff-drive");
+
+        let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture/robot");
+        assert!(
+            robot_for_launch(Some(&missing)).is_err(),
+            "a root without a robot.yaml must fail the launch, not bind nothing"
+        );
+    }
+
+    /// Both loop faults reach the operator as an actionable message naming what
+    /// went wrong; the supervisor keeps this text as the failure evidence.
+    #[test]
+    fn loop_faults_report_actionable_errors() {
+        let clock = LoopFault::ClockDiscipline(TimeUnsynchronized::ClockFault).into_error();
+        let message = format!("{clock}");
+        assert!(
+            message.starts_with("clock discipline lost: "),
+            "the operator's only handle on which trigger fired: {message}"
+        );
+        assert!(
+            message.contains(&TimeUnsynchronized::ClockFault.to_string()),
+            "the reason must survive into the message: {message}"
+        );
+
+        let panicked = LoopFault::ManagedTask(ManagedTaskExit {
+            name: "io-pump".to_string(),
+            panic_message: Some("serial port vanished".to_string()),
+        })
+        .into_error();
         assert_eq!(
-            scheduler.now(),
-            Some(at(12, 0)),
-            "a retired clock must not roll the scheduler back to an old world history"
+            format!("{panicked}"),
+            "managed task \"io-pump\" panicked: serial port vanished"
         );
 
-        feed_task.abort();
-        bus.close().await.expect("bus should close");
+        let returned = LoopFault::ManagedTask(ManagedTaskExit {
+            name: "io-pump".to_string(),
+            panic_message: None,
+        })
+        .into_error();
+        assert_eq!(
+            format!("{returned}"),
+            "managed task \"io-pump\" exited unexpectedly"
+        );
     }
 }

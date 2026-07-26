@@ -8,7 +8,7 @@
 //! `phoxal_api_tree!`, which lives in the `phoxal-api` crate): phoxal-bus is
 //! the ABI floor and must be testable without the concrete API versions.
 //! The golden tests that bind the bus to the real `v1` tree live in the
-//! `phoxal` crate (`phoxal/tests/bus_api.rs`).
+//! `phoxal` crate (`phoxal::bus`'s own test module).
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
