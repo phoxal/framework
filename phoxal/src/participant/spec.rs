@@ -73,9 +73,49 @@ pub enum MissedTick {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prelude::*;
 
     #[test]
     fn step_schedule_period_never_rounds_to_zero() {
         assert_eq!(StepSchedule::hz(f64::MAX).period(), Duration::from_nanos(1));
+    }
+
+    #[phoxal::simulator(id = "marker-simulator", config = (), api = ())]
+    struct MarkerSimulator;
+
+    #[phoxal::behavior]
+    impl MarkerSimulator {
+        #[setup]
+        async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+            Ok((Self, ()))
+        }
+
+        #[step(hz = 20)]
+        async fn step(&mut self, _api: &mut Self::Api, _step: StepContext) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[phoxal::tool(id = "marker-tool")]
+    struct MarkerTool;
+
+    #[phoxal::behavior]
+    impl MarkerTool {
+        #[setup]
+        async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+            Ok((Self, ()))
+        }
+    }
+
+    /// Each kind macro emits its own marker, which is what gates the
+    /// kind-specific `SetupContext` accessors. A tool additionally has no
+    /// typed-graph surface.
+    #[test]
+    fn kind_macros_emit_their_markers() {
+        fn assert_simulator<T: IsSimulator + TypedGraphSurface>() {}
+        fn assert_tool<T: IsTool>() {}
+
+        assert_simulator::<MarkerSimulator>();
+        assert_tool::<MarkerTool>();
     }
 }

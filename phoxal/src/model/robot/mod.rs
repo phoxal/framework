@@ -160,15 +160,6 @@ impl Robot {
         }
     }
 
-    pub fn validate_with(
-        &self,
-        platform_participant_names: &[&str],
-    ) -> std::result::Result<(), Vec<ValidationError>> {
-        match self {
-            Self::V0(robot) => robot.validate_with(platform_participant_names),
-        }
-    }
-
     #[must_use]
     pub fn as_v0(&self) -> &v0::Robot {
         match self {
