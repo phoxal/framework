@@ -113,9 +113,9 @@ mod tests {
 
     /// End-to-end proof (X-tools slice acceptance criteria): build a real
     /// participant, extract its section from the actual built artifact on
-    /// disk, and assert the simulator-owned battery publisher is present.
+    /// disk, and assert the simulator-owned world-clock publisher is present.
     #[test]
-    fn extracts_real_webots_controller_battery_metadata() -> Result<()> {
+    fn extracts_real_webots_controller_clock_metadata() -> Result<()> {
         let workspace = Workspace::discover()?;
         let package_name = "phoxal-simulator-webots-controller";
         let status = Command::new("cargo")
@@ -140,7 +140,7 @@ mod tests {
         assert!(meta.contracts.contains(&ParticipantMetaContract {
             role: "publish".to_string(),
             version: "v0.1".to_string(),
-            contract: "battery::State".to_string(),
+            contract: "simulation::Clock".to_string(),
             external: false,
         }));
         Ok(())

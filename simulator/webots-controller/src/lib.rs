@@ -39,11 +39,6 @@ use capabilities::range::{NativeRange, RangeSpec};
 const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
-const BATTERY_PUBLISH: Duration = Duration::from_nanos(1_000_000_000);
-const FULL_VOLTAGE_V: f64 = 16.8;
-const EMPTY_VOLTAGE_V: f64 = 12.0;
-const DRAW_CURRENT_A: f64 = 2.0;
-const CAPACITY_AH: f64 = 10.0;
 
 #[cfg(phoxal_require_native_webots)]
 const _: () = assert!(
@@ -56,16 +51,12 @@ const _: () = assert!(
 pub struct WebotsControllerConfig {
     #[serde(default = "default_require_native")]
     require_native: bool,
-    /// Deterministic test/simulation input for every bound component e-stop.
-    #[serde(default)]
-    emergency_stop_engaged: bool,
 }
 
 impl Default for WebotsControllerConfig {
     fn default() -> Self {
         Self {
             require_native: default_require_native(),
-            emergency_stop_engaged: false,
         }
     }
 }
@@ -86,8 +77,6 @@ pub struct Api {
     cameras: Vec<MeasurementPublisher<api::component::camera::Frame>>,
     depths: Vec<MeasurementPublisher<api::component::depth::Frame>>,
     gnss: Vec<MeasurementPublisher<api::component::gnss::Sample>>,
-    emergency_stops: Vec<StatePublisher<api::component::emergency_stop::State>>,
-    battery: StatePublisher<api::battery::State>,
 }
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
@@ -101,10 +90,6 @@ struct ControllerRuntime {
     authority: TimelineAuthority,
     step_index: u64,
     backend: SharedBackend,
-    emergency_stop_states: Vec<bool>,
-    battery_charge_ratio: f64,
-    last_battery_update: Option<RobotInstant>,
-    last_battery_publish: Option<RobotInstant>,
 }
 
 type SharedBackend = Arc<Mutex<BackendControl>>;
@@ -162,9 +147,6 @@ impl WebotsControllerSimulator {
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let clock = ctx
             .state_publisher(api::topic::internal::new(cap).simulation().clock())
-            .await?;
-        let battery = ctx
-            .state_publisher(api::topic::internal::new(cap).battery().state())
             .await?;
 
         let mut motor_commands = Vec::new();
@@ -285,28 +267,10 @@ impl WebotsControllerSimulator {
             );
         }
 
-        let mut emergency_stops = Vec::new();
-        for spec in &catalog.emergency_stops {
-            emergency_stops.push(
-                ctx.state_publisher(
-                    api::topic::internal::new(cap)
-                        .component(&spec.reference.component_id)
-                        .emergency_stop(&spec.reference.capability_id)
-                        .state(),
-                )
-                .await?,
-            );
-        }
-
         let backend = Arc::new(Mutex::new(BackendControl {
             backend: Backend::open(&config, &catalog)?,
             motor_specs: catalog.motors.clone(),
         }));
-        let emergency_stop_states = catalog
-            .emergency_stops
-            .iter()
-            .map(|spec| config.emergency_stop_engaged || spec.engaged)
-            .collect();
         tracing::info!(
             target: "simulator_webots_controller",
             webots_runtime_linked = webots_rs::WEBOTS_RUNTIME_LINKED,
@@ -333,18 +297,12 @@ impl WebotsControllerSimulator {
             cameras,
             depths,
             gnss,
-            emergency_stops,
-            battery,
         };
 
         let runtime = ControllerRuntime {
             authority: TimelineAuthority::__mint(TimelineId::mint())?,
             step_index: 0,
             backend: Arc::clone(&backend),
-            emergency_stop_states,
-            battery_charge_ratio: 1.0,
-            last_battery_update: None,
-            last_battery_publish: None,
         };
         let loop_api = api.clone();
         ctx.spawn_managed("webots-step-loop", async move {
@@ -409,9 +367,7 @@ impl ControllerRuntime {
         // that advance is stamped with it. There is no other way for this
         // process to express a robot instant.
         let world_step = self.authority.completed_step(step.now_ns);
-        self.publish_outputs(api, &world_step, step.outputs)?;
-        api.clock
-            .publish(&world_step, api::simulation::Clock { step: next_step })?;
+        commit_step(api, &world_step, next_step, step.outputs)?;
         self.step_index = next_step;
         tracing::trace!(
             target: "simulator_webots_controller",
@@ -429,128 +385,68 @@ impl ControllerRuntime {
     fn latest_motor_commands(&self, api: &Api) -> Vec<Option<api::component::motor::Command>> {
         api.motor_commands.iter().map(drain_latest).collect()
     }
-
-    fn publish_outputs(
-        &mut self,
-        api: &Api,
-        world_step: &WorldStepToken,
-        outputs: BackendOutput,
-    ) -> Result<()> {
-        // Simulated sensors read the world at exactly the instant the world
-        // advanced to, so their capture is exact rather than uncertain.
-        let captured_at = CaptureStamp::exact(world_step.instant());
-        for (publisher, sample) in api.encoders.iter().zip(outputs.encoders) {
-            if let Some(sample) = sample {
-                publisher.publish(captured_at, sample)?;
-            }
-        }
-        for (publisher, sample) in api.imus.iter().zip(outputs.imus) {
-            if let Some(sample) = sample {
-                publisher.publish(captured_at, sample)?;
-            }
-        }
-        for (publisher, sample) in api.accelerometers.iter().zip(outputs.accelerometers) {
-            if let Some(sample) = sample {
-                publisher.publish(captured_at, sample)?;
-            }
-        }
-        for (publisher, sample) in api.gyroscopes.iter().zip(outputs.gyroscopes) {
-            if let Some(sample) = sample {
-                publisher.publish(captured_at, sample)?;
-            }
-        }
-        for (publisher, sample) in api.ranges.iter().zip(outputs.ranges) {
-            if let Some(sample) = sample {
-                publisher.publish(captured_at, sample)?;
-            }
-        }
-        for (publisher, frame) in api.cameras.iter().zip(outputs.cameras) {
-            if let Some(frame) = frame {
-                publisher.publish(captured_at, frame)?;
-            }
-        }
-        for (publisher, frame) in api.depths.iter().zip(outputs.depths) {
-            if let Some(frame) = frame {
-                publisher.publish(captured_at, frame)?;
-            }
-        }
-        for (publisher, sample) in api.gnss.iter().zip(outputs.gnss) {
-            if let Some(sample) = sample {
-                publisher.publish(captured_at, sample)?;
-            }
-        }
-        // The emergency-stop component publishes `state`, so it is stamped
-        // with the world step like any other state - no privileged path.
-        for (publisher, engaged) in api.emergency_stops.iter().zip(&self.emergency_stop_states) {
-            publisher.publish(
-                world_step,
-                api::component::emergency_stop::State { engaged: *engaged },
-            )?;
-        }
-        if let Some(state) = self.battery_state(world_step.instant()) {
-            api.battery.publish(world_step, state)?;
-        }
-        Ok(())
-    }
-
-    fn battery_state(&mut self, at: RobotInstant) -> Option<api::battery::State> {
-        // A replaced world starts from a full battery: the previous world's
-        // discharge describes a history that no longer exists. `duration_since`
-        // returning an error is exactly that signal.
-        let elapsed = self
-            .last_battery_update
-            .map(|previous| at.duration_since(previous));
-        match elapsed {
-            Some(Err(_)) => {
-                self.battery_charge_ratio = 1.0;
-                self.last_battery_publish = None;
-            }
-            Some(Ok(elapsed)) => {
-                self.battery_charge_ratio = discharge(
-                    self.battery_charge_ratio,
-                    DRAW_CURRENT_A,
-                    elapsed.as_secs_f64(),
-                    CAPACITY_AH,
-                );
-            }
-            None => {}
-        }
-        self.last_battery_update = Some(at);
-
-        // A replaced world already cleared `last_battery_publish` above, so a
-        // cross-timeline `duration_since` cannot reach this point; treating an
-        // error as "not due" is therefore unreachable rather than a silent
-        // suppression.
-        let due = self.last_battery_publish.is_none_or(|previous| {
-            at.duration_since(previous)
-                .is_ok_and(|elapsed| elapsed >= BATTERY_PUBLISH)
-        });
-        if !due {
-            return None;
-        }
-        self.last_battery_publish = Some(at);
-        Some(api::battery::State {
-            voltage_v: voltage_for(self.battery_charge_ratio, EMPTY_VOLTAGE_V, FULL_VOLTAGE_V)
-                as f32,
-            current_a: if self.battery_charge_ratio > 0.0 {
-                DRAW_CURRENT_A as f32
-            } else {
-                0.0
-            },
-            charge_ratio: self.battery_charge_ratio as f32,
-        })
-    }
 }
 
-fn discharge(ratio: f64, current_a: f64, dt_s: f64, capacity_ah: f64) -> f64 {
-    if ratio <= 0.0 || current_a <= 0.0 || dt_s <= 0.0 || capacity_ah <= 0.0 {
-        return ratio.clamp(0.0, 1.0);
-    }
-    (ratio.clamp(0.0, 1.0) - current_a * (dt_s / 3_600.0) / capacity_ah).clamp(0.0, 1.0)
+/// Publishes everything one completed world advance produced, then the clock
+/// that closes it. The order is the contract: a reader that has seen the clock
+/// for a step has already seen that step's outputs.
+fn commit_step(
+    api: &Api,
+    world_step: &WorldStepToken,
+    step: u64,
+    outputs: BackendOutput,
+) -> Result<()> {
+    publish_outputs(api, world_step, outputs)?;
+    api.clock
+        .publish(world_step, api::simulation::Clock { step })?;
+    Ok(())
 }
 
-fn voltage_for(ratio: f64, empty_v: f64, full_v: f64) -> f64 {
-    empty_v + (full_v - empty_v) * ratio.clamp(0.0, 1.0)
+fn publish_outputs(api: &Api, world_step: &WorldStepToken, outputs: BackendOutput) -> Result<()> {
+    // Simulated sensors read the world at exactly the instant the world
+    // advanced to, so their capture is exact rather than uncertain.
+    let captured_at = CaptureStamp::exact(world_step.instant());
+    for (publisher, sample) in api.encoders.iter().zip(outputs.encoders) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    for (publisher, sample) in api.imus.iter().zip(outputs.imus) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    for (publisher, sample) in api.accelerometers.iter().zip(outputs.accelerometers) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    for (publisher, sample) in api.gyroscopes.iter().zip(outputs.gyroscopes) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    for (publisher, sample) in api.ranges.iter().zip(outputs.ranges) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    for (publisher, frame) in api.cameras.iter().zip(outputs.cameras) {
+        if let Some(frame) = frame {
+            publisher.publish(captured_at, frame)?;
+        }
+    }
+    for (publisher, frame) in api.depths.iter().zip(outputs.depths) {
+        if let Some(frame) = frame {
+            publisher.publish(captured_at, frame)?;
+        }
+    }
+    for (publisher, sample) in api.gnss.iter().zip(outputs.gnss) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    Ok(())
 }
 
 fn drain_latest<B: ContractBody>(subscriber: &Subscriber<B>) -> Option<B> {
@@ -586,13 +482,6 @@ struct CapabilityCatalog {
     cameras: Vec<CameraSpec>,
     depths: Vec<DepthSpec>,
     gnss: Vec<GnssSpec>,
-    emergency_stops: Vec<EmergencyStopSpec>,
-}
-
-#[derive(Clone, Debug)]
-struct EmergencyStopSpec {
-    reference: CapabilityRef,
-    engaged: bool,
 }
 
 impl CapabilityCatalog {
@@ -694,6 +583,7 @@ impl CapabilityCatalog {
                     | Capability::Microphone(_)
                     | Capability::Speaker(_)
                     | Capability::Battery(_)
+                    | Capability::EmergencyStop(_)
                     | Capability::Led(_) => {
                         tracing::debug!(
                             target: "simulator_webots_controller",
@@ -701,19 +591,6 @@ impl CapabilityCatalog {
                             kind = capability.kind_name(),
                             "capability is intentionally left for a later Webots port slice"
                         );
-                    }
-                    Capability::EmergencyStop(_) => {
-                        let engaged = match simulation_capability {
-                            Some(
-                                phoxal::model::simulation::capability::Capability::EmergencyStop(
-                                    config,
-                                ),
-                            ) => config.engaged,
-                            _ => false,
-                        };
-                        catalog
-                            .emergency_stops
-                            .push(EmergencyStopSpec { reference, engaged });
                     }
                 }
             }
@@ -1139,8 +1016,6 @@ fn contract_mappings() -> Vec<ContractMapping> {
         mapping::<api::component::camera::Frame>(ContractRole::Publish),
         mapping::<api::component::depth::Frame>(ContractRole::Publish),
         mapping::<api::component::gnss::Sample>(ContractRole::Publish),
-        mapping::<api::component::emergency_stop::State>(ContractRole::Publish),
-        mapping::<api::battery::State>(ContractRole::Publish),
     ]
 }
 
@@ -1156,11 +1031,11 @@ fn mapping<B: ContractBody>(role: phoxal::participant::ContractRole) -> Contract
 mod tests {
     use super::*;
     use phoxal::participant::{Participant, ParticipantApi, ParticipantLifecycle};
-    use phoxal::raw::{Bus, BusConfig, OwnerCap, StatePublisher, Subscriber};
+    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, OwnerCap, StatePublisher, Subscriber};
     use std::time::Duration;
 
     #[test]
-    fn api_declares_clock_component_and_battery_contracts() {
+    fn api_declares_clock_and_component_contracts() {
         assert_eq!(
             <WebotsControllerSimulator as Participant>::ID,
             "webots-controller"
@@ -1181,7 +1056,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             expected.len(),
-            "controller must declare one clock output, 9 component contracts, and battery state, got {contracts:?}"
+            "controller must declare one clock output and 9 component contracts, got {contracts:?}"
         );
         for mapping in &expected {
             assert!(
@@ -1256,17 +1131,46 @@ mod tests {
         assert!(step_ns_from_ms(-1).is_err());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn controller_publishes_outputs_before_matching_clock() {
-        let namespace = format!(
-            "test/webots-controller-order/{}/{}",
+    fn test_namespace(label: &str) -> String {
+        format!(
+            "test/webots-controller-{label}/{}/{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|since| since.as_nanos())
                 .unwrap_or_default()
-        );
-        let bus = Bus::open(BusConfig::in_process(namespace, "robot"))
+        )
+    }
+
+    fn clock_publisher(bus: &Bus, cap: OwnerCap) -> StatePublisher<api::simulation::Clock> {
+        StatePublisher::new(
+            bus.clone(),
+            &api::topic::internal::new(cap).simulation().clock(),
+        )
+        .expect("clock publisher should attach")
+    }
+
+    fn empty_api(clock: StatePublisher<api::simulation::Clock>) -> Api {
+        Api {
+            clock,
+            motor_commands: Vec::new(),
+            encoders: Vec::new(),
+            imus: Vec::new(),
+            accelerometers: Vec::new(),
+            gyroscopes: Vec::new(),
+            ranges: Vec::new(),
+            cameras: Vec::new(),
+            depths: Vec::new(),
+            gnss: Vec::new(),
+        }
+    }
+
+    // One process may mint exactly one timeline authority, so the controller's
+    // step behaviour is covered by this single test rather than one per
+    // assertion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn controller_publishes_outputs_before_matching_clock() {
+        let bus = Bus::open(BusConfig::in_process(test_namespace("order"), "robot"))
             .await
             .expect("bus should open");
         let cap = OwnerCap::__mint();
@@ -1277,31 +1181,28 @@ mod tests {
         )
         .await
         .expect("clock subscriber should attach");
-        let battery_subscriber =
-            Subscriber::<api::battery::State>::new(&bus, &api::topic::new().battery().state(), 1)
-                .await
-                .expect("battery subscriber should attach");
+        let encoder_subscriber = Subscriber::<api::component::encoder::Sample>::new(
+            &bus,
+            &api::topic::new()
+                .component("left_drive")
+                .encoder("encoder")
+                .sample(),
+            1,
+        )
+        .await
+        .expect("encoder subscriber should attach");
         let api = Api {
-            clock: StatePublisher::new(
-                bus.clone(),
-                &api::topic::internal::new(cap).simulation().clock(),
-            )
-            .expect("clock publisher should attach"),
-            motor_commands: Vec::new(),
-            encoders: Vec::new(),
-            imus: Vec::new(),
-            accelerometers: Vec::new(),
-            gyroscopes: Vec::new(),
-            ranges: Vec::new(),
-            cameras: Vec::new(),
-            depths: Vec::new(),
-            gnss: Vec::new(),
-            emergency_stops: Vec::new(),
-            battery: StatePublisher::new(
-                bus.clone(),
-                &api::topic::internal::new(cap).battery().state(),
-            )
-            .expect("battery publisher should attach"),
+            encoders: vec![
+                MeasurementPublisher::new(
+                    bus.clone(),
+                    &api::topic::internal::new(cap)
+                        .component("left_drive")
+                        .encoder("encoder")
+                        .sample(),
+                )
+                .expect("encoder publisher should attach"),
+            ],
+            ..empty_api(clock_publisher(&bus, cap))
         };
         let timeline = TimelineId::from_raw(77).expect("test timeline must be nonzero");
         let mut runtime = ControllerRuntime {
@@ -1311,20 +1212,40 @@ mod tests {
                 backend: Backend::Stub(StubBackend::new(&CapabilityCatalog::default())),
                 motor_specs: Vec::new(),
             })),
-            emergency_stop_states: Vec::new(),
-            battery_charge_ratio: 1.0,
-            last_battery_update: None,
-            last_battery_publish: None,
         };
 
+        // A stub step produces no sensor output, so it only proves the clock
+        // the controller reached.
         runtime
             .step_once(&api)
             .await
             .expect("stub step should complete");
-        let battery = tokio::time::timeout(Duration::from_secs(2), battery_subscriber.recv())
+        let clock = tokio::time::timeout(Duration::from_secs(2), clock_subscriber.recv())
             .await
-            .expect("battery output should arrive")
-            .expect("battery output should decode");
+            .expect("clock should arrive")
+            .expect("clock should decode");
+        assert_eq!(
+            clock.metadata.produced_exactly_at(),
+            Some(RobotInstant::new(timeline, 10_000_000))
+        );
+        assert_eq!(clock.body.step, 1);
+        assert_eq!(runtime.step_index, 1);
+
+        // A step that did produce sensor output commits it ahead of that step's
+        // clock.
+        let world_step = runtime.authority.completed_step(20_000_000);
+        let mut outputs =
+            BackendOutput::empty(&OutputCounts::from_catalog(&CapabilityCatalog::default()));
+        outputs.encoders = vec![Some(api::component::encoder::Sample {
+            position_rad: 1.0,
+            velocity_radps: 0.5,
+        })];
+        commit_step(&api, &world_step, 2, outputs).expect("commit should publish");
+
+        let encoder = tokio::time::timeout(Duration::from_secs(2), encoder_subscriber.recv())
+            .await
+            .expect("encoder output should arrive")
+            .expect("encoder output should decode");
         let clock = tokio::time::timeout(Duration::from_secs(2), clock_subscriber.recv())
             .await
             .expect("clock should arrive")
@@ -1332,24 +1253,14 @@ mod tests {
 
         // Every output of one completed world step shares that step's exact
         // instant, and it rides in the envelope rather than in any body.
-        let expected = RobotInstant::new(timeline, 10_000_000);
-        assert_eq!(battery.metadata.produced_exactly_at(), Some(expected));
+        let expected = RobotInstant::new(timeline, 20_000_000);
+        assert_eq!(encoder.metadata.produced_exactly_at(), Some(expected));
         assert_eq!(clock.metadata.produced_exactly_at(), Some(expected));
-        assert_eq!(clock.body.step, 1);
+        assert_eq!(clock.body.step, 2);
         assert!(
-            battery.metadata.sequence < clock.metadata.sequence,
+            encoder.metadata.sequence < clock.metadata.sequence,
             "all completed-world outputs must enqueue before the matching clock"
         );
-        assert_eq!(runtime.step_index, 1);
         bus.close().await.expect("bus should close");
-    }
-
-    #[test]
-    fn battery_model_discharges_and_clamps() {
-        assert_eq!(discharge(0.5, 2.0, 0.0, 10.0), 0.5);
-        assert!(discharge(1.0, 2.0, 3_600.0, 10.0) < 1.0);
-        assert_eq!(discharge(0.01, 100.0, 3_600.0, 1.0), 0.0);
-        assert_eq!(voltage_for(0.0, 12.0, 16.8), 12.0);
-        assert_eq!(voltage_for(1.0, 12.0, 16.8), 16.8);
     }
 }
