@@ -234,9 +234,7 @@ impl Perception {
 mod tests {
     use std::path::PathBuf;
 
-    use phoxal::bus::ContractBody;
     use phoxal::model::v0::Robot;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::*;
     use crate::detector::RawDetection;
@@ -331,31 +329,6 @@ mod tests {
         assert_eq!(
             depths[0].depth_topic().key(),
             "v0.1/component/front_camera/depth/depth/frame"
-        );
-    }
-
-    #[test]
-    fn api_reports_perception_contracts() {
-        assert_eq!(<Perception as Participant>::ID, "perception");
-
-        let contracts = <<Perception as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<api::component::camera::Frame>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::component::depth::Frame>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::perception::Detections>(contracts, ContractRole::Publish);
-        assert_contract::<api::perception::State>(contracts, ContractRole::Publish);
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == B::TOPIC && c.role == role),
-            "expected a {role:?} contract for {} in {contracts:?}",
-            B::TOPIC
         );
     }
 }

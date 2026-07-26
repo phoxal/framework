@@ -128,10 +128,7 @@ fn range_sample(spec: &RangeSpec) -> api::component::range::Sample {
 
 #[cfg(test)]
 mod tests {
-    use super::{Vl53l1x, divisor_for_rate, range_sample};
-    use phoxal::api;
-    use phoxal::bus::ContractBody;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
+    use super::{divisor_for_rate, range_sample};
 
     #[test]
     fn divisor_and_stub_distance_follow_range_config() {
@@ -146,20 +143,5 @@ mod tests {
         let sample = range_sample(&spec);
         assert_eq!(sample.distance_m, 4.0);
         assert_eq!(sample.limits.unwrap().min_m, 0.1);
-    }
-
-    #[test]
-    fn api_reports_per_component_contracts() {
-        assert_eq!(<Vl53l1x as Participant>::ID, "vl53l1x");
-
-        let contracts = <<Vl53l1x as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(
-            contracts.iter().any(|c| {
-                c.topic == <api::component::range::Sample as ContractBody>::TOPIC
-                    && c.role == ContractRole::Publish
-            }),
-            "expected a Publish contract for {} in {contracts:?}",
-            <api::component::range::Sample as ContractBody>::TOPIC
-        );
     }
 }

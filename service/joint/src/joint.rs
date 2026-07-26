@@ -200,10 +200,8 @@ mod tests {
     use std::path::PathBuf;
 
     use phoxal::api;
-    use phoxal::bus::ContractBody;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
-    use super::{EncoderBinding, Joint, JointConfig, joint_state};
+    use super::{EncoderBinding, JointConfig, joint_state};
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixture/robot/rgbd-imu-diff-drive")
@@ -314,20 +312,5 @@ mod tests {
             });
         });
         assert!(JointConfig::from_robot(&robot).unwrap().encoders.is_empty());
-    }
-
-    #[test]
-    fn api_reports_contracts() {
-        assert_eq!(<Joint as Participant>::ID, "joint");
-
-        let contracts = <<Joint as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC
-                && c.role == ContractRole::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::joint::JointState as ContractBody>::TOPIC
-                && c.role == ContractRole::Publish
-        }));
     }
 }

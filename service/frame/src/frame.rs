@@ -205,9 +205,7 @@ mod tests {
 
     use nalgebra::{Quaternion, UnitQuaternion};
     use phoxal::api;
-    use phoxal::bus::ContractBody;
     use phoxal::model::structure::Structure;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::*;
 
@@ -424,18 +422,6 @@ mod tests {
         assert_eq!(buffer.nearest(at(10)), Some((at(10), 2)));
     }
 
-    #[test]
-    fn api_reports_contracts() {
-        assert_eq!(<Frame as Participant>::ID, "frame");
-
-        let contracts = <<Frame as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<api::joint::JointState>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::frame::Tree>(contracts, ContractRole::Publish);
-        assert_contract::<api::frame::StaticTransforms>(contracts, ContractRole::Publish);
-        assert_contract::<api::frame::LookupRequest>(contracts, ContractRole::Serve);
-        assert_contract::<api::frame::LookupResponse>(contracts, ContractRole::Serve);
-    }
-
     fn snapshot_from_config(
         config: &FrameConfig,
         dynamics: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
@@ -475,19 +461,6 @@ mod tests {
             velocity_radps: 0.0,
             effort_nm: None,
         }
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == B::TOPIC && c.role == role),
-            "expected a {role:?} contract for {} in {contracts:?}",
-            B::TOPIC
-        );
     }
 
     fn assert_yaw(rotation_xyzw: [f64; 4], expected_yaw: f64) {

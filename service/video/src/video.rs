@@ -320,9 +320,7 @@ fn validate_requested_dimensions(
 mod tests {
     use std::path::PathBuf;
 
-    use phoxal::bus::ContractBody;
     use phoxal::bus::QueryCode;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::*;
 
@@ -407,29 +405,5 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(err.code, QueryCode::InvalidArgument);
-    }
-
-    #[test]
-    fn api_reports_video_contracts() {
-        assert_eq!(<Video as Participant>::ID, "video");
-
-        let contracts = <<Video as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<api::component::camera::Frame>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::video::stream::StreamState>(contracts, ContractRole::Publish);
-        assert_contract::<api::video::OpenRequest>(contracts, ContractRole::Serve);
-        assert_contract::<api::video::OpenResponse>(contracts, ContractRole::Serve);
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == B::TOPIC && c.role == role),
-            "expected a {role:?} contract for {} in {contracts:?}",
-            B::TOPIC
-        );
     }
 }

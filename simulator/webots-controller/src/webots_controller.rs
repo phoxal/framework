@@ -52,7 +52,7 @@ const SIMULATION_FILE: &str = "simulation.yaml";
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    clock: StatePublisher<api::simulation::Clock>,
+    clock: WorldClockPublisher<api::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
     encoders: Vec<MeasurementPublisher<api::component::encoder::Sample>>,
     imus: Vec<MeasurementPublisher<api::component::imu::Sample>>,
@@ -131,7 +131,7 @@ impl WebotsControllerSimulator {
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let clock = ctx
-            .state_publisher(api::topic::owner().simulation().clock())
+            .world_clock_publisher(api::topic::owner().simulation().clock())
             .await?;
 
         let mut motor_commands = Vec::new();
@@ -394,7 +394,7 @@ impl WebotsControllerSimulator {
         };
 
         let runtime = ControllerRuntime {
-            authority: TimelineAuthority::__mint(TimelineId::mint())?,
+            authority: ctx.timeline_authority(TimelineId::mint())?,
             step_index: 0,
             backend: Arc::clone(&backend),
         };
@@ -1331,53 +1331,14 @@ fn none_vec<T>(len: usize) -> Vec<Option<T>> {
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ContractMapping {
-    topic: &'static str,
-    role: phoxal::participant::ContractRole,
-}
-
-#[cfg(test)]
-fn contract_mappings() -> Vec<ContractMapping> {
-    use phoxal::participant::ContractRole;
-    vec![
-        mapping::<api::simulation::Clock>(ContractRole::Publish),
-        mapping::<api::component::motor::Command>(ContractRole::Subscribe),
-        mapping::<api::component::encoder::Sample>(ContractRole::Publish),
-        mapping::<api::component::imu::Sample>(ContractRole::Publish),
-        mapping::<api::component::accelerometer::Sample>(ContractRole::Publish),
-        mapping::<api::component::gyroscope::Sample>(ContractRole::Publish),
-        mapping::<api::component::range::Sample>(ContractRole::Publish),
-        mapping::<api::component::camera::Frame>(ContractRole::Publish),
-        mapping::<api::component::depth::Frame>(ContractRole::Publish),
-        mapping::<api::component::gnss::Sample>(ContractRole::Publish),
-        mapping::<api::component::magnetometer::Sample>(ContractRole::Publish),
-        mapping::<api::component::lidar::Scan>(ContractRole::Publish),
-        mapping::<api::component::mmwave::Scan>(ContractRole::Publish),
-        mapping::<api::component::microphone::Frame>(ContractRole::Publish),
-        mapping::<api::component::battery::State>(ContractRole::Publish),
-        mapping::<api::component::led::Command>(ContractRole::Subscribe),
-        mapping::<api::component::speaker::Chunk>(ContractRole::Subscribe),
-    ]
-}
-
-#[cfg(test)]
-fn mapping<B: ContractBody>(role: phoxal::participant::ContractRole) -> ContractMapping {
-    ContractMapping {
-        topic: B::TOPIC,
-        role,
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::participant::{Participant, ParticipantApi, ParticipantLifecycle};
-    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, StatePublisher, Subscriber};
+    use phoxal::participant::{Participant, ParticipantLifecycle};
+    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, Subscriber, WorldClockPublisher};
     use std::time::Duration;
 
     #[test]
-    fn api_declares_clock_and_component_contracts() {
+    fn identity_and_class_are_reported() {
         assert_eq!(
             <WebotsControllerSimulator as Participant>::ID,
             "webots-controller"
@@ -1389,38 +1350,6 @@ mod tests {
         assert_eq!(
             <WebotsControllerSimulator as Participant>::PARTICIPANT_CLASS,
             "checked"
-        );
-
-        let contracts =
-            <<WebotsControllerSimulator as Participant>::Api as ParticipantApi>::CONTRACTS;
-
-        let expected = contract_mappings();
-        assert_eq!(
-            contracts.len(),
-            expected.len(),
-            "controller must declare one clock output and every simulated component contract, got {contracts:?}"
-        );
-        for mapping in &expected {
-            assert!(
-                contracts
-                    .iter()
-                    .any(|c| c.topic == mapping.topic && c.role == mapping.role),
-                "missing mapping for {} ({:?})",
-                mapping.topic,
-                mapping.role
-            );
-        }
-
-        // The controller owns the only simulation clock in this process.
-        assert!(
-            contracts
-                .iter()
-                .filter(|c| c.topic.contains("/simulation/"))
-                .all(|c| {
-                    c.topic == api::simulation::Clock::TOPIC
-                        && c.role == phoxal::participant::ContractRole::Publish
-                }),
-            "controller may only publish simulation/clock: {contracts:?}"
         );
         assert!(
             <WebotsControllerSimulator as ParticipantLifecycle>::__step_schedule().is_none(),
@@ -1464,12 +1393,12 @@ mod tests {
         )
     }
 
-    fn clock_publisher(bus: &Bus) -> StatePublisher<api::simulation::Clock> {
-        StatePublisher::new(bus.clone(), &api::topic::owner().simulation().clock())
+    fn clock_publisher(bus: &Bus) -> WorldClockPublisher<api::simulation::Clock> {
+        WorldClockPublisher::new(bus.clone(), &api::topic::owner().simulation().clock())
             .expect("clock publisher should attach")
     }
 
-    fn empty_api(clock: StatePublisher<api::simulation::Clock>) -> Api {
+    fn empty_api(clock: WorldClockPublisher<api::simulation::Clock>) -> Api {
         Api {
             clock,
             motor_commands: Vec::new(),

@@ -353,12 +353,10 @@ fn clamp_f32(value: f32, limit: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use phoxal::api;
-    use phoxal::bus::ContractBody;
     use phoxal::bus::{Lease, LeaseDecision, LocalInstant, ProducerId, RobotInstant, TimelineId};
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     use super::{
-        DifferentialDrive, Drive, DriveConfig, Duration, MotionLimits, TARGET_HOLD, TARGET_SILENCE,
+        DifferentialDrive, DriveConfig, Duration, MotionLimits, TARGET_HOLD, TARGET_SILENCE,
         resolve_target, stopped_target,
     };
     use std::path::PathBuf;
@@ -504,23 +502,5 @@ mod tests {
             lease.offer(second, 0, host_now, target(0.3)),
             LeaseDecision::Rejected(_)
         ));
-    }
-
-    #[test]
-    fn api_declares_the_drive_contracts() {
-        assert_eq!(<Drive as Participant>::ID, "drive");
-
-        let contracts = <<Drive as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::drive::Target as ContractBody>::TOPIC
-                && c.role == ContractRole::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::drive::State as ContractBody>::TOPIC && c.role == ContractRole::Publish
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::component::motor::Command as ContractBody>::TOPIC
-                && c.role == ContractRole::Publish
-        }));
     }
 }

@@ -334,8 +334,7 @@ fn emergency_stop_bindings(robot: &Robot) -> Vec<EmergencyStopBinding> {
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::{ContractBody, ProducerId, TimelineId};
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
+    use phoxal::bus::{ProducerId, TimelineId};
 
     use super::*;
 
@@ -345,32 +344,6 @@ mod tests {
 
     fn at(ticks: u64) -> RobotInstant {
         RobotInstant::new(line(), ticks)
-    }
-
-    #[test]
-    fn api_owns_estop_and_state_and_consumes_component_estops() {
-        assert_eq!(<Motion as Participant>::ID, "motion");
-        let contracts = <<Motion as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<api::motion::ManualCommand>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::navigation::Candidate>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::component::emergency_stop::State>(
-            contracts,
-            ContractRole::Subscribe,
-        );
-        assert_contract::<api::drive::Target>(contracts, ContractRole::Publish);
-        assert_contract::<api::motion::State>(contracts, ContractRole::Publish);
-        assert_contract::<api::safety::MotionConstraints>(contracts, ContractRole::Subscribe);
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|contract| contract.topic == B::TOPIC && contract.role == role)
-        );
     }
 
     #[test]

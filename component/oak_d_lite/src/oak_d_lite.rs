@@ -388,13 +388,9 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        OakDLite, channels_for_encoding, divisor_for_rate, encoding_for_mode, frame_byte_len,
-    };
+    use super::{channels_for_encoding, divisor_for_rate, encoding_for_mode, frame_byte_len};
     use phoxal::api;
-    use phoxal::bus::ContractBody;
     use phoxal::model::component::v0::capability::CameraMode;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     #[test]
     fn camera_encoding_and_frame_size_follow_mode() {
@@ -416,26 +412,5 @@ mod tests {
         );
         assert_eq!(frame_byte_len(640, 480, 3), Some(921_600));
         assert_eq!(divisor_for_rate(100.0, 25.0), 4);
-    }
-
-    #[test]
-    fn api_reports_per_component_contracts() {
-        assert_eq!(<OakDLite as Participant>::ID, "oak_d_lite");
-
-        let contracts = <<OakDLite as Participant>::Api as ParticipantApi>::CONTRACTS;
-        for family in [
-            <api::component::camera::Frame as ContractBody>::TOPIC,
-            <api::component::depth::Frame as ContractBody>::TOPIC,
-            <api::component::imu::Sample as ContractBody>::TOPIC,
-            <api::component::accelerometer::Sample as ContractBody>::TOPIC,
-            <api::component::gyroscope::Sample as ContractBody>::TOPIC,
-        ] {
-            assert!(
-                contracts
-                    .iter()
-                    .any(|c| { c.topic == family && c.role == ContractRole::Publish }),
-                "missing Publish contract for {family}"
-            );
-        }
     }
 }

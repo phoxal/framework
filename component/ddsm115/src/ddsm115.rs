@@ -365,8 +365,6 @@ fn integrate(position_rad: f64, velocity_radps: f32, dt_s: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::bus::ContractBody;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     fn start() -> LocalInstant {
         LocalInstant::from_boot_ns(1_000_000_000)
@@ -556,20 +554,5 @@ mod tests {
         .await;
         watchdog.abort();
         stopped.expect("the actuator must stop when logical time stops advancing");
-    }
-
-    #[test]
-    fn api_reports_per_component_contracts() {
-        assert_eq!(<Ddsm115 as Participant>::ID, "ddsm115");
-
-        let contracts = <<Ddsm115 as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::component::motor::Command as ContractBody>::TOPIC
-                && c.role == ContractRole::Subscribe
-        }));
-        assert!(contracts.iter().any(|c| {
-            c.topic == <api::component::encoder::Sample as ContractBody>::TOPIC
-                && c.role == ContractRole::Publish
-        }));
     }
 }

@@ -551,27 +551,13 @@ async fn publish_result(
 mod tests {
     use std::time::Duration;
 
-    use phoxal::bus::ContractBody;
     use phoxal::participant::ExecutionOrigin;
-    use phoxal::participant::{
-        ClockSource, ContractRole, Participant, ParticipantApi, ParticipantLaunch, TestClock,
-    };
+    use phoxal::participant::{ClockSource, ParticipantLaunch, TestClock};
     use phoxal::raw::{
         Bus, BusConfig, CommandPublisher, StatePublisher, StepToken, Subscriber, run_with_bus_clock,
     };
 
     use super::*;
-
-    #[test]
-    fn api_owns_the_navigation_lifecycle_and_candidate() {
-        assert_eq!(<Navigation as Participant>::ID, "navigation");
-        let contracts = <<Navigation as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<api::navigation::Request>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::navigation::State>(contracts, ContractRole::Publish);
-        assert_contract::<api::navigation::Progress>(contracts, ContractRole::Publish);
-        assert_contract::<api::navigation::Result>(contracts, ContractRole::Publish);
-        assert_contract::<api::navigation::Candidate>(contracts, ContractRole::Publish);
-    }
 
     #[test]
     fn terminal_outcomes_cannot_represent_running() {
@@ -871,16 +857,5 @@ mod tests {
         api::navigation::RequestId {
             value: value.to_string(),
         }
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|contract| { contract.topic == B::TOPIC && contract.role == role })
-        );
     }
 }

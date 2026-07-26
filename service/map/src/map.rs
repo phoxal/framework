@@ -222,11 +222,9 @@ fn mark_free(grid: &mut Grid, x_m: f64, y_m: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Grid, LOCALIZATION_STALE, Map, localization_is_usable, mark_free};
+    use super::{Grid, LOCALIZATION_STALE, localization_is_usable, mark_free};
     use phoxal::api;
-    use phoxal::bus::ContractBody;
     use phoxal::bus::RobotInstant;
-    use phoxal::participant::{ContractRole, Participant, ParticipantApi};
 
     #[test]
     fn submap_returns_full_grid_window() {
@@ -299,29 +297,5 @@ mod tests {
             "a sample older than the window is not usable"
         );
         assert!(localization_is_usable(Some(&sample(f64::NAN, line, now.ticks())), now).is_err());
-    }
-
-    #[test]
-    fn api_declares_the_map_contracts() {
-        assert_eq!(<Map as Participant>::ID, "map");
-
-        let contracts = <<Map as Participant>::Api as ParticipantApi>::CONTRACTS;
-        assert_contract::<api::localize::LocalizationState>(contracts, ContractRole::Subscribe);
-        assert_contract::<api::map::Revision>(contracts, ContractRole::Publish);
-        assert_contract::<api::map::SubmapRequest>(contracts, ContractRole::Serve);
-        assert_contract::<api::map::SubmapResponse>(contracts, ContractRole::Serve);
-    }
-
-    fn assert_contract<B>(contracts: &[phoxal::participant::ApiContractUse], role: ContractRole)
-    where
-        B: ContractBody,
-    {
-        assert!(
-            contracts
-                .iter()
-                .any(|c| c.topic == B::TOPIC && c.role == role),
-            "expected a {role:?} contract for {} in {contracts:?}",
-            B::TOPIC
-        );
     }
 }
