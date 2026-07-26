@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.1](https://github.com/phoxal/framework/compare/phoxal-v0.41.0...phoxal-v0.41.1) - 2026-07-26
+
+### Other
+
+- *(phoxal)* guarantee native simulator artifacts ([#320](https://github.com/phoxal/framework/pull/320))
+
 ## [0.41.0](https://github.com/phoxal/framework/compare/phoxal-v0.40.2...phoxal-v0.41.0) - 2026-07-26
 
 ### Added
