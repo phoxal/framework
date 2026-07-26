@@ -2436,16 +2436,9 @@ dependencies = [
 name = "phoxal-infrastructure-router"
 version = "0.41.1"
 dependencies = [
- "anyhow",
  "clap",
- "json5",
- "phoxal",
- "serde",
  "serde_json",
- "tempfile",
  "tokio",
- "tracing",
- "tracing-subscriber",
  "zenoh",
 ]
 

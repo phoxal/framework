@@ -118,17 +118,11 @@ The root keys are `schema`, `robot`, and optionally `extends`, `services`,
   a `tools/` workspace crate whose name matches an official tool identity
   overrides that official binary without being declared.
 - `router` (optional) names a project-relative Zenoh JSON5 file through
-  `router.config`. Every supervised project binds its local participant
-  transport at the exact project-owned
-  `unixsock-stream/<project>/.phoxal/zenoh.sock` endpoint known before launch.
-  Without an authored config, Phoxal disables discovery and outgoing
-  connections. With one, authored Zenoh listeners, connect endpoints, and
-  scouting settings are retained alongside the mandatory local Unix endpoint;
-  Phoxal still forces router mode and rejects non-loopback authored TCP
-  listeners until listener authentication ships. Router readiness is a one-shot
-  typed result on the supervisor-provided bootstrap descriptor; stdout and
-  stderr contain only ordinary logs. `hello-rover` needs no custom router
-  settings and omits the section entirely.
+  `router.config`. The CLI chooses and passes the router's listener endpoints;
+  the router only forces Zenoh router mode, applies that listener list, and
+  opens Zenoh. Zenoh owns configuration, endpoint, and bind validation.
+  `router.config` supplies all other native Zenoh settings. `hello-rover` needs
+  no custom router settings and omits the section entirely.
 
 ## Adding a component
 
