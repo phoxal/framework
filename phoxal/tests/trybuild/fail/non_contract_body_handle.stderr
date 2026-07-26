@@ -49,13 +49,13 @@ help: the trait `ContractBody` is not implemented for `NotABody`
    | ^^^^^^^^^^^^^^^
    = help: the following other types implement trait `ContractBody`:
              Candidate
+             Chunk
              Clock
              Detections
              Devices
              FrontierRequest
              FrontierResponse
              GetRequest
-             GetResponse
            and $N others
 
 error[E0277]: the trait bound `NotABody: StateContract` is not satisfied

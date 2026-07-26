@@ -5,14 +5,21 @@
 //! structurally; the contracts and derive underneath are today's.
 
 pub mod accelerometer;
+pub mod battery;
 pub mod camera;
 pub mod depth;
 pub mod encoder;
 pub mod gnss;
 pub mod gyroscope;
 pub mod imu;
+pub mod led;
+pub mod lidar;
+pub mod magnetometer;
+pub mod microphone;
+pub mod mmwave;
 pub mod motor;
 pub mod range;
+pub mod speaker;
 
 use anyhow::{Result, bail};
 use phoxal::model::component::v0::CapabilityRef;

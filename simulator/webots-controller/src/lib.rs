@@ -1,12 +1,17 @@
 //! Webots controller simulator artifact.
 //!
-//! Binds one Webots-owned controller process to
-//! a robot's component capabilities (motor, encoder, IMU, accelerometer,
-//! gyroscope, range, camera, depth, GNSS) and publishes/subscribes exactly the
-//! `component::*` contracts those capabilities need. The process bootstraps the
-//! normal framework runner, mints one opaque timeline, and runs only the
-//! external Webots step loop. Each step publishes all component outputs and
-//! then the matching `simulation::Clock`.
+//! Binds one Webots-owned controller process to a robot's component
+//! capabilities and publishes/subscribes exactly the `component::*` contracts
+//! those capabilities need. The process bootstraps the normal framework runner,
+//! mints one opaque timeline, and runs only the external Webots step loop. Each
+//! step applies the actuator inputs, publishes all component outputs, and then
+//! the matching `simulation::Clock`.
+//!
+//! Every capability kind a component may declare is simulated here except one:
+//! Webots has no button, switch, or toggle node, so nothing in a simulated
+//! world can engage or release an `emergency_stop`. That capability is
+//! deliberately left unpublished rather than driven from a static config, which
+//! would assert a state no one in the world can change.
 
 mod capabilities;
 
@@ -27,14 +32,21 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use capabilities::accelerometer::{AccelerometerSpec, NativeAccelerometer};
+use capabilities::battery::{BatterySpec, NativeBattery};
 use capabilities::camera::{CameraSpec, NativeCamera};
 use capabilities::depth::{DepthSpec, NativeDepth};
 use capabilities::encoder::{EncoderSpec, NativeEncoder};
 use capabilities::gnss::{GnssSpec, NativeGnss};
 use capabilities::gyroscope::{GyroscopeSpec, NativeGyroscope};
 use capabilities::imu::{ImuSpec, NativeImu};
+use capabilities::led::{LedSpec, NativeLed};
+use capabilities::lidar::{LidarSpec, NativeLidar};
+use capabilities::magnetometer::NativeMagnetometer;
+use capabilities::microphone::NativeMicrophone;
+use capabilities::mmwave::NativeMmwave;
 use capabilities::motor::{MotorSpec, NativeMotor};
 use capabilities::range::{NativeRange, RangeSpec};
+use capabilities::speaker::{NativeSpeaker, SpeakerSpec};
 
 const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
@@ -77,6 +89,13 @@ pub struct Api {
     cameras: Vec<MeasurementPublisher<api::component::camera::Frame>>,
     depths: Vec<MeasurementPublisher<api::component::depth::Frame>>,
     gnss: Vec<MeasurementPublisher<api::component::gnss::Sample>>,
+    magnetometers: Vec<MeasurementPublisher<api::component::magnetometer::Sample>>,
+    lidars: Vec<MeasurementPublisher<api::component::lidar::Scan>>,
+    mmwaves: Vec<MeasurementPublisher<api::component::mmwave::Scan>>,
+    microphones: Vec<MeasurementPublisher<api::component::microphone::Frame>>,
+    batteries: Vec<StatePublisher<api::component::battery::State>>,
+    led_commands: Vec<Subscriber<api::component::led::Command>>,
+    speaker_streams: Vec<Subscriber<api::component::speaker::Chunk>>,
 }
 
 #[phoxal::simulator(id = "webots-controller", config = Option<WebotsControllerConfig>)]
@@ -267,6 +286,102 @@ impl WebotsControllerSimulator {
             );
         }
 
+        let mut magnetometers = Vec::new();
+        for spec in &catalog.magnetometers {
+            magnetometers.push(
+                ctx.measurement_publisher(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .magnetometer(&spec.reference.capability_id)
+                        .sample(),
+                )
+                .await?,
+            );
+        }
+
+        let mut lidars = Vec::new();
+        for spec in &catalog.lidars {
+            lidars.push(
+                ctx.measurement_publisher(
+                    api::topic::internal::new(cap)
+                        .component(&spec.sampled.reference.component_id)
+                        .lidar(&spec.sampled.reference.capability_id)
+                        .scan(),
+                )
+                .await?,
+            );
+        }
+
+        let mut mmwaves = Vec::new();
+        for spec in &catalog.mmwaves {
+            mmwaves.push(
+                ctx.measurement_publisher(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .mmwave(&spec.reference.capability_id)
+                        .scan(),
+                )
+                .await?,
+            );
+        }
+
+        let mut microphones = Vec::new();
+        for spec in &catalog.microphones {
+            microphones.push(
+                ctx.measurement_publisher(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .microphone(&spec.reference.capability_id)
+                        .frame(),
+                )
+                .await?,
+            );
+        }
+
+        let mut batteries = Vec::new();
+        for spec in &catalog.batteries {
+            batteries.push(
+                ctx.state_publisher(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .battery(&spec.reference.capability_id)
+                        .state(),
+                )
+                .await?,
+            );
+        }
+
+        let mut led_commands = Vec::new();
+        for spec in &catalog.leds {
+            led_commands.push(
+                ctx.subscriber(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .led(&spec.reference.capability_id)
+                        .command(),
+                    32,
+                )
+                .await?,
+            );
+        }
+
+        let mut speaker_streams = Vec::new();
+        for spec in &catalog.speakers {
+            speaker_streams.push(
+                ctx.subscriber(
+                    api::topic::internal::new(cap)
+                        .component(&spec.reference.component_id)
+                        .speaker(&spec.reference.capability_id)
+                        .stream(),
+                    // A stream arrives as many chunks in a row, and dropping
+                    // one silently corrupts the sound rather than shortening
+                    // it, so this queue is deeper than a command queue.
+                    256,
+                )
+                .await?,
+            );
+        }
+
         let backend = Arc::new(Mutex::new(BackendControl {
             backend: Backend::open(&config, &catalog)?,
             motor_specs: catalog.motors.clone(),
@@ -283,6 +398,13 @@ impl WebotsControllerSimulator {
             cameras = catalog.cameras.len(),
             depths = catalog.depths.len(),
             gnss = catalog.gnss.len(),
+            magnetometers = catalog.magnetometers.len(),
+            lidars = catalog.lidars.len(),
+            mmwaves = catalog.mmwaves.len(),
+            microphones = catalog.microphones.len(),
+            batteries = catalog.batteries.len(),
+            leds = catalog.leds.len(),
+            speakers = catalog.speakers.len(),
             "webots controller simulator ready"
         );
 
@@ -297,6 +419,13 @@ impl WebotsControllerSimulator {
             cameras,
             depths,
             gnss,
+            magnetometers,
+            lidars,
+            mmwaves,
+            microphones,
+            batteries,
+            led_commands,
+            speaker_streams,
         };
 
         let runtime = ControllerRuntime {
@@ -344,7 +473,7 @@ impl ControllerRuntime {
     }
 
     async fn step_once(&mut self, api: &Api) -> Result<()> {
-        let commands = self.latest_motor_commands(api);
+        let inputs = latest_inputs(api);
         let next_step = self.step_index.saturating_add(1);
         let step_index = self.step_index;
         let backend = Arc::clone(&self.backend);
@@ -352,7 +481,7 @@ impl ControllerRuntime {
             let mut control = lock_backend(&backend)?;
             let step_ns = control.backend.step_ns()?;
             let now_ns = next_step.saturating_mul(step_ns);
-            let outputs = control.backend.advance(step_index, now_ns, &commands)?;
+            let outputs = control.backend.advance(step_index, now_ns, inputs)?;
             Ok::<_, anyhow::Error>(BlockingStep {
                 step_ns,
                 now_ns,
@@ -381,9 +510,26 @@ impl ControllerRuntime {
         }
         Ok(())
     }
+}
 
-    fn latest_motor_commands(&self, api: &Api) -> Vec<Option<api::component::motor::Command>> {
-        api.motor_commands.iter().map(drain_latest).collect()
+/// Everything the graph asked this world's actuators to do since the previous
+/// step.
+///
+/// Motors and LEDs keep only the newest command - a superseded setpoint has no
+/// effect worth applying. A speaker keeps every chunk in order, because its
+/// chunks are not alternatives: dropping one corrupts the sound rather than
+/// replacing it.
+struct BackendInput {
+    motors: Vec<Option<api::component::motor::Command>>,
+    leds: Vec<Option<api::component::led::Command>>,
+    speakers: Vec<Vec<api::component::speaker::Chunk>>,
+}
+
+fn latest_inputs(api: &Api) -> BackendInput {
+    BackendInput {
+        motors: api.motor_commands.iter().map(drain_latest).collect(),
+        leds: api.led_commands.iter().map(drain_latest).collect(),
+        speakers: api.speaker_streams.iter().map(drain_all).collect(),
     }
 }
 
@@ -446,7 +592,42 @@ fn publish_outputs(api: &Api, world_step: &WorldStepToken, outputs: BackendOutpu
             publisher.publish(captured_at, sample)?;
         }
     }
+    for (publisher, sample) in api.magnetometers.iter().zip(outputs.magnetometers) {
+        if let Some(sample) = sample {
+            publisher.publish(captured_at, sample)?;
+        }
+    }
+    for (publisher, scan) in api.lidars.iter().zip(outputs.lidars) {
+        if let Some(scan) = scan {
+            publisher.publish(captured_at, scan)?;
+        }
+    }
+    for (publisher, scan) in api.mmwaves.iter().zip(outputs.mmwaves) {
+        if let Some(scan) = scan {
+            publisher.publish(captured_at, scan)?;
+        }
+    }
+    for (publisher, frame) in api.microphones.iter().zip(outputs.microphones) {
+        if let Some(frame) = frame {
+            publisher.publish(captured_at, frame)?;
+        }
+    }
+    // A battery reports what the pack is, not what a sensor saw at an instant,
+    // so it is state stamped with the world step like the clock itself.
+    for (publisher, state) in api.batteries.iter().zip(outputs.batteries) {
+        if let Some(state) = state {
+            publisher.publish(world_step, state)?;
+        }
+    }
     Ok(())
+}
+
+fn drain_all<B: ContractBody>(subscriber: &Subscriber<B>) -> Vec<B> {
+    let mut received = Vec::new();
+    while let Some(message) = subscriber.try_recv() {
+        received.push(message.body);
+    }
+    received
 }
 
 fn drain_latest<B: ContractBody>(subscriber: &Subscriber<B>) -> Option<B> {
@@ -464,7 +645,7 @@ fn lock_backend(backend: &SharedBackend) -> Result<std::sync::MutexGuard<'_, Bac
 }
 
 async fn park_backend(backend: SharedBackend) -> Result<()> {
-    tokio::task::spawn_blocking(move || lock_backend(&backend)?.park_motors())
+    tokio::task::spawn_blocking(move || lock_backend(&backend)?.park())
         .await
         .context("Webots motor parking worker failed to join")?
 }
@@ -482,6 +663,13 @@ struct CapabilityCatalog {
     cameras: Vec<CameraSpec>,
     depths: Vec<DepthSpec>,
     gnss: Vec<GnssSpec>,
+    magnetometers: Vec<capabilities::SampledSpec>,
+    lidars: Vec<LidarSpec>,
+    mmwaves: Vec<capabilities::SampledSpec>,
+    microphones: Vec<capabilities::SampledSpec>,
+    batteries: Vec<BatterySpec>,
+    leds: Vec<LedSpec>,
+    speakers: Vec<SpeakerSpec>,
 }
 
 impl CapabilityCatalog {
@@ -577,19 +765,67 @@ impl CapabilityCatalog {
                             coordinate_system: config.coordinate_system,
                         });
                     }
-                    Capability::Lidar(_)
-                    | Capability::Mmwave(_)
-                    | Capability::Magnetometer(_)
-                    | Capability::Microphone(_)
-                    | Capability::Speaker(_)
-                    | Capability::Battery(_)
-                    | Capability::EmergencyStop(_)
-                    | Capability::Led(_) => {
+                    Capability::Magnetometer(config) => {
+                        catalog.magnetometers.push(sampled_spec(
+                            reference,
+                            config.publish_rate_hz,
+                            simulation_capability,
+                        )?);
+                    }
+                    Capability::Lidar(config) => {
+                        let sampled =
+                            sampled_spec(reference, config.publish_rate_hz, simulation_capability)?;
+                        catalog.lidars.push(LidarSpec {
+                            sampled,
+                            output: config.output,
+                        });
+                    }
+                    Capability::Mmwave(config) => {
+                        catalog.mmwaves.push(sampled_spec(
+                            reference,
+                            config.publish_rate_hz,
+                            simulation_capability,
+                        )?);
+                    }
+                    Capability::Microphone(config) => {
+                        catalog.microphones.push(sampled_spec(
+                            reference,
+                            config.publish_rate_hz,
+                            simulation_capability,
+                        )?);
+                    }
+                    Capability::Battery(config) => {
+                        let sampling_hz = simulation_capability
+                            .and_then(simulation_sampling_rate)
+                            .unwrap_or(config.publish_rate_hz);
+                        catalog.batteries.push(BatterySpec {
+                            reference,
+                            publish_every_steps: capabilities::publish_every_steps(
+                                STEP_HZ,
+                                config.publish_rate_hz,
+                            )?,
+                            sampling_period_ms: capabilities::sampling_period_ms(sampling_hz)?,
+                            voltage_v: config.voltage_v,
+                            capacity_ah: config.capacity_ah,
+                        });
+                    }
+                    Capability::Led(_) => {
+                        catalog.leds.push(LedSpec { reference });
+                    }
+                    Capability::Speaker(_) => {
+                        catalog.speakers.push(SpeakerSpec { reference });
+                    }
+                    // Webots has no button, switch, or toggle node, so nothing
+                    // in a simulated world can engage or release an e-stop.
+                    // Leaving it unpublished is the honest state: `motion`
+                    // fails closed on a component it never hears from.
+                    Capability::EmergencyStop(_) => {
                         tracing::debug!(
                             target: "simulator_webots_controller",
                             capability = %reference,
                             kind = capability.kind_name(),
-                            "capability is intentionally left for a later Webots port slice"
+                            "Webots models no emergency-stop control, so this capability is \
+                             not simulated"
                         );
                     }
                 }
@@ -633,7 +869,7 @@ fn simulation_sampling_rate(
         SimCapability::Mmwave(config) => Some(config.sampling_period_hz),
         SimCapability::Microphone(config) => Some(config.sampling_period_hz),
         SimCapability::Motor(_)
-        | SimCapability::EmergencyStop(_)
+        | SimCapability::EmergencyStop
         | SimCapability::Speaker
         | SimCapability::Battery
         | SimCapability::Led => None,
@@ -674,7 +910,9 @@ enum Backend {
 }
 
 impl BackendControl {
-    fn park_motors(&mut self) -> Result<()> {
+    /// Leaves the world quiet: every motor stopped and every speaker silent.
+    /// A simulation that stopped must not keep driving or keep playing.
+    fn park(&mut self) -> Result<()> {
         let mut first_error = None;
         for spec in &self.motor_specs {
             if let Err(error) = self
@@ -689,6 +927,14 @@ impl BackendControl {
                 );
                 first_error.get_or_insert(error);
             }
+        }
+        if let Err(error) = self.backend.silence_speakers() {
+            tracing::warn!(
+                target: "simulator_webots_controller",
+                error = %error,
+                "failed to silence speakers while stopping"
+            );
+            first_error.get_or_insert(error);
         }
         first_error.map_or(Ok(()), Err)
     }
@@ -713,11 +959,11 @@ impl Backend {
         &mut self,
         step_index: u64,
         time_ns: u64,
-        commands: &[Option<api::component::motor::Command>],
+        inputs: BackendInput,
     ) -> Result<BackendOutput> {
         match self {
-            Self::Native(backend) => backend.advance(step_index, time_ns, commands),
-            Self::Stub(backend) => backend.advance(step_index, time_ns, commands),
+            Self::Native(backend) => backend.advance(step_index, time_ns, inputs),
+            Self::Stub(backend) => backend.advance(step_index, time_ns, inputs),
         }
     }
 
@@ -739,6 +985,13 @@ impl Backend {
     ) -> Result<()> {
         match self {
             Self::Native(backend) => backend.apply_motor_command(spec, command),
+            Self::Stub(_) => Ok(()),
+        }
+    }
+
+    fn silence_speakers(&self) -> Result<()> {
+        match self {
+            Self::Native(backend) => backend.silence_speakers(),
             Self::Stub(_) => Ok(()),
         }
     }
@@ -770,7 +1023,7 @@ impl StubBackend {
         &mut self,
         _step_index: u64,
         _time_ns: u64,
-        _commands: &[Option<api::component::motor::Command>],
+        _inputs: BackendInput,
     ) -> Result<BackendOutput> {
         Ok(BackendOutput::empty(&self.counts))
     }
@@ -791,6 +1044,13 @@ struct NativeBackend {
     cameras: Vec<NativeCamera>,
     depths: Vec<NativeDepth>,
     gnss: Vec<NativeGnss>,
+    magnetometers: Vec<NativeMagnetometer>,
+    lidars: Vec<NativeLidar>,
+    mmwaves: Vec<NativeMmwave>,
+    microphones: Vec<NativeMicrophone>,
+    batteries: Vec<NativeBattery>,
+    leds: Vec<NativeLed>,
+    speakers: Vec<NativeSpeaker>,
 }
 
 impl NativeBackend {
@@ -812,6 +1072,13 @@ impl NativeBackend {
         let mut cameras = Vec::new();
         let mut depths = Vec::new();
         let mut gnss = Vec::new();
+        let mut magnetometers = Vec::new();
+        let mut lidars = Vec::new();
+        let mut mmwaves = Vec::new();
+        let mut microphones = Vec::new();
+        let mut batteries = Vec::new();
+        let mut leds = Vec::new();
+        let mut speakers = Vec::new();
 
         for spec in &catalog.motors {
             motors.push(NativeMotor::new(&webots, spec)?);
@@ -840,6 +1107,42 @@ impl NativeBackend {
         for spec in &catalog.gnss {
             gnss.push(NativeGnss::new(&webots, spec)?);
         }
+        for spec in &catalog.magnetometers {
+            magnetometers.push(NativeMagnetometer::new(&webots, spec)?);
+        }
+        for spec in &catalog.lidars {
+            lidars.push(NativeLidar::new(&webots, spec)?);
+        }
+        for spec in &catalog.mmwaves {
+            mmwaves.push(NativeMmwave::new(&webots, spec)?);
+        }
+        for spec in &catalog.microphones {
+            microphones.push(NativeMicrophone::new(&webots, spec)?);
+        }
+        // Webots gives a robot exactly one battery sensor, so a second battery
+        // capability would report the first one's energy under another name.
+        if catalog.batteries.len() > 1 {
+            let declared = catalog
+                .batteries
+                .iter()
+                .map(|spec| spec.reference.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!(
+                "Webots models one battery per robot, but this robot declares {}: {declared}. \
+                 Keep exactly one battery capability for a simulated robot.",
+                catalog.batteries.len()
+            );
+        }
+        for spec in &catalog.batteries {
+            batteries.push(NativeBattery::new(spec)?);
+        }
+        for spec in &catalog.leds {
+            leds.push(NativeLed::new(&webots, spec)?);
+        }
+        for spec in &catalog.speakers {
+            speakers.push(NativeSpeaker::new(&webots, spec)?);
+        }
 
         Ok(Self {
             webots,
@@ -853,6 +1156,13 @@ impl NativeBackend {
             cameras,
             depths,
             gnss,
+            magnetometers,
+            lidars,
+            mmwaves,
+            microphones,
+            batteries,
+            leds,
+            speakers,
         })
     }
 
@@ -860,11 +1170,23 @@ impl NativeBackend {
         &mut self,
         step_index: u64,
         time_ns: u64,
-        commands: &[Option<api::component::motor::Command>],
+        inputs: BackendInput,
     ) -> Result<BackendOutput> {
-        for (motor, command) in self.motors.iter().zip(commands) {
+        for (motor, command) in self.motors.iter().zip(inputs.motors) {
             if let Some(command) = command {
-                motor.apply(command)?;
+                motor.apply(&command)?;
+            }
+        }
+        for (led, command) in self.leds.iter().zip(inputs.leds) {
+            if let Some(command) = command {
+                led.apply(&command)?;
+            }
+        }
+        // Audio chunks move rather than copy: a stream is large, and nothing
+        // downstream needs them again.
+        for (speaker, chunks) in self.speakers.iter_mut().zip(inputs.speakers) {
+            for chunk in chunks {
+                speaker.apply(chunk)?;
             }
         }
 
@@ -919,7 +1241,44 @@ impl NativeBackend {
                 .iter()
                 .map(|sensor| sensor.read_if_due(step_index))
                 .collect::<Result<_>>()?,
+            magnetometers: self
+                .magnetometers
+                .iter()
+                .map(|sensor| sensor.read_if_due(step_index))
+                .collect::<Result<_>>()?,
+            lidars: self
+                .lidars
+                .iter()
+                .map(|sensor| sensor.read_if_due(step_index))
+                .collect::<Result<_>>()?,
+            mmwaves: self
+                .mmwaves
+                .iter()
+                .map(|sensor| sensor.read_if_due(step_index))
+                .collect::<Result<_>>()?,
+            microphones: self
+                .microphones
+                .iter()
+                .map(|sensor| sensor.read_if_due(step_index))
+                .collect::<Result<_>>()?,
+            // The battery differentiates energy over the step to report
+            // current, so like the encoder it needs the instant.
+            batteries: self
+                .batteries
+                .iter_mut()
+                .map(|sensor| sensor.read_if_due(step_index, time_ns))
+                .collect::<Result<_>>()?,
         })
+    }
+
+    fn silence_speakers(&self) -> Result<()> {
+        let mut first_error = None;
+        for speaker in &self.speakers {
+            if let Err(error) = speaker.stop() {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     fn apply_motor_command(
@@ -948,6 +1307,11 @@ struct OutputCounts {
     cameras: usize,
     depths: usize,
     gnss: usize,
+    magnetometers: usize,
+    lidars: usize,
+    mmwaves: usize,
+    microphones: usize,
+    batteries: usize,
 }
 
 impl OutputCounts {
@@ -961,6 +1325,11 @@ impl OutputCounts {
             cameras: catalog.cameras.len(),
             depths: catalog.depths.len(),
             gnss: catalog.gnss.len(),
+            magnetometers: catalog.magnetometers.len(),
+            lidars: catalog.lidars.len(),
+            mmwaves: catalog.mmwaves.len(),
+            microphones: catalog.microphones.len(),
+            batteries: catalog.batteries.len(),
         }
     }
 }
@@ -974,6 +1343,11 @@ struct BackendOutput {
     cameras: Vec<Option<api::component::camera::Frame>>,
     depths: Vec<Option<api::component::depth::Frame>>,
     gnss: Vec<Option<api::component::gnss::Sample>>,
+    magnetometers: Vec<Option<api::component::magnetometer::Sample>>,
+    lidars: Vec<Option<api::component::lidar::Scan>>,
+    mmwaves: Vec<Option<api::component::mmwave::Scan>>,
+    microphones: Vec<Option<api::component::microphone::Frame>>,
+    batteries: Vec<Option<api::component::battery::State>>,
 }
 
 impl BackendOutput {
@@ -987,6 +1361,11 @@ impl BackendOutput {
             cameras: none_vec(counts.cameras),
             depths: none_vec(counts.depths),
             gnss: none_vec(counts.gnss),
+            magnetometers: none_vec(counts.magnetometers),
+            lidars: none_vec(counts.lidars),
+            mmwaves: none_vec(counts.mmwaves),
+            microphones: none_vec(counts.microphones),
+            batteries: none_vec(counts.batteries),
         }
     }
 }
@@ -1016,6 +1395,13 @@ fn contract_mappings() -> Vec<ContractMapping> {
         mapping::<api::component::camera::Frame>(ContractRole::Publish),
         mapping::<api::component::depth::Frame>(ContractRole::Publish),
         mapping::<api::component::gnss::Sample>(ContractRole::Publish),
+        mapping::<api::component::magnetometer::Sample>(ContractRole::Publish),
+        mapping::<api::component::lidar::Scan>(ContractRole::Publish),
+        mapping::<api::component::mmwave::Scan>(ContractRole::Publish),
+        mapping::<api::component::microphone::Frame>(ContractRole::Publish),
+        mapping::<api::component::battery::State>(ContractRole::Publish),
+        mapping::<api::component::led::Command>(ContractRole::Subscribe),
+        mapping::<api::component::speaker::Chunk>(ContractRole::Subscribe),
     ]
 }
 
@@ -1056,7 +1442,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             expected.len(),
-            "controller must declare one clock output and 9 component contracts, got {contracts:?}"
+            "controller must declare one clock output and every simulated component contract, got {contracts:?}"
         );
         for mapping in &expected {
             assert!(
@@ -1162,6 +1548,13 @@ mod tests {
             cameras: Vec::new(),
             depths: Vec::new(),
             gnss: Vec::new(),
+            magnetometers: Vec::new(),
+            lidars: Vec::new(),
+            mmwaves: Vec::new(),
+            microphones: Vec::new(),
+            batteries: Vec::new(),
+            led_commands: Vec::new(),
+            speaker_streams: Vec::new(),
         }
     }
 
