@@ -110,14 +110,6 @@ fn folded_contracts_are_available_on_the_first_revision() {
     assert_eq!(<v0_1::Api as ApiVersion>::ID, "v0.1");
 
     assert_eq!(
-        <v0_1::battery::State as ContractBody>::TOPIC,
-        "v0.1/battery/state"
-    );
-    assert_eq!(
-        v0_1::topic::new().battery().state().key(),
-        "v0.1/battery/state"
-    );
-    assert_eq!(
         <v0_1::simulation::Clock as ContractBody>::TOPIC,
         "v0.1/simulation/clock"
     );
@@ -183,6 +175,7 @@ fn every_command_topic_is_classified() {
         ("v0.1::behavior::Command", "one-shot"),
         ("v0.1::behavior::Request", "one-shot"),
         ("v0.1::component::led::Command", "one-shot"),
+        ("v0.1::component::speaker::Chunk", "one-shot"),
         ("v0.1::joypad::Select", "one-shot"),
         ("v0.1::joypad::SetEnabled", "one-shot"),
         ("v0.1::joypad::Rescan", "one-shot"),
@@ -232,9 +225,12 @@ fn generated_contract_manifest_lists_contract_shapes() {
         let battery_state = current
             .contracts
             .iter()
-            .find(|contract| contract.family == "v0.1::battery::State")
-            .expect("battery::State should be in the v0.1 manifest entry");
-        assert_eq!(battery_state.topic, "v0.1/battery/state");
+            .find(|contract| contract.family == "v0.1::component::battery::State")
+            .expect("component::battery::State should be in the v0.1 manifest entry");
+        assert_eq!(
+            battery_state.topic,
+            "v0.1/component/{instance}/battery/{capability}/state"
+        );
         for family in [
             "v0.1::simulation::Clock",
             "v0.1::joypad::Devices",
@@ -277,7 +273,7 @@ fn generated_role_const_matches_each_topic_role() {
 
     // State: what the owning service publishes at a logical step.
     assert_role::<api::drive::State>(TopicRole::State);
-    assert_role::<api::battery::State>(TopicRole::State);
+    assert_role::<api::component::battery::State>(TopicRole::State);
     assert_role::<api::simulation::Clock>(TopicRole::State);
     assert_role::<api::component::emergency_stop::State>(TopicRole::State);
 

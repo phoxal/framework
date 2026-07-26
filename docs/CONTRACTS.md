@@ -173,7 +173,7 @@ cannot ship unclassified.
 |---|---|---|
 | **Leased** | `motion/manual` | A continuous authority. The *receiver* owns a `Lease` with a host-monotonic silence deadline and a logical hold horizon; the sender must keep publishing or the command lapses. Sequence rejection and producer fencing apply. |
 | **Internal actuation** | `drive/target`, `component/motor/command` | Produced inside the on-robot control chain. The receiver ages it on its own clock - the motor driver holds a renewable permit and stops without one - so halting logical time cannot leave an actuator commanded. |
-| **One-shot** | `power/command`, `navigation/request`, `behavior/command`, `behavior/request`, `component/led/command`, `joypad/select`, `joypad/set_enabled`, `joypad/rescan` | A single request that either takes effect or does not. Nothing repeats it and nothing expires it; the resulting *state* is what a consumer watches. |
+| **One-shot** | `power/command`, `navigation/request`, `behavior/command`, `behavior/request`, `component/led/command`, `component/speaker/stream`, `joypad/select`, `joypad/set_enabled`, `joypad/rescan` | A single request that either takes effect or does not. Nothing repeats it and nothing expires it; the resulting *state* is what a consumer watches. |
 
 No command carries a production instant: a command is a request, not an
 observation. What it carries is producer identity and a per-producer sequence,

@@ -30,7 +30,7 @@ struct Timed<T> {
 }
 
 #[derive(Clone)]
-struct RangeBinding {
+struct CapabilityBinding {
     component_id: String,
     capability_id: String,
 }
@@ -40,18 +40,18 @@ struct WorldInputs {
     map: Option<Timed<api::map::Revision>>,
     drivable_space: Option<Timed<bool>>,
     drive: Option<Timed<api::drive::State>>,
-    battery: Option<Timed<api::battery::State>>,
+    batteries: Vec<Option<Timed<api::component::battery::State>>>,
     ranges: Vec<Option<Timed<api::component::range::Sample>>>,
 }
 
 impl WorldInputs {
-    fn new(range_count: usize) -> Self {
+    fn new(range_count: usize, battery_count: usize) -> Self {
         Self {
             localization: None,
             map: None,
             drivable_space: None,
             drive: None,
-            battery: None,
+            batteries: vec![None; battery_count],
             ranges: vec![None; range_count],
         }
     }
@@ -63,7 +63,7 @@ pub struct Api {
     map: Subscriber<api::map::Revision>,
     map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
     drive: Subscriber<api::drive::State>,
-    battery: Subscriber<api::battery::State>,
+    batteries: Vec<Subscriber<api::component::battery::State>>,
     ranges: Vec<Subscriber<api::component::range::Sample>>,
     constraints: StatePublisher<api::safety::MotionConstraints>,
     state: StatePublisher<api::safety::State>,
@@ -71,7 +71,8 @@ pub struct Api {
 
 #[phoxal::service(id = "safety", config = ())]
 pub struct Safety {
-    bindings: Vec<RangeBinding>,
+    bindings: Vec<CapabilityBinding>,
+    battery_bindings: Vec<CapabilityBinding>,
     inputs: WorldInputs,
     sequence: u64,
 }
@@ -81,7 +82,13 @@ impl Safety {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let cap = ctx.owner_capability();
-        let bindings = range_bindings(ctx.robot()?);
+        let robot = ctx.robot()?;
+        let bindings = capability_bindings(robot, |capability| {
+            matches!(capability, Capability::Range(_))
+        });
+        let battery_bindings = capability_bindings(robot, |capability| {
+            matches!(capability, Capability::Battery(_))
+        });
         let mut ranges = Vec::with_capacity(bindings.len());
         for binding in &bindings {
             ranges.push(
@@ -95,10 +102,24 @@ impl Safety {
                 .await?,
             );
         }
+        let mut batteries = Vec::with_capacity(battery_bindings.len());
+        for binding in &battery_bindings {
+            batteries.push(
+                ctx.subscriber(
+                    api::topic::new()
+                        .component(&binding.component_id)
+                        .battery(&binding.capability_id)
+                        .state(),
+                    32,
+                )
+                .await?,
+            );
+        }
         Ok((
             Self {
-                inputs: WorldInputs::new(bindings.len()),
+                inputs: WorldInputs::new(bindings.len(), battery_bindings.len()),
                 bindings,
+                battery_bindings,
                 sequence: 0,
             },
             Self::Api {
@@ -112,9 +133,7 @@ impl Safety {
                 drive: ctx
                     .subscriber(api::topic::new().drive().state(), 32)
                     .await?,
-                battery: ctx
-                    .subscriber(api::topic::new().battery().state(), 32)
-                    .await?,
+                batteries,
                 ranges,
                 constraints: ctx
                     .state_publisher(api::topic::internal::new(cap).safety().constraints())
@@ -128,7 +147,7 @@ impl Safety {
 
     #[reset]
     async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.inputs = WorldInputs::new(self.bindings.len());
+        self.inputs = WorldInputs::new(self.bindings.len(), self.battery_bindings.len());
         self.sequence = 0;
         Ok(())
     }
@@ -138,7 +157,9 @@ impl Safety {
         drain_latest(&mut self.inputs.localization, &api.localization);
         drain_latest(&mut self.inputs.map, &api.map);
         drain_latest(&mut self.inputs.drive, &api.drive);
-        drain_latest(&mut self.inputs.battery, &api.battery);
+        for (slot, subscriber) in self.inputs.batteries.iter_mut().zip(&api.batteries) {
+            drain_latest(slot, subscriber);
+        }
         for (slot, subscriber) in self.inputs.ranges.iter_mut().zip(&api.ranges) {
             drain_latest(slot, subscriber);
         }
@@ -200,7 +221,7 @@ fn drain_latest<T: phoxal::bus::ContractBody + Clone>(
 
 fn assess(
     world: &WorldInputs,
-    bindings: &[RangeBinding],
+    bindings: &[CapabilityBinding],
     sequence: u64,
     now: RobotInstant,
 ) -> Result<api::safety::MotionConstraints> {
@@ -263,7 +284,7 @@ fn assess(
         Some(true) => {}
     }
 
-    let mut nearest_range = None::<(f32, &RangeBinding)>;
+    let mut nearest_range = None::<(f32, &CapabilityBinding)>;
     for (binding, sample) in bindings.iter().zip(&world.ranges) {
         let Some(sample) = usable(sample.as_ref(), now, INPUT_STALE) else {
             constraints.push(stop_constraint(
@@ -332,24 +353,36 @@ fn assess(
         ));
     }
 
-    if let Some(battery) = usable(world.battery.as_ref(), now, INPUT_STALE) {
+    // A robot may carry several packs. The emptiest usable one decides: a
+    // healthy pack cannot vouch for a flat one.
+    let mut lowest_charge_ratio: Option<f32> = None;
+    for battery in world.batteries.iter() {
+        let Some(battery) = usable(battery.as_ref(), now, INPUT_STALE) else {
+            continue;
+        };
         if !battery.charge_ratio.is_finite() {
             bail!("battery world input contains a non-finite charge ratio");
         }
-        if battery.charge_ratio <= 0.05 {
+        lowest_charge_ratio = Some(match lowest_charge_ratio {
+            Some(lowest) => lowest.min(battery.charge_ratio),
+            None => battery.charge_ratio,
+        });
+    }
+    if let Some(charge_ratio) = lowest_charge_ratio {
+        if charge_ratio <= 0.05 {
             constraints.push(stop_constraint(
                 api::safety::ConstraintReason::BatteryCritical,
                 source(api::safety::ConstraintSourceKind::Battery, None),
-                Some(battery.charge_ratio),
+                Some(charge_ratio),
                 now,
                 expires_at,
             ));
-        } else if battery.charge_ratio <= 0.15 {
+        } else if charge_ratio <= 0.15 {
             constraints.push(limit_constraint(
                 api::safety::ConstraintReason::BatteryLow,
                 source(api::safety::ConstraintSourceKind::Battery, None),
                 PROXIMITY_LINEAR_LIMIT_MPS,
-                Some(battery.charge_ratio),
+                Some(charge_ratio),
                 now,
                 expires_at,
             ));
@@ -459,7 +492,7 @@ fn limit_constraint(
 
 fn source(
     kind: api::safety::ConstraintSourceKind,
-    binding: Option<&RangeBinding>,
+    binding: Option<&CapabilityBinding>,
 ) -> api::safety::ConstraintSource {
     let participant_id = match kind {
         api::safety::ConstraintSourceKind::Map => "map",
@@ -480,7 +513,10 @@ fn source(
     }
 }
 
-fn range_bindings(robot: &Robot) -> Vec<RangeBinding> {
+fn capability_bindings(
+    robot: &Robot,
+    selects: impl Fn(&Capability) -> bool,
+) -> Vec<CapabilityBinding> {
     let mut bindings = robot
         .manifest
         .components()
@@ -495,8 +531,8 @@ fn range_bindings(robot: &Robot) -> Vec<RangeBinding> {
             component
                 .capabilities
                 .iter()
-                .filter(|(_, capability)| matches!(capability, Capability::Range(_)))
-                .map(|(capability_id, _)| RangeBinding {
+                .filter(|(_, capability)| selects(capability))
+                .map(|(capability_id, _)| CapabilityBinding {
                     component_id: component_id.clone(),
                     capability_id: capability_id.clone(),
                 })
@@ -522,13 +558,13 @@ mod tests {
         RobotInstant::new(line(3), 2_000_000_000)
     }
 
-    fn nominal_world() -> (Vec<RangeBinding>, WorldInputs) {
-        let binding = RangeBinding {
+    fn nominal_world() -> (Vec<CapabilityBinding>, WorldInputs) {
+        let binding = CapabilityBinding {
             component_id: "front".to_string(),
             capability_id: "range".to_string(),
         };
         let at = now();
-        let mut world = WorldInputs::new(1);
+        let mut world = WorldInputs::new(1, 1);
         world.localization = Some(Timed {
             body: api::localize::LocalizationState {
                 x_m: 0.0,
@@ -558,6 +594,50 @@ mod tests {
         (vec![binding], world)
     }
 
+    fn battery(charge_ratio: f32) -> Timed<api::component::battery::State> {
+        Timed {
+            body: api::component::battery::State {
+                voltage_v: 16.0,
+                current_a: 2.0,
+                charge_ratio,
+            },
+            at: now(),
+        }
+    }
+
+    /// A robot with several packs is only as safe as its emptiest one: a full
+    /// pack must not mask a flat one sitting next to it.
+    #[test]
+    fn the_lowest_pack_decides_the_battery_constraint() {
+        let (bindings, mut world) = nominal_world();
+        world.batteries = vec![Some(battery(1.0)), Some(battery(0.04))];
+
+        let result = assess(&world, &bindings, 1, now()).unwrap();
+        assert!(result.stop);
+        let constraint = result
+            .constraints
+            .iter()
+            .find(|constraint| constraint.reason == api::safety::ConstraintReason::BatteryCritical)
+            .expect("the flat pack must raise a critical-battery stop");
+        assert_eq!(constraint.observed_value, Some(0.04));
+    }
+
+    #[test]
+    fn a_stale_pack_is_ignored_rather_than_trusted() {
+        let (bindings, mut world) = nominal_world();
+        let mut stale = battery(0.04);
+        stale.at = RobotInstant::new(line(3), 0);
+        world.batteries = vec![Some(stale)];
+
+        let result = assess(&world, &bindings, 1, now()).unwrap();
+        assert!(
+            !result.constraints.iter().any(|constraint| {
+                constraint.reason == api::safety::ConstraintReason::BatteryCritical
+            }),
+            "a pack that stopped reporting cannot keep asserting a charge level"
+        );
+    }
+
     #[test]
     fn nominal_world_is_clear_and_expires_after_three_periods() {
         let (bindings, world) = nominal_world();
@@ -573,11 +653,11 @@ mod tests {
 
     #[test]
     fn missing_world_inputs_fail_closed_with_typed_reasons() {
-        let bindings = vec![RangeBinding {
+        let bindings = vec![CapabilityBinding {
             component_id: "front".to_string(),
             capability_id: "range".to_string(),
         }];
-        let result = assess(&WorldInputs::new(1), &bindings, 1, now()).unwrap();
+        let result = assess(&WorldInputs::new(1, 1), &bindings, 1, now()).unwrap();
         assert!(result.stop);
         assert!(result.constraints.iter().any(|constraint| {
             constraint.reason == api::safety::ConstraintReason::LocalizationUnavailable

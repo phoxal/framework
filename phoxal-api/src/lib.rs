@@ -1459,6 +1459,32 @@ phoxal_api_tree! {
                 topic command: command Command;
             }
 
+            speaker(capability) {
+                /// One chunk of an audio stream to play on this speaker.
+                ///
+                /// `Some(bytes)` carries WAV-coded audio: the first chunk of a
+                /// stream starts with the standard WAV header, later chunks
+                /// continue its data. `None` ends the stream and is what tells
+                /// the owner the sound is complete.
+                struct Chunk {
+                    stream: Option<Vec<u8>>,
+                }
+
+                topic stream: command Chunk;
+            }
+
+            battery(capability) {
+                /// Battery state reported by the pack's owner - the simulator
+                /// backing this capability, or the real driver.
+                struct State {
+                    voltage_v: f32,
+                    current_a: f32,
+                    charge_ratio: f32,
+                }
+
+                topic state: state State;
+            }
+
             emergency_stop(capability) {
                 /// Per-instance emergency-stop state.
                 #[derive(Eq)]
@@ -1536,17 +1562,6 @@ phoxal_api_tree! {
             }
 
             topic get: query GetRequest => GetResponse;
-        }
-
-        battery {
-            /// Battery state reported by the active simulator or hardware owner.
-            struct State {
-                voltage_v: f32,
-                current_a: f32,
-                charge_ratio: f32,
-            }
-
-            topic state: state State;
         }
 
         joypad {

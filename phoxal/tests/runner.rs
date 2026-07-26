@@ -322,10 +322,10 @@ struct DrainApi {
     // destructive shared-queue field: it is cloned into the snapshot `Arc`,
     // but only `#[step]` (below) ever `recv`s it.
     incoming: Subscriber<api::drive::Target>,
-    // Client-side keep-last-1 of the `v0.1/battery/state` STATE (owner
+    // Client-side keep-last-1 of the `component/<c>/battery/<cap>/state` STATE (owner
     // publishes, client subscribes), alongside the command field above. This
     // is the non-destructive inbound field.
-    battery: Latest<api::battery::State>,
+    battery: Latest<api::component::battery::State>,
     // The concurrent snapshot server, deliberately reading committed state
     // only.
     query: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
@@ -361,7 +361,9 @@ impl Drainer {
                 incoming: ctx
                     .subscriber(api::topic::internal::new(cap).drive().target(), 32)
                     .await?,
-                battery: ctx.latest(api::topic::new().battery().state()).await?,
+                battery: ctx
+                    .latest(api::topic::new().component("pack").battery("cell").state())
+                    .await?,
                 query: ctx.server(api::topic::new().map().submap()).await?,
             },
         ))
@@ -422,7 +424,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     .expect("open shared bus");
 
     // Companion client handles on the same bus. `drive/target` is a command
-    // (client publishes), while `battery/state` is state (owner publishes), so
+    // (client publishes), while `component/battery/state` is state (owner publishes), so
     // the companion takes the
     // client side of the former and the owner side of the latter - the mirror
     // of what `Drainer` subscribes. Two contracts, one bus, one participant.
@@ -432,16 +434,21 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     )
     .expect("build target publisher");
     let battery_topic = api::topic::internal::new(OwnerCap::__mint())
-        .battery()
+        .component("pack")
+        .battery("cell")
         .state();
     assert_eq!(
-        <api::battery::State as ContractBody>::TOPIC,
-        "v0.1/battery/state",
+        <api::component::battery::State as ContractBody>::TOPIC,
+        "v0.1/component/{instance}/battery/{capability}/state",
         "the moved contract's version-qualified wire key (D1)"
     );
-    assert_eq!(battery_topic.key(), "v0.1/battery/state");
-    let battery_pub = StatePublisher::<api::battery::State>::new(bus.clone(), &battery_topic)
-        .expect("build battery publisher");
+    assert_eq!(
+        battery_topic.key(),
+        "v0.1/component/pack/battery/cell/state"
+    );
+    let battery_pub =
+        StatePublisher::<api::component::battery::State>::new(bus.clone(), &battery_topic)
+            .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
         &api::topic::new().map().submap(),
@@ -465,7 +472,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
         battery_pub
             .publish(
                 &StepToken::__mint(RobotInstant::new(line, 1)),
-                api::battery::State {
+                api::component::battery::State {
                     voltage_v: DRAIN_VOLTAGE_V,
                     current_a: 1.0,
                     charge_ratio: 0.9,
@@ -524,7 +531,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     );
 
     // The `Latest` field read the current value through the same owned `api` -
-    // the ground-breaker proof itself: a real `v0.1/battery/state` publish
+    // the ground-breaker proof itself: a real per-component battery-state publish
     // was delivered over the live bus and observed correctly, WHILE the
     // sibling `v0.1/drive/target` command round-tripped on the same
     // participant/bus at the same time (asserted above).
@@ -674,7 +681,7 @@ impl SimClockStepper {
 
 #[derive(phoxal::Api)]
 struct NoStepResetApi {
-    battery: Subscriber<api::battery::State>,
+    battery: Subscriber<api::component::battery::State>,
     lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
 }
 
@@ -686,7 +693,10 @@ impl NoStepResetObserver {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let battery = ctx
-            .subscriber(api::topic::new().battery().state(), 8)
+            .subscriber(
+                api::topic::new().component("pack").battery("cell").state(),
+                8,
+            )
             .await?;
         let receiver = battery.clone();
         ctx.spawn_managed("no-step-ingress", async move {
@@ -1343,10 +1353,11 @@ async fn no_step_service_observes_timeline_changes_and_installs_startup_barrier(
             .clock(),
     )
     .expect("clock publisher should attach");
-    let battery = StatePublisher::<api::battery::State>::new(
+    let battery = StatePublisher::<api::component::battery::State>::new(
         bus.clone(),
         &api::topic::internal::new(OwnerCap::__mint())
-            .battery()
+            .component("pack")
+            .battery("cell")
             .state(),
     )
     .expect("battery publisher should attach");
@@ -1377,7 +1388,7 @@ async fn no_step_service_observes_timeline_changes_and_installs_startup_barrier(
             battery
                 .publish(
                     &StepToken::__mint(RobotInstant::new(timeline, 20)),
-                    api::battery::State {
+                    api::component::battery::State {
                         voltage_v: voltage,
                         current_a: 0.0,
                         charge_ratio: 1.0,

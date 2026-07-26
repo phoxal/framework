@@ -134,6 +134,8 @@ capabilities:
     }
 
     #[test]
+    /// An emergency stop carries no simulation parameters: Webots has no
+    /// button, switch, or toggle node, so no simulator drives one.
     fn simulation_parses_emergency_stop_input() -> anyhow::Result<()> {
         let simulation = Simulation::read_from_string(
             r#"
@@ -141,7 +143,6 @@ schema: simulation/v0
 capabilities:
   emergency_stop:
     kind: emergency_stop
-    engaged: true
 "#,
         )?;
 
@@ -151,8 +152,7 @@ capabilities:
                 .expect("supported version")
                 .capabilities
                 .get("emergency_stop"),
-            Some(crate::model::simulation::capability::Capability::EmergencyStop(config))
-                if config.engaged
+            Some(crate::model::simulation::capability::Capability::EmergencyStop)
         ));
         Ok(())
     }

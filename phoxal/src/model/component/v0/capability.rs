@@ -343,7 +343,6 @@ pub struct Microphone {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Speaker {
     pub target: StructuralTarget,
-    pub publish_rate_hz: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -351,10 +350,11 @@ pub struct Speaker {
 pub struct Battery {
     pub target: StructuralTarget,
     pub publish_rate_hz: f64,
-    #[serde(default)]
-    pub voltage_v: Option<f64>,
-    #[serde(default)]
-    pub capacity_ah: Option<f64>,
+    /// Nominal pack voltage. Required: it is the only thing that turns an
+    /// energy reading into the reported voltage and current.
+    pub voltage_v: f64,
+    /// Pack capacity. Required: it is the denominator of `charge_ratio`.
+    pub capacity_ah: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
