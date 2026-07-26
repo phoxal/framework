@@ -360,45 +360,4 @@ mod tests {
             "shutdown must return before a cancellation-ignoring task finishes"
         );
     }
-
-    /// The cleanup path a failed `#[setup]` takes: tasks already spawned are
-    /// cancelled even though the participant never reached its run loop.
-    #[tokio::test]
-    async fn tasks_spawned_before_a_setup_failure_are_cancelled() {
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let observed = Arc::clone(&cancelled);
-        let started = Arc::new(AtomicBool::new(false));
-        let running = Arc::clone(&started);
-
-        let mut tasks = ManagedTasks::default();
-        tasks.spawn(
-            "spawned-in-setup",
-            ManagedTaskPolicy::FaultOnExit,
-            async move {
-                struct OnCancel(Arc<AtomicBool>);
-                impl Drop for OnCancel {
-                    fn drop(&mut self) {
-                        self.0.store(true, Ordering::Relaxed);
-                    }
-                }
-                let _guard = OnCancel(observed);
-                running.store(true, Ordering::Relaxed);
-                std::future::pending::<()>().await;
-            },
-        );
-
-        while !started.load(Ordering::Relaxed) {
-            tokio::task::yield_now().await;
-        }
-
-        // `#[setup]` returned `Err`, so the runner drops the registry it took
-        // instead of entering the main loop.
-        let unjoined = tasks.shutdown_within(Duration::from_secs(5)).await;
-
-        assert!(unjoined.is_empty());
-        assert!(
-            cancelled.load(Ordering::Relaxed),
-            "a task spawned before the failure must not outlive it"
-        );
-    }
 }

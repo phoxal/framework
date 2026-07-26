@@ -442,10 +442,9 @@ where
     let (mut participant, api) = match R::__setup(&mut ctx, config).await {
         Ok(pair) => pair,
         Err(error) => {
-            let grace = Duration::from_millis(launch.shutdown_grace_ms);
-            let unjoined = ctx.take_managed_tasks().shutdown_within(grace).await;
-            log_unjoined_managed_tasks(unjoined, launch.shutdown_grace_ms);
-            return Err(error);
+            return Err(
+                abandon_setup(ctx.take_managed_tasks(), error, launch.shutdown_grace_ms).await,
+            );
         }
     };
     // Managed tasks spawned via `ctx.spawn_managed(...)` during `#[setup]` (D-managed-tasks):
@@ -665,6 +664,24 @@ impl LoopFault {
             LoopFault::ClockDiscipline(reason) => clock_discipline_error(reason),
         }
     }
+}
+
+/// Clean up after a failed `#[setup]`: cancel and join whatever the participant
+/// already spawned, then hand back its own error.
+///
+/// The participant never reached the run loop, so nothing else will cancel
+/// those tasks. Cleanup must not mask why setup failed, which is why the
+/// original error is returned unchanged rather than replaced by anything that
+/// goes wrong while joining.
+pub(crate) async fn abandon_setup(
+    managed_tasks: ManagedTasks,
+    error: anyhow::Error,
+    shutdown_grace_ms: u64,
+) -> anyhow::Error {
+    let grace = Duration::from_millis(shutdown_grace_ms);
+    let unjoined = managed_tasks.shutdown_within(grace).await;
+    log_unjoined_managed_tasks(unjoined, shutdown_grace_ms);
+    error
 }
 
 /// Deserialize the participant's `#[setup]` config from the launch.
@@ -1312,6 +1329,33 @@ mod tests {
         }
     }
 
+    /// One managed task that parks forever, already running, plus the flag its
+    /// cancellation sets. Returns once the task is confirmed started, so a test
+    /// asserting on cancellation cannot pass by racing it.
+    async fn pending_managed_task(name: &str) -> (ManagedTasks, Arc<AtomicBool>) {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&cancelled);
+        let started = Arc::new(AtomicBool::new(false));
+        let running = Arc::clone(&started);
+
+        let mut managed = ManagedTasks::default();
+        managed.spawn(name, ManagedTaskPolicy::FaultOnExit, async move {
+            struct OnCancel(Arc<AtomicBool>);
+            impl Drop for OnCancel {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Relaxed);
+                }
+            }
+            let _guard = OnCancel(observed);
+            running.store(true, Ordering::Relaxed);
+            std::future::pending::<()>().await;
+        });
+        while !started.load(Ordering::Relaxed) {
+            tokio::task::yield_now().await;
+        }
+        (managed, cancelled)
+    }
+
     /// D24/D43i: a hook that hangs cannot hold the process open. Teardown gives
     /// up at the grace deadline and proceeds, leaving the hook cancelled.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1344,26 +1388,50 @@ mod tests {
         );
     }
 
-    /// A failing hook is not a reason to skip the rest of teardown.
+    /// A failing hook is not a reason to skip the rest of teardown: the managed
+    /// tasks after it must still be cancelled and joined.
     #[tokio::test]
     async fn a_failing_shutdown_hook_does_not_abort_teardown() {
         let trace = HookTrace::default();
+        let (managed, cancelled) = pending_managed_task("after-a-failing-hook").await;
         let mut participant = FailingShutdown {
             trace: trace.clone(),
         };
         let mut api = ();
 
         // Returns at all, rather than propagating: teardown has no error path.
-        teardown_lifecycle(
-            &mut participant,
-            &mut api,
-            Vec::new(),
-            ManagedTasks::default(),
+        teardown_lifecycle(&mut participant, &mut api, Vec::new(), managed, 5_000).await;
+
+        assert!(trace.called.load(Ordering::Relaxed), "the hook must run");
+        assert!(
+            cancelled.load(Ordering::Relaxed),
+            "the work after the failing hook must still happen"
+        );
+    }
+
+    /// The runner's own setup-failure cleanup, as `run_lifecycle_inner` calls
+    /// it: tasks spawned during `#[setup]` are cancelled, and the participant's
+    /// error survives the cleanup rather than being masked by it.
+    #[tokio::test]
+    async fn a_failed_setup_cancels_its_tasks_and_keeps_its_error() {
+        let (managed, cancelled) = pending_managed_task("spawned-in-setup").await;
+
+        let returned = abandon_setup(
+            managed,
+            anyhow::anyhow!("the serial port was not there"),
             5_000,
         )
         .await;
 
-        assert!(trace.called.load(Ordering::Relaxed));
+        assert!(
+            cancelled.load(Ordering::Relaxed),
+            "a task spawned before the failure must not outlive it"
+        );
+        assert_eq!(
+            format!("{returned}"),
+            "the serial port was not there",
+            "cleanup must not mask why setup failed"
+        );
     }
 
     /// The shutdown hook and managed-task joining share one deadline, so a
