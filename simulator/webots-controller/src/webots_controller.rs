@@ -13,8 +13,7 @@
 //! deliberately left unpublished rather than driven from a static config, which
 //! would assert a state no one in the world can change.
 
-mod capabilities;
-
+use crate::capabilities;
 use phoxal::api;
 use phoxal::bus::ContractBody;
 use phoxal::bus::{StepStamp, TimelineAuthority, TimelineId, WorldStepToken};
@@ -31,22 +30,22 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use capabilities::accelerometer::{AccelerometerSpec, NativeAccelerometer};
-use capabilities::battery::{BatterySpec, NativeBattery};
-use capabilities::camera::{CameraSpec, NativeCamera};
-use capabilities::depth::{DepthSpec, NativeDepth};
-use capabilities::encoder::{EncoderSpec, NativeEncoder};
-use capabilities::gnss::{GnssSpec, NativeGnss};
-use capabilities::gyroscope::{GyroscopeSpec, NativeGyroscope};
-use capabilities::imu::{ImuSpec, NativeImu};
-use capabilities::led::{LedSpec, NativeLed};
-use capabilities::lidar::{LidarSpec, NativeLidar};
-use capabilities::magnetometer::NativeMagnetometer;
-use capabilities::microphone::NativeMicrophone;
-use capabilities::mmwave::NativeMmwave;
-use capabilities::motor::{MotorSpec, NativeMotor};
-use capabilities::range::{NativeRange, RangeSpec};
-use capabilities::speaker::{NativeSpeaker, SpeakerSpec};
+use crate::capabilities::accelerometer::{AccelerometerSpec, NativeAccelerometer};
+use crate::capabilities::battery::{BatterySpec, NativeBattery};
+use crate::capabilities::camera::{CameraSpec, NativeCamera};
+use crate::capabilities::depth::{DepthSpec, NativeDepth};
+use crate::capabilities::encoder::{EncoderSpec, NativeEncoder};
+use crate::capabilities::gnss::{GnssSpec, NativeGnss};
+use crate::capabilities::gyroscope::{GyroscopeSpec, NativeGyroscope};
+use crate::capabilities::imu::{ImuSpec, NativeImu};
+use crate::capabilities::led::{LedSpec, NativeLed};
+use crate::capabilities::lidar::{LidarSpec, NativeLidar};
+use crate::capabilities::magnetometer::NativeMagnetometer;
+use crate::capabilities::microphone::NativeMicrophone;
+use crate::capabilities::mmwave::NativeMmwave;
+use crate::capabilities::motor::{MotorSpec, NativeMotor};
+use crate::capabilities::range::{NativeRange, RangeSpec};
+use crate::capabilities::speaker::{NativeSpeaker, SpeakerSpec};
 
 const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
@@ -97,8 +96,6 @@ pub struct Api {
     led_commands: Vec<Subscriber<api::component::led::Command>>,
     speaker_streams: Vec<Subscriber<api::component::speaker::Chunk>>,
 }
-
-
 
 struct ControllerRuntime {
     /// This controller's exclusive ownership of the world's timeline. It is
@@ -162,19 +159,18 @@ impl WebotsControllerSimulator {
         config: Option<WebotsControllerConfig>,
     ) -> Result<(Self, Self::Api)> {
         let config = config.unwrap_or_default();
-        let cap = ctx.owner_capability();
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
         let clock = ctx
-            .state_publisher(api::topic::internal::new(cap).simulation().clock())
+            .state_publisher(api::topic::owner().simulation().clock())
             .await?;
 
         let mut motor_commands = Vec::new();
         for spec in &catalog.motors {
             motor_commands.push(
                 ctx.subscriber(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .motor(&spec.reference.capability_id)
                         .command(),
@@ -188,7 +184,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.encoders {
             encoders.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .encoder(&spec.reference.capability_id)
                         .sample(),
@@ -201,7 +197,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.imus {
             imus.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .imu(&spec.reference.capability_id)
                         .sample(),
@@ -214,7 +210,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.accelerometers {
             accelerometers.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .accelerometer(&spec.reference.capability_id)
                         .sample(),
@@ -227,7 +223,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.gyroscopes {
             gyroscopes.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .gyroscope(&spec.reference.capability_id)
                         .sample(),
@@ -240,7 +236,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.ranges {
             ranges.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.sampled.reference.component_id)
                         .range(&spec.sampled.reference.capability_id)
                         .sample(),
@@ -253,7 +249,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.cameras {
             cameras.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.sampled.reference.component_id)
                         .camera(&spec.sampled.reference.capability_id)
                         .frame(),
@@ -266,7 +262,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.depths {
             depths.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.sampled.reference.component_id)
                         .depth(&spec.sampled.reference.capability_id)
                         .frame(),
@@ -279,7 +275,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.gnss {
             gnss.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.sampled.reference.component_id)
                         .gnss(&spec.sampled.reference.capability_id)
                         .sample(),
@@ -292,7 +288,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.magnetometers {
             magnetometers.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .magnetometer(&spec.reference.capability_id)
                         .sample(),
@@ -305,7 +301,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.lidars {
             lidars.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.sampled.reference.component_id)
                         .lidar(&spec.sampled.reference.capability_id)
                         .scan(),
@@ -318,7 +314,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.mmwaves {
             mmwaves.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .mmwave(&spec.reference.capability_id)
                         .scan(),
@@ -331,7 +327,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.microphones {
             microphones.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .microphone(&spec.reference.capability_id)
                         .frame(),
@@ -344,7 +340,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.batteries {
             batteries.push(
                 ctx.state_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .battery(&spec.reference.capability_id)
                         .state(),
@@ -357,7 +353,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.leds {
             led_commands.push(
                 ctx.subscriber(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .led(&spec.reference.capability_id)
                         .command(),
@@ -371,7 +367,7 @@ impl WebotsControllerSimulator {
         for spec in &catalog.speakers {
             speaker_streams.push(
                 ctx.subscriber(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&spec.reference.component_id)
                         .speaker(&spec.reference.capability_id)
                         .stream(),
@@ -1419,7 +1415,7 @@ fn mapping<B: ContractBody>(role: phoxal::participant::ContractRole) -> Contract
 mod tests {
     use super::*;
     use phoxal::participant::{Participant, ParticipantApi, ParticipantLifecycle};
-    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, OwnerCap, StatePublisher, Subscriber};
+    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, StatePublisher, Subscriber};
     use std::time::Duration;
 
     #[test]
@@ -1530,12 +1526,9 @@ mod tests {
         )
     }
 
-    fn clock_publisher(bus: &Bus, cap: OwnerCap) -> StatePublisher<api::simulation::Clock> {
-        StatePublisher::new(
-            bus.clone(),
-            &api::topic::internal::new(cap).simulation().clock(),
-        )
-        .expect("clock publisher should attach")
+    fn clock_publisher(bus: &Bus) -> StatePublisher<api::simulation::Clock> {
+        StatePublisher::new(bus.clone(), &api::topic::owner().simulation().clock())
+            .expect("clock publisher should attach")
     }
 
     fn empty_api(clock: StatePublisher<api::simulation::Clock>) -> Api {
@@ -1568,17 +1561,16 @@ mod tests {
         let bus = Bus::open(BusConfig::in_process(test_namespace("order"), "robot"))
             .await
             .expect("bus should open");
-        let cap = OwnerCap::__mint();
         let clock_subscriber = Subscriber::<api::simulation::Clock>::new(
             &bus,
-            &api::topic::new().simulation().clock(),
+            &api::topic::client().simulation().clock(),
             1,
         )
         .await
         .expect("clock subscriber should attach");
         let encoder_subscriber = Subscriber::<api::component::encoder::Sample>::new(
             &bus,
-            &api::topic::new()
+            &api::topic::client()
                 .component("left_drive")
                 .encoder("encoder")
                 .sample(),
@@ -1590,14 +1582,14 @@ mod tests {
             encoders: vec![
                 MeasurementPublisher::new(
                     bus.clone(),
-                    &api::topic::internal::new(cap)
+                    &api::topic::owner()
                         .component("left_drive")
                         .encoder("encoder")
                         .sample(),
                 )
                 .expect("encoder publisher should attach"),
             ],
-            ..empty_api(clock_publisher(&bus, cap))
+            ..empty_api(clock_publisher(&bus))
         };
         let timeline = TimelineId::from_raw(77).expect("test timeline must be nonzero");
         let mut runtime = ControllerRuntime {

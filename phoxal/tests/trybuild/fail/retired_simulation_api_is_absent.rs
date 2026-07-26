@@ -8,7 +8,7 @@ fn main() {
     let _ = std::mem::size_of::<api::simulation::RobotPose>();
     let _ = std::mem::size_of::<api::simulation::Contact>();
 
-    let simulation = api::topic::new().simulation();
+    let simulation = api::topic::client().simulation();
     let _ = simulation.spawn();
     let _ = simulation.control();
     let _ = simulation.robot_pose();

@@ -27,22 +27,19 @@ impl ToolLog {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let bus = ctx.raw_bus();
-        let cap = ctx.owner_capability();
         let history = Arc::new(Mutex::new(LogHistory::new(process_generation()?)));
 
         // Declare ingestion before readiness so later-started participants cannot
         // publish a structured log before tool-log is listening.
         let logs = Subscriber::new(
             &bus,
-            &api::topic::new().logs("*").topic(),
+            &api::topic::client().logs("*").topic(),
             INGEST_QUEUE_DEPTH,
         )
         .await?;
-        let follow = DiagnosticPublisher::new(
-            bus.clone(),
-            &api::topic::internal::new(cap).tool().log().follow(),
-        )?;
-        let snapshot_topic = api::topic::internal::new(cap).tool().log().snapshot();
+        let follow =
+            DiagnosticPublisher::new(bus.clone(), &api::topic::owner().tool().log().follow())?;
+        let snapshot_topic = api::topic::owner().tool().log().snapshot();
         let snapshots = bus.declare_server(snapshot_topic.key()).await?;
 
         let ingest_history = Arc::clone(&history);

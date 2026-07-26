@@ -1,3 +1,8 @@
+mod config;
+mod frame;
+mod ring_buffer;
+mod transform;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_frame::Frame>()
+    phoxal::run::<frame::Frame>()
 }

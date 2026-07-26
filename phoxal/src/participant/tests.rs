@@ -33,7 +33,7 @@ impl AssetTest {
         Ok((
             Self { present: true },
             Self::Api {
-                get: ctx.server(api::topic::new().asset().get()).await?,
+                get: ctx.server(api::topic::client().asset().get()).await?,
             },
         ))
     }
@@ -120,8 +120,8 @@ impl DuplicateServerTopicTest {
         Ok((
             Self {},
             Self::Api {
-                get_one: ctx.server(api::topic::new().asset().get()).await?,
-                get_two: ctx.server(api::topic::new().asset().get()).await?,
+                get_one: ctx.server(api::topic::client().asset().get()).await?,
+                get_two: ctx.server(api::topic::client().asset().get()).await?,
             },
         ))
     }
@@ -178,7 +178,7 @@ impl MapTest {
                 grid: Arc::new(vec![0; 4]),
             },
             Self::Api {
-                submap: ctx.server(api::topic::new().map().submap()).await?,
+                submap: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }

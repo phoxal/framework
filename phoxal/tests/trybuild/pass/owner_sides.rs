@@ -1,6 +1,6 @@
 // L1 (plan #00): the owner reaches its publish/subscribe/serve side through the
-// deliberate `api::topic::internal::new()...` builder, while a client reaches the
-// inverse sides through the public `api::topic::new()...` builder. This fixture is
+// deliberate `api::topic::owner()...` builder, while a client reaches the
+// inverse sides through the public `api::topic::client()...` builder. This fixture is
 // the positive counterpart to `fail/public_accessor_cannot_publish_state.rs`: it
 // must COMPILE.
 //
@@ -27,18 +27,16 @@ struct Owner;
 impl Owner {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability the owner
-        // (`internal`) builder requires.
-        let cap = ctx.owner_capability();
+        // Owner side: the owner builder is explicit and yields the inverse brands.
         Ok((
             Self,
             Self::Api {
                 // Owner side: `command` -> Subscribe, `state` -> Publish.
                 target: ctx
-                    .subscriber(api::topic::internal::new(cap).drive().target(), 32)
+                    .subscriber(api::topic::owner().drive().target(), 32)
                     .await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).drive().state())
+                    .state_publisher(api::topic::owner().drive().state())
                     .await?,
             },
         ))
@@ -62,8 +60,8 @@ impl Client {
             Self,
             Self::Api {
                 // Client side: `command` -> Publish, `state` -> Subscribe.
-                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
-                state: ctx.latest(api::topic::new().drive().state()).await?,
+                target: ctx.command_publisher(api::topic::client().drive().target()).await?,
+                state: ctx.latest(api::topic::client().drive().state()).await?,
             },
         ))
     }

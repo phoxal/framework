@@ -1,3 +1,5 @@
+mod joint;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_joint::Joint>()
+    phoxal::run::<joint::Joint>()
 }

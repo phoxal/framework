@@ -40,7 +40,7 @@ impl TimeForgingTool {
         // (3) Publishing checked state needs a stamp the tool cannot produce.
         let state = phoxal::raw::StatePublisher::<api::drive::State>::new(
             ctx.raw_bus(),
-            &api::topic::internal::new(ctx.owner_capability())
+            &api::topic::owner()
                 .drive()
                 .state(),
         )?;

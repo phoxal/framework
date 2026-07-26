@@ -14,7 +14,7 @@ use crate::config::{FrameJointType, JointMeta};
 use crate::ring_buffer::RingBuffer;
 
 pub(crate) fn lookup_transform(
-    snapshot: &crate::FrameSnapshot,
+    snapshot: &crate::frame::FrameSnapshot,
     request: &api::frame::LookupRequest,
 ) -> Option<api::frame::FrameTransform> {
     let target = &request.target_frame_id;

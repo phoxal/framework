@@ -20,8 +20,6 @@
 //! if a release follows in the same cycle - which is ordinary domain logic, not
 //! communication semantics.
 
-mod arbitration;
-
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -124,7 +122,6 @@ pub struct Motion {
 impl Motion {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         let robot = ctx.robot()?;
         let limits = robot.manifest.robot.motion_limits.validate()?;
         let estop_bindings = emergency_stop_bindings(robot);
@@ -133,7 +130,7 @@ impl Motion {
         for binding in &estop_bindings {
             component_estops.push(
                 ctx.subscriber(
-                    api::topic::new()
+                    api::topic::client()
                         .component(&binding.component_id)
                         .emergency_stop(&binding.capability_id)
                         .state(),
@@ -154,20 +151,20 @@ impl Motion {
             },
             Self::Api {
                 manual: ctx
-                    .subscriber(api::topic::internal::new(cap).motion().manual(), 32)
+                    .subscriber(api::topic::owner().motion().manual(), 32)
                     .await?,
                 autonomous: ctx
-                    .subscriber(api::topic::new().navigation().candidate(), 32)
+                    .subscriber(api::topic::client().navigation().candidate(), 32)
                     .await?,
                 component_estops,
                 safety_constraints: ctx
-                    .subscriber(api::topic::new().safety().constraints(), 32)
+                    .subscriber(api::topic::client().safety().constraints(), 32)
                     .await?,
                 drive: ctx
-                    .command_publisher(api::topic::new().drive().target())
+                    .command_publisher(api::topic::client().drive().target())
                     .await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).motion().state())
+                    .state_publisher(api::topic::owner().motion().state())
                     .await?,
             },
         ))

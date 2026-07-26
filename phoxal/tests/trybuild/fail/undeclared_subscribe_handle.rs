@@ -27,11 +27,11 @@ impl UndeclaredSubscribe {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         // ERROR: `Api` never declared a subscribe handle for `drive::State`.
-        let _state = ctx.latest(api::topic::new().drive().state()).await?;
+        let _state = ctx.latest(api::topic::client().drive().state()).await?;
         Ok((
             Self,
             Self::Api {
-                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::client().drive().target()).await?,
             },
         ))
     }

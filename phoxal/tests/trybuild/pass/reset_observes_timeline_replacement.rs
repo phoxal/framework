@@ -15,12 +15,11 @@ struct Resettable;
 impl Resettable {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         Ok((
             Self,
             Self::Api {
                 manual: ctx
-                    .subscriber(api::topic::internal::new(cap).motion().manual(), 8)
+                    .subscriber(api::topic::owner().motion().manual(), 8)
                     .await?,
             },
         ))

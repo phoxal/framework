@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::api;
 use phoxal_bus::{
-    Bus, DiagnosticPublisher, OwnerCap, RobotInstant, RuntimeBufferKind, RuntimeDirection,
+    Bus, DiagnosticPublisher, RobotInstant, RuntimeBufferKind, RuntimeDirection,
     RuntimeMetricSnapshot,
 };
 
@@ -20,10 +20,7 @@ pub(crate) struct RuntimePerformancePublisher {
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: Bus) -> Self {
-        let topic = api::topic::internal::new(OwnerCap::__mint())
-            .tool()
-            .runtime()
-            .rollup();
+        let topic = api::topic::owner().tool().runtime().rollup();
         let publisher = DiagnosticPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(

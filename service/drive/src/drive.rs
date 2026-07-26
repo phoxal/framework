@@ -83,7 +83,7 @@ impl MotorBinding {
     /// CLIENT-publishes motor commands (the motor driver owns/subscribes them), so
     /// this is the `Publish` side from the public builder.
     fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Publish<api::component::motor::Command>> {
-        api::topic::new()
+        api::topic::client()
             .component(&self.component_id)
             .motor(&self.capability_id)
             .command()
@@ -153,18 +153,15 @@ pub struct Drive {
 impl Drive {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let config = DriveConfig::from_robot(ctx.robot()?)?;
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
-        // telemetry through the owner (`internal`) builder.
+        // telemetry through the owner builder.
         let target = ctx
-            .subscriber(api::topic::internal::new(cap).drive().target(), 32)
+            .subscriber(api::topic::owner().drive().target(), 32)
             .await?;
         let state = ctx
-            .state_publisher(api::topic::internal::new(cap).drive().state())
+            .state_publisher(api::topic::owner().drive().state())
             .await?;
 
         let mut left_motors = Vec::with_capacity(config.left.len());

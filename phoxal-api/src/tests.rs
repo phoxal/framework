@@ -114,7 +114,7 @@ fn folded_contracts_are_available_on_the_first_revision() {
         "v0.1/simulation/clock"
     );
     assert_eq!(
-        v0_1::topic::new().simulation().clock().key(),
+        v0_1::topic::client().simulation().clock().key(),
         "v0.1/simulation/clock"
     );
 
@@ -123,7 +123,7 @@ fn folded_contracts_are_available_on_the_first_revision() {
         "v0.1/joypad/devices"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().devices().key(),
+        v0_1::topic::client().joypad().devices().key(),
         "v0.1/joypad/devices"
     );
     assert_eq!(
@@ -131,7 +131,7 @@ fn folded_contracts_are_available_on_the_first_revision() {
         "v0.1/joypad/select"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().select().key(),
+        v0_1::topic::client().joypad().select().key(),
         "v0.1/joypad/select"
     );
     assert_eq!(
@@ -139,7 +139,7 @@ fn folded_contracts_are_available_on_the_first_revision() {
         "v0.1/joypad/set_enabled"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().set_enabled().key(),
+        v0_1::topic::client().joypad().set_enabled().key(),
         "v0.1/joypad/set_enabled"
     );
     assert_eq!(
@@ -147,7 +147,7 @@ fn folded_contracts_are_available_on_the_first_revision() {
         "v0.1/joypad/rescan"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().rescan().key(),
+        v0_1::topic::client().joypad().rescan().key(),
         "v0.1/joypad/rescan"
     );
 }
@@ -845,105 +845,108 @@ fn component_capability_bodies_round_trip_through_messagepack() {
 
 #[test]
 fn topic_builder_keys_match_contract_topics() {
-    assert_eq!(api::topic::new().drive().state().key(), "v0.1/drive/state");
     assert_eq!(
-        api::topic::new().drive().target().key(),
+        api::topic::client().drive().state().key(),
+        "v0.1/drive/state"
+    );
+    assert_eq!(
+        api::topic::client().drive().target().key(),
         "v0.1/drive/target"
     );
     assert_eq!(
-        api::topic::new().navigation().state().key(),
+        api::topic::client().navigation().state().key(),
         "v0.1/navigation/state"
     );
     assert_eq!(
-        api::topic::new().navigation().request().key(),
+        api::topic::client().navigation().request().key(),
         "v0.1/navigation/request"
     );
     assert_eq!(
-        api::topic::new().navigation().result().key(),
+        api::topic::client().navigation().result().key(),
         "v0.1/navigation/result"
     );
     assert_eq!(
-        api::topic::new().behavior().request().key(),
+        api::topic::client().behavior().request().key(),
         "v0.1/behavior/request"
     );
     assert_eq!(
-        api::topic::new().behavior().event().key(),
+        api::topic::client().behavior().event().key(),
         "v0.1/behavior/event"
     );
     assert_eq!(
-        api::topic::new().safety().constraints().key(),
+        api::topic::client().safety().constraints().key(),
         "v0.1/safety/constraints"
     );
     assert_eq!(
-        api::topic::new().safety().state().key(),
+        api::topic::client().safety().state().key(),
         "v0.1/safety/state"
     );
-    assert_eq!(api::topic::new().frame().tree().key(), "v0.1/frame/tree");
+    assert_eq!(api::topic::client().frame().tree().key(), "v0.1/frame/tree");
     assert_eq!(
-        api::topic::new().frame().static_transforms().key(),
+        api::topic::client().frame().static_transforms().key(),
         "v0.1/frame/static_transforms"
     );
     assert_eq!(
-        api::topic::new().power().command().key(),
+        api::topic::client().power().command().key(),
         "v0.1/power/command"
     );
     assert_eq!(
-        api::topic::new().motion().manual().key(),
+        api::topic::client().motion().manual().key(),
         "v0.1/motion/manual"
     );
     assert_eq!(
-        api::topic::new().logs("drive").topic().key(),
+        api::topic::client().logs("drive").topic().key(),
         "v0.1/logs/drive"
     );
     assert_eq!(
-        api::topic::new().bus().uplink().state().key(),
+        api::topic::client().bus().uplink().state().key(),
         "v0.1/bus/uplink/state"
     );
     assert_eq!(
-        api::topic::new().tool().log().snapshot().key(),
+        api::topic::client().tool().log().snapshot().key(),
         "v0.1/tool/log/snapshot"
     );
     assert_eq!(
-        api::topic::new().tool().log().follow().key(),
+        api::topic::client().tool().log().follow().key(),
         "v0.1/tool/log/follow"
     );
     assert_eq!(
-        api::topic::new().tool().bus().snapshot().key(),
+        api::topic::client().tool().bus().snapshot().key(),
         "v0.1/tool/bus/snapshot"
     );
     assert_eq!(
-        api::topic::new().tool().bus().follow().key(),
+        api::topic::client().tool().bus().follow().key(),
         "v0.1/tool/bus/follow"
     );
     assert_eq!(
-        api::topic::new().tool().runtime().rollup().key(),
+        api::topic::client().tool().runtime().rollup().key(),
         "v0.1/tool/runtime/rollup"
     );
     assert_eq!(
-        api::topic::new().tool().runtime().snapshot().key(),
+        api::topic::client().tool().runtime().snapshot().key(),
         "v0.1/tool/runtime/snapshot"
     );
     assert_eq!(
-        api::topic::new().tool().runtime().follow().key(),
+        api::topic::client().tool().runtime().follow().key(),
         "v0.1/tool/runtime/follow"
     );
     assert_eq!(
-        api::topic::new().perception().detections().key(),
+        api::topic::client().perception().detections().key(),
         "v0.1/perception/detections"
     );
-    assert_eq!(api::topic::new().video().open().key(), "v0.1/video/open");
+    assert_eq!(api::topic::client().video().open().key(), "v0.1/video/open");
     assert_eq!(
-        api::topic::new().map().revision().key(),
+        api::topic::client().map().revision().key(),
         "v0.1/map/revision"
     );
-    assert_eq!(api::topic::new().map().submap().key(), "v0.1/map/submap");
-    assert_eq!(api::topic::new().asset().get().key(), "v0.1/asset/get");
+    assert_eq!(api::topic::client().map().submap().key(), "v0.1/map/submap");
+    assert_eq!(api::topic::client().asset().get().key(), "v0.1/asset/get");
     assert_eq!(
-        api::topic::new().odometry().state().key(),
+        api::topic::client().odometry().state().key(),
         "v0.1/odometry/state"
     );
     assert_eq!(
-        api::topic::new().localize().state().key(),
+        api::topic::client().localize().state().key(),
         "v0.1/localize/state"
     );
 }
@@ -951,84 +954,67 @@ fn topic_builder_keys_match_contract_topics() {
 #[test]
 fn folded_topic_builder_keys_match_contract_topics() {
     assert_eq!(
-        v0_1::topic::new().simulation().clock().key(),
+        v0_1::topic::client().simulation().clock().key(),
         "v0.1/simulation/clock"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().devices().key(),
+        v0_1::topic::client().joypad().devices().key(),
         "v0.1/joypad/devices"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().select().key(),
+        v0_1::topic::client().joypad().select().key(),
         "v0.1/joypad/select"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().set_enabled().key(),
+        v0_1::topic::client().joypad().set_enabled().key(),
         "v0.1/joypad/set_enabled"
     );
     assert_eq!(
-        v0_1::topic::new().joypad().rescan().key(),
+        v0_1::topic::client().joypad().rescan().key(),
         "v0.1/joypad/rescan"
     );
 }
 
 #[test]
-fn internal_owner_builder_produces_identical_keys() {
-    // The OWNER (`internal`) builder mirrors the PUBLIC client builder's structure
+fn owner_builder_produces_identical_keys() {
+    // The OWNER builder mirrors the PUBLIC client builder's structure
     // and keys exactly (L1, plan #00) - only the leaf brand differs (verified by
     // the trybuild compile-fail/pass fixtures, not at runtime). The keys must match
     // the client side and the canonical contract topics.
     //
-    // The owner entry requires the runner-minted `OwnerCap` (Layer 2); this test
-    // mints one directly via the doc-hidden `__mint`, standing in for the runner.
-    let cap = ::phoxal_bus::OwnerCap::__mint();
     assert_eq!(
-        api::topic::internal::new(cap).drive().state().key(),
+        api::topic::owner().drive().state().key(),
         "v0.1/drive/state"
     );
     assert_eq!(
-        api::topic::internal::new(cap).drive().target().key(),
+        api::topic::owner().drive().target().key(),
         "v0.1/drive/target"
     );
     assert_eq!(
-        api::topic::internal::new(cap).tool().log().snapshot().key(),
+        api::topic::owner().tool().log().snapshot().key(),
         "v0.1/tool/log/snapshot"
     );
     assert_eq!(
-        api::topic::internal::new(cap).tool().bus().follow().key(),
+        api::topic::owner().tool().bus().follow().key(),
         "v0.1/tool/bus/follow"
     );
     assert_eq!(
-        api::topic::internal::new(cap)
-            .tool()
-            .runtime()
-            .rollup()
-            .key(),
+        api::topic::owner().tool().runtime().rollup().key(),
         "v0.1/tool/runtime/rollup"
     );
+    assert_eq!(api::topic::owner().map().submap().key(), "v0.1/map/submap");
+    assert_eq!(api::topic::owner().video().open().key(), "v0.1/video/open");
     assert_eq!(
-        api::topic::internal::new(cap).map().submap().key(),
-        "v0.1/map/submap"
-    );
-    assert_eq!(
-        api::topic::internal::new(cap).video().open().key(),
-        "v0.1/video/open"
-    );
-    assert_eq!(
-        api::topic::internal::new(cap).logs("drive").topic().key(),
+        api::topic::owner().logs("drive").topic().key(),
         "v0.1/logs/drive"
     );
     // Dynamic node path: the owner builder fills carried vars the same way.
     assert_eq!(
-        api::topic::internal::new(cap).joint("elbow").state().key(),
+        api::topic::owner().joint("elbow").state().key(),
         "v0.1/joint/elbow/state"
     );
     assert_eq!(
-        api::topic::internal::new(cap)
-            .video()
-            .stream("front")
-            .state()
-            .key(),
+        api::topic::owner().video().stream("front").state().key(),
         "v0.1/video/stream/front/state"
     );
 }
@@ -1038,15 +1024,15 @@ fn internal_owner_builder_produces_identical_keys() {
 #[test]
 fn dynamic_topic_builder_fills_the_key_from_node_vars() {
     assert_eq!(
-        api::topic::new().joint("elbow").state().key(),
+        api::topic::client().joint("elbow").state().key(),
         "v0.1/joint/elbow/state"
     );
     assert_eq!(
-        api::topic::new().video().stream("front").state().key(),
+        api::topic::client().video().stream("front").state().key(),
         "v0.1/video/stream/front/state"
     );
 
-    let topic = api::topic::new()
+    let topic = api::topic::client()
         .component("front_left_drive")
         .motor("motor")
         .command();
@@ -1054,7 +1040,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
         topic.key(),
         "v0.1/component/front_left_drive/motor/motor/command"
     );
-    let enc = api::topic::new()
+    let enc = api::topic::client()
         .component("front_left_drive")
         .encoder("encoder")
         .sample();
@@ -1067,7 +1053,7 @@ fn dynamic_topic_builder_fills_the_key_from_node_vars() {
 #[test]
 fn component_capability_topic_builders_fill_keys() {
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("imu0")
             .accelerometer("accel")
             .sample()
@@ -1075,7 +1061,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/imu0/accelerometer/accel/sample"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("imu0")
             .gyroscope("gyro")
             .sample()
@@ -1083,7 +1069,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/imu0/gyroscope/gyro/sample"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("imu0")
             .magnetometer("mag")
             .sample()
@@ -1091,7 +1077,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/imu0/magnetometer/mag/sample"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("imu0")
             .imu("imu")
             .sample()
@@ -1099,7 +1085,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/imu0/imu/imu/sample"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("base")
             .range("front_tof")
             .sample()
@@ -1107,7 +1093,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/base/range/front_tof/sample"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("gps")
             .gnss("gnss")
             .sample()
@@ -1115,7 +1101,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/gps/gnss/gnss/sample"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("head")
             .camera("front")
             .frame()
@@ -1123,7 +1109,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/head/camera/front/frame"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("head")
             .depth("front_depth")
             .frame()
@@ -1131,7 +1117,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/head/depth/front_depth/frame"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("front_lidar")
             .lidar("scan")
             .scan()
@@ -1139,7 +1125,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/front_lidar/lidar/scan/scan"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("radar")
             .mmwave("mmwave")
             .scan()
@@ -1147,7 +1133,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/radar/mmwave/mmwave/scan"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("head")
             .microphone("mic")
             .frame()
@@ -1155,7 +1141,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/head/microphone/mic/frame"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("status_panel")
             .led("status")
             .command()
@@ -1163,7 +1149,7 @@ fn component_capability_topic_builders_fill_keys() {
         "v0.1/component/status_panel/led/status/command"
     );
     assert_eq!(
-        api::topic::new()
+        api::topic::client()
             .component("safety_panel")
             .emergency_stop("estop")
             .state()
@@ -1194,10 +1180,13 @@ fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
 
 #[test]
 fn dynamic_topic_wildcard_is_subscribe_only() {
-    let concrete = api::topic::new().component("base").motor("motor").command();
+    let concrete = api::topic::client()
+        .component("base")
+        .motor("motor")
+        .command();
     assert!(concrete.publish_key().is_ok());
 
-    let wildcard = api::topic::new().component("*").motor("motor").command();
+    let wildcard = api::topic::client().component("*").motor("motor").command();
     assert_eq!(wildcard.key(), "v0.1/component/*/motor/motor/command");
     assert!(wildcard.publish_key().is_err());
 }
@@ -1231,7 +1220,7 @@ mod reused_var_name {
 
     #[test]
     fn nested_reused_var_carries_each_level_independently() {
-        let topic = v0_1::topic::new().outer("a").inner("b").event();
+        let topic = v0_1::topic::client().outer("a").inner("b").event();
         assert_eq!(topic.key(), "v0.1/outer/a/inner/b/event");
     }
 }
@@ -1258,7 +1247,10 @@ mod standalone_version {
             <v0_1::sample::Body as ContractBody>::TOPIC,
             "v0.1/sample/body"
         );
-        assert_eq!(v0_1::topic::new().sample().body().key(), "v0.1/sample/body");
+        assert_eq!(
+            v0_1::topic::client().sample().body().key(),
+            "v0.1/sample/body"
+        );
 
         let body = v0_1::sample::Body {
             value: 7,

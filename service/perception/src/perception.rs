@@ -13,11 +13,6 @@
 //! detector heads can plug in behind the small `DetectorHead` trait without
 //! changing the participant IO surface.
 
-mod detector;
-mod frames;
-mod sensors;
-mod tracker;
-
 use anyhow::Result;
 use phoxal::api;
 use phoxal::prelude::*;
@@ -61,9 +56,6 @@ pub struct Perception {
 impl Perception {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let camera_sources = camera_bindings(ctx.robot()?)?;
         let depth_sources = depth_bindings(ctx.robot()?)?;
 
@@ -78,16 +70,16 @@ impl Perception {
         }
 
         let localization = ctx
-            .subscriber(api::topic::new().localize().state(), 32)
+            .subscriber(api::topic::client().localize().state(), 32)
             .await?;
         // Perception OWNS the `perception` node (detections + state telemetry)
-        // -> owner (`internal`) builder; sensor frames and `localize/state` are
+        // -> owner builder; sensor frames and `localize/state` are
         // CONSUMED via the public builder.
         let detections = ctx
-            .state_publisher(api::topic::internal::new(cap).perception().detections())
+            .state_publisher(api::topic::owner().perception().detections())
             .await?;
         let state = ctx
-            .state_publisher(api::topic::internal::new(cap).perception().state())
+            .state_publisher(api::topic::owner().perception().state())
             .await?;
 
         Ok((

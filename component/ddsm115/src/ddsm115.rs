@@ -253,16 +253,13 @@ pub struct Ddsm115 {
 impl Ddsm115 {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
-        // (`internal`) topic builder requires. This driver OWNS its component node.
-        let cap = ctx.owner_capability();
         let instance = ctx.component()?.to_string();
         // Prove the instance exists in the robot model (binds this driver to it).
         let _ = ctx.robot()?.component_instance(&instance)?;
 
         let command = ctx
             .subscriber(
-                api::topic::internal::new(cap)
+                api::topic::owner()
                     .component(&instance)
                     .motor(MOTOR_CAPABILITY)
                     .command(),
@@ -271,7 +268,7 @@ impl Ddsm115 {
             .await?;
         let encoder = ctx
             .measurement_publisher(
-                api::topic::internal::new(cap)
+                api::topic::owner()
                     .component(&instance)
                     .encoder(ENCODER_CAPABILITY)
                     .sample(),

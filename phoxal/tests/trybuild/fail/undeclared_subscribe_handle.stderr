@@ -1,7 +1,7 @@
 error[E0277]: the trait bound `Api: DeclaresSubscribe<_>` is not satisfied
   --> tests/trybuild/fail/undeclared_subscribe_handle.rs:30:26
    |
-30 |         let _state = ctx.latest(api::topic::new().drive().state()).await?;
+30 |         let _state = ctx.latest(api::topic::client().drive().state()).await?;
    |                          ^^^^^^ unsatisfied trait bound
    |
 help: the trait `DeclaresSubscribe<_>` is not implemented for `Api`
@@ -18,8 +18,8 @@ note: required by a bound in `phoxal::participant::SetupContextApiExt::latest::{
 error[E0277]: the trait bound `Api: DeclaresSubscribe<phoxal::api::drive::State>` is not satisfied
   --> tests/trybuild/fail/undeclared_subscribe_handle.rs:30:22
    |
-30 |         let _state = ctx.latest(api::topic::new().drive().state()).await?;
-   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+30 |         let _state = ctx.latest(api::topic::client().drive().state()).await?;
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
    |
 help: the trait `DeclaresSubscribe<phoxal::api::drive::State>` is not implemented for `Api`
   --> tests/trybuild/fail/undeclared_subscribe_handle.rs:18:1
@@ -36,10 +36,10 @@ note: required by a bound in `<phoxal::participant::SetupContext<R> as phoxal::p
    |                 ^^^^^^^^^^^^^^^^^^^^ required by this bound in `<SetupContext<R> as SetupContextApiExt<R>>::latest`
 
 error[E0277]: the trait bound `Api: DeclaresSubscribe<phoxal::api::drive::State>` is not satisfied
-  --> tests/trybuild/fail/undeclared_subscribe_handle.rs:30:68
+  --> tests/trybuild/fail/undeclared_subscribe_handle.rs:30:71
    |
-30 |         let _state = ctx.latest(api::topic::new().drive().state()).await?;
-   |                                                                    ^^^^^ unsatisfied trait bound
+30 |         let _state = ctx.latest(api::topic::client().drive().state()).await?;
+   |                                                                       ^^^^^ unsatisfied trait bound
    |
 help: the trait `DeclaresSubscribe<phoxal::api::drive::State>` is not implemented for `Api`
   --> tests/trybuild/fail/undeclared_subscribe_handle.rs:18:1

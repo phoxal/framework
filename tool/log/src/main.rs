@@ -1,3 +1,5 @@
+mod log;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_tool_log::ToolLog>()
+    phoxal::run::<log::ToolLog>()
 }

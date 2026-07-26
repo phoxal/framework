@@ -1,3 +1,5 @@
+mod power;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_power::Power>()
+    phoxal::run::<power::Power>()
 }

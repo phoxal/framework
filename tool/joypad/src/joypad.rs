@@ -60,25 +60,18 @@ impl ToolJoypad {
                 (None, Some(error))
             }
         };
-        let cap = ctx.owner_capability();
         let bus = ctx.raw_bus();
 
         let manual_publisher =
-            CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())?;
-        let devices_publisher = DiagnosticPublisher::new(
-            bus.clone(),
-            &api::topic::internal::new(cap).joypad().devices(),
-        )?;
+            CommandPublisher::new(bus.clone(), &api::topic::client().motion().manual())?;
+        let devices_publisher =
+            DiagnosticPublisher::new(bus.clone(), &api::topic::owner().joypad().devices())?;
         let select_subscriber =
-            Subscriber::new(&bus, &api::topic::internal::new(cap).joypad().select(), 32).await?;
-        let set_enabled_subscriber = Subscriber::new(
-            &bus,
-            &api::topic::internal::new(cap).joypad().set_enabled(),
-            32,
-        )
-        .await?;
+            Subscriber::new(&bus, &api::topic::owner().joypad().select(), 32).await?;
+        let set_enabled_subscriber =
+            Subscriber::new(&bus, &api::topic::owner().joypad().set_enabled(), 32).await?;
         let rescan_subscriber =
-            Subscriber::new(&bus, &api::topic::internal::new(cap).joypad().rescan(), 32).await?;
+            Subscriber::new(&bus, &api::topic::owner().joypad().rescan(), 32).await?;
 
         let shutdown_publisher = manual_publisher.clone();
         ctx.spawn_managed_with("joypad-poll", ManagedTaskPolicy::FaultOnExit, async move {
@@ -1535,17 +1528,11 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let publisher = CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
+        let publisher = CommandPublisher::new(bus.clone(), &api::topic::client().motion().manual())
             .expect("manual publisher should attach");
-        let subscriber = Subscriber::new(
-            &bus,
-            &api::topic::internal::new(phoxal::raw::OwnerCap::__mint())
-                .motion()
-                .manual(),
-            1,
-        )
-        .await
-        .expect("manual subscriber should attach");
+        let subscriber = Subscriber::new(&bus, &api::topic::owner().motion().manual(), 1)
+            .await
+            .expect("manual subscriber should attach");
 
         let mut pending_zeros = 0;
         let mut failures = 0;
@@ -1570,7 +1557,7 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let publisher = CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
+        let publisher = CommandPublisher::new(bus.clone(), &api::topic::client().motion().manual())
             .expect("manual publisher should attach");
         bus.close().await.expect("bus should close");
 

@@ -21,8 +21,8 @@ impl Demo {
         Ok((
             Self,
             Self::Api {
-                state: ctx.latest(api::topic::new().drive().state()).await?,
-                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
+                state: ctx.latest(api::topic::client().drive().state()).await?,
+                target: ctx.command_publisher(api::topic::client().drive().target()).await?,
             },
         ))
     }

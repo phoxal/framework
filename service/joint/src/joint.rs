@@ -34,7 +34,7 @@ impl EncoderBinding {
     /// Joint CONSUMES encoder samples (the encoder driver owns/publishes them), so
     /// this is the client `Subscribe` side from the public builder.
     fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
-        api::topic::new()
+        api::topic::client()
             .component(&self.component_id)
             .encoder(&self.capability_id)
             .sample()
@@ -100,9 +100,6 @@ pub struct Joint {
 impl Joint {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let config = JointConfig::from_robot(ctx.robot()?)?;
 
         let mut encoders = Vec::with_capacity(config.encoders.len());
@@ -120,8 +117,8 @@ impl Joint {
             states.insert(
                 joint_id.clone(),
                 // Joint OWNS each `joint/{id}` node's state telemetry -> owner
-                // (`internal`) builder.
-                ctx.state_publisher(api::topic::internal::new(cap).joint(&joint_id).state())
+                // owner builder.
+                ctx.state_publisher(api::topic::owner().joint(&joint_id).state())
                     .await?,
             );
         }

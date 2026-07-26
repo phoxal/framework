@@ -120,8 +120,8 @@ pub struct OfficialArtifact {
     pub version: String,
     pub crate_dir: PathBuf,
     /// The release binary name, or `None` for a future driver-less component
-    /// crate (design doc §9: a crate with an empty `src/lib.rs` and no
-    /// `[[bin]]`, ships only its asset bundle). None of today's discovered
+    /// crate (design doc §9: a crate with no `[[bin]]` ships only its asset
+    /// bundle). None of today's discovered
     /// components are driver-less.
     pub bin_name: Option<String>,
     pub id: String,
@@ -613,7 +613,11 @@ mod tests {
             .parent()
             .context("xtask manifest directory has no workspace parent")?;
         for tool in ["joypad", "bus", "device"] {
-            let source = workspace_root.join("tool").join(tool).join("src/lib.rs");
+            let source = workspace_root
+                .join("tool")
+                .join(tool)
+                .join("src")
+                .join(format!("{tool}.rs"));
             let body = fs::read_to_string(&source)?;
             assert!(
                 body.contains("set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip)"),

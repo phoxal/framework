@@ -21,11 +21,11 @@ struct DeclaredSubscribe;
 impl DeclaredSubscribe {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let state = ctx.latest(api::topic::new().drive().state()).await?;
+        let state = ctx.latest(api::topic::client().drive().state()).await?;
         Ok((
             Self,
             Self::Api {
-                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::client().drive().target()).await?,
                 state,
             },
         ))

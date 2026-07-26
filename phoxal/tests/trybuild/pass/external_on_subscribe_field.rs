@@ -30,17 +30,14 @@ struct ExternalOnSubscribe;
 impl ExternalOnSubscribe {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability the owner
-        // (`internal`) builder requires.
-        let cap = ctx.owner_capability();
         Ok((
             Self,
             Self::Api {
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).drive().state())
+                    .state_publisher(api::topic::owner().drive().state())
                     .await?,
                 target: ctx
-                    .latest(api::topic::internal::new(cap).drive().target())
+                    .latest(api::topic::owner().drive().target())
                     .await?,
             },
         ))

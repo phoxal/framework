@@ -14,10 +14,6 @@
 //! timestamps outside a dynamic frame's buffered window.
 //! Floating, planar, and spherical joints are not supported and fail setup.
 
-mod config;
-mod ring_buffer;
-mod transform;
-
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -28,6 +24,7 @@ use phoxal::prelude::*;
 
 use crate::config::{DynamicJoint, FrameConfig, JointMeta};
 use crate::ring_buffer::RingBuffer;
+use crate::transform;
 use crate::transform::{joint_transform, lookup_transform, sorted_transforms};
 
 const BUFFER_WINDOW: std::time::Duration = std::time::Duration::from_nanos(5_000_000_000);
@@ -35,9 +32,9 @@ const BUFFER_MAX_ENTRIES: usize = 16_384;
 
 #[derive(Clone)]
 pub struct FrameSnapshot {
-    statics: Arc<BTreeMap<String, api::frame::FrameTransform>>,
-    parent_by_child: Arc<BTreeMap<String, (String, JointMeta)>>,
-    dynamics: Arc<BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>>,
+    pub(crate) statics: Arc<BTreeMap<String, api::frame::FrameTransform>>,
+    pub(crate) parent_by_child: Arc<BTreeMap<String, (String, JointMeta)>>,
+    pub(crate) dynamics: Arc<BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>>,
 }
 
 #[derive(phoxal::Api)]
@@ -61,16 +58,13 @@ pub struct Frame {
 impl Frame {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let config = FrameConfig::from_robot(ctx.robot()?)?;
 
         let mut joints = Vec::with_capacity(config.dynamic_joints.len());
         let mut buffers = BTreeMap::new();
         for dynamic in &config.dynamic_joints {
             joints.push(
-                ctx.subscriber(api::topic::new().joint(&dynamic.joint_id).state(), 32)
+                ctx.subscriber(api::topic::client().joint(&dynamic.joint_id).state(), 32)
                     .await?,
             );
             buffers.insert(
@@ -80,15 +74,15 @@ impl Frame {
         }
 
         // Frame OWNS the `frame` node (tree, static transforms, and the
-        // `frame/lookup` query it serves below) -> owner (`internal`) builder;
+        // `frame/lookup` query it serves below) -> owner builder;
         // joint states are CONSUMED via the public builder.
         let tree = ctx
-            .state_publisher(api::topic::internal::new(cap).frame().tree())
+            .state_publisher(api::topic::owner().frame().tree())
             .await?;
         let static_pub = ctx
-            .state_publisher(api::topic::internal::new(cap).frame().static_transforms())
+            .state_publisher(api::topic::owner().frame().static_transforms())
             .await?;
-        let lookup = ctx.server(api::topic::new().frame().lookup()).await?;
+        let lookup = ctx.server(api::topic::client().frame().lookup()).await?;
 
         Ok((
             Self {

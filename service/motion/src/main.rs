@@ -1,3 +1,6 @@
+mod arbitration;
+mod motion;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_motion::Motion>()
+    phoxal::run::<motion::Motion>()
 }

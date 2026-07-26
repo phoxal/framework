@@ -1,12 +1,6 @@
 //! `navigation` owns request lifecycle, planning, path following, frontier
 //! proposal, cancellation, progress, and terminal results.
 
-mod exploration;
-mod follower;
-mod frontiers;
-mod planner;
-mod scoring;
-
 use anyhow::Result;
 use std::time::Duration;
 
@@ -14,6 +8,8 @@ use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
 use std::collections::{BTreeMap, VecDeque};
+
+use crate::{exploration, follower, planner};
 
 const LOCALIZATION_STALE: Duration = Duration::from_secs(1);
 const REQUEST_TIMEOUT_NS: u64 = 120_000_000_000;
@@ -59,7 +55,6 @@ pub struct Navigation {
 impl Navigation {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         Ok((
             Self {
                 active: None,
@@ -71,29 +66,29 @@ impl Navigation {
             },
             Self::Api {
                 request: ctx
-                    .subscriber(api::topic::internal::new(cap).navigation().request(), 32)
+                    .subscriber(api::topic::owner().navigation().request(), 32)
                     .await?,
                 localize: ctx
-                    .subscriber(api::topic::new().localize().state(), 32)
+                    .subscriber(api::topic::client().localize().state(), 32)
                     .await?,
                 map_revision: ctx
-                    .subscriber(api::topic::new().map().revision(), 32)
+                    .subscriber(api::topic::client().map().revision(), 32)
                     .await?,
-                map_submap: ctx.querier(api::topic::new().map().submap()).await?,
+                map_submap: ctx.querier(api::topic::client().map().submap()).await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).navigation().state())
+                    .state_publisher(api::topic::owner().navigation().state())
                     .await?,
                 progress: ctx
-                    .state_publisher(api::topic::internal::new(cap).navigation().progress())
+                    .state_publisher(api::topic::owner().navigation().progress())
                     .await?,
                 result: ctx
-                    .state_publisher(api::topic::internal::new(cap).navigation().result())
+                    .state_publisher(api::topic::owner().navigation().result())
                     .await?,
                 candidate: ctx
-                    .state_publisher(api::topic::internal::new(cap).navigation().candidate())
+                    .state_publisher(api::topic::owner().navigation().candidate())
                     .await?,
                 next_frontier: ctx
-                    .server(api::topic::new().navigation().next_frontier())
+                    .server(api::topic::client().navigation().next_frontier())
                     .await?,
             },
         ))
@@ -562,8 +557,7 @@ mod tests {
         ClockSource, ContractRole, Participant, ParticipantApi, ParticipantLaunch, TestClock,
     };
     use phoxal::raw::{
-        Bus, BusConfig, CommandPublisher, OwnerCap, StatePublisher, StepToken, Subscriber,
-        run_with_bus_clock,
+        Bus, BusConfig, CommandPublisher, StatePublisher, StepToken, Subscriber, run_with_bus_clock,
     };
 
     use super::*;
@@ -663,39 +657,38 @@ mod tests {
         let bus = Bus::open(BusConfig::in_process("test/navigation-lifecycle", "robot"))
             .await
             .expect("open shared bus");
-        let cap = OwnerCap::__mint();
         let request = CommandPublisher::<api::navigation::Request>::new(
             bus.clone(),
-            &api::topic::new().navigation().request(),
+            &api::topic::client().navigation().request(),
         )
         .expect("build request publisher");
         let localization = StatePublisher::<api::localize::LocalizationState>::new(
             bus.clone(),
-            &api::topic::internal::new(cap).localize().state(),
+            &api::topic::owner().localize().state(),
         )
         .expect("build localization publisher");
         let map_revision = StatePublisher::<api::map::Revision>::new(
             bus.clone(),
-            &api::topic::internal::new(cap).map().revision(),
+            &api::topic::owner().map().revision(),
         )
         .expect("build map revision publisher");
         let states = Subscriber::<api::navigation::State>::new(
             &bus,
-            &api::topic::new().navigation().state(),
+            &api::topic::client().navigation().state(),
             32,
         )
         .await
         .expect("subscribe state");
         let results = Subscriber::<api::navigation::Result>::new(
             &bus,
-            &api::topic::new().navigation().result(),
+            &api::topic::client().navigation().result(),
             32,
         )
         .await
         .expect("subscribe result");
         let candidates = Subscriber::<api::navigation::Candidate>::new(
             &bus,
-            &api::topic::new().navigation().candidate(),
+            &api::topic::client().navigation().candidate(),
             32,
         )
         .await

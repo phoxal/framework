@@ -23,7 +23,7 @@
 //! The brand is a COMPILE-TIME marker only: the underlying key and the actual
 //! `Publisher`/`Subscriber`/`Latest`/`Querier`/server ops are unchanged. The api
 //! tree emits the builder tree twice - a public *client* builder and an
-//! `internal` *owner* builder over identical keys - so the side a participant gets
+//! explicit *owner* builder over identical keys - so the side a participant gets
 //! is decided by which builder it calls, and a wrong side fails to compile in the
 //! `SetupContext` handle builder that consumes the `Topic`.
 
@@ -81,15 +81,12 @@ impl<Kind> Topic<Kind> {
     /// calls it over each contract's canonical key, and a `pub(crate)` constructor
     /// cannot cross that boundary. Author correctness does not come from hiding
     /// this: it comes from the typed handles and the api-tree builders
-    /// (`api::topic::new()....()`), which keep the typed `Kind` and the bus key in
-    /// lockstep (D61/D62). The owner side is gated by the runner-minted
-    /// [`OwnerCap`](crate::OwnerCap) (plan #00 L2): the owner builder entry
-    /// `api::topic::internal::new(cap)` requires it. This `#[doc(hidden)]` raw
-    /// constructor is the residual escape hatch L2 deliberately does NOT close -
-    /// it is generic over `Kind`, so hand-written code could forge an owner-branded
-    /// `Topic` here. That is inherent to the macro/crate split (generated builder
-    /// code in a downstream crate needs a `pub` constructor) and is the accepted
-    /// "not by accident, not on the documented surface" scope of L2.
+    /// (`api::topic::client()....()`), which keep the typed `Kind` and the bus key in
+    /// lockstep (D61/D62). The owner-side builder (`api::topic::owner()`) makes the intended side
+    /// explicit. This `#[doc(hidden)]` raw constructor remains an escape hatch: it
+    /// is generic over `Kind`, so hand-written code can forge either branded topic.
+    /// That is inherent to the macro/crate split because generated builder code in a
+    /// downstream crate needs a `pub` constructor.
     #[doc(hidden)]
     pub fn new_static(key: &'static str) -> Self {
         Topic {
@@ -106,10 +103,9 @@ impl<Kind> Topic<Kind> {
     /// builder calls it for nodes with dynamic segments, filling the carried
     /// variables into the canonical key. Not part of the authored surface;
     /// correctness for authors comes from the typed handles + api-tree builders.
-    /// The owner side is gated by the runner-minted [`OwnerCap`](crate::OwnerCap)
-    /// (plan #00 L2) at `api::topic::internal::new(cap)`; like
-    /// [`new_static`](Self::new_static), this raw constructor is the accepted
-    /// residual L2 does NOT close (see that method's note).
+    /// The owner-side builder is [`api::topic::owner()`](https://docs.rs/phoxal-api),
+    /// while this constructor remains an explicit raw escape hatch like
+    /// [`new_static`](Self::new_static).
     #[doc(hidden)]
     pub fn new_owned(key: String) -> Self {
         Topic {

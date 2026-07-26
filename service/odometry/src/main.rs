@@ -1,3 +1,5 @@
+mod odometry;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_odometry::Odometry>()
+    phoxal::run::<odometry::Odometry>()
 }
