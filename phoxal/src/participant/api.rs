@@ -207,10 +207,6 @@ pub struct ApiContractUse {
 /// two never diverge, so this is exactly D3's "read-only `&Self::Api`, or an
 /// api snapshot" - here realized as a cloned api snapshot.
 pub trait ParticipantApi: Send + Sync + Clone + 'static {
-    #[doc(hidden)]
-    const __NAME: &'static str;
-    #[doc(hidden)]
-    const __CONTRACTS_JSON: &'static str;
     /// Every contract this `Api` struct's fields use, deduplicated.
     const CONTRACTS: &'static [ApiContractUse];
 
@@ -225,8 +221,6 @@ pub trait ParticipantApi: Send + Sync + Clone + 'static {
 /// `Api = ()` for participants that opt out of a typed bus surface (tools,
 /// per decision - "Tools stay raw-bus only", `remove-emit-apis-api-authoring/readme.md`).
 impl ParticipantApi for () {
-    const __NAME: &'static str = "()";
-    const __CONTRACTS_JSON: &'static str = "[]";
     const CONTRACTS: &'static [ApiContractUse] = &[];
 
     fn __retain_timeline(&self, _timeline: TimelineId) {}

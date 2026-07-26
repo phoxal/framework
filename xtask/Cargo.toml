@@ -1,3 +1,12 @@
+# Workspace-policy checks that no single crate owns: the directory/naming/publish
+# grammar every official package must obey, plus a handful of hygiene guards that
+# assert facts about the workspace as a whole.
+#
+# This crate has no command. It was `cargo xtask`'s home until the API-coherence
+# gate - its last remaining verb - was deleted with the rest of that machinery
+# (organization#957); the release verbs had already gone with the archive release
+# model (organization#951). What is left is a library that exists to be a test
+# target, so `cargo test --workspace` keeps enforcing the policy.
 [package]
 name = "xtask"
 version.workspace = true
@@ -6,33 +15,16 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = { workspace = true }
 cargo_metadata = "0.23.1"
-clap = { workspace = true }
 glob = { workspace = true }
-hex = "0.4.3"
-object = "0.36"
-# The `#[derive(phoxal::Api)]` metadata section JSON shape (version/contract/
-# role/external) is deserialized via the shared `phoxal::participant::metadata`
-# type, not a local re-definition - this crate only owns the object-file
-# section-BYTES extraction (`xtask/src/release/metadata.rs`).
-phoxal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-tar = "0.4.46"
 toml_edit = "0.25.12"
-zstd = "0.13.3"
-
-[dev-dependencies]
-# Cross-format extraction proof (xtask/src/release/metadata.rs tests): the
-# `write` feature synthesizes a foreign-arch object file at test time so the
-# reader is exercised against an architecture other than the host's. Feature
-# unification enables it only for the test build; the shipped xtask binary
-# keeps `object`'s default (read-only) feature set.
-object = { version = "0.36", features = ["write"] }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

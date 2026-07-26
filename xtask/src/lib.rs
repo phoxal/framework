@@ -1,3 +1,12 @@
+//! Workspace policy: the rules the framework workspace must obey as a whole,
+//! and the tests that enforce them.
+//!
+//! No single crate owns these facts - that a package's directory, name and
+//! `publish` field agree, that official tools stay off the logical clock, that
+//! the zenoh dependency set keeps transport compression disabled - so they live
+//! here, in a crate whose only purpose is to be a test target under
+//! `cargo test --workspace`.
+
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
@@ -41,11 +50,6 @@ impl ArtifactKind {
             ArtifactKind::Simulator => "simulator",
             ArtifactKind::Infrastructure => "infrastructure",
         }
-    }
-
-    /// Whether binaries of this kind participate in the API coherence graph.
-    pub fn embeds_participant_metadata(self) -> bool {
-        !matches!(self, ArtifactKind::Infrastructure)
     }
 }
 
