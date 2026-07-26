@@ -152,15 +152,15 @@ fn folded_contracts_are_available_on_the_first_revision() {
     );
 }
 
-/// #952: every command topic is classified as one-shot, leased, or internal
-/// actuation, and the classification is written down in `docs/CONTRACTS.md`.
+/// Every command topic is classified as one-shot, leased, or internal
+/// actuation in the inventory below.
 ///
 /// This pins the written classification to the api tree itself: adding a
 /// command topic without deciding what kind of command it is fails here, which
 /// is the only way the inventory stays true.
 #[test]
 fn every_command_topic_is_classified() {
-    /// The classification recorded in `docs/CONTRACTS.md`. Keep both in step.
+    /// The canonical command classification. Keep it exhaustive.
     const CLASSIFIED: &[(&str, &str)] = &[
         // Leased: a continuous authority a live sender must keep renewing.
         ("v0.1::motion::ManualCommand", "leased"),
@@ -192,7 +192,7 @@ fn every_command_topic_is_classified() {
 
     assert_eq!(
         declared, classified,
-        "every command topic must be classified in docs/CONTRACTS.md"
+        "every command topic must have a classification"
     );
 }
 
