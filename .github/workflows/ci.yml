@@ -27,6 +27,95 @@ jobs:
       webots-version: R2025a
     secrets: inherit
 
+  # Executables are published as SOURCE now, so nothing at release time proves
+  # they still compile for the targets a robot may build them on - the old
+  # five-target release matrix used to be that proof. A version published to an
+  # immutable registry cannot be fixed afterwards, only superseded, so the
+  # coverage moves here, to pull-request time, where a regression is still free
+  # to fix. `check` rather than `build`: the question is "does this target still
+  # compile", and the answer is the same either way for a fraction of the cost.
+  #
+  # Per-target exclusions mirror the `compile_error!` guards in the packages
+  # themselves: joypad needs libudev (glibc-only), and the Webots controller
+  # links libController, which Cyberbotics ships only for desktop glibc hosts.
+  executable-targets:
+    name: executables on ${{ matrix.target }}
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): release v')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            exclude-packages: phoxal-simulator-webots-controller
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            exclude-packages: ""
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            exclude-packages: phoxal-tool-joypad phoxal-simulator-webots-controller
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      - name: Install the musl toolchain
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get install -y musl-tools
+
+      # The Webots controller is only checked where Webots itself exists, which
+      # is the same rule its `compile_error!` guard encodes.
+      - name: Install Webots
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location \
+            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a.dmg \
+            --output "$RUNNER_TEMP/webots.dmg"
+          mkdir "$RUNNER_TEMP/webots-volume"
+          hdiutil attach "$RUNNER_TEMP/webots.dmg" \
+            -nobrowse -quiet -mountpoint "$RUNNER_TEMP/webots-volume"
+          echo "WEBOTS_HOME=$RUNNER_TEMP/webots-volume/Webots.app/Contents" >> "$GITHUB_ENV"
+
+      - name: Check every executable this target supports
+        shell: bash
+        env:
+          EXCLUDED: ${{ matrix.exclude-packages }}
+        run: |
+          set -euo pipefail
+          args=()
+          checked=0
+          while read -r package; do
+            skip=false
+            for excluded in $EXCLUDED; do
+              [[ "$package" == "$excluded" ]] && skip=true
+            done
+            if [[ "$skip" == true ]]; then
+              echo "  excluded on ${{ matrix.target }}: $package"
+              continue
+            fi
+            args+=("-p" "$package")
+            checked=$((checked + 1))
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | .name' | sort
+          )
+          echo "checking $checked executable(s) for ${{ matrix.target }}"
+          cargo check --locked --target "${{ matrix.target }}" "${args[@]}"
+
   # Tier-2 musl targets are not covered by upstream guarantees. Keep this
   # focused on the four library crates so the guard stays cheap and does not
   # become the native-asset build matrix from the next slice.

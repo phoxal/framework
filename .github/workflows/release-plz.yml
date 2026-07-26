@@ -30,6 +30,14 @@ on:
         required: false
         default: false
         type: boolean
+      resume_registry:
+        description: >-
+          Resume only the registry leg of an already-tagged train whose
+          crates.io libraries are live. For when the registry job died and the
+          Actions rerun window has passed.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -45,6 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.train.outputs.publish }}
+      crates: ${{ steps.train.outputs.crates }}
       version: ${{ steps.train.outputs.version }}
       tag: ${{ steps.train.outputs.tag }}
     steps:
@@ -58,6 +67,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_PUBLISH: ${{ inputs.publish }}
+          DISPATCH_RESUME: ${{ inputs.resume_registry }}
           DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -66,7 +76,33 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           subject="$(git log -1 --pretty=%s)"
-          if [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
+          # `crates` says whether the crates.io leg still has work. A
+          # registry-only resume leaves it alone: those versions are already
+          # published and immutable.
+          echo "crates=true" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_RESUME" == "true" ]]; then
+            [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
+              echo "registry resume must run from main" >&2
+              exit 1
+            }
+            git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null || {
+              echo "registry resume needs an existing $tag; nothing was published yet" >&2
+              exit 1
+            }
+            # Only a train whose libraries really are live may resume: that is
+            # what makes re-running the registry leg alone coherent.
+            for crate in phoxal-bus phoxal-macros phoxal-api phoxal; do
+              curl --fail --silent \
+                --user-agent "phoxal-release-verifier/1.0 (https://github.com/phoxal/framework)" \
+                "https://crates.io/api/v1/crates/$crate/$version" >/dev/null || {
+                  echo "$crate $version is not on crates.io; this train is not resumable" >&2
+                  exit 1
+                }
+            done
+            echo "resuming the registry leg for $tag"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "crates=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_PUBLISH" == "true" ]]; then
             [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
@@ -89,9 +125,10 @@ jobs:
             }
             # Every publishable package matters now, not just the four
             # libraries: an executable changed after the release commit would
-            # be published under a version that does not describe it.
-            git diff --quiet "$release_commit"..HEAD -- \
-              ':!.github' ':!*.md' || {
+            # be published under a version that does not describe it. Markdown
+            # is NOT excluded - `phoxal/README.md` and the changelogs are
+            # inside published crates, so editing them changes crate bytes.
+            git diff --quiet "$release_commit"..HEAD -- ':!.github' || {
               echo "package inputs changed after $release_subject; prepare a new train" >&2
               exit 1
             }
@@ -103,7 +140,7 @@ jobs:
   publish-crates:
     name: publish crates.io libraries
     needs: prepare
-    if: needs.prepare.outputs.publish == 'true'
+    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.crates == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -144,7 +181,12 @@ jobs:
   publish-registry:
     name: publish executables to the phoxal registry
     needs: [prepare, publish-crates]
-    if: needs.prepare.outputs.publish == 'true'
+    # `always()` so a registry-only resume runs with publish-crates skipped,
+    # while a real failure of that job still stops this one.
+    if: >-
+      always() && needs.prepare.outputs.publish == 'true'
+      && needs.publish-crates.result != 'failure'
+      && needs.publish-crates.result != 'cancelled'
     runs-on: ubuntu-latest
     env:
       TRAIN: ${{ needs.prepare.outputs.version }}
@@ -200,6 +242,9 @@ jobs:
           repository: phoxal/registry
           token: ${{ steps.app-token.outputs.token }}
           path: registry
+          # The registry's own append-only validator walks base..head, so this
+          # checkout needs real history.
+          fetch-depth: 0
 
       # Immutability is the registry's whole contract, so drop anything already
       # published rather than asking margo to overwrite it. A partly-published
@@ -215,7 +260,10 @@ jobs:
           while read -r package version; do
             local_crate="target/package/${package}-${version}.crate"
             [[ -f "$local_crate" ]] || { echo "::error::expected $local_crate"; exit 1; }
-            published="$(ls registry/crates/*/*/"$package"/"$version".crate 2>/dev/null | head -1 || true)"
+            published=""
+            for candidate in registry/crates/*/*/"$package"/"$version".crate; do
+              [[ -f "$candidate" ]] && { published="$candidate"; break; }
+            done
             [[ -n "$published" ]] || continue
 
             # Same version already in the registry. Resume only if it is the
@@ -249,7 +297,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
-      - name: Commit and deploy the registry
+      - name: Commit the registry
         if: env.REMAINING != '0'
         working-directory: registry
         shell: bash
@@ -257,9 +305,61 @@ jobs:
           set -euo pipefail
           git config user.name "phoxal-release-bot"
           git config user.email "release-bot@phoxal.com"
+          echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git add -A
           git commit -m "publish framework train v${TRAIN}"
-          git push origin main
+
+      # Everything below runs BEFORE the push. The registry's immutability
+      # workflow only triggers afterwards, and a malformed append would already
+      # be permanent by then - so the same validator runs here, on the commit
+      # that is about to be pushed, while it can still be thrown away.
+      - name: Verify the append is valid before pushing
+        if: env.REMAINING != '0'
+        working-directory: registry
+        shell: bash
+        run: python3 .github/scripts/check_append_only.py "$BASE" HEAD
+
+      - name: Verify every packaged version is in the index
+        if: env.REMAINING != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r package version; do
+            artifact=""
+            for candidate in registry/crates/*/*/"$package"/"$version".crate; do
+              [[ -f "$candidate" ]] && { artifact="$candidate"; break; }
+            done
+            if [[ -z "$artifact" ]]; then
+              echo "::error::${package} ${version} is not in the registry after margo ran"
+              missing=1
+              continue
+            fi
+            index_file="$(find registry -mindepth 3 -maxdepth 3 -type f -name "$package" \
+              -not -path 'registry/crates/*' -not -path 'registry/.git*' | head -1)"
+            if [[ -z "$index_file" ]]; then
+              echo "::error::${package} has no index file"
+              missing=1
+              continue
+            fi
+            expected="$(sha256sum "$artifact" | cut -d' ' -f1)"
+            jq -e --arg v "$version" --arg c "$expected" \
+              'select(.vers == $v and .cksum == $c)' "$index_file" >/dev/null || {
+                echo "::error::${package} ${version} index record missing or checksum mismatch"
+                missing=1
+              }
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
+          )
+          [[ "$missing" == "0" ]] || exit 1
+          echo "every packaged version has a matching index record"
+
+      - name: Deploy the registry
+        if: env.REMAINING != '0'
+        working-directory: registry
+        shell: bash
+        run: git push origin main
 
   release-plz-pr:
     name: prepare grouped release PR
