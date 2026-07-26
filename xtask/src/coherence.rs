@@ -6,15 +6,16 @@
 //! (`Workspace::official_artifacts()`, never just changed crates - design doc
 //! §5, "a change to A can break a contract A shares with unchanged B") by
 //! host-building each one and extracting its `#[derive(phoxal::Api)]`
-//! metadata section (`crate::release::package::build_and_extract_metadata`),
-//! then runs `phoxal::check::check_coherence` over the assembled set (§3:
-//! per-participant pub/sub overlap + every-ask-matched).
+//! metadata section, then runs `phoxal::check::check_coherence` over the
+//! assembled set (§3: per-participant pub/sub overlap + every-ask-matched).
 //!
 //! Wired as the required status check on release-plz's `chore(release)` PR
 //! (`.github/workflows/coherence-check.yml`); "block" there means this
 //! command exits non-zero.
 
 use std::collections::BTreeSet;
+use std::path::Path;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
@@ -23,11 +24,87 @@ use phoxal::check::{
     CoherenceMismatch, CoherenceReport, ParticipantContractSurface, check_coherence,
 };
 
-use crate::release::package::build_and_extract_metadata;
-use crate::workspace::Workspace;
+use crate::metadata::{self, ParticipantMeta};
+use crate::workspace::{OfficialArtifact, Workspace};
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {}
+
+/// Host-build `artifact` with a plain `cargo build` and read its compiled-in
+/// API metadata. Debug, non-`auditable`, host triple: the gate only needs the
+/// contract surface, and that is identical whatever the artifact is later
+/// compiled for.
+fn build_and_extract_metadata(
+    workspace: &Workspace,
+    artifact: &OfficialArtifact,
+) -> Result<ParticipantMeta> {
+    if !artifact.kind.embeds_participant_metadata() {
+        bail!(
+            "{} is {} and does not participate in API coherence",
+            artifact.package,
+            artifact.kind
+        );
+    }
+    let package_name = artifact.require_package_name()?;
+    let output = Command::new("cargo")
+        .args(["build", "--quiet", "-p", package_name])
+        .current_dir(workspace.root())
+        .output()
+        .with_context(|| format!("failed to spawn cargo build for {}", artifact.package))?;
+    if !output.status.success() {
+        bail!(
+            "cargo build for {} failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+            artifact.package,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let binary_path = workspace.target_dir().join("debug").join(format!(
+        "{}{}",
+        artifact.require_bin_name()?,
+        std::env::consts::EXE_SUFFIX
+    ));
+    extract_and_validate_metadata(&binary_path, artifact)
+}
+
+/// Runs `#[derive(phoxal::Api)]`'s fail-fast gate on a just-built binary: a
+/// broken or absent metadata section must not reach the coherence pass. Reads
+/// the object file directly - the artifact is never executed.
+fn extract_and_validate_metadata(
+    binary_path: &Path,
+    artifact: &OfficialArtifact,
+) -> Result<ParticipantMeta> {
+    let meta = metadata::extract_participant_metadata(binary_path).with_context(|| {
+        format!(
+            "failed to extract API metadata for {} from {}",
+            artifact.package,
+            binary_path.display()
+        )
+    })?;
+    for contract in &meta.contracts {
+        if contract.version.trim().is_empty() {
+            bail!(
+                "{} has a contract entry with an empty version",
+                artifact.package
+            );
+        }
+        if contract.contract.trim().is_empty() {
+            bail!(
+                "{} has a contract entry with an empty contract name",
+                artifact.package
+            );
+        }
+        if contract.role.trim().is_empty() {
+            bail!(
+                "{} has a contract entry with an empty role",
+                artifact.package
+            );
+        }
+    }
+    Ok(meta)
+}
 
 pub fn run(_args: Args) -> Result<()> {
     let workspace = Workspace::discover()?;

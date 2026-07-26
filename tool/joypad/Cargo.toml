@@ -4,14 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-publish = false
+publish = ["phoxal"]
 description = "Phoxal official tool: joypad - minimal gamepad teleop bridge."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
-
-[package.metadata.phoxal]
-unsupported-targets = ["*-musl"]
 
 [[bin]]
 name = "phoxal-tool-joypad"

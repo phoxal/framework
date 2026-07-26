@@ -1,10 +1,16 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
 mod coherence;
-mod release;
+mod metadata;
 mod workspace;
 
+/// Workspace automation, now a single job.
+///
+/// The release verbs (`package`, `assets`, `suite`, `verify`) are gone with the
+/// archive-and-suite release model: Cargo publishes the train, so there is no
+/// Phoxal-owned release tool left to run (organization#951, Decision 12 of the
+/// release flow). What remains is the one check Cargo cannot do for us.
 #[derive(Debug, Parser)]
 #[command(about = "Phoxal workspace automation")]
 struct Cli {
@@ -12,12 +18,8 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, clap::Subcommand)]
 enum Command {
-    Release {
-        #[command(subcommand)]
-        command: release::Command,
-    },
     /// The deployment coherence gate over the whole official artifact set:
     /// host-builds every official artifact, extracts its
     /// `#[derive(phoxal::Api)]` contract surface, and runs
@@ -30,7 +32,6 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Release { command } => release::run(command),
         Command::CoherenceCheck(args) => coherence::run(args),
     }
 }

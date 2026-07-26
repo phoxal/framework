@@ -1,5 +1,23 @@
 name: release-plz
 
+# Publishing a train is now two ordinary publications, in order:
+#
+#   1. release-plz publishes the four library crates to crates.io.
+#   2. This workflow packages every executable with `cargo package` and adds the
+#      `.crate` files to the static `phoxal` registry, which GitHub Pages then
+#      serves.
+#
+# There is no cross-target build matrix, no per-runtime archive, no suite.json,
+# and no mutable draft-release asset choreography: robots compile the source
+# packages themselves (organization#951). A train is bounded by how long it
+# takes to package source, not by how long it takes to compile 26 binaries for
+# five targets.
+#
+# `registries.phoxal.index` comes from the committed `.cargo/config.toml`, so
+# every cargo and release-plz invocation here picks it up - including the shared
+# reusable release-PR workflow, which does not inherit this workflow's env.
+# Without it release-plz does not degrade, it aborts.
+
 on:
   push:
     branches: [main]
@@ -9,6 +27,14 @@ on:
     inputs:
       publish:
         description: Re-run an unpublished prepared train from main
+        required: false
+        default: false
+        type: boolean
+      resume_registry:
+        description: >-
+          Resume only the registry leg of an already-tagged train whose
+          crates.io libraries are live. For when the registry job died and the
+          Actions rerun window has passed.
         required: false
         default: false
         type: boolean
@@ -27,6 +53,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.train.outputs.publish }}
+      crates: ${{ steps.train.outputs.crates }}
+      source: ${{ steps.train.outputs.source }}
+      restore-tag: ${{ steps.train.outputs.restore_tag }}
       version: ${{ steps.train.outputs.version }}
       tag: ${{ steps.train.outputs.tag }}
     steps:
@@ -40,6 +69,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           DISPATCH_PUBLISH: ${{ inputs.publish }}
+          DISPATCH_RESUME: ${{ inputs.resume_registry }}
           DISPATCH_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -48,7 +78,72 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           subject="$(git log -1 --pretty=%s)"
-          if [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
+          # `crates` says whether the crates.io leg still has work. A
+          # registry-only resume leaves it alone: those versions are already
+          # published and immutable.
+          echo "crates=true" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_RESUME" == "true" ]]; then
+            [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
+              echo "registry resume must run from main" >&2
+              exit 1
+            }
+            # Only a train whose libraries are already live may resume: that is
+            # what makes re-running the registry leg alone coherent, and those
+            # versions are immutable so they cannot be redone anyway.
+            for crate in phoxal-bus phoxal-macros phoxal-api phoxal; do
+              curl --fail --silent \
+                --user-agent "phoxal-release-verifier/1.0 (https://github.com/phoxal/framework)" \
+                "https://crates.io/api/v1/crates/$crate/$version" >/dev/null || {
+                  echo "$crate $version is not on crates.io; this train is not resumable" >&2
+                  exit 1
+                }
+            done
+            # Package from the PREPARED RELEASE COMMIT, never from current main
+            # and never from the tag. The tag is created wherever HEAD happened
+            # to be when release-plz ran - `v0.41.2` points at 3433a6c, three
+            # commits past its own release commit - so only the release commit
+            # identifies the source these versions describe.
+            # Match the SUBJECT, not the message. `--grep` searches the whole
+            # commit body and returns the newest hit, so any later commit that
+            # merely mentions this release in its body would win and be packaged
+            # in place of the real one.
+            release_subject="chore(release): release $tag"
+            source=""
+            while read -r sha subject; do
+              # GitHub squash-merges append " (#123)" to the subject.
+              if [[ "$subject" == "$release_subject" ]] \
+                || [[ "$subject" =~ ^"$release_subject"\ \(#[0-9]+\)$ ]]; then
+                source="$sha"
+                break
+              fi
+            done < <(git log --format='%H %s')
+            [[ -n "$source" ]] || {
+              echo "no commit whose subject is exactly '$release_subject'; nothing to resume" >&2
+              exit 1
+            }
+            git merge-base --is-ancestor "$source" HEAD || {
+              echo "$release_subject is not an ancestor of main" >&2
+              exit 1
+            }
+            # A missing tag means release-plz died between publishing the last
+            # library and tagging - a state rerunning it cannot repair, because
+            # its already-published path returns before tagging. The tag is
+            # restored at the end, once the registry push has actually
+            # succeeded; doing it up front would turn this recoverable state
+            # into the harder "tag present, registry empty" one on any later
+            # failure.
+            if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
+              echo "restore_tag=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "restore_tag=true" >> "$GITHUB_OUTPUT"
+            fi
+            echo "resuming the registry leg for $tag from $source"
+            {
+              echo "publish=true"
+              echo "crates=false"
+              echo "source=$source"
+            } >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_PUBLISH" == "true" ]]; then
             [[ "$DISPATCH_REF" == "refs/heads/main" ]] || {
@@ -69,164 +164,24 @@ jobs:
               echo "tag $tag already exists; refusing to republish" >&2
               exit 1
             }
-            git diff --quiet "$release_commit"..HEAD -- \
-              Cargo.toml Cargo.lock phoxal phoxal-api phoxal-bus phoxal-macros || {
-              echo "published crate inputs changed after $release_subject; prepare a new train" >&2
+            # Every publishable package matters now, not just the four
+            # libraries: an executable changed after the release commit would
+            # be published under a version that does not describe it. Markdown
+            # is NOT excluded - `phoxal/README.md` and the changelogs are
+            # inside published crates, so editing them changes crate bytes.
+            git diff --quiet "$release_commit"..HEAD -- ':!.github' || {
+              echo "package inputs changed after $release_subject; prepare a new train" >&2
               exit 1
             }
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Install source-verification dependencies
-        if: steps.train.outputs.publish == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev
-      - name: Install Webots runtime for source verification
-        if: steps.train.outputs.publish == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location \
-            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2 \
-            --output "$RUNNER_TEMP/webots.tar.bz2"
-          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
-          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
-      - name: Verify source train
-        if: steps.train.outputs.publish == 'true'
-        run: cargo xtask release verify --tag "${{ steps.train.outputs.tag }}"
-
-  build:
-    name: package ${{ matrix.target }}
-    needs: prepare
-    if: needs.prepare.outputs.publish == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-14
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-24.04
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-24.04
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: ${{ matrix.target }}
-      - name: Install Linux packaging dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev musl-tools
-          cargo install cargo-auditable --locked
-      - name: Install Webots runtime for Linux controller packaging
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location \
-            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a-x86-64.tar.bz2 \
-            --output "$RUNNER_TEMP/webots.tar.bz2"
-          tar -xjf "$RUNNER_TEMP/webots.tar.bz2" -C "$RUNNER_TEMP"
-          echo "WEBOTS_HOME=$RUNNER_TEMP/webots" >> "$GITHUB_ENV"
-      - name: Install macOS packaging dependencies
-        if: runner.os == 'macOS'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install cargo-auditable --locked
-          curl --fail --location \
-            https://github.com/cyberbotics/webots/releases/download/R2025a/webots-R2025a.dmg \
-            --output "$RUNNER_TEMP/webots.dmg"
-          mkdir "$RUNNER_TEMP/webots-volume"
-          hdiutil attach "$RUNNER_TEMP/webots.dmg" \
-            -nobrowse -quiet -mountpoint "$RUNNER_TEMP/webots-volume"
-          echo "WEBOTS_HOME=$RUNNER_TEMP/webots-volume/Webots.app/Contents" >> "$GITHUB_ENV"
-      - run: cargo xtask release package --all --target "${{ matrix.target }}"
-      - uses: actions/upload-artifact@v6
-        with:
-          name: train-${{ matrix.target }}
-          path: target/xtask/release/*
-          if-no-files-found: error
-
-  assets:
-    name: package component assets
-    needs: prepare
-    if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: cargo xtask release assets --all
-      - uses: actions/upload-artifact@v6
-        with:
-          name: train-assets
-          path: target/xtask/release/*
-          if-no-files-found: error
-
-  # GitHub-writing jobs mint a phoxal-release-bot App token
-  # (actions/create-github-app-token): events produced with the workflow's own
-  # GITHUB_TOKEN do not trigger other workflows, so a release PR created with
-  # it never receives the required coherence gate and cannot be merged. The
-  # `HAS_RELEASE_APP` guard keeps forks without the App secrets working on the
-  # plain GITHUB_TOKEN fallback.
-  stage-github:
-    name: stage GitHub train
-    needs: [prepare, build, assets]
-    runs-on: ubuntu-latest
-    env:
-      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: actions/download-artifact@v7
-        with:
-          pattern: train-*
-          path: target/xtask/release
-          merge-multiple: true
-      - name: Verify staged train and produce suite
-        run: cargo xtask release suite --tag "${{ needs.prepare.outputs.tag }}"
-      - name: Generate GitHub App token
-        id: app-token
-        if: env.HAS_RELEASE_APP == 'true'
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-      - name: Create or resume non-latest draft release
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${{ needs.prepare.outputs.tag }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            is_draft="$(gh release view "$tag" --json isDraft --jq '.isDraft')"
-            [[ "$is_draft" == "true" ]] || {
-              echo "::error::Release $tag is already published; refusing to replace immutable assets."
-              exit 1
-            }
-          else
-            gh release create "$tag" --draft --latest=false --title "$tag" --notes "Framework train $tag"
-          fi
-          for file in target/xtask/release/* target/xtask/suite.json; do
-            gh release upload "$tag" "$file" --clobber
-          done
 
   publish-crates:
-    name: publish crates.io train
-    needs: [prepare, stage-github]
+    name: publish crates.io libraries
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true' && needs.prepare.outputs.crates == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -236,23 +191,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: release-plz
-      # No App token here: release-plz.toml disables git tags/releases, so this
-      # job only publishes to crates.io and never writes GitHub state that must
-      # trigger other workflows.
-      - name: Publish dependency order with phoxal facade last
+      # No App token: release-plz publishes to crates.io and creates the one
+      # `v<train>` tag; it writes no GitHub state that must trigger another
+      # workflow.
+      - name: Publish dependency order with the phoxal facade last
         env:
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: release-plz release
 
-  complete:
-    name: confirm registries and complete train
-    needs: [prepare, publish-crates]
-    runs-on: ubuntu-latest
-    env:
-      HAS_RELEASE_APP: ${{ secrets.RELEASE_APP_ID != '' }}
-    steps:
-      - name: Wait for exact crates.io train
+      - name: Wait for the exact crates.io train
         shell: bash
         run: |
           set -euo pipefail
@@ -270,19 +218,240 @@ jobs:
             done
             [[ "$found" == true ]] || { echo "$crate $version is not observable" >&2; exit 1; }
           done
+
+  publish-registry:
+    name: publish executables to the phoxal registry
+    needs: [prepare, publish-crates]
+    # `always()` so a registry-only resume runs with publish-crates skipped,
+    # while a real failure of that job still stops this one.
+    if: >-
+      always() && needs.prepare.outputs.publish == 'true'
+      && needs.publish-crates.result != 'failure'
+      && needs.publish-crates.result != 'cancelled'
+    runs-on: ubuntu-latest
+    env:
+      TRAIN: ${{ needs.prepare.outputs.version }}
+      PHOXAL_REGISTRY: phoxal
+    steps:
+      # On a resume this is the prepared release commit, so the packaged bytes
+      # describe the version being published. On a normal train it is the ref
+      # that triggered the run, which IS that commit.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.source || github.sha }}
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      # tool-joypad's gamepad backend needs libudev to build, and `cargo
+      # package` verifies by building what it packaged.
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev
+
+      # The checked-out source must actually BE this train. This is what stops
+      # a resume publishing someone else's version: an old release commit
+      # predating the registry model selects no packages at all, and any commit
+      # carrying a different version is refused outright.
+      - name: Verify the checked-out source is this train
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrong=0
+          found=0
+          while read -r package version; do
+            found=$((found + 1))
+            if [[ "$version" != "$TRAIN" ]]; then
+              echo "::error::${package} is ${version} in this source, not ${TRAIN}"
+              wrong=1
+            fi
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
+          )
+          if [[ "$found" == "0" ]]; then
+            echo "::error::This source declares no packages for the ${PHOXAL_REGISTRY} registry."
+            echo "::error::It predates the registry release model, so it cannot be this train."
+            exit 1
+          fi
+          [[ "$wrong" == "0" ]] || exit 1
+          echo "all ${found} package(s) are ${TRAIN}"
+
+      - name: Package every executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | .name' \
+              | sort
+          )
+          [[ ${#packages[@]} -gt 0 ]] || { echo "no executable packages found" >&2; exit 1; }
+          echo "packaging ${#packages[@]} executables at ${TRAIN}"
+          for package in "${packages[@]}"; do
+            if [[ "$package" == "phoxal-simulator-webots-controller" ]]; then
+              # The only package that cannot be verified here: it links Webots'
+              # libController, and installing Webots to prove a bin-only crate
+              # compiles is several hundred megabytes for a check CI already
+              # performs on every pull request. What is given up is narrow -
+              # that this specific `.crate` is self-contained - and the package
+              # has sources only, no assets or generated files to omit.
+              cargo package -p "$package" --no-verify
+            else
+              cargo package -p "$package"
+            fi
+          done
+
       - name: Generate GitHub App token
         id: app-token
-        if: env.HAS_RELEASE_APP == 'true'
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-contents: write
-      - name: Mark GitHub train complete and latest
+          owner: phoxal
+          repositories: registry
+
+      - name: Check out the registry
+        uses: actions/checkout@v6
+        with:
+          repository: phoxal/registry
+          token: ${{ steps.app-token.outputs.token }}
+          path: registry
+          # The registry's own append-only validator walks base..head, so this
+          # checkout needs real history.
+          fetch-depth: 0
+
+      # Immutability is the registry's whole contract, so drop anything already
+      # published rather than asking margo to overwrite it. A partly-published
+      # train then resumes cleanly instead of failing.
+      - name: Drop already-published versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          skipped=0
+          # margo stores an artifact as crates/<prefix>/<prefix>/<name>/<version>.crate,
+          # so the published file is named for the VERSION, not the package. Glob
+          # the prefix directories rather than reimplementing Cargo's prefix rule.
+          while read -r package version; do
+            local_crate="target/package/${package}-${version}.crate"
+            [[ -f "$local_crate" ]] || { echo "::error::expected $local_crate"; exit 1; }
+            published=""
+            for candidate in registry/crates/*/*/"$package"/"$version".crate; do
+              [[ -f "$candidate" ]] && { published="$candidate"; break; }
+            done
+            [[ -n "$published" ]] || continue
+
+            # Same version already in the registry. Resume only if it is the
+            # same artifact: identical content means an earlier run of THIS
+            # train got that far. Different content means the version would
+            # have to change to describe this build, and versions are
+            # immutable - so stop rather than publish a contradiction.
+            if [[ "$(sha256sum < "$local_crate")" == "$(sha256sum < "$published")" ]]; then
+              echo "  already published, skipping: ${package} ${version}"
+              rm "$local_crate"
+              skipped=$((skipped + 1))
+            else
+              echo "::error::${package} ${version} is already published with different content."
+              echo "::error::Published versions are immutable; cut a new patch train instead."
+              exit 1
+            fi
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
+          )
+          remaining=$(find target/package -maxdepth 1 -name '*.crate' | wc -l | tr -d ' ')
+          echo "publishing $remaining package(s), skipped $skipped already-published"
+          echo "REMAINING=$remaining" >> "$GITHUB_ENV"
+
+      - name: Add the packages to the registry
+        if: env.REMAINING != '0'
+        uses: integer32llc/margo-actions@12d1175e158c2b5640a34e99cf494d0fbebf41b8
+        with:
+          crates: target/package/*.crate
+          registry: registry
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-        run: gh release edit "${{ needs.prepare.outputs.tag }}" --draft=false --latest
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Commit the registry
+        if: env.REMAINING != '0'
+        working-directory: registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "phoxal-release-bot"
+          git config user.email "release-bot@phoxal.com"
+          echo "BASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git add -A
+          git commit -m "publish framework train v${TRAIN}"
+
+      # Everything below runs BEFORE the push. The registry's immutability
+      # workflow only triggers afterwards, and a malformed append would already
+      # be permanent by then - so the same validator runs here, on the commit
+      # that is about to be pushed, while it can still be thrown away.
+      - name: Verify the append is valid before pushing
+        if: env.REMAINING != '0'
+        working-directory: registry
+        shell: bash
+        run: python3 .github/scripts/check_append_only.py "$BASE" HEAD
+
+      - name: Verify every packaged version is in the index
+        if: env.REMAINING != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          while read -r package version; do
+            artifact=""
+            for candidate in registry/crates/*/*/"$package"/"$version".crate; do
+              [[ -f "$candidate" ]] && { artifact="$candidate"; break; }
+            done
+            if [[ -z "$artifact" ]]; then
+              echo "::error::${package} ${version} is not in the registry after margo ran"
+              missing=1
+              continue
+            fi
+            index_file="$(find registry -mindepth 3 -maxdepth 3 -type f -name "$package" \
+              -not -path 'registry/crates/*' -not -path 'registry/.git*' | head -1)"
+            if [[ -z "$index_file" ]]; then
+              echo "::error::${package} has no index file"
+              missing=1
+              continue
+            fi
+            expected="$(sha256sum "$artifact" | cut -d' ' -f1)"
+            jq -e --arg v "$version" --arg c "$expected" \
+              'select(.vers == $v and .cksum == $c)' "$index_file" >/dev/null || {
+                echo "::error::${package} ${version} index record missing or checksum mismatch"
+                missing=1
+              }
+          done < <(
+            cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.publish == ["phoxal"]) | "\(.name) \(.version)"'
+          )
+          [[ "$missing" == "0" ]] || exit 1
+          echo "every packaged version has a matching index record"
+
+      - name: Deploy the registry
+        if: env.REMAINING != '0'
+        working-directory: registry
+        shell: bash
+        run: git push origin main
+
+      # Last, deliberately: until the registry has landed there is nothing for
+      # the tag to describe, and an early tag would strand the next resume.
+      - name: Restore the missing train tag
+        if: needs.prepare.outputs.restore-tag == 'true'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE: ${{ needs.prepare.outputs.source }}
+        run: |
+          set -euo pipefail
+          git config user.name "phoxal-release-bot"
+          git config user.email "release-bot@phoxal.com"
+          git tag -a "$TAG" "$SOURCE" -m "Framework train $TAG"
+          git push origin "$TAG"
+          echo "recreated $TAG at the prepared release commit"
 
   release-plz-pr:
     name: prepare grouped release PR

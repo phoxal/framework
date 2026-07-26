@@ -27,70 +27,18 @@ jobs:
       webots-version: R2025a
     secrets: inherit
 
-  # Tier-2 musl targets are not covered by upstream guarantees. Keep this
-  # focused on the four library crates so the guard stays cheap and does not
-  # become the native-asset build matrix from the next slice.
-  musl-library:
-    name: musl library guard (${{ matrix.target }})
-    if: >-
-      github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore(release): release v')
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-          - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: ${{ matrix.target }}
-
-      - name: Install musl toolchain
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
-
-      # This package-only build also keeps the published Zenoh consumers honest.
-      - name: Build library crates for musl
-        run: >
-          cargo build
-          --target ${{ matrix.target }}
-          -p phoxal-bus
-          -p phoxal-api
-          -p phoxal-macros
-          -p phoxal
-          --lib
-
-      - name: Build minimal library crates for musl
-        run: >
-          cargo build
-          --target ${{ matrix.target }}
-          -p phoxal-bus
-          -p phoxal-api
-          -p phoxal-macros
-          -p phoxal
-          --no-default-features
-          --lib
-
-      - name: Test library crates for musl
-        run: >
-          cargo test
-          --target ${{ matrix.target }}
-          -p phoxal-bus
-          -p phoxal-api
-          -p phoxal-macros
-          -p phoxal
-          --lib
-
-  feature-boundary:
-    name: stable feature boundaries
+  # Feature UNIFICATION is a workspace-build artefact: a library can compile
+  # here while relying on a dependency feature that only another member turned
+  # on, and then fail for someone who depends on it alone from crates.io.
+  # `cargo package` builds each library isolated, which is what that consumer
+  # actually gets.
+  #
+  # This is about DEPENDENCY features. None of the four library crates declares
+  # a feature of its own - there is no `[features]` table and no
+  # `cfg(feature = ...)` in their source - so `--no-default-features` on them is
+  # a no-op and is not tested here; it would only re-run `ci`'s clippy and test.
+  packaged-libraries:
+    name: libraries build outside the workspace
     if: >-
       github.event_name != 'push' ||
       !startsWith(github.event.head_commit.message, 'chore(release): release v')
@@ -100,7 +48,7 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Verify stable Zenoh consumers outside workspace feature unification
+      - name: Package each library on its own
         run: |
           cargo package -p phoxal-bus --allow-dirty
           # Verify the packaged phoxal crate against the same-release local
@@ -111,8 +59,3 @@ jobs:
             --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \
             --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'"
 
-      - name: Verify stable library boundaries
-        run: |
-          cargo test -p phoxal --lib --no-default-features
-          cargo clippy -p phoxal --all-targets --no-default-features -- -D warnings
-          cargo clippy -p phoxal-bus -p phoxal-api --all-targets --no-default-features -- -D warnings

@@ -1,2 +1,15 @@
 [alias]
 xtask = "run --package xtask --"
+
+# The static registry this workspace's executables publish to
+# (organization#951, Decision 2). Committed here rather than passed per
+# invocation because everything that touches this workspace needs it:
+# release-plz aborts outright without it ("registry index was not found in any
+# configuration"), including inside the shared reusable release-PR workflow,
+# which does not inherit the caller's environment.
+#
+# Robot projects need no equivalent: the `phoxal` CLI injects this index for the
+# `cargo install` calls it makes on their behalf, so a robot workspace stays
+# free of registry configuration.
+[registries.phoxal]
+index = "sparse+https://phoxal.github.io/registry/"
