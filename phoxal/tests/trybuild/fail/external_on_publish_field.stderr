@@ -2,8 +2,8 @@ error: #[phoxal(external)] is only valid on a subscribe/ask field; `target` is a
   --> tests/trybuild/fail/external_on_publish_field.rs:12:5
    |
 12 | /     #[phoxal(external)]
-13 | |     target: Publisher<api::drive::Target>,
-   | |_________________________________________^
+13 | |     target: CommandPublisher<api::drive::Target>,
+   | |________________________________________________^
 
 error[E0277]: the trait bound `Api: ParticipantApi` is not satisfied
   --> tests/trybuild/fail/external_on_publish_field.rs:16:1

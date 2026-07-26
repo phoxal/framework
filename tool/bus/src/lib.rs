@@ -8,7 +8,7 @@ use phoxal::prelude::*;
 #[cfg(test)]
 use phoxal::raw::encoding_string;
 use phoxal::raw::{
-    Bus, BusMetadata, Codec, CodecId, MessagePack, OwnerCap, Publisher, QueryFailure, host_time,
+    Bus, BusMetadata, Codec, CodecId, DiagnosticPublisher, MessagePack, OwnerCap, QueryFailure,
     parse_encoding_string,
 };
 
@@ -278,7 +278,7 @@ async fn spawn_metrics(
         },
     );
 
-    let follow_publisher = Publisher::new(
+    let follow_publisher = DiagnosticPublisher::new(
         metrics_bus.clone(),
         &api::topic::internal::new(cap).tool().bus().follow(),
     )?;
@@ -387,7 +387,7 @@ async fn spawn_metrics(
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .ingest(window)
                 };
-                if let Err(error) = follow_publisher.publish_at(host_time(), follow).await {
+                if let Err(error) = follow_publisher.publish(follow) {
                     tracing::warn!(target: "phoxal.bus", error = %error, "bus metrics follow publish failed");
                 }
             }
@@ -447,12 +447,12 @@ fn participant_from_attachment(
     }
     let metadata = BusMetadata::decode(attachment?).ok()?;
     if metadata.codec != encoding.codec
-        || metadata.source.participant.is_empty()
-        || metadata.source.participant.len() > MAX_METRIC_PARTICIPANT_BYTES
+        || metadata.participant.is_empty()
+        || metadata.participant.len() > MAX_METRIC_PARTICIPANT_BYTES
     {
         None
     } else {
-        Some(metadata.source.participant)
+        Some(metadata.participant)
     }
 }
 
@@ -1453,20 +1453,15 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn metrics_use_the_ordinary_bus_publisher() {
-        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig {
-            namespace: "dev".to_string(),
-            robot_id: "rover".to_string(),
-            participant: "bus".to_string(),
-            incarnation: 7,
-            connect_endpoints: Vec::new(),
-        })
-        .await
-        .expect("open bus");
+        let mut config = phoxal::raw::BusConfig::in_process("dev", "rover");
+        config.participant = "bus".to_string();
+        let producer = config.producer;
+        let bus = phoxal::raw::Bus::open(config).await.expect("open bus");
         let topic = api::topic::internal::new(OwnerCap::__mint())
             .tool()
             .bus()
             .follow();
-        let publisher = Publisher::new(bus.clone(), &topic).expect("metrics publisher");
+        let publisher = DiagnosticPublisher::new(bus.clone(), &topic).expect("metrics publisher");
         let subscriber = phoxal::raw::Subscriber::<api::tool::bus::Follow>::new(
             &bus,
             &api::topic::new().tool().bus().follow(),
@@ -1488,8 +1483,7 @@ mod tests {
             },
         };
         publisher
-            .publish_at(host_time(), expected.clone())
-            .await
+            .publish(expected.clone())
             .expect("publish metrics");
         let received = tokio::time::timeout(Duration::from_secs(1), subscriber.recv())
             .await
@@ -1497,8 +1491,12 @@ mod tests {
             .expect("receive metrics");
 
         assert_eq!(received.body, expected);
-        assert_eq!(received.metadata.source.participant, "bus");
-        assert_eq!(received.metadata.source.incarnation, 7);
+        assert_eq!(received.metadata.participant, "bus");
+        assert_eq!(received.metadata.producer, producer);
+        assert_eq!(
+            received.metadata.produced_at, None,
+            "a diagnostic describes the participant, not the world, so it expresses no robot time"
+        );
         assert_eq!(bus.health().outbound_drops.load(Ordering::Relaxed), 0);
         bus.close().await.expect("close bus");
     }

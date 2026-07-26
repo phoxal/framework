@@ -9,6 +9,7 @@
 //! `component/wheel-0/encoder/encoder/sample`), so a sample routes across the
 //! participant boundary.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -27,7 +28,7 @@ const SAMPLE_VELOCITY_RADPS: f32 = 2.5;
 
 #[derive(phoxal::Api)]
 struct EncoderProducerApi {
-    encoder: Publisher<api::component::encoder::Sample>,
+    encoder: MeasurementPublisher<api::component::encoder::Sample>,
 }
 
 /// Publishes an `EncoderSample` on a dynamic per-component key every step.
@@ -46,7 +47,7 @@ impl EncoderProducer {
                 // driver), so it publishes the `state` topic through the owner
                 // (`internal`) builder.
                 encoder: ctx
-                    .publisher(
+                    .measurement_publisher(
                         api::topic::internal::new(cap)
                             .component(INSTANCE)
                             .encoder(CAPABILITY)
@@ -59,15 +60,13 @@ impl EncoderProducer {
 
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        api.encoder
-            .publish_at(
-                step.time(),
-                api::component::encoder::Sample {
-                    position_rad: 1.0,
-                    velocity_radps: SAMPLE_VELOCITY_RADPS,
-                },
-            )
-            .await?;
+        api.encoder.publish(
+            CaptureStamp::exact(step.now()),
+            api::component::encoder::Sample {
+                position_rad: 1.0,
+                velocity_radps: SAMPLE_VELOCITY_RADPS,
+            },
+        )?;
         Ok(())
     }
 }
@@ -120,12 +119,14 @@ async fn two_runtimes_exchange_a_dynamic_topic_on_one_bus() {
 
     let producer = run_with_bus::<EncoderProducer, _>(
         &bus,
-        ParticipantLaunch::local("encoder-producer-1", "robot"),
+        ParticipantLaunch::local("encoder-producer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
     let consumer = run_with_bus::<EncoderConsumer, _>(
         &bus,
-        ParticipantLaunch::local("encoder-consumer-1", "robot"),
+        ParticipantLaunch::local("encoder-consumer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
 

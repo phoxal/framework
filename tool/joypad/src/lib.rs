@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use gilrs::{Button, EventType, Gamepad, GamepadId, Gilrs};
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal::raw::{Publisher, Subscriber, host_time};
+use phoxal::raw::Subscriber;
 
 const TRIGGER_DEADZONE: f32 = 0.08;
 
@@ -34,7 +34,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 // just `ctx.raw_bus()` and the raw handle constructors.
 #[phoxal::tool(id = "joypad")]
 pub struct ToolJoypad {
-    shutdown_publisher: Publisher<api::motion::ManualCommand>,
+    shutdown_publisher: CommandPublisher<api::motion::ManualCommand>,
 }
 
 #[phoxal::behavior]
@@ -63,8 +63,9 @@ impl ToolJoypad {
         let cap = ctx.owner_capability();
         let bus = ctx.raw_bus();
 
-        let manual_publisher = Publisher::new(bus.clone(), &api::topic::new().motion().manual())?;
-        let devices_publisher = Publisher::new(
+        let manual_publisher =
+            CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())?;
+        let devices_publisher = DiagnosticPublisher::new(
             bus.clone(),
             &api::topic::internal::new(cap).joypad().devices(),
         )?;
@@ -187,8 +188,8 @@ fn combine_unavailable_reasons(robot: Option<String>, backend: Option<String>) -
 /// late subscriber receives authoritative state without depending on robot or
 /// simulation time. Runs until the runner cancels it during managed shutdown.
 async fn run_joypad(
-    manual_publisher: Publisher<api::motion::ManualCommand>,
-    devices_publisher: Publisher<api::joypad::Devices>,
+    manual_publisher: CommandPublisher<api::motion::ManualCommand>,
+    devices_publisher: DiagnosticPublisher<api::joypad::Devices>,
     select_subscriber: Subscriber<api::joypad::Select>,
     set_enabled_subscriber: Subscriber<api::joypad::SetEnabled>,
     rescan_subscriber: Subscriber<api::joypad::Rescan>,
@@ -211,7 +212,7 @@ async fn run_joypad(
         rescan(gilrs, &mut registry);
     }
     log_inventory(&registry, "joypad ready");
-    if publish_devices(&devices_publisher, &registry, host_time()).await {
+    if publish_devices(&devices_publisher, &registry).await {
         registry.last_error = None;
     }
 
@@ -235,7 +236,7 @@ async fn run_joypad(
                     );
                     command_publish_failures = 0;
                 }
-                publish_devices_heartbeat(&devices_publisher, &registry, host_time()).await;
+                publish_devices_heartbeat(&devices_publisher, &registry).await;
             }
             _ = ticker.tick() => {
                 publish_pending_zero(
@@ -262,7 +263,7 @@ async fn run_joypad(
                     );
                 }
                 if changed
-                    && publish_devices(&devices_publisher, &registry, host_time()).await
+                    && publish_devices(&devices_publisher, &registry).await
                 {
                     registry.last_error = None;
                 }
@@ -286,7 +287,6 @@ async fn run_joypad(
                             let _ = publish_devices(
                                 &devices_publisher,
                                 &registry,
-                                host_time(),
                             )
                             .await;
                         }
@@ -298,7 +298,7 @@ async fn run_joypad(
                     registry.enabled,
                     manual_drive,
                 ) else { continue };
-                if manual_publisher.try_publish(host_time(), command).is_err() {
+                if manual_publisher.send(command).is_err() {
                     command_publish_failures = command_publish_failures.saturating_add(1);
                 }
             }
@@ -322,7 +322,7 @@ async fn run_joypad(
                                 "controller selection ignored"
                             );
                         }
-                        if publish_devices(&devices_publisher, &registry, host_time()).await {
+                        if publish_devices(&devices_publisher, &registry).await {
                             registry.last_error = None;
                         }
                     }
@@ -344,7 +344,7 @@ async fn run_joypad(
                         if handle_set_enabled(&mut registry, received.body.enabled) {
                             queue_stop(&mut pending_zeros);
                         }
-                        if publish_devices(&devices_publisher, &registry, host_time()).await {
+                        if publish_devices(&devices_publisher, &registry).await {
                             registry.last_error = None;
                         }
                     }
@@ -367,7 +367,7 @@ async fn run_joypad(
                         let inventory_changed = devices_snapshot(&registry) != before;
                         log_inventory(&registry, "controller rescan completed");
                         if inventory_changed
-                            && publish_devices(&devices_publisher, &registry, host_time()).await
+                            && publish_devices(&devices_publisher, &registry).await
                         {
                             registry.last_error = None;
                         }
@@ -388,7 +388,7 @@ fn queue_stop(pending_zeros: &mut usize) {
 }
 
 fn publish_pending_zero(
-    publisher: &Publisher<api::motion::ManualCommand>,
+    publisher: &CommandPublisher<api::motion::ManualCommand>,
     pending_zeros: &mut usize,
     failures: &mut u64,
 ) {
@@ -399,7 +399,7 @@ fn publish_pending_zero(
         linear_x_mps: 0.0,
         angular_z_radps: 0.0,
     };
-    if publisher.try_publish(host_time(), zero).is_err() {
+    if publisher.send(zero).is_err() {
         *failures = (*failures).saturating_add(1);
     } else {
         *pending_zeros -= 1;
@@ -407,7 +407,7 @@ fn publish_pending_zero(
 }
 
 async fn publish_stop_repeats(
-    publisher: &Publisher<api::motion::ManualCommand>,
+    publisher: &CommandPublisher<api::motion::ManualCommand>,
     reason: &'static str,
 ) {
     for attempt in 0..STOP_REPEAT_COUNT {
@@ -415,7 +415,7 @@ async fn publish_stop_repeats(
             linear_x_mps: 0.0,
             angular_z_radps: 0.0,
         };
-        if let Err(error) = publisher.try_publish(host_time(), zero) {
+        if let Err(error) = publisher.send(zero) {
             tracing::warn!(
                 target: "tool_joypad",
                 attempt = attempt + 1,
@@ -449,12 +449,11 @@ fn selected_gilrs_id(registry: &Registry) -> Option<GamepadId> {
 }
 
 async fn publish_devices(
-    publisher: &Publisher<api::joypad::Devices>,
+    publisher: &DiagnosticPublisher<api::joypad::Devices>,
     registry: &Registry,
-    at: LogicalTime,
 ) -> bool {
     let devices = devices_snapshot(registry);
-    if let Err(error) = publisher.publish_at(at, devices).await {
+    if let Err(error) = publisher.publish(devices) {
         tracing::warn!(target: "tool_joypad", error = %error, "devices publish failed");
         return false;
     }
@@ -466,12 +465,11 @@ async fn publish_devices(
 /// carries it; replaying it every second would turn one rejection into an
 /// endless stream of apparent new errors.
 async fn publish_devices_heartbeat(
-    publisher: &Publisher<api::joypad::Devices>,
+    publisher: &DiagnosticPublisher<api::joypad::Devices>,
     registry: &Registry,
-    at: LogicalTime,
 ) {
     let devices = devices_heartbeat_snapshot(registry);
-    if let Err(error) = publisher.publish_at(at, devices).await {
+    if let Err(error) = publisher.publish(devices) {
         tracing::warn!(target: "tool_joypad", error = %error, "devices heartbeat publish failed");
     }
 }
@@ -1537,7 +1535,7 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let publisher = Publisher::new(bus.clone(), &api::topic::new().motion().manual())
+        let publisher = CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
             .expect("manual publisher should attach");
         let subscriber = Subscriber::new(
             &bus,
@@ -1572,7 +1570,7 @@ mod tests {
         ))
         .await
         .expect("bus should open");
-        let publisher = Publisher::new(bus.clone(), &api::topic::new().motion().manual())
+        let publisher = CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
             .expect("manual publisher should attach");
         bus.close().await.expect("bus should close");
 

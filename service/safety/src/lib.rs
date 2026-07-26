@@ -4,18 +4,20 @@
 //! Emergency stop remains owned by `motion`; safety consumes localization, map,
 //! proximity, drive, and optional battery state and emits one diagnosable
 //! constraint product. Autonomous motion treats a missing, stale, future-dated,
-//! or prior-epoch product as a stop. Manual recovery can operate without that
+//! or retired-timeline product as a stop. Manual recovery can operate without that
 //! product, while any valid protective stop or limit still applies.
 
 use anyhow::{Context, Result, bail};
+use std::time::Duration;
+
 use phoxal::api;
 use phoxal::model::component::v0::capability::Capability;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 
-const INPUT_STALE_NS: u64 = 1_000_000_000;
-const MAP_STALE_NS: u64 = 600_000_000;
-const CONSTRAINT_TTL_NS: u64 = 300_000_000;
+const INPUT_STALE: Duration = Duration::from_nanos(1_000_000_000);
+const MAP_STALE: Duration = Duration::from_nanos(600_000_000);
+const CONSTRAINT_TTL: Duration = Duration::from_millis(300);
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 const PROTECTIVE_STOP_DISTANCE_M: f32 = 0.25;
 const PROXIMITY_LIMIT_DISTANCE_M: f32 = 0.60;
@@ -24,7 +26,7 @@ const PROXIMITY_LINEAR_LIMIT_MPS: f32 = 0.15;
 #[derive(Clone)]
 struct Timed<T> {
     body: T,
-    at: LogicalTime,
+    at: RobotInstant,
 }
 
 #[derive(Clone)]
@@ -63,8 +65,8 @@ pub struct Api {
     drive: Subscriber<api::drive::State>,
     battery: Subscriber<api::battery::State>,
     ranges: Vec<Subscriber<api::component::range::Sample>>,
-    constraints: Publisher<api::safety::MotionConstraints>,
-    state: Publisher<api::safety::State>,
+    constraints: StatePublisher<api::safety::MotionConstraints>,
+    state: StatePublisher<api::safety::State>,
 }
 
 #[phoxal::service(id = "safety", config = ())]
@@ -115,10 +117,10 @@ impl Safety {
                     .await?,
                 ranges,
                 constraints: ctx
-                    .publisher(api::topic::internal::new(cap).safety().constraints())
+                    .state_publisher(api::topic::internal::new(cap).safety().constraints())
                     .await?,
                 state: ctx
-                    .publisher(api::topic::internal::new(cap).safety().state())
+                    .state_publisher(api::topic::internal::new(cap).safety().state())
                     .await?,
             },
         ))
@@ -141,11 +143,9 @@ impl Safety {
             drain_latest(slot, subscriber);
         }
 
-        self.inputs.drivable_space = if let Some(localization) = usable(
-            self.inputs.localization.as_ref(),
-            step.time(),
-            INPUT_STALE_NS,
-        ) {
+        self.inputs.drivable_space = if let Some(localization) =
+            usable(self.inputs.localization.as_ref(), step.now(), INPUT_STALE)
+        {
             let radius = 0.20;
             let response = api
                 .map_submap
@@ -159,7 +159,7 @@ impl Safety {
             match response {
                 Ok(response) => Some(Timed {
                     body: submap_has_drivable_space(&response)?,
-                    at: step.time(),
+                    at: step.now(),
                 }),
                 Err(_) => None,
             }
@@ -168,19 +168,15 @@ impl Safety {
         };
 
         self.sequence = self.sequence.saturating_add(1);
-        let motion = assess(&self.inputs, &self.bindings, self.sequence, step.time())?;
-        api.constraints
-            .publish_at(step.time(), motion.clone())
-            .await?;
-        api.state
-            .publish_at(
-                step.time(),
-                api::safety::State {
-                    clear: !motion.stop && motion.constraints.is_empty(),
-                    motion,
-                },
-            )
-            .await?;
+        let motion = assess(&self.inputs, &self.bindings, self.sequence, step.now())?;
+        api.constraints.publish(step.token(), motion.clone())?;
+        api.state.publish(
+            step.token(),
+            api::safety::State {
+                clear: !motion.stop && motion.constraints.is_empty(),
+                motion,
+            },
+        )?;
         Ok(())
     }
 }
@@ -189,11 +185,16 @@ fn drain_latest<T: phoxal::bus::ContractBody + Clone>(
     slot: &mut Option<Timed<T>>,
     subscriber: &Subscriber<T>,
 ) {
-    while let Some(received) = subscriber.try_recv() {
-        *slot = Some(Timed {
-            body: received.body,
-            at: LogicalTime::new(received.metadata.epoch, received.metadata.produced_at_ns),
-        });
+    while let Some(observed) = subscriber.try_recv() {
+        // A sample with no exact production instant expresses no robot time, so
+        // it can never satisfy a freshness gate; dropping it here keeps the
+        // "missing means fail closed" rule in one place.
+        if let Some(at) = observed.metadata.produced_exactly_at() {
+            *slot = Some(Timed {
+                body: observed.body,
+                at,
+            });
+        }
     }
 }
 
@@ -201,18 +202,18 @@ fn assess(
     world: &WorldInputs,
     bindings: &[RangeBinding],
     sequence: u64,
-    now: LogicalTime,
+    now: RobotInstant,
 ) -> Result<api::safety::MotionConstraints> {
-    let expires_at_ns = now.time_ns().saturating_add(CONSTRAINT_TTL_NS);
+    let expires_at = now.saturating_add(CONSTRAINT_TTL);
     let mut constraints = Vec::new();
 
-    match usable(world.localization.as_ref(), now, INPUT_STALE_NS) {
+    match usable(world.localization.as_ref(), now, INPUT_STALE) {
         None => constraints.push(stop_constraint(
             api::safety::ConstraintReason::LocalizationUnavailable,
             source(api::safety::ConstraintSourceKind::Localization, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         )),
         Some(localization) => {
             if !(localization.x_m.is_finite()
@@ -228,49 +229,49 @@ fn assess(
                     source(api::safety::ConstraintSourceKind::Localization, None),
                     Some(localization.confidence),
                     now,
-                    expires_at_ns,
+                    expires_at,
                 ));
             }
         }
     }
 
-    if usable(world.map.as_ref(), now, MAP_STALE_NS).is_none() {
+    if usable(world.map.as_ref(), now, MAP_STALE).is_none() {
         constraints.push(stop_constraint(
             api::safety::ConstraintReason::MapUnavailable,
             source(api::safety::ConstraintSourceKind::Map, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         ));
     }
 
-    match usable(world.drivable_space.as_ref(), now, MAP_STALE_NS) {
+    match usable(world.drivable_space.as_ref(), now, MAP_STALE) {
         None => constraints.push(stop_constraint(
             api::safety::ConstraintReason::WorldUnavailable,
             source(api::safety::ConstraintSourceKind::WorldModel, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         )),
         Some(false) => constraints.push(stop_constraint(
             api::safety::ConstraintReason::DrivableSpaceUnavailable,
             source(api::safety::ConstraintSourceKind::WorldModel, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         )),
         Some(true) => {}
     }
 
     let mut nearest_range = None::<(f32, &RangeBinding)>;
     for (binding, sample) in bindings.iter().zip(&world.ranges) {
-        let Some(sample) = usable(sample.as_ref(), now, INPUT_STALE_NS) else {
+        let Some(sample) = usable(sample.as_ref(), now, INPUT_STALE) else {
             constraints.push(stop_constraint(
                 api::safety::ConstraintReason::WorldUnavailable,
                 source(api::safety::ConstraintSourceKind::Range, Some(binding)),
                 None,
                 now,
-                expires_at_ns,
+                expires_at,
             ));
             continue;
         };
@@ -286,7 +287,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Range, Some(binding)),
                 Some(sample.distance_m),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
             continue;
         }
@@ -302,7 +303,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Range, Some(binding)),
                 Some(distance),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         } else if distance <= PROXIMITY_LIMIT_DISTANCE_M {
             constraints.push(limit_constraint(
@@ -311,12 +312,12 @@ fn assess(
                 PROXIMITY_LINEAR_LIMIT_MPS,
                 Some(distance),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         }
     }
 
-    if let Some(drive) = usable(world.drive.as_ref(), now, INPUT_STALE_NS)
+    if let Some(drive) = usable(world.drive.as_ref(), now, INPUT_STALE)
         && matches!(
             drive.stop_reason,
             Some(api::drive::StopReason::Fault | api::drive::StopReason::ActuatorCommandNotFinite)
@@ -327,11 +328,11 @@ fn assess(
             source(api::safety::ConstraintSourceKind::Drive, None),
             None,
             now,
-            expires_at_ns,
+            expires_at,
         ));
     }
 
-    if let Some(battery) = usable(world.battery.as_ref(), now, INPUT_STALE_NS) {
+    if let Some(battery) = usable(world.battery.as_ref(), now, INPUT_STALE) {
         if !battery.charge_ratio.is_finite() {
             bail!("battery world input contains a non-finite charge ratio");
         }
@@ -341,7 +342,7 @@ fn assess(
                 source(api::safety::ConstraintSourceKind::Battery, None),
                 Some(battery.charge_ratio),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         } else if battery.charge_ratio <= 0.15 {
             constraints.push(limit_constraint(
@@ -350,7 +351,7 @@ fn assess(
                 PROXIMITY_LINEAR_LIMIT_MPS,
                 Some(battery.charge_ratio),
                 now,
-                expires_at_ns,
+                expires_at,
             ));
         }
     }
@@ -370,16 +371,19 @@ fn assess(
         max_linear_speed_mps,
         max_angular_speed_radps,
         constraints,
-        expires_at_ns,
+        expires_at,
     })
 }
 
-fn usable<T>(sample: Option<&Timed<T>>, now: LogicalTime, stale_ns: u64) -> Option<&T> {
+/// A sample is usable only if it belongs to this step's world history, is not
+/// in its future, and is within the bound. A cross-timeline comparison is a
+/// checked error, so it fails closed rather than silently passing.
+fn usable<T>(sample: Option<&Timed<T>>, now: RobotInstant, stale: Duration) -> Option<&T> {
     sample
         .filter(|sample| {
-            sample.at.epoch() == now.epoch()
-                && sample.at.time_ns() <= now.time_ns()
-                && now.time_ns().saturating_sub(sample.at.time_ns()) <= stale_ns
+            TimeWindow::exact(sample.at)
+                .possibly_fresh_within(now, stale)
+                .unwrap_or(false)
         })
         .map(|sample| &sample.body)
 }
@@ -418,8 +422,8 @@ fn stop_constraint(
     reason: api::safety::ConstraintReason,
     source: api::safety::ConstraintSource,
     observed_value: Option<f32>,
-    now: LogicalTime,
-    expires_at_ns: u64,
+    now: RobotInstant,
+    expires_at: RobotInstant,
 ) -> api::safety::Constraint {
     api::safety::Constraint {
         reason,
@@ -428,8 +432,8 @@ fn stop_constraint(
         max_linear_speed_mps: Some(0.0),
         max_angular_speed_radps: Some(0.0),
         observed_value,
-        valid_from_ns: now.time_ns(),
-        expires_at_ns,
+        valid_from: now,
+        expires_at,
     }
 }
 
@@ -438,8 +442,8 @@ fn limit_constraint(
     source: api::safety::ConstraintSource,
     max_linear_speed_mps: f32,
     observed_value: Option<f32>,
-    now: LogicalTime,
-    expires_at_ns: u64,
+    now: RobotInstant,
+    expires_at: RobotInstant,
 ) -> api::safety::Constraint {
     api::safety::Constraint {
         reason,
@@ -448,8 +452,8 @@ fn limit_constraint(
         max_linear_speed_mps: Some(max_linear_speed_mps),
         max_angular_speed_radps: None,
         observed_value,
-        valid_from_ns: now.time_ns(),
-        expires_at_ns,
+        valid_from: now,
+        expires_at,
     }
 }
 
@@ -508,10 +512,14 @@ fn range_bindings(robot: &Robot) -> Vec<RangeBinding> {
 
 #[cfg(test)]
 mod tests {
+    fn line(seed: u64) -> phoxal::bus::TimelineId {
+        phoxal::bus::TimelineId::from_raw(seed).expect("test timeline must be nonzero")
+    }
+
     use super::*;
 
-    fn now() -> LogicalTime {
-        LogicalTime::new(3, 2_000_000_000)
+    fn now() -> RobotInstant {
+        RobotInstant::new(line(3), 2_000_000_000)
     }
 
     fn nominal_world() -> (Vec<RangeBinding>, WorldInputs) {
@@ -542,7 +550,6 @@ mod tests {
             body: api::component::range::Sample {
                 distance_m: 2.0,
                 limits: None,
-                measured_at_ns: Some(at.time_ns()),
                 quality: None,
                 health: api::component::range::SensorHealth::Nominal,
             },
@@ -558,7 +565,10 @@ mod tests {
         assert!(!result.stop);
         assert!(result.constraints.is_empty());
         assert_eq!(result.sequence, 7);
-        assert_eq!(result.expires_at_ns - now().time_ns(), CONSTRAINT_TTL_NS);
+        assert_eq!(
+            result.expires_at.duration_since(now()).unwrap(),
+            CONSTRAINT_TTL
+        );
     }
 
     #[test]
@@ -606,9 +616,9 @@ mod tests {
     }
 
     #[test]
-    fn prior_epoch_samples_never_authorize_motion() {
+    fn samples_from_a_retired_world_never_authorize_motion() {
         let (bindings, mut world) = nominal_world();
-        world.localization.as_mut().unwrap().at = LogicalTime::new(2, now().time_ns());
+        world.localization.as_mut().unwrap().at = RobotInstant::new(line(2), now().ticks());
         let result = assess(&world, &bindings, 1, now()).unwrap();
         assert!(result.stop);
         assert!(result.constraints.iter().any(|constraint| {

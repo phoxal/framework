@@ -8,7 +8,7 @@ struct Config {}
 
 #[derive(phoxal::Api)]
 struct Api {
-    target: Publisher<NotABody>,
+    target: StatePublisher<NotABody>,
 }
 
 #[phoxal::service(id = "not-a-body")]

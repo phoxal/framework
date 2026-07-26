@@ -15,9 +15,13 @@
 //!
 //! - **A typed contract bus.** Every message is a plain serde body bound to one
 //!   version-qualified contract name. Handles are body-typed
-//!   ([`Publisher<T>`](bus::Publisher), [`Subscriber<T>`](bus::Subscriber),
-//!   [`Latest<T>`](bus::Latest), [`Querier<Req, Resp>`](bus::Querier)), so the
-//!   compiler - not a late check - rejects sending the wrong type on a topic.
+//!   ([`StatePublisher<T>`](bus::StatePublisher),
+//!   [`Subscriber<T>`](bus::Subscriber), [`Latest<T>`](bus::Latest),
+//!   [`Querier<Req, Resp>`](bus::Querier)), so the compiler - not a late check -
+//!   rejects sending the wrong type on a topic. Publishing is additionally
+//!   gated by the contract's *temporal* role: the robot time a publisher can
+//!   express is fixed by what the contract is, so a participant cannot stamp an
+//!   instant it never reached.
 //! - **One train-selected API facade.** Official participants import
 //!   `phoxal::api`, which names the complete concrete revision selected by the
 //!   locked framework train. Contract identity is realized on the wire by the
@@ -47,8 +51,8 @@
 //!
 //! #[derive(phoxal::Api)]
 //! struct Api {
-//!     state:  Latest<api::drive::State>,    // keep-last view of the drive state
-//!     target: Publisher<api::drive::Target>, // commanded drive target
+//!     state:  Latest<api::drive::State>,            // keep-last view of the drive state
+//!     target: CommandPublisher<api::drive::Target>, // commanded drive target
 //! }
 //!
 //! #[phoxal::service(id = "avoid-obstacles")]
@@ -60,18 +64,17 @@
 //!     async fn setup(ctx: &mut SetupContext<Self>, _config: Self::Config) -> Result<(Self, Self::Api)> {
 //!         Ok((Self, Self::Api {
 //!             state:  ctx.latest(api::topic::new().drive().state()).await?,
-//!             target: ctx.publisher(api::topic::new().drive().target()).await?,
+//!             target: ctx.command_publisher(api::topic::new().drive().target()).await?,
 //!         }))
 //!     }
 //!
 //!     #[step(hz = 50)]
 //!     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-//!         let now = step.time();
-//!         api.target.publish_at(now, api::drive::Target {
+//!         api.target.send(api::drive::Target {
 //!             linear_x_mps: 0.2,
 //!             angular_z_radps: 0.0,
 //!             curvature_limit_radpm: None,
-//!         }).await?;
+//!         })?;
 //!         Ok(())
 //!     }
 //! }
@@ -85,7 +88,7 @@
 //!   `Api` struct fields name train-selected bodies (`api::drive::Target`)
 //!   directly, with no participant-local version attribute to keep in sync.
 //! - `#[derive(phoxal::Api)]` derives the bus-facing contract surface from the
-//!   `Api` struct's handle fields ([`Publisher<T>`](bus::Publisher),
+//!   `Api` struct's handle fields (the role-gated publishers,
 //!   [`Latest<T>`](bus::Latest), [`Subscriber<T>`](bus::Subscriber),
 //!   [`Querier<Req, Resp>`](bus::Querier), `Server<Req, Resp>`).
 //! - `#[phoxal::service(id = "…")]` links the participant state struct to its
@@ -94,7 +97,7 @@
 //!   (`api::topic::new().drive().state()`) and returned as the `Api` value
 //!   alongside the participant state.
 //! - `#[step(hz = ...)]` is the scheduled control loop; the runner owns timing and
-//!   delivers logical time via [`StepContext`](participant::StepContext), and
+//!   delivers the step token via [`StepContext`](participant::StepContext), and
 //!   `&mut Self::Api` alongside `&mut self`. Query servers use `#[server]` /
 //!   `#[server_snapshot]`, and `#[shutdown]` runs graceful cleanup before the bus
 //!   closes.
@@ -114,7 +117,10 @@
 //!   through
 //!   [`SetupContextApiExt::robot`](participant::SetupContextApiExt::robot).
 //!   Privileged raw-bus access lives under [`raw`] so it is never part of the
-//!   default checked participant surface.
+//!   default checked participant surface. A tool joins the execution, not the
+//!   clock: it can observe and command, and nothing on its surface hands it a
+//!   [`RobotInstant`](bus::RobotInstant) - see [`raw`]'s docs for where that
+//!   boundary is a compiler rule and where it is a convention.
 //! - [`macro@simulator`] is a normal participant for simulation-only processes.
 //!   It carries a distinct kind and marker for simulation clock ownership.
 //!
@@ -137,7 +143,8 @@
 //!   ([`run`] / [`tokio::run`]).
 //! - [`bus`] - the typed contract vocabulary normal participants need: the
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
-//!   body-typed handles, and side-branded [`Topic`](bus::Topic) values.
+//!   the four non-interchangeable time types, body-typed handles, and
+//!   side-branded [`Topic`](bus::Topic) values.
 //! - [`raw`] - the explicit privileged/tooling surface for opening a raw bus,
 //!   accessing the underlying session, or embedding runtimes on a caller-owned
 //!   bus.
@@ -178,11 +185,15 @@ pub use phoxal_api::latest as api;
 /// access use [`raw`] instead.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiVersion, AskQuery, BusError, BusMetadata, Codec, CodecError, CodecId, ContractBody,
-        DEFAULT_QUERY_TIMEOUT, Latest, LogicalTime, MessagePack, OwnerCap, Publish, Publisher,
-        Querier, QueryCode, QueryError, QueryFailure, Received, Result, ServeQuery, ServerResult,
-        Source, Subscribe, Subscriber, Topic, TopicKind, TopicRole, WildcardPublish,
-        encoding_string,
+        ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
+        CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
+        DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
+        LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
+        Observed, OwnerCap, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError,
+        QueryFailure, Result, RobotInstant, ServeQuery, ServerResult, StateContract,
+        StatePublisher, StepStamp, StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority,
+        TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        WorldStepToken, encoding_string,
     };
 }
 
@@ -194,22 +205,38 @@ pub mod bus {
 /// `Tool` participants are emitted as `participant_class = "privileged"`; the
 /// graph checker still includes their contracts, but never lets their raw
 /// access satisfy checked topology.
+///
+/// # Robot time: what the types enforce, and what they do not
+///
+/// Raw access reaches the session, the subscription handles, the querier, and
+/// the command/diagnostic publishers - everything a tool or bridge needs to
+/// watch a robot and act on it. Commands carry no production instant at all, so
+/// nothing here lets a tool *date* anything by publishing one.
+///
+/// Publishing checked state or a measurement is different: it needs a
+/// [`StepToken`](phoxal_bus::StepToken), a
+/// [`WorldStepToken`](phoxal_bus::WorldStepToken), or a
+/// [`CaptureStamp`](phoxal_bus::CaptureStamp). The runner mints the first from
+/// each step it actually reaches, and the second comes from a
+/// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) the world-authority
+/// participant holds. In ordinary authoring there is no way to obtain either
+/// one out of thin air, and the sealed [`StepStamp`](phoxal_bus::StepStamp)
+/// trait plus the role markers make using the wrong one a compile error.
+///
+/// **That is a strong convention, not a sealed boundary, and this module will
+/// not pretend otherwise.** `RobotInstant`, `StepToken`, and the role
+/// publishers are defined in `phoxal-bus` while the runner that mints them
+/// lives here, so their constructors have to be `pub` for the runner to call
+/// them - and Rust has no visibility level between "this crate" and "the
+/// world". They are `#[doc(hidden)]` and named to be conspicuous
+/// (`__mint`), which makes fabricating robot time something a participant can
+/// only do on purpose, in code that says so. The alternative - folding the api,
+/// the bus, and the runtime into one crate so the constructors could be
+/// `pub(crate)` - buys a compiler-enforced guarantee at the cost of the crate
+/// split; it is a deliberate open question, not an oversight (#952 section D).
 pub mod raw {
     pub use crate::participant::runner::{run_with_bus, run_with_bus_clock};
     pub use phoxal_bus::*;
-
-    /// Current host wall time for privileged tools and bridges that need an
-    /// envelope timestamp without joining a robot's logical clock.
-    ///
-    /// This is metadata time only. Scheduling periodic work should use a host
-    /// monotonic timer such as [`std::time::Instant`] or
-    /// [`tokio::time::interval`].
-    pub fn host_time() -> LogicalTime {
-        let elapsed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        LogicalTime::new(0, u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
-    }
 }
 
 /// The framework result type (`anyhow`-backed). Authoring code uses bare
@@ -265,10 +292,14 @@ pub mod tokio {
 /// Everything a participant author imports with `use phoxal::prelude::*;`.
 pub mod prelude {
     pub use crate::Result;
-    pub use crate::bus::{Latest, Publisher, Querier, QueryError, ServerResult, Subscriber};
+    pub use crate::bus::{
+        CaptureStamp, CommandPublisher, DiagnosticPublisher, Latest, Lease, LeaseDecision,
+        LocalInstant, MeasurementPublisher, Observed, ProducerFence, Querier, QueryError,
+        RobotInstant, ServerResult, StatePublisher, Subscriber, TimeWindow, TimelineId,
+    };
     pub use crate::participant::{
-        ExecutionDeviceId, LogicalTime, ManagedTaskPolicy, ResetContext, Server, SetupContext,
-        SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
-        ShutdownContext, Snapshot, StepContext,
+        ManagedTaskPolicy, ResetContext, Server, SetupContext, SetupContextApiExt,
+        SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt, ShutdownContext,
+        Snapshot, StepContext,
     };
 }

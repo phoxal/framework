@@ -1,0 +1,49 @@
+error[E0369]: binary operation `<` cannot be applied to type `RobotInstant`
+  --> tests/trybuild/fail/robot_instants_have_no_ordering_or_arithmetic.rs:17:21
+   |
+17 |     let _ = earlier < later;
+   |             ------- ^ ----- RobotInstant
+   |             |
+   |             RobotInstant
+   |
+note: `RobotInstant` does not implement `PartialOrd`
+  --> $WORKSPACE/phoxal-bus/src/time.rs
+   |
+   | pub struct RobotInstant {
+   | ^^^^^^^^^^^^^^^^^^^^^^^ `RobotInstant` is defined in another crate
+
+error[E0369]: cannot subtract `RobotInstant` from `RobotInstant`
+  --> tests/trybuild/fail/robot_instants_have_no_ordering_or_arithmetic.rs:20:19
+   |
+20 |     let _ = later - earlier;
+   |             ----- ^ ------- RobotInstant
+   |             |
+   |             RobotInstant
+   |
+note: `RobotInstant` does not implement `Sub`
+  --> $WORKSPACE/phoxal-bus/src/time.rs
+   |
+   | pub struct RobotInstant {
+   | ^^^^^^^^^^^^^^^^^^^^^^^ `RobotInstant` is defined in another crate
+
+error[E0308]: mismatched types
+  --> tests/trybuild/fail/robot_instants_have_no_ordering_or_arithmetic.rs:24:21
+   |
+24 |     let _ = local < earlier;
+   |             -----   ^^^^^^^ expected `LocalInstant`, found `RobotInstant`
+   |             |
+   |             expected because this is `LocalInstant`
+
+error[E0369]: binary operation `<` cannot be applied to type `WallTimestamp`
+  --> tests/trybuild/fail/robot_instants_have_no_ordering_or_arithmetic.rs:28:18
+   |
+28 |     let _ = wall < WallTimestamp::now();
+   |             ---- ^ -------------------- WallTimestamp
+   |             |
+   |             WallTimestamp
+   |
+note: `WallTimestamp` does not implement `PartialOrd`
+  --> $WORKSPACE/phoxal-bus/src/time.rs
+   |
+   | pub struct WallTimestamp {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `WallTimestamp` is defined in another crate

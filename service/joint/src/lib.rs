@@ -19,7 +19,7 @@ use phoxal::model::component::v0::capability::{Capability, StructuralTarget};
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 
-const ENCODER_STALE_NS: u64 = 200_000_000;
+const ENCODER_STALE: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[derive(Clone, Debug)]
 struct EncoderBinding {
@@ -48,7 +48,7 @@ struct JointConfig {
 #[derive(phoxal::Api)]
 pub struct Api {
     encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    states: BTreeMap<String, Publisher<api::joint::JointState>>,
+    states: BTreeMap<String, StatePublisher<api::joint::JointState>>,
 }
 
 impl JointConfig {
@@ -93,7 +93,7 @@ impl JointConfig {
 #[phoxal::service(id = "joint", config = ())]
 pub struct Joint {
     config: JointConfig,
-    sample_at: Vec<Option<LogicalTime>>,
+    sample_at: Vec<Option<RobotInstant>>,
 }
 
 #[phoxal::behavior]
@@ -121,7 +121,7 @@ impl Joint {
                 joint_id.clone(),
                 // Joint OWNS each `joint/{id}` node's state telemetry -> owner
                 // (`internal`) builder.
-                ctx.publisher(api::topic::internal::new(cap).joint(&joint_id).state())
+                ctx.state_publisher(api::topic::internal::new(cap).joint(&joint_id).state())
                     .await?,
             );
         }
@@ -144,7 +144,7 @@ impl Joint {
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
         let mut latest_by_joint = BTreeMap::new();
-        let now = step.time();
+        let now = step.now();
         for ((subscriber, binding), sample_at) in api
             .encoders
             .iter_mut()
@@ -153,18 +153,15 @@ impl Joint {
         {
             let mut latest = None;
             while let Some(received) = subscriber.try_recv() {
-                *sample_at = Some(LogicalTime::new(
-                    received.metadata.epoch,
-                    received.metadata.produced_at_ns,
-                ));
+                *sample_at = received.metadata.produced_exactly_at();
                 latest = Some(received.body);
             }
 
             if let Some(sample) = latest
                 && sample_at.is_some_and(|at| {
-                    at.epoch() == now.epoch()
-                        && at.time_ns() <= now.time_ns()
-                        && now.time_ns().saturating_sub(at.time_ns()) <= ENCODER_STALE_NS
+                    TimeWindow::exact(at)
+                        .possibly_fresh_within(now, ENCODER_STALE)
+                        .unwrap_or(false)
                 })
             {
                 let state = joint_state(&sample, binding).ok_or_else(|| {
@@ -179,7 +176,7 @@ impl Joint {
 
         for (joint_id, state) in latest_by_joint {
             if let Some(publisher) = api.states.get(&joint_id) {
-                publisher.publish_at(step.time(), state).await?;
+                publisher.publish(step.token(), state)?;
             }
         }
         Ok(())

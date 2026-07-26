@@ -12,7 +12,7 @@ struct Config {}
 
 #[derive(phoxal::Api)]
 struct Api {
-    state: Publisher<api::drive::State>,
+    state: StatePublisher<api::drive::State>,
 }
 
 #[phoxal::service(id = "owner-needs-cap")]
@@ -25,7 +25,7 @@ impl OwnerNeedsCap {
         // ERROR: `internal::new` takes the runner-minted `OwnerCap`; this call
         // passes no argument.
         let state = ctx
-            .publisher(api::topic::internal::new().drive().state())
+            .state_publisher(api::topic::internal::new().drive().state())
             .await?;
         Ok((Self, Self::Api { state }))
     }

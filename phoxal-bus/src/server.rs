@@ -23,7 +23,7 @@ use zenoh::query::{Query as ZenohQuery, Queryable};
 
 use crate::abi::{CodecId, encoding_string, parse_encoding_string};
 use crate::error::{BusError, Result};
-use crate::metadata::{BusMetadata, Source};
+use crate::metadata::BusMetadata;
 use crate::query::QueryFailure;
 use crate::session::Bus;
 
@@ -122,16 +122,9 @@ impl IncomingQuery {
     /// Send a success reply: the plain `Resp` body, with a fresh
     /// provenance-only metadata attachment (D62/D1).
     pub async fn reply(&self, bus: &Bus, payload: Vec<u8>) -> Result<()> {
-        let metadata = BusMetadata {
-            codec: CodecId::MessagePack.as_u8(),
-            produced_at_ns: 0,
-            epoch: 0,
-            source: Source {
-                participant: bus.participant().to_string(),
-                incarnation: bus.incarnation(),
-                sequence: bus.next_sequence(),
-            },
-        };
+        // A reply expresses no robot time: it answers a question, it does not
+        // observe the world.
+        let metadata = bus.metadata(None);
         self.query
             .reply(self.query.key_expr(), payload)
             .encoding(encoding_string(CodecId::MessagePack))

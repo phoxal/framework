@@ -37,7 +37,6 @@ impl NativeDepth {
     pub(crate) fn read_if_due(
         &self,
         step_index: u64,
-        time_ns: u64,
     ) -> Result<Option<api::component::depth::Frame>> {
         if !is_due(step_index, self.spec.sampled.publish_every_steps) {
             return Ok(None);
@@ -58,7 +57,6 @@ impl NativeDepth {
             intrinsics: None,
             distortion: None,
             exposure: None,
-            measured_at_ns: Some(time_ns),
             calibration: None,
         }))
     }

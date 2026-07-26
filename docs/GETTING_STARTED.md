@@ -232,10 +232,10 @@ impl Cruise {
 
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        api.manual.publish_at(step.time(), api::motion::ManualCommand {
+        api.manual.send(api::motion::ManualCommand {
             linear_x_mps: f64::from(self.cruise_speed_mps),
             angular_z_radps: 0.0,
-        }).await?;
+        })?;
         Ok(())
     }
 }

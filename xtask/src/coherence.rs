@@ -118,6 +118,13 @@ fn format_mismatch(mismatch: &CoherenceMismatch) -> String {
              QueryError::Timeout",
             join_versions(served),
         ),
+        CoherenceMismatch::MultipleTimelineAuthorities { participant_ids } => format!(
+            "MISMATCH timeline authority: participants {{{}}} all publish the world clock, so \
+             the graph has more than one timeline authority - the participants between them \
+             would be stepped by two world histories at once, and no consumer can tell which \
+             one it is on",
+            join_versions(participant_ids),
+        ),
     }
 }
 

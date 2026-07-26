@@ -1,12 +1,15 @@
 //! Participant presence built on Zenoh Liveliness.
 //!
-//! Each token is keyed by robot, participant id, and process incarnation.
-//! Observers receive exact incarnation events and can aggregate them by the
-//! stable participant id for present/not-present UI state.
+//! Each token is keyed by execution root, participant id, and producer
+//! identity. Observers receive exact per-producer events and can aggregate them
+//! by the stable participant id for present/not-present UI state. Because the
+//! root is execution-scoped, a previous run's tokens are on different keys
+//! entirely and can never be mistaken for the current run's.
 
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
 
+use crate::identity::ProducerId;
 use crate::{Bus, BusError, Result};
 
 const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
@@ -16,29 +19,32 @@ const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 pub struct ParticipantLivelinessKey {
     key: OwnedKeyExpr,
     participant: String,
-    incarnation: u64,
+    producer: ProducerId,
 }
 
 impl ParticipantLivelinessKey {
     pub(crate) fn for_bus(bus: &Bus) -> Result<Self> {
-        Self::new(bus.root(), bus.participant(), bus.incarnation())
+        Self::new(bus.root(), bus.participant(), bus.producer())
     }
 
-    /// Build and validate an incarnation-qualified participant key below an
+    /// Build and validate a producer-qualified participant key below an
     /// existing robot root.
-    pub fn new(robot_root: &str, participant: impl Into<String>, incarnation: u64) -> Result<Self> {
+    pub fn new(
+        robot_root: &str,
+        participant: impl Into<String>,
+        producer: ProducerId,
+    ) -> Result<Self> {
         validate_robot_root(robot_root)?;
         let participant = participant.into();
         validate_participant(&participant)?;
-        let raw =
-            format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{incarnation}");
+        let raw = format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{producer}");
         let key = OwnedKeyExpr::new(raw.clone()).map_err(|error| {
             BusError::Namespace(format!("invalid Liveliness key '{raw}': {error}"))
         })?;
         Ok(Self {
             key,
             participant,
-            incarnation,
+            producer,
         })
     }
 
@@ -52,9 +58,9 @@ impl ParticipantLivelinessKey {
         &self.participant
     }
 
-    /// Per-process incarnation encoded in the key.
-    pub fn incarnation(&self) -> u64 {
-        self.incarnation
+    /// Producer identity encoded in the key.
+    pub fn producer(&self) -> ProducerId {
+        self.producer
     }
 
     /// Parse a concrete participant key emitted below `robot_root`.
@@ -63,11 +69,11 @@ impl ParticipantLivelinessKey {
         let suffix = suffix
             .strip_prefix(PARTICIPANT_LIVELINESS_PREFIX)?
             .strip_prefix('/')?;
-        let (participant, incarnation) = suffix.split_once('/')?;
-        if incarnation.contains('/') {
+        let (participant, producer) = suffix.split_once('/')?;
+        if producer.contains('/') {
             return None;
         }
-        Self::new(robot_root, participant, incarnation.parse().ok()?).ok()
+        Self::new(robot_root, participant, ProducerId::parse(producer).ok()?).ok()
     }
 
     /// Wildcard selector used by a robot-scoped observer.
@@ -133,8 +139,8 @@ impl Bus {
     /// is appropriate.
     ///
     /// Callers that render stable participant presence must aggregate the exact
-    /// incarnation events and consider the participant present while at least
-    /// one incarnation remains live.
+    /// per-producer events and consider the participant present while at least
+    /// one producer remains live.
     pub async fn observe_participant_liveliness(
         &self,
         callback: impl Fn(ParticipantLivelinessEvent) + Send + Sync + 'static,
@@ -205,25 +211,28 @@ fn validate_robot_root(root: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    const ROOT: &str = "dev/robots/rover/xffffffffffffffffffffffffffffffff";
+
     #[test]
     fn key_builder_owns_validation_and_round_trips_identity() {
-        let key = ParticipantLivelinessKey::new("dev/robots/rover", "drive", 42).unwrap();
+        let producer = ProducerId::mint();
+        let key = ParticipantLivelinessKey::new(ROOT, "drive", producer).unwrap();
         assert_eq!(
             key.as_str(),
-            "dev/robots/rover/liveliness/participants/drive/42"
+            format!("{ROOT}/liveliness/participants/drive/{producer}")
         );
         assert_eq!(
-            ParticipantLivelinessKey::parse("dev/robots/rover", key.as_str()),
+            ParticipantLivelinessKey::parse(ROOT, key.as_str()),
             Some(key.clone())
         );
         assert_eq!(key.participant(), "drive");
-        assert_eq!(key.incarnation(), 42);
-        assert!(ParticipantLivelinessKey::new("dev/robots/rover", "bad/id", 42).is_err());
-        assert!(ParticipantLivelinessKey::new("dev/*", "drive", 42).is_err());
+        assert_eq!(key.producer(), producer);
+        assert!(ParticipantLivelinessKey::new(ROOT, "bad/id", producer).is_err());
+        assert!(ParticipantLivelinessKey::new("dev/*", "drive", producer).is_err());
         assert!(
             ParticipantLivelinessKey::parse(
-                "dev/robots/rover",
-                "dev/robots/rover/liveliness/participants/drive/not-a-number"
+                ROOT,
+                &format!("{ROOT}/liveliness/participants/drive/not-a-producer")
             )
             .is_none()
         );
@@ -231,26 +240,26 @@ mod tests {
 
     #[test]
     fn participant_event_maps_sample_kinds() {
-        let root = "dev/robots/rover";
-        let key = "dev/robots/rover/liveliness/participants/drive/7";
-        let alive = participant_event(root, key, SampleKind::Put).unwrap();
-        let lost = participant_event(root, key, SampleKind::Delete).unwrap();
+        let producer = ProducerId::mint();
+        let key = format!("{ROOT}/liveliness/participants/drive/{producer}");
+        let alive = participant_event(ROOT, &key, SampleKind::Put).unwrap();
+        let lost = participant_event(ROOT, &key, SampleKind::Delete).unwrap();
 
         assert_eq!(alive.key.participant(), "drive");
-        assert_eq!(alive.key.incarnation(), 7);
+        assert_eq!(alive.key.producer(), producer);
         assert_eq!(alive.status, ParticipantLivelinessStatus::Alive);
         assert_eq!(lost.status, ParticipantLivelinessStatus::Lost);
-        assert!(participant_event(root, "other/robot/key", SampleKind::Put).is_none());
+        assert!(participant_event(ROOT, "other/robot/key", SampleKind::Put).is_none());
     }
 
     #[test]
     fn observer_selector_covers_exactly_the_emitted_identity_segments() {
-        let root = "dev/robots/rover";
+        let root = ROOT;
         let selector = ParticipantLivelinessKey::selector(root).unwrap();
-        let key = ParticipantLivelinessKey::new(root, "drive", 9).unwrap();
+        let key = ParticipantLivelinessKey::new(root, "drive", ProducerId::mint()).unwrap();
         assert_eq!(
             selector.as_str(),
-            "dev/robots/rover/liveliness/participants/*/*"
+            format!("{ROOT}/liveliness/participants/*/*")
         );
         assert!(selector.includes(&key.key));
     }

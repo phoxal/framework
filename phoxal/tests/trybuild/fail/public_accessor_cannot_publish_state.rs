@@ -18,7 +18,7 @@ struct Config {}
 
 #[derive(phoxal::Api)]
 struct Api {
-    state: Publisher<api::drive::State>,
+    state: StatePublisher<api::drive::State>,
 }
 
 #[phoxal::service(id = "public-publish-state")]
@@ -31,7 +31,7 @@ impl PublicPublishState {
         // ERROR: the public (client) `state` leaf is `Topic<Subscribe<drive::State>>`,
         // but `publisher` takes `Topic<Publish<B>>`. Publishing a `state` requires
         // the owner builder: `api::topic::internal::new().drive().state()`.
-        let state = ctx.publisher(api::topic::new().drive().state()).await?;
+        let state = ctx.state_publisher(api::topic::new().drive().state()).await?;
         Ok((Self, Self::Api { state }))
     }
 }

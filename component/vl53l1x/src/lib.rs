@@ -9,7 +9,7 @@ const STEP_HZ: f64 = 20.0;
 
 #[derive(phoxal::Api)]
 pub struct Api {
-    range: Vec<Publisher<api::component::range::Sample>>,
+    range: Vec<MeasurementPublisher<api::component::range::Sample>>,
 }
 
 #[phoxal::driver(id = "vl53l1x", config = ())]
@@ -68,7 +68,7 @@ impl Vl53l1x {
         let mut range_specs = Vec::new();
         for slot in slots {
             range.push(
-                ctx.publisher(
+                ctx.measurement_publisher(
                     api::topic::internal::new(cap)
                         .component(&instance)
                         .range(&slot.capability_id)
@@ -84,12 +84,12 @@ impl Vl53l1x {
 
     #[step(hz = 20)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let at = step.time();
+        let at = step.now();
         let step_index = step.step_index();
 
         for (publisher, spec) in api.range.iter().zip(&self.range_specs) {
             if is_due(step_index, spec.divisor) {
-                publisher.publish_at(at, range_sample(spec)).await?;
+                publisher.publish(CaptureStamp::exact(at), range_sample(spec))?;
             }
         }
 
@@ -124,7 +124,6 @@ fn range_sample(spec: &RangeSpec) -> api::component::range::Sample {
             min_m: spec.min_range_m,
             max_m: spec.max_range_m,
         }),
-        measured_at_ns: None,
         quality: None,
         health: api::component::range::SensorHealth::Nominal,
     }

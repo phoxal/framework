@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
-use phoxal_bus::{Bus, LogicalTime, OwnerCap, Publisher};
+use phoxal_bus::{Bus, DiagnosticPublisher, OwnerCap};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::field::{Field, Visit};
@@ -169,14 +169,6 @@ impl LogRecord {
             dropped,
             truncated: self.truncated,
         }
-    }
-
-    fn logical_time(&self) -> LogicalTime {
-        let seconds = u64::try_from(self.time.unix_seconds).unwrap_or(0);
-        let nanos = seconds
-            .saturating_mul(1_000_000_000)
-            .saturating_add(u64::from(self.time.nanos));
-        LogicalTime::new(0, nanos)
     }
 }
 
@@ -365,19 +357,18 @@ async fn drain_loop(
     let topic = api::topic::internal::new(OwnerCap::__mint())
         .logs(&participant_id)
         .topic();
-    let publisher = match Publisher::<api::logs::Event>::new(bus, &topic) {
+    let publisher = match DiagnosticPublisher::<api::logs::Event>::new(bus, &topic) {
         Ok(publisher) => publisher,
         Err(_) => return,
     };
     let mut seq = 0_u64;
     while let Some(record) = receiver.recv().await {
-        let at = record.logical_time();
         let dropped = state.take_dropped();
         let event = record.into_event(seq, dropped);
         seq = seq.wrapping_add(1);
         let result = IN_BUS_LOG_PUBLISH.with(|guard| {
             guard.set(true);
-            let result = publisher.try_publish(at, event);
+            let result = publisher.publish(event);
             guard.set(false);
             result
         });
@@ -525,6 +516,104 @@ mod tests {
             captured.fields.get("marker"),
             Some(api::logs::LogValue::U64(7))
         ));
+        state.clear_sender(token);
+    }
+
+    /// #952: the decision trace is evidence an operator can actually read, not
+    /// in-process state. Every lease transition has to survive the real bus-log
+    /// pipeline - its target must not be one of the filtered ones - and carry
+    /// the producer, the sender's sequence, this receiver's observation ordinal,
+    /// and the decision.
+    #[tokio::test]
+    async fn lease_decisions_reach_the_bus_log_with_their_full_provenance() {
+        use crate::bus::{Lease, LocalInstant, ProducerId, RobotInstant, TimelineId};
+        use std::time::Duration;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        assert!(
+            !target_is_filtered(phoxal_bus::LEASE_TRACE_TARGET),
+            "the decision trace must not be dropped before it reaches the bus"
+        );
+
+        let state = Arc::new(BusLogState::new());
+        let (sender, mut receiver) = mpsc::channel(16);
+        let token = state.install_sender(sender);
+        let subscriber = tracing_subscriber::registry().with(BusLogLayer::new(Arc::clone(&state)));
+
+        let first = ProducerId::mint();
+        let second = ProducerId::mint();
+        let silence = Duration::from_millis(150);
+        let start = LocalInstant::from_boot_ns(0);
+        let step = RobotInstant::new(TimelineId::mint(), 0);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mut lease = Lease::new("motion/manual", silence, Duration::from_millis(500));
+            lease.offer(first, 1, start, "go");
+            lease.live(start, step);
+            lease.offer(second, 0, start, "replacement");
+            lease.offer(first, 9, start, "zombie");
+            lease.live(start.saturating_add(silence), step);
+        });
+
+        let mut decisions = Vec::new();
+        while let Ok(record) = receiver.try_recv() {
+            assert_eq!(record.target, phoxal_bus::LEASE_TRACE_TARGET);
+            let Some(api::logs::LogValue::String(decision)) = record.fields.get("decision") else {
+                panic!("every lease record names its decision: {record:?}");
+            };
+            decisions.push((decision.clone(), record));
+        }
+
+        let names: Vec<&str> = decisions
+            .iter()
+            .map(|(decision, _)| decision.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["producer_replaced", "rejected", "expired_silence"],
+            "every transition is reported; ordinary renewals are the DEBUG half \
+             of the same trace"
+        );
+
+        let (_, expired) = &decisions[2];
+        assert_eq!(
+            expired.fields.get("producer"),
+            Some(&api::logs::LogValue::String(second.to_string())),
+            "an expiry names the command that died, not just the lease"
+        );
+        assert_eq!(
+            expired.fields.get("sequence"),
+            Some(&api::logs::LogValue::U64(0))
+        );
+        assert_eq!(
+            expired.fields.get("observation"),
+            Some(&api::logs::LogValue::U64(2))
+        );
+
+        let (_, replaced) = &decisions[0];
+        assert_eq!(
+            replaced.fields.get("producer"),
+            Some(&api::logs::LogValue::String(second.to_string()))
+        );
+        assert_eq!(
+            replaced.fields.get("superseded"),
+            Some(&api::logs::LogValue::String(first.to_string()))
+        );
+        assert_eq!(
+            replaced.fields.get("sequence"),
+            Some(&api::logs::LogValue::U64(0)),
+            "a restarted producer restarting at zero is not a replay"
+        );
+        assert_eq!(
+            replaced.fields.get("observation"),
+            Some(&api::logs::LogValue::U64(2)),
+            "the ordinate is the receiver's own arrival order"
+        );
+        assert_eq!(
+            replaced.fields.get("input"),
+            Some(&api::logs::LogValue::String("motion/manual".to_string()))
+        );
+
         state.clear_sender(token);
     }
 

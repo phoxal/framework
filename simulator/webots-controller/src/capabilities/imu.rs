@@ -47,7 +47,6 @@ impl NativeImu {
     pub(crate) fn read_if_due(
         &self,
         step_index: u64,
-        time_ns: u64,
     ) -> Result<Option<api::component::imu::Sample>> {
         if !is_due(step_index, self.spec.publish_every_steps) {
             return Ok(None);
@@ -73,7 +72,6 @@ impl NativeImu {
             covariance: None,
             noise_density: None,
             sensor_frame_id: None,
-            measured_at_ns: Some(time_ns),
             health: api::component::imu::SensorHealth::Nominal,
             bias: None,
         }))

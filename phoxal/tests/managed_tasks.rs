@@ -3,6 +3,7 @@
 //! (`ManagedTaskPolicy::FaultOnExit`), leaves `AllowExit` tasks alone, and
 //! cancels + joins every managed task at shutdown within the grace budget.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -17,7 +18,8 @@ fn unique_namespace(label: &str) -> String {
 }
 
 fn local_launch(label: &str, participant_id: &str) -> ParticipantLaunch {
-    let mut launch = ParticipantLaunch::local(participant_id, "robot");
+    let mut launch = ParticipantLaunch::local(participant_id, "robot")
+        .with_execution_origin(ExecutionOrigin::mint());
     launch.namespace = unique_namespace(label);
     launch
 }
@@ -125,7 +127,7 @@ impl ManagedEarlyReturnAllowed {
 
     #[step(hz = 50)]
     async fn step(&mut self, step: StepContext) -> Result<()> {
-        let _ = step.time();
+        let _ = step.now();
         ALLOWED_RUNNER_STEPPED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -169,7 +171,7 @@ impl ManagedPanicAllowed {
 
     #[step(hz = 50)]
     async fn step(&mut self, step: StepContext) -> Result<()> {
-        let _ = step.time();
+        let _ = step.now();
         ALLOWED_PANIC_RUNNER_STEPPED.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

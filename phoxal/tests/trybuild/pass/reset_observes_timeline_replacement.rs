@@ -5,11 +5,10 @@ use phoxal::prelude::*;
 
 #[derive(phoxal::Api)]
 struct Api {
-    #[phoxal(epoch_agnostic)]
     manual: Subscriber<api::motion::ManualCommand>,
 }
 
-#[phoxal::service(id = "reset-and-epoch-agnostic", config = (), api = Api)]
+#[phoxal::service(id = "reset-observer", config = (), api = Api)]
 struct Resettable;
 
 #[phoxal::behavior]
@@ -29,7 +28,11 @@ impl Resettable {
 
     #[reset]
     async fn reset(&mut self, api: &mut Self::Api, ctx: ResetContext) -> Result<()> {
-        let _ = (api.manual.try_recv(), ctx.previous_epoch(), ctx.new_epoch());
+        let _ = (
+            api.manual.try_recv(),
+            ctx.previous_timeline(),
+            ctx.new_timeline(),
+        );
         Ok(())
     }
 }

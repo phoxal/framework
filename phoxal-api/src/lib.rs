@@ -26,7 +26,7 @@
 //! with its own identity. Exactly one `latest` alias is selected for each
 //! framework train.
 //!
-//! [`Api`]: v0_2::Api
+//! [`Api`]: v0_1::Api
 //!
 //! # Train-selected revision and per-contract identity
 //!
@@ -123,9 +123,11 @@ phoxal_api_tree! {
         drive {
             /// Why actuation authority is in its current state.
             enum StopReason {
-                NoTarget,
+                /// Nothing is live: no target has been accepted, the producer
+                /// has gone silent past the host deadline, or the held command
+                /// exceeded its logical hold horizon. All three are the same
+                /// fact to a consumer - the drive is not being commanded.
                 TargetStale,
-                TargetFromFuture,
                 TargetNotFinite,
                 ActuatorCommandNotFinite,
                 Inactive,
@@ -152,7 +154,6 @@ phoxal_api_tree! {
                 limited_target: Target,
                 actuator_authority: ActuatorAuthority,
                 stop_reason: Option<StopReason>,
-                target_age_ns: Option<u64>,
             }
 
             topic target: command Target;
@@ -178,7 +179,9 @@ phoxal_api_tree! {
                 child_frame_id: String,
                 translation_m: [f64; 3],
                 rotation_quat_xyzw: [f64; 4],
-                stamp_ns: Option<u64>,
+                /// When this transform was observed. Absent for a static
+                /// transform, which is configuration rather than observation.
+                stamp: Option<::phoxal_bus::RobotInstant>,
             }
 
             /// Transforms that do not change over time.
@@ -195,7 +198,8 @@ phoxal_api_tree! {
             struct LookupRequest {
                 target_frame_id: String,
                 source_frame_id: String,
-                at_ns: Option<u64>,
+                /// The instant to resolve at. Absent asks for the latest.
+                at: Option<::phoxal_bus::RobotInstant>,
             }
 
             /// The resolved transform, or `None` if it is not available.
@@ -269,10 +273,7 @@ phoxal_api_tree! {
             #[serde(rename_all = "snake_case")]
             enum ZeroReason {
                 NoCandidate,
-                ManualCandidateStale,
                 NavigationCandidateStale,
-                ManualCandidateFromFuture,
-                NavigationCandidateFromFuture,
                 ManualCandidateNotFinite,
                 NavigationCandidateNotFinite,
                 EmergencyStopEngaged,
@@ -292,26 +293,21 @@ phoxal_api_tree! {
                 angular_z_radps: f64,
             }
 
-            #[derive(Eq)]
-            struct EmergencyStopRequest {
-                engaged: bool,
-            }
-
             struct State {
-                manual_candidate_age_ns: Option<u64>,
+                /// How long ago motion observed the live manual command, on
+                /// its own host clock. `None` when no manual command is live.
+                manual_observed_age_ns: Option<u64>,
                 autonomous_candidate_age_ns: Option<u64>,
                 safety_constraints_age_ns: Option<u64>,
                 selected_source: Option<Source>,
                 final_target: Target,
                 zero_reason: Option<ZeroReason>,
                 safety_runtime: SafetyRuntime,
-                software_estop_engaged: bool,
                 component_estop_blocked: bool,
                 active_safety_constraints: Vec<super::safety::Constraint>,
             }
 
             topic manual: command ManualCommand;
-            topic estop: command EmergencyStopRequest;
             topic state: state State;
         }
 
@@ -361,19 +357,23 @@ phoxal_api_tree! {
                 max_linear_speed_mps: Option<f32>,
                 max_angular_speed_radps: Option<f32>,
                 observed_value: Option<f32>,
-                valid_from_ns: u64,
-                expires_at_ns: u64,
+                /// The instant this constraint starts applying, on the
+                /// publisher's timeline. A consumer on another timeline gets a
+                /// checked error, never a silently wrong comparison.
+                valid_from: ::phoxal_bus::RobotInstant,
+                /// The instant this constraint stops applying.
+                expires_at: ::phoxal_bus::RobotInstant,
             }
 
             /// The sole safety-to-motion control product. Motion accepts it only
-            /// in the same epoch and before `expires_at_ns`.
+            /// on the same timeline and before `expires_at`.
             struct MotionConstraints {
                 sequence: u64,
                 stop: bool,
                 max_linear_speed_mps: Option<f32>,
                 max_angular_speed_radps: Option<f32>,
                 constraints: Vec<Constraint>,
-                expires_at_ns: u64,
+                expires_at: ::phoxal_bus::RobotInstant,
             }
 
             /// Operator-facing state mirrors the exact product consumed by motion.
@@ -601,8 +601,10 @@ phoxal_api_tree! {
                 active_node_path: Option<String>,
                 blackboard: ::std::collections::BTreeMap<String, Value>,
                 args: ::std::collections::BTreeMap<String, Value>,
-                started_at_ns: Option<u64>,
-                updated_at_ns: u64,
+                /// When the active execution started, on the publisher's
+                /// timeline. The envelope carries when this snapshot was
+                /// produced; that instant is never duplicated here.
+                started_at: Option<::phoxal_bus::RobotInstant>,
                 failure: Option<Failure>,
             }
 
@@ -629,7 +631,6 @@ phoxal_api_tree! {
                 kind: EventKind,
                 failure: Option<Failure>,
                 participant_id: String,
-                logical_time_ns: u64,
             }
 
             topic command: command Command;
@@ -684,7 +685,7 @@ phoxal_api_tree! {
                 truncated: u32,
             }
 
-            topic self: state Event;
+            topic self: diagnostic Event;
         }
 
         tool {
@@ -766,10 +767,10 @@ phoxal_api_tree! {
                 current_depth: u64,
                 high_water_depth: u64,
                 decode_errors: u64,
-                /// Samples discarded because they belonged to a retired
-                /// simulation epoch, or because an unmatched pending epoch
-                /// was purged when another epoch became authoritative.
-                epoch_filtered: u64,
+                /// Samples discarded because they belonged to a retired world
+                /// history, or because a quarantined candidate timeline was
+                /// purged when a different one became authoritative.
+                timeline_filtered: u64,
                 overflowed_rows: u32,
             }
 
@@ -843,7 +844,7 @@ phoxal_api_tree! {
                 }
 
                 topic snapshot: query SnapshotRequest => Snapshot;
-                topic follow: state Follow;
+                topic follow: diagnostic Follow;
             }
 
             bus {
@@ -887,7 +888,7 @@ phoxal_api_tree! {
                 }
 
                 topic snapshot: query SnapshotRequest => Snapshot;
-                topic follow: state Follow;
+                topic follow: diagnostic Follow;
             }
 
             device {
@@ -907,9 +908,6 @@ phoxal_api_tree! {
                 /// when the current platform cannot provide a truthful value.
                 /// These totals must never be attributed to a runtime.
                 struct Sample {
-                    /// Logical device identity within the robot root. The
-                    /// current execution environment is always `main`.
-                    device_id: String,
                     cpu_pct: Option<f32>,
                     ram_used_bytes: Option<u64>,
                     ram_total_bytes: Option<u64>,
@@ -926,8 +924,6 @@ phoxal_api_tree! {
 
                 /// Requests tool-telemetry's bounded device history.
                 struct SnapshotRequest {
-                    /// Optional exact logical device filter.
-                    device_id: Option<String>,
                     /// Maximum newest records to return. Zero selects the
                     /// tool's bounded default.
                     limit: u32,
@@ -956,9 +952,9 @@ phoxal_api_tree! {
                     record: Record,
                 }
 
-                topic sample: state Sample;
+                topic sample: diagnostic Sample;
                 topic snapshot: query SnapshotRequest => Snapshot;
-                topic follow: state Follow;
+                topic follow: diagnostic Follow;
             }
 
             runtime {
@@ -1023,9 +1019,9 @@ phoxal_api_tree! {
                     record: Record,
                 }
 
-                topic rollup: state Rollup;
+                topic rollup: diagnostic Rollup;
                 topic snapshot: query SnapshotRequest => Snapshot;
-                topic follow: state Follow;
+                topic follow: diagnostic Follow;
             }
         }
 
@@ -1055,7 +1051,7 @@ phoxal_api_tree! {
                     detail: Option<String>,
                 }
 
-                topic state: state State;
+                topic state: diagnostic State;
             }
         }
 
@@ -1075,7 +1071,8 @@ phoxal_api_tree! {
             /// A batch of detections from one perception cycle.
             struct Detections {
                 detections: Vec<Detection>,
-                stamp_ns: Option<u64>,
+                /// The frame instant these detections were derived from.
+                stamp: Option<::phoxal_bus::RobotInstant>,
             }
 
             /// The perception participant's published health.
@@ -1128,10 +1125,12 @@ phoxal_api_tree! {
         simulation {
             /// The authoritative advancing simulation clock. Publication means
             /// the world advanced; silence means it did not.
+            ///
+            /// The timeline and instant ride in the envelope, like every other
+            /// `state` publication - the world authority stamps them with a
+            /// world step token. The body carries only the step counter, which
+            /// is not derivable from the envelope.
             struct Clock {
-                /// Opaque identity minted once by the controller process.
-                epoch: u64,
-                now_ns: u64,
                 step: u64,
             }
 
@@ -1163,7 +1162,7 @@ phoxal_api_tree! {
                     velocity_radps: f32,
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             accelerometer(capability) {
@@ -1172,7 +1171,7 @@ phoxal_api_tree! {
                     linear_acceleration: [f32; 3],
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             gyroscope(capability) {
@@ -1181,7 +1180,7 @@ phoxal_api_tree! {
                     angular_velocity: [f32; 3],
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             magnetometer(capability) {
@@ -1190,7 +1189,7 @@ phoxal_api_tree! {
                     magnetic_field: [f32; 3],
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             imu(capability) {
@@ -1215,12 +1214,11 @@ phoxal_api_tree! {
                     covariance: Option<[f32; 9]>,
                     noise_density: Option<[f32; 3]>,
                     sensor_frame_id: Option<String>,
-                    measured_at_ns: Option<u64>,
                     health: SensorHealth,
                     bias: Option<Bias>,
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             range(capability) {
@@ -1247,12 +1245,11 @@ phoxal_api_tree! {
                 struct Sample {
                     distance_m: f32,
                     limits: Option<Limits>,
-                    measured_at_ns: Option<u64>,
                     quality: Option<SampleQuality>,
                     health: SensorHealth,
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             gnss(capability) {
@@ -1264,7 +1261,7 @@ phoxal_api_tree! {
                     position_covariance: [f64; 9],
                 }
 
-                topic sample: state Sample;
+                topic sample: measurement Sample;
             }
 
             camera(capability) {
@@ -1311,13 +1308,12 @@ phoxal_api_tree! {
                     intrinsics: Option<Intrinsics>,
                     distortion: Option<Distortion>,
                     exposure: Option<ExposureTiming>,
-                    measured_at_ns: Option<u64>,
                     calibration: Option<CalibrationIdentity>,
                     #[serde(with = "serde_bytes")]
                     data: Vec<u8>,
                 }
 
-                topic frame: state Frame;
+                topic frame: measurement Frame;
             }
 
             depth(capability) {
@@ -1369,11 +1365,10 @@ phoxal_api_tree! {
                     intrinsics: Option<Intrinsics>,
                     distortion: Option<Distortion>,
                     exposure: Option<ExposureTiming>,
-                    measured_at_ns: Option<u64>,
                     calibration: Option<CalibrationIdentity>,
                 }
 
-                topic frame: state Frame;
+                topic frame: measurement Frame;
             }
 
             lidar(capability) {
@@ -1406,7 +1401,6 @@ phoxal_api_tree! {
                     ranges: Vec<f32>,
                     geometry: Option<ScanGeometry>,
                     limits: Option<RangeLimits>,
-                    measured_at_ns: Option<u64>,
                     quality: Option<ScanQuality>,
                     health: SensorHealth,
                 }
@@ -1414,7 +1408,6 @@ phoxal_api_tree! {
                 struct Points {
                     points: Vec<[f32; 3]>,
                     limits: Option<RangeLimits>,
-                    measured_at_ns: Option<u64>,
                     quality: Option<ScanQuality>,
                     health: SensorHealth,
                 }
@@ -1426,7 +1419,7 @@ phoxal_api_tree! {
                     Points(Points),
                 }
 
-                topic scan: state Scan;
+                topic scan: measurement Scan;
             }
 
             mmwave(capability) {
@@ -1443,7 +1436,7 @@ phoxal_api_tree! {
                     detections: Vec<Detection>,
                 }
 
-                topic scan: state Scan;
+                topic scan: measurement Scan;
             }
 
             microphone(capability) {
@@ -1452,7 +1445,7 @@ phoxal_api_tree! {
                     data: Vec<u8>,
                 }
 
-                topic frame: state Frame;
+                topic frame: measurement Frame;
             }
 
             led(capability) {
@@ -1603,42 +1596,13 @@ phoxal_api_tree! {
             /// Client asks the tool to re-enumerate devices.
             struct Rescan {}
 
-            topic devices: state Devices;
+            topic devices: diagnostic Devices;
             topic select: command Select;
             topic set_enabled: command SetEnabled;
             topic rescan: command Rescan;
         }
     }
-    version v0_2 extends v0_1 {
-        tool {
-            device {
-                /// Portable whole-device observations produced by one
-                /// runner-owned tool-device. Every optional field is `None`
-                /// when the current platform cannot provide a truthful value.
-                /// These totals must never be attributed to a runtime.
-                replace struct Sample {
-                    /// Bounded execution-device label supplied by the project
-                    /// supervisor. Every per-robot sampler in one project uses
-                    /// the same value, so robot-rooted records remain joinable
-                    /// without creating device-rooted bus authority.
-                    device_id: String,
-                    cpu_pct: Option<f32>,
-                    ram_used_bytes: Option<u64>,
-                    ram_total_bytes: Option<u64>,
-                    swap_used_bytes: Option<u64>,
-                    swap_total_bytes: Option<u64>,
-                    load_1m: Option<f32>,
-                    load_5m: Option<f32>,
-                    load_15m: Option<f32>,
-                    uptime_s: Option<u64>,
-                    disks: Option<Vec<Disk>>,
-                    /// Host-monotonic duration between sampler refreshes.
-                    window_ns: u64,
-                }
-            }
-        }
-    }
-    latest v0_2;
+    latest v0_1;
 }
 
 #[cfg(test)]

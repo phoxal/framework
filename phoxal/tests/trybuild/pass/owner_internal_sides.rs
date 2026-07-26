@@ -17,7 +17,7 @@ struct Config {}
 #[derive(phoxal::Api)]
 struct OwnerApi {
     target: Subscriber<api::drive::Target>,
-    state: Publisher<api::drive::State>,
+    state: StatePublisher<api::drive::State>,
 }
 
 #[phoxal::service(id = "drive-owner", api = OwnerApi)]
@@ -38,7 +38,7 @@ impl Owner {
                     .subscriber(api::topic::internal::new(cap).drive().target(), 32)
                     .await?,
                 state: ctx
-                    .publisher(api::topic::internal::new(cap).drive().state())
+                    .state_publisher(api::topic::internal::new(cap).drive().state())
                     .await?,
             },
         ))
@@ -47,7 +47,7 @@ impl Owner {
 
 #[derive(phoxal::Api)]
 struct ClientApi {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
     state: Latest<api::drive::State>,
 }
 
@@ -62,7 +62,7 @@ impl Client {
             Self,
             Self::Api {
                 // Client side: `command` -> Publish, `state` -> Subscribe.
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
                 state: ctx.latest(api::topic::new().drive().state()).await?,
             },
         ))

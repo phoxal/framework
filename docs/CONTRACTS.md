@@ -59,21 +59,26 @@ The version is part of the contract's topic key.
 - The codec rides the Zenoh encoding string and the `BusMetadata` attachment.
   Contract version and identity do not ride metadata because they are already
   fixed by the subscribed topic key.
-- Production time rides metadata too: `BusMetadata` carries
-  `produced_at_ns` + `epoch` + `source { participant, incarnation, sequence }`
+- Production time rides metadata too: `BusMetadata` carries `produced_at`
+  (a `TimeWindow`, or `None` when the sample expresses no robot time at all -
+  commands and diagnostics) plus `producer` + `sequence`
   ([`phoxal-bus/src/metadata.rs`](../phoxal-bus/src/metadata.rs)), so a payload
-  struct never carries a generic `timestamp_ns`.
-  A publish stamps these from the runtime's `LogicalTime`
-  (`publisher.publish_at(at, body)`).
-- Participant startup presence is an exact process-incarnation fact. The
-  Liveliness token key is
-  `<robot-root>/liveliness/participants/<participant-id>/<incarnation>`;
-  readiness waits for the launched incarnation, while UI presence aggregates
-  all live incarnations by stable participant id.
+  struct never carries a generic `timestamp_ns`. A publish stamps these from
+  the step token it is given (`publisher.publish(&step, body)`), so the
+  envelope's instant is one the producer actually reached. The `participant`
+  field is a diagnostic label, never identity and never an admissibility input.
+- Participant startup presence is an exact per-process fact. The Liveliness
+  token key is
+  `<robot-root>/liveliness/participants/<participant-id>/<producer-id>`;
+  readiness waits for the launched producer, while UI presence aggregates all
+  live producers by stable participant id. A restarted process is a different
+  producer, which is what makes "did the sequence reset" a non-question.
 - A body **may** carry an additional, explicitly named time field only when it
-  denotes a different instant than produce time - `measured_at_ns` (sensor sample),
-  `expires_at_ns` (when something lapses).
-  Several capability `Sample` bodies already do this.
+  denotes a different instant than produce time - when a constraint starts
+  applying, when a transform was observed, when an execution started. Such a
+  field is a typed `RobotInstant`, never bare nanoseconds: a consumer on a
+  different timeline must get a checked error, not a number that compares.
+  Repeating the envelope's own production instant in the body is forbidden.
 - Query request/response bodies carry no produce-time field; a query response that
   needs a time names it explicitly.
 
@@ -128,19 +133,19 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
   topic. Their cursor combines an opaque process generation with a monotonic
   ingest sequence. Consumers buffer follow items while querying, install the
   snapshot, replay only newer buffered items, and re-query on a generation
-  change or sequence gap. `v0.2::tool::log` retains the newest 1,000 existing
-  `v0.2::logs` events; `v0.2::tool::bus` retains the newest 60 one-second windows.
-  `v0.2::tool::runtime` retains five host-monotonic minutes of portable runner
+  change or sequence gap. `v0.1::tool::log` retains the newest 1,000 existing
+  `v0.1::logs` events; `v0.1::tool::bus` retains the newest 60 one-second windows.
+  `v0.1::tool::runtime` retains five host-monotonic minutes of portable runner
   rollups behind a bounded, participant-filterable backward-paginated query.
   Ingest clamps participant ids to 512 bytes, exact topic ids to 256 bytes, and
   normal rows to 256 plus an explicit aggregate overflow row. Retention has
   both record and byte caps; capacity evictions and identity truncation remain
-  visible in the response. The published `v0.1` concrete revision remains
-  immutable. Its follow stream uses the same generation/sequence recovery rule.
+  visible in the response. The follow stream uses the same generation/sequence
+  recovery rule.
 
 ### Raw retention-tool coherence boundary
 
-The retention tools serve `v0.2::tool::{log,bus,runtime,device}` through their
+The retention tools serve `v0.1::tool::{log,bus,runtime,device}` through their
 raw-bus owner capability. This is an explicit current coherence gap: tools are
 intentionally clockless, raw-bus-only participants and their authoring model
 fixes `Api = ()`, so these served query/state edges are not embedded in the
@@ -157,6 +162,46 @@ coherence gate cannot currently detect a stranded consumer for these raw
 edges. This limitation is canonical and deliberate, not a claim that the raw
 surfaces participate in coherence today.
 
+## Command classification
+
+Every command topic is one of three kinds, and the kind decides who is
+responsible for it stopping. The classification below is pinned by a test
+(`every_command_topic_is_classified` in `phoxal-api`), so a new command topic
+cannot ship unclassified.
+
+| Kind | Topics | Rule |
+|---|---|---|
+| **Leased** | `motion/manual` | A continuous authority. The *receiver* owns a `Lease` with a host-monotonic silence deadline and a logical hold horizon; the sender must keep publishing or the command lapses. Sequence rejection and producer fencing apply. |
+| **Internal actuation** | `drive/target`, `component/motor/command` | Produced inside the on-robot control chain. The receiver ages it on its own clock - the motor driver holds a renewable permit and stops without one - so halting logical time cannot leave an actuator commanded. |
+| **One-shot** | `power/command`, `navigation/request`, `behavior/command`, `behavior/request`, `component/led/command`, `joypad/select`, `joypad/set_enabled`, `joypad/rescan` | A single request that either takes effect or does not. Nothing repeats it and nothing expires it; the resulting *state* is what a consumer watches. |
+
+No command carries a production instant: a command is a request, not an
+observation. What it carries is producer identity and a per-producer sequence,
+which is what lets a receiver reject a replay and fence a superseded sender.
+
+Every lease and permit decision - renewal, replacement, rejection, application
+at a step, and each expiry - is emitted on the `phoxal.lease` tracing target
+with the producer, the sender's sequence, the receiver's own observation
+ordinal, and the decision. That trace is the acceptance evidence; no component
+keeps a private decision history.
+
+## Actuator inventory
+
+The rule (#952 section H): every official physical actuator driver must have
+either hardware watchdog coverage or a proved external stop deadline, recorded
+here. The current honest state of that inventory:
+
+| Driver | Models | Watchdog | Status |
+|---|---|---|---|
+| `component/ddsm115` | The DDSM115 hub motor. Non-zero velocity requires a permit the driver ages on its own `LocalInstant` in a managed task, independent of `#[step]`; `Stop` is always callable and needs no permit. A superseded producer cannot renew it. | Driver-local permit floor only. **No verified hardware watchdog**, and no proved stop deadline measured against real hardware. | **Not production-ready for physical actuation.** |
+
+So: **there are currently zero production-ready official physical actuator
+drivers.** The permit floor is a real guarantee about this process - it stops
+the commanded velocity when logical time halts, when the publisher dies, and
+when the host suspends - but it is not a guarantee about the hardware, which is
+what the rule asks for. Declaring a driver production-ready means adding the
+hardware watchdog or measuring the stop deadline, not restating the permit.
+
 ## Revision linkage
 
 Stateful products that depend on an upstream map/localization state carry the
@@ -164,7 +209,8 @@ Stateful products that depend on an upstream map/localization state carry the
 Today this is a plain `Option<u64>` field on `navigation::Path` and
 `navigation::Frontier`, linked to `map::Revision.revision`, so a consumer can
 reject or re-query when the linkage does not match the state it holds.
-A richer epoch-scoped revision id is a future contract change, not a current type.
+A richer timeline-scoped revision id is a future contract change, not a current
+type.
 
 ## Large products
 
@@ -191,8 +237,8 @@ name.
 
 A subscriber fails loud on a body it cannot decode: the sample is counted
 (`decode_errors`) and logged as a health signal, never silently accepted.
-Epoch-aware inbound handles also disclose samples purged or rejected at an
-execution boundary through `epoch_filtered`
+Timeline-aware inbound handles also disclose samples purged or rejected at a
+world-history boundary
 ([`phoxal-bus/src/handle.rs`](../phoxal-bus/src/handle.rs)).
 This decode-time loudness is the framework's compatibility backstop - contracts
 are statically known to consumers, and identity lives in the key itself, so

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::api;
 use phoxal_bus::{
-    Bus, LogicalTime, OwnerCap, Publisher, RuntimeBufferKind, RuntimeDirection,
+    Bus, DiagnosticPublisher, OwnerCap, RobotInstant, RuntimeBufferKind, RuntimeDirection,
     RuntimeMetricSnapshot,
 };
 
@@ -15,7 +15,7 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<Publisher<api::tool::runtime::Rollup>>,
+    publisher: Option<DiagnosticPublisher<api::tool::runtime::Rollup>>,
 }
 
 impl RuntimePerformancePublisher {
@@ -24,7 +24,7 @@ impl RuntimePerformancePublisher {
             .tool()
             .runtime()
             .rollup();
-        let publisher = Publisher::new(bus, &topic)
+        let publisher = DiagnosticPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(
                     target: "phoxal.runtime",
@@ -36,11 +36,11 @@ impl RuntimePerformancePublisher {
         Self { publisher }
     }
 
-    pub(crate) fn publish(&self, at: LogicalTime, body: api::tool::runtime::Rollup) {
+    pub(crate) fn publish(&self, body: api::tool::runtime::Rollup) {
         let Some(publisher) = &self.publisher else {
             return;
         };
-        if let Err(error) = publisher.try_publish(at, body) {
+        if let Err(error) = publisher.publish(body) {
             tracing::warn!(
                 target: "phoxal.runtime",
                 error = %error,
@@ -71,17 +71,17 @@ impl RuntimePerformance {
 
     pub(crate) fn begin_step(
         &mut self,
-        target: LogicalTime,
-        fired_at: LogicalTime,
+        target: RobotInstant,
+        fired_at: RobotInstant,
         missed_ticks: u32,
     ) -> Option<StepObservation> {
-        let lateness = logical_lateness(target, fired_at);
+        let lateness = step_lateness(target, fired_at);
         self.step
             .as_mut()
             .map(|step| step.begin(Instant::now(), lateness, missed_ticks))
     }
 
-    /// Drop cadence/history derived from the previous simulation execution.
+    /// Drop cadence/history derived from the previous world history.
     pub(crate) fn reset(&mut self, schedule: Option<StepSchedule>) {
         *self = Self::new(schedule);
     }
@@ -124,12 +124,11 @@ impl RuntimePerformance {
     }
 }
 
-fn logical_lateness(target: LogicalTime, fired_at: LogicalTime) -> Duration {
-    if fired_at.epoch() != target.epoch() {
-        debug_assert_eq!(fired_at.epoch(), target.epoch());
-        return Duration::ZERO;
-    }
-    Duration::from_nanos(fired_at.time_ns().saturating_sub(target.time_ns()))
+/// How late the released tick was, in robot time. A cross-timeline pair is not
+/// lateness at all - the world was replaced - so it reports zero rather than an
+/// invented number.
+fn step_lateness(target: RobotInstant, fired_at: RobotInstant) -> Duration {
+    fired_at.duration_since(target).unwrap_or_default()
 }
 
 pub(crate) struct StepObservation {
@@ -259,7 +258,7 @@ fn bounded_topics(
         current_depth: 0,
         high_water_depth: 0,
         decode_errors: 0,
-        epoch_filtered: 0,
+        timeline_filtered: 0,
         overflowed_rows: u32::try_from(omitted.len()).unwrap_or(u32::MAX),
     };
     for row in omitted {
@@ -277,7 +276,9 @@ fn bounded_topics(
             .high_water_depth
             .saturating_add(row.high_water_depth);
         overflow.decode_errors = overflow.decode_errors.saturating_add(row.decode_errors);
-        overflow.epoch_filtered = overflow.epoch_filtered.saturating_add(row.epoch_filtered);
+        overflow.timeline_filtered = overflow
+            .timeline_filtered
+            .saturating_add(row.timeline_filtered);
     }
     overflow.rate_hz = rate(overflow.count, elapsed);
     (converted, Some(overflow))
@@ -304,7 +305,7 @@ fn topic_row(row: RuntimeMetricSnapshot, elapsed: Duration) -> api::tool::Runtim
         current_depth: row.current_depth,
         high_water_depth: row.high_water_depth,
         decode_errors: row.decode_errors,
-        epoch_filtered: row.epoch_filtered,
+        timeline_filtered: row.timeline_filtered,
         overflowed_rows: 0,
     }
 }
@@ -348,7 +349,7 @@ mod tests {
             current_depth: 0,
             high_water_depth: 1,
             decode_errors: 0,
-            epoch_filtered: 0,
+            timeline_filtered: 0,
         }
     }
 
@@ -442,8 +443,13 @@ mod tests {
     fn lateness_uses_fired_at_minus_target_independently_of_missed_ticks() {
         let schedule = StepSchedule::hz(100.0);
         let mut performance = RuntimePerformance::new(Some(schedule));
+        let line = phoxal_bus::TimelineId::mint();
         let observation = performance
-            .begin_step(LogicalTime::new(4, 100), LogicalTime::new(4, 135), 7)
+            .begin_step(
+                RobotInstant::new(line, 100),
+                RobotInstant::new(line, 135),
+                7,
+            )
             .expect("scheduled participant has step observation");
         assert_eq!(observation.lateness, Duration::from_nanos(35));
         assert_eq!(observation.missed_ticks, 7);

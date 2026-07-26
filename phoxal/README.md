@@ -49,13 +49,15 @@ impl AvoidObstacles {
 
     #[step(hz = 50)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let now = step.time();
-        // read inputs, publish version-local bodies
-        api.target.publish_at(now, api::drive::Target {
+        // Read inputs and publish version-local bodies. `drive/target` is a
+        // command, so it carries no production instant at all; a state or
+        // measurement publish instead takes `&step`, which is the only proof
+        // this participant reached the instant it is stamping.
+        api.target.send(api::drive::Target {
             linear_x_mps: self.cruise_linear_x_mps,
             angular_z_radps: 0.0,
             curvature_limit_radpm: None,
-        }).await?;
+        })?;
         Ok(())
     }
 }
@@ -72,7 +74,7 @@ Key rules the example shows:
   `#[derive(phoxal::Api)]` requires every field to name a `ContractBody`, so a non-contract type is a **compile error**.
 - Topics are api-local: `api::topic::new().drive().state()`.
 - The wire body is the plain payload, and contract identity lives only in the version-qualified topic key.
-  Bus metadata carries the codec and provenance, including logical produce time and source identity, but no API version or contract family.
+  Bus metadata carries the codec and provenance - the producing process, its sample sequence, and the robot instant the content was produced at when the sample expresses robot time at all - but no API version or contract family.
   Normal participants never open Zenoh - the runner opens the launch-selected bus profile before `#[setup]`.
 - `config` is for **user participants only**.
   Official participants take no `config` param and read the robot model through `ctx.robot()`.
@@ -81,16 +83,20 @@ The runner also owns the rest of the lifecycle: `#[step(hz = ...)]` is the
 scheduled control loop, optional `#[reset]` clears prior simulation-execution
 state, `#[server]` / `#[server_snapshot]` serve queries, and `#[shutdown]` runs
 graceful park/stop/flush before the bus closes. `#[reset]` is serialized with
-steps and exclusive servers and receives `ResetContext`; host/operator
-`Subscriber` or `Latest` fields that must survive it use
-`#[phoxal(epoch_agnostic)]`.
-For a supervised process, `PHOXAL_INCARNATION` (or `--incarnation`) carries the
-supervisor-minted nonzero `u64` into bus metadata and the participant's exact
-Liveliness key:
-`<robot-root>/liveliness/participants/<participant-id>/<incarnation>`.
+steps and exclusive servers and receives `ResetContext`. Clockless operator
+input needs no marker to survive it: a command carries no production instant, so
+it belongs to no timeline, and what bounds it is its `Lease` rather than the
+world boundary.
+
+Every process carries a `ProducerId` - minted by the supervisor and passed
+through the launch contract, or minted by the process itself for an ad hoc run.
+It rides bus metadata and forms the participant's exact Liveliness key,
+`<robot-root>/liveliness/participants/<participant-id>/<producer-id>`.
 Observers use that exact key for spawn readiness and aggregate all live
-incarnations of a participant id when they need stable present/not-present
-state. Unmanaged local runs use incarnation `0`.
+producers of a participant id when they need stable present/not-present state.
+Because a fresh process is always a fresh producer whose sequence restarts at
+zero, a restart is structurally distinguishable from a replay - there is no
+sequence-reset rule to get wrong.
 It measures handler duration/lateness/missed ticks plus the exact
 version-qualified typed-bus buffers declared by the participant and emits one
 bounded portable runtime-performance rollup per host-monotonic grid interval.
@@ -100,9 +106,10 @@ participant writes no telemetry code, unscheduled participants report step
 timing as not applicable, and no per-process CPU/RSS sampler is involved.
 
 `#[phoxal::tool]` is intentionally outside the robot clock. Tools use managed
-host/event loops, host-monotonic timers for cadence and freshness, and
-`phoxal::raw::host_time()` only when a generic bus envelope timestamp is
-required. The macro rejects `#[step]`, the setup context exposes no clock, and
+host/event loops and `LocalInstant` - the host's suspend-aware boot clock - for
+cadence and freshness. They express no robot time: a tool's publications are
+commands and diagnostics, which carry no production instant.
+The macro rejects `#[step]`, the setup context exposes no clock, and
 the tool process launch has no clock option. The normal embedding API likewise
 accepts no clock argument; deterministic clock injection is restricted to typed
 graph participants. Official tool sources are additionally checked against

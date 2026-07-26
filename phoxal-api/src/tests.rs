@@ -4,76 +4,18 @@
 
 use crate::v0_1;
 use crate::v0_1 as api;
-use crate::v0_2;
 use crate::{ApiVersion, ContractBody};
-use phoxal_bus::TopicRole;
+use phoxal_bus::{RobotInstant, TimelineId, TopicRole};
+
+/// A same-timeline instant for round-trip fixtures.
+fn instant(ticks: u64) -> RobotInstant {
+    RobotInstant::new(TimelineId::from_raw(1).unwrap(), ticks)
+}
 
 #[test]
-fn v0_1_remains_available_as_an_immutable_concrete_revision() {
+fn v0_1_is_the_single_train_selected_revision() {
     assert_eq!(<api::Api as ApiVersion>::ID, "v0.1");
-}
-
-#[test]
-fn v0_2_is_the_train_selected_revision_with_identity_derived_device_samples() {
-    assert_eq!(<crate::latest::Api as ApiVersion>::ID, "v0.2");
-    assert_eq!(
-        <v0_1::tool::device::Sample as ContractBody>::TOPIC,
-        "v0.1/tool/device/sample"
-    );
-    assert_eq!(
-        <v0_2::tool::device::Sample as ContractBody>::TOPIC,
-        "v0.2/tool/device/sample"
-    );
-    assert_eq!(
-        v0_2::topic::new().tool().device().sample().key(),
-        "v0.2/tool/device/sample"
-    );
-}
-
-#[test]
-fn v0_2_device_sample_has_the_exact_identity_derived_wire_shape() {
-    let sample = v0_2::tool::device::Sample {
-        device_id: "project-e2e".to_string(),
-        cpu_pct: Some(12.5),
-        ram_used_bytes: Some(1_073_741_824),
-        ram_total_bytes: Some(17_179_869_184),
-        swap_used_bytes: None,
-        swap_total_bytes: None,
-        load_1m: Some(0.75),
-        load_5m: Some(0.5),
-        load_15m: Some(0.25),
-        uptime_s: Some(42),
-        disks: Some(vec![v0_2::tool::device::Disk {
-            mount_point: "/".to_string(),
-            file_system: "apfs".to_string(),
-            used_bytes: 10,
-            total_bytes: 100,
-        }]),
-        window_ns: 1_000_000_000,
-    };
-    assert_eq!(
-        serde_json::to_value(&sample).unwrap(),
-        serde_json::json!({
-            "device_id": "project-e2e",
-            "cpu_pct": 12.5,
-            "ram_used_bytes": 1_073_741_824_u64,
-            "ram_total_bytes": 17_179_869_184_u64,
-            "swap_used_bytes": null,
-            "swap_total_bytes": null,
-            "load_1m": 0.75,
-            "load_5m": 0.5,
-            "load_15m": 0.25,
-            "uptime_s": 42,
-            "disks": [{
-                "mount_point": "/",
-                "file_system": "apfs",
-                "used_bytes": 10,
-                "total_bytes": 100
-            }],
-            "window_ns": 1_000_000_000
-        })
-    );
-    round_trip(&sample);
+    assert_eq!(<crate::latest::Api as ApiVersion>::ID, "v0.1");
 }
 
 #[test]
@@ -218,6 +160,49 @@ fn folded_contracts_are_available_on_the_first_revision() {
     );
 }
 
+/// #952: every command topic is classified as one-shot, leased, or internal
+/// actuation, and the classification is written down in `docs/CONTRACTS.md`.
+///
+/// This pins the written classification to the api tree itself: adding a
+/// command topic without deciding what kind of command it is fails here, which
+/// is the only way the inventory stays true.
+#[test]
+fn every_command_topic_is_classified() {
+    /// The classification recorded in `docs/CONTRACTS.md`. Keep both in step.
+    const CLASSIFIED: &[(&str, &str)] = &[
+        // Leased: a continuous authority a live sender must keep renewing.
+        ("v0.1::motion::ManualCommand", "leased"),
+        // Internal actuation: produced by an on-robot participant inside the
+        // control chain, and expiring through the receiver's own deadline.
+        ("v0.1::drive::Target", "internal actuation"),
+        ("v0.1::component::motor::Command", "internal actuation"),
+        // One-shot: a single request that either takes effect or does not, and
+        // that nothing has to keep repeating.
+        ("v0.1::power::Command", "one-shot"),
+        ("v0.1::navigation::Request", "one-shot"),
+        ("v0.1::behavior::Command", "one-shot"),
+        ("v0.1::behavior::Request", "one-shot"),
+        ("v0.1::component::led::Command", "one-shot"),
+        ("v0.1::joypad::Select", "one-shot"),
+        ("v0.1::joypad::SetEnabled", "one-shot"),
+        ("v0.1::joypad::Rescan", "one-shot"),
+    ];
+
+    let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
+        .iter()
+        .flat_map(|version| version.contracts.iter())
+        .filter(|contract| contract.role == TopicRole::Command)
+        .map(|contract| contract.family)
+        .collect();
+    let classified: std::collections::BTreeSet<&str> =
+        CLASSIFIED.iter().map(|(family, _)| *family).collect();
+
+    assert_eq!(
+        declared, classified,
+        "every command topic must be classified in docs/CONTRACTS.md"
+    );
+}
+
 #[test]
 fn generated_contract_manifest_lists_contract_shapes() {
     let version = crate::API_CONTRACT_MANIFEST
@@ -267,55 +252,64 @@ fn generated_contract_manifest_lists_contract_shapes() {
         }
     }
 
-    let current = crate::API_CONTRACT_MANIFEST
-        .iter()
-        .find(|version| version.name == "v0.2")
-        .expect("v0.2 should be in the generated manifest");
-    let device_sample = current
-        .contracts
-        .iter()
-        .find(|contract| contract.family == "v0.2::tool::device::Sample")
-        .expect("tool::device::Sample should be in the v0.2 manifest entry");
-    assert_eq!(device_sample.topic, "v0.2/tool/device/sample");
+    assert_eq!(
+        crate::API_CONTRACT_MANIFEST.len(),
+        1,
+        "the train ships exactly one concrete revision"
+    );
 }
 
 #[test]
 fn generated_role_const_matches_each_topic_role() {
-    // The `ROLE` const is an inherent const generated per body by
-    // `phoxal_api_tree!`. Assert representative topics across all three roles so a
-    // generator bug that emitted an all-`State` (or all-`Command`) tree is caught
-    // by `cargo test`, without relying on any external script.
+    // `ContractBody::ROLE` is generated per body by `phoxal_api_tree!`, and it
+    // fixes both the side brand and the robot time a publisher may express.
+    // Assert representative topics across every role so a generator bug that
+    // emitted an all-`State` tree is caught by `cargo test`.
 
-    // Command: a control input the owning service subscribes.
-    assert_eq!(api::drive::Target::ROLE, TopicRole::Command);
-    assert_eq!(api::power::Command::ROLE, TopicRole::Command);
+    // Command: a control input the owning service subscribes. It expresses no
+    // robot time.
+    assert_role::<api::drive::Target>(TopicRole::Command);
+    assert_role::<api::power::Command>(TopicRole::Command);
+    assert_role::<api::motion::ManualCommand>(TopicRole::Command);
+    assert_role::<api::joypad::Select>(TopicRole::Command);
+    assert_role::<api::joypad::SetEnabled>(TopicRole::Command);
+    assert_role::<api::joypad::Rescan>(TopicRole::Command);
 
-    // State: telemetry the owning service publishes.
-    assert_eq!(api::drive::State::ROLE, TopicRole::State);
-    assert_eq!(api::tool::runtime::Rollup::ROLE, TopicRole::State);
-    assert_eq!(api::tool::runtime::SnapshotRequest::ROLE, TopicRole::Query);
-    assert_eq!(api::tool::runtime::Snapshot::ROLE, TopicRole::Query);
-    assert_eq!(api::tool::runtime::Follow::ROLE, TopicRole::State);
-    assert_eq!(api::tool::device::Sample::ROLE, TopicRole::State);
-    assert_eq!(api::tool::device::SnapshotRequest::ROLE, TopicRole::Query);
-    assert_eq!(api::tool::device::Snapshot::ROLE, TopicRole::Query);
-    assert_eq!(api::tool::device::Follow::ROLE, TopicRole::State);
+    // State: what the owning service publishes at a logical step.
+    assert_role::<api::drive::State>(TopicRole::State);
+    assert_role::<api::battery::State>(TopicRole::State);
+    assert_role::<api::simulation::Clock>(TopicRole::State);
+    assert_role::<api::component::emergency_stop::State>(TopicRole::State);
+
+    // Measurement: a sensor observation carrying a capture stamp.
+    assert_role::<api::component::imu::Sample>(TopicRole::Measurement);
+    assert_role::<api::component::encoder::Sample>(TopicRole::Measurement);
+    assert_role::<api::component::camera::Frame>(TopicRole::Measurement);
+    assert_role::<api::component::depth::Frame>(TopicRole::Measurement);
+    assert_role::<api::component::lidar::Scan>(TopicRole::Measurement);
+    assert_role::<api::component::range::Sample>(TopicRole::Measurement);
+
+    // Diagnostic: describes the participant or host, never the world, and so
+    // expresses no robot time.
+    assert_role::<api::tool::runtime::Rollup>(TopicRole::Diagnostic);
+    assert_role::<api::tool::runtime::Follow>(TopicRole::Diagnostic);
+    assert_role::<api::tool::device::Sample>(TopicRole::Diagnostic);
+    assert_role::<api::tool::device::Follow>(TopicRole::Diagnostic);
+    assert_role::<api::logs::Event>(TopicRole::Diagnostic);
+    assert_role::<api::joypad::Devices>(TopicRole::Diagnostic);
+
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
-    assert_eq!(api::frame::LookupRequest::ROLE, TopicRole::Query);
-    assert_eq!(api::frame::LookupResponse::ROLE, TopicRole::Query);
-    assert_eq!(api::map::SubmapRequest::ROLE, TopicRole::Query);
-    assert_eq!(api::map::SubmapResponse::ROLE, TopicRole::Query);
+    assert_role::<api::frame::LookupRequest>(TopicRole::Query);
+    assert_role::<api::frame::LookupResponse>(TopicRole::Query);
+    assert_role::<api::map::SubmapRequest>(TopicRole::Query);
+    assert_role::<api::map::SubmapResponse>(TopicRole::Query);
+    assert_role::<api::tool::runtime::SnapshotRequest>(TopicRole::Query);
+    assert_role::<api::tool::device::Snapshot>(TopicRole::Query);
 }
 
-#[test]
-fn folded_role_consts_match_each_topic_role() {
-    assert_eq!(v0_1::battery::State::ROLE, TopicRole::State);
-    assert_eq!(v0_1::simulation::Clock::ROLE, TopicRole::State);
-    assert_eq!(v0_1::joypad::Devices::ROLE, TopicRole::State);
-    assert_eq!(v0_1::joypad::Select::ROLE, TopicRole::Command);
-    assert_eq!(v0_1::joypad::SetEnabled::ROLE, TopicRole::Command);
-    assert_eq!(v0_1::joypad::Rescan::ROLE, TopicRole::Command);
+fn assert_role<B: ContractBody>(expected: TopicRole) {
+    assert_eq!(B::ROLE, expected, "{} has the wrong role", B::NAME);
 }
 
 #[test]
@@ -351,7 +345,6 @@ fn body_round_trips_through_messagepack() {
         },
         actuator_authority: api::drive::ActuatorAuthority::Active,
         stop_reason: None,
-        target_age_ns: Some(10),
     };
     let bytes = rmp_serde::to_vec_named(&state).unwrap();
     let decoded: api::drive::State = rmp_serde::from_slice(&bytes).unwrap();
@@ -408,8 +401,8 @@ fn behavior_navigation_and_safety_wire_shapes_are_golden() {
         max_linear_speed_mps: None,
         max_angular_speed_radps: None,
         observed_value: Some(0.1),
-        valid_from_ns: 100,
-        expires_at_ns: 400,
+        valid_from: instant(100),
+        expires_at: instant(400),
     };
     let safety = api::safety::MotionConstraints {
         sequence: 3,
@@ -417,7 +410,7 @@ fn behavior_navigation_and_safety_wire_shapes_are_golden() {
         max_linear_speed_mps: None,
         max_angular_speed_radps: None,
         constraints: vec![constraint],
-        expires_at_ns: 400,
+        expires_at: instant(400),
     };
     let safety_json = serde_json::to_value(&safety).unwrap();
     assert_eq!(
@@ -432,8 +425,11 @@ fn behavior_navigation_and_safety_wire_shapes_are_golden() {
 fn behavior_navigation_and_safety_reject_malformed_payloads() {
     let corrupt = [0xc1u8, 0xc1, 0xc1];
     assert!(rmp_serde::from_slice::<api::behavior::Event>(&corrupt).is_err());
-    let wrong =
-        rmp_serde::to_vec_named(&api::motion::EmergencyStopRequest { engaged: true }).unwrap();
+    let wrong = rmp_serde::to_vec_named(&api::motion::ManualCommand {
+        linear_x_mps: 0.1,
+        angular_z_radps: 0.2,
+    })
+    .unwrap();
     assert!(rmp_serde::from_slice::<api::behavior::Snapshot>(&wrong).is_err());
     assert!(rmp_serde::from_slice::<api::navigation::Request>(&wrong).is_err());
     assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&wrong).is_err());
@@ -452,7 +448,10 @@ fn domain_bodies_round_trip_through_messagepack() {
             child_frame_id: "base_link".to_string(),
             translation_m: [1.0, 2.0, 0.0],
             rotation_quat_xyzw: [0.0, 0.0, 0.0, 1.0],
-            stamp_ns: Some(10),
+            stamp: Some(::phoxal_bus::RobotInstant::new(
+                ::phoxal_bus::TimelineId::from_raw(1).unwrap(),
+                10,
+            )),
         }],
     });
     round_trip(&api::power::State {
@@ -460,7 +459,7 @@ fn domain_bodies_round_trip_through_messagepack() {
         detail: None,
     });
     round_trip(&api::motion::State {
-        manual_candidate_age_ns: Some(10),
+        manual_observed_age_ns: Some(10),
         autonomous_candidate_age_ns: None,
         safety_constraints_age_ns: Some(5),
         selected_source: Some(api::motion::Source::Manual),
@@ -471,7 +470,6 @@ fn domain_bodies_round_trip_through_messagepack() {
         },
         zero_reason: None,
         safety_runtime: api::motion::SafetyRuntime::Present,
-        software_estop_engaged: false,
         component_estop_blocked: false,
         active_safety_constraints: Vec::new(),
     });
@@ -492,10 +490,10 @@ fn domain_bodies_round_trip_through_messagepack() {
             max_linear_speed_mps: Some(0.0),
             max_angular_speed_radps: Some(0.0),
             observed_value: Some(0.1),
-            valid_from_ns: 10,
-            expires_at_ns: 310,
+            valid_from: instant(10),
+            expires_at: instant(310),
         }],
-        expires_at_ns: 310,
+        expires_at: instant(310),
     });
     round_trip(&api::logs::Event {
         seq: 7,
@@ -542,7 +540,10 @@ fn domain_bodies_round_trip_through_messagepack() {
             frame_id: "camera_link".to_string(),
             track_id: Some(6),
         }],
-        stamp_ns: Some(7),
+        stamp: Some(::phoxal_bus::RobotInstant::new(
+            ::phoxal_bus::TimelineId::from_raw(1).unwrap(),
+            7,
+        )),
     });
     round_trip(&api::video::stream::StreamState {
         phase: api::video::stream::StreamPhase::Active,
@@ -652,7 +653,7 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         current_depth: 1,
         high_water_depth: 1,
         decode_errors: 0,
-        epoch_filtered: 0,
+        timeline_filtered: 0,
         overflowed_rows: 0,
     };
     let step = api::tool::RuntimeStep {
@@ -702,7 +703,6 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         sequence: 9,
     };
     let sample = api::tool::device::Sample {
-        device_id: "main".to_string(),
         cpu_pct: Some(12.5),
         ram_used_bytes: Some(1_073_741_824),
         ram_total_bytes: Some(17_179_869_184),
@@ -727,7 +727,6 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
     };
     round_trip(&sample);
     round_trip(&api::tool::device::SnapshotRequest {
-        device_id: Some("main".to_string()),
         limit: 1,
         before_sequence: None,
     });
@@ -751,18 +750,12 @@ fn runtime_rollup_rejects_malformed_payloads() {
 
 #[test]
 fn folded_bodies_round_trip_through_messagepack() {
-    let clock = v0_1::simulation::Clock {
-        epoch: 0xfeed_beef,
-        now_ns: 1_000_000,
-        step: 100,
-    };
+    // The clock body carries only the step counter now: its timeline and
+    // instant ride in the envelope, stamped by the world authority.
+    let clock = v0_1::simulation::Clock { step: 100 };
     assert_eq!(
         serde_json::to_value(&clock).unwrap(),
-        serde_json::json!({
-            "epoch": 0xfeed_beef_u64,
-            "now_ns": 1_000_000_u64,
-            "step": 100_u64,
-        })
+        serde_json::json!({ "step": 100_u64 })
     );
     round_trip(&clock);
     round_trip(&v0_1::joypad::Device {
@@ -815,7 +808,6 @@ fn component_capability_bodies_round_trip_through_messagepack() {
         covariance: Some([0.0; 9]),
         noise_density: Some([0.01, 0.02, 0.03]),
         sensor_frame_id: Some("imu_link".to_string()),
-        measured_at_ns: Some(42),
         health: api::component::imu::SensorHealth::Degraded,
         bias: Some(api::component::imu::Bias {
             angular_velocity_radps: [0.001, 0.002, 0.003],
@@ -844,7 +836,6 @@ fn component_capability_bodies_round_trip_through_messagepack() {
             exposure_start_ns: Some(100),
             exposure_duration_ns: Some(200),
         }),
-        measured_at_ns: Some(300),
         calibration: Some(api::component::camera::CalibrationIdentity {
             id: "front".to_string(),
             version: "v0.1".to_string(),

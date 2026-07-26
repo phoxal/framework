@@ -10,7 +10,7 @@ struct Config {}
 #[derive(phoxal::Api)]
 struct Api {
     state: Latest<api::drive::State>,
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "component-requires-driver")]
@@ -25,7 +25,7 @@ impl ComponentRequiresDriver {
             Self,
             Self::Api {
                 state: ctx.latest(api::topic::new().drive().state()).await?,
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
             },
         ))
     }

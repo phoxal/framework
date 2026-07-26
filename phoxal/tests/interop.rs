@@ -7,6 +7,7 @@
 //! exercised end-to-end here - the first test that crosses a participant boundary on a
 //! live bus, rather than driving the bus or a single participant in isolation.
 
+use phoxal::participant::ExecutionOrigin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -23,7 +24,7 @@ const TARGET_LINEAR_MPS: f32 = 0.5;
 
 #[derive(phoxal::Api)]
 struct ProducerApi {
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 /// Publishes a fixed `drive/target` every step.
@@ -37,23 +38,20 @@ impl Producer {
         Ok((
             Self,
             Self::Api {
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx
+                    .command_publisher(api::topic::new().drive().target())
+                    .await?,
             },
         ))
     }
 
     #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        api.target
-            .publish_at(
-                step.time(),
-                api::drive::Target {
-                    linear_x_mps: TARGET_LINEAR_MPS,
-                    angular_z_radps: 0.0,
-                    curvature_limit_radpm: None,
-                },
-            )
-            .await?;
+    async fn step(&mut self, api: &mut Self::Api, _step: StepContext) -> Result<()> {
+        api.target.send(api::drive::Target {
+            linear_x_mps: TARGET_LINEAR_MPS,
+            angular_z_radps: 0.0,
+            curvature_limit_radpm: None,
+        })?;
         Ok(())
     }
 }
@@ -110,12 +108,14 @@ async fn two_runtimes_exchange_a_contract_on_one_bus() {
     // wall-clock window (enough for the 50 Hz producer to emit many samples).
     let producer = run_with_bus::<Producer, _>(
         &bus,
-        ParticipantLaunch::local("producer-1", "robot"),
+        ParticipantLaunch::local("producer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
     let consumer = run_with_bus::<Consumer, _>(
         &bus,
-        ParticipantLaunch::local("consumer-1", "robot"),
+        ParticipantLaunch::local("consumer-1", "robot")
+            .with_execution_origin(ExecutionOrigin::mint()),
         async { tokio::time::sleep(Duration::from_millis(500)).await },
     );
 

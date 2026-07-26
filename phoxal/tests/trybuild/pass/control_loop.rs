@@ -8,7 +8,7 @@ struct Config {}
 #[derive(phoxal::Api)]
 struct Api {
     state: Latest<api::drive::State>,
-    target: Publisher<api::drive::Target>,
+    target: CommandPublisher<api::drive::Target>,
 }
 
 #[phoxal::service(id = "demo")]
@@ -22,14 +22,14 @@ impl Demo {
             Self,
             Self::Api {
                 state: ctx.latest(api::topic::new().drive().state()).await?,
-                target: ctx.publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
             },
         ))
     }
 
     #[step(hz = 10)]
     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        let _ = (step.time(), &api.state);
+        let _ = (step.now(), step.token(), &api.state);
         Ok(())
     }
 
