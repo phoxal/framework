@@ -199,6 +199,9 @@ one final `latest <revision>;` selects the facade for the train.
 The platform participant set ships alongside this crate in the workspace `service/` tree (`drive`, `motion`, `navigation`, `localize`, `map`, …).
 They are full official participants authored on exactly this surface, and they double as worked reference reading.
 Neutral teaching examples live in `phoxal/examples/` (`runtime_control_loop`, `runtime_query_server`, `runtime_snapshot_server`, `runtime_async_entrypoint`).
+The matching GitHub train also ships the official simulator controller binaries.
+Release packaging requires those controllers to link their native simulator
+runtime; metadata-only test builds are never published as runnable artifacts.
 
 ## Status
 
