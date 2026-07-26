@@ -31,7 +31,7 @@ impl SensorBinding {
     pub(crate) fn camera_topic(
         &self,
     ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
-        api::topic::new()
+        api::topic::client()
             .component(&self.component_id)
             .camera(&self.capability_id)
             .frame()
@@ -40,7 +40,7 @@ impl SensorBinding {
     pub(crate) fn depth_topic(
         &self,
     ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::depth::Frame>> {
-        api::topic::new()
+        api::topic::client()
             .component(&self.component_id)
             .depth(&self.capability_id)
             .frame()

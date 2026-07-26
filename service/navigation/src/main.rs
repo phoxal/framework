@@ -1,3 +1,10 @@
+mod exploration;
+mod follower;
+mod frontiers;
+mod navigation;
+mod planner;
+mod scoring;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_navigation::Navigation>()
+    phoxal::run::<navigation::Navigation>()
 }

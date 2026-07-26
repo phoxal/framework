@@ -1,13 +1,13 @@
 // The authoring model's canonical fixture: `#[derive(phoxal::Api)]` +
 // `#[derive(phoxal::Config)]` + `#[phoxal::service]` + `#[phoxal::behavior]`
 // with a `Result<(Self, Self::Api)>` `#[setup]`. Exercises a client Publisher
-// + a Latest + an OWNER-side Publisher built from `ctx.owner_capability()` /
-// `topic::internal::new(cap)` (the path every real participant opens with),
+// + a Latest + an OWNER-side Publisher built from `topic::owner()` (the path
+// every real participant opens with),
 // `#[step]`/`#[shutdown]` taking `&mut Self::Api`, an exclusive
 // `#[server(api = …)]` taking `&mut Self::Api`, and a `#[server_snapshot(api
 // = …)]` taking a read-only `&Self::Api` (D3) - the green proof that the
 // codegen (`phoxal-macros::behavior`/`authoring`) and the `SetupContext`
-// surface (`SetupContextApiExt`, incl. `owner_capability`) work end to end.
+// surface (`SetupContextApiExt`) work end to end.
 //
 // Imported as `v1` (not `as api`), matching the companion doc: the
 // lifecycle parameters are conventionally named `api`, so aliasing the module
@@ -23,10 +23,8 @@ struct Config {
 #[derive(phoxal::Api)]
 struct Api {
     target: CommandPublisher<api::drive::Target>,
-    // OWNER-side publish of `drive/state`, built below from an owner-capability
-    // internal topic (`topic::internal::new(cap)`), so this fixture exercises
-    // the owner-cap path P-convert (battery, shared state, …) starts every real
-    // participant with - not just the public client topics.
+    // OWNER-side publish of `drive/state`, built below from `topic::owner()`,
+    // so this fixture exercises both explicit sides of the topic API.
     state: StatePublisher<api::drive::State>,
     odometry: Latest<api::drive::State>,
     lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
@@ -48,19 +46,17 @@ impl WallFollower {
         config: Self::Config,
     ) -> Result<(Self, Self::Api)> {
         let _ = config.target_distance_m;
-        // Every real participant starts here; owning `drive/state` requires the
-        // runner-minted capability passed to the `internal` owner builder.
-        let cap = ctx.owner_capability();
+        // Owning `drive/state` uses the explicit owner builder.
         Ok((
             Self { last_error: 0.0 },
             Self::Api {
-                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::client().drive().target()).await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).drive().state())
+                    .state_publisher(api::topic::owner().drive().state())
                     .await?,
-                odometry: ctx.latest(api::topic::new().drive().state()).await?,
-                lookup: ctx.server(api::topic::new().frame().lookup()).await?,
-                submap: ctx.server(api::topic::new().map().submap()).await?,
+                odometry: ctx.latest(api::topic::client().drive().state()).await?,
+                lookup: ctx.server(api::topic::client().frame().lookup()).await?,
+                submap: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }
@@ -76,7 +72,7 @@ impl WallFollower {
                     angular_z_radps: 0.0,
                     curvature_limit_radpm: None,
                 })?;
-        // Owner-side publish of the drive state, over the internal topic bound
+        // Owner-side publish of the drive state, over the owner topic bound
         // in `#[setup]`.
         api.state.publish(step.token(), api::drive::State {
                     target: odometry.target.clone(),

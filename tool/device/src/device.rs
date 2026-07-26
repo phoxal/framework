@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, DiagnosticPublisher, OwnerCap};
+use phoxal::raw::{Bus, DiagnosticPublisher};
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -17,7 +17,7 @@ pub struct ToolDevice;
 impl ToolDevice {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let publisher = device_publisher(ctx.raw_bus(), ctx.owner_capability())?;
+        let publisher = device_publisher(ctx.raw_bus())?;
         ctx.spawn_managed_with(
             "device-sampler",
             ManagedTaskPolicy::FaultOnExit,
@@ -32,11 +32,8 @@ impl ToolDevice {
     }
 }
 
-fn device_publisher(
-    bus: Bus,
-    cap: OwnerCap,
-) -> Result<DiagnosticPublisher<api::tool::device::Sample>> {
-    let topic = api::topic::internal::new(cap).tool().device().sample();
+fn device_publisher(bus: Bus) -> Result<DiagnosticPublisher<api::tool::device::Sample>> {
+    let topic = api::topic::owner().tool().device().sample();
     Ok(DiagnosticPublisher::new(bus, &topic)?)
 }
 

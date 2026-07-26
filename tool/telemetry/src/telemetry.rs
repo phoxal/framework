@@ -41,16 +41,15 @@ impl ToolTelemetry {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let bus = ctx.raw_bus();
-        let cap = ctx.owner_capability();
 
         let device_history = Arc::new(Mutex::new(DeviceHistory::new(process_generation()?)));
         let device_samples =
-            Subscriber::new(&bus, &stable::topic::new().tool().device().sample(), 32).await?;
+            Subscriber::new(&bus, &stable::topic::client().tool().device().sample(), 32).await?;
         let device_follow = DiagnosticPublisher::new(
             bus.clone(),
-            &stable::topic::internal::new(cap).tool().device().follow(),
+            &stable::topic::owner().tool().device().follow(),
         )?;
-        let device_snapshot_topic = stable::topic::internal::new(cap).tool().device().snapshot();
+        let device_snapshot_topic = stable::topic::owner().tool().device().snapshot();
         let device_snapshots = bus.declare_server(device_snapshot_topic.key()).await?;
 
         let ingest_devices = Arc::clone(&device_history);
@@ -128,16 +127,17 @@ impl ToolTelemetry {
         );
 
         let runtime_history = Arc::new(Mutex::new(RuntimeHistory::new(process_generation()?)));
-        let runtime_rollups =
-            Subscriber::new(&bus, &stable::topic::new().tool().runtime().rollup(), 128).await?;
+        let runtime_rollups = Subscriber::new(
+            &bus,
+            &stable::topic::client().tool().runtime().rollup(),
+            128,
+        )
+        .await?;
         let runtime_follow = DiagnosticPublisher::new(
             bus.clone(),
-            &stable::topic::internal::new(cap).tool().runtime().follow(),
+            &stable::topic::owner().tool().runtime().follow(),
         )?;
-        let runtime_snapshot_topic = stable::topic::internal::new(cap)
-            .tool()
-            .runtime()
-            .snapshot();
+        let runtime_snapshot_topic = stable::topic::owner().tool().runtime().snapshot();
         let runtime_snapshots = bus.declare_server(runtime_snapshot_topic.key()).await?;
 
         let ingest_history = Arc::clone(&runtime_history);

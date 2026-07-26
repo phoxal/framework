@@ -39,7 +39,7 @@ impl Producer {
             Self,
             Self::Api {
                 target: ctx
-                    .command_publisher(api::topic::new().drive().target())
+                    .command_publisher(api::topic::client().drive().target())
                     .await?,
             },
         ))
@@ -64,7 +64,7 @@ struct ConsumerApi {
 /// Subscribes `drive/target` and records what it receives into shared statics so
 /// the test can assert delivery after both runtimes have shut down. It plays the
 /// OWNER/reader of the `drive/target` command (the side that subscribes a command),
-/// so it acquires the topic through the owner (`internal`) builder.
+/// so it acquires the topic through the owner builder.
 #[phoxal::service(id = "consumer", config = (), api = ConsumerApi)]
 struct Consumer;
 
@@ -72,12 +72,11 @@ struct Consumer;
 impl Consumer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         Ok((
             Self,
             Self::Api {
                 target: ctx
-                    .subscriber(api::topic::internal::new(cap).drive().target(), 32)
+                    .subscriber(api::topic::owner().drive().target(), 32)
                     .await?,
             },
         ))

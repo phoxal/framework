@@ -22,7 +22,6 @@
 //! explicit `phoxal::raw` opt-in.
 
 pub mod abi;
-pub mod capability;
 pub mod codec;
 pub mod contract;
 pub mod error;
@@ -39,7 +38,6 @@ pub mod time;
 pub mod topic;
 
 pub use abi::{CodecId, encoding_string, parse_encoding_string};
-pub use capability::OwnerCap;
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,

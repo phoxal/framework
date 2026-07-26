@@ -47,23 +47,18 @@ impl VideoSource {
     fn camera_topic(
         &self,
     ) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::camera::Frame>> {
-        api::topic::new()
+        api::topic::client()
             .component(&self.capability.component_id)
             .camera(&self.capability.capability_id)
             .frame()
     }
 
     /// Video OWNS each `video/stream/{id}` node's state telemetry, so this is the
-    /// owner `Publish` side from the `internal` builder, which requires the
-    /// runner-minted owner capability (L2, plan #00).
+    /// owner `Publish` side from the owner builder.
     fn state_topic(
         &self,
-        cap: phoxal::bus::OwnerCap,
     ) -> phoxal::bus::Topic<phoxal::bus::Publish<api::video::stream::StreamState>> {
-        api::topic::internal::new(cap)
-            .video()
-            .stream(&self.stream_id)
-            .state()
+        api::topic::owner().video().stream(&self.stream_id).state()
     }
 
     fn capability_key(&self) -> String {
@@ -113,18 +108,15 @@ impl Video {
 impl Video {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let sources = build_video_sources(ctx.robot()?)?;
 
         let mut cameras = Vec::with_capacity(sources.len());
         let mut states = Vec::with_capacity(sources.len());
         for source in &sources {
             cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
-            states.push(ctx.state_publisher(source.state_topic(cap)).await?);
+            states.push(ctx.state_publisher(source.state_topic()).await?);
         }
-        let open = ctx.server(api::topic::new().video().open()).await?;
+        let open = ctx.server(api::topic::client().video().open()).await?;
 
         Ok((
             Self {
@@ -365,12 +357,8 @@ mod tests {
             rgb.camera_topic().key(),
             "v0.1/component/front_camera/camera/rgb/frame"
         );
-        // The owner topic builder requires the runner-minted `OwnerCap` (L2); the
-        // test mints one directly via the doc-hidden `__mint`, standing in for the
-        // runner.
-        let cap = phoxal::bus::OwnerCap::__mint();
         assert_eq!(
-            rgb.state_topic(cap).key(),
+            rgb.state_topic().key(),
             "v0.1/video/stream/front_camera_rgb/state"
         );
     }

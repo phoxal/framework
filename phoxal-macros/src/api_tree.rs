@@ -8,10 +8,9 @@
 //! (telemetry the owner publishes), or `topic <leaf>: query <Req> => <Resp>;`
 //! (request/response). `command` and `state` are both pub/sub on the wire; the
 //! role drives the side-branded builders (L1): the public client builder
-//! (`api::topic::new()...`) and the owner builder (`api::topic::internal::new(cap)...`)
+//! (`api::topic::client()...`) and the owner builder (`api::topic::owner()...`)
 //! return side-branded topics (`Publish`/`Subscribe`/`AskQuery`/`ServeQuery`), so
-//! taking the wrong side does not compile. The owner entry takes the runner-minted
-//! `OwnerCap` (L2). The role is also emitted as a `ROLE`
+//! taking the wrong side does not compile. The role is also emitted as a `ROLE`
 //! const on each body (D63). A topic's key and dynamism are
 //! derived from the node path, not from per-topic params; a topic whose node path
 //! contains at least one `(var)` node is dynamic, one with none is static.
@@ -92,7 +91,7 @@
 //! - `__phoxal_type_root` is seeded per top-level node in `topic`
 //!   (`pub use super::<node> as __phoxal_type_root_<node>;`, one hop from `topic`
 //!   to the version module that holds the type tree), then forwarded one hop into
-//!   `topic::internal` under the same name, then every builder module along that
+//!   `topic::owner` under the same name, then every builder module along that
 //!   node's subtree, client or owner side, any depth, imports it from its own
 //!   parent under the uniform local name `__phoxal_type_root`. A leaf's body
 //!   reference is then `self::__phoxal_type_root::<rest of the node path>::<Body>`:
@@ -207,7 +206,7 @@ struct TopicDef {
     /// [`TopicKind::PubSub`] on the wire, while `query` produces a
     /// [`TopicKind::Query`]. The role selects the SIDE BRAND in the generated
     /// builders (L1): per (role, side) a leaf returns `Publish` / `Subscribe` /
-    /// `AskQuery` / `ServeQuery`, so the public (client) and `internal` (owner)
+    /// `AskQuery` / `ServeQuery`, so the public (client) and owner builders
     /// builders return different branded topics. It is also emitted as
     /// `ContractBody::ROLE` plus the matching temporal-role marker impl, which
     /// is what fixes the robot time a publisher of the body can express (#952
@@ -500,7 +499,7 @@ impl Parse for TopicDef {
         // carries request/response. The role rides alongside the kind and
         // selects the side brand in the generated builders (L1): a `command`
         // leaf is `Publish` on the public builder and `Subscribe` on
-        // `internal`; every owner-published role is the reverse.
+        // owner builder; every owner-published role is the reverse.
         let (kind, role) = if input.peek(kw::command) {
             input.parse::<kw::command>()?;
             let body: Ident = input.parse()?;
@@ -1210,12 +1209,11 @@ fn topic_key(node_key_prefix: &str, leaf: &TopicLeaf) -> String {
 /// The api tree emits the builder tree TWICE over identical node/leaf structure
 /// and keys, differing only by the brand each leaf carries:
 ///
-/// - [`Side::Client`] - the PUBLIC `topic::new()...` tree. A `command` leaf yields
+/// - [`Side::Client`] - the PUBLIC `topic::client()...` tree. A `command` leaf yields
 ///   `Topic<Publish<B>>` (the client sends commands), a `state` leaf yields
 ///   `Topic<Subscribe<B>>` (the client observes state), and a `query` leaf yields
 ///   `Topic<AskQuery<Req, Resp>>` (the client calls).
-/// - [`Side::Owner`] - the `topic::internal::new(cap)...` tree (a deliberate,
-///   greppable, cap-gated owner opt-in; L2). The brands flip: `command` -> `Subscribe` (the owner
+/// - [`Side::Owner`] - the `topic::owner()...` tree. The brands flip: `command` -> `Subscribe` (the owner
 ///   reads its control input), `state` -> `Publish` (the owner emits telemetry),
 ///   `query` -> `ServeQuery` (the owner serves).
 #[derive(Clone, Copy)]
@@ -1235,9 +1233,9 @@ fn type_root_alias_ident(node_name: &Ident) -> Ident {
 
 /// Emit the api-local `topic` builder module with BOTH side trees (L1).
 ///
-/// The PUBLIC client tree lives directly under `topic` (`topic::new()` + a builder
-/// module per node); the OWNER tree lives under `topic::internal`
-/// (`topic::internal::new(cap)` + the same builder modules, one level deeper). Both
+/// The PUBLIC client tree lives directly under `topic` (`topic::client()` + a builder
+/// module per node); the OWNER tree lives under `topic::owner`
+/// (`topic::owner()` + the same builder modules, one level deeper). Both
 /// mirror the node tree and format identical keys - only the leaf brand differs by
 /// side. A dynamic node's method takes its variable as `impl Display` and carries
 /// it forward; a leaf method formats the final key from the carried vars.
@@ -1249,7 +1247,7 @@ fn type_root_alias_ident(node_name: &Ident) -> Ident {
 /// `topic` seeds one hidden alias per top-level node
 /// (`#[doc(hidden)] pub use super::component as __phoxal_type_root_component;`,
 /// a single, always-valid hop since `topic` is a direct child of the version
-/// module) and `internal` re-forwards each of them one hop further. Every builder
+/// module) and `owner` re-forwards each of them one hop further. Every builder
 /// module under either side then imports its own top-level node's alias - a
 /// single hop from its immediate parent - under the uniform local name
 /// `__phoxal_type_root`, and deeper builder modules just forward THAT one hop at
@@ -1283,19 +1281,17 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
 
     Ok(quote! {
         /// Api-local topic builders (D61), side-branded for L1 (plan #00). The
-        /// PUBLIC `topic::new()...` chain is the CLIENT side; the OWNER side is the
-        /// deliberate, greppable, capability-gated opt-in at
-        /// [`topic::internal::new(cap)`](internal::new) (L2: it requires the
-        /// runner-minted `OwnerCap`). Every leaf binds the topic's node-path/kind to
-        /// a version-local body and the side it grants.
+        /// PUBLIC `topic::client()...` chain is the CLIENT side; the OWNER side is
+        /// the equally explicit [`topic::owner()`](owner). Every leaf binds the
+        /// topic's node-path/kind to a version-local body and the side it grants.
         pub mod topic {
             /// Begin a CLIENT topic path for this API version.
-            pub fn new() -> Root {
+            pub fn client() -> Root {
                 Root
             }
 
-            /// Root of the client topic builder chain. `#[non_exhaustive]` so the
-            /// only way to start a path is `topic::new()` (no direct `Root` literal).
+            /// Root of the client topic builder chain. `#[non_exhaustive]` keeps
+            /// [`client()`](self::client) as its sole public entry point.
             #[non_exhaustive]
             pub struct Root;
             impl Root {
@@ -1309,32 +1305,17 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
 
             #client_builder_mods
 
-            /// Owner-side topic builders (L1 + L2, plan #00). `internal::new(cap)...`
-            /// is the deliberate, greppable owner opt-in: a participant acquires the
-            /// topics of its OWN node here, getting the publish/subscribe/serve side
-            /// the owner must take (the inverse of the client brands). Consumed
-            /// topics still go through the public [`new()`](self::new) chain.
-            ///
-            /// The entry requires the runner-minted `OwnerCap` (Layer 2): on the
-            /// documented surface, owning a topic needs a capability obtained from
-            /// `phoxal::SetupContext::owner_capability()`, so it cannot happen by
-            /// accident.
-            pub mod internal {
-                /// Begin an OWNER topic path for this API version.
-                ///
-                /// Requires the runner-minted [`OwnerCap`](::phoxal_bus::OwnerCap)
-                /// (Layer 2): pass `ctx.owner_capability()`. The cap is consumed
-                /// only at this entry - it is not threaded through node methods or
-                /// leaves.
-                pub fn new(_cap: ::phoxal_bus::OwnerCap) -> Root {
-                    Root
-                }
+            /// Begin an OWNER topic path for this API version.
+            pub fn owner() -> owner::Root {
+                owner::Root
+            }
 
-                /// Root of the owner topic builder chain. `#[non_exhaustive]` so it
-                /// cannot be constructed by a direct `internal::Root` literal - the
-                /// ONLY entry is `internal::new(cap)`, which closes the L2 owner-cap
-                /// gate (a bare `Root` would otherwise reach `.node().leaf()` with no
-                /// cap).
+            /// Owner-side topic builders. A participant acquires topics of its OWN
+            /// node here, getting the publish/subscribe/serve side it must take.
+            /// Consumed topics still go through [`client()`](self::client).
+            pub mod owner {
+                /// Root of the owner topic builder chain. `#[non_exhaustive]` keeps
+                /// [`owner()`](super::owner) as its sole public entry point.
                 #[non_exhaustive]
                 pub struct Root;
                 impl Root {
@@ -1342,7 +1323,7 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
                 }
 
                 // Forward each top-level node's type-tree alias one more hop, from
-                // `topic` into `internal` (still a single, always-valid hop).
+                // `topic` into `owner` (still a single, always-valid hop).
                 #type_root_forwards
 
                 #owner_builder_mods
@@ -1495,7 +1476,7 @@ fn expand_builder_module(
     // Self-contained absolute path to this top-level node's type-tree (D1): at the
     // top of a top-level node's builder subtree (`ancestors` empty) import the
     // alias `expand_topic_module` seeded one hop up (in `topic` for the client
-    // side, in `topic::internal` for the owner side - both are that alias's direct
+    // side, in `topic::owner` for the owner side - both are that alias's direct
     // parent). Every deeper builder module just re-forwards it one more hop under
     // the same local name, so a leaf at any depth reaches its body type through
     // `self::__phoxal_type_root` with no supers count.
@@ -1518,11 +1499,8 @@ fn expand_builder_module(
             #type_root_import
 
             #[doc = #builder_doc]
-            // `#[non_exhaustive]` blocks cross-crate construction by struct literal,
-            // so a node builder (incl. an empty static-node `Builder`) is only
-            // reachable through the chain from `topic::new()` / `internal::new(cap)`.
-            // Without this, an owner-side empty `Builder {}` could be built directly,
-            // bypassing the L2 owner-cap gate.
+            // Keep a path builder reachable only through its parent builder, so
+            // `client()` and `owner()` remain the explicit entry points.
             #[non_exhaustive]
             pub struct Builder {
                 #(#field_decls,)*
@@ -1541,7 +1519,7 @@ fn expand_builder_module(
 /// The branded `Kind` type for a builder leaf, side-aware (L1, plan #00).
 ///
 /// The body path is built from `self::__phoxal_type_root` (this top-level node's
-/// type-tree alias, forwarded one hop at a time down from `topic`/`topic::internal`;
+/// type-tree alias, forwarded one hop at a time down from `topic`/`topic::owner`;
 /// see [`expand_topic_module`] and [`expand_builder_module`]), followed by the node
 /// path's segments after the top-level one (which the alias already denotes), then
 /// the body ident. This is a fixed-shape reference that never depends on how deep

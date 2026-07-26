@@ -26,7 +26,7 @@ impl RawBus {
         Ok((
             Self,
             Self::Api {
-                target: ctx.command_publisher(api::topic::new().drive().target()).await?,
+                target: ctx.command_publisher(api::topic::client().drive().target()).await?,
             },
         ))
     }

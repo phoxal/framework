@@ -1,3 +1,5 @@
+mod bus;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_tool_bus::ToolBus>()
+    phoxal::run::<bus::ToolBus>()
 }

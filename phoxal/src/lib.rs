@@ -63,8 +63,8 @@
 //!     #[setup]
 //!     async fn setup(ctx: &mut SetupContext<Self>, _config: Self::Config) -> Result<(Self, Self::Api)> {
 //!         Ok((Self, Self::Api {
-//!             state:  ctx.latest(api::topic::new().drive().state()).await?,
-//!             target: ctx.command_publisher(api::topic::new().drive().target()).await?,
+//!             state:  ctx.latest(api::topic::client().drive().state()).await?,
+//!             target: ctx.command_publisher(api::topic::client().drive().target()).await?,
 //!         }))
 //!     }
 //!
@@ -94,7 +94,7 @@
 //! - `#[phoxal::service(id = "…")]` links the participant state struct to its
 //!   `Config`/`Api` types and records its identity.
 //! - All handles are built in `#[setup]` from api-local topic builders
-//!   (`api::topic::new().drive().state()`) and returned as the `Api` value
+//!   (`api::topic::client().drive().state()`) and returned as the `Api` value
 //!   alongside the participant state.
 //! - `#[step(hz = ...)]` is the scheduled control loop; the runner owns timing and
 //!   delivers the step token via [`StepContext`](participant::StepContext), and
@@ -189,10 +189,10 @@ pub mod bus {
         CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DiagnosticContract,
         DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
         LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
-        Observed, OwnerCap, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError,
-        QueryFailure, Result, RobotInstant, ServeQuery, ServerResult, StateContract,
-        StatePublisher, StepStamp, StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority,
-        TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
+        Observed, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure,
+        Result, RobotInstant, ServeQuery, ServerResult, StateContract, StatePublisher, StepStamp,
+        StepToken, Subscribe, Subscriber, TimeWindow, TimelineAuthority, TimelineId,
+        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
         WorldStepToken, encoding_string,
     };
 }

@@ -1,3 +1,5 @@
+mod video;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_service_video::Video>()
+    phoxal::run::<video::Video>()
 }

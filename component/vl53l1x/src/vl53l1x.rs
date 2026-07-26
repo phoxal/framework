@@ -34,9 +34,6 @@ struct RangeSpec {
 impl Vl53l1x {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
-        // (`internal`) topic builder requires. This driver OWNS its component node.
-        let cap = ctx.owner_capability();
         let instance = ctx.component()?.to_string();
         let slots = {
             let robot = ctx.robot()?;
@@ -69,7 +66,7 @@ impl Vl53l1x {
         for slot in slots {
             range.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&instance)
                         .range(&slot.capability_id)
                         .sample(),

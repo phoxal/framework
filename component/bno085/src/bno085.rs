@@ -31,9 +31,6 @@ struct CapabilitySchedule {
 impl Bno085 {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the owner
-        // (`internal`) topic builder requires. This driver OWNS its component node.
-        let cap = ctx.owner_capability();
         let instance = ctx.component()?.to_string();
         let (imu_slots, accelerometer_slots, gyroscope_slots) = {
             let robot = ctx.robot()?;
@@ -75,7 +72,7 @@ impl Bno085 {
         for slot in imu_slots {
             imu.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&instance)
                         .imu(&slot.capability_id)
                         .sample(),
@@ -90,7 +87,7 @@ impl Bno085 {
         for slot in accelerometer_slots {
             accelerometer.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&instance)
                         .accelerometer(&slot.capability_id)
                         .sample(),
@@ -105,7 +102,7 @@ impl Bno085 {
         for slot in gyroscope_slots {
             gyroscope.push(
                 ctx.measurement_publisher(
-                    api::topic::internal::new(cap)
+                    api::topic::owner()
                         .component(&instance)
                         .gyroscope(&slot.capability_id)
                         .sample(),

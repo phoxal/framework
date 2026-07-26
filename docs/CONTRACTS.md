@@ -145,8 +145,8 @@ The handle is `Querier<Req, Resp>` and the caller gets `Result<Resp, QueryError>
 
 ### Raw retention-tool coherence boundary
 
-The retention tools serve `v0.1::tool::{log,bus,runtime,device}` through their
-raw-bus owner capability. This is an explicit current coherence gap: tools are
+The retention tools serve `v0.1::tool::{log,bus,runtime,device}` through raw-bus
+owner-side topic builders. This is an explicit current coherence gap: tools are
 intentionally clockless, raw-bus-only participants and their authoring model
 fixes `Api = ()`, so these served query/state edges are not embedded in the
 participant metadata that `cargo xtask coherence-check` reads. Pretending
@@ -156,7 +156,7 @@ second contract authority.
 Until tool authoring gains a dedicated served-API metadata surface, the proof is
 instead the single `phoxal_api_tree!` declaration (which owns body and topic
 identity), its exact topic-key and MessagePack round-trip tests, and the
-owner-capability constructors used by both servers/publishers. A migration of
+owner-side topic builders used by both servers/publishers. A migration of
 any retained surface must update its raw producer and consumer together; the
 coherence gate cannot currently detect a stranded consumer for these raw
 edges. This limitation is canonical and deliberate, not a claim that the raw

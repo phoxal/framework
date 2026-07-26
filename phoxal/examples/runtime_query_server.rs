@@ -32,7 +32,7 @@ impl AssetStore {
         Ok((
             Self { assets },
             Self::Api {
-                get: ctx.server(api::topic::new().asset().get()).await?,
+                get: ctx.server(api::topic::client().asset().get()).await?,
             },
         ))
     }

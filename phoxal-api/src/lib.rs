@@ -16,7 +16,7 @@
 //!   [`ApiVersion::ID`] is the concrete wire identity (for example `"v0.1"`);
 //! - the version-local wire bodies, one `pub mod` per contract node holding plain
 //!   serde structs/enums and their [`ContractBody`] impls;
-//! - an api-local `topic` builder rooted at `topic::new()`.
+//! - an api-local `topic` builder rooted at `topic::client()`.
 //!
 //! From 1.0, published concrete revisions are immutable. Before 1.0 the
 //! framework may make an approved in-place breaking edit without adding a shim
@@ -69,35 +69,29 @@
 //! # The api-local topic builder
 //!
 //! Each version module exposes a `topic` builder that mirrors the node tree:
-//! `api::topic::new()` returns a root, one method per top-level node walks down the
+//! `api::topic::client()` returns a root, one method per top-level node walks down the
 //! tree, a dynamic node's method takes its variable as `impl Display`, and a leaf
 //! method binds the topic's side-branded kind to its version-local body. For
-//! example `api::topic::new().drive().state()` yields a
+//! example `api::topic::client().drive().state()` yields a
 //! `Topic<Subscribe<drive::State>>` (the CLIENT observes the owner's `state`) over
 //! the version-qualified key `v0.1/drive/state`, and
-//! `api::topic::new().component("base").motor("left").command()` fills the dynamic
+//! `api::topic::client().component("base").motor("left").command()` fills the dynamic
 //! segments to produce `v0.1/component/base/motor/left/command`. Because the
 //! builder is generated from the same tree as `TOPIC`, the built key and the
 //! documented key stay in lockstep.
 //!
-//! ## Owner side: `topic::internal`
+//! ## Owner side: `topic::owner`
 //!
-//! The PUBLIC `topic::new()...` chain above is the **client** side. The matching
-//! **owner** side lives at `api::topic::internal::new(cap)...` (L1 + L2, plan #00):
+//! The PUBLIC `topic::client()...` chain above is the **client** side. The matching
+//! **owner** side lives at `api::topic::owner()...`:
 //! the same node tree and keys, but the leaf brands flip so the owner gets the side
-//! it must take - `api::topic::internal::new(cap).drive().state()` is
+//! it must take - `api::topic::owner().drive().state()` is
 //! `Topic<Publish<drive::State>>` (the owner publishes its telemetry), and
-//! `api::topic::internal::new(cap).drive().target()` is `Topic<Subscribe<drive::Target>>`
+//! `api::topic::owner().drive().target()` is `Topic<Subscribe<drive::Target>>`
 //! (the owner reads its command input). A query owner reaches its `ServeQuery`
-//! brand the same way. The `internal` chain is the deliberate, greppable owner
-//! opt-in; a participant acquires the topics of its OWN node through it and everything
-//! it consumes through the public chain.
-//!
-//! The `internal::new` entry requires the runner-minted owner capability
-//! ([`OwnerCap`](phoxal_bus::OwnerCap), Layer 2): a participant obtains it from
-//! `phoxal::SetupContext::owner_capability()` and passes it in. On the documented
-//! surface, owning a topic therefore cannot happen by accident - only with a
-//! capability the runner mints.
+//! brand the same way. The owner chain makes that ownership explicit; a
+//! participant acquires the topics of its OWN node through it and everything it
+//! consumes through the client chain.
 
 use phoxal_macros::phoxal_api_tree;
 

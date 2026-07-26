@@ -1,3 +1,5 @@
+mod joypad;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_tool_joypad::ToolJoypad>()
+    phoxal::run::<joypad::ToolJoypad>()
 }

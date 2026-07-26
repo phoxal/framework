@@ -34,14 +34,11 @@ pub struct Localize {
 impl Localize {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let odometry = ctx
-            .subscriber(api::topic::new().odometry().state(), 32)
+            .subscriber(api::topic::client().odometry().state(), 32)
             .await?;
         let state = ctx
-            .state_publisher(api::topic::internal::new(cap).localize().state())
+            .state_publisher(api::topic::owner().localize().state())
             .await?;
 
         Ok((

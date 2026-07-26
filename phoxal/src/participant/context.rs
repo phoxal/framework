@@ -7,18 +7,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bus::{OwnerCap, RobotInstant, StepToken, TimelineId};
+use crate::bus::{RobotInstant, StepToken, TimelineId};
 use crate::model::v0::Robot;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::Bus;
 
 /// The sole IO-construction point, handed to `#[setup]` (D18). Builders live
 /// on [`SetupContextApiExt`](super::api::SetupContextApiExt) (`R: Participant`);
-/// see that trait for the side-brand/owner-capability contract each builder
+/// see that trait for the side-brand contract each builder
 /// enforces.
 pub struct SetupContext<R> {
     bus: Bus,
-    owner_cap: OwnerCap,
     robot: Option<Arc<Robot>>,
     robot_root: Option<PathBuf>,
     component_instance: Option<String>,
@@ -33,14 +32,12 @@ pub struct SetupContext<R> {
 impl<R> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
-        owner_cap: OwnerCap,
         robot: Option<Arc<Robot>>,
         robot_root: Option<PathBuf>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
             bus,
-            owner_cap,
             robot,
             robot_root,
             component_instance,
@@ -109,13 +106,6 @@ impl<R> SetupContext<R> {
     /// tool-only [`Self::raw_bus`] accessor.
     pub(crate) fn bus(&self) -> &Bus {
         &self.bus
-    }
-
-    /// The runner-minted owner capability (plan #00 L2). In-crate accessor the
-    /// NEW model's `SetupContextApiExt::owner_capability` (`participant::api`)
-    /// reads the raw field through.
-    pub(crate) fn owner_cap(&self) -> OwnerCap {
-        self.owner_cap
     }
 
     /// The bound `robot.components` instance, if any. In-crate accessor for the

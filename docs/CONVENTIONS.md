@@ -44,14 +44,14 @@ the only source of keys, and the wire body never appears in the key
 
 - Domain streams: `<revision>/<domain>/<stream>` (e.g.
   `<revision>/drive/state`, `<revision>/drive/target`), built as
-  `api::topic::new().drive().state()`.
+  `api::topic::client().drive().state()`.
 - Domain queries: a single `<revision>/<domain>/<query>` key carrying request + response
   bodies (e.g. `<revision>/frame/lookup`, `<revision>/map/submap`,
   `<revision>/asset/get`).
 - Per-instance component capabilities:
   `<revision>/component/<instance>/<kind>/<capability>/<stream>` (e.g.
   `<revision>/component/front_left_drive/motor/motor/command`), built as
-  `api::topic::new().component(instance).motor(capability).command()`.
+  `api::topic::client().component(instance).motor(capability).command()`.
   These are dynamic keys resolved from the robot model in `#[setup]`.
 - The runner applies the multi-robot root `<namespace>/robots/<robot-id>/` to every
   version-qualified key at the transport layer; service code obtains that key

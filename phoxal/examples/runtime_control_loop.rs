@@ -33,9 +33,9 @@ impl AvoidObstacles {
             Self,
             Self::Api {
                 // Api-local topic builders bind each handle's body to its version.
-                state: ctx.latest(api::topic::new().drive().state()).await?,
+                state: ctx.latest(api::topic::client().drive().state()).await?,
                 target: ctx
-                    .command_publisher(api::topic::new().drive().target())
+                    .command_publisher(api::topic::client().drive().target())
                     .await?,
             },
         ))

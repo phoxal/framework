@@ -81,7 +81,6 @@ pub struct Safety {
 impl Safety {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         let robot = ctx.robot()?;
         let bindings = capability_bindings(robot, |capability| {
             matches!(capability, Capability::Range(_))
@@ -93,7 +92,7 @@ impl Safety {
         for binding in &bindings {
             ranges.push(
                 ctx.subscriber(
-                    api::topic::new()
+                    api::topic::client()
                         .component(&binding.component_id)
                         .range(&binding.capability_id)
                         .sample(),
@@ -106,7 +105,7 @@ impl Safety {
         for binding in &battery_bindings {
             batteries.push(
                 ctx.subscriber(
-                    api::topic::new()
+                    api::topic::client()
                         .component(&binding.component_id)
                         .battery(&binding.capability_id)
                         .state(),
@@ -124,22 +123,22 @@ impl Safety {
             },
             Self::Api {
                 localization: ctx
-                    .subscriber(api::topic::new().localize().state(), 32)
+                    .subscriber(api::topic::client().localize().state(), 32)
                     .await?,
                 map: ctx
-                    .subscriber(api::topic::new().map().revision(), 32)
+                    .subscriber(api::topic::client().map().revision(), 32)
                     .await?,
-                map_submap: ctx.querier(api::topic::new().map().submap()).await?,
+                map_submap: ctx.querier(api::topic::client().map().submap()).await?,
                 drive: ctx
-                    .subscriber(api::topic::new().drive().state(), 32)
+                    .subscriber(api::topic::client().drive().state(), 32)
                     .await?,
                 batteries,
                 ranges,
                 constraints: ctx
-                    .state_publisher(api::topic::internal::new(cap).safety().constraints())
+                    .state_publisher(api::topic::owner().safety().constraints())
                     .await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).safety().state())
+                    .state_publisher(api::topic::owner().safety().state())
                     .await?,
             },
         ))

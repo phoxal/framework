@@ -35,11 +35,10 @@
 //!   redesign (a separate read-only snapshot view type excluding `Subscriber`
 //!   fields); until it lands, P-convert must uphold the rule per participant.
 //!
-//! The owner-capability / component / raw-bus setup accessors are **not**
-//! deferred: the surface exposes `owner_capability()` for all participants,
-//! `component()` for drivers and simulators, and `raw_bus()` for tools (see
-//! [`SetupContextApiExt`], [`SetupContextDriverExt`],
-//! [`SetupContextSimulatorExt`], [`SetupContextToolExt`] below).
+//! The component and raw-bus setup accessors are **not** deferred: the surface
+//! exposes `component()` for drivers and simulators, and `raw_bus()` for tools
+//! (see [`SetupContextDriverExt`], [`SetupContextSimulatorExt`],
+//! [`SetupContextToolExt`] below).
 
 use std::future::Future;
 use std::pin::Pin;
@@ -48,8 +47,7 @@ use std::sync::Arc;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
     DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
-    OwnerCap, Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineId,
-    Topic,
+    Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineId, Topic,
 };
 use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
@@ -607,22 +605,6 @@ pub trait SetupContextApiExt<R: Participant> {
     where
         R::Api: DeclaresServe<Req, Resp>;
 
-    /// The runner-minted owner capability (plan #00 Layer 2) - the controlled
-    /// path a participant takes to OWN its own topics. Bind it once in
-    /// `#[setup]` and pass it to the owner builder entry
-    /// `api::topic::internal::new(cap)`:
-    ///
-    /// ```ignore
-    /// let cap = ctx.owner_capability();
-    /// let state = ctx
-    ///     .state_publisher(api::topic::internal::new(cap).drive().state())
-    ///     .await?;
-    /// ```
-    ///
-    /// Every real participant starts here, so it is on the base surface (all
-    /// `Participant` kinds).
-    fn owner_capability(&self) -> OwnerCap;
-
     /// The resolved robot model (`robot.yaml` + components + structure, D33):
     /// participants build their typed state from it. Present only when the
     /// runner was launched with a robot root; errors otherwise.
@@ -718,10 +700,6 @@ impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
         // compile here); dispatch itself is runner-side (see `Server`'s docs).
         let _ = topic;
         Ok(Server::new())
-    }
-
-    fn owner_capability(&self) -> OwnerCap {
-        self.owner_cap()
     }
 
     fn robot(&self) -> crate::Result<&crate::model::v0::Robot> {

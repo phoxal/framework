@@ -18,7 +18,7 @@ struct ToolThinRunnerLifecycle {
 impl ToolThinRunnerLifecycle {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let publisher = CommandPublisher::new(ctx.raw_bus(), &api::topic::new().motion().manual())?;
+        let publisher = CommandPublisher::new(ctx.raw_bus(), &api::topic::client().motion().manual())?;
         Ok((Self { publisher }, ()))
     }
 

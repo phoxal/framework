@@ -176,7 +176,7 @@ pub(crate) fn step_scheduler_for(
 /// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
 /// the other server tasks, aborted at shutdown): this subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
-/// observes (`api::topic::new().simulation().clock()`, the CLIENT side of
+/// observes (`api::topic::client().simulation().clock()`, the CLIENT side of
 /// the `Simulator`'s owner-side publish - both sides format the identical
 /// `simulation/clock` key, D61/D62), then per received sample:
 ///
@@ -205,7 +205,7 @@ pub(crate) fn spawn_simulation_clock_feed(
 ) -> crate::Result<JoinHandle<()>> {
     let bus = bus.clone();
     Ok(tokio::spawn(async move {
-        let topic = api::topic::new().simulation().clock();
+        let topic = api::topic::client().simulation().clock();
         let subscriber = match Subscriber::<api::simulation::Clock>::new(&bus, &topic, 1).await {
             Ok(subscriber) => subscriber,
             Err(error) => {
@@ -442,12 +442,8 @@ where
         None => None,
     };
 
-    // Mint the single plan #00 Layer 2 owner capability the participant uses to opt
-    // into owning its own topics (via `ctx.owner_capability()` ->
-    // `api::topic::internal::new(cap)`). The runner is the only minter.
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
-        ::phoxal_bus::OwnerCap::__mint(),
         robot,
         launch.robot_root.clone(),
         launch.component_instance.clone(),
@@ -1237,9 +1233,7 @@ mod tests {
 
         let clock_publisher = StatePublisher::<api::simulation::Clock>::new(
             bus.clone(),
-            &api::topic::internal::new(crate::bus::OwnerCap::__mint())
-                .simulation()
-                .clock(),
+            &api::topic::owner().simulation().clock(),
         )
         .expect("clock publisher should attach");
         let mut authority =

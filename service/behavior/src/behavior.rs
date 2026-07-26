@@ -83,7 +83,6 @@ pub struct BehaviorService {
 impl BehaviorService {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         let root = ctx.robot_root()?;
         let behavior_config = ctx.robot()?.manifest.behavior.clone();
         // The topology reserves this participant before the behavior design is
@@ -113,32 +112,32 @@ impl BehaviorService {
             },
             Self::Api {
                 command: ctx
-                    .subscriber(api::topic::internal::new(cap).behavior().command(), 32)
+                    .subscriber(api::topic::owner().behavior().command(), 32)
                     .await?,
                 request: ctx
-                    .subscriber(api::topic::internal::new(cap).behavior().request(), 32)
+                    .subscriber(api::topic::owner().behavior().request(), 32)
                     .await?,
                 navigation_result: ctx
-                    .subscriber(api::topic::new().navigation().result(), 32)
+                    .subscriber(api::topic::client().navigation().result(), 32)
                     .await?,
-                localization: ctx.latest(api::topic::new().localize().state()).await?,
-                map_revision: ctx.latest(api::topic::new().map().revision()).await?,
-                motion_state: ctx.latest(api::topic::new().motion().state()).await?,
-                safety_state: ctx.latest(api::topic::new().safety().state()).await?,
+                localization: ctx.latest(api::topic::client().localize().state()).await?,
+                map_revision: ctx.latest(api::topic::client().map().revision()).await?,
+                motion_state: ctx.latest(api::topic::client().motion().state()).await?,
+                safety_state: ctx.latest(api::topic::client().safety().state()).await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).behavior().state())
+                    .state_publisher(api::topic::owner().behavior().state())
                     .await?,
                 snapshot: ctx
-                    .state_publisher(api::topic::internal::new(cap).behavior().snapshot())
+                    .state_publisher(api::topic::owner().behavior().snapshot())
                     .await?,
                 event: ctx
-                    .state_publisher(api::topic::internal::new(cap).behavior().event())
+                    .state_publisher(api::topic::owner().behavior().event())
                     .await?,
                 navigation_request: ctx
-                    .command_publisher(api::topic::new().navigation().request())
+                    .command_publisher(api::topic::client().navigation().request())
                     .await?,
                 power_command: ctx
-                    .command_publisher(api::topic::new().power().command())
+                    .command_publisher(api::topic::client().power().command())
                     .await?,
             },
         ))

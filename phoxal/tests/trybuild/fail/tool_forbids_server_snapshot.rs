@@ -23,7 +23,7 @@ impl ToolForbidsServerSnapshot {
         Ok((
             Self,
             Self::Api {
-                submap: ctx.server(api::topic::new().map().submap()).await?,
+                submap: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }

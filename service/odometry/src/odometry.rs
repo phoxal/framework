@@ -55,7 +55,7 @@ impl EncoderBinding {
     /// CONSUMES encoder samples (the encoder driver owns/publishes them), so this
     /// is the client `Subscribe` side from the public builder.
     fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
-        api::topic::new()
+        api::topic::client()
             .component(&self.component_id)
             .encoder(&self.capability_id)
             .sample()
@@ -129,9 +129,6 @@ pub struct Odometry {
 impl Odometry {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         let config = OdometryConfig::from_robot(ctx.robot()?)?;
 
         let mut left_encoders = Vec::with_capacity(config.left.len());
@@ -143,7 +140,7 @@ impl Odometry {
             right_encoders.push(ctx.subscriber(binding.topic(), 32).await?);
         }
         let state = ctx
-            .state_publisher(api::topic::internal::new(cap).odometry().state())
+            .state_publisher(api::topic::owner().odometry().state())
             .await?;
 
         Ok((

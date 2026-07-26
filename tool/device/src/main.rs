@@ -1,3 +1,5 @@
+mod device;
+
 fn main() -> phoxal::Result<()> {
-    phoxal::run::<phoxal_tool_device::ToolDevice>()
+    phoxal::run::<device::ToolDevice>()
 }

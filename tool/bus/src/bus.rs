@@ -8,7 +8,7 @@ use phoxal::prelude::*;
 #[cfg(test)]
 use phoxal::raw::encoding_string;
 use phoxal::raw::{
-    Bus, BusMetadata, Codec, CodecId, DiagnosticPublisher, MessagePack, OwnerCap, QueryFailure,
+    Bus, BusMetadata, Codec, CodecId, DiagnosticPublisher, MessagePack, QueryFailure,
     parse_encoding_string,
 };
 
@@ -111,8 +111,7 @@ impl ToolBus {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let bus = ctx.raw_bus();
-        let cap = ctx.owner_capability();
-        spawn_metrics(ctx, bus, cap).await?;
+        spawn_metrics(ctx, bus).await?;
         tracing::info!(target: "tool_bus", "bus observation ready");
         Ok((Self, ()))
     }
@@ -236,11 +235,7 @@ impl BusHistory {
 /// this tool. It does not amplify itself: the publish cadence is timer-driven,
 /// not triggered by inbound samples, so `Metrics` being itself mirrored and
 /// counted (like any other local topic) never feeds back into more publishes.
-async fn spawn_metrics(
-    ctx: &mut SetupContext<ToolBus>,
-    metrics_bus: Bus,
-    cap: OwnerCap,
-) -> Result<()> {
+async fn spawn_metrics(ctx: &mut SetupContext<ToolBus>, metrics_bus: Bus) -> Result<()> {
     let mirror_key_expr = mirror_key_expr(metrics_bus.root());
     let (mirror_tx, mut mirror_rx) = tokio::sync::mpsc::channel(METRICS_INGEST_QUEUE);
     let dropped_mirror_samples = Arc::new(AtomicU64::new(0));
@@ -280,9 +275,9 @@ async fn spawn_metrics(
 
     let follow_publisher = DiagnosticPublisher::new(
         metrics_bus.clone(),
-        &api::topic::internal::new(cap).tool().bus().follow(),
+        &api::topic::owner().tool().bus().follow(),
     )?;
-    let snapshot_topic = api::topic::internal::new(cap).tool().bus().snapshot();
+    let snapshot_topic = api::topic::owner().tool().bus().snapshot();
     let snapshots = metrics_bus.declare_server(snapshot_topic.key()).await?;
     let query_history = Arc::clone(&history);
     let query_counters = Arc::clone(&counters);
@@ -1457,14 +1452,11 @@ mod tests {
         config.participant = "bus".to_string();
         let producer = config.producer;
         let bus = phoxal::raw::Bus::open(config).await.expect("open bus");
-        let topic = api::topic::internal::new(OwnerCap::__mint())
-            .tool()
-            .bus()
-            .follow();
+        let topic = api::topic::owner().tool().bus().follow();
         let publisher = DiagnosticPublisher::new(bus.clone(), &topic).expect("metrics publisher");
         let subscriber = phoxal::raw::Subscriber::<api::tool::bus::Follow>::new(
             &bus,
-            &api::topic::new().tool().bus().follow(),
+            &api::topic::client().tool().bus().follow(),
             1,
         )
         .await

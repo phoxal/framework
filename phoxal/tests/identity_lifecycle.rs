@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use phoxal::api;
-use phoxal::bus::{OwnerCap, StatePublisher, TimelineAuthority, TimelineId};
+use phoxal::bus::{StatePublisher, TimelineAuthority, TimelineId};
 use phoxal::participant::{ClockMode, ParticipantLaunch};
 use phoxal::prelude::*;
 use phoxal::raw::{Bus, BusConfig, run_with_bus};
@@ -98,13 +98,8 @@ async fn advance_world(
 }
 
 fn clock_publisher(bus: &Bus) -> StatePublisher<api::simulation::Clock> {
-    StatePublisher::new(
-        bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
-            .simulation()
-            .clock(),
-    )
-    .expect("clock publisher should attach")
+    StatePublisher::new(bus.clone(), &api::topic::owner().simulation().clock())
+        .expect("clock publisher should attach")
 }
 
 /// Row 1: a restarted participant keeps the execution and the world history it

@@ -225,7 +225,7 @@ impl Cruise {
         Ok((
             Self { cruise_speed_mps: config.cruise_speed_mps },
             Self::Api {
-                manual: ctx.publisher(api::topic::new().motion().manual()).await?,
+                manual: ctx.publisher(api::topic::client().motion().manual()).await?,
             },
         ))
     }

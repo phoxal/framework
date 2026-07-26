@@ -75,9 +75,6 @@ pub struct MapState {
 impl Map {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        // Owner opt-in (plan #00 L2): the runner-minted capability that the
-        // owner (`internal`) topic builder requires.
-        let cap = ctx.owner_capability();
         Ok((
             Self {
                 grid: Arc::new(Grid::empty(64, 64, 0.05)),
@@ -87,15 +84,15 @@ impl Map {
             },
             Self::Api {
                 localize: ctx
-                    .subscriber(api::topic::new().localize().state(), 32)
+                    .subscriber(api::topic::client().localize().state(), 32)
                     .await?,
                 // Map OWNS the `map` node (its revision telemetry and the
-                // `map/submap` query it serves below) -> owner (`internal`)
+                // `map/submap` query it serves below) -> owner
                 // builder; `localize/state` is CONSUMED via the public builder.
                 revision: ctx
-                    .state_publisher(api::topic::internal::new(cap).map().revision())
+                    .state_publisher(api::topic::owner().map().revision())
                     .await?,
-                submap: ctx.server(api::topic::new().map().submap()).await?,
+                submap: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }

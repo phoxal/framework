@@ -32,8 +32,8 @@ use std::time::Duration;
 use phoxal::api;
 use phoxal::bus::ContractBody;
 use phoxal::bus::{
-    CommandPublisher, DEFAULT_QUERY_TIMEOUT, Latest, OwnerCap, Querier, RobotInstant,
-    StatePublisher, StepToken, TimelineAuthority, TimelineId,
+    CommandPublisher, DEFAULT_QUERY_TIMEOUT, Latest, Querier, RobotInstant, StatePublisher,
+    StepToken, TimelineAuthority, TimelineId,
 };
 use phoxal::participant::{ClockMode, ParticipantLaunch, TestClock, TimeUnsynchronized};
 use phoxal::prelude::*;
@@ -91,10 +91,10 @@ impl WallFollower {
             Self { steps: 0 },
             Self::Api {
                 target: ctx
-                    .command_publisher(api::topic::new().drive().target())
+                    .command_publisher(api::topic::client().drive().target())
                     .await?,
-                lookup: ctx.server(api::topic::new().frame().lookup()).await?,
-                submap: ctx.server(api::topic::new().map().submap()).await?,
+                lookup: ctx.server(api::topic::client().frame().lookup()).await?,
+                submap: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }
@@ -168,29 +168,25 @@ async fn new_model_participant_runs_through_a_real_bus() {
     // `WallFollower` publishes it from the client side below, so the
     // companion reads it from the OWNER side, exactly like
     // `tests/interop.rs`'s `Consumer` does for the same contract.
-    let target_latest = Latest::<api::drive::Target>::new(
-        &bus,
-        &api::topic::internal::new(OwnerCap::__mint())
-            .drive()
-            .target(),
-    )
-    .await
-    .expect("subscribe target");
+    let target_latest =
+        Latest::<api::drive::Target>::new(&bus, &api::topic::owner().drive().target())
+            .await
+            .expect("subscribe target");
     let runtime_latest = Latest::<api::tool::runtime::Rollup>::new(
         &bus,
-        &api::topic::new().tool().runtime().rollup(),
+        &api::topic::client().tool().runtime().rollup(),
     )
     .await
     .expect("subscribe runner performance");
     let lookup_querier = Querier::<api::frame::LookupRequest, api::frame::LookupResponse>::new(
         bus.clone(),
-        &api::topic::new().frame().lookup(),
+        &api::topic::client().frame().lookup(),
         DEFAULT_QUERY_TIMEOUT,
     )
     .expect("build lookup querier");
     let submap_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
-        &api::topic::new().map().submap(),
+        &api::topic::client().map().submap(),
         DEFAULT_QUERY_TIMEOUT,
     )
     .expect("build submap querier");
@@ -351,7 +347,6 @@ struct Drainer {
 impl Drainer {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         Ok((
             Self {
                 received: 0,
@@ -359,12 +354,17 @@ impl Drainer {
             },
             Self::Api {
                 incoming: ctx
-                    .subscriber(api::topic::internal::new(cap).drive().target(), 32)
+                    .subscriber(api::topic::owner().drive().target(), 32)
                     .await?,
                 battery: ctx
-                    .latest(api::topic::new().component("pack").battery("cell").state())
+                    .latest(
+                        api::topic::client()
+                            .component("pack")
+                            .battery("cell")
+                            .state(),
+                    )
                     .await?,
-                query: ctx.server(api::topic::new().map().submap()).await?,
+                query: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }
@@ -430,10 +430,10 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
     // of what `Drainer` subscribes. Two contracts, one bus, one participant.
     let target_pub = CommandPublisher::<api::drive::Target>::new(
         bus.clone(),
-        &api::topic::new().drive().target(),
+        &api::topic::client().drive().target(),
     )
     .expect("build target publisher");
-    let battery_topic = api::topic::internal::new(OwnerCap::__mint())
+    let battery_topic = api::topic::owner()
         .component("pack")
         .battery("cell")
         .state();
@@ -451,7 +451,7 @@ async fn subscriber_and_latest_survive_the_owned_arc_split() {
             .expect("build battery publisher");
     let query_querier = Querier::<api::map::SubmapRequest, api::map::SubmapResponse>::new(
         bus.clone(),
-        &api::topic::new().map().submap(),
+        &api::topic::client().map().submap(),
         DEFAULT_QUERY_TIMEOUT,
     )
     .expect("build submap querier");
@@ -562,7 +562,7 @@ impl Counter {
             Self,
             Self::Api {
                 target: ctx
-                    .command_publisher(api::topic::new().drive().target())
+                    .command_publisher(api::topic::client().drive().target())
                     .await?,
             },
         ))
@@ -648,7 +648,7 @@ impl SimClockStepper {
             Self,
             Self::Api {
                 target: ctx
-                    .command_publisher(api::topic::new().drive().target())
+                    .command_publisher(api::topic::client().drive().target())
                     .await?,
             },
         ))
@@ -694,7 +694,10 @@ impl NoStepResetObserver {
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
         let battery = ctx
             .subscriber(
-                api::topic::new().component("pack").battery("cell").state(),
+                api::topic::client()
+                    .component("pack")
+                    .battery("cell")
+                    .state(),
                 8,
             )
             .await?;
@@ -711,7 +714,7 @@ impl NoStepResetObserver {
             Self,
             Self::Api {
                 battery,
-                lookup: ctx.server(api::topic::new().frame().lookup()).await?,
+                lookup: ctx.server(api::topic::client().frame().lookup()).await?,
             },
         ))
     }
@@ -792,9 +795,7 @@ impl HostDrivenTool {
         let bus = ctx.raw_bus();
         let manual = phoxal::raw::Subscriber::<api::motion::ManualCommand>::new(
             &bus,
-            &api::topic::internal::new(ctx.owner_capability())
-                .motion()
-                .manual(),
+            &api::topic::owner().motion().manual(),
             8,
         )
         .await?;
@@ -864,7 +865,7 @@ async fn clockless_tool_keeps_host_work_and_raw_subscriptions_running() {
     bus_config.participant = participant_id.to_string();
     let bus = Bus::open(bus_config).await.expect("bus should open");
     let manual =
-        phoxal::raw::CommandPublisher::new(bus.clone(), &api::topic::new().motion().manual())
+        phoxal::raw::CommandPublisher::new(bus.clone(), &api::topic::client().motion().manual())
             .expect("manual publisher should attach");
 
     let mut launch = ParticipantLaunch::local(participant_id, "robot")
@@ -1051,8 +1052,8 @@ async fn slow_shutdown_hook_is_bounded_by_grace() {
 /// it, minus Webots itself.
 ///
 /// This publishes `simulation::Clock` samples the same way
-/// `simulator/webots-controller/src/lib.rs` does (owner-side publisher over
-/// `api::topic::internal::new(cap).simulation().clock()`, publishes an
+/// `simulator/webots-controller/src/webots_controller.rs` does (owner-side publisher over
+/// `api::topic::owner().simulation().clock()`, publishes an
 /// explicit `RobotInstant`), and proves three things the runner's wiring must
 /// get right:
 /// 1. with no clock samples published yet, the participant never steps;
@@ -1085,9 +1086,7 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     // runner subscribes the identical wire key (not a look-alike topic).
     let clock_publisher = StatePublisher::<api::simulation::Clock>::new(
         bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
-            .simulation()
-            .clock(),
+        &api::topic::owner().simulation().clock(),
     )
     .expect("clock publisher should attach");
     let first_timeline = TimelineId::from_raw(9).expect("timeline must be nonzero");
@@ -1095,15 +1094,10 @@ async fn simulation_mode_step_advances_only_with_the_clock_feed() {
     let higher_replacement = TimelineId::from_raw(12).expect("timeline must be nonzero");
     let mut authority =
         TimelineAuthority::__mint(first_timeline).expect("world authority should mint");
-    let target_subscriber = Subscriber::<api::drive::Target>::new(
-        &bus,
-        &api::topic::internal::new(OwnerCap::__mint())
-            .drive()
-            .target(),
-        16,
-    )
-    .await
-    .expect("target subscriber should attach");
+    let target_subscriber =
+        Subscriber::<api::drive::Target>::new(&bus, &api::topic::owner().drive().target(), 16)
+            .await
+            .expect("target subscriber should attach");
 
     let mut launch = ParticipantLaunch::local("sim-clock-stepper-1", "robot")
         .with_execution_origin(ExecutionOrigin::mint());
@@ -1348,14 +1342,12 @@ async fn no_step_service_observes_timeline_changes_and_installs_startup_barrier(
         .expect("bus should open");
     let clock = StatePublisher::<api::simulation::Clock>::new(
         bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
-            .simulation()
-            .clock(),
+        &api::topic::owner().simulation().clock(),
     )
     .expect("clock publisher should attach");
     let battery = StatePublisher::<api::component::battery::State>::new(
         bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
+        &api::topic::owner()
             .component("pack")
             .battery("cell")
             .state(),
@@ -1363,7 +1355,7 @@ async fn no_step_service_observes_timeline_changes_and_installs_startup_barrier(
     .expect("battery publisher should attach");
     let lookup = Querier::<api::frame::LookupRequest, api::frame::LookupResponse>::new(
         bus.clone(),
-        &api::topic::new().frame().lookup(),
+        &api::topic::client().frame().lookup(),
         DEFAULT_QUERY_TIMEOUT,
     )
     .expect("lookup querier should attach");
@@ -1466,9 +1458,7 @@ async fn reset_error_faults_the_runner_and_still_runs_teardown() {
         .expect("bus should open");
     let clock = StatePublisher::<api::simulation::Clock>::new(
         bus.clone(),
-        &api::topic::internal::new(OwnerCap::__mint())
-            .simulation()
-            .clock(),
+        &api::topic::owner().simulation().clock(),
     )
     .expect("clock publisher should attach");
     let traffic = tokio::spawn(async move {

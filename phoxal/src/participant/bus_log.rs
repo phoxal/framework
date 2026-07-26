@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api;
-use phoxal_bus::{Bus, DiagnosticPublisher, OwnerCap};
+use phoxal_bus::{Bus, DiagnosticPublisher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::field::{Field, Visit};
@@ -354,9 +354,7 @@ async fn drain_loop(
     participant_id: String,
     mut receiver: mpsc::Receiver<LogRecord>,
 ) {
-    let topic = api::topic::internal::new(OwnerCap::__mint())
-        .logs(&participant_id)
-        .topic();
+    let topic = api::topic::owner().logs(&participant_id).topic();
     let publisher = match DiagnosticPublisher::<api::logs::Event>::new(bus, &topic) {
         Ok(publisher) => publisher,
         Err(_) => return,

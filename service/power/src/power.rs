@@ -33,7 +33,6 @@ pub struct Power {
 impl Power {
     #[setup]
     async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        let cap = ctx.owner_capability();
         let executor = SystemdExecutor::detect().map(|executor| Arc::new(executor) as _);
         Ok((
             Self {
@@ -42,10 +41,10 @@ impl Power {
             },
             Self::Api {
                 commands: ctx
-                    .subscriber(api::topic::internal::new(cap).power().command(), 32)
+                    .subscriber(api::topic::owner().power().command(), 32)
                     .await?,
                 state: ctx
-                    .state_publisher(api::topic::internal::new(cap).power().state())
+                    .state_publisher(api::topic::owner().power().state())
                     .await?,
             },
         ))
