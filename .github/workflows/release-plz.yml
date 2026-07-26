@@ -54,6 +54,9 @@ jobs:
     outputs:
       publish: ${{ steps.train.outputs.publish }}
       crates: ${{ steps.train.outputs.crates }}
+      source: ${{ steps.train.outputs.source }}
+      require-started: ${{ steps.train.outputs.require_started }}
+      restore-tag: ${{ steps.train.outputs.restore_tag }}
       version: ${{ steps.train.outputs.version }}
       tag: ${{ steps.train.outputs.tag }}
     steps:
@@ -85,12 +88,9 @@ jobs:
               echo "registry resume must run from main" >&2
               exit 1
             }
-            git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null || {
-              echo "registry resume needs an existing $tag; nothing was published yet" >&2
-              exit 1
-            }
-            # Only a train whose libraries really are live may resume: that is
-            # what makes re-running the registry leg alone coherent.
+            # Only a train whose libraries are already live may resume: that is
+            # what makes re-running the registry leg alone coherent, and those
+            # versions are immutable so they cannot be redone anyway.
             for crate in phoxal-bus phoxal-macros phoxal-api phoxal; do
               curl --fail --silent \
                 --user-agent "phoxal-release-verifier/1.0 (https://github.com/phoxal/framework)" \
@@ -99,9 +99,40 @@ jobs:
                   exit 1
                 }
             done
-            echo "resuming the registry leg for $tag"
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "crates=false" >> "$GITHUB_OUTPUT"
+            # Package from the PREPARED RELEASE COMMIT, never from current main
+            # and never from the tag. The tag is created wherever HEAD happened
+            # to be when release-plz ran - `v0.41.2` points at 3433a6c, three
+            # commits past its own release commit - so only the release commit
+            # identifies the source these versions describe.
+            release_subject="chore(release): release $tag"
+            source="$(git log --format=%H --fixed-strings --grep="$release_subject" | head -1)"
+            [[ -n "$source" ]] || {
+              echo "no $release_subject commit found; nothing to resume" >&2
+              exit 1
+            }
+            git merge-base --is-ancestor "$source" HEAD || {
+              echo "$release_subject is not an ancestor of main" >&2
+              exit 1
+            }
+            if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
+              # The tag exists, so the crates.io leg completed normally. Only a
+              # publication that actually STARTED may be resumed - otherwise
+              # this mode would happily publish a brand-new first train at an
+              # already-tagged version. The registry leg enforces that.
+              echo "require_started=true" >> "$GITHUB_OUTPUT"
+            else
+              # Libraries live but no tag: release-plz died between publishing
+              # and tagging. That state cannot be reached by rerunning it, so
+              # recreate the tag at the release commit and carry on.
+              echo "require_started=false" >> "$GITHUB_OUTPUT"
+              echo "restore_tag=true" >> "$GITHUB_OUTPUT"
+            fi
+            echo "resuming the registry leg for $tag from $source"
+            {
+              echo "publish=true"
+              echo "crates=false"
+              echo "source=$source"
+            } >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "push" && "$subject" == "chore(release): release v"* ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$DISPATCH_PUBLISH" == "true" ]]; then
@@ -191,7 +222,13 @@ jobs:
     env:
       TRAIN: ${{ needs.prepare.outputs.version }}
     steps:
+      # On a resume this is the prepared release commit, so the packaged bytes
+      # describe the version being published. On a normal train it is the ref
+      # that triggered the run, which IS that commit.
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.source || github.sha }}
+          fetch-depth: 0
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -249,6 +286,37 @@ jobs:
       # Immutability is the registry's whole contract, so drop anything already
       # published rather than asking margo to overwrite it. A partly-published
       # train then resumes cleanly instead of failing.
+      - name: Refuse to "resume" a publication that never started
+        if: needs.prepare.outputs.require-started == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          started=0
+          for candidate in registry/crates/*/*/*/"${TRAIN}".crate; do
+            [[ -f "$candidate" ]] && { started=1; break; }
+          done
+          if [[ "$started" == "0" ]]; then
+            echo "::error::No package for ${TRAIN} exists in the registry, so there is"
+            echo "::error::nothing to resume. A first publication must go through the"
+            echo "::error::normal release path, which cuts a fresh version."
+            exit 1
+          fi
+          echo "found an existing ${TRAIN} package; resuming"
+
+      - name: Restore the missing train tag
+        if: needs.prepare.outputs.restore-tag == 'true'
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE: ${{ needs.prepare.outputs.source }}
+        run: |
+          set -euo pipefail
+          git config user.name "phoxal-release-bot"
+          git config user.email "release-bot@phoxal.com"
+          git tag -a "$TAG" "$SOURCE" -m "Framework train $TAG"
+          git push origin "$TAG"
+          echo "recreated $TAG at the prepared release commit"
+
       - name: Drop already-published versions
         shell: bash
         run: |

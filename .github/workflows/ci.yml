@@ -32,12 +32,21 @@ jobs:
   # five-target release matrix used to be that proof. A version published to an
   # immutable registry cannot be fixed afterwards, only superseded, so the
   # coverage moves here, to pull-request time, where a regression is still free
-  # to fix. `check` rather than `build`: the question is "does this target still
-  # compile", and the answer is the same either way for a fraction of the cost.
+  # to fix. `build`, not `check`: only a real build links, and linking is where
+  # a missing native symbol, a wrong library architecture, or a broken linker
+  # configuration actually shows up - exactly the failures that matter for a
+  # package a robot must compile for its own target.
+  #
+  # The covered set is the targets robots actually build on. `host_target_triple`
+  # maps linux to `unknown-linux-gnu` and never to musl, no robot project selects
+  # a musl triple, and executables are reached only through the CLI for a robot's
+  # own target - so musl belongs to the library guard below, which exists because
+  # those four crates are public on crates.io, and not here. x86_64 linux-gnu is
+  # covered by the main `ci` job's host build.
   #
   # Per-target exclusions mirror the `compile_error!` guards in the packages
-  # themselves: joypad needs libudev (glibc-only), and the Webots controller
-  # links libController, which Cyberbotics ships only for desktop glibc hosts.
+  # themselves: the Webots controller links libController, which Cyberbotics
+  # ships only for desktop hosts.
   executable-targets:
     name: executables on ${{ matrix.target }}
     if: >-
@@ -54,9 +63,6 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-14
             exclude-packages: ""
-          - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-            exclude-packages: phoxal-tool-joypad phoxal-simulator-webots-controller
     steps:
       - uses: actions/checkout@v6
 
@@ -70,10 +76,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libudev-dev
-
-      - name: Install the musl toolchain
-        if: contains(matrix.target, 'musl')
-        run: sudo apt-get install -y musl-tools
 
       # The Webots controller is only checked where Webots itself exists, which
       # is the same rule its `compile_error!` guard encodes.
@@ -90,7 +92,7 @@ jobs:
             -nobrowse -quiet -mountpoint "$RUNNER_TEMP/webots-volume"
           echo "WEBOTS_HOME=$RUNNER_TEMP/webots-volume/Webots.app/Contents" >> "$GITHUB_ENV"
 
-      - name: Check every executable this target supports
+      - name: Build every executable this target supports
         shell: bash
         env:
           EXCLUDED: ${{ matrix.exclude-packages }}
@@ -113,8 +115,8 @@ jobs:
             cargo metadata --no-deps --format-version 1 \
               | jq -r '.packages[] | select(.publish == ["phoxal"]) | .name' | sort
           )
-          echo "checking $checked executable(s) for ${{ matrix.target }}"
-          cargo check --locked --target "${{ matrix.target }}" "${args[@]}"
+          echo "building $checked executable(s) for ${{ matrix.target }}"
+          cargo build --locked --target "${{ matrix.target }}" "${args[@]}"
 
   # Tier-2 musl targets are not covered by upstream guarantees. Keep this
   # focused on the four library crates so the guard stays cheap and does not
