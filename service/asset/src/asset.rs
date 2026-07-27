@@ -19,7 +19,7 @@ pub struct Api {
     get: Server<api::asset::GetRequest, api::asset::GetResponse>,
 }
 
-#[phoxal::service(id = "asset", config = ())]
+#[phoxal::service(config = ())]
 pub struct Asset {
     robot_root: PathBuf,
 }

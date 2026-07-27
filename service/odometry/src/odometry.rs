@@ -112,7 +112,7 @@ pub struct Api {
     state: StatePublisher<api::odometry::State>,
 }
 
-#[phoxal::service(id = "odometry", config = ())]
+#[phoxal::service(config = ())]
 pub struct Odometry {
     // Runtime-private typed state (not handles).
     config: OdometryConfig,

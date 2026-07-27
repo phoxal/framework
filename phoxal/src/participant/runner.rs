@@ -110,6 +110,13 @@ pub fn run<R: ParticipantLifecycle>() -> crate::Result<()> {
 /// Async host runner for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
 pub async fn run_async<R: ParticipantLifecycle>() -> crate::Result<()> {
+    // Every real entry path (`run`, and this function directly as
+    // `phoxal::tokio::run`) passes through here first, which is what makes
+    // this the one place that needs to touch `R`'s embedded metadata static
+    // to keep the ELF linker from garbage-collecting it - see
+    // `Participant::__retain_embedded_metadata`'s docs.
+    R::__retain_embedded_metadata();
+
     let launch = R::LaunchPolicy::from_cli(R::ID, "robot")?;
 
     init_tracing();

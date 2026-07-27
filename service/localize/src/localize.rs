@@ -24,7 +24,7 @@ pub struct Api {
     state: StatePublisher<api::localize::LocalizationState>,
 }
 
-#[phoxal::service(id = "localize", config = ())]
+#[phoxal::service(config = ())]
 pub struct Localize {
     // Runtime-private typed state (not handles).
     last_odometry: Option<(api::odometry::State, RobotInstant)>,

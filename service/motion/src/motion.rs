@@ -108,7 +108,7 @@ pub struct Api {
     state: StatePublisher<api::motion::State>,
 }
 
-#[phoxal::service(id = "motion", config = ())]
+#[phoxal::service(config = ())]
 pub struct Motion {
     limits: MotionLimits,
     manual: Lease<api::motion::ManualCommand>,

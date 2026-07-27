@@ -241,7 +241,7 @@ pub struct Api {
     encoder: MeasurementPublisher<api::component::encoder::Sample>,
 }
 
-#[phoxal::driver(id = "ddsm115", config = ())]
+#[phoxal::driver(config = ())]
 pub struct Ddsm115 {
     // Driver-private hardware state.
     instance: String,

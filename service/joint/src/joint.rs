@@ -90,7 +90,7 @@ impl JointConfig {
     }
 }
 
-#[phoxal::service(id = "joint", config = ())]
+#[phoxal::service(config = ())]
 pub struct Joint {
     config: JointConfig,
     sample_at: Vec<Option<RobotInstant>>,

@@ -12,7 +12,7 @@ pub struct Api {
     range: Vec<MeasurementPublisher<api::component::range::Sample>>,
 }
 
-#[phoxal::driver(id = "vl53l1x", config = ())]
+#[phoxal::driver(config = ())]
 pub struct Vl53l1x {
     range_specs: Vec<RangeSpec>,
 }

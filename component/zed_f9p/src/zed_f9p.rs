@@ -12,7 +12,7 @@ pub struct Api {
     gnss: Vec<MeasurementPublisher<api::component::gnss::Sample>>,
 }
 
-#[phoxal::driver(id = "zed_f9p", config = ())]
+#[phoxal::driver(config = ())]
 pub struct ZedF9p {
     gnss_divisors: Vec<u64>,
 }

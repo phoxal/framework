@@ -39,7 +39,7 @@ pub struct Api {
     state: StatePublisher<api::perception::State>,
 }
 
-#[phoxal::service(id = "perception", config = ())]
+#[phoxal::service(config = ())]
 pub struct Perception {
     // Runtime-private state.
     camera_sources: Vec<SensorBinding>,

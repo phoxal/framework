@@ -41,7 +41,7 @@ pub struct Api {
     next_frontier: Server<api::navigation::FrontierRequest, api::navigation::FrontierResponse>,
 }
 
-#[phoxal::service(id = "navigation", config = ())]
+#[phoxal::service(config = ())]
 pub struct Navigation {
     active: Option<Active>,
     last_localize: Option<Timed<api::localize::LocalizationState>>,

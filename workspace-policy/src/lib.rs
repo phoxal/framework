@@ -775,6 +775,156 @@ path = "src/lib.rs"
         Ok(())
     }
 
+    /// The two linker-section names a participant's embedded metadata can
+    /// live under (`phoxal-macros/src/authoring.rs`'s `link_section_attrs`):
+    /// `.phoxal_meta` on ELF, `__phoxal_meta` on Mach-O (`object`'s
+    /// [`ObjectSection`] name match ignores the `__DATA` segment
+    /// qualifier). Duplicated here rather than imported: there is no
+    /// framework-side crate that reads object files today, and the only
+    /// other place this exact list lives is `phoxal-cli`'s
+    /// `participant_metadata.rs`, in a sibling repository this crate does
+    /// not and should not depend on.
+    const PARTICIPANT_META_SECTION_NAMES: [&str; 2] = [".phoxal_meta", "__phoxal_meta"];
+
+    /// **What a unit test cannot see: the linker.** `#[used]` keeps a static
+    /// alive against this compilation unit's own dead-code elimination, but
+    /// ELF `--gc-sections` still drops any section unreachable from `main`
+    /// at final link time - which is exactly what silently stripped every
+    /// participant's `.phoxal_meta` section before
+    /// `Participant::__retain_embedded_metadata` existed (six framework
+    /// review rounds missed it because every prior check only read source,
+    /// never a built artifact). The only honest check is building a real
+    /// participant and inspecting the linked object file, so that is what
+    /// this test does: it compiles a throwaway tool participant against the
+    /// real in-tree `phoxal`/`phoxal-macros` crates in a standalone temp
+    /// workspace (the same "spin up a disposable cargo project" pattern
+    /// [`discovery_accepts_a_binless_official_component_package`] already
+    /// uses), then reads the linked binary's metadata section back with the
+    /// `object` crate - never executing it, the same "read the bytes, don't
+    /// run the binary" discipline `phoxal-cli`'s reader follows - and
+    /// confirms it parses to the expected id.
+    ///
+    /// This proves the mechanism on whatever object format the test host
+    /// produces: ELF on the `ubuntu-latest` runner this workspace's own
+    /// `.github/workflows/ci.yml` uses (the format `--gc-sections` actually
+    /// drops sections on - a passing run there is the real regression
+    /// guard), Mach-O on a macOS development machine (which never dropped
+    /// the section even before this fix, so a local run confirms the
+    /// section and its contents but does not by itself exercise the ELF
+    /// regression - CI is what does).
+    #[test]
+    fn participant_metadata_section_survives_the_linker() -> Result<()> {
+        use object::{Object, ObjectSection};
+
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("workspace-policy manifest directory has no workspace parent")?;
+        let phoxal_path = workspace_root.join("phoxal");
+
+        let probe_dir = tempfile::tempdir().context("failed to create temp probe crate dir")?;
+        let crate_dir = probe_dir.path();
+        fs::create_dir_all(crate_dir.join("src"))?;
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!(
+                r#"[workspace]
+
+[package]
+name = "phoxal-elf-meta-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "phoxal-elf-meta-probe"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = {{ path = {phoxal_path:?} }}
+"#,
+                phoxal_path = phoxal_path.display().to_string(),
+            ),
+        )?;
+        fs::write(
+            crate_dir.join("src/main.rs"),
+            r#"use phoxal::prelude::*;
+
+#[phoxal::tool(id = "elf-meta-probe")]
+struct ElfMetaProbe;
+
+#[phoxal::behavior]
+impl ElfMetaProbe {
+    #[setup]
+    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+        Ok((Self, ()))
+    }
+}
+
+fn main() -> phoxal::Result<()> {
+    phoxal::run::<ElfMetaProbe>()
+}
+"#,
+        )?;
+
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = std::process::Command::new(&cargo)
+            .arg("build")
+            .arg("--manifest-path")
+            .arg(crate_dir.join("Cargo.toml"))
+            .status()
+            .context("failed to spawn cargo build for the probe participant")?;
+        assert!(
+            status.success(),
+            "cargo build for the linker-section probe participant failed"
+        );
+
+        let binary_name = if cfg!(windows) {
+            "phoxal-elf-meta-probe.exe"
+        } else {
+            "phoxal-elf-meta-probe"
+        };
+        let binary_path = crate_dir.join("target").join("debug").join(binary_name);
+        let data = fs::read(&binary_path).with_context(|| {
+            format!(
+                "failed to read the built probe binary at {}",
+                binary_path.display()
+            )
+        })?;
+        let file = object::File::parse(&*data).with_context(|| {
+            format!(
+                "{} is not a recognized object file (ELF/Mach-O/...)",
+                binary_path.display()
+            )
+        })?;
+
+        let mut section_bytes = None;
+        for name in PARTICIPANT_META_SECTION_NAMES {
+            if let Some(section) = file.section_by_name(name) {
+                section_bytes = Some(section.data().with_context(|| {
+                    format!("failed to read section '{name}' data from the probe binary")
+                })?);
+                break;
+            }
+        }
+        let section_bytes = section_bytes.with_context(|| {
+            format!(
+                "the built probe binary carries no participant metadata section ({}); the ELF \
+                 --gc-sections defeat in phoxal-macros' expand_participant/Participant::\
+                 __retain_embedded_metadata has regressed",
+                PARTICIPANT_META_SECTION_NAMES.join(" or ")
+            )
+        })?;
+
+        let meta: Value = serde_json::from_slice(section_bytes)
+            .context("the participant metadata section did not parse as JSON")?;
+        assert_eq!(
+            meta.get("id").and_then(Value::as_str),
+            Some("elf-meta-probe"),
+            "unexpected participant metadata in the linked section: {meta:?}"
+        );
+        Ok(())
+    }
+
     #[test]
     fn package_identity_is_provider_qualified() {
         assert_eq!(
