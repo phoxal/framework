@@ -304,7 +304,7 @@ fn divisor_for_rate(step_hz: f64, publish_rate_hz: f64) -> u64 {
 }
 
 fn is_due(step_index: u64, divisor: u64) -> bool {
-    divisor <= 1 || step_index % divisor == 0
+    divisor <= 1 || step_index.is_multiple_of(divisor)
 }
 
 fn encoding_for_mode(mode: CameraMode) -> api::component::camera::Encoding {

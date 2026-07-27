@@ -45,18 +45,9 @@ jobs:
           tool: cargo-audit
 
       - name: Audit Cargo.lock against RUSTSEC advisories
-        # Yanked transitive versions cannot be ignored individually by
-        # cargo-audit. The current spin/stabby entries come from zenoh 1.9 and
-        # have no advisory; all advisory classes remain warnings-as-errors.
-        run: cargo audit --deny warnings --no-yanked
-
-      - name: Verify the exact yanked transitive allowlist
-        # cargo-audit can disable yanked checks only as a class, so compare its
-        # machine report against the three Zenoh 1.9 transitives reviewed here.
-        # Any newly yanked crate or version fails until it is investigated.
-        run: |
-          cargo audit --json |
-            jq -e '
-              [.warnings.yanked[].package | "\(.name)@\(.version)"] | sort
-              == ["spin@0.10.0", "spin@0.9.8", "stabby@72.1.1"]
-            '
+        # Yanked crates are a hard failure. The lockfile refresh that raised the
+        # MSRV floor cleared the last yanked transitives (spin, stabby, via
+        # zenoh 1.9), so the `--no-yanked` class exemption and the exact
+        # allowlist that policed it are both gone. If a dependency ever
+        # reintroduces a yanked version, this fails, which is the point.
+        run: cargo audit --deny warnings

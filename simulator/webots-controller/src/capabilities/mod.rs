@@ -52,5 +52,5 @@ pub(crate) fn sampling_period_ms(rate_hz: f64) -> Result<i32> {
 }
 
 pub(crate) fn is_due(step_index: u64, publish_every_steps: u64) -> bool {
-    publish_every_steps <= 1 || step_index % publish_every_steps == 0
+    publish_every_steps <= 1 || step_index.is_multiple_of(publish_every_steps)
 }

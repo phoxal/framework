@@ -316,10 +316,10 @@ impl Navigation {
     ) {
         let key = request_id.value.clone();
         if !self.completed.contains_key(&key) {
-            if self.completion_order.len() == RESULT_CACHE_CAPACITY {
-                if let Some(oldest) = self.completion_order.pop_front() {
-                    self.completed.remove(&oldest);
-                }
+            if self.completion_order.len() == RESULT_CACHE_CAPACITY
+                && let Some(oldest) = self.completion_order.pop_front()
+            {
+                self.completed.remove(&oldest);
             }
             self.completion_order.push_back(key.clone());
         }
@@ -336,16 +336,16 @@ impl Navigation {
             publish_invalid(api, step, request.request_id).await?;
             return Ok(());
         }
-        if let Some(active) = &self.active {
-            if active.request_id == request.request_id {
-                let state = if active.accepted_published {
-                    api::navigation::State::Running(active.request_id.clone())
-                } else {
-                    api::navigation::State::Accepted(active.request_id.clone())
-                };
-                api.state.publish(step.token(), state)?;
-                return Ok(());
-            }
+        if let Some(active) = &self.active
+            && active.request_id == request.request_id
+        {
+            let state = if active.accepted_published {
+                api::navigation::State::Running(active.request_id.clone())
+            } else {
+                api::navigation::State::Accepted(active.request_id.clone())
+            };
+            api.state.publish(step.token(), state)?;
+            return Ok(());
         }
         if let Some(outcome) = self.completed.get(&request.request_id.value).cloned() {
             publish_result(api, step, request.request_id, outcome).await?;

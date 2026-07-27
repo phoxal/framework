@@ -352,11 +352,10 @@ async fn run_joypad(
                 match received {
                     Ok(_received) => {
                         let before = devices_snapshot(&registry);
-                        if let Some(gilrs) = gilrs.as_ref() {
-                            if rescan(gilrs, &mut registry) {
+                        if let Some(gilrs) = gilrs.as_ref()
+                            && rescan(gilrs, &mut registry) {
                                 queue_stop(&mut pending_zeros);
                             }
-                        }
                         let inventory_changed = devices_snapshot(&registry) != before;
                         log_inventory(&registry, "controller rescan completed");
                         if inventory_changed
@@ -692,20 +691,17 @@ fn mark_missing_devices(registry: &mut Registry, seen: &HashSet<String>) -> bool
 /// to the first compatible pad while leaving authority disabled.
 fn reconcile_selection(gilrs: &Gilrs, registry: &mut Registry) -> bool {
     let zero_required = invalidate_unready_selection(registry);
-    if registry.selected.is_none() {
-        if let Some((first_id, _)) = gilrs
+    if registry.selected.is_none()
+        && let Some((first_id, _)) = gilrs
             .gamepads()
             .find(|(_, gamepad)| has_compatible_mapping(gamepad))
-        {
-            if let Some((stable_id, _)) = registry
-                .entries
-                .iter()
-                .find(|(_, entry)| entry.gilrs_id == Some(first_id))
-            {
-                registry.selected = Some(stable_id.clone());
-                registry.enabled = false;
-            }
-        }
+        && let Some((stable_id, _)) = registry
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.gilrs_id == Some(first_id))
+    {
+        registry.selected = Some(stable_id.clone());
+        registry.enabled = false;
     }
     zero_required
 }
