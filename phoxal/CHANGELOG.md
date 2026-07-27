@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.3](https://github.com/phoxal/framework/compare/v0.42.2...v0.42.3) - 2026-07-27
+
+### Fixed
+
+- *(bus)* retry a failed connect within a bounded window ([#347](https://github.com/phoxal/framework/pull/347))
+
 ## [0.42.2](https://github.com/phoxal/framework/compare/v0.42.1...v0.42.2) - 2026-07-27
 
 ### Fixed
