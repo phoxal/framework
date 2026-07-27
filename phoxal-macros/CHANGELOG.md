@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.1](https://github.com/phoxal/framework/compare/phoxal-macros-v0.42.0...phoxal-macros-v0.42.1) - 2026-07-27
+
+### Other
+
+- delete dead code ([#341](https://github.com/phoxal/framework/pull/341))
+- *(deps)* raise MSRV to 1.88 and refresh the lockfile ([#339](https://github.com/phoxal/framework/pull/339))
+
 ## [0.42.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.41.3...phoxal-macros-v0.42.0) - 2026-07-26
 
 ### Other
