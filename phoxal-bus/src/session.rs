@@ -425,6 +425,24 @@ fn validate_segment(value: &str, what: &str, multi: bool) -> Result<()> {
     Ok(())
 }
 
+/// Bound on how long a client-mode `Bus::open` retries a failed connect
+/// before giving up. Passed to Zenoh as `connect/timeout_ms`, which wraps its
+/// own internal connect retry (exponential backoff via `connect/retry/*`,
+/// left at Zenoh's shipped defaults: 1s initial / 4s max / x2 increase)
+/// rather than one this crate reimplements.
+///
+/// 20s comfortably survives the startup race this bounds: several
+/// participants opening a bus session while a router is still coming up.
+/// Zenoh's default backoff yields attempts at roughly t=0, 1s, 3s, 7s, 11s,
+/// 15s, 19s - about seven tries - which is both more attempts and a shorter
+/// worst case than today's only fallback (the CLI's crash-restart loop:
+/// `RESTART_SEC=2s` between attempts, up to `START_LIMIT_BURST=5` in
+/// `START_LIMIT_INTERVAL=60s`, each cycle paying full process-spawn cost). It
+/// is also small next to the CLI's five-minute overall readiness deadline
+/// (`wait_for_required_readiness`), so a genuinely absent router still fails
+/// fast and legibly instead of silently eating the whole startup budget.
+const CONNECT_TIMEOUT_MS: u64 = 20_000;
+
 fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
     let mut config = zenoh::Config::default();
     // Phoxal-owned links use a nominal three-second lease and Zenoh's documented
@@ -453,6 +471,24 @@ fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
             .map_err(|error| BusError::Transport(error.to_string()))?;
         config
             .insert_json5("connect/endpoints", &json)
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        // Client mode's shipped default is `connect/timeout_ms: 0` ("no
+        // retry" - see zenoh-config's DEFAULT_CONFIG.json5), so a router that
+        // is not yet accepting connections - the ordinary case when several
+        // participants race a router at startup - fails the very first
+        // attempt and there is no second one. Setting a bounded, nonzero
+        // timeout here switches `zenoh::open` onto Zenoh's own internal retry
+        // path: it retries the connect with exponential backoff
+        // (`connect/retry/*`, left at Zenoh's shipped defaults: 1s initial
+        // delay, doubling, capped at 4s) until either a link is established
+        // or this timeout elapses, at which point it returns a clear error
+        // naming the endpoint(s) it could not reach. That is a better lever
+        // than an outer retry loop in this crate: Zenoh already owns the
+        // backoff math, the per-attempt diagnostics (each failed attempt logs
+        // the underlying transport error), and the "clear bounded failure"
+        // requirement, all through one `.await` on `zenoh::open`.
+        config
+            .insert_json5("connect/timeout_ms", &CONNECT_TIMEOUT_MS.to_string())
             .map_err(|error| BusError::Transport(error.to_string()))?;
     }
     Ok(config)
@@ -494,5 +530,35 @@ mod tests {
         zenoh_config(&[]).expect("pinned Zenoh must accept Phoxal lease settings");
         zenoh_config(&["tcp/127.0.0.1:7447".to_string()])
             .expect("pinned Zenoh must accept Phoxal client settings");
+    }
+
+    #[test]
+    fn client_mode_bounds_the_connect_retry_but_in_process_does_not() {
+        // In-process (no endpoints) never dials anything, so there is nothing
+        // to retry - the key must be absent, not merely zero, so it cannot be
+        // mistaken for "connect once, no retry" on a config path that never
+        // connects at all.
+        let in_process = zenoh_config(&[]).expect("in-process config");
+        assert_eq!(
+            in_process
+                .get_json("connect/timeout_ms")
+                .expect("key is always present, unresolved by default"),
+            "null",
+            "in-process config must leave Zenoh's mode-dependent default \
+             untouched - it never dials anything, so there is nothing to \
+             bound",
+        );
+
+        // Client mode (this is what a real launch uses, D-participant#run_with)
+        // must carry the bounded, nonzero timeout that switches Zenoh onto its
+        // own retry-with-backoff path - see CONNECT_TIMEOUT_MS's docs for why
+        // this exact value.
+        let client = zenoh_config(&["tcp/127.0.0.1:7447".to_string()]).expect("client config");
+        assert_eq!(
+            client
+                .get_json("connect/timeout_ms")
+                .expect("client config must set a connect timeout"),
+            CONNECT_TIMEOUT_MS.to_string(),
+        );
     }
 }
