@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.2](https://github.com/phoxal/framework/compare/phoxal-macros-v0.42.1...phoxal-macros-v0.42.2) - 2026-07-27
+
+### Fixed
+
+- *(macros)* keep participant metadata through the linker, default ids to the package name ([#344](https://github.com/phoxal/framework/pull/344))
+
 ## [0.42.1](https://github.com/phoxal/framework/compare/phoxal-macros-v0.42.0...phoxal-macros-v0.42.1) - 2026-07-27
 
 ### Other
