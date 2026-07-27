@@ -140,28 +140,6 @@ impl Capability {
             Self::Led(nm) => &nm.target,
         }
     }
-
-    pub fn target_mut(&mut self) -> &mut StructuralTarget {
-        match self {
-            Self::Motor(nm) => &mut nm.target,
-            Self::Encoder(nm) => &mut nm.target,
-            Self::Accelerometer(nm) => &mut nm.target,
-            Self::Gyroscope(nm) => &mut nm.target,
-            Self::Magnetometer(nm) => &mut nm.target,
-            Self::Imu(nm) => &mut nm.target,
-            Self::Gnss(nm) => &mut nm.target,
-            Self::Camera(nm) => &mut nm.target,
-            Self::Depth(nm) => &mut nm.target,
-            Self::EmergencyStop(nm) => &mut nm.target,
-            Self::Range(nm) => &mut nm.target,
-            Self::Lidar(nm) => &mut nm.target,
-            Self::Mmwave(nm) => &mut nm.target,
-            Self::Microphone(nm) => &mut nm.target,
-            Self::Speaker(nm) => &mut nm.target,
-            Self::Battery(nm) => &mut nm.target,
-            Self::Led(nm) => &mut nm.target,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

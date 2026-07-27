@@ -97,18 +97,6 @@ impl OfficialArtifact {
             )
         })
     }
-
-    /// The release binary name, or an error naming the package if it has none
-    /// (a driver-less component crate - see [`Self::bin_name`]).
-    pub fn require_bin_name(&self) -> Result<&str> {
-        self.bin_name.as_deref().with_context(|| {
-            format!(
-                "{} is a {} package with no binary target; this operation only applies to \
-                 packages with a driver binary",
-                self.package, self.kind
-            )
-        })
-    }
 }
 
 #[derive(Debug)]
