@@ -262,6 +262,18 @@ where
 {
     init_tracing();
 
+    if !launch.bus.connect_endpoints.is_empty() {
+        // One line, not a per-attempt one: a participant racing a router that
+        // has not opened its listener yet can take several seconds to connect
+        // (`phoxal_bus::session` bounds and backs off the retry internally,
+        // via Zenoh's own `connect/timeout_ms`). Without this, that gap looks
+        // like a silent hang rather than expected startup activity.
+        tracing::info!(
+            target: "phoxal.runtime",
+            endpoints = ?launch.bus.connect_endpoints,
+            "connecting to the bus"
+        );
+    }
     let bus = Bus::open(BusConfig {
         namespace: launch.namespace.clone(),
         robot_id: launch.robot_id.clone(),
