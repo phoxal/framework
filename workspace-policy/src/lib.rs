@@ -160,12 +160,10 @@ impl Workspace {
                         .iter()
                         .find(|target| target.is_kind(TargetKind::Bin))
                 })
-                .map(|target| target.name.clone())
-                .with_context(|| {
-                    format!(
-                        "{package_name} is an official artifact package but has no binary target"
-                    )
-                })?;
+                .map(|target| target.name.clone());
+            if bin_name.is_none() && kind != ArtifactKind::Component {
+                bail!("{package_name} is an official artifact package but has no binary target");
+            }
 
             official_artifacts.push(OfficialArtifact {
                 package: package_identity(kind, &id),
@@ -173,7 +171,7 @@ impl Workspace {
                 kind,
                 version: package.version.to_string(),
                 crate_dir,
-                bin_name: Some(bin_name),
+                bin_name,
                 id,
                 metadata: phoxal_metadata,
             });
@@ -716,6 +714,65 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("must not declare kind or id"));
+    }
+
+    /// Design doc §9: a driver-less component crate that ships only its asset
+    /// bundle (`component.yaml`, `simulation.yaml`, `structure.urdf`) must
+    /// still pass discovery even though it has no `[[bin]]` target - that is
+    /// the whole point of giving it a library target instead. This builds a
+    /// standalone throwaway workspace on disk (its own `[workspace]` table,
+    /// so it is not swallowed as a member of this repo's workspace) with one
+    /// bin-less official component package, and asserts discovery accepts it
+    /// with `bin_name: None`.
+    #[test]
+    fn discovery_accepts_a_binless_official_component_package() -> Result<()> {
+        let workspace_dir = tempfile::tempdir().context("failed to create temp workspace dir")?;
+        let root = workspace_dir.path();
+
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[workspace]
+resolver = "3"
+members = ["component/asset-only"]
+"#,
+        )?;
+
+        let package_dir = root.join("component/asset-only");
+        fs::create_dir_all(package_dir.join("src"))?;
+        fs::write(
+            package_dir.join("Cargo.toml"),
+            r#"[package]
+name = "phoxal-component-asset-only"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = ["phoxal"]
+description = "Driver-less official component: assets only."
+
+[lib]
+path = "src/lib.rs"
+"#,
+        )?;
+        fs::write(
+            package_dir.join("src/lib.rs"),
+            "//! Cargo train anchor; this component ships no driver binary.\n",
+        )?;
+        fs::write(package_dir.join("component.yaml"), "id: asset-only\n")?;
+
+        let workspace = Workspace::discover_with(
+            MetadataCommand::new().manifest_path(root.join("Cargo.toml")),
+        )?;
+
+        assert_eq!(workspace.official_artifacts().len(), 1);
+        let artifact = &workspace.official_artifacts()[0];
+        assert_eq!(artifact.package, "phoxal/component-asset-only");
+        assert_eq!(artifact.kind, ArtifactKind::Component);
+        assert_eq!(
+            artifact.package_name.as_deref(),
+            Some("phoxal-component-asset-only")
+        );
+        assert_eq!(artifact.bin_name, None);
+        Ok(())
     }
 
     #[test]
