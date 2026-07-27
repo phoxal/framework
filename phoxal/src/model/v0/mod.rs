@@ -25,13 +25,6 @@ struct ResolvedCapability<'a> {
     parameters: Option<&'a Parameters>,
 }
 
-pub struct DriverBinding<'a> {
-    pub component_id: String,
-    pub component: &'a ComponentSpec,
-    pub component_instance: &'a robot_v0::Component,
-    pub driver: &'a robot_v0::DriverConfig,
-}
-
 impl Robot {
     pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
@@ -245,22 +238,6 @@ impl Robot {
                 component_id
             )
         }
-    }
-
-    pub fn driver_binding(&self, component_id: &str) -> Result<DriverBinding<'_>> {
-        let component_instance = self.component_instance(component_id)?;
-        let driver = component_instance.driver.as_ref().ok_or_else(|| {
-            anyhow!(
-                "component '{}' has no driver config in robot.yaml",
-                component_id
-            )
-        })?;
-        Ok(DriverBinding {
-            component_id: component_id.to_string(),
-            component: self.component_for_instance(component_id)?,
-            component_instance,
-            driver,
-        })
     }
 }
 
