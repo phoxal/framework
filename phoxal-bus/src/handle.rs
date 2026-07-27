@@ -1020,53 +1020,53 @@ impl<B> Ring<B> {
         // A sample expressing no robot time belongs to no world history and is
         // never quarantined.
         let timeline = item.timeline();
-        if let (Some(timeline), Some(active_timeline)) = (timeline, state.active_timeline) {
-            if timeline != active_timeline {
-                if state.retired_timelines.contains(timeline) {
-                    self.metric.record_timeline_filtered(1);
-                    return RingPush {
-                        accepted: false,
-                        evicted: false,
-                        new_pending_timeline: None,
-                    };
-                }
-
-                let mut new_pending_timeline = None;
-                let pending_index = state
-                    .pending
-                    .iter()
-                    .position(|pending| pending.timeline == timeline);
-                let pending_index = match pending_index {
-                    Some(index) => index,
-                    None => {
-                        if state.pending.len() == PENDING_TIMELINE_CAPACITY {
-                            if let Some(removed) = state.pending.pop_front() {
-                                self.metric.record_timeline_filtered(
-                                    u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
-                                );
-                            }
-                        }
-                        state.pending.push_back(PendingTimeline {
-                            timeline,
-                            buf: VecDeque::with_capacity(self.cap),
-                        });
-                        new_pending_timeline = Some(timeline);
-                        state.pending.len() - 1
-                    }
-                };
-                let pending = &mut state.pending[pending_index];
-                if pending.buf.len() == self.cap {
-                    pending.buf.pop_front();
-                    self.metric.record_timeline_filtered(1);
-                }
-                pending.buf.push_back(item);
-                self.metric.record_pending_subscriber();
+        if let (Some(timeline), Some(active_timeline)) = (timeline, state.active_timeline)
+            && timeline != active_timeline
+        {
+            if state.retired_timelines.contains(timeline) {
+                self.metric.record_timeline_filtered(1);
                 return RingPush {
-                    accepted: true,
+                    accepted: false,
                     evicted: false,
-                    new_pending_timeline,
+                    new_pending_timeline: None,
                 };
             }
+
+            let mut new_pending_timeline = None;
+            let pending_index = state
+                .pending
+                .iter()
+                .position(|pending| pending.timeline == timeline);
+            let pending_index = match pending_index {
+                Some(index) => index,
+                None => {
+                    if state.pending.len() == PENDING_TIMELINE_CAPACITY
+                        && let Some(removed) = state.pending.pop_front()
+                    {
+                        self.metric.record_timeline_filtered(
+                            u64::try_from(removed.buf.len()).unwrap_or(u64::MAX),
+                        );
+                    }
+                    state.pending.push_back(PendingTimeline {
+                        timeline,
+                        buf: VecDeque::with_capacity(self.cap),
+                    });
+                    new_pending_timeline = Some(timeline);
+                    state.pending.len() - 1
+                }
+            };
+            let pending = &mut state.pending[pending_index];
+            if pending.buf.len() == self.cap {
+                pending.buf.pop_front();
+                self.metric.record_timeline_filtered(1);
+            }
+            pending.buf.push_back(item);
+            self.metric.record_pending_subscriber();
+            return RingPush {
+                accepted: true,
+                evicted: false,
+                new_pending_timeline,
+            };
         }
 
         let mut dropped = false;

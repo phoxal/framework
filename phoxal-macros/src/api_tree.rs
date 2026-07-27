@@ -711,12 +711,10 @@ fn reroot_inherited_type_paths(nodes: &mut [Node], parent: &Ident, child: &Ident
             if segments
                 .next()
                 .is_some_and(|segment| segment.ident == "crate")
+                && let Some(revision) = segments.next()
+                && revision.ident == *self.parent
             {
-                if let Some(revision) = segments.next() {
-                    if revision.ident == *self.parent {
-                        revision.ident = self.child.clone();
-                    }
-                }
+                revision.ident = self.child.clone();
             }
             visit_mut::visit_path_mut(self, path);
         }
