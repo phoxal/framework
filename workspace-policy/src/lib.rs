@@ -556,7 +556,7 @@ mod tests {
             }
         }
         assert_eq!(
-            direct_zenoh_dependencies, 4,
+            direct_zenoh_dependencies, 3,
             "every direct Zenoh dependency must be covered by this guard"
         );
         Ok(())

@@ -26,7 +26,6 @@ syn = { workspace = true, features = ["visit-mut"] }
 heck = { workspace = true }
 
 [dev-dependencies]
-phoxal-bus = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 trybuild = { workspace = true }
 

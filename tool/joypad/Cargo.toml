@@ -17,7 +17,6 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true }
 gilrs = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
