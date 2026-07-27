@@ -186,8 +186,14 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
 }
 
 /// Link a participant state struct to its `Config`/`Api` types as a checked
-/// service. Defaults to the local `Config`/`Api` type names; override with
+/// service. Defaults to the local `Config`/`Api` type names, and to the
+/// crate's `CARGO_PKG_NAME` (a leading `phoxal-<kind>-` stripped when
+/// present) for `id`; override any of them with
 /// `#[phoxal::service(id = "…", config = Type, api = Type)]`.
+///
+/// An explicit `id` is still required whenever a crate defines more than one
+/// participant - they cannot all default to the one package name - and
+/// remains available any time the package name isn't the id you want.
 ///
 /// For user runtimes, `Config` is the user-authored `robot.yaml` surface. A
 /// framework runtime may use this same slot for a CLI-synthesized launch

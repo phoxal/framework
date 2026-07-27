@@ -103,7 +103,7 @@ fn is_version_topic(key: &str) -> bool {
 
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
-#[phoxal::tool(id = "bus")]
+#[phoxal::tool]
 pub struct ToolBus;
 
 #[phoxal::behavior]

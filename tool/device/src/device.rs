@@ -10,7 +10,7 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_DISK_ROWS: usize = 32;
 const MAX_DISK_TEXT_BYTES: usize = 128;
 
-#[phoxal::tool(id = "device")]
+#[phoxal::tool]
 pub struct ToolDevice;
 
 #[phoxal::behavior]

@@ -19,7 +19,7 @@ const MAX_RETAINED_FIELDS: usize = 64;
 #[cfg(test)]
 const MAX_SNAPSHOT_WIRE_BYTES: usize = 16 * 1_024 * 1_024;
 
-#[phoxal::tool(id = "log")]
+#[phoxal::tool]
 pub struct ToolLog;
 
 #[phoxal::behavior]

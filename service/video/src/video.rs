@@ -75,7 +75,7 @@ pub struct Api {
     open: Server<api::video::OpenRequest, api::video::OpenResponse>,
 }
 
-#[phoxal::service(id = "video", config = ())]
+#[phoxal::service(config = ())]
 pub struct Video {
     // Runtime-private state.
     sources: Vec<VideoSource>,

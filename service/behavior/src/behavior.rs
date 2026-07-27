@@ -68,7 +68,7 @@ enum Effect {
     },
 }
 
-#[phoxal::service(id = "behavior", config = ())]
+#[phoxal::service(config = ())]
 pub struct BehaviorService {
     catalog: BehaviorCatalog,
     execution: Option<Execution>,

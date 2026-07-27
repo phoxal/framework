@@ -29,7 +29,7 @@ pub struct Api {
     submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
 
-#[phoxal::service(id = "map", config = ())]
+#[phoxal::service(config = ())]
 pub struct Map {
     grid: Arc<Grid>,
     rev: u64,

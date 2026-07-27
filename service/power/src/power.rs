@@ -23,7 +23,7 @@ pub struct Api {
     state: StatePublisher<api::power::State>,
 }
 
-#[phoxal::service(id = "power", config = ())]
+#[phoxal::service(config = ())]
 pub struct Power {
     latched: api::power::State,
     executor: Option<Arc<dyn PowerExecutor>>,

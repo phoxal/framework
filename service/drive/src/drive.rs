@@ -142,7 +142,7 @@ pub struct Api {
     right_motors: Vec<CommandPublisher<api::component::motor::Command>>,
 }
 
-#[phoxal::service(id = "drive", config = ())]
+#[phoxal::service(config = ())]
 pub struct Drive {
     // Runtime-private typed state (not handles).
     config: DriveConfig,

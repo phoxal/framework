@@ -33,7 +33,7 @@ const MAX_RUNTIME_SNAPSHOT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 // starts cleanly with `PHOXAL_CONFIG` ABSENT rather than requiring `'{}'`.
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
-#[phoxal::tool(id = "telemetry")]
+#[phoxal::tool]
 pub struct ToolTelemetry;
 
 #[phoxal::behavior]

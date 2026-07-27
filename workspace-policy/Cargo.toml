@@ -27,6 +27,15 @@ toml_edit = "0.25.12"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Reads the built-artifact linker section back out for
+# `participant_metadata_section_survives_the_linker` - the one honest way to
+# prove the ELF `--gc-sections` defeat (`phoxal-macros`'
+# `link_section_attrs`/`Participant::__retain_embedded_metadata`) actually
+# holds through a real link, not just at the source level. Version pinned to
+# match `phoxal-cli`'s own object-file reader
+# (`crates/core/src/check/participant_metadata.rs`), the only other place in
+# either repo that parses this section.
+object = "0.36"
 
 [lints]
 workspace = true

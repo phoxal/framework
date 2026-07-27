@@ -32,7 +32,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 // starts cleanly with `PHOXAL_CONFIG` ABSENT rather than requiring `'{}'`.
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
-#[phoxal::tool(id = "joypad")]
+#[phoxal::tool]
 pub struct ToolJoypad {
     shutdown_publisher: CommandPublisher<api::motion::ManualCommand>,
 }

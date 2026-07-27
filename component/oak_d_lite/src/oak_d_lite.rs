@@ -16,7 +16,7 @@ pub struct Api {
     gyroscope: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
 }
 
-#[phoxal::driver(id = "oak_d_lite", config = ())]
+#[phoxal::driver(config = ())]
 pub struct OakDLite {
     camera_specs: Vec<CameraSpec>,
     depth_specs: Vec<DepthSpec>,

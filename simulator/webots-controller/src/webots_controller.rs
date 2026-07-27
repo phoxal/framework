@@ -123,7 +123,7 @@ fn has_explicit_producer_arg(args: impl IntoIterator<Item = OsString>) -> bool {
     })
 }
 
-#[phoxal::simulator(id = "webots-controller", config = ())]
+#[phoxal::simulator(config = ())]
 pub struct WebotsControllerSimulator {
     backend: SharedBackend,
 }

@@ -69,7 +69,7 @@ pub struct Api {
     state: StatePublisher<api::safety::State>,
 }
 
-#[phoxal::service(id = "safety", config = ())]
+#[phoxal::service(config = ())]
 pub struct Safety {
     bindings: Vec<CapabilityBinding>,
     battery_bindings: Vec<CapabilityBinding>,

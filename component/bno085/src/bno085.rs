@@ -14,7 +14,7 @@ pub struct Api {
     gyroscope: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
 }
 
-#[phoxal::driver(id = "bno085", config = ())]
+#[phoxal::driver(config = ())]
 pub struct Bno085 {
     imu_divisors: Vec<u64>,
     accelerometer_divisors: Vec<u64>,

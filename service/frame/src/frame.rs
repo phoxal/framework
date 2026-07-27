@@ -45,7 +45,7 @@ pub struct Api {
     lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
 }
 
-#[phoxal::service(id = "frame", config = ())]
+#[phoxal::service(config = ())]
 pub struct Frame {
     static_transforms: Arc<BTreeMap<String, api::frame::FrameTransform>>,
     parent_by_child: Arc<BTreeMap<String, (String, JointMeta)>>,
