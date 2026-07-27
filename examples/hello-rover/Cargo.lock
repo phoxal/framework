@@ -272,9 +272,9 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cc"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89588d05638b5b4594a3348a2d6c20277e43a7f5c5202b05cc56888475a47b8"
+checksum = "5add81bb678e6cb321aff7fa0dc7689ad82b112dbc032cea19f91d6b8e3582b9"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -669,9 +669,9 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "either"
-version = "1.16.0"
+version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
+checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
 
 [[package]]
 name = "equivalent"
@@ -1938,9 +1938,9 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.38.1"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c8445bc0b9e9b393379eeade7e112c37c680431af42426378e184c8ad580ea8"
+checksum = "3dd61547c514b12695f25afec76612a3d92f033b7eab40e758c8a91b00e131b6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -1948,6 +1948,7 @@ dependencies = [
  "const_format",
  "derive-new",
  "dotenvy",
+ "libc",
  "nalgebra",
  "phoxal-api",
  "phoxal-bus",
@@ -1968,9 +1969,9 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.38.1"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cce6494b9e09675c5ee5e5b5b1517e18fc5529fe43ed8072642f3e425a18b5f0"
+checksum = "bf519d0a50e08f555111c188a1733220b0b78951aa74da342f8c94508f56c06b"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -1980,13 +1981,15 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bus"
-version = "0.38.1"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc88457a7a8a1d0e8cae1a5437155c41978cfc1058215518d08f369d50803f62"
+checksum = "fb969613541d5a0f0cd088f6cf962e2ead1da43f625dbae61215b831a21354f1"
 dependencies = [
- "arc-swap",
+ "getrandom 0.3.4",
+ "libc",
  "rmp-serde",
  "serde",
+ "serde_bytes",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
@@ -1996,9 +1999,9 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.38.1"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ba404762e8f6b5af8932f681dd78592abffcda040373bbd6f8d5a445a670b01"
+checksum = "2e89b55cd593ffdc008626a763fc677e888a40d2f0eb9126d15db756f0b10744"
 dependencies = [
  "heck",
  "proc-macro2",
