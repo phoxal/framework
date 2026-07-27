@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.dependencies]
-phoxal = "=0.42.0"
+phoxal = "=0.42.2"
 
 [workspace.lints.rust]
 unused = "warn"
