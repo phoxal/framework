@@ -764,12 +764,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dotenvy"
-version = "0.15.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aaf95b3e5c8f23aa320147307562d361db0ae0d51242340f558153b4eb2439b"
-
-[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2299,17 +2293,14 @@ dependencies = [
  "clap",
  "const_format",
  "derive-new",
- "dotenvy",
  "jsonschema",
  "libc",
  "nalgebra",
  "phoxal-api",
  "phoxal-bus",
  "phoxal-macros",
- "rmp-serde",
  "schemars 1.2.1",
  "serde",
- "serde_bytes",
  "serde_json",
  "serde_yaml",
  "serial_test",
@@ -2321,7 +2312,6 @@ dependencies = [
  "tracing-subscriber",
  "trybuild",
  "urdf-rs",
- "zenoh",
 ]
 
 [[package]]
@@ -2415,7 +2405,6 @@ name = "phoxal-macros"
 version = "0.42.0"
 dependencies = [
  "heck",
- "phoxal-bus",
  "proc-macro2",
  "quote",
  "serde",
@@ -2555,7 +2544,6 @@ name = "phoxal-simulator-webots-controller"
 version = "0.42.0"
 dependencies = [
  "anyhow",
- "getrandom 0.3.4",
  "phoxal",
  "tokio",
  "tracing",
@@ -2590,7 +2578,6 @@ version = "0.42.0"
 dependencies = [
  "gilrs",
  "phoxal",
- "serde",
  "tokio",
  "tracing",
 ]
@@ -2602,7 +2589,6 @@ dependencies = [
  "anyhow",
  "getrandom 0.3.4",
  "phoxal",
- "tokio",
  "tracing",
 ]
 
@@ -2613,8 +2599,6 @@ dependencies = [
  "anyhow",
  "getrandom 0.3.4",
  "phoxal",
- "serde",
- "tokio",
  "tracing",
 ]
 
@@ -4784,7 +4768,6 @@ version = "0.42.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
- "glob",
  "serde",
  "serde_json",
  "toml_edit",

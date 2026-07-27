@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::model::component::v0::capability::{Capability, Encoder, Imu, Motor, StructuralTarget};
+use crate::model::component::v0::capability::{Capability, Encoder, Motor, StructuralTarget};
 use crate::model::component::v0::{CapabilityRef, Component as ComponentSpec};
 use crate::model::robot::v0::capability::Parameters;
 use crate::model::robot::v0::{
@@ -23,13 +23,6 @@ pub struct Robot {
 struct ResolvedCapability<'a> {
     capability: &'a Capability,
     parameters: Option<&'a Parameters>,
-}
-
-pub struct DriverBinding<'a> {
-    pub component_id: String,
-    pub component: &'a ComponentSpec,
-    pub component_instance: &'a robot_v0::Component,
-    pub driver: &'a robot_v0::DriverConfig,
 }
 
 impl Robot {
@@ -215,44 +208,6 @@ impl Robot {
         Ok((encoder, direction_sign))
     }
 
-    pub fn require_imu(&self, reference: &CapabilityRef) -> Result<&Imu> {
-        let resolved = self.resolved_capability(reference)?;
-        let Capability::Imu(imu) = resolved.capability else {
-            bail!(
-                "capability '{}' must reference an IMU, found {}",
-                reference,
-                resolved.capability.kind_name()
-            );
-        };
-        if let Some(parameters) = resolved.parameters
-            && !matches!(parameters, Parameters::Imu(_))
-        {
-            bail!(
-                "capability '{}' parameters must match IMU kind, found {}",
-                reference,
-                parameters.kind_name()
-            );
-        }
-        Ok(imu)
-    }
-
-    pub fn require_joint(&self, reference: &CapabilityRef) -> Result<&urdf_rs::Joint> {
-        let target = self
-            .capability(reference)?
-            .target()
-            .namespaced(&reference.component_id);
-        let StructuralTarget::Joint { id } = target else {
-            bail!("capability '{}' must target a joint", reference);
-        };
-        self.structure.joint(&id).ok_or_else(|| {
-            anyhow!(
-                "joint target '{}' for capability '{}' not found in structure",
-                id,
-                reference
-            )
-        })
-    }
-
     pub fn require_link_target(&self, reference: &CapabilityRef) -> Result<String> {
         let target = self
             .capability(reference)?
@@ -283,22 +238,6 @@ impl Robot {
                 component_id
             )
         }
-    }
-
-    pub fn driver_binding(&self, component_id: &str) -> Result<DriverBinding<'_>> {
-        let component_instance = self.component_instance(component_id)?;
-        let driver = component_instance.driver.as_ref().ok_or_else(|| {
-            anyhow!(
-                "component '{}' has no driver config in robot.yaml",
-                component_id
-            )
-        })?;
-        Ok(DriverBinding {
-            component_id: component_id.to_string(),
-            component: self.component_for_instance(component_id)?,
-            component_instance,
-            driver,
-        })
     }
 }
 

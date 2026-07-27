@@ -1,6 +1,6 @@
 //! 3D transform helper used by model config and TF payloads.
 
-use nalgebra::{Quaternion, UnitQuaternion};
+use nalgebra::UnitQuaternion;
 use serde::{Deserialize, Serialize};
 
 /// 3D transform (translation + rotation).
@@ -32,18 +32,6 @@ impl Transform {
         let [roll, pitch, yaw] = self.rotation_rpy;
         let quaternion = UnitQuaternion::from_euler_angles(roll, pitch, yaw);
         [quaternion.i, quaternion.j, quaternion.k, quaternion.w]
-    }
-
-    /// Create transform from translation and quaternion [x, y, z, w].
-    #[must_use]
-    pub fn from_translation_quaternion(translation: [f64; 3], quaternion: [f64; 4]) -> Self {
-        let [x, y, z, w] = quaternion;
-        let unit = UnitQuaternion::new_normalize(Quaternion::new(w, x, y, z));
-        let (roll, pitch, yaw) = unit.euler_angles();
-        Self {
-            translation_xyz: translation,
-            rotation_rpy: [roll, pitch, yaw],
-        }
     }
 }
 

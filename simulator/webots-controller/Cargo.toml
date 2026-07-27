@@ -19,7 +19,6 @@ phoxal = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 webots-rs = { workspace = true }
-getrandom = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

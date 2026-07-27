@@ -142,18 +142,6 @@ impl ParticipantLaunch {
         }
     }
 
-    /// Set the robot model root for this launch.
-    pub fn with_robot_root(mut self, root: impl Into<PathBuf>) -> Self {
-        self.robot_root = Some(root.into());
-        self
-    }
-
-    /// Set the component instance this participant drives (driver launch, D47/D53).
-    pub fn with_component_instance(mut self, instance: impl Into<String>) -> Self {
-        self.component_instance = Some(instance.into());
-        self
-    }
-
     /// Join an existing supervised run instead of the freshly minted one.
     pub fn in_execution(mut self, execution: ExecutionId) -> Self {
         self.execution = execution;
