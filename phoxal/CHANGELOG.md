@@ -235,7 +235,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(check)* coherence pass - per-participant pub/sub overlap + every-ask-matched (coherence-B) ([#203](https://github.com/phoxal/framework/pull/203))
+- *(check)* validate participant graph topology before launch ([#203](https://github.com/phoxal/framework/pull/203))
 - *(xtask)* read metadata from the binary section and add the frozen-generation release check (X-tools)
 - *(runtime)* wire new-model runner (run_v2), coexisting with old (F-runtime)
 - *(macros)* add new participant authoring model alongside old (F-macros)
