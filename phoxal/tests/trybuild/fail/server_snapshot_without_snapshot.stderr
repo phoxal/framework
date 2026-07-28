@@ -1,5 +1,0 @@
-error: #[server_snapshot] requires a #[snapshot] provider on the same participant
-  --> tests/trybuild/fail/server_snapshot_without_snapshot.rs:20:6
-   |
-20 | impl NoSnap {
-   |      ^^^^^^

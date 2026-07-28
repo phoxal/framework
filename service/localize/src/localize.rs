@@ -18,22 +18,25 @@ use phoxal::prelude::*;
 
 const LOCALIZE_STALE: Duration = Duration::from_secs(1);
 
-#[derive(phoxal::Api)]
 pub struct Api {
     odometry: Subscriber<api::odometry::State>,
     state: StatePublisher<api::localize::LocalizationState>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Localize {
+pub struct LocalizeState {
     // Runtime-private typed state (not handles).
     last_odometry: Option<(api::odometry::State, RobotInstant)>,
 }
 
-#[phoxal::behavior]
-impl Localize {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = LocalizeState, api = Api)]
+pub struct Localize;
+
+impl Participant for Localize {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let odometry = ctx
             .subscriber(api::topic::client().odometry().state(), 32)
             .await?;
@@ -42,35 +45,44 @@ impl Localize {
             .await?;
 
         Ok((
-            Self {
+            LocalizeState {
                 last_odometry: None,
             },
-            Self::Api { odometry, state },
+            Api { odometry, state },
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.last_odometry = None;
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.last_odometry = None;
         Ok(())
     }
 
-    #[step(hz = 20)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 20)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         while let Some(observed) = api.odometry.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                self.last_odometry = Some((observed.body, at));
+                state.last_odometry = Some((observed.body, at));
             }
         }
 
         let now = step.now();
-        if !odometry_is_usable(self.last_odometry.as_ref(), now)? {
+        if !odometry_is_usable(state.last_odometry.as_ref(), now)? {
             return Ok(());
         }
 
         // The input gate proves a real, finite, fresh odometry sample exists;
         // publish nothing otherwise so consumers never see a fabricated origin.
-        let (odometry, produced_at) = self
+        let (odometry, produced_at) = state
             .last_odometry
             .as_ref()
             .expect("usable odometry requires a sample");

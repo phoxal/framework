@@ -1,5 +1,0 @@
-error: #[server] must be `async`
-  --> tests/trybuild/fail/server_requires_async.rs:28:5
-   |
-28 |     fn get(
-   |     ^^

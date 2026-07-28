@@ -1,7 +1,7 @@
 //! `asset` - the official asset participant.
 //!
-//! A server-only official participant: no `#[step]`, one exclusive `#[server]` serving
-//! `asset/get` from the robot root. It consumes no topics; it reads the robot
+//! A query-only official participant serving `asset/get` from the robot root.
+//! It consumes no topics; it reads the robot
 //! root via `ctx.robot_root()` (D33: official services build their state from the
 //! model, not a typed config block).
 //! On each request it resolves the requested path against the robot root and
@@ -14,45 +14,40 @@ use std::path::PathBuf;
 use phoxal::api;
 use phoxal::prelude::*;
 
-#[derive(phoxal::Api)]
-pub struct Api {
-    get: Server<api::asset::GetRequest, api::asset::GetResponse>,
-}
+pub struct Api;
 
-#[phoxal::service(config = ())]
-pub struct Asset {
+pub struct AssetState {
     robot_root: PathBuf,
 }
 
-#[phoxal::behavior]
-impl Asset {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = AssetState, api = Api)]
+pub struct Asset;
+
+impl Participant for Asset {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        ctx.query(api::topic::owner().asset().get(), Self::get)
+            .await?;
         Ok((
-            Self {
+            AssetState {
                 robot_root: ctx.robot_root()?.to_path_buf(),
             },
-            Self::Api {
-                get: ctx.server(api::topic::client().asset().get()).await?,
-            },
+            Api,
         ))
     }
+}
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        // Stateless with respect to the simulated world: the immutable robot
-        // root remains valid across controller executions.
-        Ok(())
-    }
-
-    #[server(api = get)]
+impl Asset {
     async fn get(
-        &mut self,
-        api: &mut Self::Api,
+        &self,
+        _api: &Api,
         request: api::asset::GetRequest,
-    ) -> ServerResult<api::asset::GetResponse> {
-        let _ = api;
-        Ok(resolve(&self.robot_root, &request.path))
+        state: &mut AssetState,
+    ) -> QueryResult<api::asset::GetResponse> {
+        Ok(resolve(&state.robot_root, &request.path))
     }
 }
 

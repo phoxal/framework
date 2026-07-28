@@ -1,0 +1,17 @@
+error[E0277]: `ScheduledTool` has a clockless launch policy and cannot own a scheduled step
+  --> tests/trybuild/fail/tool_cannot_schedule_step.rs:15:5
+   |
+15 |     #[phoxal::step(hz = 10)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ scheduled steps are available only on services and drivers
+   |
+help: the trait `phoxal::participant::SchedulableSurface` is not implemented for `ScheduledTool`
+  --> tests/trybuild/fail/tool_cannot_schedule_step.rs:4:1
+   |
+ 4 | struct ScheduledTool;
+   | ^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `__assert_schedulable_surface`
+  --> tests/trybuild/fail/tool_cannot_schedule_step.rs:15:5
+   |
+15 |     #[phoxal::step(hz = 10)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `__assert_schedulable_surface`
+   = note: this error originates in the attribute macro `phoxal::step` (in Nightly builds, run with -Z macro-backtrace for more info)

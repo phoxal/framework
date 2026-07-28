@@ -36,10 +36,12 @@ const MAX_RUNTIME_SNAPSHOT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 #[phoxal::tool]
 pub struct ToolTelemetry;
 
-#[phoxal::behavior]
-impl ToolTelemetry {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+impl Participant for ToolTelemetry {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let bus = ctx.raw_bus();
 
         let device_history = Arc::new(Mutex::new(DeviceHistory::new(process_generation()?)));
@@ -219,7 +221,7 @@ impl ToolTelemetry {
 
         tracing::info!(target: "tool_telemetry", "telemetry ready");
 
-        Ok((Self, ()))
+        Ok(((), ()))
     }
 }
 

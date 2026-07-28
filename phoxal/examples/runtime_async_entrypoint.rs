@@ -4,24 +4,25 @@
 
 use phoxal::prelude::*;
 
-#[derive(serde::Deserialize, phoxal::Config)]
-struct Config {}
-
-#[derive(phoxal::Api)]
-struct Api {}
-
 #[phoxal::service(id = "async-participant")]
 struct AsyncParticipant;
 
-#[phoxal::behavior]
-impl AsyncParticipant {
-    #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        Ok((Self, Self::Api {}))
+impl Participant for AsyncParticipant {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
     }
 
-    #[step(hz = 1)]
-    async fn step(&mut self, _api: &mut Self::Api, _step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 1)]
+    async fn step(
+        &self,
+        _api: &Self::Api,
+        _step: StepContext,
+        _state: &mut Self::State,
+    ) -> Result<()> {
         Ok(())
     }
 }

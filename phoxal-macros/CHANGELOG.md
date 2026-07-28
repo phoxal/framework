@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- [**breaking**] delete the API coherence system ([#336](https://github.com/phoxal/framework/pull/336))
+- [**breaking**] simplify participant contract metadata ([#336](https://github.com/phoxal/framework/pull/336))
 
 ## [0.41.2](https://github.com/phoxal/framework/compare/phoxal-macros-v0.41.1...phoxal-macros-v0.41.2) - 2026-07-26
 
@@ -113,27 +113,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(macros)* embed resolved version-qualified TOPIC in the Api metadata section (F2-names) ([#198](https://github.com/phoxal/framework/pull/198))
+- *(macros)* embed resolved version-qualified TOPIC in generated metadata (F2-names) ([#198](https://github.com/phoxal/framework/pull/198))
 - *(new-model)* add robot()/robot_root() accessors + Querier/Ask contract role
 
 ### Other
 
-- *(api)* split generation/contract metadata fields + #[phoxal(external)] marker ([#200](https://github.com/phoxal/framework/pull/200))
-- phoxal-api refactor — finish batch (nested nodes, Declares/server gating, mixed API versions) ([#195](https://github.com/phoxal/framework/pull/195))
-- delete old authoring model + emit-apis; run_v2 -> run (Cleanup)
-- *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
+- *(api)* refine generated contract metadata fields ([#200](https://github.com/phoxal/framework/pull/200))
+- phoxal-api refactor — finish nested nodes and version handling ([#195](https://github.com/phoxal/framework/pull/195))
+- simplify the participant runner entrypoint (Cleanup)
+- *(api)* fold contract identity into the wire key (F-seam)
 
 ## [0.20.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.6...phoxal-macros-v0.20.0) - 2026-07-08
 
 ### Other
 
-- *(check)* [**breaking**] strip pub/sub/responder/topic/materialization; keep schema_id-by-family + config (WS5a) ([#189](https://github.com/phoxal/framework/pull/189))
+- *(check)* [**breaking**] simplify generated participant metadata (WS5a) ([#189](https://github.com/phoxal/framework/pull/189))
 
 ## [0.19.6](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.5...phoxal-macros-v0.19.6) - 2026-07-06
 
 ### Fixed
 
-- *(15)* enforce Tool as a thin runner - reject #[step]/#[server] at compile time ([#171](https://github.com/phoxal/framework/pull/171))
+- *(15)* enforce Tool as a thin raw-bus runner at compile time ([#171](https://github.com/phoxal/framework/pull/171))
 
 ## [0.19.5](https://github.com/phoxal/framework/compare/phoxal-macros-v0.19.4...phoxal-macros-v0.19.5) - 2026-07-03
 
@@ -163,7 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(15,16)* finish authoring taxonomy + per-contract schema_id (framework) ([#131](https://github.com/phoxal/framework/pull/131))
+- *(15,16)* finish authoring taxonomy and contract identity (framework) ([#131](https://github.com/phoxal/framework/pull/131))
 - *(15)* Service/Driver authoring kinds replace the Runtime derive ([#128](https://github.com/phoxal/framework/pull/128))
 
 ### Other

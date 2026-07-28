@@ -1,0 +1,7 @@
+error: #[phoxal::step(hz = N)] frequency must be positive and finite
+  --> tests/trybuild/fail/step_frequency_must_be_positive.rs:15:5
+   |
+15 |     #[phoxal::step(hz = 0)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this error originates in the attribute macro `phoxal::step` (in Nightly builds, run with -Z macro-backtrace for more info)

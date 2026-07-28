@@ -1,5 +1,0 @@
-error: #[server] takes `&mut self` (exclusive, serialized with #[step] - D16)
-  --> tests/trybuild/fail/server_requires_mut_self.rs:28:5
-   |
-28 |     async fn get(
-   |     ^^^^^

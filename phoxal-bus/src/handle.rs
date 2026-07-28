@@ -117,7 +117,7 @@ pub trait StepStamp: sealed::Sealed {
     fn instant(&self) -> RobotInstant;
 }
 
-/// Proof that the runner released a scheduled `#[step]` at a robot instant.
+/// Proof that the runner released a scheduled `Participant::step` at a robot instant.
 ///
 /// The runner is the only minter on the documented surface. Handing it to
 /// [`StatePublisher::publish`](StatePublisher::publish) is the sole way a
@@ -156,7 +156,7 @@ impl StepStamp for StepToken {
 
 /// Proof that the world authority completed one world step.
 ///
-/// The externally driven simulation controller has no framework `#[step]`: it
+/// The externally driven simulation controller has no framework `Participant::step`: it
 /// is driven by the simulator's own advance call, so no runner-minted
 /// [`StepToken`] can cover it. A [`TimelineAuthority`] mints this token once per
 /// completed world advance, for all outputs of that advance.
@@ -183,9 +183,9 @@ impl StepStamp for WorldStepToken {
 /// by whatever launches the graph (`phoxal-cli`), not by anything this
 /// process can observe.
 ///
-/// **What the type system actually closes, and what it does not
-/// (organization#957).** The documented authoring surface a participant
-/// writes against has exactly one path to an authority -
+/// **What the type system actually closes, and what it does not.** The
+/// documented authoring surface a participant writes against has exactly one
+/// path to an authority -
 /// `SetupContextSimulatorExt::timeline_authority` in the `phoxal` crate - and
 /// that trait's impl requires `Self: IsSimulator`, which is sealed behind a
 /// supertrait the role macros emit: `impl IsSimulator for MyType` on its own
@@ -219,7 +219,7 @@ static TIMELINE_AUTHORITY_HELD: AtomicBool = AtomicBool::new(false);
 
 impl TimelineAuthority {
     /// Framework-internal minter. The author-facing path is
-    /// `SetupContextSimulatorExt::timeline_authority` in `#[setup]` (`Self:
+    /// `SetupContextSimulatorExt::timeline_authority` in `Participant::setup` (`Self:
     /// IsSimulator`-gated - see the struct's docs for the exact strength of
     /// that guarantee). Fails if this process already holds one.
     /// `#[doc(hidden)]`.
@@ -342,7 +342,7 @@ macro_rules! role_publisher {
         impl<B: $bound> $name<B> {
             /// Framework-internal (macro/runner-only): build the handle over a
             /// topic. The author-facing path is the matching `ctx.*_publisher(...)`
-            /// builder in `#[setup]`. `#[doc(hidden)]`.
+            /// builder in `Participant::setup`. `#[doc(hidden)]`.
             #[doc(hidden)]
             pub fn new(bus: Bus, topic: &Topic<Publish<B>>) -> Result<Self> {
                 Ok($name(Outbox::new(bus, topic)?))
@@ -400,7 +400,7 @@ role_publisher!(
 /// and [`StepToken::__mint`] use - and this type is not re-exported from
 /// `phoxal::bus` or `phoxal::prelude`. The documented way to build one is
 /// `SetupContextSimulatorExt::world_clock_publisher` in the `phoxal` crate
-/// (`Self: IsSimulator`-gated, organization#957). That closes the accidental
+/// (`Self: IsSimulator`-gated). That closes the accidental
 /// route; it is not a sealed capability - see [`TimelineAuthority`]'s docs for
 /// the exact strength of that claim, which applies here identically.
 pub struct WorldClockPublisher<B: WorldClockContract>(Outbox<B>);
@@ -420,7 +420,7 @@ impl<B: StateContract> StatePublisher<B> {
 
 impl<B: WorldClockContract> WorldClockPublisher<B> {
     /// Framework-internal minter. The author-facing path is
-    /// `SetupContextSimulatorExt::world_clock_publisher` in `#[setup]`
+    /// `SetupContextSimulatorExt::world_clock_publisher` in `Participant::setup`
     /// (`Self: IsSimulator`-gated - see [`TimelineAuthority`]'s docs for the
     /// exact strength of that guarantee, which applies to this constructor
     /// identically). `#[doc(hidden)]`.
@@ -497,7 +497,7 @@ where
     Resp: ContractBody,
 {
     /// Framework-internal (macro/runner-only): build a querier over a query topic.
-    /// The author-facing path is `ctx.querier(...)` in `#[setup]`. `#[doc(hidden)]`.
+    /// The author-facing path is `ctx.querier(...)` in `Participant::setup`. `#[doc(hidden)]`.
     #[doc(hidden)]
     pub fn new(bus: Bus, topic: &Topic<AskQuery<Req, Resp>>, timeout: Duration) -> Result<Self> {
         let key = bus.full_key(topic.publish_key()?);
@@ -756,7 +756,7 @@ impl<B> Clone for Latest<B> {
 
 impl<B: ContractBody> Latest<B> {
     /// Framework-internal (macro/runner-only): build a keep-last view over a topic.
-    /// The author-facing path is `ctx.latest(...)` in `#[setup]`. `#[doc(hidden)]`.
+    /// The author-facing path is `ctx.latest(...)` in `Participant::setup`. `#[doc(hidden)]`.
     #[doc(hidden)]
     pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>) -> Result<Self> {
         let state = Arc::new(Mutex::new(LatestState {
@@ -861,16 +861,9 @@ impl<B: ContractBody> Latest<B> {
 /// it. That is a correctness question for whoever holds the clones, not a
 /// memory-safety one.
 ///
-/// This matters for the `Api` struct (a `Subscriber` field is
-/// cloned when the runner makes the `Arc<Self::Api>` snapshot it hands to
-/// concurrent `#[server_snapshot]` handlers - see
-/// `phoxal::participant::runner`): a `#[server_snapshot]` handler must
-/// **read committed `Snapshot` state, never `recv` a `Subscriber`**, or it
-/// would steal samples from the `#[step]`/exclusive-server side that owns the
-/// subscription. Prefer [`Latest`] whenever a value needs to be read from more
-/// than one place (its `.observed()` is a non-destructive clone from one
-/// mutex-serialized retained slot, so every clone sees the same current
-/// value); reserve sharing a
+/// Prefer [`Latest`] whenever a value needs to be read from more than one place
+/// (its `.observed()` is a non-destructive clone from one mutex-serialized
+/// retained slot, so every clone sees the same current value); reserve sharing a
 /// `Subscriber` clone for a deliberate "first clone to poll wins" work-queue
 /// fan-out.
 pub struct Subscriber<B> {
@@ -892,7 +885,8 @@ impl<B> Clone for Subscriber<B> {
 
 impl<B: ContractBody> Subscriber<B> {
     /// Framework-internal (macro/runner-only): build a drop-oldest ring over a topic.
-    /// The author-facing path is `ctx.subscriber(...)` in `#[setup]`. `#[doc(hidden)]`.
+    /// The author-facing path is `ctx.subscriber(...)` in
+    /// `Participant::setup`. `#[doc(hidden)]`.
     #[doc(hidden)]
     pub async fn new(bus: &Bus, topic: &Topic<Subscribe<B>>, depth: usize) -> Result<Self> {
         let depth = depth.max(1);
@@ -935,11 +929,8 @@ impl<B: ContractBody> Subscriber<B> {
     /// Await the next observed sample (drop-oldest under congestion).
     ///
     /// **Destructive**: this pops from the ring, so the sample is delivered to
-    /// exactly this caller. If this `Subscriber` was cloned (e.g. into the
-    /// `Arc<Self::Api>` snapshot the runner hands concurrent
-    /// `#[server_snapshot]` handlers), every clone competes for the same queue
-    /// (see the [type docs](Self)). Do not `recv` a `Subscriber` from a
-    /// snapshot server; read committed `Snapshot` state instead.
+    /// exactly this caller. If this `Subscriber` was cloned, every clone
+    /// competes for the same queue (see the [type docs](Self)).
     pub async fn recv(&self) -> Result<Observed<B>> {
         let (observed, _current_depth) = self.ring.recv().await;
         Ok(observed)

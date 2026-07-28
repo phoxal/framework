@@ -17,11 +17,10 @@
 //! (same name => same frozen shape, enforced by the type system and made
 //! physically real by the version-qualified wire key); two participants naming
 //! *different* contracts are simply different topics, never a collision.
-//! There is no API-coherence pass and no contract-surface inventory
-//! (organization#957): the exact framework train, plus the train-selected
-//! `phoxal::api` facade, is the entire API compatibility boundary, so a
-//! version disagreement between two participants on one robot is not
-//! expressible. The one thing that *is* still a real runtime hazard - a user
+//! The exact framework train, plus the train-selected `phoxal::api` facade, is
+//! the entire API compatibility boundary, so a version disagreement between
+//! two participants on one robot is not expressible. The one thing that *is*
+//! still a real runtime hazard - a user
 //! runtime's manifest config not matching its emitted JSON Schema - is
 //! [`Problem::InvalidConfig`], constructed and checked entirely by the caller
 //! that resolved both the manifest and the schema; this module supplies only

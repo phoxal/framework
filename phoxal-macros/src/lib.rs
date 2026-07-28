@@ -5,26 +5,16 @@
 //! - [`phoxal_api_tree!`] - declares concrete API-revision modules
 //!   (`phoxal_api::v0_1`, …), their revision-local body types, the
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
-//! - [`derive@Api`] / [`derive@Config`] - read an `Api` handle struct's typed
-//!   fields (the role-gated publishers / `Subscriber<T>` / `Latest<T>` / `Querier<Req,
-//!   Resp>` / `Server<Req, Resp>`) and a `Config` struct respectively, and emit
-//!   the static metadata (`ParticipantApi`/`ParticipantConfig`) the runner
-//!   consumes.
+//! - [`derive@Config`] - derives the config schema embedded in participant
+//!   metadata.
 //! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] / [`macro@tool`] -
-//!   link a participant state struct to its `Config`/`Api` types and record
-//!   its identity (`Participant`).
-//! - [`macro@behavior`] - the bare `#[phoxal::behavior]` attribute on the inherent
-//!   impl; it reads `#[setup]`/`#[step(hz = N)]`/`#[shutdown]` plus the query-side
-//!   `#[server]`/`#[server_snapshot]`/`#[snapshot]` and emits the lifecycle and
-//!   server dispatch (`ParticipantLifecycle`).
-//!
-//! The struct/impl macros are paired: `#[phoxal::service|driver|simulator|tool]`
-//! links the participant to its `Config`/`Api` types and records the artifact
-//! kind, while `#[phoxal::behavior]` adds the lifecycle methods and the
-//! server-side contracts, threading `Self::Api` through every callback (D3).
+//!   declare a unit marker's `Config`/`State`/`Api` types and identity
+//!   (`ParticipantSpec`).
+//! - [`macro@step`] - records cadence on the ordinary `Participant::step`
+//!   override. Setup, reset, shutdown, and query handlers are plain Rust.
 //!
 //! The participant authoring macros (`macro@service` / `macro@driver` /
-//! `macro@tool` / `macro@simulator` / `macro@behavior`) reference the framework
+//! `macro@tool` / `macro@simulator` / `macro@step`) reference the framework
 //! through `::phoxal::…`; the engine crate makes that path resolve to itself with
 //! `extern crate self as phoxal;`. The
 //! `phoxal_api_tree!` output instead targets the bus ABI floor directly as
@@ -33,7 +23,7 @@
 
 mod api_tree;
 mod authoring;
-mod behavior;
+mod step;
 mod util;
 
 use proc_macro::TokenStream;
@@ -76,9 +66,8 @@ use proc_macro::TokenStream;
 ///   segments plus the leaf, where a static node contributes `name` and a
 ///   dynamic node contributes `name/{var}` (e.g.
 ///   `v0.1/component/{instance}/motor/{capability}/command`). Folding the
-///   version into the key (D1) is what makes two differently-versioned
-///   contracts physically distinct Zenoh keys - there is no separate
-///   `FAMILY`/`SCHEMA_ID` axis.
+///   version into the key (D1) makes differently-versioned contracts
+///   physically distinct Zenoh keys.
 /// - **body type path** - `phoxal_api::vM_N::<node>::…::<Body>`; variables never
 ///   appear in the module path.
 ///
@@ -104,72 +93,11 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// The bare `#[phoxal::behavior]` attribute on a participant's inherent impl.
-///
-/// Takes no arguments (configure the participant on the struct via
-/// `#[phoxal::service]`, `#[phoxal::driver]`, `#[phoxal::tool]`, or
-/// `#[phoxal::simulator]`, and its bus-facing handles via `#[derive(phoxal::Api)]`
-/// on a companion `Api` struct). Reads the lifecycle/server helper attributes on
-/// the impl's methods, emits a `ParticipantLifecycle` impl that the runner
-/// drives, and re-emits the original methods verbatim with the helper
-/// attributes stripped. A method may carry at most one helper attribute.
-///
-/// # Lifecycle / server attributes and their required signatures
-///
-/// - `#[setup]` - **mandatory, exactly once**. An `async` associated function
-///   named `setup` taking `ctx: &mut SetupContext<Self>` and, optionally, the
-///   participant config; returns `Result<(Self, Self::Api)>`.
-/// - `#[step(hz = N)]` - at most once. `async fn (&mut self, api: &mut Self::Api,
-///   step: StepContext) -> Result<()>`; the scheduled control loop runs at the
-///   positive, finite frequency `N`.
-/// - `#[shutdown]` - at most once. An `async` method named `shutdown` taking
-///   `&mut self`, `api: &mut Self::Api`, and, optionally, `ctx: ShutdownContext`;
-///   returns `Result<()>`.
-/// - `#[server(api = field)]` - an exclusive query server: `async fn (&mut self,
-///   api: &mut Self::Api, request: Req) -> ServerResult<Resp>`. Serialized with
-///   `#[step]`.
-/// - `#[server_snapshot(api = field)]` - a concurrent, read-only query server: an
-///   `async` associated function taking `state: Snapshot<State>`, `api:
-///   &Self::Api`, and `request: Req`, returning `ServerResult<Resp>`. Requires a
-///   `#[snapshot]` provider.
-/// - `#[snapshot]` - at most once. The committed-snapshot provider: a synchronous
-///   `fn (&self) -> State` returning the committed state.
-///
-/// For `#[server]`/`#[server_snapshot]` the `api = field` names the `Api` struct's
-/// `Server<Req, Resp>` field being implemented; both request and response bodies
-/// must be `ContractBody` (checked at compile time; a query only ever reaches the
-/// handler on its own version-qualified topic key, D1, so there is no
-/// separate decode-time identity check left).
-///
-/// # A `tool` is a thin runner
-///
-/// A `#[phoxal::tool]` participant may use `#[setup]` and `#[shutdown]` (plus
-/// `#[snapshot]`, which is inert without a server), but `#[step]`,
-/// `#[server(...)]`, and `#[server_snapshot(...)]` are the typed-graph surface and
-/// are a compile error on a tool: tools are privileged, out-of-band, thin
-/// raw-bus runners (lifecycle + `participant_id` + `ctx.robot()` +
-/// `phoxal::raw`), not checked participants. A tool that needs a recurring loop
-/// spawns and owns its own task from `#[setup]`.
+/// Attach a positive, finite frequency to the ordinary
+/// [`Participant::step`](https://docs.rs/phoxal) override.
 #[proc_macro_attribute]
-pub fn behavior(attr: TokenStream, item: TokenStream) -> TokenStream {
-    behavior::expand(attr.into(), item.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-/// Derive the bus-facing contract surface from an `Api` handle struct. See
-/// `phoxal::participant::api` for the trait shape.
-///
-/// Scans fields by canonical syntactic form: a role-gated publisher / `Subscriber<T>` /
-/// `Latest<T>` are pub/sub handles, `Querier<Req, Resp>` is the asking side of a
-/// query, and `Server<Req, Resp>` is a served query contract - no live
-/// connection, declared for `#[phoxal::behavior]`'s `#[server(api = …)]` /
-/// `#[server_snapshot(api = …)]` to implement. A `Vec`/`BTreeMap`/`HashMap` of a
-/// handle carries the inner handle's declaration. Official participants name
-/// the train-selected complete revision through `phoxal::api`.
-#[proc_macro_derive(Api)]
-pub fn derive_api(input: TokenStream) -> TokenStream {
-    authoring::expand_api(input.into())
+pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
+    step::expand(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -185,11 +113,8 @@ pub fn derive_config(input: TokenStream) -> TokenStream {
         .into()
 }
 
-/// Link a participant state struct to its `Config`/`Api` types as a checked
-/// service. Defaults to the local `Config`/`Api` type names, and to the
-/// crate's `CARGO_PKG_NAME` (a leading `phoxal-<kind>-` stripped when
-/// present) for `id`; override any of them with
-/// `#[phoxal::service(id = "…", config = Type, api = Type)]`.
+/// Declare a service marker's `Config`/`State`/`Api` types. Each omitted type
+/// defaults to `()`; identity defaults from `CARGO_PKG_NAME`.
 ///
 /// An explicit `id` is still required whenever a crate defines more than one
 /// participant - they cannot all default to the one package name - and

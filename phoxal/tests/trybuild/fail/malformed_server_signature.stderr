@@ -1,5 +1,0 @@
-error: server handlers must return `ServerResult<Resp>`
-  --> tests/trybuild/fail/malformed_server_signature.rs:33:10
-   |
-33 |     ) -> Result<api::asset::GetResponse> {
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

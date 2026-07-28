@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- [**breaking**] delete the API coherence system ([#336](https://github.com/phoxal/framework/pull/336))
+- [**breaking**] simplify participant contract metadata ([#336](https://github.com/phoxal/framework/pull/336))
 
 ## [0.41.3](https://github.com/phoxal/framework/compare/phoxal-bus-v0.41.2...phoxal-bus-v0.41.3) - 2026-07-26
 
@@ -108,9 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- *(api)* split generation/contract metadata fields + #[phoxal(external)] marker ([#200](https://github.com/phoxal/framework/pull/200))
-- delete old authoring model + emit-apis; run_v2 -> run (Cleanup)
-- *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
+- *(api)* refine generated contract metadata fields ([#200](https://github.com/phoxal/framework/pull/200))
+- simplify the participant runner entrypoint (Cleanup)
+- *(api)* fold contract identity into the wire key (F-seam)
 
 ## [0.20.1](https://github.com/phoxal/framework/compare/phoxal-bus-v0.20.0...phoxal-bus-v0.20.1) - 2026-07-02
 
@@ -127,7 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(15,16)* finish authoring taxonomy + per-contract schema_id (framework) ([#131](https://github.com/phoxal/framework/pull/131))
+- *(15,16)* finish authoring taxonomy and contract identity (framework) ([#131](https://github.com/phoxal/framework/pull/131))
 - *(15)* Service/Driver authoring kinds replace the Runtime derive ([#128](https://github.com/phoxal/framework/pull/128))
 
 ### Other

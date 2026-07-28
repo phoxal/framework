@@ -2300,7 +2300,6 @@ name = "phoxal"
 version = "0.42.3"
 dependencies = [
  "anyhow",
- "arc-swap",
  "clap",
  "const_format",
  "derive-new",

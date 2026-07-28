@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- [**breaking**] delete the API coherence system ([#336](https://github.com/phoxal/framework/pull/336))
+- [**breaking**] simplify participant contract metadata ([#336](https://github.com/phoxal/framework/pull/336))
 
 ## [0.41.3](https://github.com/phoxal/framework/compare/v0.41.2...v0.41.3) - 2026-07-26
 
@@ -230,37 +230,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - *(check)* coherence pass - per-participant pub/sub overlap + every-ask-matched (coherence-B) ([#203](https://github.com/phoxal/framework/pull/203))
-- *(xtask)* read metadata from binary section; drop schema_id/freeze tooling; frozen-gen release check (X-tools)
+- *(xtask)* read metadata from the binary section and add the frozen-generation release check (X-tools)
 - *(runtime)* wire new-model runner (run_v2), coexisting with old (F-runtime)
 - *(macros)* add new participant authoring model alongside old (F-macros)
 
 ### Fixed
 
-- *(macros)* embed resolved version-qualified TOPIC in the Api metadata section (F2-names) ([#198](https://github.com/phoxal/framework/pull/198))
+- *(macros)* embed resolved version-qualified TOPIC in generated metadata (F2-names) ([#198](https://github.com/phoxal/framework/pull/198))
 - *(new-model)* blanket ParticipantConfig for Option<T>
 - *(new-model)* add robot()/robot_root() accessors + Querier/Ask contract role
 
 ### Other
 
-- *(api)* split generation/contract metadata fields + #[phoxal(external)] marker ([#200](https://github.com/phoxal/framework/pull/200))
+- *(api)* refine generated contract metadata fields ([#200](https://github.com/phoxal/framework/pull/200))
 - *(component)* [**breaking**] flatten each component into one crate with binary + assets (F3-flatten) ([#199](https://github.com/phoxal/framework/pull/199))
 - *(ci)* build-snapshot release model (phoxal.catalog/v0) ([#196](https://github.com/phoxal/framework/pull/196))
-- phoxal-api refactor — finish batch (nested nodes, Declares/server gating, mixed API versions) ([#195](https://github.com/phoxal/framework/pull/195))
-- delete old authoring model + emit-apis; run_v2 -> run (Cleanup)
-- *(api)* fold generation into wire key; drop schema_id/bus_abi/extends (F-seam)
+- phoxal-api refactor — finish nested nodes and version handling ([#195](https://github.com/phoxal/framework/pull/195))
+- simplify the participant runner entrypoint (Cleanup)
+- *(api)* fold contract identity into the wire key (F-seam)
 
 ## [0.30.0](https://github.com/phoxal/framework/compare/phoxal-v0.29.0...phoxal-v0.30.0) - 2026-07-08
 
 ### Other
 
 - *(model)* [**breaking**] rename manifest wrappers v1->v0, unify yaml tag to schema:<domain>/v0 (WS5b) ([#191](https://github.com/phoxal/framework/pull/191))
-- *(check)* [**breaking**] strip pub/sub/responder/topic/materialization; keep schema_id-by-family + config (WS5a) ([#189](https://github.com/phoxal/framework/pull/189))
+- *(check)* [**breaking**] simplify graph reports and config checks (WS5a) ([#189](https://github.com/phoxal/framework/pull/189))
 
 ## [0.29.0](https://github.com/phoxal/framework/compare/phoxal-v0.28.0...phoxal-v0.29.0) - 2026-07-07
 
 ### Other
 
-- *(catalog)* [**breaking**] lean phoxal-artifacts.json, single phoxal::catalog schema, inline emit-apis (WS1) ([#187](https://github.com/phoxal/framework/pull/187))
+- *(catalog)* [**breaking**] lean phoxal-artifacts.json with one catalog schema (WS1) ([#187](https://github.com/phoxal/framework/pull/187))
 
 ## [0.28.0](https://github.com/phoxal/framework/compare/phoxal-v0.27.0...phoxal-v0.28.0) - 2026-07-07
 
@@ -284,7 +284,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- *(15)* enforce Tool as a thin runner - reject #[step]/#[server] at compile time ([#171](https://github.com/phoxal/framework/pull/171))
+- *(15)* enforce Tool as a thin raw-bus runner at compile time ([#171](https://github.com/phoxal/framework/pull/171))
 
 ## [0.26.0](https://github.com/phoxal/framework/compare/phoxal-v0.25.0...phoxal-v0.26.0) - 2026-07-04
 
@@ -340,7 +340,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- *(15,16)* finish authoring taxonomy + per-contract schema_id (framework) ([#131](https://github.com/phoxal/framework/pull/131))
+- *(15,16)* finish authoring taxonomy and contract identity (framework) ([#131](https://github.com/phoxal/framework/pull/131))
 - *(15)* Service/Driver authoring kinds replace the Runtime derive ([#128](https://github.com/phoxal/framework/pull/128))
 
 ### Other

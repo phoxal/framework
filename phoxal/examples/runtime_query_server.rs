@@ -1,53 +1,46 @@
-//! A server-only participant: `#[setup]` + one exclusive `#[server]`, no `#[step]`.
+//! A query-only participant with no scheduled step.
 //!
 //! `cargo run --example runtime_query_server` serves `asset/get`; the runner
-//! drives the queryable and serializes each call with `&mut self`.
+//! drives the queryable and serializes each call with lifecycle state.
 
 use std::collections::BTreeMap;
 
 use phoxal::api;
 use phoxal::prelude::*;
 
-#[derive(serde::Deserialize, phoxal::Config)]
-struct Config {}
+struct Api;
 
-#[derive(phoxal::Api)]
-struct Api {
-    get: Server<api::asset::GetRequest, api::asset::GetResponse>,
-}
-
-#[phoxal::service(id = "asset-store")]
-struct AssetStore {
+struct AssetStoreState {
     // Runtime-private state - not a handle, so it lives on the participant
     // struct, not the `Api` struct.
     assets: BTreeMap<String, Vec<u8>>,
 }
 
-#[phoxal::behavior]
-impl AssetStore {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(id = "asset-store", state = AssetStoreState, api = Api)]
+struct AssetStore;
+
+impl Participant for AssetStore {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let mut assets = BTreeMap::new();
         assets.insert("map.pgm".to_string(), vec![0x50, 0x35, 0x0a]);
-        Ok((
-            Self { assets },
-            Self::Api {
-                get: ctx.server(api::topic::client().asset().get()).await?,
-            },
-        ))
+        ctx.query(api::topic::owner().asset().get(), Self::get)
+            .await?;
+        Ok((AssetStoreState { assets }, Api))
     }
+}
 
-    // The default exclusive server: serialized with any `#[step]`, holds `&mut
-    // self` and `&mut Self::Api`. `api = get` names the `Api` struct's `Server`
-    // slot this handler implements ("`Api` declares the bus contract,
-    // `behavior` implements runtime logic").
-    #[server(api = get)]
+impl AssetStore {
     async fn get(
-        &mut self,
-        _api: &mut Self::Api,
+        &self,
+        _api: &Api,
         request: api::asset::GetRequest,
-    ) -> ServerResult<api::asset::GetResponse> {
-        match self.assets.get(&request.path) {
+        state: &mut AssetStoreState,
+    ) -> QueryResult<api::asset::GetResponse> {
+        match state.assets.get(&request.path) {
             Some(bytes) => Ok(api::asset::GetResponse::Found {
                 bytes: bytes.clone(),
             }),

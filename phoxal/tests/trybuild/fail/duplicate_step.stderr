@@ -1,5 +1,0 @@
-error: duplicate #[step]: a participant has at most one scheduled loop
-  --> tests/trybuild/fail/duplicate_step.rs:34:5
-   |
-34 |     async fn step_b(&mut self, _step: StepContext) -> Result<()> {
-   |     ^^^^^

@@ -1,5 +1,0 @@
-error: #[server_snapshot] first argument must be `state: Snapshot<State>`
-  --> tests/trybuild/fail/server_snapshot_requires_snapshot_arg.rs:31:17
-   |
-31 |         _state: MapState,
-   |                 ^^^^^^^^

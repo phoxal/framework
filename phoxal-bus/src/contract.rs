@@ -101,8 +101,8 @@ pub trait StateContract: ContractBody {}
 /// Deliberately a SIBLING of [`StateContract`], not a subtrait of it: if the
 /// world clock also implemented `StateContract`, it would still satisfy the
 /// ordinary, unrestricted `state_publisher` builder every participant has,
-/// which is exactly the unenforced convention organization#957 found - "only
-/// a simulator can mint world steps" was a doc comment, not a compiler rule.
+/// which would make "only a simulator can mint world steps" an unenforced
+/// convention rather than a compiler rule.
 /// Excluding it from `StateContract` is what makes that builder reject it at
 /// compile time, forcing every caller through the world-authority-gated
 /// `SetupContextSimulatorExt::world_clock_publisher` in the `phoxal` crate
@@ -147,8 +147,8 @@ pub trait DiagnosticContract: ContractBody {}
 /// Every body declared inside a `phoxal_api_tree!` node gets a generated impl.
 /// Each body carries its own [`Api`](ContractBody::Api) version marker and
 /// version-qualified [`TOPIC`](ContractBody::TOPIC).
-/// Participant `Api` derives record contract bodies field by field, and setup
-/// builders require the requested handle body to be declared by that struct.
+/// Participant setup builders accept these bodies directly and preserve the
+/// contract type through each typed handle.
 ///
 /// The serde encoding of an implementor *is* the wire payload; there is no version
 /// envelope (D62).
@@ -156,9 +156,9 @@ pub trait DiagnosticContract: ContractBody {}
 /// **Wire identity is the key, not a hash (D1).** The version is folded into
 /// [`TOPIC`](ContractBody::TOPIC), so `v0.1::drive::Target` and a
 /// hypothetically re-minted `v0.2::drive::Target` publish on different Zenoh
-/// keys and physically cannot collide. There is therefore no `SCHEMA_ID`/`FAMILY`
-/// axis: two participants interoperate on a contract iff they use the exact same
-/// version-qualified name, which is realized on the wire by the key.
+/// keys and physically cannot collide. Two participants interoperate on a
+/// contract iff they use the exact same version-qualified name, which is
+/// realized on the wire by the key.
 /// A receiver's per-key Zenoh subscription is the
 /// whole fast-reject; the bus decode path validates only the codec.
 pub trait ContractBody:
@@ -183,8 +183,8 @@ pub trait ContractBody:
     const NAME: &'static str;
     /// This body's dotted wire revision alone, e.g. `"v0.1"` - equal to
     /// `<Self::Api as ApiVersion>::ID`, but exposed directly on the body so a
-    /// metadata recorder (`#[derive(phoxal::Api)]`'s linker-section
-    /// splicing) can const-splice it without routing through `Self::Api`.
+    /// metadata or diagnostics recorder can const-splice it without routing
+    /// through `Self::Api`.
     /// Split from [`CONTRACT`](ContractBody::CONTRACT) so a consumer can read
     /// the revision without parsing a joined name.
     const VERSION: &'static str;

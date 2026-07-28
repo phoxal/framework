@@ -1,5 +1,0 @@
-error: #[server] takes `&mut self`, optional `api: &mut Self::Api`, and one request argument
-  --> tests/trybuild/fail/server_wrong_arg_count.rs:28:5
-   |
-28 |     async fn get(
-   |     ^^^^^
