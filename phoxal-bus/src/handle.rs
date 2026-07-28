@@ -468,8 +468,8 @@ impl<B: DiagnosticContract> DiagnosticPublisher<B> {
 ///   [`QueryError::Server`] carrying the [`QueryFailure`];
 /// - the deadline elapsing with no reply is [`QueryError::Timeout`], and the
 ///   reply stream closing with no reply is [`QueryError::Unavailable`];
-/// - a second reply (a duplicate responder, also a `phoxal-cli check` topology
-///   error) is [`QueryError::TooManyResponders`].
+/// - a second reply (a duplicate responder, also a launch-topology error) is
+///   [`QueryError::TooManyResponders`].
 pub struct Querier<Req, Resp> {
     bus: Bus,
     key: String,
@@ -539,7 +539,7 @@ where
         // An exclusive query topic has exactly one responder (D31/D43f): collect
         // replies until the stream closes, returning the single reply. A second
         // reply is `TooManyResponders` (a duplicate responder - also a
-        // `phoxal-cli check` topology error). The Phoxal-pinned finite timeout
+        // launch-topology error). The Phoxal-pinned finite timeout
         // bounds the wait: deadline with no reply → `Timeout`; the stream closing
         // with no reply → `Unavailable`.
         let deadline = tokio::time::Instant::now() + self.timeout;
