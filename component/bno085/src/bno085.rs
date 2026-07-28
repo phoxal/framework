@@ -159,15 +159,6 @@ impl Participant for Bno085 {
 
         Ok(())
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        _state: &mut Self::State,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 fn schedule(capability_id: &str, publish_rate_hz: f64) -> Result<CapabilitySchedule> {

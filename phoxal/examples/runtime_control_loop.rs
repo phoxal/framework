@@ -62,17 +62,6 @@ impl Participant for AvoidObstacles {
         api.target.send(target)?;
         Ok(())
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        _state: &mut Self::State,
-    ) -> Result<()> {
-        // Best-effort: a real participant parks/stops actuators here before the bus
-        // closes. Nothing to flush in this example.
-        Ok(())
-    }
 }
 
 fn main() -> phoxal::Result<()> {

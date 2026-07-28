@@ -319,12 +319,7 @@ impl Participant for Ddsm115 {
         Ok(())
     }
 
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    async fn shutdown(&self, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         // Park: command the motor to a stop. A real driver flushes the bus/CAN here
         // before the session closes.
         lock(&state.motor).stop();

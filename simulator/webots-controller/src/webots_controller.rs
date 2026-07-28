@@ -421,12 +421,7 @@ impl Participant for WebotsControllerSimulator {
         Ok((WebotsControllerState { backend }, api))
     }
 
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    async fn shutdown(&self, api: &Self::Api, state: &mut Self::State) -> Result<()> {
         for subscriber in &api.motor_commands {
             let _latest = drain_latest(subscriber);
         }

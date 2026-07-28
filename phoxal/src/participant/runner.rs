@@ -25,9 +25,7 @@ use crate::bus::{LocalInstant, QueryFailure, RobotInstant, StepToken, TimelineId
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockReading, ClockSource, RealClock, TimeUnsynchronized};
-use crate::participant::context::{
-    ResetContext, SetupContext, ShutdownContext, StepContext, TimelineRetention,
-};
+use crate::participant::context::{ResetContext, SetupContext, StepContext, TimelineRetention};
 use crate::participant::launch::{ClockMode, ParticipantLaunch, ParticipantLaunchPolicy};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
@@ -548,12 +546,7 @@ async fn teardown_lifecycle<R>(
     // log and move on; the hook's task is dropped (cancelled at the next await).
     let shutdown_remaining =
         shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
-    match tokio::time::timeout(
-        shutdown_remaining,
-        participant.shutdown(ShutdownContext::new(grace), api, state),
-    )
-    .await
-    {
+    match tokio::time::timeout(shutdown_remaining, participant.shutdown(api, state)).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             tracing::warn!(target: "phoxal.runtime", error = %error, "shutdown hook returned error");
@@ -1177,12 +1170,7 @@ mod tests {
             Ok((HookTrace::default(), ()))
         }
 
-        async fn shutdown(
-            &self,
-            _ctx: ShutdownContext,
-            _api: &Self::Api,
-            state: &mut Self::State,
-        ) -> crate::Result<()> {
+        async fn shutdown(&self, _api: &Self::Api, state: &mut Self::State) -> crate::Result<()> {
             state.called.store(true, Ordering::Relaxed);
             std::future::pending::<()>().await;
             state.completed.store(true, Ordering::Relaxed);
@@ -1204,12 +1192,7 @@ mod tests {
             Ok((HookTrace::default(), ()))
         }
 
-        async fn shutdown(
-            &self,
-            _ctx: ShutdownContext,
-            _api: &Self::Api,
-            state: &mut Self::State,
-        ) -> crate::Result<()> {
+        async fn shutdown(&self, _api: &Self::Api, state: &mut Self::State) -> crate::Result<()> {
             state.called.store(true, Ordering::Relaxed);
             anyhow::bail!("could not park the wheels")
         }

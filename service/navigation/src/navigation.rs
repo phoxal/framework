@@ -252,16 +252,6 @@ impl Participant for Navigation {
         }
         Ok(())
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        state.active = None;
-        Ok(())
-    }
 }
 
 impl Navigation {

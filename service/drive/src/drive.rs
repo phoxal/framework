@@ -266,12 +266,7 @@ impl Participant for Drive {
         Ok(())
     }
 
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        api: &Self::Api,
-        _state: &mut Self::State,
-    ) -> Result<()> {
+    async fn shutdown(&self, api: &Self::Api, _state: &mut Self::State) -> Result<()> {
         // Best-effort park: command every wheel to stop before the bus closes.
         // A motor command expresses no robot time, so this needs no instant -
         // which is exactly why `Stop` stays callable outside a step, as it must.

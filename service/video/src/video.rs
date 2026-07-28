@@ -186,23 +186,6 @@ impl Participant for Video {
 
         Ok(())
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        // Shutdown is outside every step, so there is no instant to publish a
-        // final `StreamState` at. Marking the streams stopped locally is the
-        // whole obligation: consumers see the stream go silent, which is the
-        // same signal a killed process gives.
-        for index in 0..state.sources.len() {
-            state.phase[index] = StreamPhase::Stopped;
-            state.active[index] = false;
-        }
-        Ok(())
-    }
 }
 
 impl Video {

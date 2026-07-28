@@ -312,34 +312,6 @@ impl Participant for BehaviorService {
         }
         state.publish_observation(api, step).await
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        if let Some(execution) = state.execution.as_mut()
-            && matches!(
-                execution.status,
-                api::behavior::ExecutionStatus::Running | api::behavior::ExecutionStatus::Paused
-            )
-        {
-            execution.status = api::behavior::ExecutionStatus::Abandoned;
-            execution.failure = Some(failure(
-                api::behavior::FailureReason::ExecutionAbandoned,
-                "behavior service stopped; v0 never resumes an in-flight execution",
-                None,
-                None,
-            ));
-        }
-        // Shutdown is outside every step, so there is no instant to publish the
-        // abandonment event at. The state is recorded locally; consumers learn
-        // the execution stopped from the participant going silent, exactly as
-        // they would if the process were killed.
-        let _ = api;
-        Ok(())
-    }
 }
 
 impl BehaviorServiceState {

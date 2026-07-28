@@ -285,15 +285,6 @@ impl Participant for OakDLite {
 
         Ok(())
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        _state: &mut Self::State,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 fn sensor_slot(capability_id: &str, publish_rate_hz: f64) -> Result<SensorSlot> {

@@ -266,9 +266,9 @@ pub mod bus {
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) or
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) either; this is
 /// also where the one simulator that legitimately owns the world clock
-/// imports those two from. `Tool` participants are emitted as
-/// `participant_class = "privileged"`; the graph checker still includes their
-/// contracts, but never lets their raw access satisfy checked topology.
+/// imports those two from. `Tool` participants are marked
+/// `participant_class = "privileged"` so runtime diagnostics can identify
+/// that deliberate boundary crossing.
 ///
 /// # Robot time: what the types enforce, and what they do not
 ///
@@ -357,7 +357,6 @@ pub mod prelude {
     };
     pub use crate::participant::{
         ManagedTaskPolicy, Participant, ResetContext, SetupContext, SetupContextApiExt,
-        SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt, ShutdownContext,
-        StepContext,
+        SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt, StepContext,
     };
 }

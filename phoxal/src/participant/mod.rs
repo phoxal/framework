@@ -24,7 +24,7 @@ pub use api::{
 pub use clock::{
     BootId, ClockReading, ClockSource, ExecutionOrigin, RealClock, TestClock, TimeUnsynchronized,
 };
-pub use context::{ResetContext, SetupContext, ShutdownContext, StepContext};
+pub use context::{ResetContext, SetupContext, StepContext};
 pub use launch::{BusProfile, ClockMode, ParticipantLaunch};
 pub use managed::ManagedTaskPolicy;
 pub use runner::{run, run_async, run_with};

@@ -27,7 +27,7 @@ use crate::bus::{
     MessagePack, Publish, Querier, ServeQuery, StateContract, StatePublisher, Subscribe,
     Subscriber, TimelineId, Topic, WorldClockContract,
 };
-use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
+use crate::participant::context::{ResetContext, SetupContext, StepContext};
 use crate::participant::server::ServerOutcome;
 use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule, TypedGraphSurface};
 // `TimelineAuthority`/`WorldClockPublisher` are deliberately imported from the
@@ -291,13 +291,13 @@ pub trait Participant: ParticipantSpec {
         Ok(())
     }
 
-    /// Gracefully park, stop, or flush participant-owned state.
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        _state: &mut Self::State,
-    ) -> crate::Result<()> {
+    /// Gracefully park, stop, flush, or publish a final externally observable
+    /// action before the bus closes.
+    ///
+    /// Override this only when teardown has an effect outside the state that
+    /// the runner is about to drop. Ordinary participants omit it. The runner
+    /// bounds the hook with the launch contract's shutdown grace period.
+    async fn shutdown(&self, _api: &Self::Api, _state: &mut Self::State) -> crate::Result<()> {
         Ok(())
     }
 

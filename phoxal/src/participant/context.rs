@@ -1,6 +1,6 @@
 //! Participant contexts: `SetupContext` (IO construction), `ResetContext`
-//! (simulation execution replacement), `StepContext` (logical time per
-//! scheduled step), and `ShutdownContext`.
+//! (simulation execution replacement), and `StepContext` (logical time per
+//! scheduled step).
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -58,8 +58,8 @@ impl<R: Participant> SetupContext<R> {
     /// runner treats that as a runtime fault (participant marked `Failed`,
     /// lose the participant Liveliness token) exactly as it would a `Participant::step` bug it
     /// cannot recover from. At shutdown the runner cancels every managed task
-    /// as the shutdown sequence starts and joins it within the same grace
-    /// budget as `Participant::shutdown` (see [`ShutdownContext::grace`]), before the bus
+    /// as the shutdown sequence starts and joins it within the same
+    /// runner-enforced grace budget as `Participant::shutdown`, before the bus
     /// closes.
     ///
     /// `name` is a short diagnostic label (e.g. `"serial-reader"`) surfaced in
@@ -230,28 +230,5 @@ impl StepContext {
     /// Ticks collapsed into this step after an overrun (D34).
     pub fn missed_ticks(&self) -> u32 {
         self.missed_ticks
-    }
-}
-
-/// Context for `Participant::shutdown`: graceful park/stop/flush before bus close (D24/D43i).
-///
-/// The runner bounds the whole `Participant::shutdown` hook by [`grace`](Self::grace): if the
-/// hook is still running at the deadline, the runner logs, drops the hook, and
-/// proceeds to bus close anyway so the process never leaks. Treat [`grace`](Self::grace)
-/// as a budget for any internal flush/park deadlines and return before it elapses.
-#[derive(Clone, Copy, Debug)]
-pub struct ShutdownContext {
-    grace: Duration,
-}
-
-impl ShutdownContext {
-    pub(crate) fn new(grace: Duration) -> Self {
-        ShutdownContext { grace }
-    }
-
-    /// The bounded grace period the runner allows the hook before it forces bus
-    /// close. Sourced from `ParticipantLaunch::shutdown_grace_ms`.
-    pub fn grace(&self) -> Duration {
-        self.grace
     }
 }

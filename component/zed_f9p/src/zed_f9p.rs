@@ -90,15 +90,6 @@ impl Participant for ZedF9p {
 
         Ok(())
     }
-
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        _state: &mut Self::State,
-    ) -> Result<()> {
-        Ok(())
-    }
 }
 
 fn validate_publish_rate(capability_id: &str, publish_rate_hz: f64) -> Result<()> {

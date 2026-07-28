@@ -93,12 +93,7 @@ impl Participant for ToolJoypad {
         Ok((ToolJoypadState { shutdown_publisher }, ()))
     }
 
-    async fn shutdown(
-        &self,
-        _ctx: ShutdownContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
+    async fn shutdown(&self, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         publish_stop_repeats(&state.shutdown_publisher, "tool shutdown").await;
         Ok(())
     }
