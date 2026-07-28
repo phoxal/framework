@@ -68,15 +68,12 @@ impl VideoSource {
 
 use api::video::stream::{StreamPhase, StreamState};
 
-#[derive(phoxal::Api)]
 pub struct Api {
     cameras: Vec<Subscriber<api::component::camera::Frame>>,
     states: Vec<StatePublisher<StreamState>>,
-    open: Server<api::video::OpenRequest, api::video::OpenResponse>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Video {
+pub struct VideoState {
     // Runtime-private state.
     sources: Vec<VideoSource>,
     active: Vec<bool>,
@@ -85,14 +82,9 @@ pub struct Video {
     last_frame: Vec<Option<TimeWindow>>,
 }
 
-impl Video {
-    /// Publish the current `StreamState` snapshot for `index`.
-    async fn publish_state(
-        &mut self,
-        api: &mut Api,
-        index: usize,
-        step: StepContext,
-    ) -> Result<()> {
+impl VideoState {
+    /// Publish the current `StreamState` for `index`.
+    async fn publish_state(&mut self, api: &Api, index: usize, step: StepContext) -> Result<()> {
         api.states[index].publish(
             step.token(),
             StreamState {
@@ -104,10 +96,15 @@ impl Video {
     }
 }
 
-#[phoxal::behavior]
-impl Video {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = VideoState, api = Api)]
+pub struct Video;
+
+impl Participant for Video {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let sources = build_video_sources(ctx.robot()?)?;
 
         let mut cameras = Vec::with_capacity(sources.len());
@@ -116,67 +113,73 @@ impl Video {
             cameras.push(ctx.subscriber(source.camera_topic(), 32).await?);
             states.push(ctx.state_publisher(source.state_topic()).await?);
         }
-        let open = ctx.server(api::topic::client().video().open()).await?;
+        ctx.query(api::topic::owner().video().open(), Self::open)
+            .await?;
 
         Ok((
-            Self {
+            VideoState {
                 active: vec![false; sources.len()],
                 phase: vec![StreamPhase::Stopped; sources.len()],
                 frames_seen: vec![0; sources.len()],
                 last_frame: vec![None; sources.len()],
                 sources,
             },
-            Self::Api {
-                cameras,
-                states,
-                open,
-            },
+            Api { cameras, states },
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        for (active, phase) in self.active.iter().zip(&mut self.phase) {
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        for (active, phase) in state.active.iter().zip(&mut state.phase) {
             *phase = if *active {
                 StreamPhase::Starting
             } else {
                 StreamPhase::Stopped
             };
         }
-        self.frames_seen.fill(0);
-        self.last_frame.fill(None);
+        state.frames_seen.fill(0);
+        state.last_frame.fill(None);
         Ok(())
     }
 
-    #[step(hz = 30)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 30)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         for index in 0..api.cameras.len() {
             let mut saw_frame = false;
             while let Some(observed) = api.cameras[index].try_recv() {
                 let captured_at = observed.metadata.produced_at;
-                if !self.active[index] {
-                    self.last_frame[index] = captured_at;
+                if !state.active[index] {
+                    state.last_frame[index] = captured_at;
                     continue;
                 }
-                self.frames_seen[index] = self.frames_seen[index].saturating_add(1);
-                self.last_frame[index] = captured_at;
+                state.frames_seen[index] = state.frames_seen[index].saturating_add(1);
+                state.last_frame[index] = captured_at;
                 saw_frame = true;
             }
             if saw_frame {
-                self.publish_state(api, index, step).await?;
+                state.publish_state(api, index, step).await?;
             }
         }
 
-        for index in 0..self.sources.len() {
-            if self.active[index] {
-                let next = if frame_is_fresh(self.last_frame[index], step.now()) {
+        for index in 0..state.sources.len() {
+            if state.active[index] {
+                let next = if frame_is_fresh(state.last_frame[index], step.now()) {
                     StreamPhase::Active
                 } else {
                     StreamPhase::Starting
                 };
-                if self.phase[index] != next {
-                    self.phase[index] = next;
-                    self.publish_state(api, index, step).await?;
+                if state.phase[index] != next {
+                    state.phase[index] = next;
+                    state.publish_state(api, index, step).await?;
                 }
             }
         }
@@ -184,34 +187,38 @@ impl Video {
         Ok(())
     }
 
-    #[server(api = open)]
-    async fn open(
-        &mut self,
-        api: &mut Self::Api,
-        request: api::video::OpenRequest,
-    ) -> ServerResult<api::video::OpenResponse> {
-        let _ = api;
-        open_stream(
-            &self.sources,
-            &mut self.active,
-            &mut self.phase,
-            &mut self.frames_seen,
-            request,
-        )
-    }
-
-    #[shutdown]
-    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
         // Shutdown is outside every step, so there is no instant to publish a
         // final `StreamState` at. Marking the streams stopped locally is the
         // whole obligation: consumers see the stream go silent, which is the
         // same signal a killed process gives.
-        let _ = api;
-        for index in 0..self.sources.len() {
-            self.phase[index] = StreamPhase::Stopped;
-            self.active[index] = false;
+        for index in 0..state.sources.len() {
+            state.phase[index] = StreamPhase::Stopped;
+            state.active[index] = false;
         }
         Ok(())
+    }
+}
+
+impl Video {
+    async fn open(
+        &self,
+        _api: &Api,
+        request: api::video::OpenRequest,
+        state: &mut VideoState,
+    ) -> QueryResult<api::video::OpenResponse> {
+        open_stream(
+            &state.sources,
+            &mut state.active,
+            &mut state.phase,
+            &mut state.frames_seen,
+            request,
+        )
     }
 }
 
@@ -252,7 +259,7 @@ fn open_stream(
     phase: &mut [StreamPhase],
     frames_seen: &mut [u64],
     request: api::video::OpenRequest,
-) -> ServerResult<api::video::OpenResponse> {
+) -> QueryResult<api::video::OpenResponse> {
     let index = resolve_open(&request, sources)?;
     // (Re)opening a stream restarts its lifecycle: the next step republishes the
     // `Starting` → `Active` transition from a fresh frame count.
@@ -266,7 +273,7 @@ fn open_stream(
     })
 }
 
-fn resolve_open(request: &api::video::OpenRequest, sources: &[VideoSource]) -> ServerResult<usize> {
+fn resolve_open(request: &api::video::OpenRequest, sources: &[VideoSource]) -> QueryResult<usize> {
     if sources.is_empty() {
         return Err(QueryFailure::unavailable("no camera sources are available"));
     }
@@ -301,7 +308,7 @@ fn resolve_open(request: &api::video::OpenRequest, sources: &[VideoSource]) -> S
 fn validate_requested_dimensions(
     request: &api::video::OpenRequest,
     source: &VideoSource,
-) -> ServerResult<()> {
+) -> QueryResult<()> {
     if request
         .width_px
         .is_some_and(|width| width > source.native_width_px)

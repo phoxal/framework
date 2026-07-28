@@ -7,15 +7,13 @@ use phoxal::prelude::*;
 
 const STEP_HZ: f64 = 100.0;
 
-#[derive(phoxal::Api)]
 pub struct Api {
     imu: Vec<MeasurementPublisher<api::component::imu::Sample>>,
     accelerometer: Vec<MeasurementPublisher<api::component::accelerometer::Sample>>,
     gyroscope: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
 }
 
-#[phoxal::driver(config = ())]
-pub struct Bno085 {
+pub struct Bno085State {
     imu_divisors: Vec<u64>,
     accelerometer_divisors: Vec<u64>,
     gyroscope_divisors: Vec<u64>,
@@ -27,10 +25,15 @@ struct CapabilitySchedule {
     divisor: u64,
 }
 
-#[phoxal::behavior]
-impl Bno085 {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::driver(state = Bno085State, api = Api)]
+pub struct Bno085;
+
+impl Participant for Bno085 {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let instance = ctx.component()?.to_string();
         let (imu_slots, accelerometer_slots, gyroscope_slots) = {
             let robot = ctx.robot()?;
@@ -113,12 +116,12 @@ impl Bno085 {
         }
 
         Ok((
-            Self {
+            Bno085State {
                 imu_divisors,
                 accelerometer_divisors,
                 gyroscope_divisors,
             },
-            Self::Api {
+            Api {
                 imu,
                 accelerometer,
                 gyroscope,
@@ -126,24 +129,29 @@ impl Bno085 {
         ))
     }
 
-    #[step(hz = 100)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 100)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let at = step.now();
         let step_index = step.step_index();
 
-        for (publisher, divisor) in api.imu.iter().zip(&self.imu_divisors) {
+        for (publisher, divisor) in api.imu.iter().zip(&state.imu_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), imu_sample())?;
             }
         }
 
-        for (publisher, divisor) in api.accelerometer.iter().zip(&self.accelerometer_divisors) {
+        for (publisher, divisor) in api.accelerometer.iter().zip(&state.accelerometer_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), accelerometer_sample())?;
             }
         }
 
-        for (publisher, divisor) in api.gyroscope.iter().zip(&self.gyroscope_divisors) {
+        for (publisher, divisor) in api.gyroscope.iter().zip(&state.gyroscope_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), gyroscope_sample())?;
             }
@@ -152,8 +160,12 @@ impl Bno085 {
         Ok(())
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> Result<()> {
         Ok(())
     }
 }

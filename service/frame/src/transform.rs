@@ -3,18 +3,16 @@
 //! child-to-parent transforms, and converting between the wire
 //! `FrameTransform` type and `nalgebra` isometries.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-
 use nalgebra::{Isometry3, Quaternion, Translation3, Unit, UnitQuaternion, Vector3};
 use phoxal::api;
 use phoxal::bus::RobotInstant;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{FrameJointType, JointMeta};
 use crate::ring_buffer::RingBuffer;
 
 pub(crate) fn lookup_transform(
-    snapshot: &crate::frame::FrameSnapshot,
+    state: &crate::frame::FrameState,
     request: &api::frame::LookupRequest,
 ) -> Option<api::frame::FrameTransform> {
     let target = &request.target_frame_id;
@@ -22,14 +20,14 @@ pub(crate) fn lookup_transform(
 
     if !known_frame(
         target,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
+        &state.static_transforms,
+        &state.buffers,
+        &state.parent_by_child,
     ) || !known_frame(
         source,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
+        &state.static_transforms,
+        &state.buffers,
+        &state.parent_by_child,
     ) {
         return None;
     }
@@ -43,22 +41,22 @@ pub(crate) fn lookup_transform(
         ));
     }
 
-    let lca = common_ancestor(target, source, &snapshot.parent_by_child)?;
+    let lca = common_ancestor(target, source, &state.parent_by_child)?;
     let (target_stamp, lca_to_target) = transform_from_ancestor_to_descendant(
         &lca,
         target,
         request.at,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
+        &state.static_transforms,
+        &state.buffers,
+        &state.parent_by_child,
     )?;
     let (source_stamp, lca_to_source) = transform_from_ancestor_to_descendant(
         &lca,
         source,
         request.at,
-        &snapshot.statics,
-        &snapshot.dynamics,
-        &snapshot.parent_by_child,
+        &state.static_transforms,
+        &state.buffers,
+        &state.parent_by_child,
     )?;
 
     // The composed transform is only as fresh as its stalest edge; both edges
@@ -79,7 +77,7 @@ pub(crate) fn lookup_transform(
 fn known_frame(
     frame_id: &str,
     statics: &BTreeMap<String, api::frame::FrameTransform>,
-    dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
+    dynamics: &BTreeMap<String, RingBuffer<Isometry3<f64>>>,
     parent_by_child: &BTreeMap<String, (String, JointMeta)>,
 ) -> bool {
     statics.contains_key(frame_id)
@@ -126,7 +124,7 @@ fn transform_from_ancestor_to_descendant(
     descendant: &str,
     at: Option<RobotInstant>,
     statics: &BTreeMap<String, api::frame::FrameTransform>,
-    dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
+    dynamics: &BTreeMap<String, RingBuffer<Isometry3<f64>>>,
     parent_by_child: &BTreeMap<String, (String, JointMeta)>,
 ) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
     let mut child_to_parent_edges = Vec::new();
@@ -158,7 +156,7 @@ fn edge_transform(
     child_frame_id: &str,
     at: Option<RobotInstant>,
     statics: &BTreeMap<String, api::frame::FrameTransform>,
-    dynamics: &BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>,
+    dynamics: &BTreeMap<String, RingBuffer<Isometry3<f64>>>,
 ) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
     if let Some(transform) = statics.get(child_frame_id) {
         return Some((None, isometry_from_transform(transform)));

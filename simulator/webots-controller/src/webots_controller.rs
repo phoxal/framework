@@ -23,7 +23,7 @@ use phoxal::model::simulation::v0::Simulation as SimulationSpec;
 use phoxal::model::v0::Robot;
 use phoxal::prelude::*;
 // `TimelineAuthority` and `WorldClockPublisher` are deliberately not part of
-// `phoxal::bus`/`phoxal::prelude` (organization#957): they are world-clock-
+// `phoxal::bus`/`phoxal::prelude`: they are world-clock
 // authority types only this simulator legitimately names, so they live behind
 // the explicit `phoxal::raw` opt-in instead - see that module's docs.
 use phoxal::raw::{TimelineAuthority, WorldClockPublisher};
@@ -55,7 +55,7 @@ const STEP_HZ: f64 = 100.0;
 const COMPONENTS_DIR: &str = "components";
 const SIMULATION_FILE: &str = "simulation.yaml";
 
-#[derive(phoxal::Api)]
+#[derive(Clone)]
 pub struct Api {
     clock: WorldClockPublisher<api::simulation::Clock>,
     motor_commands: Vec<Subscriber<api::component::motor::Command>>,
@@ -123,15 +123,19 @@ fn has_explicit_producer_arg(args: impl IntoIterator<Item = OsString>) -> bool {
     })
 }
 
-#[phoxal::simulator(config = ())]
-pub struct WebotsControllerSimulator {
+pub struct WebotsControllerState {
     backend: SharedBackend,
 }
 
-#[phoxal::behavior]
-impl WebotsControllerSimulator {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::simulator(state = WebotsControllerState, api = Api)]
+pub struct WebotsControllerSimulator;
+
+impl Participant for WebotsControllerSimulator {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
         let root = ctx.robot_root()?;
         let catalog = CapabilityCatalog::from_robot(root, robot)?;
@@ -378,7 +382,7 @@ impl WebotsControllerSimulator {
             "webots controller simulator ready"
         );
 
-        let api = Self::Api {
+        let api = Api {
             clock,
             motor_commands,
             encoders,
@@ -414,15 +418,19 @@ impl WebotsControllerSimulator {
             }
         });
 
-        Ok((Self { backend }, api))
+        Ok((WebotsControllerState { backend }, api))
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
         for subscriber in &api.motor_commands {
             let _latest = drain_latest(subscriber);
         }
-        park_backend(Arc::clone(&self.backend)).await
+        park_backend(Arc::clone(&state.backend)).await
     }
 }
 
@@ -1338,27 +1346,27 @@ fn none_vec<T>(len: usize) -> Vec<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::participant::{Participant, ParticipantLifecycle};
+    use phoxal::participant::{Participant, ParticipantSpec};
     use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, Subscriber};
     use std::time::Duration;
 
     #[test]
     fn identity_and_class_are_reported() {
         assert_eq!(
-            <WebotsControllerSimulator as Participant>::ID,
+            <WebotsControllerSimulator as ParticipantSpec>::ID,
             "webots-controller"
         );
         assert_eq!(
-            <WebotsControllerSimulator as Participant>::KIND,
+            <WebotsControllerSimulator as ParticipantSpec>::KIND,
             "simulator"
         );
         assert_eq!(
-            <WebotsControllerSimulator as Participant>::PARTICIPANT_CLASS,
+            <WebotsControllerSimulator as ParticipantSpec>::PARTICIPANT_CLASS,
             "checked"
         );
         assert!(
-            <WebotsControllerSimulator as ParticipantLifecycle>::__step_schedule().is_none(),
-            "the controller must not wrap Webots in a framework #[step] loop"
+            <WebotsControllerSimulator as Participant>::__step_schedule().is_none(),
+            "the controller must not wrap Webots in a framework step loop"
         );
     }
 

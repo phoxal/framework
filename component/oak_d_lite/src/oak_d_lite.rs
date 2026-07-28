@@ -7,7 +7,6 @@ use phoxal::prelude::*;
 
 const STEP_HZ: f64 = 100.0;
 
-#[derive(phoxal::Api)]
 pub struct Api {
     camera: Vec<MeasurementPublisher<api::component::camera::Frame>>,
     depth: Vec<MeasurementPublisher<api::component::depth::Frame>>,
@@ -16,8 +15,7 @@ pub struct Api {
     gyroscope: Vec<MeasurementPublisher<api::component::gyroscope::Sample>>,
 }
 
-#[phoxal::driver(config = ())]
-pub struct OakDLite {
+pub struct OakDLiteState {
     camera_specs: Vec<CameraSpec>,
     depth_specs: Vec<DepthSpec>,
     imu_divisors: Vec<u64>,
@@ -60,10 +58,15 @@ struct SensorSlot {
     divisor: u64,
 }
 
-#[phoxal::behavior]
-impl OakDLite {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::driver(state = OakDLiteState, api = Api)]
+pub struct OakDLite;
+
+impl Participant for OakDLite {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let instance = ctx.component()?.to_string();
         let (camera_slots, depth_slots, imu_slots, accelerometer_slots, gyroscope_slots) = {
             let robot = ctx.robot()?;
@@ -223,14 +226,14 @@ impl OakDLite {
         }
 
         Ok((
-            Self {
+            OakDLiteState {
                 camera_specs,
                 depth_specs,
                 imu_divisors,
                 accelerometer_divisors,
                 gyroscope_divisors,
             },
-            Self::Api {
+            Api {
                 camera,
                 depth,
                 imu,
@@ -240,36 +243,41 @@ impl OakDLite {
         ))
     }
 
-    #[step(hz = 100)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 100)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let at = step.now();
         let step_index = step.step_index();
 
-        for (publisher, spec) in api.camera.iter().zip(&self.camera_specs) {
+        for (publisher, spec) in api.camera.iter().zip(&state.camera_specs) {
             if is_due(step_index, spec.divisor) {
                 publisher.publish(CaptureStamp::exact(at), camera_frame(spec))?;
             }
         }
 
-        for (publisher, spec) in api.depth.iter().zip(&self.depth_specs) {
+        for (publisher, spec) in api.depth.iter().zip(&state.depth_specs) {
             if is_due(step_index, spec.divisor) {
                 publisher.publish(CaptureStamp::exact(at), depth_frame(spec))?;
             }
         }
 
-        for (publisher, divisor) in api.imu.iter().zip(&self.imu_divisors) {
+        for (publisher, divisor) in api.imu.iter().zip(&state.imu_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), imu_sample())?;
             }
         }
 
-        for (publisher, divisor) in api.accelerometer.iter().zip(&self.accelerometer_divisors) {
+        for (publisher, divisor) in api.accelerometer.iter().zip(&state.accelerometer_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), accelerometer_sample())?;
             }
         }
 
-        for (publisher, divisor) in api.gyroscope.iter().zip(&self.gyroscope_divisors) {
+        for (publisher, divisor) in api.gyroscope.iter().zip(&state.gyroscope_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), gyroscope_sample())?;
             }
@@ -278,8 +286,12 @@ impl OakDLite {
         Ok(())
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> Result<()> {
         Ok(())
     }
 }

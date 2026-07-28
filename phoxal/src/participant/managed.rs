@@ -1,9 +1,9 @@
-//! Runner-owned background tasks spawned during `#[setup]`
+//! Runner-owned background tasks spawned during `Participant::setup`
 //! ([`SetupContext::spawn_managed`](crate::participant::context::SetupContext::spawn_managed)).
 //!
 //! A managed task is the framework-tracked alternative to a raw `tokio::spawn`
 //! for long-lived work (sensor polling loops, serial/USB readers, async IO
-//! pumps): the runner records it during `#[setup]`, watches for an unexpected
+//! pumps): the runner records it during `Participant::setup`, watches for an unexpected
 //! exit or panic while the participant runs, and cancels + joins it during
 //! shutdown before the bus closes. See [`ManagedTaskPolicy`] for what
 //! "unexpected" means.
@@ -59,8 +59,8 @@ pub(crate) struct ManagedTaskExit {
     pub(crate) panic_message: Option<String>,
 }
 
-/// Registry `SetupContext` accumulates managed tasks into during `#[setup]`;
-/// the runner takes ownership of it once `#[setup]` returns
+/// Registry `SetupContext` accumulates managed tasks into during `Participant::setup`;
+/// the runner takes ownership of it once `Participant::setup` returns
 /// ([`SetupContext::take_managed_tasks`](crate::participant::context::SetupContext::take_managed_tasks))
 /// and drives it from the main loop
 /// ([`Self::next_unexpected_exit`]) and the shutdown sequence

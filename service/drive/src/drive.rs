@@ -134,7 +134,6 @@ impl DriveConfig {
     }
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
     target: Subscriber<api::drive::Target>,
     state: StatePublisher<api::drive::State>,
@@ -142,17 +141,21 @@ pub struct Api {
     right_motors: Vec<CommandPublisher<api::component::motor::Command>>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Drive {
+pub struct DriveState {
     // Runtime-private typed state (not handles).
     config: DriveConfig,
     target: Lease<api::drive::Target>,
 }
 
-#[phoxal::behavior]
-impl Drive {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = DriveState, api = Api)]
+pub struct Drive;
+
+impl Participant for Drive {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let config = DriveConfig::from_robot(ctx.robot()?)?;
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
@@ -174,11 +177,11 @@ impl Drive {
         }
 
         Ok((
-            Self {
+            DriveState {
                 config,
                 target: Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD),
             },
-            Self::Api {
+            Api {
                 target,
                 state,
                 left_motors,
@@ -187,14 +190,23 @@ impl Drive {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.target.clear();
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.target.clear();
         Ok(())
     }
 
-    #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 50)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let now = step.now();
         // Without the host clock there is no silence deadline to measure, so
         // this step decides nothing: it renews no lease and applies no
@@ -208,7 +220,7 @@ impl Drive {
         // decides what is live: it fences a superseded producer, rejects a
         // replayed sequence, and stamps the receiver's own observation.
         while let Some(observed) = api.target.try_recv() {
-            let decision = self.target.offer(
+            let decision = state.target.offer(
                 observed.metadata.producer,
                 observed.metadata.sequence,
                 observed.observed_at,
@@ -220,25 +232,25 @@ impl Drive {
         }
 
         let (target, mut limited_target, mut authority, mut stop_reason) = resolve_target(
-            self.target.live(host_now, now),
-            self.config.limits,
-            self.config.kinematics.is_some(),
+            state.target.live(host_now, now),
+            state.config.limits,
+            state.config.kinematics.is_some(),
         );
-        let wheel_targets = self
+        let wheel_targets = state
             .config
             .kinematics
             .and_then(|kinematics| wheel_targets(kinematics, &limited_target));
         let (left, right) = wheel_targets.unwrap_or((0.0, 0.0));
-        if self.config.kinematics.is_some() && wheel_targets.is_none() {
+        if state.config.kinematics.is_some() && wheel_targets.is_none() {
             limited_target = stopped_target();
             authority = api::drive::ActuatorAuthority::Stopped;
             stop_reason = Some(api::drive::StopReason::ActuatorCommandNotFinite);
         }
 
-        for (publisher, binding) in api.left_motors.iter().zip(&self.config.left) {
+        for (publisher, binding) in api.left_motors.iter().zip(&state.config.left) {
             publisher.send(command(left, binding.direction_sign))?;
         }
-        for (publisher, binding) in api.right_motors.iter().zip(&self.config.right) {
+        for (publisher, binding) in api.right_motors.iter().zip(&state.config.right) {
             publisher.send(command(right, binding.direction_sign))?;
         }
 
@@ -254,8 +266,12 @@ impl Drive {
         Ok(())
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> Result<()> {
         // Best-effort park: command every wheel to stop before the bus closes.
         // A motor command expresses no robot time, so this needs no instant -
         // which is exactly why `Stop` stays callable outside a step, as it must.

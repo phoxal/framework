@@ -1,68 +1,14 @@
-//! The runner (D23/D34): owns the bus connection, the clock, step scheduling,
-//! server-query dispatch, snapshot commits, and graceful shutdown.
+//! The runner (D23/D34): owns the bus connection, clock, step scheduling,
+//! serialized query dispatch, and graceful shutdown.
 //!
 //! `phoxal::run::<R>()` builds a blocking Tokio runtime and runs the participant to
 //! completion; `phoxal::tokio::run::<R>().await` is the async entrypoint for
 //! custom Tokio mains.
 //!
-//! Serving model (D16): exclusive `#[server]` queries are awaited on the main
-//! task (holding `&mut self` and `&mut Self::Api`, serialized with `#[step]`);
-//! concurrent `#[server_snapshot]` queries are spawned and read a committed
-//! `Snapshot`. A snapshot is committed after `#[setup]`, after each `#[step]`,
-//! and after each exclusive `#[server]`.
-//!
-//! # `Api` ownership (D3: "read-only `&Self::Api`, or an api snapshot")
-//!
-//! `#[setup]` returns `(participant, api)` as two independent values
-//! (`ParticipantLifecycle::__setup`). This runner keeps:
-//!
-//! - **`api: R::Api`**, owned directly (not behind `Arc`) - passed as
-//!   `&mut Self::Api` to `#[step]`/exclusive `#[server]`/`#[shutdown]`, all
-//!   awaited serially on the main task (same exclusivity rule as `#[step]`/
-//!   `#[server]`, D16), so a plain owned value always gives a sound `&mut`
-//!   with no synchronization needed;
-//! - **`api_shared: Arc<R::Api>`**, one clone of `api` made right after
-//!   `#[setup]` returns, handed to every spawned `#[server_snapshot]` task
-//!   (`Arc::clone`, cheap) for the participant's whole lifetime.
-//!
-//! These are **two independent `Clone` instances of the same handle set**,
-//! not one value shared behind both `&mut` and `Arc` at once (which Rust's
-//! aliasing rules forbid without unsafe code - not used anywhere in this
-//! module). Every `ParticipantApi` field type is `Clone` precisely because
-//! every real operation on it takes `&self`
-//! (`phoxal-bus/src/handle.rs`'s `Publisher`/`Querier`/`Latest`/`Subscriber`
-//! `Clone` impls, [`Server`](super::api::Server)'s `Clone`/`Copy` impl, and
-//! [`ParticipantApi`](super::api::ParticipantApi)'s own docs): a clone is a
-//! second handle to the same underlying `Bus`/subscription/session.
-//!
-//! For **`Publisher`, `Latest`, `Querier`, and `Server` this is fully sound
-//! AND behaviorally exact**: their operations are non-destructive reads or
-//! fresh-envelope publishes (`Latest::latest()` clones the retained `Arc`
-//! under its mutex and clones the body after releasing that lock,
-//! `Publisher`/`Querier` build a new envelope per call, and `Server` carries
-//! no live connection), so `api` and every `api_shared` clone always observe
-//! and produce the identical live state - they can never diverge. That is
-//! D3's "an api snapshot", realized through shared handles without wrapping
-//! the whole `Api` in a `RwLock` or using `unsafe`.
-//!
-//! **`Subscriber` is the one exception, and it constrains snapshot-server
-//! code.** A `Subscriber<B>`'s backing `Ring` is a single shared
-//! `Mutex<VecDeque>` behind one `Arc`, and `recv`/`try_recv` *pop* from it
-//! (`phoxal-bus/src/handle.rs`). So the owned `api` and the `Arc<R::Api>`
-//! snapshot clone hold two handles to **one** queue: if BOTH sides drained
-//! it, buffered samples would be split between them (each sample delivered to
-//! exactly one caller), not duplicated - silent message loss, no panic. This
-//! runner never does that: `#[step]`/exclusive `#[server]`/`#[shutdown]` own
-//! the `&mut api` and are the only place a `Subscriber` should be `recv`'d,
-//! while `#[server_snapshot]` handlers get the read-only `Arc` snapshot and
-//! **must read committed `Snapshot` state, never `recv` a `Subscriber`**
-//! (draining a subscription from a concurrent snapshot server is an
-//! anti-pattern - see `Subscriber`'s and `Subscriber::recv`'s rustdoc).
-//! **Deferred guard:** this rule is documentation-only for now - a
-//! compile-time reject of a `#[server_snapshot]` handler that `recv`s a
-//! `Subscriber` field would need the snapshot codegen to see the `Api` field
-//! kinds (which it does not today), so it is left as a hardening follow-up
-//! rather than an enforced invariant in this slice.
+//! Setup returns separate `State` and `Api` values. One main-loop task owns
+//! mutable `State`; due steps, timeline resets, and typed queries all take
+//! turns on that task. There is no snapshot projection or concurrent handler
+//! branch.
 
 use std::future::Future;
 use std::pin::pin;
@@ -70,17 +16,18 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use arc_swap::ArcSwapOption;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::api;
 use crate::bus::Subscriber;
 use crate::bus::{LocalInstant, QueryFailure, RobotInstant, StepToken, TimelineId};
-use crate::participant::api::{ParticipantApi, ParticipantLifecycle};
+use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::bus_log::{self, BusLogState};
 use crate::participant::clock::{ClockReading, ClockSource, RealClock, TimeUnsynchronized};
-use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
+use crate::participant::context::{
+    ResetContext, SetupContext, ShutdownContext, StepContext, TimelineRetention,
+};
 use crate::participant::launch::{ClockMode, ParticipantLaunch, ParticipantLaunchPolicy};
 use crate::participant::managed::{ManagedTaskExit, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
@@ -100,7 +47,7 @@ const RUNTIME_PERFORMANCE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 /// at all: services/drivers are selectable, while tools and simulators are
 /// structurally host-driven. The default binary entrypoint is
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
-pub fn run<R: ParticipantLifecycle>() -> crate::Result<()> {
+pub fn run<R: Participant>() -> crate::Result<()> {
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -109,7 +56,7 @@ pub fn run<R: ParticipantLifecycle>() -> crate::Result<()> {
 
 /// Async host runner for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
-pub async fn run_async<R: ParticipantLifecycle>() -> crate::Result<()> {
+pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // Every real entry path (`run`, and this function directly as
     // `phoxal::tokio::run`) passes through here first, which is what makes
     // this the one place that needs to touch `R`'s embedded metadata static
@@ -125,7 +72,7 @@ pub async fn run_async<R: ParticipantLifecycle>() -> crate::Result<()> {
 }
 
 /// Select the step scheduler for `clock_mode` (D34/#09): the seam that
-/// answers "when should the next `#[step]` tick fire", separate from the
+/// answers "when should the next `Participant::step` tick fire", separate from the
 /// [`ClockSource`] used for timestamps.
 ///
 /// [`ClockMode::Real`] preserves the runner's pre-#09 wall-clock cadence
@@ -145,6 +92,7 @@ pub(crate) fn step_scheduler_for(
         .unwrap_or(crate::participant::spec::MissedTick::Collapse);
     let period = schedule.map(|s| s.period());
     Ok(match clock_mode {
+        ClockMode::Real if schedule.is_none() => (AnyStepScheduler::Clockless, None),
         ClockMode::Real => {
             // A real participant has no instant to anchor its cadence on until
             // the clock is trustworthy. Anchoring on an invented timeline would
@@ -180,8 +128,8 @@ pub(crate) fn step_scheduler_for(
 /// `Simulator` kind that owns the world, e.g. the Webots controller) and drive
 /// `handle` from it for the lifetime of the returned task.
 ///
-/// Mirrors the snapshot-server task pattern (bus-driven task, pushed alongside
-/// the other server tasks, aborted at shutdown): this subscribes the same
+/// This bus-driven task is pushed alongside the query receiver tasks and
+/// aborted at shutdown. It subscribes the same
 /// global `simulation/clock` wire key every sim participant on the robot
 /// observes (`api::topic::client().simulation().clock()`, the CLIENT side of
 /// the `Simulator`'s owner-side publish - both sides format the identical
@@ -257,7 +205,7 @@ pub(crate) fn spawn_simulation_clock_feed(
 /// receive or override.
 pub async fn run_with<R, S>(launch: ParticipantLaunch, shutdown: S) -> crate::Result<()>
 where
-    R: ParticipantLifecycle,
+    R: Participant,
     S: Future<Output = ()>,
 {
     init_tracing();
@@ -309,7 +257,7 @@ pub async fn run_with_bus<R, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantLifecycle,
+    R: Participant,
     S: Future<Output = ()>,
 {
     let clock = match launch.execution_origin {
@@ -331,7 +279,7 @@ pub async fn run_with_bus_clock<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantLifecycle<LaunchPolicy = crate::participant::launch::ClockedParticipantLaunch>
+    R: Participant<LaunchPolicy = crate::participant::launch::ClockedParticipantLaunch>
         + crate::participant::TypedGraphSurface,
     C: ClockSource,
     S: Future<Output = ()>,
@@ -346,7 +294,7 @@ async fn run_with_bus_inner<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantLifecycle,
+    R: Participant,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -366,7 +314,7 @@ async fn run_lifecycle<R, C, S>(
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantLifecycle,
+    R: Participant,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -401,6 +349,7 @@ where
         Arc::clone(&effective_clock),
         scheduler,
         schedule,
+        clock_mode,
         shutdown,
     )
     .await;
@@ -440,15 +389,14 @@ async fn run_lifecycle_inner<R, C, S>(
     clock: Arc<RunnerClock<C>>,
     scheduler: AnyStepScheduler,
     schedule: Option<StepSchedule>,
+    clock_mode: ClockMode,
     shutdown: S,
 ) -> crate::Result<()>
 where
-    R: ParticipantLifecycle,
+    R: Participant,
     C: ClockSource,
     S: Future<Output = ()>,
 {
-    R::__validate_server_topics().map_err(anyhow::Error::msg)?;
-
     let config: R::Config = participant_config(launch.config.as_ref())?;
     let robot = robot_for_launch(launch.robot_root.as_deref())?;
 
@@ -458,7 +406,8 @@ where
         launch.robot_root.clone(),
         launch.component_instance.clone(),
     );
-    let (mut participant, api) = match R::__setup(&mut ctx, config).await {
+    let participant = R::__new();
+    let (mut state, api) = match participant.setup(&mut ctx, config).await {
         Ok(pair) => pair,
         Err(error) => {
             return Err(
@@ -466,33 +415,31 @@ where
             );
         }
     };
-    // Managed tasks spawned via `ctx.spawn_managed(...)` during `#[setup]` (D-managed-tasks):
+    // Managed tasks spawned via `ctx.spawn_managed(...)` during `Participant::setup` (D-managed-tasks):
     // from here on the runner - not `SetupContext` - owns watching them for an
     // unexpected exit and cancelling/joining them at shutdown.
     let mut managed_tasks = ctx.take_managed_tasks();
+    let timeline_retentions = ctx.take_timeline_retentions();
+    let query_registrations = ctx.take_query_registrations();
 
-    // The Api ownership split (see module docs): `api` stays owned for the
-    // exclusive `&mut Self::Api` path; `api_shared` is the one clone every
-    // concurrent `#[server_snapshot]` task gets its own `Arc::clone` of.
-    let api_shared: Arc<R::Api> = Arc::new(api.clone());
-    let mut api = api;
-
-    // Committed snapshot, shared with concurrent snapshot-server tasks (D16).
-    let committed: Arc<ArcSwapOption<R::Snapshot>> = Arc::new(ArcSwapOption::empty());
-    commit_snapshot::<R>(&participant, &committed);
-
-    // Forward exclusive-server queries to the main loop; keep one sender alive so
-    // the receiver pends (never returns `None`) when there are no servers.
-    let (excl_tx, mut excl_rx) = mpsc::channel::<IncomingQuery>(64);
+    // Queryables are declared only after setup succeeds. Receive tasks do no
+    // participant work: they forward bounded, indexed requests to the same
+    // serialized event loop that owns state, step, and reset.
+    let (query_tx, mut query_rx) = if query_registrations.is_empty() {
+        (None, None)
+    } else {
+        let (tx, rx) = mpsc::channel::<(usize, IncomingQuery)>(64);
+        (Some(tx), Some(rx))
+    };
     let mut server_tasks: Vec<JoinHandle<()>> = Vec::new();
-
-    for topic in R::__exclusive_server_topics() {
-        let queryable = match bus.declare_server(topic).await {
+    for (index, registration) in query_registrations.iter().enumerate() {
+        let queryable = match bus.declare_server(registration.topic()).await {
             Ok(queryable) => queryable,
             Err(error) => {
                 teardown_lifecycle(
-                    &mut participant,
-                    &mut api,
+                    &participant,
+                    &api,
+                    &mut state,
                     server_tasks,
                     managed_tasks,
                     launch.shutdown_grace_ms,
@@ -501,53 +448,14 @@ where
                 return Err(error.into());
             }
         };
-        let tx = excl_tx.clone();
+        let tx = query_tx
+            .as_ref()
+            .expect("a query channel exists when registrations exist")
+            .clone();
         server_tasks.push(tokio::spawn(async move {
             while let Ok(incoming) = queryable.recv().await {
-                if tx.send(incoming).await.is_err() {
+                if tx.send((index, incoming)).await.is_err() {
                     break;
-                }
-            }
-        }));
-    }
-
-    // Concurrent snapshot-server queries run against the latest committed
-    // snapshot. Each topic's per-query tasks live in a `JoinSet` owned by that
-    // topic's task, so aborting the topic task on shutdown also aborts any
-    // in-flight handlers (they never outlive the runner / race `bus.close`).
-    for topic in R::__snapshot_server_topics() {
-        let queryable = match bus.declare_server(topic).await {
-            Ok(queryable) => queryable,
-            Err(error) => {
-                teardown_lifecycle(
-                    &mut participant,
-                    &mut api,
-                    server_tasks,
-                    managed_tasks,
-                    launch.shutdown_grace_ms,
-                )
-                .await;
-                return Err(error.into());
-            }
-        };
-        let committed = Arc::clone(&committed);
-        let api_shared = Arc::clone(&api_shared);
-        let bus = bus.clone();
-        server_tasks.push(tokio::spawn(async move {
-            let mut inflight = tokio::task::JoinSet::new();
-            loop {
-                tokio::select! {
-                    incoming = queryable.recv() => {
-                        let Ok(incoming) = incoming else { break };
-                        let snapshot = committed.load_full();
-                        let api = Arc::clone(&api_shared);
-                        let bus = bus.clone();
-                        inflight.spawn(async move {
-                            serve_snapshot_query::<R>(&bus, incoming, snapshot, api).await
-                        });
-                    }
-                    // Reap finished handlers so the JoinSet does not grow unbounded.
-                    Some(_) = inflight.join_next() => {}
                 }
             }
         }));
@@ -563,8 +471,9 @@ where
         Ok(token) => token,
         Err(error) => {
             teardown_lifecycle(
-                &mut participant,
-                &mut api,
+                &participant,
+                &api,
+                &mut state,
                 server_tasks,
                 managed_tasks,
                 launch.shutdown_grace_ms,
@@ -575,24 +484,28 @@ where
     };
     tracing::info!(target: "phoxal.runtime", id = R::ID, participant = %launch.participant_id, "runtime ready");
     let loop_result = main_loop::<R, _, S>(
-        &mut participant,
-        &mut api,
+        &participant,
+        &api,
+        &mut state,
         bus,
         clock.as_ref(),
         &scheduler,
         schedule,
-        &committed,
-        &mut excl_rx,
+        clock_mode,
+        &timeline_retentions,
+        &query_registrations,
+        &mut query_rx,
         shutdown,
         &runtime_performance_publisher,
         &mut runtime_performance,
         &mut managed_tasks,
     )
     .await;
-    drop(excl_tx);
+    drop(query_tx);
     teardown_lifecycle(
-        &mut participant,
-        &mut api,
+        &participant,
+        &api,
+        &mut state,
         server_tasks,
         managed_tasks,
         launch.shutdown_grace_ms,
@@ -608,17 +521,18 @@ where
 }
 
 /// One shutdown path shared by normal completion and every fallible operation
-/// after `#[setup]` succeeds. Keeping this sequence centralized prevents a
+/// after `Participant::setup` succeeds. Keeping this sequence centralized prevents a
 /// server-declaration error from bypassing the participant's hardware-safety
 /// hook or detaching server/managed tasks before the bus closes.
 async fn teardown_lifecycle<R>(
-    participant: &mut R,
-    api: &mut R::Api,
+    participant: &R,
+    api: &R::Api,
+    state: &mut R::State,
     server_tasks: Vec<JoinHandle<()>>,
     mut managed_tasks: ManagedTasks,
     shutdown_grace_ms: u64,
 ) where
-    R: ParticipantLifecycle,
+    R: Participant,
 {
     for task in server_tasks {
         task.abort();
@@ -636,7 +550,7 @@ async fn teardown_lifecycle<R>(
         shutdown_deadline.saturating_duration_since(tokio::time::Instant::now());
     match tokio::time::timeout(
         shutdown_remaining,
-        participant.__shutdown(api, ShutdownContext::new(grace)),
+        participant.shutdown(ShutdownContext::new(grace), api, state),
     )
     .await
     {
@@ -654,7 +568,7 @@ async fn teardown_lifecycle<R>(
     }
 
     // Join managed tasks before the bus closes (item 4/5/6 of the managed-task
-    // contract): the same shutdown deadline bounds both `#[shutdown]` and
+    // contract): the same shutdown deadline bounds both `Participant::shutdown` and
     // managed-task joining, so a stuck task cannot extend the grace window.
     let unjoined = managed_tasks.join_until(shutdown_deadline).await;
     log_unjoined_managed_tasks(unjoined, shutdown_grace_ms);
@@ -666,7 +580,7 @@ async fn teardown_lifecycle<R>(
 /// Why the main loop stopped without being asked to.
 ///
 /// Both variants mean the same thing to the caller: run the ordinary teardown -
-/// which parks the hardware through `#[shutdown]` - and then report a failure,
+/// which parks the hardware through `Participant::shutdown` - and then report a failure,
 /// so the supervisor's restart and start-limit policy decides what happens next.
 /// Neither is a distinct "failure mode" the participant handles itself.
 pub(crate) enum LoopFault {
@@ -685,7 +599,7 @@ impl LoopFault {
     }
 }
 
-/// Clean up after a failed `#[setup]`: cancel and join whatever the participant
+/// Clean up after a failed `Participant::setup`: cancel and join whatever the participant
 /// already spawned, then hand back its own error.
 ///
 /// The participant never reached the run loop, so nothing else will cancel
@@ -703,7 +617,7 @@ pub(crate) async fn abandon_setup(
     error
 }
 
-/// Deserialize the participant's `#[setup]` config from the launch.
+/// Deserialize the participant's `Participant::setup` config from the launch.
 ///
 /// An absent `PHOXAL_CONFIG` is JSON `null`, not a missing value: that is what
 /// lets a participant declaring `config = ()` or `config = Option<T>` launch
@@ -758,21 +672,24 @@ pub(crate) fn log_unjoined_managed_tasks(unjoined: Vec<String>, grace_ms: u64) {
 
 #[allow(clippy::too_many_arguments)]
 async fn main_loop<R, C, S>(
-    participant: &mut R,
-    api: &mut R::Api,
+    participant: &R,
+    api: &R::Api,
+    state: &mut R::State,
     bus: &Bus,
     clock: &C,
     scheduler: &AnyStepScheduler,
     schedule: Option<StepSchedule>,
-    committed: &Arc<ArcSwapOption<R::Snapshot>>,
-    excl_rx: &mut mpsc::Receiver<IncomingQuery>,
+    clock_mode: ClockMode,
+    timeline_retentions: &[TimelineRetention],
+    query_registrations: &[QueryRegistration<R>],
+    query_rx: &mut Option<mpsc::Receiver<(usize, IncomingQuery)>>,
     mut shutdown: std::pin::Pin<&mut S>,
     runtime_performance_publisher: &RuntimePerformancePublisher,
     runtime_performance: &mut RuntimePerformance,
     managed_tasks: &mut ManagedTasks,
 ) -> crate::Result<Option<LoopFault>>
 where
-    R: ParticipantLifecycle,
+    R: Participant,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -780,7 +697,7 @@ where
     let mut step_index: u64 = 0;
     let mut active_timeline: Option<TimelineId> = None;
     let mut simulation_time_rx = scheduler.simulation_time_receiver();
-    // The simulation clock feed starts before `#[setup]`. If setup takes long
+    // The simulation clock feed starts before `Participant::setup`. If setup takes long
     // enough for the authority's first world step to arrive, a newly-cloned
     // watch receiver sees that value as its initial state and has no change
     // notification to deliver. Establish that already-current world history
@@ -789,7 +706,7 @@ where
     let initial_time = scheduler.now();
     if let Some(initial_time) = initial_time.filter(|_| simulation_time_rx.is_some()) {
         active_timeline = Some(initial_time.timeline());
-        api.__retain_timeline(initial_time.timeline());
+        retain_timeline(timeline_retentions, initial_time.timeline());
     }
     let mut last_step_at = initial_time;
     // The next tick's *robot* due time - what the runner asks the scheduler to
@@ -827,18 +744,18 @@ where
 
                 // Timelines are opaque identities, not ordered generations. Any
                 // different one establishes a replacement world history. This
-                // branch is independent of `#[step]`, so clocked server-only
+                // branch is independent of `Participant::step`, so clocked server-only
                 // services receive the same serialized reset lifecycle.
                 let previous_timeline = active_timeline.replace(fired_at.timeline());
-                api.__retain_timeline(fired_at.timeline());
+                retain_timeline(timeline_retentions, fired_at.timeline());
                 if let Some(previous_timeline) = previous_timeline {
                     participant
-                        .__reset(
-                            api,
+                        .reset(
                             ResetContext::new(previous_timeline, fired_at.timeline()),
+                            api,
+                            state,
                         )
                         .await?;
-                    commit_snapshot::<R>(participant, committed);
                 }
                 next_step_target =
                     period.map(|period| advance_step_deadline(fired_at, period, 0));
@@ -851,7 +768,7 @@ where
                     &mut next_runtime_performance_tick,
                     RUNTIME_PERFORMANCE_TICK_INTERVAL,
                 );
-                // A real participant with no `#[step]` schedule would otherwise
+                // A real participant with no `Participant::step` schedule would otherwise
                 // check its clock once at startup and never again, and go on
                 // serving queries from state it can no longer date. This tick
                 // is its only recurring beat, so clock discipline is checked
@@ -864,8 +781,8 @@ where
                 // that was lost.
                 let faulted = LocalInstant::clock_faulted()
                     .then_some(TimeUnsynchronized::ClockFault)
-                    .or_else(|| match (period, scheduler) {
-                        (None, AnyStepScheduler::Real(_)) => match clock.read() {
+                    .or_else(|| match (period, clock_mode) {
+                        (None, ClockMode::Real) => match clock.read() {
                             ClockReading::Unsynchronized(reason) => Some(reason),
                             ClockReading::Synchronized(_) => None,
                         },
@@ -917,7 +834,7 @@ where
                         // The clock feed can replace the world history after the
                         // scheduler resolves but before this read. Let the
                         // higher-priority simulation-time arm install the
-                        // ingress barrier and run #[reset] before any step on
+                        // ingress barrier and run Participant::reset before any step on
                         // the new timeline.
                         continue;
                     }
@@ -950,16 +867,11 @@ where
                 );
                 step_index += 1;
 
-                // A handler `Err` is a domain outcome: stay healthy, log, continue
-                // (D32); the snapshot is committed only after a *successful* step so
-                // a failed mutation is never published as committed state. A panic
-                // would unwind and abort the process.
+                // A handler `Err` is a domain outcome: stay healthy, log, and
+                // continue. A panic still unwinds and aborts the process.
                 let observation = runtime_performance.begin_step(target, fired_at, missed_ticks);
-                let success = match participant.__step(api, step).await {
-                    Ok(()) => {
-                        commit_snapshot::<R>(participant, committed);
-                        true
-                    }
+                let success = match participant.step(api, step, state).await {
+                    Ok(()) => true,
                     Err(e) => {
                         tracing::warn!(target: "phoxal.runtime", error = %e, "step returned error");
                         false
@@ -967,15 +879,26 @@ where
                 };
                 runtime_performance.finish_step(observation, success);
             }
-            Some(incoming) = excl_rx.recv() => {
-                // Commit only if the handler succeeded (D14/D32: retain the prior
-                // snapshot on a handler error).
-                if serve_exclusive_query::<R>(participant, api, bus, incoming).await {
-                    commit_snapshot::<R>(participant, committed);
+            Some((index, incoming)) = next_query(query_rx) => {
+                if let Some(registration) = query_registrations.get(index) {
+                    serve_query(registration, participant, api, state, bus, incoming).await;
+                } else {
+                    let _ = incoming
+                        .reply_err(&QueryFailure::internal("invalid query registration"))
+                        .await;
                 }
             }
         }
     }
+}
+
+async fn next_query(
+    receiver: &mut Option<mpsc::Receiver<(usize, IncomingQuery)>>,
+) -> Option<(usize, IncomingQuery)> {
+    let Some(receiver) = receiver else {
+        return std::future::pending().await;
+    };
+    receiver.recv().await
 }
 
 pub(crate) async fn simulation_time_change(
@@ -1023,7 +946,7 @@ pub(crate) fn advance_deadline(next: &mut tokio::time::Instant, period: Duration
 /// Resolve when the scheduler releases the tick due at `target`; never
 /// resolve when there is no step schedule (so the loop is driven only by
 /// server queries / shutdown). This is the sole seam through which the main
-/// loop asks "when should the next `#[step]` tick fire" (D34/#09) - real mode
+/// loop asks "when should the next `Participant::step` tick fire" (D34/#09) - real mode
 /// sleeps on wall time, simulation mode waits on logical time, and the main
 /// loop itself does not know which.
 pub(crate) async fn step_tick(
@@ -1036,72 +959,21 @@ pub(crate) async fn step_tick(
     }
 }
 
-fn commit_snapshot<R: ParticipantLifecycle>(
+fn retain_timeline(retentions: &[TimelineRetention], timeline: TimelineId) {
+    for retention in retentions {
+        retention(timeline);
+    }
+}
+
+/// Serve one typed query on the serialized participant state.
+async fn serve_query<R: Participant>(
+    registration: &QueryRegistration<R>,
     participant: &R,
-    committed: &Arc<ArcSwapOption<R::Snapshot>>,
-) {
-    if R::HAS_SNAPSHOT {
-        committed.store(Some(Arc::new(participant.__take_snapshot())));
-    }
-}
-
-/// Serve one exclusive query. Returns `true` iff the handler succeeded (so the
-/// runner should commit a fresh snapshot).
-async fn serve_exclusive_query<R: ParticipantLifecycle>(
-    participant: &mut R,
-    api: &mut R::Api,
+    api: &R::Api,
+    state: &mut R::State,
     bus: &Bus,
     incoming: IncomingQuery,
-) -> bool {
-    let topic = incoming.topic_key().to_string();
-    let metadata = match incoming.request_metadata() {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = incoming
-                .reply_err(&QueryFailure::invalid_argument(e.to_string()))
-                .await;
-            return false;
-        }
-    };
-    if metadata.codec_id().is_none() {
-        let _ = incoming
-            .reply_err(&QueryFailure::invalid_argument(format!(
-                "unsupported request codec id {}",
-                metadata.codec
-            )))
-            .await;
-        return false;
-    }
-    let request = match incoming.request_bytes() {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            let _ = incoming
-                .reply_err(&QueryFailure::invalid_argument(e.to_string()))
-                .await;
-            return false;
-        }
-    };
-    match participant.__serve_exclusive(api, &topic, &request).await {
-        Ok(reply) => {
-            let _ = incoming.reply(bus, reply.payload).await;
-            true
-        }
-        Err(failure) => {
-            let _ = incoming.reply_err(&failure).await;
-            false
-        }
-    }
-}
-
-/// Serve one concurrent `#[server_snapshot]` query, handing the generated
-/// dispatcher its `Arc<R::Api>` clone (D3).
-async fn serve_snapshot_query<R: ParticipantLifecycle>(
-    bus: &Bus,
-    incoming: IncomingQuery,
-    snapshot: Option<Arc<R::Snapshot>>,
-    api: Arc<R::Api>,
 ) {
-    let topic = incoming.topic_key().to_string();
     let metadata = match incoming.request_metadata() {
         Ok(m) => m,
         Err(e) => {
@@ -1129,13 +1001,10 @@ async fn serve_snapshot_query<R: ParticipantLifecycle>(
             return;
         }
     };
-    let Some(snapshot) = snapshot else {
-        let _ = incoming
-            .reply_err(&QueryFailure::unavailable("no committed snapshot yet"))
-            .await;
-        return;
-    };
-    match R::__serve_snapshot(snapshot, api, topic, request).await {
+    match registration
+        .dispatch(participant, api, state, request)
+        .await
+    {
         Ok(reply) => {
             let _ = incoming.reply(bus, reply.payload).await;
         }
@@ -1213,6 +1082,14 @@ mod tests {
     }
 
     #[test]
+    fn real_participant_without_a_step_schedule_allocates_no_step_scheduler() {
+        let (scheduler, handle) =
+            step_scheduler_for(ClockMode::Real, None, Some(at(1, 0))).expect("runner clock");
+        assert!(matches!(scheduler, AnyStepScheduler::Clockless));
+        assert!(handle.is_none());
+    }
+
+    #[test]
     fn a_real_participant_with_no_trustworthy_clock_does_not_get_a_cadence_at_all() {
         // The alternative was anchoring the cadence on an invented timeline at
         // tick zero, which publishes a world history nobody authored. Refusing
@@ -1286,64 +1163,54 @@ mod tests {
         completed: Arc<AtomicBool>,
     }
 
-    /// A participant whose `#[shutdown]` hook never returns, standing in for one
+    /// A participant whose shutdown hook never returns, standing in for one
     /// that hangs parking or flushing hardware.
-    #[phoxal::service(id = "hanging-shutdown", config = (), api = ())]
-    struct HangingShutdown {
-        trace: HookTrace,
-    }
+    #[phoxal::service(id = "hanging-shutdown", state = HookTrace)]
+    struct HangingShutdown;
 
-    #[phoxal::behavior]
-    impl HangingShutdown {
-        #[setup]
-        async fn setup(_ctx: &mut SetupContext<Self>) -> crate::Result<(Self, Self::Api)> {
-            Ok((
-                Self {
-                    trace: HookTrace::default(),
-                },
-                (),
-            ))
+    impl Participant for HangingShutdown {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok((HookTrace::default(), ()))
         }
 
-        #[shutdown]
         async fn shutdown(
-            &mut self,
-            _api: &mut Self::Api,
+            &self,
             _ctx: ShutdownContext,
+            _api: &Self::Api,
+            state: &mut Self::State,
         ) -> crate::Result<()> {
-            self.trace.called.store(true, Ordering::Relaxed);
+            state.called.store(true, Ordering::Relaxed);
             std::future::pending::<()>().await;
-            self.trace.completed.store(true, Ordering::Relaxed);
+            state.completed.store(true, Ordering::Relaxed);
             Ok(())
         }
     }
 
     /// A hook that fails. Teardown must log it and keep going: the bus still has
     /// to close, and the participant's own failure is what gets reported.
-    #[phoxal::service(id = "failing-shutdown", config = (), api = ())]
-    struct FailingShutdown {
-        trace: HookTrace,
-    }
+    #[phoxal::service(id = "failing-shutdown", state = HookTrace)]
+    struct FailingShutdown;
 
-    #[phoxal::behavior]
-    impl FailingShutdown {
-        #[setup]
-        async fn setup(_ctx: &mut SetupContext<Self>) -> crate::Result<(Self, Self::Api)> {
-            Ok((
-                Self {
-                    trace: HookTrace::default(),
-                },
-                (),
-            ))
+    impl Participant for FailingShutdown {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> crate::Result<(Self::State, Self::Api)> {
+            Ok((HookTrace::default(), ()))
         }
 
-        #[shutdown]
         async fn shutdown(
-            &mut self,
-            _api: &mut Self::Api,
+            &self,
             _ctx: ShutdownContext,
+            _api: &Self::Api,
+            state: &mut Self::State,
         ) -> crate::Result<()> {
-            self.trace.called.store(true, Ordering::Relaxed);
+            state.called.store(true, Ordering::Relaxed);
             anyhow::bail!("could not park the wheels")
         }
     }
@@ -1380,15 +1247,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_hanging_shutdown_hook_is_bounded_by_the_grace_deadline() {
         let trace = HookTrace::default();
-        let mut participant = HangingShutdown {
-            trace: trace.clone(),
-        };
-        let mut api = ();
+        let participant = HangingShutdown;
+        let api = ();
+        let mut state = trace.clone();
 
         let began = std::time::Instant::now();
         teardown_lifecycle(
-            &mut participant,
-            &mut api,
+            &participant,
+            &api,
+            &mut state,
             Vec::new(),
             ManagedTasks::default(),
             150,
@@ -1413,13 +1280,12 @@ mod tests {
     async fn a_failing_shutdown_hook_does_not_abort_teardown() {
         let trace = HookTrace::default();
         let (managed, cancelled) = pending_managed_task("after-a-failing-hook").await;
-        let mut participant = FailingShutdown {
-            trace: trace.clone(),
-        };
-        let mut api = ();
+        let participant = FailingShutdown;
+        let api = ();
+        let mut state = trace.clone();
 
         // Returns at all, rather than propagating: teardown has no error path.
-        teardown_lifecycle(&mut participant, &mut api, Vec::new(), managed, 5_000).await;
+        teardown_lifecycle(&participant, &api, &mut state, Vec::new(), managed, 5_000).await;
 
         assert!(trace.called.load(Ordering::Relaxed), "the hook must run");
         assert!(
@@ -1429,7 +1295,7 @@ mod tests {
     }
 
     /// The runner's own setup-failure cleanup, as `run_lifecycle_inner` calls
-    /// it: tasks spawned during `#[setup]` are cancelled, and the participant's
+    /// it: tasks spawned during `Participant::setup` are cancelled, and the participant's
     /// error survives the cleanup rather than being masked by it.
     #[tokio::test]
     async fn a_failed_setup_cancels_its_tasks_and_keeps_its_error() {
@@ -1478,12 +1344,11 @@ mod tests {
             tokio::task::yield_now().await;
         }
 
-        let mut participant = HangingShutdown {
-            trace: HookTrace::default(),
-        };
-        let mut api = ();
+        let participant = HangingShutdown;
+        let api = ();
+        let mut state = HookTrace::default();
         let began = std::time::Instant::now();
-        teardown_lifecycle(&mut participant, &mut api, Vec::new(), managed, 150).await;
+        teardown_lifecycle(&participant, &api, &mut state, Vec::new(), managed, 150).await;
         let elapsed = began.elapsed();
 
         assert!(

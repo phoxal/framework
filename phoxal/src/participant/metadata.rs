@@ -5,9 +5,8 @@
 //! `phoxal::participant::api::__meta` for the const-eval mechanism that
 //! resolves it. The shape is `{"id", "config_schema"}`: which participant this
 //! binary implements, and the configuration it accepts. It is strict; this
-//! pre-1.0 writer/parser cut has no compatibility fallback, so a binary still
-//! carrying the retired contract inventory is rejected rather than partially
-//! understood.
+//! pre-1.0 writer/parser cut has no compatibility fallback, so unknown fields
+//! are rejected rather than partially understood.
 //!
 //! This module owns ONLY the JSON shape, not the object-file section-BYTES
 //! extraction, which stays host-specific (an `object`-crate walk over an
@@ -79,13 +78,11 @@ mod tests {
         assert!(err.to_string().contains("id"));
     }
 
-    /// The contract inventory is gone, not optional: a section still carrying
-    /// one is a stale binary, and `deny_unknown_fields` says so rather than
-    /// silently ignoring it (organization#957).
+    /// Unknown metadata is rejected rather than silently ignored.
     #[test]
-    fn a_stale_section_with_a_contract_inventory_is_rejected() {
-        let json = br#"{"id":"drive","contracts":[],"config_schema":{"type":"null"}}"#;
+    fn an_unknown_metadata_field_is_rejected() {
+        let json = br#"{"id":"drive","unexpected":[],"config_schema":{"type":"null"}}"#;
         let err = parse_participant_metadata(json).unwrap_err();
-        assert!(err.to_string().contains("contracts"), "{err}");
+        assert!(err.to_string().contains("unexpected"), "{err}");
     }
 }

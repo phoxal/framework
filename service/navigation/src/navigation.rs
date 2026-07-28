@@ -28,7 +28,6 @@ struct Active {
     started_at_ns: u64,
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
     request: Subscriber<api::navigation::Request>,
     localize: Subscriber<api::localize::LocalizationState>,
@@ -38,11 +37,9 @@ pub struct Api {
     progress: StatePublisher<api::navigation::Progress>,
     result: StatePublisher<api::navigation::Result>,
     candidate: StatePublisher<api::navigation::Candidate>,
-    next_frontier: Server<api::navigation::FrontierRequest, api::navigation::FrontierResponse>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Navigation {
+pub struct NavigationState {
     active: Option<Active>,
     last_localize: Option<Timed<api::localize::LocalizationState>>,
     last_map_revision: Option<Timed<api::map::Revision>>,
@@ -51,12 +48,22 @@ pub struct Navigation {
     last_time: Option<RobotInstant>,
 }
 
-#[phoxal::behavior]
-impl Navigation {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = NavigationState, api = Api)]
+pub struct Navigation;
+
+impl Participant for Navigation {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        ctx.query(
+            api::topic::owner().navigation().next_frontier(),
+            Self::next_frontier,
+        )
+        .await?;
         Ok((
-            Self {
+            NavigationState {
                 active: None,
                 last_localize: None,
                 last_map_revision: None,
@@ -64,7 +71,7 @@ impl Navigation {
                 completion_order: VecDeque::new(),
                 last_time: None,
             },
-            Self::Api {
+            Api {
                 request: ctx
                     .subscriber(api::topic::owner().navigation().request(), 32)
                     .await?,
@@ -87,30 +94,36 @@ impl Navigation {
                 candidate: ctx
                     .state_publisher(api::topic::owner().navigation().candidate())
                     .await?,
-                next_frontier: ctx
-                    .server(api::topic::client().navigation().next_frontier())
-                    .await?,
             },
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.active = None;
-        self.last_localize = None;
-        self.last_map_revision = None;
-        self.completed.clear();
-        self.completion_order.clear();
-        self.last_time = None;
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.active = None;
+        state.last_localize = None;
+        state.last_map_revision = None;
+        state.completed.clear();
+        state.completion_order.clear();
+        state.last_time = None;
         Ok(())
     }
 
-    #[step(hz = 20)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        self.last_time = Some(step.now());
+    #[phoxal::step(hz = 20)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.last_time = Some(step.now());
         while let Some(received) = api.localize.try_recv() {
             if let Some(at) = received.metadata.produced_exactly_at() {
-                self.last_localize = Some(Timed {
+                state.last_localize = Some(Timed {
                     body: received.body,
                     at,
                 });
@@ -118,7 +131,7 @@ impl Navigation {
         }
         while let Some(received) = api.map_revision.try_recv() {
             if let Some(at) = received.metadata.produced_exactly_at() {
-                self.last_map_revision = Some(Timed {
+                state.last_map_revision = Some(Timed {
                     body: received.body,
                     at,
                 });
@@ -126,11 +139,11 @@ impl Navigation {
         }
 
         while let Some(received) = api.request.try_recv() {
-            self.handle_request(api, step, received.body).await?;
+            state.handle_request(api, step, received.body).await?;
         }
 
         let now = step.now();
-        let Some(active) = self.active.as_mut() else {
+        let Some(active) = state.active.as_mut() else {
             api.state
                 .publish(step.token(), api::navigation::State::Idle)?;
             return Ok(());
@@ -147,61 +160,65 @@ impl Navigation {
 
         if now.ticks().saturating_sub(active.started_at_ns) > REQUEST_TIMEOUT_NS {
             let request_id = active.request_id.clone();
-            self.active = None;
+            state.active = None;
             publish_zero(api, step, request_id.clone()).await?;
-            self.publish_terminal(api, step, request_id, api::navigation::Outcome::TimedOut)
+            state
+                .publish_terminal(api, step, request_id, api::navigation::Outcome::TimedOut)
                 .await?;
             return Ok(());
         }
 
-        let map_revision = fresh_sample(self.last_map_revision.as_ref(), now);
+        let map_revision = fresh_sample(state.last_map_revision.as_ref(), now);
         if active.path.map_revision.is_some_and(|expected| {
             map_revision.is_none_or(|current| current.body.revision != expected)
         }) {
             let request_id = active.request_id.clone();
-            self.active = None;
+            state.active = None;
             publish_zero(api, step, request_id.clone()).await?;
-            self.publish_terminal(
-                api,
-                step,
-                request_id,
-                api::navigation::Outcome::Failed(if map_revision.is_some() {
-                    api::navigation::FailureReason::MapChanged
-                } else {
-                    api::navigation::FailureReason::MapUnavailable
-                }),
-            )
-            .await?;
+            state
+                .publish_terminal(
+                    api,
+                    step,
+                    request_id,
+                    api::navigation::Outcome::Failed(if map_revision.is_some() {
+                        api::navigation::FailureReason::MapChanged
+                    } else {
+                        api::navigation::FailureReason::MapUnavailable
+                    }),
+                )
+                .await?;
             return Ok(());
         }
 
-        let Some(localize) = fresh_sample(self.last_localize.as_ref(), now) else {
+        let Some(localize) = fresh_sample(state.last_localize.as_ref(), now) else {
             let request_id = active.request_id.clone();
-            self.active = None;
+            state.active = None;
             publish_zero(api, step, request_id.clone()).await?;
-            self.publish_terminal(
-                api,
-                step,
-                request_id,
-                api::navigation::Outcome::Failed(
-                    api::navigation::FailureReason::LocalizationUnavailable,
-                ),
-            )
-            .await?;
+            state
+                .publish_terminal(
+                    api,
+                    step,
+                    request_id,
+                    api::navigation::Outcome::Failed(
+                        api::navigation::FailureReason::LocalizationUnavailable,
+                    ),
+                )
+                .await?;
             return Ok(());
         };
 
         let Some(output) = follower::pursue(&active.path, &localize.body) else {
             let request_id = active.request_id.clone();
-            self.active = None;
+            state.active = None;
             publish_zero(api, step, request_id.clone()).await?;
-            self.publish_terminal(
-                api,
-                step,
-                request_id,
-                api::navigation::Outcome::Failed(api::navigation::FailureReason::NoPath),
-            )
-            .await?;
+            state
+                .publish_terminal(
+                    api,
+                    step,
+                    request_id,
+                    api::navigation::Outcome::Failed(api::navigation::FailureReason::NoPath),
+                )
+                .await?;
             return Ok(());
         };
 
@@ -228,28 +245,41 @@ impl Navigation {
         )?;
 
         if output.finished {
-            self.active = None;
-            self.publish_terminal(api, step, request_id, api::navigation::Outcome::Succeeded)
+            state.active = None;
+            state
+                .publish_terminal(api, step, request_id, api::navigation::Outcome::Succeeded)
                 .await?;
         }
         Ok(())
     }
 
-    #[server(api = next_frontier)]
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.active = None;
+        Ok(())
+    }
+}
+
+impl Navigation {
     async fn next_frontier(
-        &mut self,
-        api: &mut Self::Api,
+        &self,
+        api: &Api,
         request: api::navigation::FrontierRequest,
-    ) -> ServerResult<api::navigation::FrontierResponse> {
-        let Some(now) = self.last_time else {
+        state: &mut NavigationState,
+    ) -> QueryResult<api::navigation::FrontierResponse> {
+        let Some(now) = state.last_time else {
             return Err(QueryFailure::unavailable("no step has run yet"));
         };
-        let Some(localize) = fresh_sample(self.last_localize.as_ref(), now) else {
+        let Some(localize) = fresh_sample(state.last_localize.as_ref(), now) else {
             return Err(QueryFailure::unavailable(
                 "localization is unavailable or stale",
             ));
         };
-        let Some(revision) = fresh_sample(self.last_map_revision.as_ref(), now) else {
+        let Some(revision) = fresh_sample(state.last_map_revision.as_ref(), now) else {
             return Err(QueryFailure::unavailable(
                 "map revision is unavailable or stale",
             ));
@@ -284,20 +314,9 @@ impl Navigation {
             map_revision: Some(revision.body.revision),
         })
     }
-
-    #[shutdown]
-    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
-        // Shutdown is outside every step, so there is no instant to publish a
-        // terminal result at. Dropping the active request locally is the whole
-        // obligation; a consumer learns the request ended from the participant
-        // going silent, exactly as it would if the process were killed.
-        let _ = api;
-        self.active = None;
-        Ok(())
-    }
 }
 
-impl Navigation {
+impl NavigationState {
     async fn publish_terminal(
         &mut self,
         api: &Api,
@@ -328,7 +347,7 @@ impl Navigation {
 
     async fn handle_request(
         &mut self,
-        api: &mut Api,
+        api: &Api,
         step: StepContext,
         request: api::navigation::Request,
     ) -> Result<()> {
@@ -604,7 +623,7 @@ mod tests {
 
     #[test]
     fn terminal_results_are_replayable_and_bounded() {
-        let mut navigation = Navigation {
+        let mut navigation = NavigationState {
             active: None,
             last_localize: None,
             last_map_revision: None,

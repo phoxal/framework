@@ -57,7 +57,6 @@ impl WorldInputs {
     }
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
     localization: Subscriber<api::localize::LocalizationState>,
     map: Subscriber<api::map::Revision>,
@@ -69,18 +68,22 @@ pub struct Api {
     state: StatePublisher<api::safety::State>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Safety {
+pub struct SafetyState {
     bindings: Vec<CapabilityBinding>,
     battery_bindings: Vec<CapabilityBinding>,
     inputs: WorldInputs,
     sequence: u64,
 }
 
-#[phoxal::behavior]
-impl Safety {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = SafetyState, api = Api)]
+pub struct Safety;
+
+impl Participant for Safety {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
         let bindings = capability_bindings(robot, |capability| {
             matches!(capability, Capability::Range(_))
@@ -115,13 +118,13 @@ impl Safety {
             );
         }
         Ok((
-            Self {
+            SafetyState {
                 inputs: WorldInputs::new(bindings.len(), battery_bindings.len()),
                 bindings,
                 battery_bindings,
                 sequence: 0,
             },
-            Self::Api {
+            Api {
                 localization: ctx
                     .subscriber(api::topic::client().localize().state(), 32)
                     .await?,
@@ -144,27 +147,36 @@ impl Safety {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.inputs = WorldInputs::new(self.bindings.len(), self.battery_bindings.len());
-        self.sequence = 0;
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.inputs = WorldInputs::new(state.bindings.len(), state.battery_bindings.len());
+        state.sequence = 0;
         Ok(())
     }
 
-    #[step(hz = 10)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        drain_latest(&mut self.inputs.localization, &api.localization);
-        drain_latest(&mut self.inputs.map, &api.map);
-        drain_latest(&mut self.inputs.drive, &api.drive);
-        for (slot, subscriber) in self.inputs.batteries.iter_mut().zip(&api.batteries) {
+    #[phoxal::step(hz = 10)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        drain_latest(&mut state.inputs.localization, &api.localization);
+        drain_latest(&mut state.inputs.map, &api.map);
+        drain_latest(&mut state.inputs.drive, &api.drive);
+        for (slot, subscriber) in state.inputs.batteries.iter_mut().zip(&api.batteries) {
             drain_latest(slot, subscriber);
         }
-        for (slot, subscriber) in self.inputs.ranges.iter_mut().zip(&api.ranges) {
+        for (slot, subscriber) in state.inputs.ranges.iter_mut().zip(&api.ranges) {
             drain_latest(slot, subscriber);
         }
 
-        self.inputs.drivable_space = if let Some(localization) =
-            usable(self.inputs.localization.as_ref(), step.now(), INPUT_STALE)
+        state.inputs.drivable_space = if let Some(localization) =
+            usable(state.inputs.localization.as_ref(), step.now(), INPUT_STALE)
         {
             let radius = 0.20;
             let response = api
@@ -187,8 +199,8 @@ impl Safety {
             None
         };
 
-        self.sequence = self.sequence.saturating_add(1);
-        let motion = assess(&self.inputs, &self.bindings, self.sequence, step.now())?;
+        state.sequence = state.sequence.saturating_add(1);
+        let motion = assess(&state.inputs, &state.bindings, state.sequence, step.now())?;
         api.constraints.publish(step.token(), motion.clone())?;
         api.state.publish(
             step.token(),

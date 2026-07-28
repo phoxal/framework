@@ -105,15 +105,13 @@ impl OdometryConfig {
     }
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
     left_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
     right_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
     state: StatePublisher<api::odometry::State>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Odometry {
+pub struct OdometryState {
     // Runtime-private typed state (not handles).
     config: OdometryConfig,
     x_m: f64,
@@ -125,10 +123,15 @@ pub struct Odometry {
     right_sample_at: Vec<Option<RobotInstant>>,
 }
 
-#[phoxal::behavior]
-impl Odometry {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = OdometryState, api = Api)]
+pub struct Odometry;
+
+impl Participant for Odometry {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let config = OdometryConfig::from_robot(ctx.robot()?)?;
 
         let mut left_encoders = Vec::with_capacity(config.left.len());
@@ -144,7 +147,7 @@ impl Odometry {
             .await?;
 
         Ok((
-            Self {
+            OdometryState {
                 left_velocity_radps: vec![0.0; config.left.len()],
                 right_velocity_radps: vec![0.0; config.right.len()],
                 left_sample_at: vec![None; config.left.len()],
@@ -154,7 +157,7 @@ impl Odometry {
                 y_m: 0.0,
                 yaw_rad: 0.0,
             },
-            Self::Api {
+            Api {
                 left_encoders,
                 right_encoders,
                 state,
@@ -162,67 +165,76 @@ impl Odometry {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.x_m = 0.0;
-        self.y_m = 0.0;
-        self.yaw_rad = 0.0;
-        self.left_velocity_radps.fill(0.0);
-        self.right_velocity_radps.fill(0.0);
-        self.left_sample_at.fill(None);
-        self.right_sample_at.fill(None);
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.x_m = 0.0;
+        state.y_m = 0.0;
+        state.yaw_rad = 0.0;
+        state.left_velocity_radps.fill(0.0);
+        state.right_velocity_radps.fill(0.0);
+        state.left_sample_at.fill(None);
+        state.right_sample_at.fill(None);
         Ok(())
     }
 
-    #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        if !self.config.active {
+    #[phoxal::step(hz = 50)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        if !state.config.active {
             return Ok(());
         }
         drain_encoders(
-            &mut api.left_encoders,
-            &self.config.left,
-            &mut self.left_velocity_radps,
-            &mut self.left_sample_at,
+            &api.left_encoders,
+            &state.config.left,
+            &mut state.left_velocity_radps,
+            &mut state.left_sample_at,
         );
         drain_encoders(
-            &mut api.right_encoders,
-            &self.config.right,
-            &mut self.right_velocity_radps,
-            &mut self.right_sample_at,
+            &api.right_encoders,
+            &state.config.right,
+            &mut state.right_velocity_radps,
+            &mut state.right_sample_at,
         );
 
         let now = step.now();
-        let left_radps = average_side(&self.left_velocity_radps, &self.left_sample_at, now);
-        let right_radps = average_side(&self.right_velocity_radps, &self.right_sample_at, now);
+        let left_radps = average_side(&state.left_velocity_radps, &state.left_sample_at, now);
+        let right_radps = average_side(&state.right_velocity_radps, &state.right_sample_at, now);
         let (Some(left_radps), Some(right_radps)) = (left_radps, right_radps) else {
             return Ok(());
         };
         let (linear_x_mps, angular_z_radps) = forward(
             left_radps,
             right_radps,
-            self.config.wheel_radius_m,
-            self.config.wheel_base_m,
+            state.config.wheel_radius_m,
+            state.config.wheel_base_m,
         );
 
         let (x_m, y_m, yaw_rad) = integrate_pose(
-            self.x_m,
-            self.y_m,
-            self.yaw_rad,
+            state.x_m,
+            state.y_m,
+            state.yaw_rad,
             linear_x_mps,
             angular_z_radps,
             step.dt().as_secs_f64(),
         );
-        self.x_m = x_m;
-        self.y_m = y_m;
-        self.yaw_rad = yaw_rad;
+        state.x_m = x_m;
+        state.y_m = y_m;
+        state.yaw_rad = yaw_rad;
 
         api.state.publish(
             step.token(),
             api::odometry::State {
-                x_m: self.x_m,
-                y_m: self.y_m,
-                yaw_rad: self.yaw_rad,
+                x_m: state.x_m,
+                y_m: state.y_m,
+                yaw_rad: state.yaw_rad,
                 linear_x_mps: linear_x_mps as f32,
                 angular_z_radps: angular_z_radps as f32,
             },
@@ -232,13 +244,13 @@ impl Odometry {
 }
 
 fn drain_encoders(
-    subscribers: &mut [Subscriber<api::component::encoder::Sample>],
+    subscribers: &[Subscriber<api::component::encoder::Sample>],
     bindings: &[EncoderBinding],
     velocities: &mut [f64],
     sample_at: &mut [Option<RobotInstant>],
 ) {
     for (((subscriber, binding), velocity), seen_at) in subscribers
-        .iter_mut()
+        .iter()
         .zip(bindings)
         .zip(velocities.iter_mut())
         .zip(sample_at.iter_mut())

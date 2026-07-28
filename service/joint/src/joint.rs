@@ -45,7 +45,6 @@ struct JointConfig {
     encoders: Vec<EncoderBinding>,
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
     encoders: Vec<Subscriber<api::component::encoder::Sample>>,
     states: BTreeMap<String, StatePublisher<api::joint::JointState>>,
@@ -90,16 +89,20 @@ impl JointConfig {
     }
 }
 
-#[phoxal::service(config = ())]
-pub struct Joint {
+pub struct JointState {
     config: JointConfig,
     sample_at: Vec<Option<RobotInstant>>,
 }
 
-#[phoxal::behavior]
-impl Joint {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = JointState, api = Api)]
+pub struct Joint;
+
+impl Participant for Joint {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let config = JointConfig::from_robot(ctx.robot()?)?;
 
         let mut encoders = Vec::with_capacity(config.encoders.len());
@@ -124,29 +127,38 @@ impl Joint {
         }
 
         Ok((
-            Self {
+            JointState {
                 sample_at: vec![None; config.encoders.len()],
                 config,
             },
-            Self::Api { encoders, states },
+            Api { encoders, states },
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.sample_at.fill(None);
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.sample_at.fill(None);
         Ok(())
     }
 
-    #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 50)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let mut latest_by_joint = BTreeMap::new();
         let now = step.now();
         for ((subscriber, binding), sample_at) in api
             .encoders
-            .iter_mut()
-            .zip(&self.config.encoders)
-            .zip(&mut self.sample_at)
+            .iter()
+            .zip(&state.config.encoders)
+            .zip(&mut state.sample_at)
         {
             let mut latest = None;
             while let Some(received) = subscriber.try_recv() {

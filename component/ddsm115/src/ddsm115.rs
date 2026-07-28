@@ -6,12 +6,12 @@
 //! `component_instance` (D47/D53), read here via `ctx.component()`. This driver binds
 //! its instance's per-component motor-command (subscribe) and encoder-sample
 //! (publish) topics (dynamic keys, D17/D38), applies commands to the hardware, and
-//! feeds back encoder samples. `#[shutdown]` parks the motor before the bus closes.
+//! feeds back encoder samples. `Participant::shutdown` parks the motor before the bus closes.
 //!
 //! # Non-zero actuation requires a permit (#952 section H)
 //!
-//! Command reception and expiry live in a **managed task**, not in `#[step]`.
-//! That is the whole point: if logical time stops advancing, `#[step]` stops
+//! Command reception and expiry live in a **managed task**, not in `Participant::step`.
+//! That is the whole point: if logical time stops advancing, `Participant::step` stops
 //! running, and a driver that only expired commands inside its step would hold
 //! its last velocity forever. The managed task runs independently of the step
 //! loop and ages the permit on its own [`LocalInstant`] - the host's
@@ -233,26 +233,27 @@ fn observed_command(
     }
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
-    // Handles on this instance's dynamic per-component topics. The command
-    // subscription is drained by the managed permit task, never by `#[step]`.
-    command: Subscriber<api::component::motor::Command>,
+    // The command subscription is owned by the managed permit task.
     encoder: MeasurementPublisher<api::component::encoder::Sample>,
 }
 
-#[phoxal::driver(config = ())]
-pub struct Ddsm115 {
+pub struct Ddsm115State {
     // Driver-private hardware state.
     instance: String,
     position_rad: f64,
     motor: Arc<Mutex<Motor>>,
 }
 
-#[phoxal::behavior]
-impl Ddsm115 {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::driver(state = Ddsm115State, api = Api)]
+pub struct Ddsm115;
+
+impl Participant for Ddsm115 {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let instance = ctx.component()?.to_string();
         // Prove the instance exists in the robot model (binds this driver to it).
         let _ = ctx.robot()?.component_instance(&instance)?;
@@ -283,47 +284,56 @@ impl Ddsm115 {
         });
 
         Ok((
-            Self {
+            Ddsm115State {
                 instance,
                 position_rad: 0.0,
                 motor,
             },
-            Self::Api { command, encoder },
+            Api { encoder },
         ))
     }
 
-    #[step(hz = 100)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 100)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         // Read the effective velocity, enforcing the permit here too so a step
         // can never integrate a velocity the permit task would have stopped.
-        let velocity_radps = lock(&self.motor).enforce_now();
+        let velocity_radps = lock(&state.motor).enforce_now();
 
         // Integrate the wheel position from the effective velocity.
-        self.position_rad = integrate(self.position_rad, velocity_radps, step.dt().as_secs_f64());
+        state.position_rad = integrate(state.position_rad, velocity_radps, step.dt().as_secs_f64());
 
         // This driver models the motor rather than reading a device clock, so
         // the encoder capture coincides exactly with this step.
         api.encoder.publish(
             CaptureStamp::exact(step.now()),
             api::component::encoder::Sample {
-                position_rad: self.position_rad,
+                position_rad: state.position_rad,
                 velocity_radps,
             },
         )?;
         Ok(())
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
         // Park: command the motor to a stop. A real driver flushes the bus/CAN here
         // before the session closes.
-        lock(&self.motor).stop();
-        let _ = &self.instance;
+        lock(&state.motor).stop();
+        let _ = &state.instance;
         Ok(())
     }
 }
 
-/// Receive commands and enforce the permit, independently of `#[step]`.
+/// Receive commands and enforce the permit, independently of `Participant::step`.
 ///
 /// The `select!` is what makes this a watchdog rather than a mailbox: the tick
 /// arm fires even when no command ever arrives, so a lapsed permit stops the

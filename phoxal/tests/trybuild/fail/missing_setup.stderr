@@ -1,5 +1,0 @@
-error: a participant impl must declare exactly one #[setup] method (D22)
-  --> tests/trybuild/fail/missing_setup.rs:17:6
-   |
-17 | impl NoSetup {
-   |      ^^^^^^^

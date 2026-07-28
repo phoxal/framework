@@ -7,13 +7,11 @@ use phoxal::prelude::*;
 
 const STEP_HZ: f64 = 10.0;
 
-#[derive(phoxal::Api)]
 pub struct Api {
     gnss: Vec<MeasurementPublisher<api::component::gnss::Sample>>,
 }
 
-#[phoxal::driver(config = ())]
-pub struct ZedF9p {
+pub struct ZedF9pState {
     gnss_divisors: Vec<u64>,
 }
 
@@ -23,10 +21,15 @@ struct GnssSlot {
     divisor: u64,
 }
 
-#[phoxal::behavior]
-impl ZedF9p {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::driver(state = ZedF9pState, api = Api)]
+pub struct ZedF9p;
+
+impl Participant for ZedF9p {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let instance = ctx.component()?.to_string();
         let slots = {
             let robot = ctx.robot()?;
@@ -66,15 +69,20 @@ impl ZedF9p {
             gnss_divisors.push(slot.divisor);
         }
 
-        Ok((Self { gnss_divisors }, Self::Api { gnss }))
+        Ok((ZedF9pState { gnss_divisors }, Api { gnss }))
     }
 
-    #[step(hz = 10)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 10)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let at = step.now();
         let step_index = step.step_index();
 
-        for (publisher, divisor) in api.gnss.iter().zip(&self.gnss_divisors) {
+        for (publisher, divisor) in api.gnss.iter().zip(&state.gnss_divisors) {
             if is_due(step_index, *divisor) {
                 publisher.publish(CaptureStamp::exact(at), gnss_sample())?;
             }
@@ -83,8 +91,12 @@ impl ZedF9p {
         Ok(())
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> Result<()> {
         Ok(())
     }
 }

@@ -1,7 +1,6 @@
-//! The participant authoring model (`Api`/`Config`/`Participant`).
-//! `#[derive(phoxal::Api)]` / `#[derive(phoxal::Config)]` /
-//! `#[phoxal::service|driver|simulator|tool]` / `#[phoxal::behavior]` target
-//! the traits here.
+//! The participant authoring model (`ParticipantSpec` + `Participant`).
+//! Role attributes declare static identity and `Config`/`State`/`Api` types;
+//! authors implement lifecycle behavior directly.
 //!
 //! `Api` names a participant-authored struct of bus handles. Official
 //! participants use the train-selected `phoxal::api` facade across all fields;
@@ -12,47 +11,25 @@
 //! `participant::runner` hardcodes `use phoxal::api as api;`,
 //! independent of any participant's chosen `Api`.
 //!
-//! # What this slice defers
-//!
-//! - **Deferred hardening for `#[server_snapshot]`.** The generated
-//!   [`ParticipantLifecycle::__serve_snapshot`] takes `Arc<Self::Api>`
-//!   (read-only, D3): the runner constructs that `Arc` (one clone of the
-//!   `#[setup]`-returned `api`) and hands `Arc::clone`s to each spawned
-//!   `#[server_snapshot]` task on a live bus, alongside the owned `api` the
-//!   main task keeps for `&mut Self::Api`. `Arc<Self::Api>` (not
-//!   `&Self::Api`) is the chosen "api snapshot" shape (D3 offers either):
-//!   every bus handle type's real operations already take `&self` (see
-//!   `phoxal-bus/src/handle.rs`), so an `Arc` costs nothing extra and - unlike
-//!   a borrowed reference - is `'static` and can be moved into the
-//!   spawned/boxed future `__serve_snapshot` returns. This is sound for
-//!   `Publisher`/`Latest`/`Querier`/`Server` (non-destructive reads / fresh
-//!   publishes); a `Subscriber` field, however, is a *destructive* shared
-//!   queue, so a `#[server_snapshot]` handler must read committed `Snapshot`
-//!   state and never `recv` a `Subscriber` (see `runner`'s module docs and
-//!   `Subscriber`'s rustdoc). **Deferred hardening:** this slice does not yet
-//!   *enforce* that structurally - rejecting a snapshot handler that drains a
-//!   `Subscriber` at compile time would need an invasive `Api`-projection
-//!   redesign (a separate read-only snapshot view type excluding `Subscriber`
-//!   fields); until it lands, P-convert must uphold the rule per participant.
-//!
-//! The component and raw-bus setup accessors are **not** deferred: the surface
+//! The component and raw-bus setup accessors remain role-gated: the surface
 //! exposes `component()` for drivers and simulators, and `raw_bus()` for tools
 //! (see [`SetupContextDriverExt`], [`SetupContextSimulatorExt`],
 //! [`SetupContextToolExt`] below).
 
 use std::future::Future;
+use std::marker::PhantomData;
+use std::ops::AsyncFn;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use crate::bus::{
-    AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
+    AskQuery, Codec, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
     DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
-    Publish, Querier, StateContract, StatePublisher, Subscribe, Subscriber, TimelineId, Topic,
-    WorldClockContract,
+    MessagePack, Publish, Querier, ServeQuery, StateContract, StatePublisher, Subscribe,
+    Subscriber, TimelineId, Topic, WorldClockContract,
 };
 use crate::participant::context::{ResetContext, SetupContext, ShutdownContext, StepContext};
 use crate::participant::server::ServerOutcome;
-use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule};
+use crate::participant::spec::{IsDriver, IsSimulator, IsTool, StepSchedule, TypedGraphSurface};
 // `TimelineAuthority`/`WorldClockPublisher` are deliberately imported from the
 // bus crate directly rather than through `crate::bus`: they are not part of
 // that ordinary re-export (see its module docs and `crate::raw`'s) precisely
@@ -77,13 +54,8 @@ use phoxal_bus::{Bus, TimelineAuthority, WorldClockPublisher};
 /// fixed byte array placed in the linker section.
 #[doc(hidden)]
 pub mod __meta {
-    /// Re-exported so `#[derive(phoxal::Api)]`'s generated code can reach it
-    /// as `phoxal::participant::api::__meta::__concatcp!(..)` without every
-    /// participant crate needing its own `const_format` dependency.
-    /// `concatcp!` (unlike `std::concat!`) accepts constant *expressions*,
-    /// not just literals - in particular, a path to a foreign associated
-    /// const like `<Body as ContractBody>::NAME` - which is exactly the
-    /// piece a proc-macro cannot pre-resolve into a literal.
+    /// Re-exported for role-macro metadata generation without requiring every
+    /// participant crate to depend directly on `const_format`.
     pub use const_format::concatcp as __concatcp;
 
     /// Fixed-capacity const-eval string builder used for recursively composed
@@ -162,110 +134,6 @@ pub mod __meta {
     }
 }
 
-/// Emitted by `#[derive(phoxal::Api)]`: the bus-facing contract surface of a
-/// participant's `Api` handle struct.
-///
-/// `Clone`: every bus handle type (the role-gated publishers, `Latest`,
-/// `Subscriber`, `Querier`, [`Server`]) is cheaply `Clone` - a second handle to the same
-/// underlying subscription/publish key/session, never a deep copy - because
-/// every real operation on them takes `&self` (`phoxal-bus/src/handle.rs`'s
-/// module docs). `#[derive(phoxal::Api)]` emits a field-wise `Clone` impl
-/// alongside the `ParticipantApi` impl, so this bound is satisfied
-/// automatically for every derived `Api` struct. The runner
-/// (`participant::runner`) uses it to give concurrent `#[server_snapshot]`
-/// tasks their own `Arc<Self::Api>` - a full clone made once after
-/// `#[setup]`, independent of the `&mut Self::Api` the main task keeps for
-/// `#[step]`/`#[server]`/`#[shutdown]` - rather than one value shared behind
-/// `&mut`/`Arc` at once, which Rust's aliasing rules forbid without unsafe
-/// code. Because every clone is a handle to the same live state (shared
-/// `Bus`, mutex-serialized retained `Latest` slot, or subscription task), the
-/// two never diverge, so this is exactly D3's "read-only `&Self::Api`, or an
-/// api snapshot" - here realized as a cloned api snapshot.
-pub trait ParticipantApi: Send + Sync + Clone + 'static {
-    /// Retain only inbound samples belonging to the newly active timeline.
-    /// Generated from every subscribe field by `#[derive(Api)]`. Samples that
-    /// express no robot time belong to no world history and are never
-    /// discarded, so a command input needs no opt-out.
-    #[doc(hidden)]
-    fn __retain_timeline(&self, timeline: TimelineId);
-}
-
-/// `Api = ()` for participants that opt out of a typed bus surface (tools,
-/// per decision - "Tools stay raw-bus only", `remove-emit-apis-api-authoring/readme.md`).
-impl ParticipantApi for () {
-    fn __retain_timeline(&self, _timeline: TimelineId) {}
-}
-
-/// Framework-internal recursive hook used by a derived participant `Api` to
-/// clear stale inbound state at a timeline boundary.
-#[doc(hidden)]
-pub trait TimelineScopedApiField {
-    fn __retain_timeline(&self, timeline: TimelineId);
-}
-
-impl<B: ContractBody> TimelineScopedApiField for Subscriber<B> {
-    fn __retain_timeline(&self, timeline: TimelineId) {
-        Subscriber::__retain_timeline(self, timeline);
-    }
-}
-
-impl<B: ContractBody> TimelineScopedApiField for Latest<B> {
-    fn __retain_timeline(&self, timeline: TimelineId) {
-        Latest::__retain_timeline(self, timeline);
-    }
-}
-
-impl<T: TimelineScopedApiField> TimelineScopedApiField for Vec<T> {
-    fn __retain_timeline(&self, timeline: TimelineId) {
-        for value in self {
-            value.__retain_timeline(timeline);
-        }
-    }
-}
-
-impl<K, T: TimelineScopedApiField> TimelineScopedApiField for std::collections::BTreeMap<K, T> {
-    fn __retain_timeline(&self, timeline: TimelineId) {
-        for value in self.values() {
-            value.__retain_timeline(timeline);
-        }
-    }
-}
-
-impl<K, T: TimelineScopedApiField, S> TimelineScopedApiField
-    for std::collections::HashMap<K, T, S>
-{
-    fn __retain_timeline(&self, timeline: TimelineId) {
-        for value in self.values() {
-            value.__retain_timeline(timeline);
-        }
-    }
-}
-
-/// Per-`Api`-struct marker: this `Api` declared a *publish* handle for body
-/// `B` (D44). Emitted by `#[derive(phoxal::Api)]` for each role-gated publisher
-/// field (including `Vec`/`BTreeMap`/`HashMap` of one). Every publisher builder
-/// carries `where R::Api: DeclaresPublish<B>`, so building a publisher for a
-/// family the `Api` struct never declared as a field is a compile error.
-pub trait DeclaresPublish<B: ?Sized> {}
-
-/// Per-`Api`-struct marker: this `Api` declared a *subscribe* handle for body
-/// `B` (`Subscriber<B>`/`Latest<B>` fields, including `Vec`/`BTreeMap`/`HashMap`
-/// of one). See [`DeclaresPublish`]; [`SetupContextApiExt::latest`] and
-/// [`SetupContextApiExt::subscriber`] both carry `where R::Api: DeclaresSubscribe<B>`.
-pub trait DeclaresSubscribe<B: ?Sized> {}
-
-/// Per-`Api`-struct marker: this `Api` declared a *query* (asking/client)
-/// handle for `Req`/`Resp` (`Querier<Req, Resp>` fields). See
-/// [`DeclaresPublish`]; [`SetupContextApiExt::querier`] carries
-/// `where R::Api: DeclaresAsk<Req, Resp>`.
-pub trait DeclaresAsk<Req: ?Sized, Resp: ?Sized> {}
-
-/// Per-`Api`-struct marker: this `Api` declared a *serve* (answering/server)
-/// handle for `Req`/`Resp` (`Server<Req, Resp>` fields). See
-/// [`DeclaresPublish`]; [`SetupContextApiExt::server`] carries
-/// `where R::Api: DeclaresServe<Req, Resp>`.
-pub trait DeclaresServe<Req: ?Sized, Resp: ?Sized> {}
-
 /// Emitted by `#[derive(phoxal::Config)]`: the participant config's compile-time
 /// JSON Schema (Draft 2020-12).
 pub trait ParticipantConfig: serde::de::DeserializeOwned + Send + 'static {
@@ -340,10 +208,10 @@ primitive_config_schema!(usize => r#"{"type":"integer","minimum":0}"#);
 primitive_config_schema!(f32 => r#"{"type":"number","format":"float"}"#);
 primitive_config_schema!(f64 => r#"{"type":"number","format":"double"}"#);
 
-/// Emitted by `#[phoxal::service]` / `#[phoxal::driver]` /
-/// `#[phoxal::simulator]` / `#[phoxal::tool]`: participant identity plus the
-/// linked `Config`/`Api` types.
-pub trait Participant: Sized + Send + 'static {
+/// Static participant identity and associated types, emitted by a role
+/// attribute on a unit marker.
+#[doc(hidden)]
+pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The authoring kind that produced this artifact (`"service"`,
     /// `"driver"`, `"simulator"`, or `"tool"`).
     const KIND: &'static str;
@@ -358,9 +226,14 @@ pub trait Participant: Sized + Send + 'static {
     type LaunchPolicy: crate::participant::launch::ParticipantLaunchPolicy;
     /// The participant's typed config (`robot.yaml` input).
     type Config: ParticipantConfig;
-    /// The participant's bus-facing contract surface (`()` for a raw-bus
-    /// tool).
-    type Api: ParticipantApi;
+    /// Mutable runtime state, owned only by the serialized event loop.
+    type State: Send + 'static;
+    /// Bus-facing handles used by lifecycle behavior.
+    type Api: Send + 'static;
+
+    /// Construct the role marker. Role attributes accept unit structs only.
+    #[doc(hidden)]
+    fn __new() -> Self;
 
     /// Read a byte out of this participant's embedded `.phoxal_meta` /
     /// `__DATA,__phoxal_meta` metadata static, so it is reachable from the
@@ -385,139 +258,165 @@ pub trait Participant: Sized + Send + 'static {
     fn __retain_embedded_metadata();
 }
 
-/// Lifecycle dispatch + server-side metadata, emitted by `#[phoxal::behavior]`
-/// for a `#[setup]` returning `Result<(Self, Self::Api)>`, threading
-/// `Self::Api` through every callback (D3):
+/// Participant lifecycle behavior.
 ///
-/// - `#[step]` / the exclusive `#[server(api = …)]` get `&mut Self::Api`
-///   (same task as the caller, so exclusive access is free);
-/// - the concurrent `#[server_snapshot(api = …)]` gets a shared
-///   `Arc<Self::Api>`, not `&mut` - it may run concurrently with `#[step]`/an
-///   exclusive server (D3's "read-only … or an api snapshot"; see the module
-///   docs for why `Arc` is this slice's chosen shape).
+/// One runner task owns `State` and serializes step, query, reset, and
+/// shutdown access. `Api` is separate and shared immutably with behavior.
 #[allow(async_fn_in_trait)]
-pub trait ParticipantLifecycle: Participant {
-    /// The committed-snapshot state type (`()` when there is no
-    /// `#[snapshot]`).
-    type Snapshot: Send + Sync + 'static;
-
-    /// Whether the participant provides a committed snapshot (`#[snapshot]`).
-    const HAS_SNAPSHOT: bool;
-
-    /// The version-qualified topic keys of exclusive `#[server]` handlers.
-    fn __exclusive_server_topics() -> &'static [&'static str];
-
-    /// The version-qualified topic keys of concurrent `#[server_snapshot]`
-    /// handlers.
-    fn __snapshot_server_topics() -> &'static [&'static str];
-
-    /// Reject a duplicate server topic before startup declares queryables.
-    fn __validate_server_topics() -> Result<(), String>;
-
-    /// The scheduled-step cadence, or `None` if the participant has no
-    /// `#[step]`.
-    fn __step_schedule() -> Option<StepSchedule>;
-
-    /// Construct the participant and its `Api` (`#[setup]`).
-    async fn __setup(
+pub trait Participant: ParticipantSpec {
+    /// Build initial mutable state and bus-facing handles.
+    async fn setup(
+        &self,
         ctx: &mut SetupContext<Self>,
         config: Self::Config,
-    ) -> crate::Result<(Self, Self::Api)>;
+    ) -> crate::Result<(Self::State, Self::Api)>;
 
-    /// Run one scheduled step (`#[step]`; a no-op when none is declared).
-    async fn __step(&mut self, api: &mut Self::Api, step: StepContext) -> crate::Result<()>;
+    /// Run one scheduled step.
+    async fn step(
+        &self,
+        _api: &Self::Api,
+        _step: StepContext,
+        _state: &mut Self::State,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 
-    /// Reset participant-owned state derived from the prior simulation
-    /// execution (`#[reset]`; a generated no-op when none is declared).
-    async fn __reset(&mut self, api: &mut Self::Api, ctx: ResetContext) -> crate::Result<()>;
+    /// Reset state derived from a replaced simulation timeline.
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 
-    /// Graceful shutdown (`#[shutdown]`; a no-op when none is declared).
-    async fn __shutdown(&mut self, api: &mut Self::Api, ctx: ShutdownContext) -> crate::Result<()>;
+    /// Gracefully park, stop, or flush participant-owned state.
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        _state: &mut Self::State,
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 
-    /// Commit the current state as a snapshot (calls the `#[snapshot]`
-    /// provider; returns `()` when there is none).
-    fn __take_snapshot(&self) -> Self::Snapshot;
-
-    /// Serve one exclusive `#[server]` query (holds `&mut self` and
-    /// `&mut Self::Api`, serialized with `#[step]`).
-    async fn __serve_exclusive(
-        &mut self,
-        api: &mut Self::Api,
-        topic: &str,
-        request: &[u8],
-    ) -> ServerOutcome;
-
-    /// Serve one concurrent `#[server_snapshot]` query against a committed
-    /// state snapshot and a shared, read-only `Api` snapshot (D3). Returns a
-    /// boxed `Send` future so the caller can spawn it.
-    fn __serve_snapshot(
-        snapshot: Arc<Self::Snapshot>,
-        api: Arc<Self::Api>,
-        topic: String,
-        request: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + Send>>;
-}
-
-/// A declared server slot in an `Api` struct (`#[derive(phoxal::Api)]`
-/// recognizes it and emits a `DeclaresServe<Req, Resp>` marker impl). Unlike
-/// [`Publisher`]/[`Latest`]/[`Subscriber`]/[`Querier`], this carries no live
-/// bus connection: serving is runner-dispatched from the generated
-/// `ParticipantLifecycle::__serve_*` methods keyed on
-/// `<Req as ContractBody>::TOPIC` - the field exists purely so `Api` can
-/// *declare* the contract ("`Api` declares the bus contract; `behavior`
-/// implements runtime logic").
-pub struct Server<Req, Resp> {
-    _p: std::marker::PhantomData<fn(Req) -> Resp>,
-}
-
-impl<Req, Resp> Server<Req, Resp> {
-    /// Framework-internal (macro-only) constructor; the author-facing path is
-    /// `ctx.server(...)` in `#[setup]`. `#[doc(hidden)]`.
+    /// Cadence emitted alongside a `#[phoxal::step(hz = N)]` override.
     #[doc(hidden)]
-    pub fn new() -> Self {
-        Server {
-            _p: std::marker::PhantomData,
+    fn __step_schedule() -> Option<StepSchedule> {
+        None
+    }
+}
+
+/// One setup-time query binding, type-erased only after its request/response
+/// types and handler have been checked at the `ctx.query(...)` call.
+pub(crate) struct QueryRegistration<R: Participant> {
+    topic: String,
+    handler: Box<dyn ErasedQueryHandler<R>>,
+}
+
+impl<R: Participant> QueryRegistration<R> {
+    pub(crate) fn new<Req, Resp, H>(topic: String, handler: H) -> Self
+    where
+        Req: ContractBody,
+        Resp: ContractBody,
+        H: for<'a> AsyncFn(
+                &'a R,
+                &'a R::Api,
+                Req,
+                &'a mut R::State,
+            ) -> crate::bus::QueryResult<Resp>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            topic,
+            handler: Box::new(TypedQueryHandler::<H, Req, Resp> {
+                handler,
+                _types: PhantomData,
+            }),
         }
     }
-}
 
-impl<Req, Resp> Default for Server<Req, Resp> {
-    fn default() -> Self {
-        Self::new()
+    pub(crate) fn topic(&self) -> &str {
+        &self.topic
+    }
+
+    pub(crate) async fn dispatch(
+        &self,
+        participant: &R,
+        api: &R::Api,
+        state: &mut R::State,
+        request: Vec<u8>,
+    ) -> ServerOutcome {
+        self.handler
+            .dispatch(participant, api, state, request)
+            .await
     }
 }
 
-impl<Req, Resp> Clone for Server<Req, Resp> {
-    fn clone(&self) -> Self {
-        *self
+trait ErasedQueryHandler<R: Participant>: Send + Sync {
+    fn dispatch<'a>(
+        &'a self,
+        participant: &'a R,
+        api: &'a R::Api,
+        state: &'a mut R::State,
+        request: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>>;
+}
+
+struct TypedQueryHandler<H, Req, Resp> {
+    handler: H,
+    _types: PhantomData<fn(Req) -> Resp>,
+}
+
+impl<R, H, Req, Resp> ErasedQueryHandler<R> for TypedQueryHandler<H, Req, Resp>
+where
+    R: Participant,
+    Req: ContractBody,
+    Resp: ContractBody,
+    H: for<'a> AsyncFn(&'a R, &'a R::Api, Req, &'a mut R::State) -> crate::bus::QueryResult<Resp>
+        + Send
+        + Sync
+        + 'static,
+{
+    fn dispatch<'a>(
+        &'a self,
+        participant: &'a R,
+        api: &'a R::Api,
+        state: &'a mut R::State,
+        request: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>> {
+        Box::pin(async move {
+            let request = MessagePack::decode::<Req>(&request).map_err(|error| {
+                crate::bus::QueryFailure::invalid_argument(format!(
+                    "decode query request for '{}': {error}",
+                    Req::TOPIC
+                ))
+            })?;
+            let response = (self.handler)(participant, api, request, state).await?;
+            let payload = MessagePack::encode(&response).map_err(|error| {
+                crate::bus::QueryFailure::internal(format!(
+                    "encode query response for '{}': {error}",
+                    Resp::TOPIC
+                ))
+            })?;
+            Ok(crate::participant::server::ServerReply { payload })
+        })
     }
 }
 
-impl<Req, Resp> Copy for Server<Req, Resp> {}
-
-// `PhantomData<fn(Req) -> Resp>` is `Send`/`Sync`/`Copy` regardless of
-// `Req`/`Resp` (a fn-pointer phantom, same trick the other handle types'
-// `PhantomData<fn() -> B>` markers use), so `Server<Req, Resp>` needs no
-// bounds on `Req`/`Resp` to satisfy `ParticipantApi: Send + Sync + Clone`
-// (see that trait's docs).
-
-/// `SetupContext<R>` builders (`R: Participant`), added as an extension trait
-/// rather than an inherent `impl<R: Participant> SetupContext<R>` block so
-/// `context.rs` can stay free of a `Participant` bound on `SetupContext`
-/// itself. Bring it into scope with `use phoxal::prelude::*;`.
+/// Typed builders available to checked graph participants.
 #[allow(async_fn_in_trait)]
-pub trait SetupContextApiExt<R: Participant> {
+pub trait SetupContextApiExt<R: Participant + TypedGraphSurface> {
     /// Build a state publisher for `B`. `B: StateContract` (#952 section D):
     /// only a contract declared `state` in the api tree can be published at a
-    /// logical step. `R::Api: DeclaresPublish<B>` (D44): building a publisher
-    /// for a contract the `Api` struct did not declare as a field is a compile
-    /// error.
+    /// logical step.
     async fn state_publisher<B: StateContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<StatePublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>;
+    ) -> crate::Result<StatePublisher<B>>;
 
     /// Build a measurement publisher for `B`. `B: MeasurementContract`: only a
     /// contract declared `measurement` in the api tree can carry a capture
@@ -525,9 +424,7 @@ pub trait SetupContextApiExt<R: Participant> {
     async fn measurement_publisher<B: MeasurementContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<MeasurementPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>;
+    ) -> crate::Result<MeasurementPublisher<B>>;
 
     /// Build a command publisher for `B`. `B: CommandContract`: only a contract
     /// declared `command` in the api tree can be sent as a request expressing
@@ -535,9 +432,7 @@ pub trait SetupContextApiExt<R: Participant> {
     async fn command_publisher<B: CommandContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<CommandPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>;
+    ) -> crate::Result<CommandPublisher<B>>;
 
     /// Build a diagnostic publisher for `B`. `B: DiagnosticContract`: only a
     /// contract declared `diagnostic` in the api tree describes the participant
@@ -545,45 +440,48 @@ pub trait SetupContextApiExt<R: Participant> {
     async fn diagnostic_publisher<B: DiagnosticContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<DiagnosticPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>;
+    ) -> crate::Result<DiagnosticPublisher<B>>;
 
-    /// A keep-last-1 view of `B`. `R::Api: DeclaresSubscribe<B>` (D44).
-    async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>) -> crate::Result<Latest<B>>
-    where
-        R::Api: DeclaresSubscribe<B>;
+    /// A keep-last-1 view of `B`, registered with the runner's timeline
+    /// ingress barrier.
+    async fn latest<B: ContractBody>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<Latest<B>>;
 
-    /// A drop-oldest ring subscription of `B` at `depth`. `R::Api:
-    /// DeclaresSubscribe<B>` (D44).
+    /// A drop-oldest ring subscription of `B` at `depth`, registered with the
+    /// runner's timeline ingress barrier.
     async fn subscriber<B: ContractBody>(
-        &self,
+        &mut self,
         topic: Topic<Subscribe<B>>,
         depth: usize,
-    ) -> crate::Result<Subscriber<B>>
-    where
-        R::Api: DeclaresSubscribe<B>;
+    ) -> crate::Result<Subscriber<B>>;
 
-    /// Build a querier for a declared query contract. `R::Api:
-    /// DeclaresAsk<Req, Resp>` (D44).
+    /// Build an outbound typed querier.
     async fn querier<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Querier<Req, Resp>>
-    where
-        R::Api: DeclaresAsk<Req, Resp>;
+    ) -> crate::Result<Querier<Req, Resp>>;
 
-    /// Declare an `Api` server slot for a query contract this participant
-    /// serves. See [`Server`] - no live connection is opened here; the
-    /// runner dispatches served queries to the generated
-    /// `ParticipantLifecycle::__serve_*` methods. `R::Api: DeclaresServe<Req,
-    /// Resp>` (D44).
-    async fn server<Req: ContractBody, Resp: ContractBody>(
-        &self,
-        topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Server<Req, Resp>>
+    /// Bind one owner-side typed query endpoint to an ordinary async method.
+    /// The queryable becomes live only after setup returns successfully.
+    async fn query<Req, Resp, H>(
+        &mut self,
+        topic: Topic<ServeQuery<Req, Resp>>,
+        handler: H,
+    ) -> crate::Result<()>
     where
-        R::Api: DeclaresServe<Req, Resp>;
+        Req: ContractBody,
+        Resp: ContractBody,
+        H: for<'a> AsyncFn(
+                &'a R,
+                &'a R::Api,
+                Req,
+                &'a mut R::State,
+            ) -> crate::bus::QueryResult<Resp>
+            + Send
+            + Sync
+            + 'static;
 
     /// The resolved robot model (`robot.yaml` + components + structure, D33):
     /// participants build their typed state from it. Present only when the
@@ -595,72 +493,64 @@ pub trait SetupContextApiExt<R: Participant> {
     fn robot_root(&self) -> crate::Result<&std::path::Path>;
 }
 
-impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
+impl<R: Participant + TypedGraphSurface> SetupContextApiExt<R> for SetupContext<R> {
     async fn state_publisher<B: StateContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<StatePublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>,
-    {
+    ) -> crate::Result<StatePublisher<B>> {
         Ok(StatePublisher::new(self.bus().clone(), &topic)?)
     }
 
     async fn measurement_publisher<B: MeasurementContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<MeasurementPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>,
-    {
+    ) -> crate::Result<MeasurementPublisher<B>> {
         Ok(MeasurementPublisher::new(self.bus().clone(), &topic)?)
     }
 
     async fn command_publisher<B: CommandContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<CommandPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>,
-    {
+    ) -> crate::Result<CommandPublisher<B>> {
         Ok(CommandPublisher::new(self.bus().clone(), &topic)?)
     }
 
     async fn diagnostic_publisher<B: DiagnosticContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<DiagnosticPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>,
-    {
+    ) -> crate::Result<DiagnosticPublisher<B>> {
         Ok(DiagnosticPublisher::new(self.bus().clone(), &topic)?)
     }
 
-    async fn latest<B: ContractBody>(&self, topic: Topic<Subscribe<B>>) -> crate::Result<Latest<B>>
-    where
-        R::Api: DeclaresSubscribe<B>,
-    {
-        Ok(Latest::new(self.bus(), &topic).await?)
+    async fn latest<B: ContractBody>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<Latest<B>> {
+        let handle = Latest::new(self.bus(), &topic).await?;
+        let retained = handle.clone();
+        self.register_timeline_retention(move |timeline| {
+            retained.__retain_timeline(timeline);
+        });
+        Ok(handle)
     }
 
     async fn subscriber<B: ContractBody>(
-        &self,
+        &mut self,
         topic: Topic<Subscribe<B>>,
         depth: usize,
-    ) -> crate::Result<Subscriber<B>>
-    where
-        R::Api: DeclaresSubscribe<B>,
-    {
-        Ok(Subscriber::new(self.bus(), &topic, depth).await?)
+    ) -> crate::Result<Subscriber<B>> {
+        let handle = Subscriber::new(self.bus(), &topic, depth).await?;
+        let retained = handle.clone();
+        self.register_timeline_retention(move |timeline| {
+            retained.__retain_timeline(timeline);
+        });
+        Ok(handle)
     }
 
     async fn querier<Req: ContractBody, Resp: ContractBody>(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Querier<Req, Resp>>
-    where
-        R::Api: DeclaresAsk<Req, Resp>,
-    {
+    ) -> crate::Result<Querier<Req, Resp>> {
         Ok(Querier::new(
             self.bus().clone(),
             &topic,
@@ -668,18 +558,34 @@ impl<R: Participant> SetupContextApiExt<R> for SetupContext<R> {
         )?)
     }
 
-    async fn server<Req: ContractBody, Resp: ContractBody>(
-        &self,
-        topic: Topic<AskQuery<Req, Resp>>,
-    ) -> crate::Result<Server<Req, Resp>>
+    async fn query<Req, Resp, H>(
+        &mut self,
+        topic: Topic<ServeQuery<Req, Resp>>,
+        handler: H,
+    ) -> crate::Result<()>
     where
-        R::Api: DeclaresServe<Req, Resp>,
+        Req: ContractBody,
+        Resp: ContractBody,
+        H: for<'a> AsyncFn(
+                &'a R,
+                &'a R::Api,
+                Req,
+                &'a mut R::State,
+            ) -> crate::bus::QueryResult<Resp>
+            + Send
+            + Sync
+            + 'static,
     {
-        // No live bus op: the topic argument only pins `Req`/`Resp` to the
-        // declared query contract at the call site (a wrong pairing fails to
-        // compile here); dispatch itself is runner-side (see `Server`'s docs).
-        let _ = topic;
-        Ok(Server::new())
+        let topic = topic.key().to_string();
+        if self
+            .query_registrations()
+            .iter()
+            .any(|registration| registration.topic() == topic)
+        {
+            anyhow::bail!("duplicate query binding for '{topic}'");
+        }
+        self.register_query(QueryRegistration::new(topic, handler));
+        Ok(())
     }
 
     fn robot(&self) -> crate::Result<&crate::model::v0::Robot> {
@@ -728,7 +634,7 @@ impl<R: Participant + IsDriver> SetupContextDriverExt for SetupContext<R> {
 /// the same way a driver does.
 ///
 /// This is also the only place in the documented authoring surface a
-/// participant can express world time (organization#957): minting this
+/// participant can express world time: minting this
 /// process's [`TimelineAuthority`], and building a publisher for the
 /// framework's own world-clock contract, both require `Self: IsSimulator`,
 /// which is sealed behind a supertrait the role macros emit - so `impl
@@ -765,14 +671,11 @@ pub trait SetupContextSimulatorExt<R: Participant> {
     /// tree). `B: WorldClockContract` - a trait deliberately disjoint from
     /// `StateContract` - is what makes this the ONLY builder that can produce
     /// this handle: [`SetupContextApiExt::state_publisher`] cannot, because
-    /// the world clock does not implement `StateContract`. `R::Api:
-    /// DeclaresPublish<B>` (D44) still applies, unchanged.
+    /// the world clock does not implement `StateContract`.
     async fn world_clock_publisher<B: WorldClockContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<WorldClockPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>;
+    ) -> crate::Result<WorldClockPublisher<B>>;
 }
 
 impl<R: Participant + IsSimulator> SetupContextSimulatorExt<R> for SetupContext<R> {
@@ -791,10 +694,7 @@ impl<R: Participant + IsSimulator> SetupContextSimulatorExt<R> for SetupContext<
     async fn world_clock_publisher<B: WorldClockContract>(
         &self,
         topic: Topic<Publish<B>>,
-    ) -> crate::Result<WorldClockPublisher<B>>
-    where
-        R::Api: DeclaresPublish<B>,
-    {
+    ) -> crate::Result<WorldClockPublisher<B>> {
         Ok(WorldClockPublisher::__mint(self.bus().clone(), &topic)?)
     }
 }
@@ -815,6 +715,9 @@ pub trait SetupContextToolExt {
     /// env or open an unrelated session.
     fn raw_bus(&self) -> Bus;
 
+    /// The resolved robot model, when the tool was launched in a robot root.
+    fn robot(&self) -> crate::Result<&crate::model::v0::Robot>;
+
     /// The supervised run this tool joined.
     fn execution(&self) -> crate::bus::ExecutionId;
 }
@@ -822,6 +725,12 @@ pub trait SetupContextToolExt {
 impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
     fn raw_bus(&self) -> Bus {
         self.bus().clone()
+    }
+
+    fn robot(&self) -> crate::Result<&crate::model::v0::Robot> {
+        self.robot_ref().ok_or_else(|| {
+            anyhow::anyhow!("no robot model is bound (the tool was launched without a robot root)")
+        })
     }
 
     fn execution(&self) -> crate::bus::ExecutionId {

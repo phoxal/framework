@@ -36,7 +36,7 @@ pub enum ArtifactKind {
     Tool,
     Simulator,
     /// Phoxal-owned process infrastructure. It is released like other binary
-    /// artifacts but is not a participant and must not embed API metadata.
+    /// artifacts but is not a participant and must not embed participant metadata.
     Infrastructure,
 }
 
@@ -852,11 +852,13 @@ phoxal = {{ path = {phoxal_path:?} }}
 #[phoxal::tool(id = "elf-meta-probe")]
 struct ElfMetaProbe;
 
-#[phoxal::behavior]
-impl ElfMetaProbe {
-    #[setup]
-    async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-        Ok((Self, ()))
+impl Participant for ElfMetaProbe {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
     }
 }
 

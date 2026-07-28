@@ -28,7 +28,7 @@
 //! `simulation::Clock` - and no reason for a second. This role exists to close
 //! the accidental route to minting world time; it is not an absolute seal, and
 //! `TimelineAuthority`'s docs state the exact strength of the guarantee
-//! (organization#957 leftover).
+//! described by `TimelineAuthority`'s public contract.
 //! A revision may extend exactly one earlier revision. The child is materialized
 //! as a complete concrete tree; inherited definitions are regenerated under the
 //! child's identity, while `replace` and `remove` make deltas explicit. Exactly
@@ -72,8 +72,8 @@
 //! (`v0.1/drive/target`). Two participants interoperate on a contract iff
 //! they use the exact same version-qualified name - enforced by the type system
 //! (the `Api` bound) and realized on the wire by the key, which makes two
-//! differently-versioned contracts physically incapable of colliding. There is
-//! no `SCHEMA_ID`/`FAMILY`. Published concrete revisions are immutable.
+//! differently-versioned contracts physically incapable of colliding.
+//! Published concrete revisions are immutable.
 //!
 //! # Self-contained absolute paths (no depth-counted `super::`)
 //!
@@ -131,8 +131,7 @@
 //! - A concrete revision has an explicit wire identity. A renamed path is an
 //!   explicit replacement in a new child revision; a `rename` attribute would
 //!   hide that contract change rather than simplify it.
-//! - The whole point of D1's move away from `schema_id`/`FAMILY` is that identity
-//!   collapses onto ONE axis - the version-qualified Rust path IS the wire key
+//! - D1 keeps identity on one axis: the version-qualified Rust path is the wire key
 //!   (`v0.1::drive::Target` <-> `v0.1/drive/target`). A `rename` attribute
 //!   would reopen a second axis (Rust name vs. wire name) for exactly the
 //!   contracts where the model guarantees they can never need to diverge.
@@ -931,11 +930,10 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
     quote! {
         /// One generated API version in the contract manifest.
         ///
-        /// `#[cfg(test)]`-only (organization#957): this is the tree's own
+        /// `#[cfg(test)]`-only: this is the tree's own
         /// self-enumeration, which backs `phoxal-api`'s curation tests (every
         /// command topic is deliberately classified, every wire key composes
-        /// as intended) - not a per-participant contract surface, and not
-        /// something the shipped `phoxal-api` rlib carries.
+        /// as intended). It is available only to test builds.
         #[cfg(test)]
         #[doc(hidden)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -946,8 +944,8 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
 
         /// One generated contract in the contract manifest. `family` is the
         /// version-qualified contract identity (D1); `topic` is its
-        /// version-qualified wire key. There is no `schema_id`: the name
-        /// itself is the whole identity (D1). `#[cfg(test)]`-only - see
+        /// version-qualified wire key. The name itself is the whole identity.
+        /// `#[cfg(test)]`-only - see
         /// [`ApiContractManifestVersion`]'s docs.
         #[cfg(test)]
         #[doc(hidden)]
@@ -961,9 +959,8 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
         /// The tree's own enumeration of every contract it declares, used by
         /// `phoxal-api`'s curation tests to assert that each command topic is
         /// deliberately classified and each wire key composes as intended.
-        /// `#[cfg(test)]`-only: the shipped `phoxal-api` rlib carries no
-        /// contract inventory at all (organization#957) - this exists purely
-        /// for the two `#[cfg(test)]` consumers in `phoxal-api/src/tests.rs`.
+        /// `#[cfg(test)]`-only for the two consumers in
+        /// `phoxal-api/src/tests.rs`.
         #[cfg(test)]
         #[doc(hidden)]
         pub const API_CONTRACT_MANIFEST: &[ApiContractManifestVersion] = &[#(#version_entries),*];
@@ -1695,14 +1692,6 @@ mod tests {
             "CONTRACT must be the type path within its version, with no version \
              prefix: {expanded}"
         );
-        assert!(
-            !expanded.contains("SCHEMA_ID"),
-            "there is no schema_id left to emit: {expanded}"
-        );
-        assert!(
-            !expanded.contains("FAMILY"),
-            "ContractBody no longer carries FAMILY (D1): {expanded}"
-        );
     }
 
     #[test]
@@ -1892,8 +1881,7 @@ mod tests {
         assert!(
             expanded.contains("# [cfg (test)] # [doc (hidden)] pub const API_CONTRACT_MANIFEST"),
             "the manifest const (and its two supporting types) must be \
-             #[cfg(test)]-gated: the shipped phoxal-api rlib carries no \
-             contract inventory (organization#957): {expanded}"
+             #[cfg(test)]-gated: {expanded}"
         );
         assert!(
             expanded.contains(
@@ -1928,10 +1916,6 @@ mod tests {
         assert!(
             expanded.contains("topic : \"v0.2/sample/body\""),
             "each version's contracts get their own version-qualified key: {expanded}"
-        );
-        assert!(
-            !expanded.contains("schema_id :"),
-            "there is no schema_id field left in the manifest (D1): {expanded}"
         );
         assert!(
             expanded.contains("pub use v0_2 as latest"),

@@ -5,8 +5,8 @@
 //! Phoxal gives a robot a small, strongly-typed core: a contract bus over
 //! [Zenoh](https://zenoh.io), train-selected concrete API contracts,
 //! and a
-//! participant authoring model where one struct plus a couple of attribute
-//! macros is a complete service, driver, tool, or simulator. The framework owns the
+//! participant authoring model where a role marker plus a direct trait
+//! implementation is a complete service, driver, tool, or simulator. The framework owns the
 //! awkward parts - argument parsing, bus connection, scheduling, query serving,
 //! shutdown, and health - so the code you write is the robot's behavior, not its
 //! plumbing.
@@ -25,51 +25,51 @@
 //! - **One train-selected API facade.** Official participants import
 //!   `phoxal::api`, which names the complete concrete revision selected by the
 //!   locked framework train. Contract identity is realized on the wire by the
-//!   revision-qualified key (D1); there is no `schema_id`.
-//! - **Participants are authored, not wired.** You write a `Config` struct, an
-//!   `Api` handle struct, a state struct, and an `impl`;
-//!   [`#[derive(Config)]`](derive@Config) / [`#[derive(Api)]`](derive@Api) plus
-//!   [`#[phoxal::service|driver|simulator|tool]`](macro@service) and
-//!   [`#[phoxal::behavior]`](macro@behavior) derive the static metadata, and
-//!   [`run`] turns the type into a binary. Use `service` for ordinary robot
+//!   revision-qualified key (D1).
+//! - **Participants are authored, not wired.** A role attribute declares
+//!   identity and associated `Config`/`State`/`Api` types; a direct
+//!   [`Participant`](participant::Participant) implementation owns lifecycle
+//!   behavior, and [`run`] turns the marker into a binary. Use `service` for ordinary robot
 //!   participants, `driver` for a participant launched once per
 //!   `robot.components` entry, `tool` for host-side utilities, and `simulator`
 //!   for simulation-only participants.
 //!
 //! ## Author a participant
 //!
-//! A participant is a `Config` struct, an `Api` struct of typed bus handles, a
-//! state struct, and one annotated inherent `impl`. This is the whole
-//! getting-started surface:
+//! A participant is a unit role marker, optional `Config`/`State`/`Api` types,
+//! and one direct trait implementation:
 //!
 //! ```ignore
 //! use phoxal::api;
 //! use phoxal::prelude::*;
 //!
-//! #[derive(serde::Deserialize, phoxal::Config)]
-//! struct Config {}
-//!
-//! #[derive(phoxal::Api)]
 //! struct Api {
 //!     state:  Latest<api::drive::State>,            // keep-last view of the drive state
 //!     target: CommandPublisher<api::drive::Target>, // commanded drive target
 //! }
 //!
-//! #[phoxal::service(id = "avoid-obstacles")]
+//! #[phoxal::service(id = "avoid-obstacles", api = Api)]
 //! struct AvoidObstacles;
 //!
-//! #[phoxal::behavior]
-//! impl AvoidObstacles {
-//!     #[setup]
-//!     async fn setup(ctx: &mut SetupContext<Self>, _config: Self::Config) -> Result<(Self, Self::Api)> {
-//!         Ok((Self, Self::Api {
+//! impl Participant for AvoidObstacles {
+//!     async fn setup(
+//!         &self,
+//!         ctx: &mut SetupContext<Self>,
+//!         _config: Self::Config,
+//!     ) -> Result<(Self::State, Self::Api)> {
+//!         Ok(((), Api {
 //!             state:  ctx.latest(api::topic::client().drive().state()).await?,
 //!             target: ctx.command_publisher(api::topic::client().drive().target()).await?,
 //!         }))
 //!     }
 //!
-//!     #[step(hz = 50)]
-//!     async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+//!     #[phoxal::step(hz = 50)]
+//!     async fn step(
+//!         &self,
+//!         api: &Self::Api,
+//!         _step: StepContext,
+//!         _state: &mut Self::State,
+//!     ) -> Result<()> {
 //!         api.target.send(api::drive::Target {
 //!             linear_x_mps: 0.2,
 //!             angular_z_radps: 0.0,
@@ -87,20 +87,14 @@
 //! - `use phoxal::api;` brings the versioned API module into scope;
 //!   `Api` struct fields name train-selected bodies (`api::drive::Target`)
 //!   directly, with no participant-local version attribute to keep in sync.
-//! - `#[derive(phoxal::Api)]` derives the bus-facing contract surface from the
-//!   `Api` struct's handle fields (the role-gated publishers,
-//!   [`Latest<T>`](bus::Latest), [`Subscriber<T>`](bus::Subscriber),
-//!   [`Querier<Req, Resp>`](bus::Querier), `Server<Req, Resp>`).
-//! - `#[phoxal::service(id = "…")]` links the participant state struct to its
-//!   `Config`/`Api` types and records its identity.
-//! - All handles are built in `#[setup]` from api-local topic builders
-//!   (`api::topic::client().drive().state()`) and returned as the `Api` value
-//!   alongside the participant state.
-//! - `#[step(hz = ...)]` is the scheduled control loop; the runner owns timing and
-//!   delivers the step token via [`StepContext`](participant::StepContext), and
-//!   `&mut Self::Api` alongside `&mut self`. Query servers use `#[server]` /
-//!   `#[server_snapshot]`, and `#[shutdown]` runs graceful cleanup before the bus
-//!   closes.
+//! - The role attribute records identity and sets associated types. Omitted
+//!   `Config`, `State`, and `Api` default to `()`.
+//! - Handles are ordinary fields built in `Participant::setup` from typed topic
+//!   builders and returned alongside mutable state.
+//! - `#[phoxal::step(hz = ...)]` adds a cadence to the trait's step override.
+//! - `ctx.query(owner_endpoint, Self::handler)` registers typed query handlers;
+//!   the endpoint fixes the handler's request and response types at compile time.
+//! - The runner serializes step, query, reset, and shutdown access to `State`.
 //! - `fn main() -> phoxal::Result<()> { phoxal::run::<R>() }` is the default
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
@@ -115,7 +109,7 @@
 //!   to read the bound component instance.
 //! - [`macro@tool`] is for host-side utilities that inspect the robot model
 //!   through
-//!   [`SetupContextApiExt::robot`](participant::SetupContextApiExt::robot).
+//!   [`SetupContextToolExt::robot`](participant::SetupContextToolExt::robot).
 //!   Privileged raw-bus access lives under [`raw`] so it is never part of the
 //!   default checked participant surface. A tool joins the execution, not the
 //!   clock: it can observe and command, and nothing on its surface hands it a
@@ -155,9 +149,7 @@
 //!   participants authored on exactly this surface, useful as reference reading.
 
 // Generated macro output refers to the framework as `::phoxal::…`; make that path
-// resolve to this crate so the engine's participant derives and
-// `#[phoxal::behavior]` macro work when invoked inside the engine (e.g. the
-// crate's own tests), the
+// resolve to this crate so role/config macros work inside the engine's own tests, the
 // same as in downstream service crates. Only the in-crate test build units expand
 // macros to `::phoxal::…`, so the alias is needed only under `cfg(test)`; gating
 // it there keeps the non-test build free of an unused `extern crate` (no need for
@@ -183,7 +175,7 @@ pub use phoxal_api::latest as api;
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher): both are world-
 /// clock-authority types only a `#[phoxal::simulator]` ever legitimately
 /// names, so keeping them off the surface an ordinary participant browses
-/// closes the accidental route (organization#957) - see
+/// closes the accidental route - see
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority)'s docs for the exact
 /// strength of that claim. Checked participants build IO through
 /// [`participant::SetupContext`] and the api-local topic builders; privileged
@@ -196,7 +188,7 @@ pub mod bus {
         DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
         LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
         Observed, ProducerFence, ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure,
-        Result, RobotInstant, ServeQuery, ServerResult, StateContract, StatePublisher, StepStamp,
+        QueryResult, Result, RobotInstant, ServeQuery, StateContract, StatePublisher, StepStamp,
         StepToken, Subscribe, Subscriber, TimeWindow, TimelineId, TimelineMismatch, Topic,
         TopicKind, TopicRole, WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
         encoding_string,
@@ -318,13 +310,6 @@ pub use anyhow::Result;
 /// SemVer of the single framework train this facade was built from.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The bare `#[phoxal::behavior]` attribute for a participant's inherent impl.
-pub use phoxal_macros::behavior;
-
-/// Derive the bus-facing contract surface from an `Api` handle struct's
-/// fields. See `phoxal::participant::api`.
-pub use phoxal_macros::Api;
-
 /// Derive participant config identity from a `Config` struct (schema
 /// materialization is a later slice - see
 /// `phoxal::participant::api::ParticipantConfig`).
@@ -346,9 +331,10 @@ pub use phoxal_macros::simulator;
 /// defaults to `()` - tools stay raw-bus only).
 pub use phoxal_macros::tool;
 
-/// Run a participant (`#[phoxal::service|driver|simulator|tool]` +
-/// `#[phoxal::behavior]`) to completion on a framework-owned blocking Tokio
-/// runtime.
+/// Attach a cadence to `Participant::step`.
+pub use phoxal_macros::step;
+
+/// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// This is the default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
@@ -367,11 +353,11 @@ pub mod prelude {
     pub use crate::bus::{
         CaptureStamp, CommandPublisher, DiagnosticPublisher, Latest, Lease, LeaseDecision,
         LocalInstant, MeasurementPublisher, Observed, ProducerFence, Querier, QueryError,
-        RobotInstant, ServerResult, StatePublisher, Subscriber, TimeWindow, TimelineId,
+        QueryResult, RobotInstant, StatePublisher, Subscriber, TimeWindow, TimelineId,
     };
     pub use crate::participant::{
-        ManagedTaskPolicy, ResetContext, Server, SetupContext, SetupContextApiExt,
+        ManagedTaskPolicy, Participant, ResetContext, SetupContext, SetupContextApiExt,
         SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt, ShutdownContext,
-        Snapshot, StepContext,
+        StepContext,
     };
 }

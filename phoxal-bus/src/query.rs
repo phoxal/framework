@@ -145,6 +145,6 @@ pub enum QueryError {
     TooManyResponders,
 }
 
-/// What a `#[server]`/`#[server_snapshot]` handler returns (D43f): `Ok(resp)` or a
-/// structured [`QueryFailure`].
-pub type ServerResult<T> = std::result::Result<T, QueryFailure>;
+/// What a participant query handler returns: `Ok(response)` or a structured
+/// [`QueryFailure`].
+pub type QueryResult<T> = std::result::Result<T, QueryFailure>;

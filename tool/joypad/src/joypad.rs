@@ -7,8 +7,8 @@ use phoxal::raw::Subscriber;
 
 const TRIGGER_DEADZONE: f32 = 0.08;
 
-// Plan #15: a tool is a thin raw-bus runner - no `#[step]`. The 50 Hz poll loop
-// this tool needs runs as a managed task registered from `#[setup]`, so the
+// Plan #15: a tool is a thin raw-bus runner - no `Participant::step`. The 50 Hz poll loop
+// this tool needs runs as a managed task registered from `Participant::setup`, so the
 // runner can cancel, join, and fault it if it exits unexpectedly.
 const POLL_HZ: f64 = 50.0;
 const MAX_DEVICE_REGISTRY: usize = 64;
@@ -32,15 +32,19 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 // starts cleanly with `PHOXAL_CONFIG` ABSENT rather than requiring `'{}'`.
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
 // just `ctx.raw_bus()` and the raw handle constructors.
-#[phoxal::tool]
-pub struct ToolJoypad {
+pub struct ToolJoypadState {
     shutdown_publisher: CommandPublisher<api::motion::ManualCommand>,
 }
 
-#[phoxal::behavior]
-impl ToolJoypad {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::tool(state = ToolJoypadState)]
+pub struct ToolJoypad;
+
+impl Participant for ToolJoypad {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let (manual_drive, unavailable_reason) = match ctx
             .robot()
             .map_err(|error| error.to_string())
@@ -86,12 +90,16 @@ impl ToolJoypad {
             )
             .await
         });
-        Ok((Self { shutdown_publisher }, ()))
+        Ok((ToolJoypadState { shutdown_publisher }, ()))
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, _api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
-        publish_stop_repeats(&self.shutdown_publisher, "tool shutdown").await;
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        publish_stop_repeats(&state.shutdown_publisher, "tool shutdown").await;
         Ok(())
     }
 }

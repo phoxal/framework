@@ -56,7 +56,7 @@ pub use liveliness::{
     ParticipantLivelinessStatus, ParticipantLivelinessToken,
 };
 pub use metadata::BusMetadata;
-pub use query::{QueryCode, QueryError, QueryFailure, ServerResult};
+pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
 #[doc(hidden)]
 pub use runtime_metrics::{
     RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,

@@ -9,27 +9,25 @@ use std::time::Duration;
 
 use crate::bus::{RobotInstant, StepToken, TimelineId};
 use crate::model::v0::Robot;
+use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::Bus;
 
-/// The sole IO-construction point, handed to `#[setup]` (D18). Builders live
-/// on [`SetupContextApiExt`](super::api::SetupContextApiExt) (`R: Participant`);
-/// see that trait for the side-brand contract each builder
-/// enforces.
-pub struct SetupContext<R> {
+pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
+
+/// The sole IO-construction point, handed to `Participant::setup`.
+pub struct SetupContext<R: Participant> {
     bus: Bus,
     robot: Option<Arc<Robot>>,
     robot_root: Option<PathBuf>,
     component_instance: Option<String>,
     managed_tasks: ManagedTasks,
+    timeline_retentions: Vec<TimelineRetention>,
+    queries: Vec<QueryRegistration<R>>,
     _runtime: PhantomData<fn() -> R>,
 }
 
-/// Unbounded on `R`: these just store/read raw fields or spawn/track tasks
-/// generically, and [`SetupContextApiExt`](super::api::SetupContextApiExt)
-/// (`participant::api`, a sibling module) calls them from its own `R:
-/// Participant`-bound `impl`.
-impl<R> SetupContext<R> {
+impl<R: Participant> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
         robot: Option<Arc<Robot>>,
@@ -42,6 +40,8 @@ impl<R> SetupContext<R> {
             robot_root,
             component_instance,
             managed_tasks: ManagedTasks::default(),
+            timeline_retentions: Vec::new(),
+            queries: Vec::new(),
             _runtime: PhantomData,
         }
     }
@@ -56,10 +56,10 @@ impl<R> SetupContext<R> {
     /// task, by contrast, is watched for the rest of the participant's
     /// lifetime - if it panics or returns while `FaultOnExit` applies, the
     /// runner treats that as a runtime fault (participant marked `Failed`,
-    /// lose the participant Liveliness token) exactly as it would a `#[step]` bug it
+    /// lose the participant Liveliness token) exactly as it would a `Participant::step` bug it
     /// cannot recover from. At shutdown the runner cancels every managed task
     /// as the shutdown sequence starts and joins it within the same grace
-    /// budget as `#[shutdown]` (see [`ShutdownContext::grace`]), before the bus
+    /// budget as `Participant::shutdown` (see [`ShutdownContext::grace`]), before the bus
     /// closes.
     ///
     /// `name` is a short diagnostic label (e.g. `"serial-reader"`) surfaced in
@@ -91,12 +91,35 @@ impl<R> SetupContext<R> {
         self.managed_tasks.spawn(name, policy, future);
     }
 
-    /// Hand the managed-task registry accumulated during `#[setup]` to the
+    /// Hand the managed-task registry accumulated during `Participant::setup` to the
     /// runner, which then owns watching/cancelling/joining them for the rest of
-    /// the participant's lifetime. Called exactly once, after `#[setup]`
+    /// the participant's lifetime. Called exactly once, after `Participant::setup`
     /// returns.
     pub(crate) fn take_managed_tasks(&mut self) -> ManagedTasks {
         std::mem::take(&mut self.managed_tasks)
+    }
+
+    pub(crate) fn register_timeline_retention(
+        &mut self,
+        retention: impl Fn(TimelineId) + Send + Sync + 'static,
+    ) {
+        self.timeline_retentions.push(Box::new(retention));
+    }
+
+    pub(crate) fn take_timeline_retentions(&mut self) -> Vec<TimelineRetention> {
+        std::mem::take(&mut self.timeline_retentions)
+    }
+
+    pub(crate) fn register_query(&mut self, registration: QueryRegistration<R>) {
+        self.queries.push(registration);
+    }
+
+    pub(crate) fn query_registrations(&self) -> &[QueryRegistration<R>] {
+        &self.queries
+    }
+
+    pub(crate) fn take_query_registrations(&mut self) -> Vec<QueryRegistration<R>> {
+        std::mem::take(&mut self.queries)
     }
 
     /// The underlying bus. Not on the default checked-participant surface (plan #00
@@ -142,7 +165,7 @@ pub struct StepContext {
     missed_ticks: u32,
 }
 
-/// Context for `#[reset]`: the runner observed a different timeline and is
+/// Context for `Participant::reset`: the runner observed a different timeline and is
 /// about to begin releasing steps for that world history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResetContext {
@@ -210,9 +233,9 @@ impl StepContext {
     }
 }
 
-/// Context for `#[shutdown]`: graceful park/stop/flush before bus close (D24/D43i).
+/// Context for `Participant::shutdown`: graceful park/stop/flush before bus close (D24/D43i).
 ///
-/// The runner bounds the whole `#[shutdown]` hook by [`grace`](Self::grace): if the
+/// The runner bounds the whole `Participant::shutdown` hook by [`grace`](Self::grace): if the
 /// hook is still running at the deadline, the runner logs, drops the hook, and
 /// proceeds to bus close anyway so the process never leaks. Treat [`grace`](Self::grace)
 /// as a budget for any internal flush/park deadlines and return before it elapses.

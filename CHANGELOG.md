@@ -38,12 +38,9 @@ All notable changes documented here. The format follows
 
 ### Changed
 
-- **(model) BREAKING:** `robot.yaml` now opens with `schema: v0` (manifest grammar,
-  replacing the old `version: v1` discriminator) and a required root `api_version`
-  (the graph-wide Phoxal contract API, e.g. stable `v1`). `api_version` is selection
-  intent — the model checks it is non-empty; `phoxal-cli check` validates it against
-  each artifact's `emit-apis` (D59/D63). Old `version: v1` manifests no longer parse
-  (pre-1.0, no shim). Scope is `robot.yaml` only — `component.yaml`/`simulation.yaml`
+- **(model) BREAKING:** `robot.yaml` now opens with `schema: v0`, replacing the
+  old `version: v1` discriminator. Old manifests no longer parse (pre-1.0, no
+  shim). Scope is `robot.yaml` only; `component.yaml` and `simulation.yaml`
   keep their own grammar versioning. (#99)
 
 ## [0.11.0](https://github.com/phoxal/framework/releases/tag/v0.11.0) - 2026-06-28
@@ -53,14 +50,12 @@ API contract tree, with the official runtime set rebuilt on top of it.
 
 ### Added
 
-- New `phoxal-macros` proc-macro crate: `phoxal_api_tree!` (dated `api::<version>`
-  contract families, static + dynamic/parameterized topics, `extends` API
-  inheritance), `#[derive(phoxal::Runtime)]`, and `#[phoxal::runtime]`
-  (`#[setup]`/`#[step]`/`#[shutdown]`/`#[server]`/`#[server_snapshot]`/`#[snapshot]`).
+- New `phoxal-macros` proc-macro crate for the dated `phoxal_api_tree!`
+  contract tree and participant authoring.
 - Engine: typed bus (MessagePack codec, `BusMetadata`, non-blocking outbound),
   `Publisher`/`Subscriber`/`Latest`/`Querier`, the runner (`run`/`tokio::run`/
   `run_with`/`run_with_bus`), `SetupContext` (model/bundle/component wiring), the
-  clock + scheduler, and the build-time `emit-apis` document.
+  clock, and scheduler.
 - Two API versions — stable `v1` and preview `v2` (the preview replaces changed
   `drive::Target`, adds `battery` + `safety`).
 - Official runtime crates forming a closed-loop nav stack: `asset`, `drive`,

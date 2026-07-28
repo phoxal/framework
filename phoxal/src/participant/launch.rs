@@ -488,7 +488,7 @@ pub enum ClockMode {
     ///
     /// Tools and the externally driven simulation controller join the
     /// *execution*, not the clock (#952 section B): they are given no execution
-    /// origin, they have no `#[step]` to schedule, and they express no robot
+    /// origin, they have no `Participant::step` to schedule, and they express no robot
     /// time. Selecting `Real` for them would demand an origin their launch
     /// contract deliberately withholds, which is a startup failure rather than
     /// a safety property.

@@ -17,29 +17,32 @@ use tokio::time::timeout;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(phoxal::Api)]
 pub struct Api {
     commands: Subscriber<api::power::Command>,
     state: StatePublisher<api::power::State>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Power {
+pub struct PowerState {
     latched: api::power::State,
     executor: Option<Arc<dyn PowerExecutor>>,
 }
 
-#[phoxal::behavior]
-impl Power {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = PowerState, api = Api)]
+pub struct Power;
+
+impl Participant for Power {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let executor = SystemdExecutor::detect().map(|executor| Arc::new(executor) as _);
         Ok((
-            Self {
+            PowerState {
                 latched: idle_state(None),
                 executor,
             },
-            Self::Api {
+            Api {
                 commands: ctx
                     .subscriber(api::topic::owner().power().command(), 32)
                     .await?,
@@ -50,18 +53,17 @@ impl Power {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        // Host lifecycle state is independent of the simulated world.
-        Ok(())
-    }
-
-    #[step(hz = 1)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 1)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         while let Some(received) = api.commands.try_recv() {
-            self.latched = state_for_command(received.body, self.executor.as_deref()).await;
+            state.latched = state_for_command(received.body, state.executor.as_deref()).await;
         }
-        api.state.publish(step.token(), self.latched.clone())?;
+        api.state.publish(step.token(), state.latched.clone())?;
         Ok(())
     }
 }

@@ -13,10 +13,12 @@ const MAX_DISK_TEXT_BYTES: usize = 128;
 #[phoxal::tool]
 pub struct ToolDevice;
 
-#[phoxal::behavior]
-impl ToolDevice {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+impl Participant for ToolDevice {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let publisher = device_publisher(ctx.raw_bus())?;
         ctx.spawn_managed_with(
             "device-sampler",
@@ -28,7 +30,7 @@ impl ToolDevice {
             execution = %ctx.execution(),
             "device telemetry ready"
         );
-        Ok((Self, ()))
+        Ok(((), ()))
     }
 }
 

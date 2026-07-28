@@ -7,7 +7,6 @@ use phoxal::api;
 use phoxal::behavior::{BehaviorCatalog, BehaviorDefinition, Node, ValueType};
 use phoxal::prelude::*;
 
-#[derive(phoxal::Api)]
 pub struct Api {
     command: Subscriber<api::behavior::Command>,
     request: Subscriber<api::behavior::Request>,
@@ -68,8 +67,7 @@ enum Effect {
     },
 }
 
-#[phoxal::service(config = ())]
-pub struct BehaviorService {
+pub struct BehaviorServiceState {
     catalog: BehaviorCatalog,
     execution: Option<Execution>,
     queued: VecDeque<api::behavior::Request>,
@@ -79,10 +77,15 @@ pub struct BehaviorService {
     next_event: u64,
 }
 
-#[phoxal::behavior]
-impl BehaviorService {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = BehaviorServiceState, api = Api)]
+pub struct BehaviorService;
+
+impl Participant for BehaviorService {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let root = ctx.robot_root()?;
         let behavior_config = ctx.robot()?.manifest.behavior.clone();
         // The topology reserves this participant before the behavior design is
@@ -99,7 +102,7 @@ impl BehaviorService {
             catalog.validate_root(&config.root)?;
         }
         Ok((
-            Self {
+            BehaviorServiceState {
                 catalog,
                 execution: None,
                 queued: VecDeque::new(),
@@ -110,7 +113,7 @@ impl BehaviorService {
                 next_execution: 1,
                 next_event: 1,
             },
-            Self::Api {
+            Api {
                 command: ctx
                     .subscriber(api::topic::owner().behavior().command(), 32)
                     .await?,
@@ -143,45 +146,57 @@ impl BehaviorService {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.execution = None;
-        self.navigation_outcomes.clear();
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.execution = None;
+        state.navigation_outcomes.clear();
         // Queued behavior requests and identity counters are host/operator
         // intent and process identity, not simulated-world projections.
         Ok(())
     }
 
-    #[step(hz = 20)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 20)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         while let Some(received) = api.navigation_result.try_recv() {
-            self.navigation_outcomes
+            state
+                .navigation_outcomes
                 .insert(received.body.request_id.value, received.body.outcome);
         }
         while let Some(received) = api.command.try_recv() {
-            self.handle_command(api, received.body, step).await?;
+            state.handle_command(api, received.body, step).await?;
         }
         while let Some(received) = api.request.try_recv() {
-            self.handle_request(api, received.body, step).await?;
+            state.handle_request(api, received.body, step).await?;
         }
 
         // Keep the terminal snapshot observable while idle, but release it once
         // queued work can advance. The completion event is emitted exactly once.
-        let release_terminal = self.execution.as_ref().is_some_and(|execution| {
+        let release_terminal = state.execution.as_ref().is_some_and(|execution| {
             execution.completion_published
-                && (!self.queued.is_empty()
-                    || self.authoritative_root.as_deref() != Some(execution.root_id.as_str()))
+                && (!state.queued.is_empty()
+                    || state.authoritative_root.as_deref() != Some(execution.root_id.as_str()))
         });
         if release_terminal {
-            self.execution = None;
+            state.execution = None;
         }
 
-        if self.execution.is_none() {
-            if let Some(root) = self.authoritative_root.clone() {
-                self.start_execution(api, root, BTreeMap::new(), step)
+        if state.execution.is_none() {
+            if let Some(root) = state.authoritative_root.clone() {
+                state
+                    .start_execution(api, root, BTreeMap::new(), step)
                     .await?;
-            } else if let Some(request) = self.queued.pop_front() {
-                self.start_execution(api, request.behavior_id, request.args, step)
+            } else if let Some(request) = state.queued.pop_front() {
+                state
+                    .start_execution(api, request.behavior_id, request.args, step)
                     .await?;
             }
         }
@@ -197,41 +212,41 @@ impl BehaviorService {
             safety_clear: api.safety_state.latest().is_some_and(|state| state.clear),
         };
         if world.manual_active
-            && self
+            && state
                 .execution
                 .as_ref()
                 .is_some_and(|execution| execution.active_request.is_some())
         {
-            self.cancel_active_request(api, step).await?;
+            state.cancel_active_request(api, step).await?;
         }
         if !world.manual_active
-            && self.execution.as_ref().is_some_and(|execution| {
-                self.authoritative_root.as_deref() == Some(execution.root_id.as_str())
+            && state.execution.as_ref().is_some_and(|execution| {
+                state.authoritative_root.as_deref() == Some(execution.root_id.as_str())
                     && execution.active_request.is_none()
             })
-            && let Some(request) = self.queued.pop_front()
+            && let Some(request) = state.queued.pop_front()
         {
-            self.accept_request(api, request, step).await?;
+            state.accept_request(api, request, step).await?;
         }
         let mut effects = Vec::new();
         let mut transitions = Vec::new();
-        if let Some(execution) = self.execution.as_mut()
+        if let Some(execution) = state.execution.as_mut()
             && execution.status == api::behavior::ExecutionStatus::Running
         {
             let before = execution.node_statuses.clone();
-            let definition = self
+            let definition = state
                 .catalog
                 .get(&execution.root_id)
                 .expect("execution definition remains in immutable catalog");
             let bindings = execution.args.clone();
             let outcome = tick_node(
-                &self.catalog,
+                &state.catalog,
                 &definition.authored.root,
                 &definition.authored.id,
                 &bindings,
                 execution,
                 &world,
-                &self.navigation_outcomes,
+                &state.navigation_outcomes,
                 step.now().ticks(),
                 &mut effects,
             )?;
@@ -259,18 +274,19 @@ impl BehaviorService {
             }
         }
 
-        self.apply_effects(api, effects, step).await?;
+        state.apply_effects(api, effects, step).await?;
         for (path, status) in transitions {
-            self.publish_event(
-                api,
-                step,
-                api::behavior::EventKind::NodeTransition(status),
-                Some(path),
-                None,
-            )
-            .await?;
+            state
+                .publish_event(
+                    api,
+                    step,
+                    api::behavior::EventKind::NodeTransition(status),
+                    Some(path),
+                    None,
+                )
+                .await?;
         }
-        if self.execution.as_ref().is_some_and(|execution| {
+        if state.execution.as_ref().is_some_and(|execution| {
             matches!(
                 execution.status,
                 api::behavior::ExecutionStatus::Succeeded
@@ -278,26 +294,32 @@ impl BehaviorService {
                     | api::behavior::ExecutionStatus::Cancelled
             ) && !execution.completion_published
         }) {
-            self.publish_event(
-                api,
-                step,
-                api::behavior::EventKind::ExecutionCompleted,
-                None,
-                self.execution
-                    .as_ref()
-                    .and_then(|execution| execution.failure.clone()),
-            )
-            .await?;
-            if let Some(execution) = self.execution.as_mut() {
+            state
+                .publish_event(
+                    api,
+                    step,
+                    api::behavior::EventKind::ExecutionCompleted,
+                    None,
+                    state
+                        .execution
+                        .as_ref()
+                        .and_then(|execution| execution.failure.clone()),
+                )
+                .await?;
+            if let Some(execution) = state.execution.as_mut() {
                 execution.completion_published = true;
             }
         }
-        self.publish_observation(api, step).await
+        state.publish_observation(api, step).await
     }
 
-    #[shutdown]
-    async fn shutdown(&mut self, api: &mut Self::Api, _ctx: ShutdownContext) -> Result<()> {
-        if let Some(execution) = self.execution.as_mut()
+    async fn shutdown(
+        &self,
+        _ctx: ShutdownContext,
+        api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        if let Some(execution) = state.execution.as_mut()
             && matches!(
                 execution.status,
                 api::behavior::ExecutionStatus::Running | api::behavior::ExecutionStatus::Paused
@@ -320,7 +342,7 @@ impl BehaviorService {
     }
 }
 
-impl BehaviorService {
+impl BehaviorServiceState {
     async fn handle_command(
         &mut self,
         api: &Api,
