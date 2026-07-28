@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.42.3...phoxal-api-v0.43.0) - 2026-07-28
+
+### Other
+
+- [**breaking**] simplify participant authoring ([#350](https://github.com/phoxal/framework/pull/350))
+
 ## [0.42.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.41.3...phoxal-api-v0.42.0) - 2026-07-26
 
 ### Other
