@@ -2,7 +2,7 @@
 //!
 //! [`ClockSource`](crate::participant::clock::ClockSource) answers "what time is
 //! it", and every produced instant is read from it. [`StepScheduler`]
-//! answers a different question: "when should the next `#[step]` tick fire".
+//! answers a different question: "when should the next participant step fire".
 //! Real mode answers that from the host monotonic clock, never from a bus
 //! message; a simulation clock instead releases ticks only when the world
 //! authority advances robot time. Without this split, simulated time could
@@ -51,12 +51,12 @@ pub struct SchedulerTick {
     pub missed_ticks: u32,
 }
 
-/// Answers "when should the next `#[step]` tick fire", given the active clock
+/// Answers "when should the next `Participant::step` tick fire", given the active clock
 /// mode. See the module docs for why this is a separate seam from
 /// [`ClockSource`](crate::participant::clock::ClockSource).
 ///
 /// Async methods (no `async_trait`) to match the runner's existing async
-/// style (`ParticipantLifecycle`, D34): the runner awaits `wait_until` directly
+/// style (`Participant`, D34): the runner awaits `wait_until` directly
 /// inside its own `tokio::select!`, so boxing the future would be pure
 /// overhead.
 #[allow(async_fn_in_trait)]
@@ -87,7 +87,7 @@ pub struct RealScheduler {
     missed_tick: MissedTick,
     /// The nominal step period, needed to collapse a multi-period overrun
     /// into a single released tick (see [`Self::wait_until`]). `None` when the
-    /// participant has no `#[step]` schedule at all.
+    /// participant has no `Participant::step` schedule at all.
     period: Option<Duration>,
     timeline: TimelineId,
     /// The boot-clock anchor every released tick is measured against. Sampled
@@ -247,7 +247,7 @@ pub struct SimulationScheduler {
     missed_tick: MissedTick,
     /// The nominal step period, used to count how many whole periods a
     /// logical-time jump spanned (see [`Self::wait_until`]). `None` when the
-    /// participant has no `#[step]` schedule.
+    /// participant has no `Participant::step` schedule.
     period: Option<Duration>,
     /// Keeps the watch channel open even when the runner has not wired an
     /// external `simulation/clock` feed yet. Without this, dropping the
@@ -346,7 +346,7 @@ impl SimulationScheduler {
 
     /// A [`SimulationClock`](crate::participant::clock::SimulationClock) that
     /// observes the same feed this scheduler releases ticks from. The runner
-    /// uses it as the instant source in simulation mode so `#[step]` release
+    /// uses it as the instant source in simulation mode so `Participant::step` release
     /// time and stamped production time never diverge.
     pub(crate) fn simulation_clock(&self) -> crate::participant::clock::SimulationClock {
         crate::participant::clock::SimulationClock::from_receiver(self.rx.clone())
@@ -419,7 +419,7 @@ pub enum AnyStepScheduler {
     Simulation(SimulationScheduler),
     /// No scheduling at all: a participant outside robot time.
     ///
-    /// Tools and the externally driven simulation controller have no `#[step]`
+    /// Tools and the externally driven simulation controller have no `Participant::step`
     /// (the authoring macros reject one) and no robot time to schedule it
     /// against. This releases no tick ever, rather than pretending to run a
     /// cadence nobody drives.

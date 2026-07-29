@@ -23,7 +23,7 @@
 //! untrustworthy clock is, so there is no honest threshold to wait out.
 //!
 //! Instead the clock reports [`ClockReading::Unsynchronized`] and the runner
-//! fails the participant immediately. Teardown runs, so `#[shutdown]` parks the
+//! fails the participant immediately. Teardown runs, so `Participant::shutdown` parks the
 //! hardware; time-sensitive publication stops because the process stops; leases
 //! and actuator permits stop being renewed, so the receiver-side deadlines and
 //! the driver-local watchdogs stop the machine on their own clocks. The reason
@@ -257,7 +257,7 @@ impl ClockSource for RealClock {
 /// It reads the same authoritative instant the
 /// [`SimulationScheduler`](crate::participant::scheduler::SimulationScheduler)
 /// releases ticks from - both share one [`watch`] channel driven by the live
-/// clock feed - so "what time is it" and "when does the next `#[step]` fire"
+/// clock feed - so "what time is it" and "when does the next `Participant::step` fire"
 /// never diverge. Before the first sample arrives there is no world history at
 /// all, which is honestly reported as unsynchronized rather than as instant
 /// zero of some invented timeline.

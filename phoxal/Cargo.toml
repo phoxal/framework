@@ -22,7 +22,6 @@ phoxal-api = { workspace = true }
 phoxal-bus = { workspace = true }
 phoxal-macros = { workspace = true }
 anyhow = { workspace = true }
-arc-swap = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 const_format = { workspace = true }
 derive-new = { workspace = true }
@@ -62,8 +61,8 @@ name = "runtime_query_server"
 path = "examples/runtime_query_server.rs"
 
 [[example]]
-name = "runtime_snapshot_server"
-path = "examples/runtime_snapshot_server.rs"
+name = "runtime_serialized_queries"
+path = "examples/runtime_serialized_queries.rs"
 
 [[example]]
 name = "runtime_async_entrypoint"

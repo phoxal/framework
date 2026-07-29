@@ -22,10 +22,12 @@ const MAX_SNAPSHOT_WIRE_BYTES: usize = 16 * 1_024 * 1_024;
 #[phoxal::tool]
 pub struct ToolLog;
 
-#[phoxal::behavior]
-impl ToolLog {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+impl Participant for ToolLog {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let bus = ctx.raw_bus();
         let history = Arc::new(Mutex::new(LogHistory::new(process_generation()?)));
 
@@ -127,7 +129,7 @@ impl ToolLog {
         );
 
         tracing::info!(target: "tool_log", "structured log retention ready");
-        Ok((Self, ()))
+        Ok(((), ()))
     }
 }
 

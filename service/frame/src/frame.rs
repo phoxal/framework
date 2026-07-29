@@ -1,6 +1,6 @@
 //! `frame` - maintain the robot transform tree and serve frame lookups.
 //!
-//! A scheduled participant with a concurrent snapshot server. It builds the link
+//! A scheduled participant with a serialized query handler. It builds the link
 //! tree from the robot model (D33): fixed joints become static transforms, while
 //! movable joints (revolute, continuous, prismatic) are tracked dynamically.
 //! It subscribes to the per-joint `joint/<id>/state` topic for each movable joint
@@ -8,19 +8,16 @@
 //! transform, buffered in a time-windowed ring buffer per child frame.
 //! Each step it publishes the latest combined tree on `frame/tree`, and emits the
 //! static transforms once on `frame/static_transforms`.
-//! A `#[server_snapshot]` serves `frame/lookup` concurrently against the committed
-//! snapshot, composing the transform between any two known frames through their
+//! The `frame/lookup` handler composes the transform between any two known frames through their
 //! lowest common ancestor; it returns no transform for unknown frames or for
 //! timestamps outside a dynamic frame's buffered window.
 //! Floating, planar, and spherical joints are not supported and fail setup.
-
-use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use anyhow::Result;
 use nalgebra::Isometry3;
 use phoxal::api;
 use phoxal::prelude::*;
+use std::collections::BTreeMap;
 
 use crate::config::{DynamicJoint, FrameConfig, JointMeta};
 use crate::ring_buffer::RingBuffer;
@@ -30,34 +27,29 @@ use crate::transform::{joint_transform, lookup_transform, sorted_transforms};
 const BUFFER_WINDOW: std::time::Duration = std::time::Duration::from_nanos(5_000_000_000);
 const BUFFER_MAX_ENTRIES: usize = 16_384;
 
-#[derive(Clone)]
-pub struct FrameSnapshot {
-    pub(crate) statics: Arc<BTreeMap<String, api::frame::FrameTransform>>,
-    pub(crate) parent_by_child: Arc<BTreeMap<String, (String, JointMeta)>>,
-    pub(crate) dynamics: Arc<BTreeMap<String, Arc<RingBuffer<Isometry3<f64>>>>>,
-}
-
-#[derive(phoxal::Api)]
 pub struct Api {
     joints: Vec<Subscriber<api::joint::JointState>>,
     tree: StatePublisher<api::frame::Tree>,
     static_pub: StatePublisher<api::frame::StaticTransforms>,
-    lookup: Server<api::frame::LookupRequest, api::frame::LookupResponse>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Frame {
-    static_transforms: Arc<BTreeMap<String, api::frame::FrameTransform>>,
-    parent_by_child: Arc<BTreeMap<String, (String, JointMeta)>>,
+pub struct FrameState {
+    pub(crate) static_transforms: BTreeMap<String, api::frame::FrameTransform>,
+    pub(crate) parent_by_child: BTreeMap<String, (String, JointMeta)>,
     dynamic_joints: Vec<DynamicJoint>,
-    buffers: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
+    pub(crate) buffers: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
     published_static: bool,
 }
 
-#[phoxal::behavior]
-impl Frame {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = FrameState, api = Api)]
+pub struct Frame;
+
+impl Participant for Frame {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let config = FrameConfig::from_robot(ctx.robot()?)?;
 
         let mut joints = Vec::with_capacity(config.dynamic_joints.len());
@@ -82,106 +74,100 @@ impl Frame {
         let static_pub = ctx
             .state_publisher(api::topic::owner().frame().static_transforms())
             .await?;
-        let lookup = ctx.server(api::topic::client().frame().lookup()).await?;
+        ctx.query(api::topic::owner().frame().lookup(), Self::lookup)
+            .await?;
 
         Ok((
-            Self {
-                static_transforms: Arc::new(config.static_transforms),
-                parent_by_child: Arc::new(config.parent_by_child),
+            FrameState {
+                static_transforms: config.static_transforms,
+                parent_by_child: config.parent_by_child,
                 dynamic_joints: config.dynamic_joints,
                 buffers,
                 published_static: false,
             },
-            Self::Api {
+            Api {
                 joints,
                 tree,
                 static_pub,
-                lookup,
             },
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        for buffer in self.buffers.values_mut() {
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        for buffer in state.buffers.values_mut() {
             buffer.clear();
         }
         // Static transforms are immutable configuration and remain valid, but
         // republish them for the replacement execution.
-        self.published_static = false;
+        state.published_static = false;
         Ok(())
     }
 
-    #[step(hz = 50)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        for (subscriber, dynamic) in api.joints.iter_mut().zip(&self.dynamic_joints) {
+    #[phoxal::step(hz = 50)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        for (subscriber, dynamic) in api.joints.iter().zip(&state.dynamic_joints) {
             while let Some(observed) = subscriber.try_recv() {
                 let Some(at) = observed.metadata.produced_exactly_at() else {
                     continue;
                 };
-                let Some((_, meta)) = self.parent_by_child.get(&dynamic.child_frame_id) else {
+                let Some((_, meta)) = state.parent_by_child.get(&dynamic.child_frame_id) else {
                     continue;
                 };
                 let Some(transform) = joint_transform(meta, &observed.body) else {
                     continue;
                 };
-                self.buffers
+                state
+                    .buffers
                     .entry(dynamic.child_frame_id.clone())
                     .or_insert_with(|| RingBuffer::new(BUFFER_WINDOW, BUFFER_MAX_ENTRIES))
                     .push(at, transform);
             }
         }
 
-        if !self.published_static {
+        if !state.published_static {
             api.static_pub.publish(
                 step.token(),
                 api::frame::StaticTransforms {
-                    transforms: sorted_transforms(self.static_transforms.values().cloned()),
+                    transforms: sorted_transforms(state.static_transforms.values().cloned()),
                 },
             )?;
-            self.published_static = true;
+            state.published_static = true;
         }
 
         api.tree.publish(
             step.token(),
             api::frame::Tree {
-                transforms: self.tree_transforms(),
+                transforms: state.tree_transforms(),
             },
         )?;
         Ok(())
     }
-
-    // Concurrent read against the committed snapshot: does not block the step
-    // loop. Reads only committed `Snapshot` state, never touches a `Subscriber`
-    // (the `joints` field is drained exclusively in `#[step]` above).
-    #[server_snapshot(api = lookup)]
-    async fn lookup(
-        state: Snapshot<FrameSnapshot>,
-        api: &Self::Api,
-        request: api::frame::LookupRequest,
-    ) -> ServerResult<api::frame::LookupResponse> {
-        let _ = api;
-        Ok(api::frame::LookupResponse {
-            transform: lookup_transform(&state, &request),
-        })
-    }
-
-    #[snapshot]
-    fn snapshot(&self) -> FrameSnapshot {
-        FrameSnapshot {
-            statics: Arc::clone(&self.static_transforms),
-            parent_by_child: Arc::clone(&self.parent_by_child),
-            dynamics: Arc::new(
-                self.buffers
-                    .iter()
-                    .map(|(frame_id, buffer)| (frame_id.clone(), Arc::new(buffer.clone())))
-                    .collect(),
-            ),
-        }
-    }
 }
 
 impl Frame {
+    async fn lookup(
+        &self,
+        _api: &Api,
+        request: api::frame::LookupRequest,
+        state: &mut FrameState,
+    ) -> QueryResult<api::frame::LookupResponse> {
+        Ok(api::frame::LookupResponse {
+            transform: lookup_transform(state, &request),
+        })
+    }
+}
+
+impl FrameState {
     fn tree_transforms(&self) -> Vec<api::frame::FrameTransform> {
         let static_transforms = self.static_transforms.values().cloned();
         let dynamic_transforms = self.buffers.iter().filter_map(|(child_frame_id, buffer)| {
@@ -200,12 +186,10 @@ impl Frame {
 
 #[cfg(test)]
 mod tests {
-    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
-    use std::sync::Arc;
-
     use nalgebra::{Quaternion, UnitQuaternion};
     use phoxal::api;
     use phoxal::model::structure::Structure;
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
     use super::*;
 
@@ -236,10 +220,10 @@ mod tests {
             </robot>
             "#,
         )?)?;
-        let snapshot = snapshot_from_config(&config, BTreeMap::new());
+        let state = state_from_config(&config, BTreeMap::new());
 
         let transform = lookup_transform(
-            &snapshot,
+            &state,
             &api::frame::LookupRequest {
                 target_frame_id: "base_link".to_string(),
                 source_frame_id: "arm_link".to_string(),
@@ -268,9 +252,9 @@ mod tests {
             joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
         );
 
-        let snapshot = snapshot_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
         let transform = lookup_transform(
-            &snapshot,
+            &state,
             &api::frame::LookupRequest {
                 target_frame_id: "base_link".to_string(),
                 source_frame_id: wheel,
@@ -294,11 +278,11 @@ mod tests {
             at(100),
             joint_transform(meta, &joint_state(0.0)).expect("joint transform"),
         );
-        let snapshot = snapshot_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
 
         assert!(
             lookup_transform(
-                &snapshot,
+                &state,
                 &api::frame::LookupRequest {
                     target_frame_id: "base_link".to_string(),
                     source_frame_id: "missing".to_string(),
@@ -309,7 +293,7 @@ mod tests {
         );
         assert!(
             lookup_transform(
-                &snapshot,
+                &state,
                 &api::frame::LookupRequest {
                     target_frame_id: "base_link".to_string(),
                     source_frame_id: wheel,
@@ -337,10 +321,10 @@ mod tests {
             at(200),
             joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
         );
-        let snapshot = snapshot_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
 
         let transform = lookup_transform(
-            &snapshot,
+            &state,
             &api::frame::LookupRequest {
                 target_frame_id: "base_link".to_string(),
                 source_frame_id: wheel,
@@ -368,10 +352,10 @@ mod tests {
             at(200),
             joint_transform(meta, &joint_state(FRAC_PI_2)).expect("joint transform"),
         );
-        let snapshot = snapshot_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
+        let state = state_from_config(&config, BTreeMap::from([(wheel.clone(), buffer)]));
 
         let transform = lookup_transform(
-            &snapshot,
+            &state,
             &api::frame::LookupRequest {
                 target_frame_id: "base_link".to_string(),
                 source_frame_id: wheel,
@@ -422,19 +406,16 @@ mod tests {
         assert_eq!(buffer.nearest(at(10)), Some((at(10), 2)));
     }
 
-    fn snapshot_from_config(
+    fn state_from_config(
         config: &FrameConfig,
         dynamics: BTreeMap<String, RingBuffer<Isometry3<f64>>>,
-    ) -> FrameSnapshot {
-        FrameSnapshot {
-            statics: Arc::new(config.static_transforms.clone()),
-            parent_by_child: Arc::new(config.parent_by_child.clone()),
-            dynamics: Arc::new(
-                dynamics
-                    .into_iter()
-                    .map(|(frame_id, buffer)| (frame_id, Arc::new(buffer)))
-                    .collect(),
-            ),
+    ) -> FrameState {
+        FrameState {
+            static_transforms: config.static_transforms.clone(),
+            parent_by_child: config.parent_by_child.clone(),
+            dynamic_joints: config.dynamic_joints.clone(),
+            buffers: dynamics,
+            published_static: false,
         }
     }
 

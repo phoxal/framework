@@ -1,0 +1,8 @@
+error: #[phoxal::service] requires a unit marker struct; declare mutable data with `state = Type`
+ --> tests/trybuild/fail/role_requires_unit_marker.rs:2:17
+  |
+2 |   struct Stateful {
+  |  _________________^
+3 | |     value: u64,
+4 | | }
+  | |_^

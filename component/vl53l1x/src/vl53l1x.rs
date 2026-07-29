@@ -7,13 +7,11 @@ use phoxal::prelude::*;
 
 const STEP_HZ: f64 = 20.0;
 
-#[derive(phoxal::Api)]
 pub struct Api {
     range: Vec<MeasurementPublisher<api::component::range::Sample>>,
 }
 
-#[phoxal::driver(config = ())]
-pub struct Vl53l1x {
+pub struct Vl53l1xState {
     range_specs: Vec<RangeSpec>,
 }
 
@@ -30,10 +28,15 @@ struct RangeSpec {
     max_range_m: f32,
 }
 
-#[phoxal::behavior]
-impl Vl53l1x {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::driver(state = Vl53l1xState, api = Api)]
+pub struct Vl53l1x;
+
+impl Participant for Vl53l1x {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let instance = ctx.component()?.to_string();
         let slots = {
             let robot = ctx.robot()?;
@@ -76,25 +79,25 @@ impl Vl53l1x {
             range_specs.push(slot.spec);
         }
 
-        Ok((Self { range_specs }, Self::Api { range }))
+        Ok((Vl53l1xState { range_specs }, Api { range }))
     }
 
-    #[step(hz = 20)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 20)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let at = step.now();
         let step_index = step.step_index();
 
-        for (publisher, spec) in api.range.iter().zip(&self.range_specs) {
+        for (publisher, spec) in api.range.iter().zip(&state.range_specs) {
             if is_due(step_index, spec.divisor) {
                 publisher.publish(CaptureStamp::exact(at), range_sample(spec))?;
             }
         }
 
-        Ok(())
-    }
-
-    #[shutdown]
-    async fn shutdown(&mut self, _ctx: ShutdownContext) -> Result<()> {
         Ok(())
     }
 }

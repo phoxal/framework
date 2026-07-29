@@ -1,5 +1,5 @@
 //! Server-side query handling: a thin wrapper over a Zenoh queryable that the
-//! runner uses to drive `#[server]`/`#[server_snapshot]` handlers (D16/D31).
+//! runner uses to drive typed participant query handlers (D16/D31).
 //!
 //! This is the responder side of the request/response leg whose caller is
 //! [`Querier`](crate::Querier). [`Bus::declare_server`] declares a

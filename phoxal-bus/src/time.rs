@@ -226,7 +226,7 @@ impl fmt::Display for RobotInstant {
 
 /// A bounded estimate of a [`RobotInstant`], with possibly asymmetric bounds.
 ///
-/// Every production instant on the wire is a window: a `#[step]` publish is a
+/// Every production instant on the wire is a window: a `Participant::step` publish is a
 /// window whose bounds coincide, while a measurement translated from a device
 /// clock is honestly wider. Consumers never hand-pick a bound - they ask the
 /// named predicates below, each of which answers conservatively for the

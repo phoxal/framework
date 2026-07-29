@@ -98,7 +98,6 @@ impl EmergencyStopLatch {
     }
 }
 
-#[derive(phoxal::Api)]
 pub struct Api {
     manual: Subscriber<api::motion::ManualCommand>,
     autonomous: Subscriber<api::navigation::Candidate>,
@@ -108,8 +107,7 @@ pub struct Api {
     state: StatePublisher<api::motion::State>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Motion {
+pub struct MotionState {
     limits: MotionLimits,
     manual: Lease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
@@ -118,10 +116,15 @@ pub struct Motion {
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
 }
 
-#[phoxal::behavior]
-impl Motion {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = MotionState, api = Api)]
+pub struct Motion;
+
+impl Participant for Motion {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
         let limits = robot.manifest.robot.motion_limits.validate()?;
         let estop_bindings = emergency_stop_bindings(robot);
@@ -141,7 +144,7 @@ impl Motion {
         }
 
         Ok((
-            Self {
+            MotionState {
                 limits,
                 manual: Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
@@ -149,7 +152,7 @@ impl Motion {
                 estop: EmergencyStopLatch::new(estop_bindings.len()),
                 last_safety_constraints: None,
             },
-            Self::Api {
+            Api {
                 manual: ctx
                     .subscriber(api::topic::owner().motion().manual(), 32)
                     .await?,
@@ -170,11 +173,15 @@ impl Motion {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.last_autonomous = None;
-        self.last_safety_constraints = None;
-        self.estop.reset_timeline();
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.last_autonomous = None;
+        state.last_safety_constraints = None;
+        state.estop.reset_timeline();
         // The manual command is a clockless operator input sampled at a logical
         // step, not state derived from the replaced world, so the lease is not
         // cleared here and keeps ageing on the host clock across the boundary.
@@ -187,8 +194,13 @@ impl Motion {
         Ok(())
     }
 
-    #[step(hz = 20)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 20)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let now = step.now();
         // Without the host clock there is no silence deadline to measure, so
         // this step decides nothing: it renews no lease and applies no
@@ -200,7 +212,7 @@ impl Motion {
 
         while let Some(observed) = api.manual.try_recv() {
             let observed_at = observed.observed_at;
-            match self.manual.offer(
+            match state.manual.offer(
                 observed.metadata.producer,
                 observed.metadata.sequence,
                 observed_at,
@@ -213,12 +225,12 @@ impl Motion {
                         "rejected manual command"
                     );
                 }
-                _ => self.manual_observed_at = Some(observed_at),
+                _ => state.manual_observed_at = Some(observed_at),
             }
         }
         while let Some(observed) = api.autonomous.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                self.last_autonomous = Some(Timed {
+                state.last_autonomous = Some(Timed {
                     body: observed.body,
                     at,
                 });
@@ -227,20 +239,20 @@ impl Motion {
         for (index, subscriber) in api.component_estops.iter().enumerate() {
             while let Some(observed) = subscriber.try_recv() {
                 if let Some(at) = observed.metadata.produced_exactly_at() {
-                    self.estop.set_component(index, observed.body.engaged, at);
+                    state.estop.set_component(index, observed.body.engaged, at);
                 }
             }
         }
         while let Some(observed) = api.safety_constraints.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                self.last_safety_constraints = Some(Timed {
+                state.last_safety_constraints = Some(Timed {
                     body: observed.body,
                     at,
                 });
             }
         }
 
-        let safety_runtime = if self
+        let safety_runtime = if state
             .last_safety_constraints
             .as_ref()
             .is_some_and(|constraints| safety_is_usable(constraints, now))
@@ -249,36 +261,36 @@ impl Motion {
         } else {
             api::motion::SafetyRuntime::Absent
         };
-        let manual = self.manual.live(host_now, now).cloned();
+        let manual = state.manual.live(host_now, now).cloned();
         if manual.is_none() {
-            self.manual_observed_at = None;
+            state.manual_observed_at = None;
         }
         let arbitration = arbitrate(
             manual.as_ref(),
-            self.last_autonomous.as_ref(),
-            self.estop.engaged(now),
-            self.last_safety_constraints.as_ref(),
-            self.limits,
+            state.last_autonomous.as_ref(),
+            state.estop.engaged(now),
+            state.last_safety_constraints.as_ref(),
+            state.limits,
             now,
         );
-        self.estop.finish_cycle();
+        state.estop.finish_cycle();
 
         api.drive.send(arbitration.selected.clone())?;
         api.state.publish(
             step.token(),
             api::motion::State {
-                manual_observed_age_ns: manual_observed_age_ns(self.manual_observed_at, host_now),
-                autonomous_candidate_age_ns: candidate_age_ns(self.last_autonomous.as_ref(), now),
+                manual_observed_age_ns: manual_observed_age_ns(state.manual_observed_at, host_now),
+                autonomous_candidate_age_ns: candidate_age_ns(state.last_autonomous.as_ref(), now),
                 safety_constraints_age_ns: candidate_age_ns(
-                    self.last_safety_constraints.as_ref(),
+                    state.last_safety_constraints.as_ref(),
                     now,
                 ),
                 selected_source: arbitration.source,
                 final_target: state_target(&arbitration.selected),
                 zero_reason: arbitration.zero_reason,
                 safety_runtime,
-                component_estop_blocked: self.estop.components_blocked(now),
-                active_safety_constraints: self.last_safety_constraints.as_ref().map_or_else(
+                component_estop_blocked: state.estop.components_blocked(now),
+                active_safety_constraints: state.last_safety_constraints.as_ref().map_or_else(
                     Vec::new,
                     |constraints| {
                         if safety_is_usable(constraints, now) {

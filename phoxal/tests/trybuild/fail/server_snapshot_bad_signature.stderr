@@ -1,5 +1,0 @@
-error: #[server_snapshot] is an associated function: it takes `state: Snapshot<…>`, optional `api: &Self::Api`, and `request`, not `self` (concurrent, read-only - D16/D3)
-  --> tests/trybuild/fail/server_snapshot_bad_signature.rs:30:5
-   |
-30 |     async fn submap(
-   |     ^^^^^

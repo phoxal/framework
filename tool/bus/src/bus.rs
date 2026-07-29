@@ -106,14 +106,16 @@ fn is_version_topic(key: &str) -> bool {
 #[phoxal::tool]
 pub struct ToolBus;
 
-#[phoxal::behavior]
-impl ToolBus {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+impl Participant for ToolBus {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let bus = ctx.raw_bus();
         spawn_metrics(ctx, bus).await?;
         tracing::info!(target: "tool_bus", "bus observation ready");
-        Ok((Self, ()))
+        Ok(((), ()))
     }
 }
 

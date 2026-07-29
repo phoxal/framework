@@ -1,8 +1,9 @@
 //! Static metadata markers the macros target (D50/D59/D60).
 //!
 //! - [`TypedGraphSurface`] is emitted by `#[phoxal::service|driver|simulator]`
-//!   and gates `#[step]` / `#[reset]` / `#[server]` / `#[server_snapshot]` away from thin
-//!   `#[phoxal::tool]` runners.
+//!   and gates the typed graph handle builders away from thin tool runners.
+//! - [`SchedulableSurface`] is emitted by `#[phoxal::service|driver]` and gates
+//!   scheduled steps away from clockless tools and simulators.
 //! - [`IsDriver`]/[`IsSimulator`]/[`IsTool`] are emitted by the matching
 //!   attribute macro and gate the kind-specific `SetupContext` accessors
 //!   (`component()`, `raw_bus()`, and - for [`IsSimulator`] - world-clock
@@ -13,12 +14,11 @@
 //! - [`StepSchedule`]/[`MissedTick`] describe a `#[step(hz = …)]` loop's cadence
 //!   and overrun policy; the runner ([`participant::runner`](super::runner))
 //!   reads them from
-//!   [`ParticipantLifecycle::__step_schedule`](super::api::ParticipantLifecycle::__step_schedule).
+//!   [`Participant::__step_schedule`](super::api::Participant::__step_schedule).
 
 use std::time::Duration;
 
-/// The sealing boundary for [`IsDriver`]/[`IsSimulator`]/[`IsTool`]
-/// (organization#957).
+/// The sealing boundary for [`IsDriver`]/[`IsSimulator`]/[`IsTool`].
 ///
 /// This module is `pub` - not truly private - because the marker impls it
 /// gates are written by `#[phoxal::driver|simulator|tool]`'s macro expansion,
@@ -37,13 +37,21 @@ pub mod sealing {
     pub trait Sealed {}
 }
 
-/// Marker emitted only by checked participant macros that expose the typed graph
-/// surface (`#[step]` / `#[reset]` / `#[server]` / `#[server_snapshot]`).
+/// Marker emitted only by participant roles that expose typed graph handles.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is a tool, which is a thin raw-bus runner and has no typed-graph surface",
-    label = "`#[step]` / `#[reset]` / `#[server]` is not allowed here; use the raw bus (`phoxal::raw`) instead"
+    label = "typed graph handles are not available here; use the raw bus (`phoxal::raw`) instead"
 )]
 pub trait TypedGraphSurface {}
+
+/// Marker emitted only by participant roles whose launch policy carries a
+/// schedulable robot clock.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has a clockless launch policy and cannot own a scheduled step",
+    label = "scheduled steps are available only on services and drivers"
+)]
+pub trait SchedulableSurface {}
 
 /// Marker emitted only by `#[phoxal::driver]`. Sealed - see [`sealing`].
 #[doc(hidden)]
@@ -108,30 +116,29 @@ mod tests {
         assert_eq!(StepSchedule::hz(f64::MAX).period(), Duration::from_nanos(1));
     }
 
-    #[phoxal::simulator(id = "marker-simulator", config = (), api = ())]
+    #[phoxal::simulator(id = "marker-simulator")]
     struct MarkerSimulator;
 
-    #[phoxal::behavior]
-    impl MarkerSimulator {
-        #[setup]
-        async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-            Ok((Self, ()))
-        }
-
-        #[step(hz = 20)]
-        async fn step(&mut self, _api: &mut Self::Api, _step: StepContext) -> Result<()> {
-            Ok(())
+    impl Participant for MarkerSimulator {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
         }
     }
 
     #[phoxal::tool(id = "marker-tool")]
     struct MarkerTool;
 
-    #[phoxal::behavior]
-    impl MarkerTool {
-        #[setup]
-        async fn setup(_ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
-            Ok((Self, ()))
+    impl Participant for MarkerTool {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
         }
     }
 

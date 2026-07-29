@@ -1,19 +1,13 @@
 //! `map` - localization-trace occupancy-grid placeholder.
 //!
-//! A scheduled participant with a concurrent snapshot server. It subscribes to
+//! A scheduled participant with a serialized query handler. It subscribes to
 //! `localize/state`, publishes `map/revision` (the current revision and grid
-//! resolution), and serves `map/submap` from a committed grid snapshot.
-//! It uses the concurrent snapshot-server pattern: `#[step]` updates the
-//! copy-on-write grid, the runner commits `#[snapshot]` state, and
-//! `#[server_snapshot]` serves `map/submap` concurrently from that snapshot
-//! without blocking the step loop.
+//! resolution), and serves `map/submap` from the same state the step mutates.
 //! Each step it marks the cell under the latest localization pose as free,
 //! bumping the revision only when a cell actually changes.
 //! This is a placeholder: it does not integrate range/depth/lidar observations
 //! yet, the grid is a fixed 64x64 window, and `map/submap` ignores the request
 //! bounds and always returns the whole grid.
-
-use std::sync::Arc;
 
 use anyhow::Result;
 use phoxal::api;
@@ -22,16 +16,13 @@ use phoxal::prelude::*;
 
 const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
-#[derive(phoxal::Api)]
 pub struct Api {
     localize: Subscriber<api::localize::LocalizationState>,
     revision: StatePublisher<api::map::Revision>,
-    submap: Server<api::map::SubmapRequest, api::map::SubmapResponse>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Map {
-    grid: Arc<Grid>,
+pub struct MapState {
+    grid: Grid,
     rev: u64,
     has_localization: bool,
     last_localization: Option<(api::localize::LocalizationState, RobotInstant)>,
@@ -65,106 +56,102 @@ impl Grid {
     }
 }
 
-// The committed snapshot type: cheap to clone (an `Arc` over the grid).
-pub struct MapState {
-    grid: Arc<Grid>,
-    ready: bool,
-}
+#[phoxal::service(state = MapState, api = Api)]
+pub struct Map;
 
-#[phoxal::behavior]
-impl Map {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+impl Participant for Map {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        ctx.query(api::topic::owner().map().submap(), Self::submap)
+            .await?;
         Ok((
-            Self {
-                grid: Arc::new(Grid::empty(64, 64, 0.05)),
+            MapState {
+                grid: Grid::empty(64, 64, 0.05),
                 rev: 0,
                 has_localization: false,
                 last_localization: None,
             },
-            Self::Api {
+            Api {
                 localize: ctx
                     .subscriber(api::topic::client().localize().state(), 32)
                     .await?,
                 // Map OWNS the `map` node (its revision telemetry and the
-                // `map/submap` query it serves below) -> owner
-                // builder; `localize/state` is CONSUMED via the public builder.
+                // `map/submap` query it serves below) -> owner builder;
+                // `localize/state` is consumed via the client builder.
                 revision: ctx
                     .state_publisher(api::topic::owner().map().revision())
                     .await?,
-                submap: ctx.server(api::topic::client().map().submap()).await?,
             },
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
         let (width, height, resolution_m) =
-            (self.grid.width, self.grid.height, self.grid.resolution_m);
-        self.grid = Arc::new(Grid::empty(width, height, resolution_m));
-        self.rev = 0;
-        self.has_localization = false;
-        self.last_localization = None;
+            (state.grid.width, state.grid.height, state.grid.resolution_m);
+        state.grid = Grid::empty(width, height, resolution_m);
+        state.rev = 0;
+        state.has_localization = false;
+        state.last_localization = None;
         Ok(())
     }
 
-    #[step(hz = 5)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
+    #[phoxal::step(hz = 5)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
         while let Some(observed) = api.localize.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                self.last_localization = Some((observed.body, at));
+                state.last_localization = Some((observed.body, at));
             }
         }
 
-        if !localization_is_usable(self.last_localization.as_ref(), step.now())? {
-            self.has_localization = false;
+        if !localization_is_usable(state.last_localization.as_ref(), step.now())? {
+            state.has_localization = false;
             return Ok(());
         }
 
-        if let Some((loc, _)) = &self.last_localization {
-            self.has_localization = true;
-            // Copy-on-write before mutating, so committed snapshots stay stable.
-            let grid = Arc::make_mut(&mut self.grid);
-            if mark_free(grid, loc.x_m, loc.y_m) {
-                self.rev += 1;
+        if let Some((loc, _)) = &state.last_localization {
+            state.has_localization = true;
+            if mark_free(&mut state.grid, loc.x_m, loc.y_m) {
+                state.rev += 1;
             }
         }
 
         api.revision.publish(
             step.token(),
             api::map::Revision {
-                revision: self.rev,
-                resolution_m: self.grid.resolution_m,
+                revision: state.rev,
+                resolution_m: state.grid.resolution_m,
             },
         )?;
         Ok(())
     }
+}
 
-    // Concurrent read against the committed snapshot: does not block the step loop.
-    // Reads only committed `Snapshot` state, never touches a `Subscriber` (the
-    // `localize` field is a non-destructive `Latest`, safe even if read, but this
-    // handler does not need it either).
-    #[server_snapshot(api = submap)]
+impl Map {
     async fn submap(
-        state: Snapshot<MapState>,
-        api: &Self::Api,
+        &self,
+        _api: &Api,
         request: api::map::SubmapRequest,
-    ) -> ServerResult<api::map::SubmapResponse> {
-        let _ = api;
-        if !state.ready {
+        state: &mut MapState,
+    ) -> QueryResult<api::map::SubmapResponse> {
+        if !state.has_localization {
             return Err(QueryFailure::unavailable(
                 "map has no localization-backed revision yet",
             ));
         }
         Ok(state.grid.submap(&request))
-    }
-
-    #[snapshot]
-    fn snapshot(&self) -> MapState {
-        MapState {
-            grid: Arc::clone(&self.grid),
-            ready: self.has_localization,
-        }
     }
 }
 

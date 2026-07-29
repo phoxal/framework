@@ -30,20 +30,17 @@
 //!
 //! # Train-selected revision and per-contract identity
 //!
-//! A participant declares its bus surface with a companion
-//! `#[derive(phoxal::Api)]` handle struct.
-//! Official handle fields name types through the complete train-selected facade.
-//! The derive does not declare a participant-wide API version, or record any
-//! per-field contract identity in the participant's embedded metadata: the
-//! embedded static carries only `{id, config_schema}`, never a contract
-//! inventory (organization#957).
+//! A participant creates typed bus handles during
+//! [`Participant::setup`](phoxal::Participant::setup). Official participants
+//! name contract types through the complete train-selected facade. Embedded
+//! participant metadata carries `{id, config_schema}`.
 //! Across the graph, compatibility is **name identity** (D1) - two participants
 //! interoperate on a contract iff they use the exact same version-qualified name
 //! (`v0.1::drive::Target`), which is real on the wire because the revision
-//! is folded into the key ([`ContractBody::TOPIC`]). There is no `schema_id`:
-//! from 1.0 onward a stable contract type is immutable, so the name alone is
-//! the whole identity. Before 1.0, that identity is train-scoped and an
-//! in-place edit requires the whole robot graph to upgrade together.
+//! is folded into the key ([`ContractBody::TOPIC`]). From 1.0 onward a stable
+//! contract type is immutable, so the name is the whole identity. Before 1.0,
+//! that identity is train-scoped and an in-place edit requires the whole robot
+//! graph to upgrade together.
 //!
 //! # Plain serde wire bodies, provenance in metadata
 //!
@@ -64,8 +61,7 @@
 //! `v0.1/component/{instance}/motor/{capability}/command`. A fully static path
 //! has a literal key (`v0.1/drive/state`). Folding the revision into the key
 //! (D1) is what makes two differently-versioned contracts physically distinct
-//! Zenoh keys - they cannot collide, so there is no `SCHEMA_ID`/`FAMILY` needed to
-//! disambiguate them.
+//! Zenoh keys, so they cannot collide.
 //!
 //! # The api-local topic builder
 //!
@@ -108,9 +104,9 @@ use phoxal_macros::phoxal_api_tree;
 ///   bound to exactly one [`ApiVersion`] and one contract topic. Every body
 ///   declared inside a [`phoxal_api_tree!`] node gets a generated impl; handles,
 ///   `SetupContext` builders, and the `Service`/`Driver` derive assertions key
-///   off its `Api`/`TOPIC`. `TOPIC` is version-qualified (D1) and *is* the
-///   compatibility key - there is no `SCHEMA_ID`/`FAMILY`; its serde encoding
-///   *is* the wire payload, with no version envelope (D62).
+///   off its `Api`/`TOPIC`. `TOPIC` is version-qualified (D1) and is the
+///   compatibility key; its serde encoding is the wire payload, with no version
+///   envelope (D62).
 pub use phoxal_bus::{ApiVersion, ContractBody};
 
 phoxal_api_tree! {
@@ -1132,8 +1128,8 @@ phoxal_api_tree! {
             // `world_clock`, not `state`: only the world-authority participant
             // (`#[phoxal::simulator]`) may publish it, enforced at compile time
             // by the disjoint `WorldClockContract` this role generates instead
-            // of `StateContract` (organization#957 leftover - see
-            // `phoxal_bus::contract::WorldClockContract`'s docs).
+            // of `StateContract`; see
+            // `phoxal_bus::contract::WorldClockContract`'s docs.
             topic clock: world_clock Clock;
         }
 

@@ -30,7 +30,6 @@ const DEPTH_STALE: std::time::Duration = std::time::Duration::from_nanos(1_000_0
 const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_nanos(1_000_000_000);
 const MIN_LOCALIZATION_CONFIDENCE: f32 = 0.25;
 
-#[derive(phoxal::Api)]
 pub struct Api {
     cameras: Vec<Subscriber<api::component::camera::Frame>>,
     depths: Vec<Subscriber<api::component::depth::Frame>>,
@@ -39,8 +38,7 @@ pub struct Api {
     state: StatePublisher<api::perception::State>,
 }
 
-#[phoxal::service(config = ())]
-pub struct Perception {
+pub struct PerceptionState {
     // Runtime-private state.
     camera_sources: Vec<SensorBinding>,
     depth_sources: Vec<SensorBinding>,
@@ -52,10 +50,15 @@ pub struct Perception {
     health: HealthState,
 }
 
-#[phoxal::behavior]
-impl Perception {
-    #[setup]
-    async fn setup(ctx: &mut SetupContext<Self>) -> Result<(Self, Self::Api)> {
+#[phoxal::service(state = PerceptionState, api = Api)]
+pub struct Perception;
+
+impl Participant for Perception {
+    async fn setup(
+        &self,
+        ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
         let camera_sources = camera_bindings(ctx.robot()?)?;
         let depth_sources = depth_bindings(ctx.robot()?)?;
 
@@ -83,7 +86,7 @@ impl Perception {
             .await?;
 
         Ok((
-            Self {
+            PerceptionState {
                 latest_cameras: vec![None; camera_sources.len()],
                 latest_depths: vec![None; depth_sources.len()],
                 latest_localization: None,
@@ -93,7 +96,7 @@ impl Perception {
                 camera_sources,
                 depth_sources,
             },
-            Self::Api {
+            Api {
                 cameras,
                 depths,
                 localization,
@@ -103,33 +106,42 @@ impl Perception {
         ))
     }
 
-    #[reset]
-    async fn reset(&mut self, _ctx: ResetContext) -> Result<()> {
-        self.latest_cameras.fill(None);
-        self.latest_depths.fill(None);
-        self.latest_localization = None;
-        self.tracker = PointTracker::default();
-        self.health = HealthState::default();
+    async fn reset(
+        &self,
+        _ctx: ResetContext,
+        _api: &Self::Api,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.latest_cameras.fill(None);
+        state.latest_depths.fill(None);
+        state.latest_localization = None;
+        state.tracker = PointTracker::default();
+        state.health = HealthState::default();
         Ok(())
     }
 
-    #[step(hz = 10)]
-    async fn step(&mut self, api: &mut Self::Api, step: StepContext) -> Result<()> {
-        self.drain_inputs(api);
+    #[phoxal::step(hz = 10)]
+    async fn step(
+        &self,
+        api: &Self::Api,
+        step: StepContext,
+        state: &mut Self::State,
+    ) -> Result<()> {
+        state.drain_inputs(api);
 
         let now = step.now();
-        if self.camera_sources.is_empty()
-            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE).is_none()
+        if state.camera_sources.is_empty()
+            || latest_fresh_camera_index(&state.latest_cameras, now, CAMERA_STALE).is_none()
         {
             return Ok(());
         }
-        let detections = self.detect(now);
+        let detections = state.detect(now);
         let healthy = !detections.is_empty()
-            || latest_fresh_camera_index(&self.latest_cameras, now, CAMERA_STALE).is_some();
+            || latest_fresh_camera_index(&state.latest_cameras, now, CAMERA_STALE).is_some();
         if healthy {
-            self.health.observe_healthy();
+            state.health.observe_healthy();
         } else {
-            self.health.degrade();
+            state.health.degrade();
         }
 
         api.detections.publish(
@@ -142,16 +154,16 @@ impl Perception {
         api.state.publish(
             step.token(),
             api::perception::State {
-                healthy: self.health.healthy(),
-                detector: self.detector.detector_name().to_string(),
+                healthy: state.health.healthy(),
+                detector: state.detector.detector_name().to_string(),
             },
         )?;
         Ok(())
     }
 }
 
-impl Perception {
-    fn drain_inputs(&mut self, api: &mut Api) {
+impl PerceptionState {
+    fn drain_inputs(&mut self, api: &Api) {
         for (subscriber, slot) in api.cameras.iter().zip(&mut self.latest_cameras) {
             while let Some(observed) = subscriber.try_recv() {
                 if let Some(at) = observed.metadata.produced_exactly_at() {
