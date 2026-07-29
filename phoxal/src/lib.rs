@@ -161,7 +161,6 @@ pub mod behavior;
 pub mod check;
 pub mod model;
 pub mod participant;
-pub mod suite;
 pub mod util;
 
 /// The concrete framework API revision selected by this release train.
