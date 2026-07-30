@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0](https://github.com/phoxal/framework/compare/v0.43.2...v0.44.0) - 2026-07-30
+
+### Other
+
+- [**breaking**] separate source documents from canonical model ([#358](https://github.com/phoxal/framework/pull/358))
+- [**breaking**] remove unused suite descriptor ([#351](https://github.com/phoxal/framework/pull/351))
+
 ## [0.43.1](https://github.com/phoxal/framework/compare/v0.43.0...v0.43.1) - 2026-07-28
 
 ### Other
