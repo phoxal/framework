@@ -341,6 +341,7 @@ impl Bus {
     }
 }
 
+#[allow(deprecated)]
 fn reserve_outbound_bytes(queued: &AtomicUsize, bytes: usize) -> bool {
     queued
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
