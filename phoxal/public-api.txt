@@ -1,4 +1,5 @@
 pub mod phoxal
+pub use phoxal::AssetId
 pub use phoxal::Config
 pub use phoxal::Result
 pub use phoxal::api
@@ -75,6 +76,7 @@ pub use phoxal::model::robot::MotionModel
 pub use phoxal::model::robot::ROBOT_SCHEMA
 pub use phoxal::model::robot::RobotIdentity
 pub mod phoxal::prelude
+pub use phoxal::prelude::AssetId
 pub use phoxal::prelude::CaptureStamp
 pub use phoxal::prelude::CommandPublisher
 pub use phoxal::prelude::DiagnosticPublisher
@@ -97,16 +99,12 @@ pub use phoxal::prelude::TimelineId
 pub enum phoxal::prelude::ManagedTaskPolicy
 pub phoxal::prelude::ManagedTaskPolicy::AllowExit
 pub phoxal::prelude::ManagedTaskPolicy::FaultOnExit
-pub struct phoxal::prelude::AssetId(_)
-impl phoxal::AssetId
-pub fn phoxal::AssetId::as_str(&self) -> &str
-pub fn phoxal::AssetId::new(impl core::convert::Into<alloc::string::String>) -> anyhow::Result<Self>
 pub struct phoxal::prelude::AssetResolver
 impl phoxal::AssetResolver
-pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal::AssetId>
-pub fn phoxal::AssetResolver::open(&self, &phoxal::AssetId) -> anyhow::Result<std::fs::File>
-pub fn phoxal::AssetResolver::path(&self, &phoxal::AssetId) -> anyhow::Result<&std::path::Path>
-pub fn phoxal::AssetResolver::read(&self, &phoxal::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
+pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::asset::AssetId>
+pub fn phoxal::AssetResolver::open(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<std::fs::File>
+pub fn phoxal::AssetResolver::path(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<&std::path::Path>
+pub fn phoxal::AssetResolver::read(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
 pub struct phoxal::prelude::ResetContext
 impl phoxal::ResetContext
 pub fn phoxal::ResetContext::new_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
@@ -149,16 +147,12 @@ pub async fn phoxal::prelude::Participant::shutdown(&self, &Self::Api, &mut Self
 pub async fn phoxal::prelude::Participant::step(&self, &Self::Api, phoxal::StepContext, &mut Self::State) -> anyhow::Result<()>
 pub mod phoxal::tokio
 pub async fn phoxal::tokio::run<R: phoxal::Participant>() -> anyhow::Result<()>
-pub struct phoxal::AssetId(_)
-impl phoxal::AssetId
-pub fn phoxal::AssetId::as_str(&self) -> &str
-pub fn phoxal::AssetId::new(impl core::convert::Into<alloc::string::String>) -> anyhow::Result<Self>
 pub struct phoxal::AssetResolver
 impl phoxal::AssetResolver
-pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal::AssetId>
-pub fn phoxal::AssetResolver::open(&self, &phoxal::AssetId) -> anyhow::Result<std::fs::File>
-pub fn phoxal::AssetResolver::path(&self, &phoxal::AssetId) -> anyhow::Result<&std::path::Path>
-pub fn phoxal::AssetResolver::read(&self, &phoxal::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
+pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::asset::AssetId>
+pub fn phoxal::AssetResolver::open(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<std::fs::File>
+pub fn phoxal::AssetResolver::path(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<&std::path::Path>
+pub fn phoxal::AssetResolver::read(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
 pub struct phoxal::ResetContext
 impl phoxal::ResetContext
 pub fn phoxal::ResetContext::new_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId

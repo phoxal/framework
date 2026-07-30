@@ -167,6 +167,457 @@
             "height_px": 400,
             "field_of_view_rad": 1.272271
           }
+        },
+        "structure": {
+          "joints": [
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "body_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "body_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "parent": "mount",
+              "safety": null
+            },
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "left_mono_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "left_mono_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.00875,
+                  -0.0375,
+                  0.005
+                ]
+              },
+              "parent": "body_link",
+              "safety": null
+            },
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "rgb_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "rgb_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.00875,
+                  0.0,
+                  0.005
+                ]
+              },
+              "parent": "body_link",
+              "safety": null
+            },
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "right_mono_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "right_mono_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.00875,
+                  0.0375,
+                  0.005
+                ]
+              },
+              "parent": "body_link",
+              "safety": null
+            },
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "stereo_center_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "stereo_center_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.00875,
+                  0.0,
+                  0.005
+                ]
+              },
+              "parent": "body_link",
+              "safety": null
+            },
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "imu_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "imu_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "parent": "body_link",
+              "safety": null
+            }
+          ],
+          "links": [
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "mount",
+              "visuals": []
+            },
+            {
+              "collisions": [
+                {
+                  "geometry": {
+                    "kind": "box",
+                    "size": [
+                      0.0175,
+                      0.091,
+                      0.028
+                    ]
+                  },
+                  "name": null,
+                  "origin": {
+                    "rpy": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "xyz": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ]
+                  }
+                }
+              ],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.000046,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 6e-6,
+                  "iyz": 0.0,
+                  "izz": 0.000044
+                },
+                "mass_kg": 0.061,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "body_link",
+              "visuals": [
+                {
+                  "geometry": {
+                    "kind": "box",
+                    "size": [
+                      0.0175,
+                      0.091,
+                      0.028
+                    ]
+                  },
+                  "material": null,
+                  "name": null,
+                  "origin": {
+                    "rpy": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "xyz": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "left_mono_link",
+              "visuals": []
+            },
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "rgb_link",
+              "visuals": []
+            },
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "right_mono_link",
+              "visuals": []
+            },
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "stereo_center_link",
+              "visuals": []
+            },
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "imu_link",
+              "visuals": []
+            }
+          ],
+          "materials": [],
+          "name": "camera_rgbd_640x480_device"
         }
       },
       "drive_motor": {
@@ -193,6 +644,146 @@
             "max_torque_nm": 2.0,
             "max_velocity_radps": 20.943951
           }
+        },
+        "structure": {
+          "joints": [
+            {
+              "axis": [
+                0.0,
+                0.0,
+                1.0
+              ],
+              "calibration": null,
+              "child": "rotor_link",
+              "dynamics": null,
+              "kind": "continuous",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "motor_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "parent": "mount",
+              "safety": null
+            }
+          ],
+          "links": [
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "mount",
+              "visuals": []
+            },
+            {
+              "collisions": [
+                {
+                  "geometry": {
+                    "kind": "cylinder",
+                    "length": 0.08,
+                    "radius": 0.11
+                  },
+                  "name": null,
+                  "origin": {
+                    "rpy": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "xyz": [
+                      0.0,
+                      0.0,
+                      -0.022
+                    ]
+                  }
+                }
+              ],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0028,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0028,
+                  "iyz": 0.0,
+                  "izz": 0.0048
+                },
+                "mass_kg": 0.8,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "rotor_link",
+              "visuals": [
+                {
+                  "geometry": {
+                    "filename": "meshes/components/drive_motor/drive_motor.obj",
+                    "kind": "mesh",
+                    "scale": null
+                  },
+                  "material": null,
+                  "name": null,
+                  "origin": {
+                    "rpy": [
+                      1.5708,
+                      0.0,
+                      0.0
+                    ],
+                    "xyz": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "materials": [],
+          "name": "drive_motor_device"
         }
       },
       "imu": {
@@ -236,6 +827,127 @@
               true
             ]
           }
+        },
+        "structure": {
+          "joints": [
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "sensor_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "sensor_mount_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "parent": "mount",
+              "safety": null
+            }
+          ],
+          "links": [
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "mount",
+              "visuals": []
+            },
+            {
+              "collisions": [
+                {
+                  "geometry": {
+                    "kind": "box",
+                    "size": [
+                      0.02,
+                      0.02,
+                      0.01
+                    ]
+                  },
+                  "name": null,
+                  "origin": {
+                    "rpy": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "xyz": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ]
+                  }
+                }
+              ],
+              "inertial": {
+                "inertia": {
+                  "ixx": 1e-6,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 1e-6,
+                  "iyz": 0.0,
+                  "izz": 1e-6
+                },
+                "mass_kg": 0.02,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "sensor_link",
+              "visuals": []
+            }
+          ],
+          "materials": [],
+          "name": "imu_device"
         }
       },
       "range_tof": {
@@ -251,6 +963,127 @@
             "max_range_m": 4.0,
             "field_of_view_rad": 0.471239
           }
+        },
+        "structure": {
+          "joints": [
+            {
+              "axis": [
+                1.0,
+                0.0,
+                0.0
+              ],
+              "calibration": null,
+              "child": "sensor_link",
+              "dynamics": null,
+              "kind": "fixed",
+              "limit": {
+                "effort": 0.0,
+                "lower": 0.0,
+                "upper": 0.0,
+                "velocity": 0.0
+              },
+              "mimic": null,
+              "name": "sensor_mount_joint",
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              },
+              "parent": "mount",
+              "safety": null
+            }
+          ],
+          "links": [
+            {
+              "collisions": [],
+              "inertial": {
+                "inertia": {
+                  "ixx": 0.0,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 0.0,
+                  "iyz": 0.0,
+                  "izz": 0.0
+                },
+                "mass_kg": 0.0,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "mount",
+              "visuals": []
+            },
+            {
+              "collisions": [
+                {
+                  "geometry": {
+                    "kind": "box",
+                    "size": [
+                      0.005,
+                      0.01,
+                      0.003
+                    ]
+                  },
+                  "name": null,
+                  "origin": {
+                    "rpy": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ],
+                    "xyz": [
+                      0.0,
+                      0.0,
+                      0.0
+                    ]
+                  }
+                }
+              ],
+              "inertial": {
+                "inertia": {
+                  "ixx": 1e-8,
+                  "ixy": 0.0,
+                  "ixz": 0.0,
+                  "iyy": 2e-8,
+                  "iyz": 0.0,
+                  "izz": 2e-8
+                },
+                "mass_kg": 0.002,
+                "origin": {
+                  "rpy": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "xyz": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ]
+                }
+              },
+              "name": "sensor_link",
+              "visuals": []
+            }
+          ],
+          "materials": [],
+          "name": "range_tof_device"
         }
       }
     },

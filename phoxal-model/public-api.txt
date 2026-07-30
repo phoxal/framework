@@ -1,0 +1,488 @@
+pub mod phoxal_model
+pub mod phoxal_model::asset
+pub struct phoxal_model::asset::AssetId(_)
+impl phoxal_model::asset::AssetId
+pub fn phoxal_model::asset::AssetId::as_str(&self) -> &str
+pub fn phoxal_model::asset::AssetId::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, phoxal_model::ModelError>
+impl serde_core::ser::Serialize for phoxal_model::asset::AssetId
+pub fn phoxal_model::asset::AssetId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for phoxal_model::asset::AssetId
+pub fn phoxal_model::asset::AssetId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub mod phoxal_model::component
+pub mod phoxal_model::component::capability
+pub enum phoxal_model::component::capability::CameraMode
+pub phoxal_model::component::capability::CameraMode::Mono
+pub phoxal_model::component::capability::CameraMode::Rgb
+pub enum phoxal_model::component::capability::Capability
+pub phoxal_model::component::capability::Capability::Accelerometer(phoxal_model::component::capability::Accelerometer)
+pub phoxal_model::component::capability::Capability::Battery(phoxal_model::component::capability::Battery)
+pub phoxal_model::component::capability::Capability::Camera(phoxal_model::component::capability::Camera)
+pub phoxal_model::component::capability::Capability::Depth(phoxal_model::component::capability::Depth)
+pub phoxal_model::component::capability::Capability::EmergencyStop(phoxal_model::component::capability::EmergencyStop)
+pub phoxal_model::component::capability::Capability::Encoder(phoxal_model::component::capability::Encoder)
+pub phoxal_model::component::capability::Capability::Gnss(phoxal_model::component::capability::Gnss)
+pub phoxal_model::component::capability::Capability::Gyroscope(phoxal_model::component::capability::Gyroscope)
+pub phoxal_model::component::capability::Capability::Imu(phoxal_model::component::capability::Imu)
+pub phoxal_model::component::capability::Capability::Led(phoxal_model::component::capability::Led)
+pub phoxal_model::component::capability::Capability::Lidar(phoxal_model::component::capability::Lidar)
+pub phoxal_model::component::capability::Capability::Magnetometer(phoxal_model::component::capability::Magnetometer)
+pub phoxal_model::component::capability::Capability::Microphone(phoxal_model::component::capability::Microphone)
+pub phoxal_model::component::capability::Capability::Mmwave(phoxal_model::component::capability::Mmwave)
+pub phoxal_model::component::capability::Capability::Motor(phoxal_model::component::capability::Motor)
+pub phoxal_model::component::capability::Capability::Range(phoxal_model::component::capability::Range)
+pub phoxal_model::component::capability::Capability::Speaker(phoxal_model::component::capability::Speaker)
+impl phoxal_model::component::capability::Capability
+pub const fn phoxal_model::component::capability::Capability::kind_name(&self) -> &'static str
+pub const fn phoxal_model::component::capability::Capability::target(&self) -> &phoxal_model::component::capability::StructuralTarget
+pub enum phoxal_model::component::capability::EncoderType
+pub phoxal_model::component::capability::EncoderType::Absolute
+pub phoxal_model::component::capability::EncoderType::Incremental
+pub enum phoxal_model::component::capability::GnssCoordinateSystem
+pub phoxal_model::component::capability::GnssCoordinateSystem::Local
+pub phoxal_model::component::capability::GnssCoordinateSystem::Wgs84
+pub enum phoxal_model::component::capability::LidarOutput
+pub phoxal_model::component::capability::LidarOutput::Points
+pub phoxal_model::component::capability::LidarOutput::Ranges
+pub enum phoxal_model::component::capability::MotorCommand
+pub phoxal_model::component::capability::MotorCommand::Position
+pub phoxal_model::component::capability::MotorCommand::Torque
+pub phoxal_model::component::capability::MotorCommand::Velocity
+pub enum phoxal_model::component::capability::StructuralTarget
+pub phoxal_model::component::capability::StructuralTarget::Joint
+pub phoxal_model::component::capability::StructuralTarget::Joint::id: alloc::string::String
+pub phoxal_model::component::capability::StructuralTarget::Link
+pub phoxal_model::component::capability::StructuralTarget::Link::id: alloc::string::String
+impl phoxal_model::component::capability::StructuralTarget
+pub fn phoxal_model::component::capability::StructuralTarget::namespaced(&self, &str) -> Self
+pub struct phoxal_model::component::capability::Accelerometer
+pub phoxal_model::component::capability::Accelerometer::axes: core::option::Option<[bool; 3]>
+pub phoxal_model::component::capability::Accelerometer::publish_rate_hz: f64
+pub phoxal_model::component::capability::Accelerometer::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Battery
+pub phoxal_model::component::capability::Battery::capacity_ah: f64
+pub phoxal_model::component::capability::Battery::publish_rate_hz: f64
+pub phoxal_model::component::capability::Battery::target: phoxal_model::component::capability::StructuralTarget
+pub phoxal_model::component::capability::Battery::voltage_v: f64
+pub struct phoxal_model::component::capability::Camera
+pub phoxal_model::component::capability::Camera::field_of_view_rad: core::option::Option<f64>
+pub phoxal_model::component::capability::Camera::height_px: u32
+pub phoxal_model::component::capability::Camera::mode: phoxal_model::component::capability::CameraMode
+pub phoxal_model::component::capability::Camera::publish_rate_hz: f64
+pub phoxal_model::component::capability::Camera::target: phoxal_model::component::capability::StructuralTarget
+pub phoxal_model::component::capability::Camera::width_px: u32
+pub struct phoxal_model::component::capability::Depth
+pub phoxal_model::component::capability::Depth::field_of_view_rad: core::option::Option<f64>
+pub phoxal_model::component::capability::Depth::height_px: u32
+pub phoxal_model::component::capability::Depth::max_range_m: core::option::Option<f64>
+pub phoxal_model::component::capability::Depth::min_range_m: core::option::Option<f64>
+pub phoxal_model::component::capability::Depth::publish_rate_hz: f64
+pub phoxal_model::component::capability::Depth::target: phoxal_model::component::capability::StructuralTarget
+pub phoxal_model::component::capability::Depth::width_px: u32
+pub struct phoxal_model::component::capability::EmergencyStop
+pub phoxal_model::component::capability::EmergencyStop::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Encoder
+pub phoxal_model::component::capability::Encoder::counts_per_revolution: u32
+pub phoxal_model::component::capability::Encoder::encoder_type: phoxal_model::component::capability::EncoderType
+pub phoxal_model::component::capability::Encoder::gear_ratio: f64
+pub phoxal_model::component::capability::Encoder::publish_rate_hz: f64
+pub phoxal_model::component::capability::Encoder::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Gnss
+pub phoxal_model::component::capability::Gnss::coordinate_system: phoxal_model::component::capability::GnssCoordinateSystem
+pub phoxal_model::component::capability::Gnss::publish_rate_hz: f64
+pub phoxal_model::component::capability::Gnss::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Gyroscope
+pub phoxal_model::component::capability::Gyroscope::axes: core::option::Option<[bool; 3]>
+pub phoxal_model::component::capability::Gyroscope::publish_rate_hz: f64
+pub phoxal_model::component::capability::Gyroscope::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Imu
+pub phoxal_model::component::capability::Imu::axes: core::option::Option<[bool; 3]>
+pub phoxal_model::component::capability::Imu::publish_rate_hz: f64
+pub phoxal_model::component::capability::Imu::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Led
+pub phoxal_model::component::capability::Led::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Lidar
+pub phoxal_model::component::capability::Lidar::horizontal_fov_rad: core::option::Option<f64>
+pub phoxal_model::component::capability::Lidar::horizontal_resolution_rad: core::option::Option<f64>
+pub phoxal_model::component::capability::Lidar::max_range_m: core::option::Option<f64>
+pub phoxal_model::component::capability::Lidar::min_range_m: core::option::Option<f64>
+pub phoxal_model::component::capability::Lidar::output: phoxal_model::component::capability::LidarOutput
+pub phoxal_model::component::capability::Lidar::publish_rate_hz: f64
+pub phoxal_model::component::capability::Lidar::target: phoxal_model::component::capability::StructuralTarget
+pub phoxal_model::component::capability::Lidar::vertical_fov_rad: core::option::Option<f64>
+pub phoxal_model::component::capability::Lidar::vertical_resolution_rad: core::option::Option<f64>
+pub struct phoxal_model::component::capability::Magnetometer
+pub phoxal_model::component::capability::Magnetometer::axes: core::option::Option<[bool; 3]>
+pub phoxal_model::component::capability::Magnetometer::publish_rate_hz: f64
+pub phoxal_model::component::capability::Magnetometer::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Microphone
+pub phoxal_model::component::capability::Microphone::publish_rate_hz: f64
+pub phoxal_model::component::capability::Microphone::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Mmwave
+pub phoxal_model::component::capability::Mmwave::publish_rate_hz: f64
+pub phoxal_model::component::capability::Mmwave::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Motor
+pub phoxal_model::component::capability::Motor::command: phoxal_model::component::capability::MotorCommand
+pub phoxal_model::component::capability::Motor::gear_ratio: f64
+pub phoxal_model::component::capability::Motor::max_torque_nm: core::option::Option<f64>
+pub phoxal_model::component::capability::Motor::max_velocity_radps: core::option::Option<f64>
+pub phoxal_model::component::capability::Motor::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Range
+pub phoxal_model::component::capability::Range::field_of_view_rad: f64
+pub phoxal_model::component::capability::Range::max_range_m: f64
+pub phoxal_model::component::capability::Range::min_range_m: f64
+pub phoxal_model::component::capability::Range::publish_rate_hz: f64
+pub phoxal_model::component::capability::Range::target: phoxal_model::component::capability::StructuralTarget
+pub struct phoxal_model::component::capability::Speaker
+pub phoxal_model::component::capability::Speaker::target: phoxal_model::component::capability::StructuralTarget
+pub const phoxal_model::component::capability::MODULE_INSTANCE_SEPARATOR: &str
+pub fn phoxal_model::component::capability::namespaced_structure_id(&str, &str) -> alloc::string::String
+pub struct phoxal_model::component::CapabilityRef
+pub phoxal_model::component::CapabilityRef::capability_id: alloc::string::String
+pub phoxal_model::component::CapabilityRef::component_id: alloc::string::String
+impl phoxal_model::component::CapabilityRef
+pub fn phoxal_model::component::CapabilityRef::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
+impl core::convert::From<phoxal_model::component::CapabilityRef> for alloc::string::String
+pub fn alloc::string::String::from(phoxal_model::component::CapabilityRef) -> Self
+impl core::convert::TryFrom<alloc::string::String> for phoxal_model::component::CapabilityRef
+pub type phoxal_model::component::CapabilityRef::Error = phoxal_model::ModelError
+pub fn phoxal_model::component::CapabilityRef::try_from(alloc::string::String) -> core::result::Result<Self, Self::Error>
+impl core::fmt::Display for phoxal_model::component::CapabilityRef
+pub fn phoxal_model::component::CapabilityRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::str::traits::FromStr for phoxal_model::component::CapabilityRef
+pub type phoxal_model::component::CapabilityRef::Err = phoxal_model::ModelError
+pub fn phoxal_model::component::CapabilityRef::from_str(&str) -> core::result::Result<Self, Self::Err>
+pub struct phoxal_model::component::Component
+impl phoxal_model::component::Component
+pub fn phoxal_model::component::Component::capabilities(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = (&str, &phoxal_model::component::capability::Capability)>
+pub fn phoxal_model::component::Component::capability(&self, &str) -> core::option::Option<&phoxal_model::component::capability::Capability>
+pub fn phoxal_model::component::Component::structure(&self) -> &phoxal_model::structure::Structure
+pub fn phoxal_model::component::is_valid_token(&str) -> bool
+pub mod phoxal_model::robot
+pub enum phoxal_model::robot::KinematicConfig
+pub phoxal_model::robot::KinematicConfig::Ackermann
+pub phoxal_model::robot::KinematicConfig::Ackermann::drive_actuator: phoxal_model::component::CapabilityRef
+pub phoxal_model::robot::KinematicConfig::Ackermann::drive_encoder: core::option::Option<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Ackermann::max_steering_angle_rad: f64
+pub phoxal_model::robot::KinematicConfig::Ackermann::steering_actuator: phoxal_model::component::CapabilityRef
+pub phoxal_model::robot::KinematicConfig::Ackermann::steering_encoder: core::option::Option<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Ackermann::track_m: f64
+pub phoxal_model::robot::KinematicConfig::Ackermann::wheel_base_m: f64
+pub phoxal_model::robot::KinematicConfig::Differential
+pub phoxal_model::robot::KinematicConfig::Differential::left_actuators: alloc::vec::Vec<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Differential::left_encoders: alloc::vec::Vec<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Differential::right_actuators: alloc::vec::Vec<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Differential::right_encoders: alloc::vec::Vec<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Differential::wheel_base_m: f64
+pub phoxal_model::robot::KinematicConfig::Differential::wheel_radius_m: f64
+pub phoxal_model::robot::KinematicConfig::Mecanum
+pub phoxal_model::robot::KinematicConfig::Mecanum::front_left_actuator: phoxal_model::component::CapabilityRef
+pub phoxal_model::robot::KinematicConfig::Mecanum::front_right_actuator: phoxal_model::component::CapabilityRef
+pub phoxal_model::robot::KinematicConfig::Mecanum::rear_left_actuator: phoxal_model::component::CapabilityRef
+pub phoxal_model::robot::KinematicConfig::Mecanum::rear_right_actuator: phoxal_model::component::CapabilityRef
+pub phoxal_model::robot::KinematicConfig::Mecanum::track_m: f64
+pub phoxal_model::robot::KinematicConfig::Mecanum::wheel_base_m: f64
+pub phoxal_model::robot::KinematicConfig::Mecanum::wheel_radius_m: f64
+pub phoxal_model::robot::KinematicConfig::Omnidirectional
+pub phoxal_model::robot::KinematicConfig::Omnidirectional::actuators: alloc::vec::Vec<phoxal_model::component::CapabilityRef>
+pub phoxal_model::robot::KinematicConfig::Omnidirectional::encoders: alloc::vec::Vec<phoxal_model::component::CapabilityRef>
+pub struct phoxal_model::robot::ComponentInstance
+impl phoxal_model::robot::ComponentInstance
+pub fn phoxal_model::robot::ComponentInstance::component_type(&self) -> &str
+pub fn phoxal_model::robot::ComponentInstance::id(&self) -> &str
+pub fn phoxal_model::robot::ComponentInstance::mount_link(&self) -> &str
+pub struct phoxal_model::robot::MotionLimits
+pub phoxal_model::robot::MotionLimits::max_angular_speed_radps: f64
+pub phoxal_model::robot::MotionLimits::max_linear_speed_mps: f64
+impl phoxal_model::robot::MotionLimits
+pub fn phoxal_model::robot::MotionLimits::validate(self) -> core::result::Result<Self, phoxal_model::ModelError>
+pub struct phoxal_model::robot::MotionModel
+impl phoxal_model::robot::MotionModel
+pub fn phoxal_model::robot::MotionModel::kinematic(&self) -> &phoxal_model::robot::KinematicConfig
+pub const fn phoxal_model::robot::MotionModel::limits(&self) -> phoxal_model::robot::MotionLimits
+pub struct phoxal_model::robot::Robot
+impl phoxal_model::robot::Robot
+pub fn phoxal_model::robot::Robot::camera_capabilities(&self) -> core::result::Result<alloc::vec::Vec<phoxal_model::component::CapabilityRef>, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::capability(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<&phoxal_model::component::capability::Capability, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::component(&self, &str) -> core::option::Option<&phoxal_model::robot::ComponentInstance>
+pub fn phoxal_model::robot::Robot::component_for_instance(&self, &str) -> core::result::Result<&phoxal_model::component::Component, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::component_ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &str>
+pub fn phoxal_model::robot::Robot::component_instance(&self, &str) -> core::result::Result<&phoxal_model::robot::ComponentInstance, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::components(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::robot::ComponentInstance>
+pub fn phoxal_model::robot::Robot::decode(&[u8]) -> core::result::Result<Self, phoxal_model::DecodeError>
+pub fn phoxal_model::robot::Robot::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, phoxal_model::EncodeError>
+pub fn phoxal_model::robot::Robot::identity(&self) -> &phoxal_model::robot::RobotIdentity
+pub fn phoxal_model::robot::Robot::kinematic(&self) -> &phoxal_model::robot::KinematicConfig
+pub fn phoxal_model::robot::Robot::link_target_frame(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<alloc::string::String, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::motion(&self) -> &phoxal_model::robot::MotionModel
+pub const fn phoxal_model::robot::Robot::motion_limits(&self) -> phoxal_model::robot::MotionLimits
+pub fn phoxal_model::robot::Robot::namespace(&self) -> &str
+pub fn phoxal_model::robot::Robot::require_encoder(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<(&phoxal_model::component::capability::Encoder, i8), phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::require_motor(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<(&phoxal_model::component::capability::Motor, i8), phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::robot_id(&self) -> &str
+pub fn phoxal_model::robot::Robot::simulation_for_component_type(&self, &str) -> core::option::Option<&phoxal_model::simulation::Simulation>
+pub fn phoxal_model::robot::Robot::simulation_for_instance(&self, &str) -> core::result::Result<core::option::Option<&phoxal_model::simulation::Simulation>, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::structure(&self) -> &phoxal_model::structure::Structure
+pub struct phoxal_model::robot::RobotIdentity
+impl phoxal_model::robot::RobotIdentity
+pub fn phoxal_model::robot::RobotIdentity::id(&self) -> &str
+pub fn phoxal_model::robot::RobotIdentity::namespace(&self) -> &str
+pub const phoxal_model::robot::ROBOT_SCHEMA: &str
+pub mod phoxal_model::simulation
+pub mod phoxal_model::simulation::capability
+pub enum phoxal_model::simulation::capability::ActuatorType
+pub phoxal_model::simulation::capability::ActuatorType::Position
+pub phoxal_model::simulation::capability::ActuatorType::Torque
+pub phoxal_model::simulation::capability::ActuatorType::Velocity
+pub enum phoxal_model::simulation::capability::CameraProjection
+pub phoxal_model::simulation::capability::CameraProjection::Cylindrical
+pub phoxal_model::simulation::capability::CameraProjection::Planar
+pub phoxal_model::simulation::capability::CameraProjection::Spherical
+pub enum phoxal_model::simulation::capability::Capability
+pub phoxal_model::simulation::capability::Capability::Accelerometer(phoxal_model::simulation::capability::Accelerometer)
+pub phoxal_model::simulation::capability::Capability::Battery
+pub phoxal_model::simulation::capability::Capability::Camera(phoxal_model::simulation::capability::Camera)
+pub phoxal_model::simulation::capability::Capability::Depth(phoxal_model::simulation::capability::Depth)
+pub phoxal_model::simulation::capability::Capability::EmergencyStop
+pub phoxal_model::simulation::capability::Capability::Encoder(phoxal_model::simulation::capability::Encoder)
+pub phoxal_model::simulation::capability::Capability::Gnss(phoxal_model::simulation::capability::Gnss)
+pub phoxal_model::simulation::capability::Capability::Gyroscope(phoxal_model::simulation::capability::Gyroscope)
+pub phoxal_model::simulation::capability::Capability::Imu(phoxal_model::simulation::capability::Imu)
+pub phoxal_model::simulation::capability::Capability::Led
+pub phoxal_model::simulation::capability::Capability::Lidar(phoxal_model::simulation::capability::Lidar)
+pub phoxal_model::simulation::capability::Capability::Magnetometer(phoxal_model::simulation::capability::Magnetometer)
+pub phoxal_model::simulation::capability::Capability::Microphone(phoxal_model::simulation::capability::Microphone)
+pub phoxal_model::simulation::capability::Capability::Mmwave(phoxal_model::simulation::capability::Mmwave)
+pub phoxal_model::simulation::capability::Capability::Motor(phoxal_model::simulation::capability::Motor)
+pub phoxal_model::simulation::capability::Capability::Range(phoxal_model::simulation::capability::Range)
+pub phoxal_model::simulation::capability::Capability::Speaker
+impl phoxal_model::simulation::capability::Capability
+pub const fn phoxal_model::simulation::capability::Capability::kind_name(&self) -> &'static str
+pub struct phoxal_model::simulation::capability::Accelerometer
+pub phoxal_model::simulation::capability::Accelerometer::lookup_table: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f64>>>
+pub phoxal_model::simulation::capability::Accelerometer::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Accelerometer::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Camera
+pub phoxal_model::simulation::capability::Camera::ambient_occlusion_radius: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::anti_aliasing: core::option::Option<bool>
+pub phoxal_model::simulation::capability::Camera::bloom_threshold: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::exposure: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::far: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::motion_blur: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::near: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Camera::noise_mask_url: core::option::Option<alloc::string::String>
+pub phoxal_model::simulation::capability::Camera::projection: core::option::Option<phoxal_model::simulation::capability::CameraProjection>
+pub phoxal_model::simulation::capability::Camera::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Depth
+pub phoxal_model::simulation::capability::Depth::motion_blur: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Depth::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Depth::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Depth::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Encoder
+pub phoxal_model::simulation::capability::Encoder::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Encoder::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Encoder::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Gnss
+pub phoxal_model::simulation::capability::Gnss::accuracy: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Gnss::noise_correlation: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Gnss::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Gnss::sampling_period_hz: f64
+pub phoxal_model::simulation::capability::Gnss::speed_noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Gnss::speed_resolution: core::option::Option<f64>
+pub struct phoxal_model::simulation::capability::Gyroscope
+pub phoxal_model::simulation::capability::Gyroscope::lookup_table: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f64>>>
+pub phoxal_model::simulation::capability::Gyroscope::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Gyroscope::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Imu
+pub phoxal_model::simulation::capability::Imu::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Imu::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Imu::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Lidar
+pub phoxal_model::simulation::capability::Lidar::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Lidar::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Lidar::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Magnetometer
+pub phoxal_model::simulation::capability::Magnetometer::lookup_table: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f64>>>
+pub phoxal_model::simulation::capability::Magnetometer::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Magnetometer::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Microphone
+pub phoxal_model::simulation::capability::Microphone::aperture: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Microphone::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Mmwave
+pub phoxal_model::simulation::capability::Mmwave::lookup_table: core::option::Option<alloc::vec::Vec<alloc::vec::Vec<f64>>>
+pub phoxal_model::simulation::capability::Mmwave::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Mmwave::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Mmwave::sampling_period_hz: f64
+pub struct phoxal_model::simulation::capability::Motor
+pub phoxal_model::simulation::capability::Motor::acceleration_radps2: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Motor::actuator_type: phoxal_model::simulation::capability::ActuatorType
+pub phoxal_model::simulation::capability::Motor::control_pid: core::option::Option<alloc::vec::Vec<f64>>
+pub phoxal_model::simulation::capability::Motor::sampling_period_torque_hz: core::option::Option<f64>
+pub struct phoxal_model::simulation::capability::Range
+pub phoxal_model::simulation::capability::Range::noise: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Range::resolution: core::option::Option<f64>
+pub phoxal_model::simulation::capability::Range::sampling_period_hz: f64
+pub struct phoxal_model::simulation::Link
+impl phoxal_model::simulation::Link
+pub fn phoxal_model::simulation::Link::contact_material(&self) -> core::option::Option<&str>
+pub struct phoxal_model::simulation::Simulation
+impl phoxal_model::simulation::Simulation
+pub fn phoxal_model::simulation::Simulation::capabilities(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = (&str, &phoxal_model::simulation::capability::Capability)>
+pub fn phoxal_model::simulation::Simulation::capability(&self, &str) -> core::option::Option<&phoxal_model::simulation::capability::Capability>
+pub fn phoxal_model::simulation::Simulation::links(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = (&str, &phoxal_model::simulation::Link)>
+pub mod phoxal_model::structure
+pub enum phoxal_model::structure::Geometry
+pub phoxal_model::structure::Geometry::Box
+pub phoxal_model::structure::Geometry::Box::size: [f64; 3]
+pub phoxal_model::structure::Geometry::Capsule
+pub phoxal_model::structure::Geometry::Capsule::length: f64
+pub phoxal_model::structure::Geometry::Capsule::radius: f64
+pub phoxal_model::structure::Geometry::Cylinder
+pub phoxal_model::structure::Geometry::Cylinder::length: f64
+pub phoxal_model::structure::Geometry::Cylinder::radius: f64
+pub phoxal_model::structure::Geometry::Mesh
+pub phoxal_model::structure::Geometry::Mesh::asset: phoxal_model::asset::AssetId
+pub phoxal_model::structure::Geometry::Mesh::scale: core::option::Option<[f64; 3]>
+pub phoxal_model::structure::Geometry::Sphere
+pub phoxal_model::structure::Geometry::Sphere::radius: f64
+impl phoxal_model::structure::Geometry
+pub fn phoxal_model::structure::Geometry::asset_id(&self) -> core::option::Option<&phoxal_model::asset::AssetId>
+pub enum phoxal_model::structure::JointKind
+pub phoxal_model::structure::JointKind::Continuous
+pub phoxal_model::structure::JointKind::Fixed
+pub phoxal_model::structure::JointKind::Floating
+pub phoxal_model::structure::JointKind::Planar
+pub phoxal_model::structure::JointKind::Prismatic
+pub phoxal_model::structure::JointKind::Revolute
+pub phoxal_model::structure::JointKind::Spherical
+pub struct phoxal_model::structure::Calibration
+impl phoxal_model::structure::Calibration
+pub const fn phoxal_model::structure::Calibration::falling(self) -> core::option::Option<f64>
+pub const fn phoxal_model::structure::Calibration::rising(self) -> core::option::Option<f64>
+pub struct phoxal_model::structure::Collision
+impl phoxal_model::structure::Collision
+pub fn phoxal_model::structure::Collision::geometry(&self) -> &phoxal_model::structure::Geometry
+pub fn phoxal_model::structure::Collision::name(&self) -> core::option::Option<&str>
+pub const fn phoxal_model::structure::Collision::origin(&self) -> phoxal_model::structure::Pose
+pub struct phoxal_model::structure::Dynamics
+impl phoxal_model::structure::Dynamics
+pub const fn phoxal_model::structure::Dynamics::damping(self) -> f64
+pub const fn phoxal_model::structure::Dynamics::friction(self) -> f64
+pub struct phoxal_model::structure::Inertia
+impl phoxal_model::structure::Inertia
+pub const fn phoxal_model::structure::Inertia::values(self) -> [f64; 6]
+pub struct phoxal_model::structure::Inertial
+impl phoxal_model::structure::Inertial
+pub const fn phoxal_model::structure::Inertial::inertia(self) -> phoxal_model::structure::Inertia
+pub const fn phoxal_model::structure::Inertial::mass_kg(self) -> f64
+pub const fn phoxal_model::structure::Inertial::origin(self) -> phoxal_model::structure::Pose
+pub struct phoxal_model::structure::Joint
+impl phoxal_model::structure::Joint
+pub const fn phoxal_model::structure::Joint::axis(&self) -> [f64; 3]
+pub const fn phoxal_model::structure::Joint::calibration(&self) -> core::option::Option<phoxal_model::structure::Calibration>
+pub fn phoxal_model::structure::Joint::child(&self) -> &str
+pub const fn phoxal_model::structure::Joint::dynamics(&self) -> core::option::Option<phoxal_model::structure::Dynamics>
+pub const fn phoxal_model::structure::Joint::kind(&self) -> phoxal_model::structure::JointKind
+pub const fn phoxal_model::structure::Joint::limit(&self) -> phoxal_model::structure::JointLimit
+pub fn phoxal_model::structure::Joint::mimic(&self) -> core::option::Option<&phoxal_model::structure::Mimic>
+pub fn phoxal_model::structure::Joint::name(&self) -> &str
+pub const fn phoxal_model::structure::Joint::origin(&self) -> phoxal_model::structure::Pose
+pub fn phoxal_model::structure::Joint::parent(&self) -> &str
+pub const fn phoxal_model::structure::Joint::safety(&self) -> core::option::Option<phoxal_model::structure::Safety>
+pub struct phoxal_model::structure::JointLimit
+impl phoxal_model::structure::JointLimit
+pub const fn phoxal_model::structure::JointLimit::effort(self) -> f64
+pub const fn phoxal_model::structure::JointLimit::lower(self) -> f64
+pub const fn phoxal_model::structure::JointLimit::upper(self) -> f64
+pub const fn phoxal_model::structure::JointLimit::velocity(self) -> f64
+pub struct phoxal_model::structure::Link
+impl phoxal_model::structure::Link
+pub fn phoxal_model::structure::Link::collisions(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::structure::Collision>
+pub const fn phoxal_model::structure::Link::inertial(&self) -> phoxal_model::structure::Inertial
+pub fn phoxal_model::structure::Link::name(&self) -> &str
+pub fn phoxal_model::structure::Link::visuals(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::structure::Visual>
+pub struct phoxal_model::structure::Material
+impl phoxal_model::structure::Material
+pub const fn phoxal_model::structure::Material::color(&self) -> core::option::Option<[f64; 4]>
+pub fn phoxal_model::structure::Material::name(&self) -> &str
+pub fn phoxal_model::structure::Material::texture(&self) -> core::option::Option<&phoxal_model::asset::AssetId>
+pub struct phoxal_model::structure::Mimic
+impl phoxal_model::structure::Mimic
+pub fn phoxal_model::structure::Mimic::joint(&self) -> &str
+pub const fn phoxal_model::structure::Mimic::multiplier(&self) -> core::option::Option<f64>
+pub const fn phoxal_model::structure::Mimic::offset(&self) -> core::option::Option<f64>
+pub struct phoxal_model::structure::Pose
+impl phoxal_model::structure::Pose
+pub const fn phoxal_model::structure::Pose::rpy(self) -> [f64; 3]
+pub const fn phoxal_model::structure::Pose::xyz(self) -> [f64; 3]
+pub struct phoxal_model::structure::Safety
+impl phoxal_model::structure::Safety
+pub const fn phoxal_model::structure::Safety::k_position(self) -> f64
+pub const fn phoxal_model::structure::Safety::k_velocity(self) -> f64
+pub const fn phoxal_model::structure::Safety::soft_lower_limit(self) -> f64
+pub const fn phoxal_model::structure::Safety::soft_upper_limit(self) -> f64
+pub struct phoxal_model::structure::Structure
+impl phoxal_model::structure::Structure
+pub fn phoxal_model::structure::Structure::asset_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = &phoxal_model::asset::AssetId>
+pub fn phoxal_model::structure::Structure::child_joints<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a phoxal_model::structure::Joint>
+pub fn phoxal_model::structure::Structure::joint(&self, &str) -> core::option::Option<&phoxal_model::structure::Joint>
+pub fn phoxal_model::structure::Structure::joints(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::structure::Joint>
+pub fn phoxal_model::structure::Structure::link(&self, &str) -> core::option::Option<&phoxal_model::structure::Link>
+pub fn phoxal_model::structure::Structure::links(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::structure::Link>
+pub fn phoxal_model::structure::Structure::materials(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::structure::Material>
+pub fn phoxal_model::structure::Structure::parent_joint(&self, &str) -> core::option::Option<&phoxal_model::structure::Joint>
+pub fn phoxal_model::structure::Structure::root_link(&self) -> &phoxal_model::structure::Link
+impl serde_core::ser::Serialize for phoxal_model::structure::Structure
+pub fn phoxal_model::structure::Structure::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for phoxal_model::structure::Structure
+pub fn phoxal_model::structure::Structure::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct phoxal_model::structure::Visual
+impl phoxal_model::structure::Visual
+pub fn phoxal_model::structure::Visual::geometry(&self) -> &phoxal_model::structure::Geometry
+pub fn phoxal_model::structure::Visual::material(&self) -> core::option::Option<&phoxal_model::structure::Material>
+pub fn phoxal_model::structure::Visual::name(&self) -> core::option::Option<&str>
+pub const fn phoxal_model::structure::Visual::origin(&self) -> phoxal_model::structure::Pose
+pub enum phoxal_model::DecodeError
+pub phoxal_model::DecodeError::Json(serde_json::error::Error)
+pub phoxal_model::DecodeError::MissingSchema
+pub phoxal_model::DecodeError::Model(phoxal_model::ModelError)
+pub phoxal_model::DecodeError::UnsupportedSchema(alloc::string::String)
+pub enum phoxal_model::ModelError
+pub phoxal_model::ModelError::Invalid(alloc::string::String)
+pub struct phoxal_model::AssetId(_)
+impl phoxal_model::asset::AssetId
+pub fn phoxal_model::asset::AssetId::as_str(&self) -> &str
+pub fn phoxal_model::asset::AssetId::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, phoxal_model::ModelError>
+impl serde_core::ser::Serialize for phoxal_model::asset::AssetId
+pub fn phoxal_model::asset::AssetId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for phoxal_model::asset::AssetId
+pub fn phoxal_model::asset::AssetId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct phoxal_model::EncodeError(_)
+pub struct phoxal_model::Robot
+impl phoxal_model::robot::Robot
+pub fn phoxal_model::robot::Robot::camera_capabilities(&self) -> core::result::Result<alloc::vec::Vec<phoxal_model::component::CapabilityRef>, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::capability(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<&phoxal_model::component::capability::Capability, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::component(&self, &str) -> core::option::Option<&phoxal_model::robot::ComponentInstance>
+pub fn phoxal_model::robot::Robot::component_for_instance(&self, &str) -> core::result::Result<&phoxal_model::component::Component, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::component_ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &str>
+pub fn phoxal_model::robot::Robot::component_instance(&self, &str) -> core::result::Result<&phoxal_model::robot::ComponentInstance, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::components(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::robot::ComponentInstance>
+pub fn phoxal_model::robot::Robot::decode(&[u8]) -> core::result::Result<Self, phoxal_model::DecodeError>
+pub fn phoxal_model::robot::Robot::encode(&self) -> core::result::Result<alloc::vec::Vec<u8>, phoxal_model::EncodeError>
+pub fn phoxal_model::robot::Robot::identity(&self) -> &phoxal_model::robot::RobotIdentity
+pub fn phoxal_model::robot::Robot::kinematic(&self) -> &phoxal_model::robot::KinematicConfig
+pub fn phoxal_model::robot::Robot::link_target_frame(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<alloc::string::String, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::motion(&self) -> &phoxal_model::robot::MotionModel
+pub const fn phoxal_model::robot::Robot::motion_limits(&self) -> phoxal_model::robot::MotionLimits
+pub fn phoxal_model::robot::Robot::namespace(&self) -> &str
+pub fn phoxal_model::robot::Robot::require_encoder(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<(&phoxal_model::component::capability::Encoder, i8), phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::require_motor(&self, &phoxal_model::component::CapabilityRef) -> core::result::Result<(&phoxal_model::component::capability::Motor, i8), phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::robot_id(&self) -> &str
+pub fn phoxal_model::robot::Robot::simulation_for_component_type(&self, &str) -> core::option::Option<&phoxal_model::simulation::Simulation>
+pub fn phoxal_model::robot::Robot::simulation_for_instance(&self, &str) -> core::result::Result<core::option::Option<&phoxal_model::simulation::Simulation>, phoxal_model::ModelError>
+pub fn phoxal_model::robot::Robot::structure(&self) -> &phoxal_model::structure::Structure
+pub struct phoxal_model::RobotIdentity
+impl phoxal_model::robot::RobotIdentity
+pub fn phoxal_model::robot::RobotIdentity::id(&self) -> &str
+pub fn phoxal_model::robot::RobotIdentity::namespace(&self) -> &str
+pub const phoxal_model::ROBOT_SCHEMA: &str

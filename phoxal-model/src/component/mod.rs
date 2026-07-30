@@ -7,18 +7,23 @@ pub mod capability;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::structure::Structure;
 use capability::Capability;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     capabilities: BTreeMap<String, Capability>,
+    structure: Structure,
 }
 
 impl Component {
     #[doc(hidden)]
-    pub fn __new(capabilities: BTreeMap<String, Capability>) -> Self {
-        Self { capabilities }
+    pub fn __new(capabilities: BTreeMap<String, Capability>, structure: Structure) -> Self {
+        Self {
+            capabilities,
+            structure,
+        }
     }
 
     #[must_use]
@@ -30,6 +35,11 @@ impl Component {
         self.capabilities
             .iter()
             .map(|(id, capability)| (id.as_str(), capability))
+    }
+
+    #[must_use]
+    pub fn structure(&self) -> &Structure {
+        &self.structure
     }
 }
 
@@ -92,9 +102,8 @@ impl From<CapabilityRef> for String {
 
 #[must_use]
 pub fn is_valid_token(value: &str) -> bool {
-    let trimmed = value.trim();
-    !trimmed.is_empty()
-        && trimmed.chars().all(|character| {
+    !value.is_empty()
+        && value.chars().all(|character| {
             character.is_ascii_lowercase()
                 || character.is_ascii_digit()
                 || character == '_'

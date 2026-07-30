@@ -3,32 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
-/// A normalized, forward-slash logical asset identifier.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct AssetId(String);
-
-impl AssetId {
-    /// Validate and construct a logical asset identifier.
-    pub fn new(value: impl Into<String>) -> crate::Result<Self> {
-        let value = value.into();
-        if value.is_empty()
-            || value.starts_with('/')
-            || value.contains('\\')
-            || value
-                .split('/')
-                .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
-        {
-            anyhow::bail!("invalid logical asset id '{value}'");
-        }
-        Ok(Self(value))
-    }
-
-    /// The normalized forward-slash representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+pub use phoxal_model::AssetId;
 
 /// Read-only resolver for the declared assets below `<bundle>/assets`.
 #[derive(Clone, Debug)]
@@ -118,8 +93,12 @@ fn discover_assets(
         }
         let logical = relative
             .components()
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
+            .map(|component| {
+                component.as_os_str().to_str().ok_or_else(|| {
+                    anyhow::anyhow!("compiled asset path is not UTF-8: {}", relative.display())
+                })
+            })
+            .collect::<crate::Result<Vec<_>>>()?
             .join("/");
         let id = AssetId::new(logical)?;
         if paths.insert(id.clone(), source).is_some() {

@@ -6,10 +6,12 @@ pub use motion::{KinematicConfig, MotionLimits};
 
 use std::collections::BTreeMap;
 
-use crate::component::capability::{Capability, Encoder, Motor, StructuralTarget};
+use crate::component::capability::{
+    Capability, Encoder, Motor, StructuralTarget, namespaced_structure_id,
+};
 use crate::component::{CapabilityRef, Component};
 use crate::simulation::Simulation;
-use crate::structure::Structure;
+use crate::structure::{JointKind, Structure};
 use crate::{DecodeError, EncodeError, ModelError, strict_json};
 
 /// Exact compiled-model wire schema. There is no legacy fallback.
@@ -163,10 +165,14 @@ impl Robot {
     /// Strictly decode and validate the canonical runtime wire document.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let value = strict_json::parse(bytes)?;
-        let wire: RobotWireOwned = serde_json::from_value(value)?;
-        if wire.schema != ROBOT_SCHEMA {
-            return Err(DecodeError::UnsupportedSchema(wire.schema));
+        let schema = value
+            .get("schema")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(DecodeError::MissingSchema)?;
+        if schema != ROBOT_SCHEMA {
+            return Err(DecodeError::UnsupportedSchema(schema.to_string()));
         }
+        let wire: RobotWireOwned = serde_json::from_value(value)?;
         Self::__from_compiler(RobotParts {
             id: wire.robot.identity.id,
             namespace: wire.robot.identity.namespace,
@@ -301,25 +307,25 @@ impl Robot {
         Ok((encoder, self.direction_sign(reference)?))
     }
 
-    pub fn require_link_target(&self, reference: &CapabilityRef) -> Result<String, ModelError> {
-        let StructuralTarget::Link { id } = self
-            .capability(reference)?
-            .target()
-            .namespaced(&reference.component_id)
-        else {
+    /// Validate and return the namespaced runtime frame for a capability's
+    /// component-local link target.
+    pub fn link_target_frame(&self, reference: &CapabilityRef) -> Result<String, ModelError> {
+        let StructuralTarget::Link { id } = self.capability(reference)?.target() else {
             return Err(ModelError::Invalid(format!(
                 "capability '{reference}' must target a link"
             )));
         };
-        self.structure.link(&id).map(|_| id.clone()).ok_or_else(|| {
-            ModelError::Invalid(format!(
+        if self
+            .component_for_instance(&reference.component_id)?
+            .structure()
+            .link(id)
+            .is_none()
+        {
+            return Err(ModelError::Invalid(format!(
                 "link target '{id}' for capability '{reference}' not found"
-            ))
-        })
-    }
-
-    pub fn component_mount_link(&self, id: &str) -> Result<String, ModelError> {
-        Ok(self.component_instance(id)?.mount_link().to_string())
+            )));
+        }
+        Ok(namespaced_structure_id(&reference.component_id, id))
     }
 
     fn direction_sign(&self, reference: &CapabilityRef) -> Result<i8, ModelError> {
@@ -335,8 +341,56 @@ impl Robot {
         validate_token(self.identity.id(), "robot id")?;
         validate_token(self.identity.namespace(), "robot namespace")?;
         self.motion.limits.validate()?;
-        self.structure.validate()?;
+        for link in self.structure.links() {
+            if link.name().contains("__") {
+                return Err(ModelError::Invalid(format!(
+                    "robot link '{}' must not contain reserved separator '__'",
+                    link.name()
+                )));
+            }
+        }
+        for joint in self.structure.joints() {
+            if joint.name().contains("__") {
+                return Err(ModelError::Invalid(format!(
+                    "robot joint '{}' must not contain reserved separator '__'",
+                    joint.name()
+                )));
+            }
+            validate_runtime_joint_kind(joint.kind(), joint.name(), "robot")?;
+        }
+        self.structure.validate_robot_frames()?;
+        for (component_type, component) in &self.component_types {
+            validate_token(component_type, "component type")?;
+            for joint in component.structure().joints() {
+                validate_runtime_joint_kind(joint.kind(), joint.name(), component_type)?;
+            }
+            for (capability_id, capability) in component.capabilities() {
+                validate_token(capability_id, "capability id")?;
+                match capability.target() {
+                    StructuralTarget::Link { id } => {
+                        if component.structure().link(id).is_none() {
+                            return Err(ModelError::Invalid(format!(
+                                "component type '{component_type}' capability '{capability_id}' references unknown link '{id}'"
+                            )));
+                        }
+                    }
+                    StructuralTarget::Joint { id } => {
+                        if component.structure().joint(id).is_none() {
+                            return Err(ModelError::Invalid(format!(
+                                "component type '{component_type}' capability '{capability_id}' references unknown joint '{id}'"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
         for (id, instance) in &self.component_instances {
+            validate_token(id, "component instance id")?;
+            if id.contains("__") {
+                return Err(ModelError::Invalid(format!(
+                    "component instance id '{id}' must not contain reserved separator '__'"
+                )));
+            }
             if id != instance.id() {
                 return Err(ModelError::Invalid(format!(
                     "component map identity '{id}' does not match embedded id '{}'",
@@ -354,6 +408,28 @@ impl Robot {
                     "component '{id}' references unknown mount link '{}'",
                     instance.mount_link()
                 )));
+            }
+            let component = self
+                .component_types
+                .get(instance.component_type())
+                .ok_or_else(|| {
+                    ModelError::Invalid(format!(
+                        "component '{id}' references unknown component type '{}'",
+                        instance.component_type()
+                    ))
+                })?;
+            for (capability_id, sign) in &instance.direction_signs {
+                validate_token(capability_id, "direction-sign capability id")?;
+                if !matches!(sign, -1 | 1) {
+                    return Err(ModelError::Invalid(format!(
+                        "component '{id}' capability '{capability_id}' direction sign must be -1 or 1"
+                    )));
+                }
+                if component.capability(capability_id).is_none() {
+                    return Err(ModelError::Invalid(format!(
+                        "component '{id}' direction sign references unknown capability '{capability_id}'"
+                    )));
+                }
             }
         }
         for (component_type, simulation) in &self.simulation_types {
@@ -473,15 +549,30 @@ fn validate_positive(value: f64, label: &str) -> Result<(), ModelError> {
     Ok(())
 }
 
+fn validate_runtime_joint_kind(
+    kind: JointKind,
+    joint_id: &str,
+    owner: &str,
+) -> Result<(), ModelError> {
+    if matches!(
+        kind,
+        JointKind::Fixed | JointKind::Revolute | JointKind::Continuous | JointKind::Prismatic
+    ) {
+        Ok(())
+    } else {
+        Err(ModelError::Invalid(format!(
+            "{owner} joint '{joint_id}' uses unsupported runtime kind '{kind:?}'"
+        )))
+    }
+}
+
 #[derive(serde::Serialize)]
-#[serde(deny_unknown_fields)]
 struct RobotWire<'a> {
     schema: &'static str,
     robot: RobotPayloadRef<'a>,
 }
 
 #[derive(serde::Serialize)]
-#[serde(deny_unknown_fields)]
 struct RobotPayloadRef<'a> {
     identity: &'a RobotIdentity,
     motion: &'a MotionModel,
@@ -494,7 +585,8 @@ struct RobotPayloadRef<'a> {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RobotWireOwned {
-    schema: String,
+    #[serde(rename = "schema")]
+    _schema: String,
     robot: RobotPayloadOwned,
 }
 

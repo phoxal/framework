@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
+pub use phoxal_model::AssetId;
 
 pub mod behavior;
 pub mod source;
@@ -111,10 +112,6 @@ pub enum ParticipantKind {
     Tool,
 }
 
-/// A normalized forward-slash logical asset id.
-#[derive(Debug, Clone, Eq, Ord, PartialEq, PartialOrd)]
-pub struct AssetId(String);
-
 /// Deterministic compiled runtime assets.
 #[derive(Debug, Clone, Default)]
 pub struct CompiledAssets(BTreeMap<AssetId, Vec<u8>>);
@@ -193,7 +190,16 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
             authored.validate_for_component(component_type)?;
             let capabilities =
                 serde_json::from_value(serde_json::to_value(authored.capabilities)?)?;
-            let component = phoxal_model::component::Component::__new(capabilities);
+            let structure_path = root.join("structure.urdf");
+            let structure = structure::Structure::read_from_file(&structure_path)
+                .with_context(|| {
+                    format!(
+                        "failed to read component structure {}",
+                        structure_path.display()
+                    )
+                })?
+                .into_canonical_fragment(component_type)?;
+            let component = phoxal_model::component::Component::__new(capabilities, structure);
             let simulation = if root.join("simulation.yaml").is_file() {
                 let authored = source::simulation::read_from_dir(&root).with_context(|| {
                     format!("failed to load simulation for component type '{component_type}'")
@@ -282,7 +288,7 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
                     structure_path.display()
                 )
             })?
-            .into_canonical()
+            .into_canonical(None)
     })()
     .map_err(|source| CompileError::Structure {
         path: structure_path,
@@ -333,6 +339,12 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
             }
         })?;
     let mut assets = CompiledAssets::default();
+    collect_files(&project_root.join("meshes"), "meshes/robot", &mut assets).map_err(|source| {
+        CompileError::Assets {
+            path: project_root.clone(),
+            source,
+        }
+    })?;
     for component_type in manifest.used_component_types() {
         let root = sources
             .component_roots
@@ -346,7 +358,7 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
             })?;
         collect_files(
             &root.join("meshes"),
-            &format!("meshes/{component_type}"),
+            &format!("meshes/components/{component_type}"),
             &mut assets,
         )
         .map_err(|source| CompileError::Assets {
@@ -370,6 +382,36 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
                 path: project_root.join("assets"),
                 source,
             })?;
+    }
+    for asset_id in robot.structure().asset_ids() {
+        if !assets.0.contains_key(asset_id) {
+            return Err(CompileError::Assets {
+                path: project_root.clone(),
+                source: anyhow::anyhow!(
+                    "canonical model references missing compiled asset '{}'",
+                    asset_id.as_str()
+                ),
+            });
+        }
+    }
+    for instance in robot.components() {
+        let component = robot
+            .component_for_instance(instance.id())
+            .map_err(|source| CompileError::CanonicalModel {
+                path: robot_manifest.clone(),
+                source,
+            })?;
+        for asset_id in component.structure().asset_ids() {
+            if !assets.0.contains_key(asset_id) {
+                return Err(CompileError::Assets {
+                    path: project_root.clone(),
+                    source: anyhow::anyhow!(
+                        "canonical model references missing compiled asset '{}'",
+                        asset_id.as_str()
+                    ),
+                });
+            }
+        }
     }
 
     Ok(CompiledProject {
@@ -500,27 +542,6 @@ impl ParticipantDeclarations {
     }
 }
 
-impl AssetId {
-    pub fn new(value: impl Into<String>) -> anyhow::Result<Self> {
-        let value = value.into();
-        if value.is_empty()
-            || value.starts_with('/')
-            || value.contains('\\')
-            || value
-                .split('/')
-                .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
-        {
-            bail!("invalid compiled asset id '{value}'");
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 impl CompiledAssets {
     fn insert(&mut self, id: AssetId, bytes: Vec<u8>) -> anyhow::Result<()> {
         if self.0.insert(id.clone(), bytes).is_some() {
@@ -557,7 +578,13 @@ fn collect_files(
                 source.display()
             );
         }
-        let name = entry.file_name().to_string_lossy().to_string();
+        let name = entry.file_name().into_string().map_err(|name| {
+            anyhow::anyhow!(
+                "asset source entry name is not UTF-8 below {}: {:?}",
+                source_root.display(),
+                name
+            )
+        })?;
         let staged = format!("{staged_root}/{name}");
         if metadata.is_dir() {
             collect_files(&source, &staged, output)?;
