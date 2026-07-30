@@ -19,7 +19,7 @@ const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "ph
 const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["workspace-policy", "fixture"];
 
 /// Official Phoxal packages always use this provider segment in their public
-/// `package` identity (`phoxal/<name>`). Third-party suites use their own
+/// `package` identity (`phoxal/<name>`). Third-party packages use their own
 /// provider segment; the grammar has no other official provider today.
 pub const PHOXAL_PROVIDER: &str = "phoxal";
 
@@ -40,22 +40,17 @@ pub enum ArtifactKind {
     Infrastructure,
 }
 
-impl ArtifactKind {
-    /// The suite's serialized artifact `kind` tag.
-    pub fn suite_kind(self) -> &'static str {
-        match self {
+impl fmt::Display for ArtifactKind {
+    /// Renders the kind as its top-level directory segment, the same token
+    /// `artifact_kind_from_directory` parses.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.pad(match self {
             ArtifactKind::Service => "service",
             ArtifactKind::Component => "component",
             ArtifactKind::Tool => "tool",
             ArtifactKind::Simulator => "simulator",
             ArtifactKind::Infrastructure => "infrastructure",
-        }
-    }
-}
-
-impl fmt::Display for ArtifactKind {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.pad(self.suite_kind())
+        })
     }
 }
 
