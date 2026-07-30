@@ -6,8 +6,8 @@ use std::time::Duration;
 use phoxal::api;
 use phoxal::prelude::*;
 #[cfg(test)]
-use phoxal::raw::encoding_string;
-use phoxal::raw::{
+use phoxal_bus::encoding_string;
+use phoxal_bus::{
     Bus, BusMetadata, Codec, CodecId, DiagnosticPublisher, MessagePack, QueryFailure,
     parse_encoding_string,
 };
@@ -102,7 +102,7 @@ fn is_version_topic(key: &str) -> bool {
 }
 
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
-// just `ctx.raw_bus()` and the raw handle constructors.
+// just `ctx.bus()` and the raw handle constructors.
 #[phoxal::tool]
 pub struct ToolBus;
 
@@ -112,7 +112,7 @@ impl Participant for ToolBus {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let bus = ctx.raw_bus();
+        let bus = ctx.bus();
         spawn_metrics(ctx, bus).await?;
         tracing::info!(target: "tool_bus", "bus observation ready");
         Ok(((), ()))
@@ -1450,13 +1450,13 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn metrics_use_the_ordinary_bus_publisher() {
-        let mut config = phoxal::raw::BusConfig::in_process("dev", "rover");
+        let mut config = phoxal_bus::BusConfig::in_process("dev", "rover");
         config.participant = "bus".to_string();
         let producer = config.producer;
-        let bus = phoxal::raw::Bus::open(config).await.expect("open bus");
+        let bus = phoxal_bus::Bus::open(config).await.expect("open bus");
         let topic = api::topic::owner().tool().bus().follow();
         let publisher = DiagnosticPublisher::new(bus.clone(), &topic).expect("metrics publisher");
-        let subscriber = phoxal::raw::Subscriber::<api::tool::bus::Follow>::new(
+        let subscriber = phoxal_bus::Subscriber::<api::tool::bus::Follow>::new(
             &bus,
             &api::topic::client().tool().bus().follow(),
             1,

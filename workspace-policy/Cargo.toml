@@ -24,6 +24,8 @@ serde_json = { workspace = true }
 toml_edit = "0.25.12"
 
 [dev-dependencies]
+phoxal = { workspace = true }
+phoxal-manifest = { workspace = true }
 tempfile = { workspace = true }
 # Reads the built-artifact linker section back out for
 # `participant_metadata_section_survives_the_linker` - the one honest way to

@@ -1,49 +1,37 @@
-error[E0599]: the method `timeline_authority` exists for mutable reference `&mut phoxal::participant::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
+error[E0599]: the method `timeline_authority` exists for mutable reference `&mut phoxal::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
   --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:13:30
    |
  5 | struct NotASimulator;
-   | -------------------- doesn't satisfy `NotASimulator: phoxal::participant::IsSimulator`
+   | -------------------- doesn't satisfy `_: WorldAuthoritySurface`
 ...
 13 |         let _authority = ctx.timeline_authority(TimelineId::mint())?;
-   |                              ^^^^^^^^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
-   |
-  ::: src/participant/context.rs
-   |
-   | pub struct SetupContext<R: Participant> {
-   | --------------------------------------- doesn't satisfy `_: SetupContextSimulatorExt<NotASimulator>`
+   |                              ^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<NotASimulator>` due to unsatisfied trait bounds
    |
    = note: the following trait bounds were not satisfied:
-           `NotASimulator: phoxal::participant::IsSimulator`
-           which is required by `phoxal::participant::SetupContext<NotASimulator>: phoxal::participant::SetupContextSimulatorExt<NotASimulator>`
-note: the trait `phoxal::participant::IsSimulator` must be implemented
-  --> src/participant/spec.rs
+           `NotASimulator: phoxal::__private::surface::WorldAuthoritySurface`
+note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be implemented
+  --> src/lib.rs
    |
-   | pub trait IsSimulator: sealing::Sealed {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         pub trait WorldAuthoritySurface: sealing::Sealed {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::participant::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
+error[E0599]: the method `world_clock_publisher` exists for mutable reference `&mut phoxal::SetupContext<NotASimulator>`, but its trait bounds were not satisfied
   --> tests/trybuild/fail/non_simulator_cannot_mint_world_clock.rs:15:14
    |
  5 |   struct NotASimulator;
-   |   -------------------- doesn't satisfy `NotASimulator: phoxal::participant::IsSimulator`
+   |   -------------------- doesn't satisfy `_: WorldAuthoritySurface`
 ...
 14 |           let _clock = ctx
    |  ______________________-
 15 | |             .world_clock_publisher(api::topic::owner().simulation().clock())
-   | |             -^^^^^^^^^^^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+   | |             -^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<NotASimulator>` due to unsatisfied trait bounds
    | |_____________|
    |
    |
-  ::: src/participant/context.rs
-   |
-   |   pub struct SetupContext<R: Participant> {
-   |   --------------------------------------- doesn't satisfy `_: SetupContextSimulatorExt<NotASimulator>`
-   |
    = note: the following trait bounds were not satisfied:
-           `NotASimulator: phoxal::participant::IsSimulator`
-           which is required by `phoxal::participant::SetupContext<NotASimulator>: phoxal::participant::SetupContextSimulatorExt<NotASimulator>`
-note: the trait `phoxal::participant::IsSimulator` must be implemented
-  --> src/participant/spec.rs
+           `NotASimulator: phoxal::__private::surface::WorldAuthoritySurface`
+note: the trait `phoxal::__private::surface::WorldAuthoritySurface` must be implemented
+  --> src/lib.rs
    |
-   | pub trait IsSimulator: sealing::Sealed {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         pub trait WorldAuthoritySurface: sealing::Sealed {}
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

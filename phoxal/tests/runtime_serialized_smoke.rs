@@ -2,10 +2,10 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use phoxal::__private::{ExecutionOrigin, ParticipantLaunch};
 use phoxal::api;
-use phoxal::participant::{ExecutionOrigin, ParticipantLaunch};
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, BusConfig};
+use phoxal_bus::{Bus, BusConfig};
 use tokio::sync::Notify;
 
 static STEP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -91,7 +91,7 @@ async fn a_query_waits_for_an_in_flight_step_and_stepping_resumes_afterward() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let runner_bus = bus.clone();
     let runner = async move {
-        phoxal::raw::run_with_bus::<SerializedSmoke, _>(&runner_bus, launch, async {
+        phoxal::__private::run_with_bus::<SerializedSmoke, _>(&runner_bus, launch, async {
             let _ = shutdown_rx.await;
         })
         .await

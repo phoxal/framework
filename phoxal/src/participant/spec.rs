@@ -1,73 +1,7 @@
-//! Static metadata markers the macros target (D50/D59/D60).
-//!
-//! - [`TypedGraphSurface`] is emitted by `#[phoxal::service|driver|simulator]`
-//!   and gates the typed graph handle builders away from thin tool runners.
-//! - [`SchedulableSurface`] is emitted by `#[phoxal::service|driver]` and gates
-//!   scheduled steps away from clockless tools and simulators.
-//! - [`IsDriver`]/[`IsSimulator`]/[`IsTool`] are emitted by the matching
-//!   attribute macro and gate the kind-specific `SetupContext` accessors
-//!   (`component()`, `raw_bus()`, and - for [`IsSimulator`] - world-clock
-//!   authority) in `participant::api`. All three are sealed (see
-//!   [`sealing::Sealed`]): ordinary participant code cannot write
-//!   `impl IsSimulator for MyType` and unlock those accessors on a type the
-//!   matching macro never blessed.
-//! - [`StepSchedule`]/[`MissedTick`] describe a `#[step(hz = …)]` loop's cadence
-//!   and overrun policy; the runner ([`participant::runner`](super::runner))
-//!   reads them from
-//!   [`Participant::__step_schedule`](super::api::Participant::__step_schedule).
+//! Sealed role capabilities emitted by participant macros plus step scheduling
+//! metadata consumed by the runtime engine.
 
 use std::time::Duration;
-
-/// The sealing boundary for [`IsDriver`]/[`IsSimulator`]/[`IsTool`].
-///
-/// This module is `pub` - not truly private - because the marker impls it
-/// gates are written by `#[phoxal::driver|simulator|tool]`'s macro expansion,
-/// which runs in the *downstream* participant crate, not this one. Rust has
-/// no visibility level between "this crate" and "the world" that a
-/// cross-crate macro expansion could still reach, so this cannot be a true
-/// `pub(crate)` seal. It is `#[doc(hidden)]` and named so a participant would
-/// have to go out of their way to find and write this exact path; a
-/// participant that does can still `impl sealing::Sealed for MyType {}` and
-/// then `impl IsSimulator for MyType {}` by hand. That closes the
-/// *accidental* route (writing `impl IsSimulator for MyType` alone no longer
-/// compiles), not a sealed capability boundary.
-#[doc(hidden)]
-pub mod sealing {
-    /// See the [module docs](self) for the exact strength of this seal.
-    pub trait Sealed {}
-}
-
-/// Marker emitted only by participant roles that expose typed graph handles.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` is a tool, which is a thin raw-bus runner and has no typed-graph surface",
-    label = "typed graph handles are not available here; use the raw bus (`phoxal::raw`) instead"
-)]
-pub trait TypedGraphSurface {}
-
-/// Marker emitted only by participant roles whose launch policy carries a
-/// schedulable robot clock.
-#[doc(hidden)]
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has a clockless launch policy and cannot own a scheduled step",
-    label = "scheduled steps are available only on services and drivers"
-)]
-pub trait SchedulableSurface {}
-
-/// Marker emitted only by `#[phoxal::driver]`. Sealed - see [`sealing`].
-#[doc(hidden)]
-pub trait IsDriver: sealing::Sealed {}
-
-/// Marker emitted only by `#[phoxal::tool]`. Sealed - see [`sealing`].
-#[doc(hidden)]
-pub trait IsTool: sealing::Sealed {}
-
-/// Marker emitted only by `#[phoxal::simulator]`. Sealed - see [`sealing`]:
-/// this is what keeps an arbitrary participant from unlocking the
-/// `SetupContextSimulatorExt` world-clock accessors
-/// (`phoxal::participant::api`) by writing `impl IsSimulator for MyType {}`
-/// on its own.
-#[doc(hidden)]
-pub trait IsSimulator: sealing::Sealed {}
 
 /// The cadence + missed-tick policy of a `#[step(hz = …)]` loop (D34).
 #[derive(Clone, Copy, Debug)]
@@ -109,6 +43,9 @@ pub enum MissedTick {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::__private::surface::{
+        ComponentBoundSurface, ToolSurface, TypedIoSurface, WorldAuthoritySurface,
+    };
     use crate::prelude::*;
 
     #[test]
@@ -147,8 +84,8 @@ mod tests {
     /// typed-graph surface.
     #[test]
     fn kind_macros_emit_their_markers() {
-        fn assert_simulator<T: IsSimulator + TypedGraphSurface>() {}
-        fn assert_tool<T: IsTool>() {}
+        fn assert_simulator<T: WorldAuthoritySurface + ComponentBoundSurface + TypedIoSurface>() {}
+        fn assert_tool<T: ToolSurface>() {}
 
         assert_simulator::<MarkerSimulator>();
         assert_tool::<MarkerTool>();

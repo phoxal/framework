@@ -31,7 +31,7 @@
 //! # Train-selected revision and per-contract identity
 //!
 //! A participant creates typed bus handles during
-//! [`Participant::setup`](phoxal::Participant::setup). Official participants
+//! `phoxal::Participant::setup`. Official participants
 //! name contract types through the complete train-selected facade. Embedded
 //! participant metadata carries `{id, config_schema}`.
 //! Across the graph, compatibility is **name identity** (D1) - two participants

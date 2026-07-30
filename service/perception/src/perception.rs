@@ -252,8 +252,10 @@ mod tests {
     use crate::detector::RawDetection;
     use crate::tracker::TrackerConfig;
 
-    fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixture/robot/rgbd-imu-diff-drive")
+    fn fixture() -> Robot {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
+        Robot::decode(&std::fs::read(path).unwrap()).unwrap()
     }
 
     fn raw(position_m: [f64; 3]) -> RawDetection {
@@ -328,7 +330,7 @@ mod tests {
 
     #[test]
     fn sensor_bindings_from_robot_enumerate_camera_and_depth_topics() {
-        let robot = Robot::read_from_dir(fixture()).unwrap();
+        let robot = fixture();
         let cameras = camera_bindings(&robot).unwrap();
         let depths = depth_bindings(&robot).unwrap();
 

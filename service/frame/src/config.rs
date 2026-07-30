@@ -8,7 +8,7 @@ use anyhow::{Result, bail};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use phoxal::api;
 use phoxal::model::Robot;
-use phoxal::model::structure::{Joint as UrdfJoint, JointType, Pose, Structure};
+use phoxal::model::structure::{Joint, JointKind, Pose, Structure};
 
 #[derive(Clone)]
 pub(crate) struct FrameConfig {
@@ -27,9 +27,9 @@ impl FrameConfig {
         let mut parent_by_child = BTreeMap::new();
         let mut dynamic_joints = Vec::new();
 
-        for joint in &structure.joints {
-            let parent_frame_id = joint.parent.link.clone();
-            let child_frame_id = joint.child.link.clone();
+        for joint in structure.joints() {
+            let parent_frame_id = joint.parent().to_string();
+            let child_frame_id = joint.child().to_string();
             let meta = JointMeta::from_joint(joint)?;
 
             parent_by_child.insert(
@@ -77,12 +77,12 @@ pub(crate) struct JointMeta {
 }
 
 impl JointMeta {
-    fn from_joint(joint: &UrdfJoint) -> Result<Self> {
+    fn from_joint(joint: &Joint) -> Result<Self> {
         Ok(Self {
-            joint_id: joint.name.clone(),
-            joint_type: FrameJointType::from_urdf(&joint.joint_type)?,
-            origin: pose_to_isometry(&joint.origin),
-            axis_xyz: [joint.axis.xyz[0], joint.axis.xyz[1], joint.axis.xyz[2]],
+            joint_id: joint.name().to_string(),
+            joint_type: FrameJointType::from_canonical(joint.kind())?,
+            origin: pose_to_isometry(joint.origin()),
+            axis_xyz: joint.axis(),
         })
     }
 }
@@ -96,22 +96,24 @@ pub(crate) enum FrameJointType {
 }
 
 impl FrameJointType {
-    fn from_urdf(joint_type: &JointType) -> Result<Self> {
+    fn from_canonical(joint_type: JointKind) -> Result<Self> {
         match joint_type {
-            JointType::Fixed => Ok(Self::Fixed),
-            JointType::Revolute => Ok(Self::Revolute),
-            JointType::Continuous => Ok(Self::Continuous),
-            JointType::Prismatic => Ok(Self::Prismatic),
-            JointType::Floating | JointType::Planar | JointType::Spherical => {
+            JointKind::Fixed => Ok(Self::Fixed),
+            JointKind::Revolute => Ok(Self::Revolute),
+            JointKind::Continuous => Ok(Self::Continuous),
+            JointKind::Prismatic => Ok(Self::Prismatic),
+            JointKind::Floating | JointKind::Planar | JointKind::Spherical => {
                 bail!("unsupported frame joint type {joint_type:?}")
             }
         }
     }
 }
 
-fn pose_to_isometry(pose: &Pose) -> Isometry3<f64> {
+fn pose_to_isometry(pose: Pose) -> Isometry3<f64> {
+    let xyz = pose.xyz();
+    let rpy = pose.rpy();
     Isometry3::from_parts(
-        Translation3::new(pose.xyz[0], pose.xyz[1], pose.xyz[2]),
-        UnitQuaternion::from_euler_angles(pose.rpy[0], pose.rpy[1], pose.rpy[2]),
+        Translation3::new(xyz[0], xyz[1], xyz[2]),
+        UnitQuaternion::from_euler_angles(rpy[0], rpy[1], rpy[2]),
     )
 }

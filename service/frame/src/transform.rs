@@ -94,8 +94,12 @@ fn common_ancestor(
     parent_by_child: &BTreeMap<String, (String, JointMeta)>,
 ) -> Option<String> {
     let target_ancestors = ancestors(target, parent_by_child);
+    let mut seen = BTreeSet::new();
     let mut current = source.to_string();
     loop {
+        if !seen.insert(current.clone()) {
+            return None;
+        }
         if target_ancestors.contains(&current) {
             return Some(current);
         }
@@ -111,7 +115,9 @@ fn ancestors(
     let mut ancestors = BTreeSet::new();
     let mut current = frame_id.to_string();
     loop {
-        ancestors.insert(current.clone());
+        if !ancestors.insert(current.clone()) {
+            return ancestors;
+        }
         let Some((parent, _)) = parent_by_child.get(&current) else {
             return ancestors;
         };
@@ -128,9 +134,13 @@ fn transform_from_ancestor_to_descendant(
     parent_by_child: &BTreeMap<String, (String, JointMeta)>,
 ) -> Option<(Option<RobotInstant>, Isometry3<f64>)> {
     let mut child_to_parent_edges = Vec::new();
+    let mut seen = BTreeSet::new();
     let mut current = descendant.to_string();
 
     while current != ancestor {
+        if !seen.insert(current.clone()) {
+            return None;
+        }
         let (parent, _) = parent_by_child.get(&current)?;
         child_to_parent_edges.push(edge_transform(&current, at, statics, dynamics)?);
         current = parent.clone();

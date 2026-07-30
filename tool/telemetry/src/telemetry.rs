@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use phoxal::api as stable;
 use phoxal::prelude::*;
-use phoxal::raw::{Codec, DiagnosticPublisher, MessagePack, QueryFailure, Subscriber};
+use phoxal_bus::{Codec, DiagnosticPublisher, MessagePack, QueryFailure, Subscriber};
 
 const DEVICE_RETENTION: Duration = Duration::from_secs(5 * 60);
 const MAX_DEVICE_RECORDS: usize = 512;
@@ -32,7 +32,7 @@ const MAX_RUNTIME_SNAPSHOT_WIRE_BYTES: usize = 16 * 1024 * 1024;
 // macro now defaults an omitted `config = …` to `()` for tools, so this
 // starts cleanly with `PHOXAL_CONFIG` ABSENT rather than requiring `'{}'`.
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
-// just `ctx.raw_bus()` and the raw handle constructors.
+// just `ctx.bus()` and the raw handle constructors.
 #[phoxal::tool]
 pub struct ToolTelemetry;
 
@@ -42,7 +42,7 @@ impl Participant for ToolTelemetry {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let bus = ctx.raw_bus();
+        let bus = ctx.bus();
 
         let device_history = Arc::new(Mutex::new(DeviceHistory::new(process_generation()?)));
         let device_samples =

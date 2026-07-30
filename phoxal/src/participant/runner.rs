@@ -268,7 +268,7 @@ where
 /// Deterministic clock-injection seam for clock-selectable checked graph
 /// participants. Fixed tool and simulator launch policies exclude them even if
 /// user code manually adds the public
-/// [`TypedGraphSurface`](crate::participant::TypedGraphSurface) marker.
+/// typed-I/O surface marker.
 #[doc(hidden)]
 pub async fn run_with_bus_clock<R, C, S>(
     bus: &Bus,
@@ -278,7 +278,7 @@ pub async fn run_with_bus_clock<R, C, S>(
 ) -> crate::Result<()>
 where
     R: Participant<LaunchPolicy = crate::participant::launch::ClockedParticipantLaunch>
-        + crate::participant::TypedGraphSurface,
+        + crate::__private::surface::TypedIoSurface,
     C: ClockSource,
     S: Future<Output = ()>,
 {
@@ -396,12 +396,13 @@ where
     S: Future<Output = ()>,
 {
     let config: R::Config = participant_config(launch.config.as_ref())?;
-    let robot = robot_for_launch(launch.robot_root.as_deref())?;
+    let robot = robot_for_launch(launch.bundle_root.as_deref())?;
+    let assets = asset_resolver_for_launch(launch.bundle_root.as_deref())?;
 
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
         robot,
-        launch.robot_root.clone(),
+        assets,
         launch.component_instance.clone(),
     );
     let participant = R::__new();
@@ -623,15 +624,28 @@ pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
     Ok(serde_json::from_value(value)?)
 }
 
-/// Load the resolved robot model from the launch's robot root, if one was
-/// provided, so official participants can read it via `ctx.robot()` (D33).
+/// Decode the one canonical runtime model from `<bundle>/robot.json`.
 pub(crate) fn robot_for_launch(
-    robot_root: Option<&std::path::Path>,
+    bundle_root: Option<&std::path::Path>,
 ) -> crate::Result<Option<Arc<crate::model::Robot>>> {
-    match robot_root {
-        Some(root) => Ok(Some(Arc::new(crate::model::Robot::read_from_dir(root)?))),
+    match bundle_root {
+        Some(root) => {
+            let path = root.join("robot.json");
+            let bytes = std::fs::read(&path).map_err(|error| {
+                anyhow::anyhow!("failed to read compiled model {}: {error}", path.display())
+            })?;
+            Ok(Some(Arc::new(crate::model::Robot::decode(&bytes)?)))
+        }
         None => Ok(None),
     }
+}
+
+pub(crate) fn asset_resolver_for_launch(
+    bundle_root: Option<&std::path::Path>,
+) -> crate::Result<Option<crate::AssetResolver>> {
+    bundle_root
+        .map(|root| crate::AssetResolver::discover(root.join("assets")))
+        .transpose()
 }
 
 /// The failure a participant reports when it cannot trust its own clock.
@@ -1371,8 +1385,8 @@ mod tests {
         participant_config::<Required>(Some(&supplied)).expect("a supplied config deserializes");
     }
 
-    /// D33: the launch's robot root is what binds the model a participant reads
-    /// through `ctx.robot()`. No root means no model, which is what makes
+    /// The launch bundle binds the compiled model a participant reads through
+    /// `ctx.robot()`. No bundle means no model, which is what makes
     /// `ctx.robot()` an error rather than a panic.
     #[test]
     fn the_robot_model_is_bound_only_when_the_launch_carries_a_root() {
@@ -1382,17 +1396,42 @@ mod tests {
                 .is_none()
         );
 
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../fixture/robot/rgbd-imu-diff-drive");
-        let robot = robot_for_launch(Some(&fixture))
+        let bundle = tempfile::tempdir().expect("temporary bundle");
+        std::fs::write(
+            bundle.path().join("robot.json"),
+            br#"{
+  "schema": "phoxal/robot/v0",
+  "robot": {
+    "identity": {"id": "test-robot", "namespace": "test"},
+    "motion": {
+      "kinematic": {"kind": "omnidirectional", "actuators": [], "encoders": []},
+      "limits": {"max_linear_speed_mps": 1.0, "max_angular_speed_radps": 1.0}
+    },
+    "component_instances": {},
+    "component_types": {},
+    "simulation_types": {},
+    "structure": {
+      "name": "test",
+      "links": [
+        {"name": "base_footprint", "inertial": {"origin": {"xyz": [0.0,0.0,0.0], "rpy": [0.0,0.0,0.0]}, "mass_kg": 0.0, "inertia": {"ixx":0.0,"ixy":0.0,"ixz":0.0,"iyy":0.0,"iyz":0.0,"izz":0.0}}, "visuals": [], "collisions": []},
+        {"name": "base_link", "inertial": {"origin": {"xyz": [0.0,0.0,0.0], "rpy": [0.0,0.0,0.0]}, "mass_kg": 0.0, "inertia": {"ixx":0.0,"ixy":0.0,"ixz":0.0,"iyy":0.0,"iyz":0.0,"izz":0.0}}, "visuals": [], "collisions": []}
+      ],
+      "joints": [{"name":"base_joint","kind":"fixed","origin":{"xyz":[0.0,0.0,0.0],"rpy":[0.0,0.0,0.0]},"parent":"base_footprint","child":"base_link","axis":[0.0,0.0,0.0],"limit":{"lower":0.0,"upper":0.0,"effort":0.0,"velocity":0.0},"calibration":null,"dynamics":null,"mimic":null,"safety":null}],
+      "materials": []
+    }
+  }
+}"#,
+        )
+        .unwrap();
+        let robot = robot_for_launch(Some(bundle.path()))
             .expect("the fixture root should load")
             .expect("a root binds a model");
-        assert_eq!(robot.robot_id(), "rgbd-imu-diff-drive");
+        assert_eq!(robot.robot_id(), "test-robot");
 
         let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture/robot");
         assert!(
             robot_for_launch(Some(&missing)).is_err(),
-            "a root without a robot.yaml must fail the launch, not bind nothing"
+            "a bundle without robot.json must fail the launch, not bind nothing"
         );
     }
 

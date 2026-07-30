@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 phoxal = { workspace = true }
+phoxal-bus = { workspace = true }
 sysinfo = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

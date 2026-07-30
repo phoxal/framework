@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal::raw::{Codec, DiagnosticPublisher, MessagePack, QueryFailure, Subscriber};
+use phoxal_bus::{Codec, DiagnosticPublisher, MessagePack, QueryFailure, Subscriber};
 
 const RETAINED_LOG_EVENTS: usize = 1_000;
 const INGEST_QUEUE_DEPTH: usize = 1_024;
@@ -28,7 +28,7 @@ impl Participant for ToolLog {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let bus = ctx.raw_bus();
+        let bus = ctx.bus();
         let history = Arc::new(Mutex::new(LogHistory::new(process_generation()?)));
 
         // Declare ingestion before readiness so later-started participants cannot

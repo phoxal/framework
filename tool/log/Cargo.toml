@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 phoxal = { workspace = true }
+phoxal-bus = { workspace = true }
 getrandom = { workspace = true }
 tracing = { workspace = true }
 

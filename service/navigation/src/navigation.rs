@@ -560,11 +560,9 @@ async fn publish_result(
 mod tests {
     use std::time::Duration;
 
-    use phoxal::participant::ExecutionOrigin;
-    use phoxal::participant::{ClockSource, ParticipantLaunch, TestClock};
-    use phoxal::raw::{
-        Bus, BusConfig, CommandPublisher, StatePublisher, StepToken, Subscriber, run_with_bus_clock,
-    };
+    use phoxal::__private::ExecutionOrigin;
+    use phoxal::__private::{ClockSource, ParticipantLaunch, TestClock, run_with_bus_clock};
+    use phoxal_bus::{Bus, BusConfig, CommandPublisher, StatePublisher, StepToken, Subscriber};
 
     use super::*;
 

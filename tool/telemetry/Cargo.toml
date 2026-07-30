@@ -18,6 +18,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 getrandom = { workspace = true }
 phoxal = { workspace = true }
+phoxal-bus = { workspace = true }
 tracing = { workspace = true }
 
 [lints]

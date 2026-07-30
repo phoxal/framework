@@ -9,178 +9,11 @@
 
 use std::path::PathBuf;
 
-use anyhow::Context;
 use clap::{CommandFactory, FromArgMatches};
-use serde::{Deserialize, Serialize};
-
-use crate::bus::{ExecutionId, ProducerId};
-use crate::participant::clock::ExecutionOrigin;
-
-/// Default bounded shutdown grace, in milliseconds.
-pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
-
-/// Public env variable names for the participant launch contract.
-pub mod env {
-    /// Bus-unique participant id.
-    pub const PARTICIPANT_ID: &str = "PHOXAL_PARTICIPANT_ID";
-    /// The supervised run this participant joins. Part of the bus key root.
-    pub const EXECUTION_ID: &str = "PHOXAL_EXECUTION_ID";
-    /// Supervisor-pre-minted producer identity for this process.
-    pub const PRODUCER_ID: &str = "PHOXAL_PRODUCER_ID";
-    /// Supervisor-minted origin of real robot time for this execution.
-    pub const EXECUTION_ORIGIN: &str = "PHOXAL_EXECUTION_ORIGIN";
-    /// Robot id for the transport root.
-    pub const ROBOT_ID: &str = "PHOXAL_ROBOT_ID";
-    /// Bus namespace for the transport root.
-    pub const NAMESPACE: &str = "PHOXAL_NAMESPACE";
-    /// Root directory containing the resolved robot model.
-    pub const ROBOT_ROOT: &str = "PHOXAL_ROBOT_ROOT";
-    /// Component instance id for driver launches.
-    pub const COMPONENT_INSTANCE: &str = "PHOXAL_COMPONENT_INSTANCE";
-    /// Comma-separated Zenoh connect endpoints.
-    pub const CONNECT: &str = "PHOXAL_CONNECT";
-    /// Inline JSON participant config block.
-    pub const CONFIG: &str = "PHOXAL_CONFIG";
-    /// Clock mode for services and drivers: real or simulation.
-    pub const CLOCK: &str = "PHOXAL_CLOCK";
-
-    /// All env names in contract order.
-    pub const ALL: &[&str] = &[
-        PARTICIPANT_ID,
-        EXECUTION_ID,
-        PRODUCER_ID,
-        EXECUTION_ORIGIN,
-        ROBOT_ID,
-        NAMESPACE,
-        ROBOT_ROOT,
-        COMPONENT_INSTANCE,
-        CONNECT,
-        CONFIG,
-        CLOCK,
-    ];
-}
-
-/// One participant's launch record.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ParticipantLaunch {
-    /// The bus-unique participant id (never the static participant/artifact id,
-    /// D53). A diagnostic label, never bus identity.
-    pub participant_id: String,
-    /// The supervised run this participant joins (#952 section B). The
-    /// supervisor mints it once per run and every participant carries it; it
-    /// scopes the bus key root.
-    pub execution: ExecutionId,
-    /// This process's producer identity (#952 section G). A supervisor
-    /// pre-mints it so restart fencing can re-key on the same value; an
-    /// unmanaged local run mints its own.
-    pub producer: ProducerId,
-    /// The supervisor-minted origin of real robot time. Absent for a run with
-    /// no supervisor, in which case a real-clock participant reports itself
-    /// unsynchronized rather than inventing an origin.
-    #[serde(default, with = "origin_serde")]
-    pub execution_origin: Option<ExecutionOrigin>,
-    /// The bus namespace (`robot.namespace`).
-    pub namespace: String,
-    /// The robot id (`robot.id`).
-    pub robot_id: String,
-    /// The resolved bus profile.
-    #[serde(default)]
-    pub bus: BusProfile,
-    /// The robot clock mode. Tool and simulator launch policies never read this
-    /// field; their scheduling is structurally host-driven.
-    #[serde(default)]
-    pub clock: ClockMode,
-    /// The participant's typed config block (`services.<id>.config`), if any.
-    #[serde(default)]
-    pub config: Option<serde_json::Value>,
-    /// The root that holds the robot model (`robot.yaml` + components + structure).
-    /// Official participants read it via `SetupContext::robot()`; absent for a bare
-    /// local run with no model.
-    #[serde(default)]
-    pub robot_root: Option<PathBuf>,
-    /// The `robot.components` entry this participant drives (D47/D53). A
-    /// component driver is launched once per instance, each with a distinct
-    /// `participant_id` and its own `component_instance`; read via
-    /// `SetupContext::component()`. Absent for non-driver participants.
-    #[serde(default)]
-    pub component_instance: Option<String>,
-    /// Bounded shutdown grace, in milliseconds.
-    #[serde(default = "default_grace")]
-    pub shutdown_grace_ms: u64,
-}
-
-fn default_grace() -> u64 {
-    DEFAULT_SHUTDOWN_GRACE_MS
-}
-
-impl ParticipantLaunch {
-    /// A default launch for local runs: a freshly minted execution and
-    /// producer, an in-process bus, and the given participant id (defaulting
-    /// the namespace to `dev`, D38).
-    ///
-    /// The execution **origin** is deliberately absent. Only a supervisor mints
-    /// one, and inventing a per-process origin here would defeat the
-    /// `TimeUnsynchronized::MissingOrigin` trigger: several participants
-    /// launched without `PHOXAL_EXECUTION_ORIGIN` would each silently run on
-    /// their own timeline instead of reporting that they have no trustworthy
-    /// clock. Use [`with_execution_origin`](Self::with_execution_origin) for a
-    /// test or bench run that wants a real one.
-    pub fn local(participant_id: impl Into<String>, robot_id: impl Into<String>) -> Self {
-        ParticipantLaunch {
-            participant_id: participant_id.into(),
-            execution: ExecutionId::mint(),
-            producer: ProducerId::mint(),
-            execution_origin: None,
-            namespace: "dev".to_string(),
-            robot_id: robot_id.into(),
-            bus: BusProfile::default(),
-            clock: ClockMode::Real,
-            config: None,
-            robot_root: None,
-            component_instance: None,
-            shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
-        }
-    }
-
-    /// Join an existing supervised run instead of the freshly minted one.
-    pub fn in_execution(mut self, execution: ExecutionId) -> Self {
-        self.execution = execution;
-        self
-    }
-
-    /// Anchor real robot time at `origin`. A supervisor mints this once per
-    /// run; a bench run that wants a working real clock mints its own.
-    pub fn with_execution_origin(mut self, origin: ExecutionOrigin) -> Self {
-        self.execution_origin = Some(origin);
-        self
-    }
-}
-
-/// `ExecutionOrigin` rides the JSON launch record as its rendered form, so the
-/// record stays a flat, human-readable document rather than exposing the boot
-/// identity as three separate fields nobody sets by hand.
-mod origin_serde {
-    use super::ExecutionOrigin;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub(super) fn serialize<S: Serializer>(
-        value: &Option<ExecutionOrigin>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        value.map(ExecutionOrigin::encode).serialize(serializer)
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<ExecutionOrigin>, D::Error> {
-        let Some(rendered) = Option::<String>::deserialize(deserializer)? else {
-            return Ok(None);
-        };
-        ExecutionOrigin::decode(&rendered).map(Some).ok_or_else(|| {
-            serde::de::Error::custom(format!("malformed execution origin '{rendered}'"))
-        })
-    }
-}
+pub use phoxal_runtime_contract::{
+    BusProfile, ClockMode, DEFAULT_SHUTDOWN_GRACE_MS, ExecutionId, ExecutionOrigin, LaunchEnv,
+    ParticipantLaunch, ProducerId, env,
+};
 
 /// The clap-derived launch fields shared by every participant binary.
 #[derive(Debug, clap::Args)]
@@ -239,11 +72,11 @@ struct CommonLaunchCli {
     /// Root directory containing the resolved robot model.
     #[arg(
         long,
-        env = env::ROBOT_ROOT,
+        env = env::BUNDLE_ROOT,
         hide_env_values = true,
         value_name = "DIR"
     )]
-    robot_root: Option<PathBuf>,
+    bundle_root: Option<PathBuf>,
 
     /// Component instance id for driver launches.
     #[arg(
@@ -289,7 +122,7 @@ struct ClockedLaunchCli {
         long,
         env = env::CLOCK,
         hide_env_values = true,
-        value_enum,
+        value_parser = parse_clock_mode,
         default_value_t = ClockMode::Real
     )]
     clock: ClockMode,
@@ -328,44 +161,26 @@ impl CommonLaunchCli {
         default_participant_id: &'static str,
         default_robot_id: &'static str,
     ) -> crate::Result<ParticipantLaunch> {
-        let participant_id =
-            nonempty_or(self.participant_id, || default_participant_id.to_string());
-        let robot_id = nonempty_or(self.robot_id, || default_robot_id.to_string());
-        let mut launch = ParticipantLaunch::local(participant_id, robot_id);
-        if let Some(execution) = self.execution_id.filter(|value| !value.is_empty()) {
-            launch.execution = ExecutionId::parse(&execution)
-                .map_err(anyhow::Error::msg)
-                .context("PHOXAL_EXECUTION_ID is invalid")?;
-        }
-        if let Some(producer) = self.producer_id.filter(|value| !value.is_empty()) {
-            launch.producer = ProducerId::parse(&producer)
-                .map_err(anyhow::Error::msg)
-                .context("PHOXAL_PRODUCER_ID is invalid")?;
-        }
-        if let Some(origin) = self.execution_origin.filter(|value| !value.is_empty()) {
-            launch.execution_origin = Some(ExecutionOrigin::decode(&origin).ok_or_else(|| {
-                anyhow::anyhow!("PHOXAL_EXECUTION_ORIGIN is malformed: '{origin}'")
-            })?);
-        }
-        launch.namespace = nonempty_or(self.namespace, || "dev".to_string());
-        launch.robot_root = self.robot_root.filter(|path| !path.as_os_str().is_empty());
-        launch.component_instance = self
-            .component_instance
-            .filter(|instance| !instance.is_empty());
-        if let Some(endpoints) = self.connect.filter(|endpoints| !endpoints.is_empty()) {
-            launch.bus.connect_endpoints = endpoints
-                .split(',')
-                .map(|endpoint| endpoint.trim().to_string())
-                .filter(|endpoint| !endpoint.is_empty())
-                .collect();
-        }
-        if let Some(config) = self.config.filter(|config| !config.is_empty()) {
-            launch.config = Some(
-                serde_json::from_str(&config)
-                    .context("PHOXAL_CONFIG must be valid JSON for the participant config")?,
-            );
-        }
-        Ok(launch)
+        ParticipantLaunch::decode(LaunchEnv {
+            participant_id: self
+                .participant_id
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| default_participant_id.to_string()),
+            execution_id: self.execution_id,
+            producer_id: self.producer_id,
+            execution_origin: self.execution_origin,
+            robot_id: self
+                .robot_id
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| default_robot_id.to_string()),
+            namespace: self.namespace,
+            bundle_root: self.bundle_root,
+            component_instance: self.component_instance,
+            connect: self.connect,
+            config: self.config,
+            clock: ClockMode::Real,
+        })
+        .map_err(anyhow::Error::from)
     }
 }
 
@@ -457,51 +272,14 @@ impl ParticipantLaunchPolicy for SimulatorParticipantLaunch {
     }
 }
 
-fn nonempty_or(value: Option<String>, default: impl FnOnce() -> String) -> String {
-    value
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(default)
-}
-
-/// A resolved bus profile: where to connect. Empty endpoints = in-process.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BusProfile {
-    /// Zenoh connect endpoints; empty means in-process (local sim / tests).
-    #[serde(default)]
-    pub connect_endpoints: Vec<String>,
-}
-
-/// The clock mode the runner uses.
-///
-/// [`ClockMode::Real`] drives scheduled steps from wall time. [`ClockMode::Simulation`]
-/// drives the logical-time scheduler from the authoritative
-/// `simulation/clock` bus feed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum ClockMode {
-    /// Host-monotonic real time.
-    #[default]
-    Real,
-    /// Drive scheduled steps from the authoritative `simulation/clock` feed.
-    Simulation,
-    /// No robot time at all.
-    ///
-    /// Tools and the externally driven simulation controller join the
-    /// *execution*, not the clock (#952 section B): they are given no execution
-    /// origin, they have no `Participant::step` to schedule, and they express no robot
-    /// time. Selecting `Real` for them would demand an origin their launch
-    /// contract deliberately withholds, which is a startup failure rather than
-    /// a safety property.
-    Clockless,
-}
-
-impl std::fmt::Display for ClockMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClockMode::Real => f.write_str("real"),
-            ClockMode::Simulation => f.write_str("simulation"),
-            ClockMode::Clockless => f.write_str("clockless"),
-        }
+fn parse_clock_mode(value: &str) -> Result<ClockMode, String> {
+    match value {
+        "real" => Ok(ClockMode::Real),
+        "simulation" => Ok(ClockMode::Simulation),
+        "clockless" => Ok(ClockMode::Clockless),
+        _ => Err(format!(
+            "invalid clock mode '{value}'; expected real or simulation"
+        )),
     }
 }
 
@@ -553,7 +331,7 @@ mod tests {
         assert_eq!(launch.participant_id, "default-id");
         assert_eq!(launch.robot_id, "robot");
         assert_eq!(launch.namespace, "dev");
-        assert_eq!(launch.robot_root, None);
+        assert_eq!(launch.bundle_root, None);
         assert_eq!(launch.config, None);
         assert!(launch.bus.connect_endpoints.is_empty());
         assert_eq!(launch.clock, ClockMode::Real);
@@ -574,7 +352,7 @@ mod tests {
             std::env::set_var(env::EXECUTION_ORIGIN, origin.encode());
             std::env::set_var(env::ROBOT_ID, "robot-a");
             std::env::set_var(env::NAMESPACE, "lab");
-            std::env::set_var(env::ROBOT_ROOT, "/robot");
+            std::env::set_var(env::BUNDLE_ROOT, "/robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "tof_front");
             std::env::set_var(env::CONNECT, "tcp/127.0.0.1:7447, tcp/127.0.0.1:7448");
             std::env::set_var(env::CONFIG, r#"{"rate_hz":10}"#);
@@ -588,7 +366,7 @@ mod tests {
         assert_eq!(launch.robot_id, "robot-a");
         assert_eq!(launch.namespace, "lab");
         assert_eq!(
-            launch.robot_root.as_deref(),
+            launch.bundle_root.as_deref(),
             Some(std::path::Path::new("/robot"))
         );
         assert_eq!(launch.component_instance.as_deref(), Some("tof_front"));
@@ -617,7 +395,7 @@ mod tests {
             std::env::set_var(env::PRODUCER_ID, ProducerId::mint().to_string());
             std::env::set_var(env::ROBOT_ID, "env-robot");
             std::env::set_var(env::NAMESPACE, "env-ns");
-            std::env::set_var(env::ROBOT_ROOT, "/env-robot");
+            std::env::set_var(env::BUNDLE_ROOT, "/env-robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "env-component");
             std::env::set_var(env::CONNECT, "tcp/env:7447");
             std::env::set_var(env::CONFIG, r#"{"source":"env"}"#);
@@ -636,7 +414,7 @@ mod tests {
             "flag-robot",
             "--namespace",
             "flag-ns",
-            "--robot-root",
+            "--bundle-root",
             "/flag-robot",
             "--component-instance",
             "flag-component",
@@ -655,7 +433,7 @@ mod tests {
         assert_eq!(launch.robot_id, "flag-robot");
         assert_eq!(launch.namespace, "flag-ns");
         assert_eq!(
-            launch.robot_root.as_deref(),
+            launch.bundle_root.as_deref(),
             Some(std::path::Path::new("/flag-robot"))
         );
         assert_eq!(launch.component_instance.as_deref(), Some("flag-component"));
@@ -679,7 +457,7 @@ mod tests {
         let err = command_for::<ClockedLaunchCli>("default-id", "robot")
             .try_get_matches_from(["participant-bin"])
             .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        assert_eq!(err.kind(), ErrorKind::ValueValidation);
         clear_env();
     }
 
@@ -703,7 +481,7 @@ mod tests {
             ("--execution-origin", env::EXECUTION_ORIGIN),
             ("--robot-id", env::ROBOT_ID),
             ("--namespace", env::NAMESPACE),
-            ("--robot-root", env::ROBOT_ROOT),
+            ("--bundle-root", env::BUNDLE_ROOT),
             ("--component-instance", env::COMPONENT_INSTANCE),
             ("--connect", env::CONNECT),
             ("--config", env::CONFIG),

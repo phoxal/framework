@@ -314,8 +314,10 @@ mod tests {
 
     use super::*;
 
-    fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixture/robot/rgbd-imu-diff-drive")
+    fn fixture() -> Robot {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
+        Robot::decode(&std::fs::read(path).unwrap()).unwrap()
     }
 
     fn request(capability: &str) -> api::video::OpenRequest {
@@ -332,7 +334,7 @@ mod tests {
 
     #[test]
     fn build_sources_from_robot_enumerates_camera_topics() {
-        let robot = Robot::read_from_dir(fixture()).unwrap();
+        let robot = fixture();
         let sources = build_video_sources(&robot).unwrap();
 
         assert_eq!(sources.len(), 3);

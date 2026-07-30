@@ -21,23 +21,20 @@ path = "src/lib.rs"
 phoxal-api = { workspace = true }
 phoxal-bus = { workspace = true }
 phoxal-macros = { workspace = true }
+phoxal-model = { workspace = true }
+phoxal-runtime-contract = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 const_format = { workspace = true }
-libc = { workspace = true }
-nalgebra = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
-sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time", "signal", "sync", "fs"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-urdf-rs = { workspace = true }
 
 [dev-dependencies]
-jsonschema = { version = "0.46.6", default-features = false }
+jsonschema = { workspace = true }
 schemars = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }

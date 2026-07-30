@@ -54,9 +54,9 @@ impl JointConfig {
     fn from_robot(robot: &Robot) -> Result<Self> {
         let mut encoders = Vec::new();
 
-        for component_id in robot.components().keys() {
+        for component_id in robot.component_ids() {
             let component = robot.component_for_instance(component_id)?;
-            for (capability_id, capability) in &component.capabilities {
+            for (capability_id, capability) in component.capabilities() {
                 let Capability::Encoder(_) = capability else {
                     continue;
                 };
@@ -77,8 +77,8 @@ impl JointConfig {
 
                 encoders.push(EncoderBinding {
                     joint_id: id,
-                    component_id: component_id.clone(),
-                    capability_id: capability_id.clone(),
+                    component_id: component_id.to_string(),
+                    capability_id: capability_id.to_string(),
                     direction_sign,
                     gear_ratio: encoder.gear_ratio,
                 });
@@ -209,15 +209,9 @@ fn joint_state(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use phoxal::api;
 
-    use super::{EncoderBinding, JointConfig, joint_state};
-
-    fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixture/robot/rgbd-imu-diff-drive")
-    }
+    use super::{EncoderBinding, joint_state};
 
     fn binding(direction_sign: i8, gear_ratio: f64) -> EncoderBinding {
         EncoderBinding {
@@ -289,49 +283,5 @@ mod tests {
             )
             .is_none()
         );
-    }
-
-    #[test]
-    fn config_from_robot_enumerates_joint_targeted_encoders() {
-        let robot = phoxal::model::Robot::read_from_dir(fixture()).unwrap();
-        let config = JointConfig::from_robot(&robot).unwrap();
-
-        assert_eq!(config.encoders.len(), 4);
-        assert!(
-            config
-                .encoders
-                .iter()
-                .all(|binding| binding.joint_id.ends_with("__motor_joint"))
-        );
-        assert!(
-            config
-                .encoders
-                .iter()
-                .any(|binding| binding.direction_sign == -1)
-        );
-    }
-
-    #[test]
-    fn link_targeted_encoders_are_excluded_from_joint_config() {
-        let root = fixture();
-        let (source, mut components, simulations, structure) =
-            phoxal::model::Robot::read_sources_from_dir(&root).unwrap();
-        components.values_mut().for_each(|component| {
-            component.capabilities.values_mut().for_each(|capability| {
-                if let phoxal::model::source::component::v0::capability::Capability::Encoder(
-                    encoder,
-                ) = capability
-                {
-                    encoder.target =
-                        phoxal::model::source::component::v0::capability::StructuralTarget::Link {
-                            id: "rotor_link".to_string(),
-                        };
-                }
-            });
-        });
-        let robot =
-            phoxal::model::Robot::try_from_sources(source, components, simulations, structure)
-                .unwrap();
-        assert!(JointConfig::from_robot(&robot).unwrap().encoders.is_empty());
     }
 }

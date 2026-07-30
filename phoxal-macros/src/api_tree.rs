@@ -3,9 +3,9 @@
 //! Grammar. The body of a `version` is a tree of **nodes**. A node is either
 //! static (`name { … }`) or dynamic (`name(var) { … }`); it can be nested to any
 //! depth and may hold any mix of types (`struct`/`enum`), `topic` declarations,
-//! and child nodes. Every topic declares a **role**: `topic <leaf>: command
-//! <Body>;` (a control input the owner subscribes), `topic <leaf>: state <Body>;`
-//! (telemetry the owner publishes), or `topic <leaf>: query <Req> => <Resp>;`
+//! and child nodes. Every topic declares a **role**: `topic name: command Body;`
+//! (a control input the owner subscribes), `topic name: state Body;` (telemetry
+//! the owner publishes), or `topic name: query Request => Response;`
 //! (request/response). `command` and `state` are both pub/sub on the wire; the
 //! role drives the side-branded builders (L1): the public client builder
 //! (`api::topic::client()...`) and the owner builder (`api::topic::owner()...`)
@@ -23,8 +23,8 @@
 //! subscribes), but the generated body implements `WorldClockContract` instead
 //! of `StateContract`, so the ordinary `state_publisher` builder every
 //! participant has cannot name it; the only documented builder is
-//! `phoxal::participant::api::SetupContextSimulatorExt::world_clock_publisher`,
-//! gated on the `IsSimulator` marker. There is exactly one production use -
+//! `phoxal::SetupContext::world_clock_publisher`,
+//! gated on the sealed world-authority surface. There is exactly one production use -
 //! `simulation::Clock` - and no reason for a second. This role exists to close
 //! the accidental route to minting world time; it is not an absolute seal, and
 //! `TimelineAuthority`'s docs state the exact strength of the guarantee

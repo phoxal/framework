@@ -67,7 +67,7 @@ impl Participant for OakDLite {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let instance = ctx.component()?.to_string();
+        let instance = ctx.component()?.id().to_string();
         let (camera_slots, depth_slots, imu_slots, accelerometer_slots, gyroscope_slots) = {
             let robot = ctx.robot()?;
             let spec = robot.component_for_instance(&instance)?;
@@ -77,7 +77,7 @@ impl Participant for OakDLite {
             let mut accelerometer = Vec::new();
             let mut gyroscope = Vec::new();
 
-            for (capability_id, capability) in &spec.capabilities {
+            for (capability_id, capability) in spec.capabilities() {
                 match capability {
                     Capability::Camera(config) => {
                         validate_publish_rate(capability_id, config.publish_rate_hz)?;

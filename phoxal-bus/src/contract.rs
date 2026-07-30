@@ -105,8 +105,8 @@ pub trait StateContract: ContractBody {}
 /// convention rather than a compiler rule.
 /// Excluding it from `StateContract` is what makes that builder reject it at
 /// compile time, forcing every caller through the world-authority-gated
-/// `SetupContextSimulatorExt::world_clock_publisher` in the `phoxal` crate
-/// instead (`Self: IsSimulator`).
+/// `SetupContext::world_clock_publisher` in the `phoxal` crate
+/// instead (`Self: world-authority surface`).
 ///
 /// Bounds [`WorldClockPublisher`](crate::handle::WorldClockPublisher), a
 /// dedicated handle type separate from

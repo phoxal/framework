@@ -11,11 +11,21 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+#[cfg(test)]
+use cargo_metadata::DependencyKind;
 use cargo_metadata::{MetadataCommand, TargetKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const LIBRARY_CRATE_DIRS: [&str; 4] = ["phoxal", "phoxal-api", "phoxal-bus", "phoxal-macros"];
+const LIBRARY_CRATE_DIRS: [&str; 7] = [
+    "phoxal",
+    "phoxal-api",
+    "phoxal-bus",
+    "phoxal-macros",
+    "phoxal-manifest",
+    "phoxal-model",
+    "phoxal-runtime-contract",
+];
 const EXCLUDED_TOP_LEVEL_DIRS: [&str; 2] = ["workspace-policy", "fixture"];
 
 /// Official Phoxal packages always use this provider segment in their public
@@ -477,6 +487,147 @@ mod tests {
                 "periodic tool {tool} must skip missed ticks instead of catching up"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn public_library_dependency_direction_is_exact() -> Result<()> {
+        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("workspace-policy manifest directory has no workspace parent")?
+            .join("Cargo.toml");
+        let metadata = MetadataCommand::new()
+            .manifest_path(workspace_manifest)
+            .no_deps()
+            .exec()?;
+        let libraries = [
+            "phoxal",
+            "phoxal-api",
+            "phoxal-bus",
+            "phoxal-macros",
+            "phoxal-manifest",
+            "phoxal-model",
+            "phoxal-runtime-contract",
+        ];
+        let allowed = [
+            ("phoxal", "phoxal-api"),
+            ("phoxal", "phoxal-bus"),
+            ("phoxal", "phoxal-macros"),
+            ("phoxal", "phoxal-model"),
+            ("phoxal", "phoxal-runtime-contract"),
+            ("phoxal-api", "phoxal-bus"),
+            ("phoxal-api", "phoxal-macros"),
+            ("phoxal-bus", "phoxal-runtime-contract"),
+            ("phoxal-manifest", "phoxal-model"),
+        ];
+        let mut actual = Vec::new();
+        for package in metadata
+            .packages
+            .iter()
+            .filter(|package| libraries.contains(&package.name.as_str()))
+        {
+            for dependency in package.dependencies.iter().filter(|dependency| {
+                dependency.kind == DependencyKind::Normal
+                    && libraries.contains(&dependency.name.as_str())
+            }) {
+                actual.push((package.name.as_str(), dependency.name.as_str()));
+            }
+        }
+        actual.sort_unstable();
+        let mut expected = allowed.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "public library dependency direction drifted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn canonical_crates_and_official_participants_keep_forbidden_edges_absent() -> Result<()> {
+        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("workspace-policy manifest directory has no workspace parent")?
+            .join("Cargo.toml");
+        let metadata = MetadataCommand::new()
+            .manifest_path(workspace_manifest)
+            .no_deps()
+            .exec()?;
+        let bans: &[(&str, &[&str])] = &[
+            (
+                "phoxal-model",
+                &[
+                    "phoxal-manifest",
+                    "phoxal",
+                    "phoxal-bus",
+                    "tokio",
+                    "clap",
+                    "zenoh",
+                    "serde_yaml",
+                    "urdf-rs",
+                    "anyhow",
+                ],
+            ),
+            ("phoxal-manifest", &["phoxal", "phoxal-bus", "phoxal-cli"]),
+            (
+                "phoxal-runtime-contract",
+                &["phoxal", "phoxal-model", "tokio", "clap", "zenoh"],
+            ),
+            ("phoxal", &["phoxal-manifest"]),
+        ];
+        let mut violations = Vec::new();
+        for (package_name, forbidden) in bans {
+            let package = metadata
+                .packages
+                .iter()
+                .find(|package| package.name.as_str() == *package_name)
+                .with_context(|| format!("missing package {package_name}"))?;
+            for dependency in &package.dependencies {
+                if forbidden.contains(&dependency.name.as_str()) {
+                    violations.push(format!(
+                        "{} -> {} ({:?})",
+                        package.name, dependency.name, dependency.kind
+                    ));
+                }
+            }
+        }
+
+        for package in &metadata.packages {
+            let manifest = package.manifest_path.as_std_path();
+            let relative = manifest
+                .strip_prefix(
+                    Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .parent()
+                        .context("workspace root")?,
+                )
+                .unwrap_or(manifest);
+            let mut components = relative.components();
+            let top = components
+                .next()
+                .and_then(|value| value.as_os_str().to_str());
+            let second = components
+                .next()
+                .and_then(|value| value.as_os_str().to_str());
+            let official = matches!(
+                (top, second),
+                (Some("service" | "component" | "simulator" | "tool"), _)
+                    | (Some("infrastructure"), Some("router"))
+            );
+            if official
+                && package
+                    .dependencies
+                    .iter()
+                    .any(|dependency| dependency.name.as_str() == "phoxal-manifest")
+            {
+                violations.push(format!("{} -> phoxal-manifest", package.name));
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "forbidden dependency edges:\n{}",
+            violations.join("\n")
+        );
         Ok(())
     }
 
@@ -944,5 +1095,33 @@ fn main() -> phoxal::Result<()> {
             package_identity(ArtifactKind::Infrastructure, "router"),
             "phoxal/infrastructure-router"
         );
+    }
+
+    #[test]
+    fn compiled_asset_id_rules_match_at_the_producer_and_consumer_boundary() {
+        let cases = [
+            ("behavior/catalog.json", true),
+            ("meshes/base.stl", true),
+            ("components/camera/config.json", true),
+            ("", false),
+            ("/absolute", false),
+            ("../secret", false),
+            ("a/../b", false),
+            ("a\\b", false),
+            ("a//b", false),
+            ("a/./b", false),
+        ];
+        for (value, accepted) in cases {
+            assert_eq!(
+                phoxal_manifest::AssetId::new(value).is_ok(),
+                accepted,
+                "manifest producer disagreed for {value:?}"
+            );
+            assert_eq!(
+                phoxal::AssetId::new(value).is_ok(),
+                accepted,
+                "runtime consumer disagreed for {value:?}"
+            );
+        }
     }
 }

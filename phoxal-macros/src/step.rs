@@ -27,10 +27,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> 
     let phoxal = phoxal();
     Ok(quote! {
         #[doc(hidden)]
-        fn __step_schedule() -> ::core::option::Option<#phoxal::participant::StepSchedule> {
-            fn __assert_schedulable_surface<T: #phoxal::participant::SchedulableSurface>() {}
+        fn __step_schedule() -> ::core::option::Option<#phoxal::__private::StepSchedule> {
+            fn __assert_schedulable_surface<T: #phoxal::__private::SchedulableSurface>() {}
             __assert_schedulable_surface::<Self>();
-            ::core::option::Option::Some(#phoxal::participant::StepSchedule::hz(#hz))
+            ::core::option::Option::Some(#phoxal::__private::StepSchedule::hz(#hz))
         }
 
         #method

@@ -1,0 +1,13 @@
+error[E0603]: module `participant` is private
+ --> tests/trybuild/fail/retired_participant_module_is_absent.rs:1:13
+  |
+1 | use phoxal::participant::Participant;
+  |             ^^^^^^^^^^^  ----------- trait `Participant` is not publicly re-exported
+  |             |
+  |             private module
+  |
+note: the module `participant` is defined here
+ --> src/lib.rs
+  |
+  | mod participant;
+  | ^^^^^^^^^^^^^^^

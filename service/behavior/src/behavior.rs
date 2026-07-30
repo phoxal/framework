@@ -1,11 +1,21 @@
-//! Headless behavior execution over robot-root `behaviors/*.yaml` definitions.
+//! Headless behavior execution over the compiled canonical behavior catalog.
 
 use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Context, Result, bail};
 use phoxal::api;
-use phoxal::behavior::{BehaviorCatalog, BehaviorDefinition, Node, ValueType};
 use phoxal::prelude::*;
+use serde::Deserialize;
+
+use crate::catalog::{BehaviorCatalog, BehaviorDefinition, Node, ValueType};
+
+#[derive(Debug, Deserialize, phoxal::Config)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    root: Option<String>,
+    #[serde(default)]
+    autostart: bool,
+}
 
 pub struct Api {
     command: Subscriber<api::behavior::Command>,
@@ -77,29 +87,24 @@ pub struct BehaviorServiceState {
     next_event: u64,
 }
 
-#[phoxal::service(state = BehaviorServiceState, api = Api)]
+#[phoxal::service(config = Config, state = BehaviorServiceState, api = Api)]
 pub struct BehaviorService;
 
 impl Participant for BehaviorService {
     async fn setup(
         &self,
         ctx: &mut SetupContext<Self>,
-        _config: Self::Config,
+        config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let root = ctx.robot_root()?;
-        let behavior_config = ctx.robot()?.behavior().cloned();
-        // The topology reserves this participant before the behavior design is
-        // complete. With no explicit manifest opt-in, do not inspect prototype
-        // files or accept executable definitions: launch as a healthy, inert
-        // boundary. This TODO can be removed only when the parked behavior-
-        // orchestration plan is redesigned and intentionally enabled.
-        let catalog = if behavior_config.is_some() {
-            BehaviorCatalog::load(root)?
+        let catalog = if config.root.is_some() {
+            let id = AssetId::new("behavior/catalog.json")?;
+            BehaviorCatalog::decode(&ctx.assets()?.read(&id)?)
+                .context("failed to decode compiled behavior catalog")?
         } else {
             BehaviorCatalog::default()
         };
-        if let Some(config) = &behavior_config {
-            catalog.validate_root(&config.root)?;
+        if let Some(root) = &config.root {
+            catalog.validate_root(root)?;
         }
         Ok((
             BehaviorServiceState {
@@ -107,9 +112,7 @@ impl Participant for BehaviorService {
                 execution: None,
                 queued: VecDeque::new(),
                 navigation_outcomes: BTreeMap::new(),
-                authoritative_root: behavior_config
-                    .filter(|config| config.autostart)
-                    .map(|config| config.root),
+                authoritative_root: config.autostart.then_some(config.root).flatten(),
                 next_execution: 1,
                 next_event: 1,
             },
@@ -1297,13 +1300,8 @@ mod tests {
 
     use super::*;
 
-    fn catalog(yaml: &str) -> (tempfile::TempDir, BehaviorCatalog) {
-        let root = tempfile::tempdir().expect("temp robot root");
-        let behaviors = root.path().join("behaviors");
-        std::fs::create_dir(&behaviors).expect("behavior directory");
-        std::fs::write(behaviors.join("test.yaml"), yaml).expect("behavior definition");
-        let catalog = BehaviorCatalog::load(root.path()).expect("valid catalog");
-        (root, catalog)
+    fn catalog(document: &str) -> BehaviorCatalog {
+        BehaviorCatalog::from_test_documents(&[document]).expect("valid catalog")
     }
 
     fn execution(root_id: &str) -> Execution {
@@ -1353,21 +1351,20 @@ mod tests {
 
     #[test]
     fn wait_sequence_is_deterministic() {
-        let (_root, catalog) = catalog(
-            r#"schema: behavior/v0
-id: test.wait
-version: "1"
-root:
-  type: sequence
-  id: root
-  children:
-    - type: wait
-      id: pause
-      duration_ms: 10
-    - type: action
-      id: shutdown
-      action: host.shutdown
-"#,
+        let catalog = catalog(
+            r#"{
+  "schema": "behavior/v0",
+  "id": "test.wait",
+  "version": "1",
+  "root": {
+    "type": "sequence",
+    "id": "root",
+    "children": [
+      {"type": "wait", "id": "pause", "duration_ms": 10},
+      {"type": "action", "id": "shutdown", "action": "host.shutdown"}
+    ]
+  }
+}"#,
         );
         let mut execution = execution("test.wait");
         let outcomes = BTreeMap::new();
@@ -1392,21 +1389,19 @@ root:
 
     #[test]
     fn navigation_action_emits_once_then_consumes_typed_result() {
-        let (_root, catalog) = catalog(
-            r#"schema: behavior/v0
-id: test.navigate
-version: "1"
-root:
-  type: action
-  id: goto
-  action: navigation.goto_pose
-  timeout_ms: 1000
-  args:
-    pose:
-      x_m: 1.0
-      y_m: 2.0
-      yaw_rad: 0.5
-"#,
+        let catalog = catalog(
+            r#"{
+  "schema": "behavior/v0",
+  "id": "test.navigate",
+  "version": "1",
+  "root": {
+    "type": "action",
+    "id": "goto",
+    "action": "navigation.goto_pose",
+    "timeout_ms": 1000,
+    "args": {"pose": {"x_m": 1.0, "y_m": 2.0, "yaw_rad": 0.5}}
+  }
+}"#,
         );
         let mut execution = execution("test.navigate");
         let mut effects = Vec::new();
@@ -1433,19 +1428,18 @@ root:
 
     #[test]
     fn retry_reexecutes_failed_child_until_attempt_budget_is_spent() {
-        let (_root, catalog) = catalog(
-            r#"schema: behavior/v0
-id: test.retry
-version: "1"
-root:
-  type: retry
-  id: retry
-  attempts: 2
-  child:
-    type: condition
-    id: map
-    condition: map.ready
-"#,
+        let catalog = catalog(
+            r#"{
+  "schema": "behavior/v0",
+  "id": "test.retry",
+  "version": "1",
+  "root": {
+    "type": "retry",
+    "id": "retry",
+    "attempts": 2,
+    "child": {"type": "condition", "id": "map", "condition": "map.ready"}
+  }
+}"#,
         );
         let mut execution = execution("test.retry");
         let mut effects = Vec::new();
@@ -1461,17 +1455,14 @@ root:
 
     #[test]
     fn runtime_args_reject_undeclared_values() {
-        let (_root, catalog) = catalog(
-            r#"schema: behavior/v0
-id: test.args
-version: "1"
-inputs:
-  enabled: bool
-root:
-  type: wait
-  id: wait
-  duration_ms: 1
-"#,
+        let catalog = catalog(
+            r#"{
+  "schema": "behavior/v0",
+  "id": "test.args",
+  "version": "1",
+  "inputs": {"enabled": "bool"},
+  "root": {"type": "wait", "id": "wait", "duration_ms": 1}
+}"#,
         );
         let definition = catalog.get("test.args").expect("definition");
         let args = BTreeMap::from([
@@ -1483,20 +1474,31 @@ root:
 
     #[test]
     fn authoritative_root_dispatches_correlated_request_without_being_replaced() {
-        let root = tempfile::tempdir().expect("temp robot root");
-        let behaviors = root.path().join("behaviors");
-        std::fs::create_dir(&behaviors).expect("behavior directory");
-        std::fs::write(
-            behaviors.join("root.yaml"),
-            "schema: behavior/v0\nid: system.root\nversion: 1\nroot: { type: action, id: dispatch, action: behavior.dispatch_request }\n",
-        )
+        let catalog = BehaviorCatalog::from_test_documents(&[
+            r#"{
+  "schema": "behavior/v0",
+  "id": "system.root",
+  "version": "1",
+  "root": {
+    "type": "action",
+    "id": "dispatch",
+    "action": "behavior.dispatch_request"
+  }
+}"#,
+            r#"{
+  "schema": "behavior/v0",
+  "id": "job",
+  "version": "1",
+  "root": {
+    "type": "action",
+    "id": "goto",
+    "action": "navigation.goto_pose",
+    "timeout_ms": 1000,
+    "args": {"pose": {"x_m": 1.0, "y_m": 0.0}}
+  }
+}"#,
+        ])
         .unwrap();
-        std::fs::write(
-            behaviors.join("job.yaml"),
-            "schema: behavior/v0\nid: job\nversion: 1\nroot:\n  type: action\n  id: goto\n  action: navigation.goto_pose\n  timeout_ms: 1000\n  args: { pose: { x_m: 1.0, y_m: 0.0 } }\n",
-        )
-        .unwrap();
-        let catalog = BehaviorCatalog::load(root.path()).unwrap();
         let mut execution = execution("system.root");
         execution.active_request = Some(ActiveRequest {
             request_id: api::behavior::RequestId {
@@ -1536,20 +1538,34 @@ root:
 
     #[test]
     fn subtree_runtime_binds_parent_input_into_child_action() {
-        let root = tempfile::tempdir().unwrap();
-        let behaviors = root.path().join("behaviors");
-        std::fs::create_dir(&behaviors).unwrap();
-        std::fs::write(
-            behaviors.join("child.yaml"),
-            "schema: behavior/v0\nid: child\nversion: 1\ninputs: { target: pose }\nroot:\n  type: action\n  id: goto\n  action: navigation.goto_pose\n  timeout_ms: 1000\n  args: { pose: '${input.target}' }\n",
-        )
+        let catalog = BehaviorCatalog::from_test_documents(&[
+            r#"{
+  "schema": "behavior/v0",
+  "id": "child",
+  "version": "1",
+  "inputs": {"target": "pose"},
+  "root": {
+    "type": "action",
+    "id": "goto",
+    "action": "navigation.goto_pose",
+    "timeout_ms": 1000,
+    "args": {"pose": "${input.target}"}
+  }
+}"#,
+            r#"{
+  "schema": "behavior/v0",
+  "id": "parent",
+  "version": "1",
+  "inputs": {"destination": "pose"},
+  "root": {
+    "type": "subtree",
+    "id": "child",
+    "behavior": "child",
+    "args": {"target": "${input.destination}"}
+  }
+}"#,
+        ])
         .unwrap();
-        std::fs::write(
-            behaviors.join("parent.yaml"),
-            "schema: behavior/v0\nid: parent\nversion: 1\ninputs: { destination: pose }\nroot:\n  type: subtree\n  id: child\n  behavior: child\n  args: { target: '${input.destination}' }\n",
-        )
-        .unwrap();
-        let catalog = BehaviorCatalog::load(root.path()).unwrap();
         let mut execution = execution("parent");
         execution.args.insert(
             "destination".to_string(),

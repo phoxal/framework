@@ -1,0 +1,5 @@
+error[E0432]: unresolved import `phoxal::raw`
+ --> tests/trybuild/fail/retired_raw_module_is_absent.rs:1:13
+  |
+1 | use phoxal::raw::Bus;
+  |             ^^^ could not find `raw` in `phoxal`
