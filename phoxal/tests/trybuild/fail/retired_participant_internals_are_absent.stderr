@@ -2,7 +2,7 @@ error[E0603]: module `participant` is private
  --> tests/trybuild/fail/retired_participant_internals_are_absent.rs:1:13
   |
 1 | use phoxal::participant::launch::ParticipantLaunch;
-  |             ^^^^^^^^^^^  ------ module `launch` is not publicly re-exported
+  |             ^^^^^^^^^^^          ----------------- struct `ParticipantLaunch` is not publicly re-exported
   |             |
   |             private module
   |
