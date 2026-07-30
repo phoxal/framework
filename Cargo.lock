@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bus"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "libc",
  "phoxal-runtime-contract",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-infrastructure-router"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "clap",
  "serde_json",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2420,7 +2420,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-manifest"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "jsonschema",
@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-model"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2446,7 +2446,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-contract"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "getrandom 0.3.4",
  "libc",
@@ -2459,14 +2459,14 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-asset"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "phoxal",
 ]
 
 [[package]]
 name = "phoxal-service-behavior"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2485,7 +2485,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-frame"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2494,7 +2494,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2502,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-localize"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-map"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2520,7 +2520,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2531,7 +2531,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2541,7 +2541,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2551,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2560,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-power"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-video"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2598,7 +2598,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-bus"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-device"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "phoxal",
  "phoxal-bus",
@@ -2622,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-joypad"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "gilrs",
  "phoxal",
@@ -2633,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-log"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -2644,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-tool-telemetry"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
@@ -4824,7 +4824,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace-policy"
-version = "0.45.0"
+version = "0.45.1"
 dependencies = [
  "anyhow",
  "cargo_metadata",
