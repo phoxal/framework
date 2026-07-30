@@ -5,7 +5,7 @@
 
 use anyhow::{Result, anyhow};
 use phoxal::api;
-use phoxal::model::component::v0::capability::CameraMode;
+use phoxal::model::component::capability::CameraMode;
 
 use super::{SampledSpec, is_due};
 

@@ -1,62 +1,56 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Robot",
-  "description": "Version dispatcher for `robot.yaml`.\n\nOn the wire, manifests use `schema: robot/v0` for the manifest grammar.\nThe single-variant enum is the future-versioning seam: a second schema\ngeneration adds a sibling variant here without disturbing `v0::Robot`.",
-  "oneOf": [
-    {
-      "description": "Top-level `robot:` section - the robot model, and exactly what\n`ctx.robot()` exposes.",
-      "type": "object",
-      "properties": {
-        "behavior": {
-          "description": "Authoritative behavior root selected for this robot. Behavior\ndefinitions themselves live under `behaviors/` in the robot root.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/BehaviorConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
+  "title": "Manifest",
+  "description": "Exact top-level `robot.yaml` v0 document.",
+  "type": "object",
+  "properties": {
+    "behavior": {
+      "description": "Authoritative behavior root selected for this robot. Behavior\ndefinitions themselves live under `behaviors/` in the robot root.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BehaviorConfig"
         },
-        "extends": {
-          "description": "Ordered parent robot documents composed before this leaf manifest.\n\nParent maps are deep-merged in declaration order, then the leaf wins.\nSequence and scalar values replace earlier values.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "robot": {
-          "$ref": "#/$defs/RobotSection"
-        },
-        "router": {
-          "description": "Optional project-relative Zenoh router configuration.",
-          "$ref": "#/$defs/Router"
-        },
-        "schema": {
-          "type": "string",
-          "const": "robot/v0"
-        },
-        "services": {
-          "description": "The user services this robot runs, keyed by service identity, each with\nits user-owned configuration. The Cargo workspace is the candidate set\n(a declared service must have a matching workspace crate); this map\nselects which discovered services belong to the robot and are built,\nstaged, and launched. An undeclared workspace service crate is legal\nand simply not part of the robot.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/UserService"
-          }
-        },
-        "tools": {
-          "description": "The additional user tools this robot runs, keyed by tool identity, each\nwith its user-owned configuration - symmetric with `services`. Official\ntools stay CLI-catalog-owned, always run, and take no configuration\nhere; a `tools/` workspace crate overriding an official identity is a\nsource override, not a declaration, and is never listed here.",
-          "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/UserTool"
-          }
+        {
+          "type": "null"
         }
-      },
-      "additionalProperties": false,
-      "required": [
-        "schema",
-        "robot"
       ]
+    },
+    "extends": {
+      "description": "Ordered parent robot documents composed before this leaf manifest.\n\nParent maps are deep-merged in declaration order, then the leaf wins.\nSequence and scalar values replace earlier values.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "robot": {
+      "$ref": "#/$defs/RobotSection"
+    },
+    "router": {
+      "description": "Optional project-relative Zenoh router configuration.",
+      "$ref": "#/$defs/Router"
+    },
+    "schema": {
+      "$ref": "#/$defs/Schema"
+    },
+    "services": {
+      "description": "The user services this robot runs, keyed by service identity, each with\nits user-owned configuration. The Cargo workspace is the candidate set\n(a declared service must have a matching workspace crate); this map\nselects which discovered services belong to the robot and are built,\nstaged, and launched. An undeclared workspace service crate is legal\nand simply not part of the robot.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/UserService"
+      }
+    },
+    "tools": {
+      "description": "The additional user tools this robot runs, keyed by tool identity, each\nwith its user-owned configuration - symmetric with `services`. Official\ntools stay CLI-catalog-owned, always run, and take no configuration\nhere; a `tools/` workspace crate overriding an official identity is a\nsource override, not a declaration, and is never listed here.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/UserTool"
+      }
     }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "robot"
   ],
   "$defs": {
     "BehaviorConfig": {
@@ -359,7 +353,7 @@
       ]
     },
     "KinematicConfig": {
-      "description": "The robot's kinematic model - a direct field of `robot:` (was\n`motion.kinematic`; the `motion:` wrapper is gone).\n\nEvery `CapabilityRef` field carries a test-only\n`#[schemars(with = \"String\")]` override: `CapabilityRef` lives in\n`crate::model::component::v0` (out of this module's schema-derive scope)\nand serializes as a plain `\"<component>.<capability>\"` string\n(`#[serde(try_from = \"String\", into = \"String\")]`), so treating it as\n`String` in the generated JSON Schema is exact, not an approximation.",
+      "description": "The robot's kinematic model - a direct field of `robot:` (was\n`motion.kinematic`; the `motion:` wrapper is gone).\n\nEvery `CapabilityRef` field carries a test-only\n`#[schemars(with = \"String\")]` override: `CapabilityRef` lives in\n`crate::model::component` (out of this module's schema-derive scope)\nand serializes as a plain `\"<component>.<capability>\"` string\n(`#[serde(try_from = \"String\", into = \"String\")]`), so treating it as\n`String` in the generated JSON Schema is exact, not an approximation.",
       "oneOf": [
         {
           "type": "object",
@@ -811,7 +805,7 @@
           "$ref": "#/$defs/KinematicConfig"
         },
         "motion_limits": {
-          "description": "Robot-wide planar speed limits. Both `motion` and `drive` enforce these\nindependently so an arbitration defect cannot bypass the actuator\nbackstop.",
+          "description": "Manifest-wide planar speed limits. Both `motion` and `drive` enforce these\nindependently so an arbitration defect cannot bypass the actuator\nbackstop.",
           "$ref": "#/$defs/MotionLimits"
         },
         "namespace": {
@@ -854,6 +848,12 @@
         }
       },
       "additionalProperties": false
+    },
+    "Schema": {
+      "type": "string",
+      "enum": [
+        "robot/v0"
+      ]
     },
     "UserService": {
       "description": "One declared user service: presence in `services` is the declaration;\n`config` is its user-owned configuration.",

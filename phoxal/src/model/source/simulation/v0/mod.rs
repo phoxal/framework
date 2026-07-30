@@ -1,13 +1,20 @@
-use crate::model::simulation::capability;
+pub mod capability;
+
 use anyhow::{Result, bail};
-use derive_new::new;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Represents the top-level configuration loaded from `simulation.yaml`
-#[derive(Debug, Clone, Serialize, Deserialize, new)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Schema {
+    #[serde(rename = "simulation/v0")]
+    V0,
+}
+
+/// Exact top-level `simulation.yaml` v0 document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Simulation {
+pub struct Manifest {
+    pub schema: Schema,
     #[serde(default)]
     pub capabilities: BTreeMap<String, capability::Capability>,
     #[serde(default)]
@@ -21,12 +28,12 @@ pub struct Link {
     pub contact_material: Option<String>,
 }
 
-impl Simulation {
+impl Manifest {
     pub fn validate(&self) -> Result<()> {
         let mut errors = Vec::new();
 
         for (capability_id, capability) in &self.capabilities {
-            if !crate::model::component::v0::is_valid_token(capability_id) {
+            if !crate::model::component::is_valid_token(capability_id) {
                 errors.push(format!(
                     "simulation.capabilities.{capability_id} must use a valid capability token"
                 ));

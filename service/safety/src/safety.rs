@@ -11,8 +11,8 @@ use anyhow::{Context, Result, bail};
 use std::time::Duration;
 
 use phoxal::api;
-use phoxal::model::component::v0::capability::Capability;
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::capability::Capability;
 use phoxal::prelude::*;
 
 const INPUT_STALE: Duration = Duration::from_nanos(1_000_000_000);
@@ -529,13 +529,12 @@ fn capability_bindings(
     selects: impl Fn(&Capability) -> bool,
 ) -> Vec<CapabilityBinding> {
     let mut bindings = robot
-        .manifest
         .components()
-        .iter()
-        .filter_map(|(component_id, instance)| {
+        .keys()
+        .filter_map(|component_id| {
             robot
-                .components
-                .get(&instance.component)
+                .component_for_instance(component_id)
+                .ok()
                 .map(|component| (component_id, component))
         })
         .flat_map(|(component_id, component)| {

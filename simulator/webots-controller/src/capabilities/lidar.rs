@@ -8,7 +8,7 @@
 
 use anyhow::{Result, anyhow};
 use phoxal::api;
-use phoxal::model::component::v0::capability::LidarOutput;
+use phoxal::model::component::capability::LidarOutput;
 use webots_rs::device::lidar::{LidarConfig, LidarReading};
 
 use super::{SampledSpec, is_due};

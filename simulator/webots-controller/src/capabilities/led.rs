@@ -4,7 +4,7 @@
 
 use anyhow::{Result, anyhow};
 use phoxal::api;
-use phoxal::model::component::v0::CapabilityRef;
+use phoxal::model::component::CapabilityRef;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LedSpec {

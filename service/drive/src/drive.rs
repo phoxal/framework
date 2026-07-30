@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::robot::v0::{KinematicConfig, MotionLimits};
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::CapabilityRef;
+use phoxal::model::robot::{KinematicConfig, MotionLimits};
 use phoxal::prelude::*;
 
 /// How long `drive` tolerates silence from the accepted target producer. This
@@ -100,14 +100,14 @@ struct DriveConfig {
 
 impl DriveConfig {
     fn from_robot(robot: &Robot) -> Result<Self> {
-        let limits = robot.manifest.robot.motion_limits.validate()?;
+        let limits = robot.motion_limits().validate()?;
         let KinematicConfig::Differential {
             left_actuators,
             right_actuators,
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = &robot.manifest.robot.kinematic
+        } = robot.kinematic()
         else {
             return Ok(Self {
                 kinematics: None,
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn config_from_robot_resolves_per_side_motors() {
-        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
+        let robot = phoxal::model::Robot::read_from_dir(fixture()).unwrap();
         let config = DriveConfig::from_robot(&robot).unwrap();
         // The fixture is a 4-wheel differential: 2 motors per side.
         assert_eq!(config.left.len(), 2);

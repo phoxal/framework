@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use nalgebra::{Isometry3, Translation3, UnitQuaternion};
 use phoxal::api;
+use phoxal::model::Robot;
 use phoxal::model::structure::{Joint as UrdfJoint, JointType, Pose, Structure};
-use phoxal::model::v0::Robot;
 
 #[derive(Clone)]
 pub(crate) struct FrameConfig {

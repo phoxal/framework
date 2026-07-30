@@ -17,19 +17,15 @@ use crate::capabilities;
 use phoxal::api;
 use phoxal::bus::ContractBody;
 use phoxal::bus::{StepStamp, TimelineId, WorldStepToken};
-use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::simulation::Simulation as SimulationFile;
-use phoxal::model::simulation::v0::Simulation as SimulationSpec;
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::CapabilityRef;
 use phoxal::prelude::*;
 // `TimelineAuthority` and `WorldClockPublisher` are deliberately not part of
 // `phoxal::bus`/`phoxal::prelude`: they are world-clock
 // authority types only this simulator legitimately names, so they live behind
 // the explicit `phoxal::raw` opt-in instead - see that module's docs.
 use phoxal::raw::{TimelineAuthority, WorldClockPublisher};
-use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -52,8 +48,6 @@ use crate::capabilities::range::{NativeRange, RangeSpec};
 use crate::capabilities::speaker::{NativeSpeaker, SpeakerSpec};
 
 const STEP_HZ: f64 = 100.0;
-const COMPONENTS_DIR: &str = "components";
-const SIMULATION_FILE: &str = "simulation.yaml";
 
 #[derive(Clone)]
 pub struct Api {
@@ -137,8 +131,7 @@ impl Participant for WebotsControllerSimulator {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
-        let root = ctx.robot_root()?;
-        let catalog = CapabilityCatalog::from_robot(root, robot)?;
+        let catalog = CapabilityCatalog::from_robot(robot)?;
         let clock = ctx
             .world_clock_publisher(api::topic::owner().simulation().clock())
             .await?;
@@ -638,15 +631,14 @@ struct CapabilityCatalog {
 }
 
 impl CapabilityCatalog {
-    fn from_robot(root: &Path, robot: &Robot) -> Result<Self> {
-        use phoxal::model::component::v0::capability::Capability;
+    fn from_robot(robot: &Robot) -> Result<Self> {
+        use phoxal::model::component::capability::Capability;
 
-        let simulations = load_simulation_specs(root, robot)?;
         let mut catalog = Self::default();
 
-        for (component_id, instance) in robot.manifest.components() {
+        for component_id in robot.components().keys() {
             let component = robot.component_for_instance(component_id)?;
-            let simulation = simulations.get(&instance.component);
+            let simulation = robot.simulation_for_instance(component_id)?;
             for (capability_id, capability) in &component.capabilities {
                 let reference = CapabilityRef::new(component_id, capability_id);
                 let simulation_capability =
@@ -839,32 +831,6 @@ fn simulation_sampling_rate(
         | SimCapability::Battery
         | SimCapability::Led => None,
     }
-}
-
-fn load_simulation_specs(root: &Path, robot: &Robot) -> Result<BTreeMap<String, SimulationSpec>> {
-    let mut simulations = BTreeMap::new();
-    for component_type in robot.manifest.used_component_types() {
-        let path = component_simulation_path(root, component_type);
-        if !path.join(SIMULATION_FILE).is_file() {
-            continue;
-        }
-        let simulation = SimulationFile::read_from_dir(&path)
-            .with_context(|| {
-                format!("failed to read Webots simulation config for {component_type}")
-            })?
-            .as_v0()
-            .context("webots simulator only supports simulation.yaml version v0")?
-            .clone();
-        simulations.insert(component_type.to_string(), simulation);
-    }
-    Ok(simulations)
-}
-
-/// Resolves the staged directory for a used component type's simulation
-/// config. Cargo dependency discovery selects component crates; the assembled
-/// runtime bundle exposes their assets under `components/<type>`.
-fn component_simulation_path(bundle_root: &Path, component_type: &str) -> PathBuf {
-    bundle_root.join(COMPONENTS_DIR).join(component_type)
 }
 
 /// Native `webots-rs` linkage is the only backend a shipped binary can

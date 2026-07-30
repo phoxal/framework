@@ -627,11 +627,9 @@ pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
 /// provided, so official participants can read it via `ctx.robot()` (D33).
 pub(crate) fn robot_for_launch(
     robot_root: Option<&std::path::Path>,
-) -> crate::Result<Option<Arc<crate::model::v0::Robot>>> {
+) -> crate::Result<Option<Arc<crate::model::Robot>>> {
     match robot_root {
-        Some(root) => Ok(Some(Arc::new(crate::model::v0::Robot::read_from_dir(
-            root,
-        )?))),
+        Some(root) => Ok(Some(Arc::new(crate::model::Robot::read_from_dir(root)?))),
         None => Ok(None),
     }
 }
@@ -1389,7 +1387,7 @@ mod tests {
         let robot = robot_for_launch(Some(&fixture))
             .expect("the fixture root should load")
             .expect("a root binds a model");
-        assert_eq!(robot.manifest.robot.id, "rgbd-imu-diff-drive");
+        assert_eq!(robot.robot_id(), "rgbd-imu-diff-drive");
 
         let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture/robot");
         assert!(

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::bus::{RobotInstant, StepToken, TimelineId};
-use crate::model::v0::Robot;
+use crate::model::Robot;
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
 use phoxal_bus::Bus;

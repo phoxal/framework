@@ -24,9 +24,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::component::v0::capability::Capability;
-use phoxal::model::robot::v0::MotionLimits;
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::capability::Capability;
+use phoxal::model::robot::MotionLimits;
 use phoxal::prelude::*;
 
 use crate::arbitration::{
@@ -126,7 +126,7 @@ impl Participant for Motion {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
-        let limits = robot.manifest.robot.motion_limits.validate()?;
+        let limits = robot.motion_limits().validate()?;
         let estop_bindings = emergency_stop_bindings(robot);
 
         let mut component_estops = Vec::with_capacity(estop_bindings.len());
@@ -316,13 +316,12 @@ fn state_target(target: &api::drive::Target) -> api::motion::Target {
 
 fn emergency_stop_bindings(robot: &Robot) -> Vec<EmergencyStopBinding> {
     let mut bindings = robot
-        .manifest
         .components()
-        .iter()
-        .filter_map(|(component_id, instance)| {
+        .keys()
+        .filter_map(|component_id| {
             robot
-                .components
-                .get(&instance.component)
+                .component_for_instance(component_id)
+                .ok()
                 .map(|component| (component_id, component))
         })
         .flat_map(|(component_id, component)| {

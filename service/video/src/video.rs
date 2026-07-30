@@ -16,9 +16,9 @@
 use anyhow::{Result, anyhow};
 use phoxal::api;
 use phoxal::bus::QueryFailure;
-use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::component::v0::capability::Capability;
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::CapabilityRef;
+use phoxal::model::component::capability::Capability;
 use phoxal::prelude::*;
 
 const CAMERA_STALE: std::time::Duration = std::time::Duration::from_secs(1);

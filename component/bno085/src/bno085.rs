@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::component::v0::capability::Capability;
+use phoxal::model::component::capability::Capability;
 use phoxal::prelude::*;
 
 const STEP_HZ: f64 = 100.0;

@@ -14,9 +14,9 @@ use std::f64::consts::PI;
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::robot::v0::KinematicConfig;
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::CapabilityRef;
+use phoxal::model::robot::KinematicConfig;
 use phoxal::prelude::*;
 
 /// A wheel whose last encoder sample is older than this is dropped from the twist
@@ -79,7 +79,7 @@ impl OdometryConfig {
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = &robot.manifest.robot.kinematic
+        } = robot.kinematic()
         else {
             return Ok(Self {
                 wheel_radius_m: 0.0,
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn config_from_robot_resolves_per_side_encoders() {
-        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
+        let robot = phoxal::model::Robot::read_from_dir(fixture()).unwrap();
         let config = OdometryConfig::from_robot(&robot).unwrap();
         // The fixture is a 4-wheel differential: 2 encoders per side.
         assert_eq!(config.left.len(), 2);

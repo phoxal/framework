@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::component::v0::capability::{CameraMode, Capability};
+use phoxal::model::component::capability::{CameraMode, Capability};
 use phoxal::prelude::*;
 
 const STEP_HZ: f64 = 100.0;
@@ -393,7 +393,7 @@ fn gyroscope_sample() -> api::component::gyroscope::Sample {
 mod tests {
     use super::{channels_for_encoding, divisor_for_rate, encoding_for_mode, frame_byte_len};
     use phoxal::api;
-    use phoxal::model::component::v0::capability::CameraMode;
+    use phoxal::model::component::capability::CameraMode;
 
     #[test]
     fn camera_encoding_and_frame_size_follow_mode() {
