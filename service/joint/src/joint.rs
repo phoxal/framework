@@ -210,8 +210,12 @@ fn joint_state(
 #[cfg(test)]
 mod tests {
     use phoxal::api;
+    use phoxal::model::Robot;
 
-    use super::{EncoderBinding, joint_state};
+    use super::{EncoderBinding, JointConfig, joint_state};
+
+    const GOLDEN: &[u8] =
+        include_bytes!("../../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
 
     fn binding(direction_sign: i8, gear_ratio: f64) -> EncoderBinding {
         EncoderBinding {
@@ -228,6 +232,16 @@ mod tests {
             (actual - expected).abs() < 1e-12,
             "expected {expected}, got {actual}"
         );
+    }
+
+    #[test]
+    fn robot_config_uses_the_canonical_component_joint_namespace() {
+        let robot = Robot::decode(GOLDEN).unwrap();
+        let config = JointConfig::from_robot(&robot).unwrap();
+        assert!(config.encoders.iter().any(|binding| {
+            binding.component_id == "front_left_drive"
+                && binding.joint_id == "front_left_drive__motor_joint"
+        }));
     }
 
     #[test]

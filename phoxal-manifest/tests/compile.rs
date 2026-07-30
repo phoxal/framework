@@ -58,7 +58,120 @@ fn every_repository_robot_compiles_to_the_canonical_model() {
 fn canonical_golden_is_pinned_to_its_authored_producer() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
     let compiled = compile(sources(&root)).expect("fixture must compile");
-    assert_eq!(compiled.robot().encode().unwrap(), GOLDEN);
+    let encoded = compiled.robot().encode().unwrap();
+    if std::env::var_os("PHOXAL_UPDATE_MODEL_GOLDEN").is_some() {
+        std::fs::write(
+            workspace_root().join("phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json"),
+            &encoded,
+        )
+        .unwrap();
+        return;
+    }
+    assert_eq!(encoded, GOLDEN);
+}
+
+#[test]
+fn canonical_mesh_references_are_backed_by_compiled_assets() {
+    let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
+    let compiled = compile(sources(&root)).expect("fixture must compile");
+    let asset_ids = compiled
+        .assets()
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let model_ids = compiled
+        .robot()
+        .structure()
+        .asset_ids()
+        .chain(
+            compiled
+                .robot()
+                .components()
+                .map(|instance| {
+                    compiled
+                        .robot()
+                        .component_for_instance(instance.id())
+                        .unwrap()
+                })
+                .flat_map(|component| component.structure().asset_ids()),
+        )
+        .map(phoxal_model::AssetId::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(model_ids.contains("meshes/components/drive_motor/drive_motor.obj"));
+    assert!(model_ids.is_subset(&asset_ids));
+}
+
+#[test]
+fn missing_canonical_mesh_is_rejected_at_compile_time() {
+    let workspace = workspace_root();
+    let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
+    let component_source = workspace.join("fixture/component/drive_motor");
+    let component_root = tempfile::tempdir().unwrap();
+    for file in ["component.yaml", "simulation.yaml", "structure.urdf"] {
+        std::fs::copy(
+            component_source.join(file),
+            component_root.path().join(file),
+        )
+        .unwrap();
+    }
+    let mut sources = sources(&source_root);
+    sources.component_roots.insert(
+        "drive_motor".to_string(),
+        component_root.path().to_path_buf(),
+    );
+    let error = compile(sources).unwrap_err();
+    assert!(matches!(error, CompileError::Assets { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("meshes/components/drive_motor/drive_motor.obj")
+    );
+}
+
+#[test]
+fn relative_material_texture_is_normalized_into_the_local_component_namespace() {
+    let workspace = workspace_root();
+    let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
+    let component_source = workspace.join("fixture/component/drive_motor");
+    let component_root = tempfile::tempdir().unwrap();
+    for file in ["component.yaml", "simulation.yaml"] {
+        std::fs::copy(
+            component_source.join(file),
+            component_root.path().join(file),
+        )
+        .unwrap();
+    }
+    let structure = std::fs::read_to_string(component_source.join("structure.urdf"))
+        .unwrap()
+        .replace(
+            "      </geometry>\n    </visual>",
+            "      </geometry>\n      <material name=\"wood\"><texture filename=\"wood.png\" /></material>\n    </visual>",
+        );
+    std::fs::write(component_root.path().join("structure.urdf"), structure).unwrap();
+    std::fs::create_dir(component_root.path().join("meshes")).unwrap();
+    std::fs::copy(
+        component_source.join("meshes/drive_motor.obj"),
+        component_root.path().join("meshes/drive_motor.obj"),
+    )
+    .unwrap();
+    std::fs::write(component_root.path().join("meshes/wood.png"), b"texture").unwrap();
+
+    let mut sources = sources(&source_root);
+    sources.component_roots.insert(
+        "drive_motor".to_string(),
+        component_root.path().to_path_buf(),
+    );
+    let compiled = compile(sources).unwrap();
+    let component = compiled
+        .robot()
+        .component_for_instance("front_left_drive")
+        .unwrap();
+    assert!(
+        component
+            .structure()
+            .asset_ids()
+            .any(|id| id.as_str() == "meshes/components/drive_motor/wood.png")
+    );
 }
 
 #[test]

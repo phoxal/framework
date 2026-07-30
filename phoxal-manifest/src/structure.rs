@@ -4,7 +4,8 @@ use std::collections::HashSet;
 #[cfg(test)]
 use std::ops::Deref;
 use std::path::Path;
-// Allowed by deloper, the phoxal-core-structure should be used instead of urdf_rs when using the structure.
+// Authored URDF values stay private to the compiler; phoxal-model owns the
+// normalized runtime structure.
 pub use urdf_rs::*;
 
 const BASE_FOOTPRINT_LINK: &str = "base_footprint";
@@ -82,10 +83,25 @@ impl Structure {
     }
 
     /// Convert parsed URDF into the normalized canonical structure value.
-    pub(crate) fn into_canonical(self) -> anyhow::Result<phoxal_model::structure::Structure> {
+    pub(crate) fn into_canonical(
+        self,
+        component_type: Option<&str>,
+    ) -> anyhow::Result<phoxal_model::structure::Structure> {
         self.validate()?;
-        let value = serde_json::to_value(wire::Structure::from(&self.robot))
+        let mut value = serde_json::to_value(wire::Structure::from(&self.robot))
             .context("failed to normalize URDF structure")?;
+        normalize_asset_references(&mut value, component_type)?;
+        phoxal_model::__private::structure_from_compiler_value(value).map_err(anyhow::Error::from)
+    }
+
+    pub(crate) fn into_canonical_fragment(
+        self,
+        component_type: &str,
+    ) -> anyhow::Result<phoxal_model::structure::Structure> {
+        self.validate_tree()?;
+        let mut value = serde_json::to_value(wire::Structure::from(&self.robot))
+            .context("failed to normalize component URDF structure")?;
+        normalize_asset_references(&mut value, Some(component_type))?;
         phoxal_model::__private::structure_from_compiler_value(value).map_err(anyhow::Error::from)
     }
 
@@ -102,10 +118,7 @@ impl Structure {
     }
 
     fn validate_tree(&self) -> anyhow::Result<&str> {
-        write_to_string(&self.robot)
-            .context("failed to serialize assembled URDF for validation")?;
         validate_links_and_joints(&self.robot)?;
-        validate_meshes(&self.robot)?;
         self.root_link_name()
     }
 
@@ -134,112 +147,76 @@ impl Structure {
             ),
         }
     }
+}
 
-    #[cfg(test)]
-    pub fn link(&self, link_id: &str) -> Option<&urdf_rs::Link> {
-        self.robot.links.iter().find(|link| link.name == link_id)
-    }
-
-    #[cfg(test)]
-    pub fn joint(&self, joint_id: &str) -> Option<&urdf_rs::Joint> {
-        self.robot
-            .joints
-            .iter()
-            .find(|joint| joint.name == joint_id)
-    }
-
-    /// Merge `component`'s structure onto `mount_link`, namespacing every component link and joint
-    /// with `{component_id}__` and attaching the component's root link to `mount_link` with a fixed
-    /// joint named `{component_id}__mount_attach`.
-    ///
-    /// Example: mounting the ddsm115 component as instance `front_left_drive` on
-    /// `front_left_wheel_mount` yields links `front_left_drive__mount`,
-    /// `front_left_drive__rotor_link` and joints `front_left_drive__mount_attach` (fixed, parent
-    /// `front_left_wheel_mount`) and `front_left_drive__motor_joint` (continuous).
-    #[cfg(test)]
-    pub fn with_mounted_component(
-        &self,
-        component_id: &str,
-        mount_link: &str,
-        component: &Structure,
-    ) -> anyhow::Result<Structure> {
-        if self.link(mount_link).is_none() {
-            bail!("mount link '{mount_link}' does not exist in structure.urdf");
-        }
-
-        let component_root = component.root_link_name()?;
-        let mut existing_links = self
-            .robot
-            .links
-            .iter()
-            .map(|link| link.name.clone())
-            .collect::<HashSet<_>>();
-        let mut existing_joints = self
-            .robot
-            .joints
-            .iter()
-            .map(|joint| joint.name.clone())
-            .collect::<HashSet<_>>();
-        let mut namespaced_links = Vec::new();
-        let mut namespaced_joints = Vec::new();
-
-        for link in &component.robot.links {
-            let namespaced_name = format!("{component_id}__{}", link.name);
-            if !existing_links.insert(namespaced_name.clone()) {
-                bail!("structure.urdf contains duplicate link name '{namespaced_name}'");
+fn normalize_asset_references(
+    value: &mut serde_json::Value,
+    component_type: Option<&str>,
+) -> anyhow::Result<()> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_asset_references(value, component_type)?;
             }
-            namespaced_links.push((link, namespaced_name));
         }
-
-        for joint in &component.robot.joints {
-            let namespaced_name = format!("{component_id}__{}", joint.name);
-            if !existing_joints.insert(namespaced_name.clone()) {
-                bail!("structure.urdf contains duplicate joint name '{namespaced_name}'");
+        serde_json::Value::Object(map) => {
+            if map.get("kind").and_then(serde_json::Value::as_str) == Some("mesh") {
+                let filename = map
+                    .get("filename")
+                    .and_then(serde_json::Value::as_str)
+                    .context("canonical mesh geometry is missing filename")?;
+                let normalized = normalize_asset_id(filename, component_type, false)?;
+                map.insert(
+                    "filename".to_string(),
+                    serde_json::Value::String(normalized),
+                );
             }
-            namespaced_joints.push((joint, namespaced_name));
+            if let Some(texture) = map
+                .get("texture")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+            {
+                map.insert(
+                    "texture".to_string(),
+                    serde_json::Value::String(normalize_asset_id(&texture, component_type, true)?),
+                );
+            }
+            for value in map.values_mut() {
+                normalize_asset_references(value, component_type)?;
+            }
         }
-
-        let attach_joint_name = format!("{component_id}__mount_attach");
-        if !existing_joints.insert(attach_joint_name.clone()) {
-            bail!("structure.urdf contains duplicate joint name '{attach_joint_name}'");
-        }
-
-        let mut robot = self.robot.clone();
-
-        for (link, namespaced_name) in namespaced_links {
-            let mut link = link.clone();
-            link.name = namespaced_name;
-            robot.links.push(link);
-        }
-
-        for (joint, namespaced_name) in namespaced_joints {
-            let mut joint = joint.clone();
-            joint.name = namespaced_name;
-            joint.parent.link = format!("{component_id}__{}", joint.parent.link);
-            joint.child.link = format!("{component_id}__{}", joint.child.link);
-            robot.joints.push(joint);
-        }
-
-        robot.joints.push(urdf_rs::Joint {
-            name: attach_joint_name,
-            joint_type: urdf_rs::JointType::Fixed,
-            origin: urdf_rs::Pose::default(),
-            parent: urdf_rs::LinkName {
-                link: mount_link.to_string(),
-            },
-            child: urdf_rs::LinkName {
-                link: format!("{component_id}__{component_root}"),
-            },
-            axis: urdf_rs::Axis::default(),
-            limit: urdf_rs::JointLimit::default(),
-            calibration: None,
-            dynamics: None,
-            mimic: None,
-            safety_controller: None,
-        });
-
-        Ok(Structure::new(robot))
+        _ => {}
     }
+    Ok(())
+}
+
+fn normalize_asset_id(
+    reference: &str,
+    component_type: Option<&str>,
+    allow_relative: bool,
+) -> anyhow::Result<String> {
+    let uri = reference
+        .strip_prefix(PACKAGE_URI_PREFIX)
+        .or_else(|| reference.strip_prefix(MODEL_URI_PREFIX));
+    let (package, relative) = match uri {
+        Some(uri) => uri
+            .split_once('/')
+            .context("asset URI must include a local package/model name and relative path")?,
+        None if allow_relative => ("meshes", reference),
+        None => bail!("structure mesh '{reference}' must use a package:// or model:// URI"),
+    };
+    let expected_package = component_type.unwrap_or("robot");
+    if package != "meshes" && package != expected_package {
+        bail!(
+            "asset URI '{reference}' names package/model '{package}', expected '{expected_package}' or 'meshes'"
+        );
+    }
+    let relative = relative.strip_prefix("meshes/").unwrap_or(relative);
+    let logical = match component_type {
+        None => format!("meshes/robot/{relative}"),
+        Some(component_type) => format!("meshes/components/{component_type}/{relative}"),
+    };
+    Ok(phoxal_model::AssetId::new(logical)?.as_str().to_string())
 }
 
 fn validate_links_and_joints(robot: &Robot) -> anyhow::Result<()> {
@@ -381,66 +358,6 @@ fn validate_unique_names(names: &[&str], kind: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-fn validate_meshes(robot: &Robot) -> anyhow::Result<()> {
-    for link in &robot.links {
-        for visual in &link.visual {
-            validate_geometry_mesh(&visual.geometry)?;
-        }
-        for collision in &link.collision {
-            validate_geometry_mesh(&collision.geometry)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_geometry_mesh(geometry: &Geometry) -> anyhow::Result<()> {
-    let Geometry::Mesh { filename, .. } = geometry else {
-        return Ok(());
-    };
-
-    let _ = mesh_relative_path(filename)?;
-    Ok(())
-}
-
-fn mesh_relative_path(filename: &str) -> anyhow::Result<&Path> {
-    if !filename.starts_with(PACKAGE_URI_PREFIX) && !filename.starts_with(MODEL_URI_PREFIX) {
-        bail!(
-            "structure mesh '{}' must start with 'package://' or 'model://'",
-            filename
-        );
-    }
-
-    let trimmed = filename
-        .trim_start_matches(PACKAGE_URI_PREFIX)
-        .trim_start_matches(MODEL_URI_PREFIX);
-    let Some((_, relative_path)) = trimmed.split_once('/') else {
-        bail!(
-            "structure mesh '{}' must include a package/model name and relative path",
-            filename
-        );
-    };
-
-    let relative_path = Path::new(relative_path);
-    if !relative_path.is_relative() {
-        bail!(
-            "structure mesh '{}' must resolve to a relative path",
-            filename
-        );
-    }
-    if relative_path
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        bail!(
-            "structure mesh '{}' must not contain parent directory segments",
-            filename
-        );
-    }
-
-    Ok(relative_path)
 }
 
 #[cfg(test)]
@@ -945,9 +862,37 @@ mod wire {
 
 #[cfg(test)]
 mod tests {
-    use super::{BASE_FOOTPRINT_LINK, BASE_LINK, STRUCTURE_FILE, Structure};
-    use anyhow::Context;
+    use super::{BASE_FOOTPRINT_LINK, BASE_LINK, STRUCTURE_FILE, Structure, normalize_asset_id};
     use tempfile::tempdir;
+
+    #[test]
+    fn normalizes_only_local_asset_references() -> anyhow::Result<()> {
+        assert_eq!(
+            normalize_asset_id("package://robot/body.stl", None, false)?,
+            "meshes/robot/body.stl"
+        );
+        assert_eq!(
+            normalize_asset_id(
+                "package://drive_motor/meshes/rotor.stl",
+                Some("drive_motor"),
+                false,
+            )?,
+            "meshes/components/drive_motor/rotor.stl"
+        );
+        assert_eq!(
+            normalize_asset_id("model://meshes/sensor.obj", Some("camera"), false)?,
+            "meshes/components/camera/sensor.obj"
+        );
+        assert_eq!(
+            normalize_asset_id("wood.png", Some("camera"), true)?,
+            "meshes/components/camera/wood.png"
+        );
+        assert!(normalize_asset_id("body.stl", None, false).is_err());
+        assert!(
+            normalize_asset_id("package://other/body.stl", Some("drive_motor"), false,).is_err()
+        );
+        Ok(())
+    }
 
     #[test]
     fn read_from_dir_fails_on_missing_file() -> anyhow::Result<()> {
@@ -1045,133 +990,6 @@ mod tests {
     }
 
     #[test]
-    fn with_mounted_component_namespaces_and_attaches() -> anyhow::Result<()> {
-        let base = Structure::from_urdf_str(
-            r#"<robot name="test-bot">
-  <link name="base_footprint" />
-  <link name="base_link" />
-  <link name="wheel_mount" />
-  <joint name="root" type="fixed">
-    <parent link="base_footprint" />
-    <child link="base_link" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-  <joint name="wheel_mount_joint" type="fixed">
-    <parent link="base_link" />
-    <child link="wheel_mount" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-</robot>
-"#,
-        )?;
-        let component = Structure::from_urdf_str(
-            r#"<robot name="ddsm115">
-  <link name="mount" />
-  <link name="rotor_link" />
-  <joint name="motor_joint" type="continuous">
-    <parent link="mount" />
-    <child link="rotor_link" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-</robot>
-"#,
-        )?;
-
-        let result = base.with_mounted_component("front_left_drive", "wheel_mount", &component)?;
-
-        let motor_joint = result
-            .joint("front_left_drive__motor_joint")
-            .context("missing namespaced motor joint")?;
-        assert_eq!(motor_joint.joint_type, urdf_rs::JointType::Continuous);
-        assert!(result.link("front_left_drive__rotor_link").is_some());
-
-        let attach_joint = result
-            .joint("front_left_drive__mount_attach")
-            .context("missing mount attach joint")?;
-        assert_eq!(attach_joint.joint_type, urdf_rs::JointType::Fixed);
-        assert_eq!(attach_joint.parent.link, "wheel_mount");
-        assert_eq!(attach_joint.child.link, "front_left_drive__mount");
-        result.validate()?;
-        Ok(())
-    }
-
-    #[test]
-    fn with_mounted_component_unknown_mount_link_errors() -> anyhow::Result<()> {
-        let base = Structure::from_urdf_str(
-            r#"<robot name="test-bot">
-  <link name="base_footprint" />
-  <link name="base_link" />
-  <joint name="root" type="fixed">
-    <parent link="base_footprint" />
-    <child link="base_link" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-</robot>
-"#,
-        )?;
-        let component = Structure::from_urdf_str(
-            r#"<robot name="ddsm115">
-  <link name="mount" />
-</robot>
-"#,
-        )?;
-
-        let result = base.with_mounted_component("front_left_drive", "missing_mount", &component);
-
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn with_mounted_component_two_instances_are_independent() -> anyhow::Result<()> {
-        let base = Structure::from_urdf_str(
-            r#"<robot name="test-bot">
-  <link name="base_footprint" />
-  <link name="base_link" />
-  <link name="left_mount" />
-  <link name="right_mount" />
-  <joint name="root" type="fixed">
-    <parent link="base_footprint" />
-    <child link="base_link" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-  <joint name="left_mount_joint" type="fixed">
-    <parent link="base_link" />
-    <child link="left_mount" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-  <joint name="right_mount_joint" type="fixed">
-    <parent link="base_link" />
-    <child link="right_mount" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-</robot>
-"#,
-        )?;
-        let component = Structure::from_urdf_str(
-            r#"<robot name="ddsm115">
-  <link name="mount" />
-  <link name="rotor_link" />
-  <joint name="motor_joint" type="continuous">
-    <parent link="mount" />
-    <child link="rotor_link" />
-    <origin xyz="0 0 0" rpy="0 0 0" />
-  </joint>
-</robot>
-"#,
-        )?;
-
-        let result = base
-            .with_mounted_component("left", "left_mount", &component)?
-            .with_mounted_component("right", "right_mount", &component)?;
-
-        assert!(result.joint("left__motor_joint").is_some());
-        assert!(result.joint("right__motor_joint").is_some());
-        result.validate()?;
-        Ok(())
-    }
-
-    #[test]
     fn validate_requires_base_footprint_root_and_base_link() -> anyhow::Result<()> {
         let structure = Structure::from_urdf_str(
             r#"<robot name="test-bot">
@@ -1188,7 +1006,7 @@ mod tests {
 
         structure.validate()?;
         assert_eq!(structure.root_link_name()?, BASE_FOOTPRINT_LINK);
-        assert!(structure.link(BASE_LINK).is_some());
+        assert!(structure.links.iter().any(|link| link.name == BASE_LINK));
         Ok(())
     }
 

@@ -46,15 +46,21 @@ pub enum StructuralTarget {
 
 pub const MODULE_INSTANCE_SEPARATOR: &str = "__";
 
+/// Build the canonical runtime identity for one component-local structural item.
+#[must_use]
+pub fn namespaced_structure_id(component_id: &str, local_id: &str) -> String {
+    format!("{component_id}{MODULE_INSTANCE_SEPARATOR}{local_id}")
+}
+
 impl StructuralTarget {
     #[must_use]
     pub fn namespaced(&self, component_id: &str) -> Self {
         match self {
             Self::Joint { id } => Self::Joint {
-                id: format!("{component_id}{MODULE_INSTANCE_SEPARATOR}{id}"),
+                id: namespaced_structure_id(component_id, id),
             },
             Self::Link { id } => Self::Link {
-                id: format!("{component_id}{MODULE_INSTANCE_SEPARATOR}{id}"),
+                id: namespaced_structure_id(component_id, id),
             },
         }
     }

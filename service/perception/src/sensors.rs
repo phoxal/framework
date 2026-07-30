@@ -16,9 +16,7 @@ pub(crate) struct SensorBinding {
 
 impl SensorBinding {
     fn from_ref(robot: &Robot, reference: CapabilityRef) -> Result<Self> {
-        let frame_id = robot
-            .require_link_target(&reference)
-            .or_else(|_| robot.component_mount_link(&reference.component_id))?;
+        let frame_id = robot.link_target_frame(&reference)?;
         Ok(Self {
             frame_id,
             component_id: reference.component_id,

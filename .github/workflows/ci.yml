@@ -89,5 +89,7 @@ jobs:
 
       - name: Verify simplified facade snapshot
         run: |
-          cargo public-api -p phoxal -sss --color=never > /tmp/phoxal-public-api.txt
-          diff -u phoxal/public-api.txt /tmp/phoxal-public-api.txt
+          for package in phoxal phoxal-model phoxal-manifest; do
+            cargo public-api -p "${package}" -sss --color=never > "/tmp/${package}-public-api.txt"
+            diff -u "${package}/public-api.txt" "/tmp/${package}-public-api.txt"
+          done

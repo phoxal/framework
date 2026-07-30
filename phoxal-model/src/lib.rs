@@ -1,10 +1,12 @@
 //! Canonical immutable runtime robot model and strict `robot.json` encoding.
 
+pub mod asset;
 pub mod component;
 pub mod robot;
 pub mod simulation;
 pub mod structure;
 
+pub use asset::AssetId;
 pub use robot::{ROBOT_SCHEMA, Robot, RobotIdentity};
 
 /// Compiler linkage that is intentionally absent from the runtime model API.
@@ -36,6 +38,8 @@ pub struct EncodeError(#[from] serde_json::Error);
 pub enum DecodeError {
     #[error("invalid canonical robot JSON: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("canonical robot is missing string field 'schema'")]
+    MissingSchema,
     #[error("unsupported robot schema '{0}'")]
     UnsupportedSchema(String),
     #[error("invalid canonical robot: {0}")]
