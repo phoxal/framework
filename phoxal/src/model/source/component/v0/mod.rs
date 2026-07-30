@@ -167,7 +167,6 @@ fn is_valid_positive(value: f64) -> bool {
 impl From<Manifest> for Component {
     fn from(source: Manifest) -> Self {
         Self {
-            gtin: source.gtin.map(Into::into),
             capabilities: source
                 .capabilities
                 .into_iter()

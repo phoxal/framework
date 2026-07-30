@@ -13,7 +13,6 @@ use capability::Capability;
 
 #[derive(Debug, Clone)]
 pub struct Component {
-    pub gtin: Option<Gtin>,
     pub capabilities: BTreeMap<String, Capability>,
 }
 
@@ -21,29 +20,6 @@ impl Component {
     #[must_use]
     pub fn capability(&self, capability_id: &str) -> Option<&Capability> {
         self.capabilities.get(capability_id)
-    }
-}
-
-/// A Global Trade Item Number (GTIN-13).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Gtin(String);
-
-impl From<crate::model::source::component::v0::Gtin> for Gtin {
-    fn from(value: crate::model::source::component::v0::Gtin) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl Gtin {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for Gtin {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
     }
 }
 
