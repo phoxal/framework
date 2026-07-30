@@ -1,7 +1,7 @@
 # release-plz owns the one inherited workspace train version.
 #
 # Two publication channels share that version:
-#   * the four library crates go to crates.io, published by release-plz itself;
+#   * the seven library crates go to crates.io, published by release-plz itself;
 #   * every executable package goes to the static `phoxal` registry, published
 #     by the release workflow with `cargo package` + `margo add`.
 #
@@ -44,6 +44,24 @@ git_release_enable = false
 
 [[package]]
 name = "phoxal-macros"
+version_group = "framework-train"
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-model"
+version_group = "framework-train"
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-manifest"
+version_group = "framework-train"
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "phoxal-runtime-contract"
 version_group = "framework-train"
 git_tag_enable = false
 git_release_enable = false

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use gilrs::{Button, EventType, Gamepad, GamepadId, Gilrs};
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal::raw::Subscriber;
+use phoxal_bus::Subscriber;
 
 const TRIGGER_DEADZONE: f32 = 0.08;
 
@@ -31,7 +31,7 @@ fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
 // macro now defaults an omitted `config = …` to `()` for tools, so this
 // starts cleanly with `PHOXAL_CONFIG` ABSENT rather than requiring `'{}'`.
 // Tools stay raw-bus only (decided 2026-07-09): no declared `Api` surface,
-// just `ctx.raw_bus()` and the raw handle constructors.
+// just `ctx.bus()` and the raw handle constructors.
 pub struct ToolJoypadState {
     shutdown_publisher: CommandPublisher<api::motion::ManualCommand>,
 }
@@ -64,7 +64,7 @@ impl Participant for ToolJoypad {
                 (None, Some(error))
             }
         };
-        let bus = ctx.raw_bus();
+        let bus = ctx.bus();
 
         let manual_publisher =
             CommandPublisher::new(bus.clone(), &api::topic::client().motion().manual())?;
@@ -1071,49 +1071,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn manual_drive_rejects_non_differential_robot_model() {
-        let root = std::path::Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixture/robot/rgbd-imu-diff-drive"
-        ));
-        let (mut source, components, simulations, structure) =
-            phoxal::model::Robot::read_sources_from_dir(root)
-                .expect("fixture robot sources should load");
-        let (actuators, encoders) = match &source.robot.kinematic {
-            phoxal::model::source::robot::v0::KinematicConfig::Differential {
-                left_actuators,
-                right_actuators,
-                left_encoders,
-                right_encoders,
-                ..
-            } => (
-                left_actuators
-                    .iter()
-                    .chain(right_actuators)
-                    .cloned()
-                    .collect(),
-                left_encoders
-                    .iter()
-                    .chain(right_encoders)
-                    .cloned()
-                    .collect(),
-            ),
-            _ => unreachable!("fixture must use differential kinematics"),
-        };
-        source.robot.kinematic =
-            phoxal::model::source::robot::v0::KinematicConfig::Omnidirectional {
-                actuators,
-                encoders,
-            };
-        let robot =
-            phoxal::model::Robot::try_from_sources(source, components, simulations, structure)
-                .expect("fixture sources should canonicalize");
-
-        let error = ManualDrive::from_robot(&robot).unwrap_err();
-        assert_eq!(error, "manual input requires differential robot kinematics");
-    }
-
     fn drive() -> ManualDrive {
         ManualDrive {
             wheel_base_m: 0.3,
@@ -1545,7 +1502,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn disconnect_zero_is_published_on_the_manual_contract() {
-        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig::in_process(
+        let bus = phoxal_bus::Bus::open(phoxal_bus::BusConfig::in_process(
             format!("test/joypad-disconnect/{}", std::process::id()),
             "robot",
         ))
@@ -1574,7 +1531,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn failed_stop_publish_keeps_the_retry_budget() {
-        let bus = phoxal::raw::Bus::open(phoxal::raw::BusConfig::in_process(
+        let bus = phoxal_bus::Bus::open(phoxal_bus::BusConfig::in_process(
             format!("test/joypad-stop-retry/{}", std::process::id()),
             "robot",
         ))

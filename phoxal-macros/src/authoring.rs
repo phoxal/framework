@@ -23,8 +23,9 @@ fn as_type_path(ty: &Type) -> Option<&TypePath> {
 /// under (cargo-auditable's embedding pattern): `__DATA,__phoxal_meta`
 /// on Mach-O (macOS; segment,section syntax, section name <=16 bytes), and
 /// `.phoxal_meta` everywhere else (ELF and other platforms this
-/// framework targets - Linux robots, primarily). The section carries only
-/// `{id, config_schema}`. `#[used]` keeps the
+/// framework targets - Linux robots, primarily). The section carries the
+/// strict `{schema, id, kind, class, config_schema}` process contract.
+/// `#[used]` keeps the
 /// linker from discarding the static during *this compilation unit's* own
 /// dead-code elimination, but not from ELF `--gc-sections` at final link
 /// time, which drops any section unreachable from `main` regardless of
@@ -52,7 +53,7 @@ fn json_lit(s: &str) -> TokenStream {
 // #[derive(phoxal::Config)]
 // ---------------------------------------------------------------------------
 
-/// Derive [`ParticipantConfig`](phoxal::participant::api::ParticipantConfig)
+/// Derive `phoxal::ParticipantConfig`
 /// from a named struct using Serde's own deserialize attribute model.
 pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
     let input: DeriveInput = syn::parse2(input)?;
@@ -102,7 +103,7 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
         let field_name = field.attrs.name().deserialize_name();
         schema_args.push(json_lit(&format!("{}:", serde_json_string(field_name))));
         let ty = field.ty;
-        schema_args.push(quote!(<#ty as #phoxal::participant::ParticipantConfig>::SCHEMA_JSON));
+        schema_args.push(quote!(<#ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON));
 
         if field.attrs.default().is_none() && !is_option_type(ty) {
             required.push(field_name.to_string());
@@ -123,9 +124,9 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
     schema_args.push(json_lit("}"));
 
     Ok(quote! {
-        impl #phoxal::participant::ParticipantConfig for #struct_name {
-            const __SCHEMA: #phoxal::participant::api::__meta::ConstSchema =
-                #phoxal::participant::api::__meta::ConstSchema::new()
+        impl #phoxal::__private::ParticipantConfig for #struct_name {
+            const __SCHEMA: #phoxal::__private::api::__meta::ConstSchema =
+                #phoxal::__private::api::__meta::ConstSchema::new()
                     #(.push_str(#schema_args))*;
         }
     })
@@ -262,25 +263,23 @@ impl ParticipantKind {
     fn launch_policy(self, phoxal: &TokenStream) -> TokenStream {
         match self {
             ParticipantKind::Tool => {
-                quote!(#phoxal::participant::launch::ToolParticipantLaunch)
+                quote!(#phoxal::__private::launch::ToolParticipantLaunch)
             }
             ParticipantKind::Simulator => {
-                quote!(#phoxal::participant::launch::SimulatorParticipantLaunch)
+                quote!(#phoxal::__private::launch::SimulatorParticipantLaunch)
             }
             ParticipantKind::Service | ParticipantKind::Driver => {
-                quote!(#phoxal::participant::launch::ClockedParticipantLaunch)
+                quote!(#phoxal::__private::launch::ClockedParticipantLaunch)
             }
         }
     }
 
-    /// Emits both the kind marker (`IsDriver`/`IsSimulator`/`IsTool`) and its
-    /// sealing impl. `IsDriver`/`IsSimulator`/`IsTool` are sealed
-    /// (`phoxal::participant::spec::sealing::Sealed`) so
-    /// that writing `impl IsSimulator for MyType` by hand - without going
-    /// through this macro - does not compile: the sealing bound is left
+    /// Emits the participant's sealed authoring surfaces. Writing one of these
+    /// impls by hand - without going through this macro - does not compile
+    /// because the sealing bound is left
     /// unsatisfied, and this expansion is the only thing that names the hidden
     /// sealing path as a matter of course. See
-    /// `phoxal::participant::spec::sealing`'s docs for the exact strength of
+    /// `phoxal::__private::surface::sealing`'s docs for the exact strength of
     /// that seal (it closes the accidental route, not a capability
     /// boundary - the sealing path is `#[doc(hidden)]`, not private, because
     /// this expansion runs in the downstream participant crate).
@@ -288,24 +287,26 @@ impl ParticipantKind {
         match self {
             ParticipantKind::Service => {
                 quote! {
-                    impl #phoxal::participant::TypedGraphSurface for #struct_name {}
-                    impl #phoxal::participant::SchedulableSurface for #struct_name {}
+                    impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
+                    impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
+                    impl #phoxal::__private::SchedulableSurface for #struct_name {}
                 }
             }
             ParticipantKind::Driver => quote! {
-                impl #phoxal::participant::spec::sealing::Sealed for #struct_name {}
-                impl #phoxal::participant::IsDriver for #struct_name {}
-                impl #phoxal::participant::TypedGraphSurface for #struct_name {}
-                impl #phoxal::participant::SchedulableSurface for #struct_name {}
+                impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
+                impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
+                impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
+                impl #phoxal::__private::SchedulableSurface for #struct_name {}
             },
             ParticipantKind::Simulator => quote! {
-                impl #phoxal::participant::spec::sealing::Sealed for #struct_name {}
-                impl #phoxal::participant::IsSimulator for #struct_name {}
-                impl #phoxal::participant::TypedGraphSurface for #struct_name {}
+                impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
+                impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
+                impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
+                impl #phoxal::__private::surface::WorldAuthoritySurface for #struct_name {}
             },
             ParticipantKind::Tool => quote! {
-                impl #phoxal::participant::spec::sealing::Sealed for #struct_name {}
-                impl #phoxal::participant::IsTool for #struct_name {}
+                impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
+                impl #phoxal::__private::surface::ToolSurface for #struct_name {}
             },
         }
     }
@@ -551,7 +552,7 @@ pub fn expand_participant(
     Ok(quote! {
         #item_struct
 
-        impl #phoxal::participant::ParticipantSpec for #struct_name {
+        impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: &'static str = #artifact_kind;
             const PARTICIPANT_CLASS: &'static str = #participant_class;
             const ID: &'static str = #id;
@@ -579,18 +580,19 @@ pub fn expand_participant(
 
         #marker
 
-        // Identity plus config, and nothing else. The train is the
-        // compatibility boundary, so a per-binary contract list has no reader.
-        // `id` is what lets a
-        // consumer answer "which participant is this binary" without trusting
-        // a filename.
+        // Process-boundary metadata is self-identifying and strict. Its schema,
+        // kind, and capability class are interpreted by the CLI before launch.
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
-            #phoxal::participant::api::__meta::__concatcp!(
-                "{\"id\":\"",
+            #phoxal::__private::api::__meta::__concatcp!(
+                "{\"schema\":\"phoxal/participant-metadata/v0\",\"id\":\"",
                 #id,
+                "\",\"kind\":\"",
+                #artifact_kind,
+                "\",\"class\":\"",
+                #participant_class,
                 "\",\"config_schema\":",
-                <#config_ty as #phoxal::participant::ParticipantConfig>::SCHEMA_JSON,
+                <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
                 "}"
             );
         #[doc(hidden)]
@@ -598,7 +600,7 @@ pub fn expand_participant(
         #link_section
         #[doc(hidden)]
         static #metadata_static_ident: [u8; #metadata_len_ident] =
-            #phoxal::participant::api::__meta::__bytes_of(#metadata_const_ident);
+            #phoxal::__private::api::__meta::__bytes_of(#metadata_const_ident);
     })
 }
 

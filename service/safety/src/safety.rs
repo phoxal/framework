@@ -529,16 +529,15 @@ fn capability_bindings(
     selects: impl Fn(&Capability) -> bool,
 ) -> Result<Vec<CapabilityBinding>> {
     let mut bindings = Vec::new();
-    for component_id in robot.components().keys() {
+    for component_id in robot.component_ids() {
         let component = robot.component_for_instance(component_id)?;
         bindings.extend(
             component
-                .capabilities
-                .iter()
+                .capabilities()
                 .filter(|(_, capability)| selects(capability))
                 .map(|(capability_id, _)| CapabilityBinding {
-                    component_id: component_id.clone(),
-                    capability_id: capability_id.clone(),
+                    component_id: component_id.to_string(),
+                    capability_id: capability_id.to_string(),
                 }),
         );
     }

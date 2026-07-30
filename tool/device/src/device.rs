@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use phoxal::api;
 use phoxal::prelude::*;
-use phoxal::raw::{Bus, DiagnosticPublisher};
+use phoxal_bus::{Bus, DiagnosticPublisher};
 use sysinfo::{CpuRefreshKind, DiskRefreshKind, Disks, MemoryRefreshKind, RefreshKind, System};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -19,7 +19,7 @@ impl Participant for ToolDevice {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let publisher = device_publisher(ctx.raw_bus())?;
+        let publisher = device_publisher(ctx.bus())?;
         ctx.spawn_managed_with(
             "device-sampler",
             ManagedTaskPolicy::FaultOnExit,

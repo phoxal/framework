@@ -1,0 +1,961 @@
+{
+  "schema": "phoxal/robot/v0",
+  "robot": {
+    "identity": {
+      "id": "rgbd-imu-diff-drive",
+      "namespace": "dev"
+    },
+    "motion": {
+      "kinematic": {
+        "kind": "differential",
+        "left_actuators": [
+          "front_left_drive.motor",
+          "rear_left_drive.motor"
+        ],
+        "right_actuators": [
+          "front_right_drive.motor",
+          "rear_right_drive.motor"
+        ],
+        "left_encoders": [
+          "front_left_drive.encoder",
+          "rear_left_drive.encoder"
+        ],
+        "right_encoders": [
+          "front_right_drive.encoder",
+          "rear_right_drive.encoder"
+        ],
+        "wheel_radius_m": 0.1,
+        "wheel_base_m": 0.4
+      },
+      "limits": {
+        "max_linear_speed_mps": 0.6,
+        "max_angular_speed_radps": 2.0
+      }
+    },
+    "component_instances": {
+      "front_camera": {
+        "id": "front_camera",
+        "component_type": "camera_rgbd_640x480",
+        "mount_link": "front_camera_mount",
+        "direction_signs": {}
+      },
+      "front_center_tof": {
+        "id": "front_center_tof",
+        "component_type": "range_tof",
+        "mount_link": "front_center_tof_mount",
+        "direction_signs": {}
+      },
+      "front_left_drive": {
+        "id": "front_left_drive",
+        "component_type": "drive_motor",
+        "mount_link": "front_left_wheel_mount",
+        "direction_signs": {
+          "encoder": 1,
+          "motor": 1
+        }
+      },
+      "front_right_drive": {
+        "id": "front_right_drive",
+        "component_type": "drive_motor",
+        "mount_link": "front_right_wheel_mount",
+        "direction_signs": {
+          "encoder": -1,
+          "motor": -1
+        }
+      },
+      "imu": {
+        "id": "imu",
+        "component_type": "imu",
+        "mount_link": "imu_mount",
+        "direction_signs": {}
+      },
+      "rear_left_drive": {
+        "id": "rear_left_drive",
+        "component_type": "drive_motor",
+        "mount_link": "rear_left_wheel_mount",
+        "direction_signs": {
+          "encoder": 1,
+          "motor": 1
+        }
+      },
+      "rear_right_drive": {
+        "id": "rear_right_drive",
+        "component_type": "drive_motor",
+        "mount_link": "rear_right_wheel_mount",
+        "direction_signs": {
+          "encoder": -1,
+          "motor": -1
+        }
+      }
+    },
+    "component_types": {
+      "camera_rgbd_640x480": {
+        "capabilities": {
+          "accelerometer": {
+            "kind": "accelerometer",
+            "target": {
+              "kind": "link",
+              "id": "imu_link"
+            },
+            "publish_rate_hz": 50.0,
+            "axes": null
+          },
+          "depth": {
+            "kind": "depth",
+            "target": {
+              "kind": "link",
+              "id": "stereo_center_link"
+            },
+            "publish_rate_hz": 15.0,
+            "width_px": 640,
+            "height_px": 400,
+            "field_of_view_rad": 1.272271,
+            "min_range_m": 0.4,
+            "max_range_m": 12.0
+          },
+          "gyroscope": {
+            "kind": "gyroscope",
+            "target": {
+              "kind": "link",
+              "id": "imu_link"
+            },
+            "publish_rate_hz": 50.0,
+            "axes": null
+          },
+          "imu": {
+            "kind": "imu",
+            "target": {
+              "kind": "link",
+              "id": "imu_link"
+            },
+            "publish_rate_hz": 50.0,
+            "axes": null
+          },
+          "left_mono": {
+            "kind": "camera",
+            "target": {
+              "kind": "link",
+              "id": "left_mono_link"
+            },
+            "mode": "mono",
+            "publish_rate_hz": 15.0,
+            "width_px": 640,
+            "height_px": 400,
+            "field_of_view_rad": 1.272271
+          },
+          "rgb": {
+            "kind": "camera",
+            "target": {
+              "kind": "link",
+              "id": "rgb_link"
+            },
+            "mode": "rgb",
+            "publish_rate_hz": 15.0,
+            "width_px": 640,
+            "height_px": 480,
+            "field_of_view_rad": 1.204277
+          },
+          "right_mono": {
+            "kind": "camera",
+            "target": {
+              "kind": "link",
+              "id": "right_mono_link"
+            },
+            "mode": "mono",
+            "publish_rate_hz": 15.0,
+            "width_px": 640,
+            "height_px": 400,
+            "field_of_view_rad": 1.272271
+          }
+        }
+      },
+      "drive_motor": {
+        "capabilities": {
+          "encoder": {
+            "kind": "encoder",
+            "target": {
+              "kind": "joint",
+              "id": "motor_joint"
+            },
+            "publish_rate_hz": 50.0,
+            "gear_ratio": 1.0,
+            "encoder_type": "incremental",
+            "counts_per_revolution": 4096
+          },
+          "motor": {
+            "kind": "motor",
+            "target": {
+              "kind": "joint",
+              "id": "motor_joint"
+            },
+            "command": "velocity",
+            "gear_ratio": 1.0,
+            "max_torque_nm": 2.0,
+            "max_velocity_radps": 20.943951
+          }
+        }
+      },
+      "imu": {
+        "capabilities": {
+          "accelerometer": {
+            "kind": "accelerometer",
+            "target": {
+              "kind": "link",
+              "id": "sensor_link"
+            },
+            "publish_rate_hz": 50.0,
+            "axes": [
+              true,
+              true,
+              true
+            ]
+          },
+          "gyroscope": {
+            "kind": "gyroscope",
+            "target": {
+              "kind": "link",
+              "id": "sensor_link"
+            },
+            "publish_rate_hz": 50.0,
+            "axes": [
+              true,
+              true,
+              true
+            ]
+          },
+          "imu": {
+            "kind": "imu",
+            "target": {
+              "kind": "link",
+              "id": "sensor_link"
+            },
+            "publish_rate_hz": 50.0,
+            "axes": [
+              true,
+              true,
+              true
+            ]
+          }
+        }
+      },
+      "range_tof": {
+        "capabilities": {
+          "range": {
+            "kind": "range",
+            "target": {
+              "kind": "link",
+              "id": "sensor_link"
+            },
+            "publish_rate_hz": 20.0,
+            "min_range_m": 0.04,
+            "max_range_m": 4.0,
+            "field_of_view_rad": 0.471239
+          }
+        }
+      }
+    },
+    "simulation_types": {
+      "camera_rgbd_640x480": {
+        "capabilities": {
+          "accelerometer": {
+            "kind": "accelerometer",
+            "sampling_period_hz": 100.0,
+            "resolution": 0.000588399,
+            "lookup_table": null
+          },
+          "depth": {
+            "kind": "depth",
+            "sampling_period_hz": 30.0,
+            "noise": 0.02,
+            "resolution": 0.03,
+            "motion_blur": 0.2
+          },
+          "gyroscope": {
+            "kind": "gyroscope",
+            "sampling_period_hz": 100.0,
+            "resolution": 0.00006981317,
+            "lookup_table": null
+          },
+          "imu": {
+            "kind": "imu",
+            "sampling_period_hz": 100.0,
+            "resolution": null,
+            "noise": null
+          },
+          "left_mono": {
+            "kind": "camera",
+            "sampling_period_hz": 30.0,
+            "projection": "planar",
+            "near": null,
+            "far": null,
+            "exposure": null,
+            "anti_aliasing": null,
+            "ambient_occlusion_radius": null,
+            "bloom_threshold": null,
+            "noise": null,
+            "motion_blur": null,
+            "noise_mask_url": null
+          },
+          "rgb": {
+            "kind": "camera",
+            "sampling_period_hz": 30.0,
+            "projection": "planar",
+            "near": null,
+            "far": null,
+            "exposure": null,
+            "anti_aliasing": null,
+            "ambient_occlusion_radius": null,
+            "bloom_threshold": null,
+            "noise": null,
+            "motion_blur": null,
+            "noise_mask_url": null
+          },
+          "right_mono": {
+            "kind": "camera",
+            "sampling_period_hz": 30.0,
+            "projection": "planar",
+            "near": null,
+            "far": null,
+            "exposure": null,
+            "anti_aliasing": null,
+            "ambient_occlusion_radius": null,
+            "bloom_threshold": null,
+            "noise": null,
+            "motion_blur": null,
+            "noise_mask_url": null
+          }
+        },
+        "links": {}
+      },
+      "drive_motor": {
+        "capabilities": {
+          "encoder": {
+            "kind": "encoder",
+            "sampling_period_hz": 50.0,
+            "resolution": 0.001533981,
+            "noise": null
+          },
+          "motor": {
+            "kind": "motor",
+            "actuator_type": "velocity",
+            "acceleration_radps2": null,
+            "control_pid": null,
+            "sampling_period_torque_hz": null
+          }
+        },
+        "links": {
+          "rotor_link": {
+            "contact_material": "rubber_wheel"
+          }
+        }
+      },
+      "imu": {
+        "capabilities": {
+          "accelerometer": {
+            "kind": "accelerometer",
+            "sampling_period_hz": 50.0,
+            "resolution": 0.038307227,
+            "lookup_table": null
+          },
+          "gyroscope": {
+            "kind": "gyroscope",
+            "sampling_period_hz": 50.0,
+            "resolution": 0.0010652644,
+            "lookup_table": null
+          },
+          "imu": {
+            "kind": "imu",
+            "sampling_period_hz": 50.0,
+            "resolution": null,
+            "noise": null
+          }
+        },
+        "links": {}
+      },
+      "range_tof": {
+        "capabilities": {
+          "range": {
+            "kind": "range",
+            "sampling_period_hz": 20.0,
+            "noise": null,
+            "resolution": 0.001
+          }
+        },
+        "links": {}
+      }
+    },
+    "structure": {
+      "joints": [
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "base_link",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "base_footprint_joint",
+          "origin": {
+            "rpy": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              0.0,
+              0.0,
+              0.1
+            ]
+          },
+          "parent": "base_footprint",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "front_left_wheel_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "front_left_wheel_mount_joint",
+          "origin": {
+            "rpy": [
+              -1.5708,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              0.18,
+              0.2,
+              -0.1
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "front_right_wheel_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "front_right_wheel_mount_joint",
+          "origin": {
+            "rpy": [
+              1.5708,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              0.18,
+              -0.2,
+              -0.1
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "rear_left_wheel_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "rear_left_wheel_mount_joint",
+          "origin": {
+            "rpy": [
+              -1.5708,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              -0.18,
+              0.2,
+              -0.1
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "rear_right_wheel_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "rear_right_wheel_mount_joint",
+          "origin": {
+            "rpy": [
+              1.5708,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              -0.18,
+              -0.2,
+              -0.1
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "imu_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "imu_mount_joint",
+          "origin": {
+            "rpy": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              0.0,
+              0.0,
+              0.08
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "front_camera_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "front_camera_mount_joint",
+          "origin": {
+            "rpy": [
+              0.0,
+              0.2618,
+              0.0
+            ],
+            "xyz": [
+              0.24,
+              0.0,
+              0.1
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        },
+        {
+          "axis": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "calibration": null,
+          "child": "front_center_tof_mount",
+          "dynamics": null,
+          "kind": "fixed",
+          "limit": {
+            "effort": 0.0,
+            "lower": 0.0,
+            "upper": 0.0,
+            "velocity": 0.0
+          },
+          "mimic": null,
+          "name": "front_center_tof_mount_joint",
+          "origin": {
+            "rpy": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "xyz": [
+              0.26,
+              0.0,
+              0.03
+            ]
+          },
+          "parent": "base_link",
+          "safety": null
+        }
+      ],
+      "links": [
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "base_footprint",
+          "visuals": []
+        },
+        {
+          "collisions": [
+            {
+              "geometry": {
+                "kind": "box",
+                "size": [
+                  0.5,
+                  0.3,
+                  0.1
+                ]
+              },
+              "name": null,
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              }
+            }
+          ],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.04,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.09,
+              "iyz": 0.0,
+              "izz": 0.1
+            },
+            "mass_kg": 4.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "base_link",
+          "visuals": [
+            {
+              "geometry": {
+                "kind": "box",
+                "size": [
+                  0.5,
+                  0.3,
+                  0.1
+                ]
+              },
+              "material": null,
+              "name": null,
+              "origin": {
+                "rpy": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "xyz": [
+                  0.0,
+                  0.0,
+                  0.0
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "front_left_wheel_mount",
+          "visuals": []
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "front_right_wheel_mount",
+          "visuals": []
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "rear_left_wheel_mount",
+          "visuals": []
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "rear_right_wheel_mount",
+          "visuals": []
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "imu_mount",
+          "visuals": []
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "front_camera_mount",
+          "visuals": []
+        },
+        {
+          "collisions": [],
+          "inertial": {
+            "inertia": {
+              "ixx": 0.0,
+              "ixy": 0.0,
+              "ixz": 0.0,
+              "iyy": 0.0,
+              "iyz": 0.0,
+              "izz": 0.0
+            },
+            "mass_kg": 0.0,
+            "origin": {
+              "rpy": [
+                0.0,
+                0.0,
+                0.0
+              ],
+              "xyz": [
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          "name": "front_center_tof_mount",
+          "visuals": []
+        }
+      ],
+      "materials": [],
+      "name": "RgbdImuDiffDrive"
+    }
+  }
+}

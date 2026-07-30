@@ -1,0 +1,15 @@
+error[E0432]: unresolved imports `phoxal::SetupContextApiExt`, `phoxal::SetupContextDriverExt`, `phoxal::SetupContextSimulatorExt`, `phoxal::SetupContextToolExt`
+ --> tests/trybuild/fail/retired_setup_extension_traits_are_absent.rs:2:5
+  |
+2 |     SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
+  |     ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^ no `SetupContextToolExt` in the root
+  |     |                   |                      |
+  |     |                   |                      no `SetupContextSimulatorExt` in the root
+  |     |                   no `SetupContextDriverExt` in the root
+  |     no `SetupContextApiExt` in the root
+  |
+help: a similar name exists in the module
+  |
+2 -     SetupContextApiExt, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
+2 +     SetupContext, SetupContextDriverExt, SetupContextSimulatorExt, SetupContextToolExt,
+  |

@@ -42,6 +42,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use crate::bus::{LocalInstant, RobotInstant, TimelineId};
+pub use phoxal_runtime_contract::{BootId, ExecutionOrigin};
 
 /// Why a participant cannot currently produce a trustworthy robot instant.
 ///
@@ -86,100 +87,6 @@ pub trait ClockSource: Send + Sync + 'static {
     /// The current reading. Within a timeline a synchronized reading never
     /// regresses.
     fn read(&self) -> ClockReading;
-}
-
-/// The supervisor-minted origin of one real execution.
-///
-/// The origin is a [`LocalInstant`] on the host boot clock plus the identity of
-/// the boot it was taken during. A participant validates the boot identity and
-/// refuses an origin from a different boot: a boot-clock reading is only
-/// meaningful within the boot that produced it, and treating a stale one as
-/// valid would silently shift every instant on the timeline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExecutionOrigin {
-    boot: BootId,
-    at: LocalInstant,
-    timeline: TimelineId,
-}
-
-impl ExecutionOrigin {
-    /// Mint the origin for a new real execution, now, on this host.
-    ///
-    /// `None` when the boot clock cannot be read: an execution anchored on an
-    /// instant nobody measured would shift every instant on its timeline.
-    pub fn try_mint() -> Option<Self> {
-        Some(ExecutionOrigin {
-            boot: BootId::current(),
-            at: LocalInstant::try_now()?,
-            timeline: TimelineId::mint(),
-        })
-    }
-
-    /// Mint the origin, panicking if this host's boot clock cannot be read.
-    ///
-    /// For tests and for the supervisor's own startup, where a host that
-    /// cannot report its uptime has nothing runnable on it anyway.
-    pub fn mint() -> Self {
-        Self::try_mint().expect("the host boot clock must be readable to start an execution")
-    }
-
-    /// Rebuild an origin the supervisor passed through the launch contract.
-    pub const fn new(boot: BootId, at: LocalInstant, timeline: TimelineId) -> Self {
-        ExecutionOrigin { boot, at, timeline }
-    }
-
-    /// The boot this origin was minted during.
-    pub const fn boot(self) -> BootId {
-        self.boot
-    }
-
-    /// The boot-clock instant this execution started at.
-    pub const fn started_at(self) -> LocalInstant {
-        self.at
-    }
-
-    /// The timeline real execution runs on.
-    pub const fn timeline(self) -> TimelineId {
-        self.timeline
-    }
-
-    /// Render for the launch contract: `<boot>:<boot-ns>:<timeline>`.
-    pub fn encode(self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.boot.0,
-            self.at.boot_ns(),
-            self.timeline.get()
-        )
-    }
-
-    /// Parse a rendered origin.
-    pub fn decode(value: &str) -> Option<Self> {
-        let mut parts = value.split(':');
-        let boot = BootId(parts.next()?.parse().ok()?);
-        let at = LocalInstant::from_boot_ns(parts.next()?.parse().ok()?);
-        let timeline = TimelineId::from_raw(parts.next()?.parse().ok()?)?;
-        if parts.next().is_some() {
-            return None;
-        }
-        Some(ExecutionOrigin { boot, at, timeline })
-    }
-}
-
-/// An identity for one host boot.
-///
-/// Derived from the host's own boot record where the platform exposes one, and
-/// otherwise from the wall time the boot clock's zero corresponds to. Both
-/// forms answer the only question asked of it: "was this origin taken during
-/// the boot I am running in".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BootId(u64);
-
-impl BootId {
-    /// This host's current boot identity.
-    pub fn current() -> Self {
-        BootId(host_boot_identity())
-    }
 }
 
 /// The real-execution clock: the host boot clock, offset by the execution
@@ -229,17 +136,15 @@ impl ClockSource for RealClock {
         let Some(now) = LocalInstant::try_now() else {
             return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
         };
-        if now < origin.started_at() {
+        let started_at = LocalInstant::from_boot_ns(origin.boot_ns());
+        if now < started_at {
             // The execution cannot have started after now on a clock that only
             // moves forward. Saturating to tick zero would silently place every
             // instant of this execution before its own origin.
             return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
         }
-        let ticks = u64::try_from(
-            now.saturating_duration_since(origin.started_at())
-                .as_nanos(),
-        )
-        .unwrap_or(u64::MAX);
+        let ticks =
+            u64::try_from(now.saturating_duration_since(started_at).as_nanos()).unwrap_or(u64::MAX);
         // The boot clock is monotonic, so this is a defensive latch rather than
         // a correction: a regression means the clock read is untrustworthy.
         let mut last = self.last_ticks.lock().expect("real clock poisoned");
@@ -348,60 +253,6 @@ impl ClockSource for TestClock {
     }
 }
 
-/// Read a stable identity for the current host boot.
-///
-/// Linux exposes a per-boot random id; Darwin exposes the boot wall time. Both
-/// are hashed into one opaque `u64`, since the only operation is equality.
-fn host_boot_identity() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(boot_id) = std::fs::read_to_string("/proc/sys/kernel/random/boot_id") {
-            return fnv1a(boot_id.trim().as_bytes());
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut boottime = libc::timeval {
-            tv_sec: 0,
-            tv_usec: 0,
-        };
-        let mut size = std::mem::size_of::<libc::timeval>();
-        // SAFETY: `sysctlbyname` writes at most `size` bytes into `boottime`,
-        // which we own and borrow mutably for the call.
-        let outcome = unsafe {
-            libc::sysctlbyname(
-                c"kern.boottime".as_ptr(),
-                (&raw mut boottime).cast(),
-                &raw mut size,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if outcome == 0 {
-            return fnv1a(&boottime.tv_sec.to_le_bytes());
-        }
-    }
-    // Portable fallback: the wall time the boot clock's zero corresponds to,
-    // truncated to whole seconds so ordinary NTP slew does not change it.
-    let wall = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or(0);
-    let uptime = LocalInstant::try_now()
-        .map(|now| Duration::from_nanos(now.boot_ns()).as_secs())
-        .unwrap_or(0);
-    fnv1a(&wall.saturating_sub(uptime).to_le_bytes())
-}
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +279,21 @@ mod tests {
     }
 
     #[test]
+    fn execution_origins_and_local_instants_share_the_same_boot_clock_scale() {
+        let before = LocalInstant::try_now().expect("test host clock");
+        let origin = ExecutionOrigin::mint();
+        let after = LocalInstant::try_now().expect("test host clock");
+
+        assert!(
+            before.boot_ns() <= origin.boot_ns() && origin.boot_ns() <= after.boot_ns(),
+            "runtime-contract origin {} escaped the bus clock interval {}..={}",
+            origin.boot_ns(),
+            before.boot_ns(),
+            after.boot_ns()
+        );
+    }
+
+    #[test]
     fn the_real_clock_never_regresses_within_a_timeline() {
         let clock = RealClock::new(ExecutionOrigin::mint());
         let mut last = clock.read().instant().unwrap();
@@ -449,8 +315,8 @@ mod tests {
         );
 
         let foreign = ExecutionOrigin::new(
-            BootId(BootId::current().0 ^ 0xffff),
-            LocalInstant::try_now().expect("test host clock"),
+            BootId::from_raw(BootId::current().get() ^ 0xffff),
+            LocalInstant::try_now().expect("test host clock").boot_ns(),
             TimelineId::mint(),
         );
         assert_eq!(

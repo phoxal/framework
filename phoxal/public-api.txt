@@ -1,0 +1,202 @@
+pub mod phoxal
+pub use phoxal::Config
+pub use phoxal::Result
+pub use phoxal::api
+pub use phoxal::driver
+pub use phoxal::service
+pub use phoxal::simulator
+pub use phoxal::step
+pub use phoxal::tool
+pub mod phoxal::bus
+pub use phoxal::bus::ApiVersion
+pub use phoxal::bus::AskQuery
+pub use phoxal::bus::BusError
+pub use phoxal::bus::BusMetadata
+pub use phoxal::bus::CaptureStamp
+pub use phoxal::bus::Codec
+pub use phoxal::bus::CodecError
+pub use phoxal::bus::CodecId
+pub use phoxal::bus::CommandContract
+pub use phoxal::bus::CommandPublisher
+pub use phoxal::bus::ContractBody
+pub use phoxal::bus::DEFAULT_QUERY_TIMEOUT
+pub use phoxal::bus::DiagnosticContract
+pub use phoxal::bus::DiagnosticPublisher
+pub use phoxal::bus::ExecutionId
+pub use phoxal::bus::LEASE_TRACE_TARGET
+pub use phoxal::bus::Latest
+pub use phoxal::bus::Lease
+pub use phoxal::bus::LeaseDecision
+pub use phoxal::bus::LeaseRejection
+pub use phoxal::bus::LocalInstant
+pub use phoxal::bus::MeasurementContract
+pub use phoxal::bus::MeasurementPublisher
+pub use phoxal::bus::MessagePack
+pub use phoxal::bus::Observed
+pub use phoxal::bus::ProducerFence
+pub use phoxal::bus::ProducerId
+pub use phoxal::bus::Publish
+pub use phoxal::bus::Querier
+pub use phoxal::bus::QueryCode
+pub use phoxal::bus::QueryError
+pub use phoxal::bus::QueryFailure
+pub use phoxal::bus::QueryResult
+pub use phoxal::bus::Result
+pub use phoxal::bus::RobotInstant
+pub use phoxal::bus::ServeQuery
+pub use phoxal::bus::StateContract
+pub use phoxal::bus::StatePublisher
+pub use phoxal::bus::StepStamp
+pub use phoxal::bus::StepToken
+pub use phoxal::bus::Subscribe
+pub use phoxal::bus::Subscriber
+pub use phoxal::bus::TimeWindow
+pub use phoxal::bus::TimelineId
+pub use phoxal::bus::TimelineMismatch
+pub use phoxal::bus::Topic
+pub use phoxal::bus::TopicKind
+pub use phoxal::bus::TopicRole
+pub use phoxal::bus::WallTimestamp
+pub use phoxal::bus::WildcardPublish
+pub use phoxal::bus::WorldClockContract
+pub use phoxal::bus::WorldStepToken
+pub use phoxal::bus::encoding_string
+pub mod phoxal::model
+pub use phoxal::model::ComponentInstance
+pub use phoxal::model::Robot
+pub use phoxal::model::component
+pub use phoxal::model::simulation
+pub use phoxal::model::structure
+pub mod phoxal::model::robot
+pub use phoxal::model::robot::ComponentInstance
+pub use phoxal::model::robot::KinematicConfig
+pub use phoxal::model::robot::MotionLimits
+pub use phoxal::model::robot::MotionModel
+pub use phoxal::model::robot::ROBOT_SCHEMA
+pub use phoxal::model::robot::RobotIdentity
+pub mod phoxal::prelude
+pub use phoxal::prelude::CaptureStamp
+pub use phoxal::prelude::CommandPublisher
+pub use phoxal::prelude::DiagnosticPublisher
+pub use phoxal::prelude::Latest
+pub use phoxal::prelude::Lease
+pub use phoxal::prelude::LeaseDecision
+pub use phoxal::prelude::LocalInstant
+pub use phoxal::prelude::MeasurementPublisher
+pub use phoxal::prelude::Observed
+pub use phoxal::prelude::ProducerFence
+pub use phoxal::prelude::Querier
+pub use phoxal::prelude::QueryError
+pub use phoxal::prelude::QueryResult
+pub use phoxal::prelude::Result
+pub use phoxal::prelude::RobotInstant
+pub use phoxal::prelude::StatePublisher
+pub use phoxal::prelude::Subscriber
+pub use phoxal::prelude::TimeWindow
+pub use phoxal::prelude::TimelineId
+pub enum phoxal::prelude::ManagedTaskPolicy
+pub phoxal::prelude::ManagedTaskPolicy::AllowExit
+pub phoxal::prelude::ManagedTaskPolicy::FaultOnExit
+pub struct phoxal::prelude::AssetId(_)
+impl phoxal::AssetId
+pub fn phoxal::AssetId::as_str(&self) -> &str
+pub fn phoxal::AssetId::new(impl core::convert::Into<alloc::string::String>) -> anyhow::Result<Self>
+pub struct phoxal::prelude::AssetResolver
+impl phoxal::AssetResolver
+pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal::AssetId>
+pub fn phoxal::AssetResolver::open(&self, &phoxal::AssetId) -> anyhow::Result<std::fs::File>
+pub fn phoxal::AssetResolver::path(&self, &phoxal::AssetId) -> anyhow::Result<&std::path::Path>
+pub fn phoxal::AssetResolver::read(&self, &phoxal::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
+pub struct phoxal::prelude::ResetContext
+impl phoxal::ResetContext
+pub fn phoxal::ResetContext::new_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
+pub fn phoxal::ResetContext::previous_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
+pub struct phoxal::prelude::SetupContext<R: phoxal::Participant>
+impl<R: phoxal::Participant + ComponentBoundSurface> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::component(&self) -> anyhow::Result<&phoxal_model::robot::ComponentInstance>
+impl<R: phoxal::Participant + ToolSurface> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::bus(&self) -> phoxal_bus::session::Bus
+pub fn phoxal::SetupContext<R>::execution(&self) -> phoxal_runtime_contract::identity::ExecutionId
+impl<R: phoxal::Participant + TypedIoSurface> phoxal::SetupContext<R>
+pub async fn phoxal::SetupContext<R>::command_publisher<B: phoxal_bus::contract::CommandContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::CommandPublisher<B>>
+pub async fn phoxal::SetupContext<R>::diagnostic_publisher<B: phoxal_bus::contract::DiagnosticContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::DiagnosticPublisher<B>>
+pub async fn phoxal::SetupContext<R>::latest<B: phoxal_bus::contract::ContractBody>(&mut self, phoxal_bus::topic::Topic<phoxal_bus::topic::Subscribe<B>>) -> anyhow::Result<phoxal_bus::handle::Latest<B>>
+pub async fn phoxal::SetupContext<R>::measurement_publisher<B: phoxal_bus::contract::MeasurementContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::MeasurementPublisher<B>>
+pub async fn phoxal::SetupContext<R>::querier<Req: phoxal_bus::contract::ContractBody, Resp: phoxal_bus::contract::ContractBody>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::AskQuery<Req, Resp>>) -> anyhow::Result<phoxal_bus::handle::Querier<Req, Resp>>
+pub async fn phoxal::SetupContext<R>::query<Req, Resp, H>(&mut self, phoxal_bus::topic::Topic<phoxal_bus::topic::ServeQuery<Req, Resp>>, H) -> anyhow::Result<()> where Req: phoxal_bus::contract::ContractBody, Resp: phoxal_bus::contract::ContractBody, H: for<'a> core::ops::async_function::AsyncFn(&'a R, &'a <R as >::Api, Req, &'a mut <R as >::State) -> phoxal_bus::query::QueryResult<Resp> + core::marker::Send + core::marker::Sync + 'static
+pub async fn phoxal::SetupContext<R>::state_publisher<B: phoxal_bus::contract::StateContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::StatePublisher<B>>
+pub async fn phoxal::SetupContext<R>::subscriber<B: phoxal_bus::contract::ContractBody>(&mut self, phoxal_bus::topic::Topic<phoxal_bus::topic::Subscribe<B>>, usize) -> anyhow::Result<phoxal_bus::handle::Subscriber<B>>
+impl<R: phoxal::Participant + WorldAuthoritySurface> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::timeline_authority(&self, phoxal_runtime_contract::identity::TimelineId) -> anyhow::Result<phoxal_bus::handle::TimelineAuthority>
+pub async fn phoxal::SetupContext<R>::world_clock_publisher<B: phoxal_bus::contract::WorldClockContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::WorldClockPublisher<B>>
+impl<R: phoxal::Participant> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::assets(&self) -> anyhow::Result<&phoxal::AssetResolver>
+pub fn phoxal::SetupContext<R>::robot(&self) -> anyhow::Result<&phoxal_model::robot::Robot>
+pub fn phoxal::SetupContext<R>::spawn_managed<F>(&mut self, impl core::convert::Into<alloc::string::String>, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
+pub fn phoxal::SetupContext<R>::spawn_managed_with<F>(&mut self, impl core::convert::Into<alloc::string::String>, phoxal::prelude::ManagedTaskPolicy, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
+pub struct phoxal::prelude::StepContext
+impl phoxal::StepContext
+pub fn phoxal::StepContext::dt(&self) -> core::time::Duration
+pub fn phoxal::StepContext::missed_ticks(&self) -> u32
+pub fn phoxal::StepContext::now(&self) -> phoxal_bus::time::RobotInstant
+pub fn phoxal::StepContext::step_index(&self) -> u64
+pub fn phoxal::StepContext::timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
+pub fn phoxal::StepContext::token(&self) -> &phoxal_bus::handle::StepToken
+pub trait phoxal::prelude::Participant: ParticipantSpec
+pub async fn phoxal::prelude::Participant::reset(&self, phoxal::ResetContext, &Self::Api, &mut Self::State) -> anyhow::Result<()>
+pub async fn phoxal::prelude::Participant::setup(&self, &mut phoxal::SetupContext<Self>, Self::Config) -> anyhow::Result<(Self::State, Self::Api)>
+pub async fn phoxal::prelude::Participant::shutdown(&self, &Self::Api, &mut Self::State) -> anyhow::Result<()>
+pub async fn phoxal::prelude::Participant::step(&self, &Self::Api, phoxal::StepContext, &mut Self::State) -> anyhow::Result<()>
+pub mod phoxal::tokio
+pub async fn phoxal::tokio::run<R: phoxal::Participant>() -> anyhow::Result<()>
+pub struct phoxal::AssetId(_)
+impl phoxal::AssetId
+pub fn phoxal::AssetId::as_str(&self) -> &str
+pub fn phoxal::AssetId::new(impl core::convert::Into<alloc::string::String>) -> anyhow::Result<Self>
+pub struct phoxal::AssetResolver
+impl phoxal::AssetResolver
+pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal::AssetId>
+pub fn phoxal::AssetResolver::open(&self, &phoxal::AssetId) -> anyhow::Result<std::fs::File>
+pub fn phoxal::AssetResolver::path(&self, &phoxal::AssetId) -> anyhow::Result<&std::path::Path>
+pub fn phoxal::AssetResolver::read(&self, &phoxal::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
+pub struct phoxal::ResetContext
+impl phoxal::ResetContext
+pub fn phoxal::ResetContext::new_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
+pub fn phoxal::ResetContext::previous_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
+pub struct phoxal::SetupContext<R: phoxal::Participant>
+impl<R: phoxal::Participant + ComponentBoundSurface> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::component(&self) -> anyhow::Result<&phoxal_model::robot::ComponentInstance>
+impl<R: phoxal::Participant + ToolSurface> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::bus(&self) -> phoxal_bus::session::Bus
+pub fn phoxal::SetupContext<R>::execution(&self) -> phoxal_runtime_contract::identity::ExecutionId
+impl<R: phoxal::Participant + TypedIoSurface> phoxal::SetupContext<R>
+pub async fn phoxal::SetupContext<R>::command_publisher<B: phoxal_bus::contract::CommandContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::CommandPublisher<B>>
+pub async fn phoxal::SetupContext<R>::diagnostic_publisher<B: phoxal_bus::contract::DiagnosticContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::DiagnosticPublisher<B>>
+pub async fn phoxal::SetupContext<R>::latest<B: phoxal_bus::contract::ContractBody>(&mut self, phoxal_bus::topic::Topic<phoxal_bus::topic::Subscribe<B>>) -> anyhow::Result<phoxal_bus::handle::Latest<B>>
+pub async fn phoxal::SetupContext<R>::measurement_publisher<B: phoxal_bus::contract::MeasurementContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::MeasurementPublisher<B>>
+pub async fn phoxal::SetupContext<R>::querier<Req: phoxal_bus::contract::ContractBody, Resp: phoxal_bus::contract::ContractBody>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::AskQuery<Req, Resp>>) -> anyhow::Result<phoxal_bus::handle::Querier<Req, Resp>>
+pub async fn phoxal::SetupContext<R>::query<Req, Resp, H>(&mut self, phoxal_bus::topic::Topic<phoxal_bus::topic::ServeQuery<Req, Resp>>, H) -> anyhow::Result<()> where Req: phoxal_bus::contract::ContractBody, Resp: phoxal_bus::contract::ContractBody, H: for<'a> core::ops::async_function::AsyncFn(&'a R, &'a <R as >::Api, Req, &'a mut <R as >::State) -> phoxal_bus::query::QueryResult<Resp> + core::marker::Send + core::marker::Sync + 'static
+pub async fn phoxal::SetupContext<R>::state_publisher<B: phoxal_bus::contract::StateContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::StatePublisher<B>>
+pub async fn phoxal::SetupContext<R>::subscriber<B: phoxal_bus::contract::ContractBody>(&mut self, phoxal_bus::topic::Topic<phoxal_bus::topic::Subscribe<B>>, usize) -> anyhow::Result<phoxal_bus::handle::Subscriber<B>>
+impl<R: phoxal::Participant + WorldAuthoritySurface> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::timeline_authority(&self, phoxal_runtime_contract::identity::TimelineId) -> anyhow::Result<phoxal_bus::handle::TimelineAuthority>
+pub async fn phoxal::SetupContext<R>::world_clock_publisher<B: phoxal_bus::contract::WorldClockContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::WorldClockPublisher<B>>
+impl<R: phoxal::Participant> phoxal::SetupContext<R>
+pub fn phoxal::SetupContext<R>::assets(&self) -> anyhow::Result<&phoxal::AssetResolver>
+pub fn phoxal::SetupContext<R>::robot(&self) -> anyhow::Result<&phoxal_model::robot::Robot>
+pub fn phoxal::SetupContext<R>::spawn_managed<F>(&mut self, impl core::convert::Into<alloc::string::String>, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
+pub fn phoxal::SetupContext<R>::spawn_managed_with<F>(&mut self, impl core::convert::Into<alloc::string::String>, phoxal::prelude::ManagedTaskPolicy, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
+pub struct phoxal::StepContext
+impl phoxal::StepContext
+pub fn phoxal::StepContext::dt(&self) -> core::time::Duration
+pub fn phoxal::StepContext::missed_ticks(&self) -> u32
+pub fn phoxal::StepContext::now(&self) -> phoxal_bus::time::RobotInstant
+pub fn phoxal::StepContext::step_index(&self) -> u64
+pub fn phoxal::StepContext::timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
+pub fn phoxal::StepContext::token(&self) -> &phoxal_bus::handle::StepToken
+pub trait phoxal::Participant: ParticipantSpec
+pub async fn phoxal::Participant::reset(&self, phoxal::ResetContext, &Self::Api, &mut Self::State) -> anyhow::Result<()>
+pub async fn phoxal::Participant::setup(&self, &mut phoxal::SetupContext<Self>, Self::Config) -> anyhow::Result<(Self::State, Self::Api)>
+pub async fn phoxal::Participant::shutdown(&self, &Self::Api, &mut Self::State) -> anyhow::Result<()>
+pub async fn phoxal::Participant::step(&self, &Self::Api, phoxal::StepContext, &mut Self::State) -> anyhow::Result<()>
+pub fn phoxal::run<R: phoxal::Participant>() -> anyhow::Result<()>

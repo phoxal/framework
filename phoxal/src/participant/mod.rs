@@ -17,10 +17,7 @@ pub mod scheduler;
 pub mod server;
 pub mod spec;
 
-pub use api::{
-    Participant, ParticipantConfig, ParticipantSpec, SetupContextApiExt, SetupContextDriverExt,
-    SetupContextSimulatorExt, SetupContextToolExt,
-};
+pub use api::{Participant, ParticipantConfig, ParticipantSpec};
 pub use clock::{
     BootId, ClockReading, ClockSource, ExecutionOrigin, RealClock, TestClock, TimeUnsynchronized,
 };
@@ -33,9 +30,7 @@ pub use scheduler::{
     StepScheduler,
 };
 pub use server::{ServerOutcome, ServerReply};
-pub use spec::{
-    IsDriver, IsSimulator, IsTool, MissedTick, SchedulableSurface, StepSchedule, TypedGraphSurface,
-};
+pub use spec::{MissedTick, StepSchedule};
 
 #[cfg(test)]
 mod config_tests;

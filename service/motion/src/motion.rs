@@ -316,16 +316,15 @@ fn state_target(target: &api::drive::Target) -> api::motion::Target {
 
 fn emergency_stop_bindings(robot: &Robot) -> Result<Vec<EmergencyStopBinding>> {
     let mut bindings = Vec::new();
-    for component_id in robot.components().keys() {
+    for component_id in robot.component_ids() {
         let component = robot.component_for_instance(component_id)?;
         bindings.extend(
             component
-                .capabilities
-                .iter()
+                .capabilities()
                 .filter(|(_, capability)| matches!(capability, Capability::EmergencyStop(_)))
                 .map(|(capability_id, _)| EmergencyStopBinding {
-                    component_id: component_id.clone(),
-                    capability_id: capability_id.clone(),
+                    component_id: component_id.to_string(),
+                    capability_id: capability_id.to_string(),
                 }),
         );
     }

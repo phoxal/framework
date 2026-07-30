@@ -188,10 +188,10 @@ impl FrameState {
 mod tests {
     use nalgebra::{Quaternion, UnitQuaternion};
     use phoxal::api;
-    use phoxal::model::structure::Structure;
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
     use super::*;
+    use crate::config::FrameJointType;
 
     /// One fixed timeline for the frame tests, so the buffered instants read
     /// like the tick counters these cases care about.
@@ -205,21 +205,65 @@ mod tests {
 
     const EPSILON: f64 = 1e-9;
 
+    fn config_with_joint(
+        name: &str,
+        kind: &str,
+        child: &str,
+        rpy: [f64; 3],
+        axis: [f64; 3],
+    ) -> FrameConfig {
+        let joint_type = match kind {
+            "fixed" => FrameJointType::Fixed,
+            "continuous" => FrameJointType::Continuous,
+            other => panic!("unsupported test joint kind {other}"),
+        };
+        let origin = Isometry3::from_parts(
+            nalgebra::Translation3::identity(),
+            UnitQuaternion::from_euler_angles(rpy[0], rpy[1], rpy[2]),
+        );
+        let meta = JointMeta {
+            joint_id: name.to_string(),
+            joint_type,
+            origin,
+            axis_xyz: axis,
+        };
+        let static_transforms = if joint_type == FrameJointType::Fixed {
+            BTreeMap::from([(
+                child.to_string(),
+                transform::transform_from_isometry(
+                    "base_link".to_string(),
+                    child.to_string(),
+                    origin,
+                    None,
+                ),
+            )])
+        } else {
+            BTreeMap::new()
+        };
+        let dynamic_joints = if joint_type == FrameJointType::Fixed {
+            Vec::new()
+        } else {
+            vec![DynamicJoint {
+                joint_id: name.to_string(),
+                child_frame_id: child.to_string(),
+            }]
+        };
+        FrameConfig {
+            static_transforms,
+            parent_by_child: BTreeMap::from([(child.to_string(), ("base_link".to_string(), meta))]),
+            dynamic_joints,
+        }
+    }
+
     #[test]
     fn static_chain_lookup_composes_yaw() -> Result<()> {
-        let config = FrameConfig::from_structure(&Structure::from_urdf_str(
-            r#"
-            <robot name="test">
-              <link name="base_link"/>
-              <joint name="arm_mount" type="fixed">
-                <parent link="base_link"/>
-                <child link="arm_link"/>
-                <origin xyz="0 0 0" rpy="0 0 1.5707963267948966"/>
-              </joint>
-              <link name="arm_link"/>
-            </robot>
-            "#,
-        )?)?;
+        let config = config_with_joint(
+            "arm_mount",
+            "fixed",
+            "arm_link",
+            [0.0, 0.0, FRAC_PI_2],
+            [0.0, 0.0, 0.0],
+        );
         let state = state_from_config(&config, BTreeMap::new());
 
         let transform = lookup_transform(
@@ -420,20 +464,13 @@ mod tests {
     }
 
     fn single_dynamic_config() -> Result<FrameConfig> {
-        FrameConfig::from_structure(&Structure::from_urdf_str(
-            r#"
-            <robot name="test">
-              <link name="base_link"/>
-              <joint name="wheel_joint" type="continuous">
-                <parent link="base_link"/>
-                <child link="wheel_link"/>
-                <origin xyz="0 0 0" rpy="0 0 0"/>
-                <axis xyz="0 0 1"/>
-              </joint>
-              <link name="wheel_link"/>
-            </robot>
-            "#,
-        )?)
+        Ok(config_with_joint(
+            "wheel_joint",
+            "continuous",
+            "wheel_link",
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ))
     }
 
     fn joint_state(position_rad: f64) -> api::joint::JointState {

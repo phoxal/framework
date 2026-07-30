@@ -140,6 +140,7 @@ impl RuntimeMetricHandle {
         update_max(&self.counters.high_water_depth, current);
     }
 
+    #[allow(deprecated)]
     pub(crate) fn enqueue_finished(&self) {
         let _ = self.counters.current_depth.fetch_update(
             Ordering::Relaxed,
@@ -261,6 +262,7 @@ impl RuntimeMetrics {
     }
 }
 
+#[allow(deprecated)]
 fn update_max(target: &AtomicU64, value: u64) {
     let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         (value > current).then_some(value)

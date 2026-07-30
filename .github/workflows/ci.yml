@@ -33,7 +33,7 @@ jobs:
   # `cargo package` builds each library isolated, which is what that consumer
   # actually gets.
   #
-  # This is about DEPENDENCY features. None of the four library crates declares
+  # This is about DEPENDENCY features. None of the seven library crates declares
   # a feature of its own - there is no `[features]` table and no
   # `cfg(feature = ...)` in their source - so `--no-default-features` on them is
   # a no-op and is not tested here; it would only re-run `ci`'s clippy and test.
@@ -50,12 +50,44 @@ jobs:
 
       - name: Package each library on its own
         run: |
-          cargo package -p phoxal-bus --allow-dirty
+          cargo package -p phoxal-runtime-contract --allow-dirty
+          cargo package -p phoxal-model --allow-dirty
+          cargo package -p phoxal-macros --allow-dirty
+          cargo package -p phoxal-bus --allow-dirty \
+            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
+          cargo package -p phoxal-api --allow-dirty \
+            --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \
+            --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'" \
+            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
+          cargo package -p phoxal-manifest --allow-dirty \
+            --config "patch.crates-io.phoxal-model.path='${GITHUB_WORKSPACE}/phoxal-model'"
           # Verify the packaged phoxal crate against the same-release local
           # libraries. The registry still contains the previous API until the
           # release workflow publishes this workspace in dependency order.
           cargo package -p phoxal --allow-dirty \
             --config "patch.crates-io.phoxal-api.path='${GITHUB_WORKSPACE}/phoxal-api'" \
             --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \
-            --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'"
+            --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'" \
+            --config "patch.crates-io.phoxal-model.path='${GITHUB_WORKSPACE}/phoxal-model'" \
+            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
 
+  public-api:
+    name: phoxal public API snapshot
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): release v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-07-30
+
+      - name: Install pinned cargo-public-api
+        run: cargo install cargo-public-api --version 0.52.0 --locked
+
+      - name: Verify simplified facade snapshot
+        run: |
+          cargo public-api -p phoxal -sss --color=never > /tmp/phoxal-public-api.txt
+          diff -u phoxal/public-api.txt /tmp/phoxal-public-api.txt

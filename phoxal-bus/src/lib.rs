@@ -19,7 +19,7 @@
 //! these two traits. The `phoxal` engine re-exports the typed authoring subset at
 //! `phoxal::bus`, so the traits are also reachable as `phoxal::bus::ApiVersion` /
 //! `phoxal::bus::ContractBody`. The raw session-opening surface lives behind the
-//! explicit `phoxal::raw` opt-in.
+//! explicit `phoxal-bus` opt-in.
 
 pub mod abi;
 pub mod codec;

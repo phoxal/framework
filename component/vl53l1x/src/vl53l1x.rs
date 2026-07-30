@@ -37,13 +37,13 @@ impl Participant for Vl53l1x {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let instance = ctx.component()?.to_string();
+        let instance = ctx.component()?.id().to_string();
         let slots = {
             let robot = ctx.robot()?;
             let spec = robot.component_for_instance(&instance)?;
             let mut slots = Vec::new();
 
-            for (capability_id, capability) in &spec.capabilities {
+            for (capability_id, capability) in spec.capabilities() {
                 if let Capability::Range(config) = capability {
                     validate_publish_rate(capability_id, config.publish_rate_hz)?;
                     slots.push(RangeSlot {

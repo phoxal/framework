@@ -1,0 +1,11 @@
+error[E0432]: unresolved import `phoxal::model::source`
+ --> tests/trybuild/fail/retired_model_sources_are_absent.rs:1:5
+  |
+1 | use phoxal::model::source;
+  |     ^^^^^^^^^^^^^^^^^^^^^ no `source` in `model`
+
+error[E0432]: unresolved import `phoxal::model::robot::v0`
+ --> tests/trybuild/fail/retired_model_sources_are_absent.rs:2:5
+  |
+2 | use phoxal::model::robot::v0;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^ no `v0` in `model::robot`

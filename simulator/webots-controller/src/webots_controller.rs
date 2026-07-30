@@ -23,8 +23,8 @@ use phoxal::prelude::*;
 // `TimelineAuthority` and `WorldClockPublisher` are deliberately not part of
 // `phoxal::bus`/`phoxal::prelude`: they are world-clock
 // authority types only this simulator legitimately names, so they live behind
-// the explicit `phoxal::raw` opt-in instead - see that module's docs.
-use phoxal::raw::{TimelineAuthority, WorldClockPublisher};
+// the explicit `phoxal_bus` opt-in instead - see that module's docs.
+use phoxal_bus::{TimelineAuthority, WorldClockPublisher};
 use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 
@@ -94,7 +94,7 @@ struct BlockingStep {
 ///
 /// The controller joins the supervised run through `PHOXAL_EXECUTION_ID`, which
 /// the supervisor puts in the Webots application's environment and Webots
-/// passes through to this child process. It mints its own [`ProducerId`] if the
+/// passes through to this child process. It mints its own `ProducerId` if the
 /// supervisor did not pre-mint one, and it always mints its own timeline: a
 /// world history belongs to the controller process that runs it, never to the
 /// CLI (#952 section B).
@@ -636,13 +636,13 @@ impl CapabilityCatalog {
 
         let mut catalog = Self::default();
 
-        for component_id in robot.components().keys() {
+        for component_id in robot.component_ids() {
             let component = robot.component_for_instance(component_id)?;
             let simulation = robot.simulation_for_instance(component_id)?;
-            for (capability_id, capability) in &component.capabilities {
+            for (capability_id, capability) in component.capabilities() {
                 let reference = CapabilityRef::new(component_id, capability_id);
                 let simulation_capability =
-                    simulation.and_then(|sim| sim.capabilities.get(capability_id));
+                    simulation.and_then(|sim| sim.capability(capability_id));
                 match capability {
                     Capability::Motor(config) => {
                         catalog.motors.push(MotorSpec {
@@ -1307,8 +1307,8 @@ fn none_vec<T>(len: usize) -> Vec<Option<T>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phoxal::participant::{Participant, ParticipantSpec};
-    use phoxal::raw::{Bus, BusConfig, MeasurementPublisher, Subscriber};
+    use phoxal::__private::{Participant, ParticipantSpec};
+    use phoxal_bus::{Bus, BusConfig, MeasurementPublisher, Subscriber};
     use std::time::Duration;
 
     #[test]

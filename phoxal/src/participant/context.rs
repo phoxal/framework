@@ -3,15 +3,23 @@
 //! scheduled step).
 
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::bus::{RobotInstant, StepToken, TimelineId};
+use crate::__private::surface::{
+    ComponentBoundSurface, ToolSurface, TypedIoSurface, WorldAuthoritySurface,
+};
+use crate::AssetResolver;
+use crate::bus::{
+    AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
+    DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
+    Publish, Querier, RobotInstant, ServeQuery, StateContract, StatePublisher, StepToken,
+    Subscribe, Subscriber, TimelineId, Topic, WorldClockContract,
+};
 use crate::model::Robot;
 use crate::participant::api::{Participant, QueryRegistration};
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
-use phoxal_bus::Bus;
+use phoxal_bus::{Bus, TimelineAuthority, WorldClockPublisher};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 
@@ -19,7 +27,7 @@ pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 pub struct SetupContext<R: Participant> {
     bus: Bus,
     robot: Option<Arc<Robot>>,
-    robot_root: Option<PathBuf>,
+    assets: Option<AssetResolver>,
     component_instance: Option<String>,
     managed_tasks: ManagedTasks,
     timeline_retentions: Vec<TimelineRetention>,
@@ -31,13 +39,13 @@ impl<R: Participant> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
         robot: Option<Arc<Robot>>,
-        robot_root: Option<PathBuf>,
+        assets: Option<AssetResolver>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
             bus,
             robot,
-            robot_root,
+            assets,
             component_instance,
             managed_tasks: ManagedTasks::default(),
             timeline_retentions: Vec::new(),
@@ -122,15 +130,6 @@ impl<R: Participant> SetupContext<R> {
         std::mem::take(&mut self.queries)
     }
 
-    /// The underlying bus. Not on the default checked-participant surface (plan #00
-    /// DoD #11 / plan #07): normal participants and examples cannot reach around
-    /// the typed handle builders. Privileged participants that genuinely need raw
-    /// access go through `phoxal::raw` (`Bus::open` + `run_with_bus`) or the
-    /// tool-only [`Self::raw_bus`] accessor.
-    pub(crate) fn bus(&self) -> &Bus {
-        &self.bus
-    }
-
     /// The bound `robot.components` instance, if any. In-crate accessor for the
     /// driver/simulator `component()` builders (`participant::api`).
     pub(crate) fn component_instance(&self) -> Option<&str> {
@@ -138,15 +137,156 @@ impl<R: Participant> SetupContext<R> {
     }
 
     /// The resolved robot model, if bound. In-crate accessor for
-    /// [`SetupContextApiExt::robot`](super::api::SetupContextApiExt::robot).
+    /// [`SetupContext::robot`](super::api::SetupContext::robot).
     pub(crate) fn robot_ref(&self) -> Option<&Robot> {
         self.robot.as_deref()
     }
 
-    /// The robot root directory, if bound. In-crate accessor for
-    /// [`SetupContextApiExt::robot_root`](super::api::SetupContextApiExt::robot_root).
-    pub(crate) fn robot_root_ref(&self) -> Option<&Path> {
-        self.robot_root.as_deref()
+    /// The immutable canonical model decoded from `<bundle>/robot.json`.
+    pub fn robot(&self) -> crate::Result<&Robot> {
+        self.robot_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no robot model is bound (this participant was launched without a bundle root)"
+            )
+        })
+    }
+
+    /// The validated assets compiled into this participant's runtime bundle.
+    pub fn assets(&self) -> crate::Result<&AssetResolver> {
+        self.assets.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("no compiled assets are bound (this participant has no bundle root)")
+        })
+    }
+}
+
+impl<R: Participant + TypedIoSurface> SetupContext<R> {
+    pub async fn state_publisher<B: StateContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<StatePublisher<B>> {
+        Ok(StatePublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub async fn measurement_publisher<B: MeasurementContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<MeasurementPublisher<B>> {
+        Ok(MeasurementPublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub async fn command_publisher<B: CommandContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<CommandPublisher<B>> {
+        Ok(CommandPublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub async fn diagnostic_publisher<B: DiagnosticContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<DiagnosticPublisher<B>> {
+        Ok(DiagnosticPublisher::new(self.bus.clone(), &topic)?)
+    }
+
+    pub async fn latest<B: ContractBody>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+    ) -> crate::Result<Latest<B>> {
+        let handle = Latest::new(&self.bus, &topic).await?;
+        let retained = handle.clone();
+        self.register_timeline_retention(move |timeline| {
+            retained.__retain_timeline(timeline);
+        });
+        Ok(handle)
+    }
+
+    pub async fn subscriber<B: ContractBody>(
+        &mut self,
+        topic: Topic<Subscribe<B>>,
+        depth: usize,
+    ) -> crate::Result<Subscriber<B>> {
+        let handle = Subscriber::new(&self.bus, &topic, depth).await?;
+        let retained = handle.clone();
+        self.register_timeline_retention(move |timeline| {
+            retained.__retain_timeline(timeline);
+        });
+        Ok(handle)
+    }
+
+    pub async fn querier<Req: ContractBody, Resp: ContractBody>(
+        &self,
+        topic: Topic<AskQuery<Req, Resp>>,
+    ) -> crate::Result<Querier<Req, Resp>> {
+        Ok(Querier::new(
+            self.bus.clone(),
+            &topic,
+            DEFAULT_QUERY_TIMEOUT,
+        )?)
+    }
+
+    pub async fn query<Req, Resp, H>(
+        &mut self,
+        topic: Topic<ServeQuery<Req, Resp>>,
+        handler: H,
+    ) -> crate::Result<()>
+    where
+        Req: ContractBody,
+        Resp: ContractBody,
+        H: for<'a> std::ops::AsyncFn(
+                &'a R,
+                &'a R::Api,
+                Req,
+                &'a mut R::State,
+            ) -> crate::bus::QueryResult<Resp>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let topic = topic.key().to_string();
+        if self
+            .query_registrations()
+            .iter()
+            .any(|registration| registration.topic() == topic)
+        {
+            anyhow::bail!("duplicate query binding for '{topic}'");
+        }
+        self.register_query(QueryRegistration::new(topic, handler));
+        Ok(())
+    }
+}
+
+impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
+    /// The compiled component instance bound to this driver or simulator.
+    pub fn component(&self) -> crate::Result<&crate::model::ComponentInstance> {
+        let id = self.component_instance().ok_or_else(|| {
+            anyhow::anyhow!("no component instance is bound for this participant launch")
+        })?;
+        Ok(self.robot()?.component_instance(id)?)
+    }
+}
+
+impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
+    pub fn timeline_authority(&self, timeline: TimelineId) -> crate::Result<TimelineAuthority> {
+        Ok(TimelineAuthority::__mint(timeline)?)
+    }
+
+    pub async fn world_clock_publisher<B: WorldClockContract>(
+        &self,
+        topic: Topic<Publish<B>>,
+    ) -> crate::Result<WorldClockPublisher<B>> {
+        Ok(WorldClockPublisher::__mint(self.bus.clone(), &topic)?)
+    }
+}
+
+impl<R: Participant + ToolSurface> SetupContext<R> {
+    /// Clone the runner-owned raw bus for privileged tool internals.
+    pub fn bus(&self) -> Bus {
+        self.bus.clone()
+    }
+
+    /// The supervised execution this tool joined.
+    pub fn execution(&self) -> crate::bus::ExecutionId {
+        self.bus.execution()
     }
 }
 
@@ -156,7 +296,7 @@ impl<R: Participant> SetupContext<R> {
 /// The [`StepToken`] is what a [`StatePublisher`](crate::bus::StatePublisher)
 /// requires, and the runner is the only minter on the documented surface - so
 /// a participant publishes state at the instant it actually reached, or not at
-/// all (#952 section D; `phoxal::raw`'s docs state exactly how strong that is).
+/// all (#952 section D; `phoxal-bus`'s docs state exactly how strong that is).
 #[derive(Clone, Copy, Debug)]
 pub struct StepContext {
     token: StepToken,

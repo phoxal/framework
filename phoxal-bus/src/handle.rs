@@ -14,7 +14,7 @@
 //!   [`StepToken::__mint`] and [`TimelineAuthority::__mint`] for the exact
 //!   strength of that. The *authority itself* IS reachable through the
 //!   documented authoring surface, but only for a `#[phoxal::simulator]`
-//!   (`SetupContextSimulatorExt::timeline_authority`, `phoxal` crate); every
+//!   (`SetupContext::timeline_authority`, `phoxal` crate); every
 //!   other participant kind has no path to one at all.
 //! - [`MeasurementPublisher<B>`] publishes with a [`CaptureStamp`] the driver
 //!   derived from its device clock, and honestly represents an untranslated
@@ -139,7 +139,7 @@ impl StepToken {
     /// it at all through the documented surface - but a participant that
     /// deliberately writes `StepToken::__mint` can. Closing that would mean
     /// merging the api, bus, and runtime crates so this could be
-    /// `pub(crate)`; see `phoxal::raw`'s module docs.
+    /// `pub(crate)`; see `phoxal-bus`'s module docs.
     #[doc(hidden)]
     pub const fn __mint(at: RobotInstant) -> Self {
         StepToken { at }
@@ -177,7 +177,7 @@ impl StepStamp for WorldStepToken {
 ///
 /// This is the narrowly scoped answer to "who may say what time it is in a
 /// world nobody schedules". A second authority in one process is rejected at
-/// mint (a per-process runtime backstop, [`TIMELINE_AUTHORITY_HELD`]). Across
+/// mint (a per-process runtime backstop, `TIMELINE_AUTHORITY_HELD`). Across
 /// processes the invariant is a selection-time one: exactly one simulator
 /// participant is launched into a simulation, and that selection is enforced
 /// by whatever launches the graph (`phoxal-cli`), not by anything this
@@ -186,9 +186,9 @@ impl StepStamp for WorldStepToken {
 /// **What the type system actually closes, and what it does not.** The
 /// documented authoring surface a participant writes against has exactly one
 /// path to an authority -
-/// `SetupContextSimulatorExt::timeline_authority` in the `phoxal` crate - and
-/// that trait's impl requires `Self: IsSimulator`, which is sealed behind a
-/// supertrait the role macros emit: `impl IsSimulator for MyType` on its own
+/// `SetupContext::timeline_authority` in the `phoxal` crate - and
+/// that trait's impl requires `Self: world-authority surface`, which is sealed behind a
+/// supertrait the role macros emit: `impl world-authority surface for MyType` on its own
 /// no longer compiles, and satisfying the seal means deliberately implementing
 /// a second, hidden trait that exists only to be that barrier. A
 /// `#[phoxal::service]` or `#[phoxal::driver]` reaching for
@@ -199,11 +199,11 @@ impl StepStamp for WorldStepToken {
 ///
 /// It is not a sealed capability, and this doc will not claim otherwise:
 /// [`__mint`](Self::__mint) below is `pub` because the bus crate (where this
-/// type lives) and the participant crate (where `IsSimulator` lives) are
+/// type lives) and the participant crate (where `world-authority surface` lives) are
 /// split, and Rust has no `pub(crate)`-across-crates visibility to express
 /// the real boundary with - exactly the same constraint [`StepToken::__mint`]
 /// documents for the analogous case. A participant that deliberately imports
-/// `phoxal::raw::TimelineAuthority` and writes `TimelineAuthority::__mint`
+/// `phoxal-bus::TimelineAuthority` and writes `TimelineAuthority::__mint`
 /// directly still can; closing that would mean merging the bus, api, and
 /// participant crates. Cross-process uniqueness (exactly one authority per
 /// simulation) is likewise a selection-time property some launcher enforces,
@@ -219,8 +219,8 @@ static TIMELINE_AUTHORITY_HELD: AtomicBool = AtomicBool::new(false);
 
 impl TimelineAuthority {
     /// Framework-internal minter. The author-facing path is
-    /// `SetupContextSimulatorExt::timeline_authority` in `Participant::setup` (`Self:
-    /// IsSimulator`-gated - see the struct's docs for the exact strength of
+    /// `SetupContext::timeline_authority` in `Participant::setup` (`Self:
+    /// world-authority surface`-gated - see the struct's docs for the exact strength of
     /// that guarantee). Fails if this process already holds one.
     /// `#[doc(hidden)]`.
     #[doc(hidden)]
@@ -399,8 +399,8 @@ role_publisher!(
 /// [`__mint`](Self::__mint) - the same convention [`TimelineAuthority::__mint`]
 /// and [`StepToken::__mint`] use - and this type is not re-exported from
 /// `phoxal::bus` or `phoxal::prelude`. The documented way to build one is
-/// `SetupContextSimulatorExt::world_clock_publisher` in the `phoxal` crate
-/// (`Self: IsSimulator`-gated). That closes the accidental
+/// `SetupContext::world_clock_publisher` in the `phoxal` crate
+/// (`Self: world-authority surface`-gated). That closes the accidental
 /// route; it is not a sealed capability - see [`TimelineAuthority`]'s docs for
 /// the exact strength of that claim, which applies here identically.
 pub struct WorldClockPublisher<B: WorldClockContract>(Outbox<B>);
@@ -420,8 +420,8 @@ impl<B: StateContract> StatePublisher<B> {
 
 impl<B: WorldClockContract> WorldClockPublisher<B> {
     /// Framework-internal minter. The author-facing path is
-    /// `SetupContextSimulatorExt::world_clock_publisher` in `Participant::setup`
-    /// (`Self: IsSimulator`-gated - see [`TimelineAuthority`]'s docs for the
+    /// `SetupContext::world_clock_publisher` in `Participant::setup`
+    /// (`Self: world-authority surface`-gated - see [`TimelineAuthority`]'s docs for the
     /// exact strength of that guarantee, which applies to this constructor
     /// identically). `#[doc(hidden)]`.
     #[doc(hidden)]

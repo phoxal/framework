@@ -254,7 +254,7 @@ impl Participant for Ddsm115 {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let instance = ctx.component()?.to_string();
+        let instance = ctx.component()?.id().to_string();
         // Prove the instance exists in the robot model (binds this driver to it).
         let _ = ctx.robot()?.component_instance(&instance)?;
 

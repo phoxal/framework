@@ -372,8 +372,10 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixture/robot/rgbd-imu-diff-drive")
+    fn fixture() -> phoxal::model::Robot {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
+        phoxal::model::Robot::decode(&std::fs::read(path).unwrap()).unwrap()
     }
 
     #[test]
@@ -404,7 +406,7 @@ mod tests {
 
     #[test]
     fn config_from_robot_resolves_per_side_motors() {
-        let robot = phoxal::model::Robot::read_from_dir(fixture()).unwrap();
+        let robot = fixture();
         let config = DriveConfig::from_robot(&robot).unwrap();
         // The fixture is a 4-wheel differential: 2 motors per side.
         assert_eq!(config.left.len(), 2);

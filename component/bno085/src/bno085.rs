@@ -34,7 +34,7 @@ impl Participant for Bno085 {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let instance = ctx.component()?.to_string();
+        let instance = ctx.component()?.id().to_string();
         let (imu_slots, accelerometer_slots, gyroscope_slots) = {
             let robot = ctx.robot()?;
             let spec = robot.component_for_instance(&instance)?;
@@ -42,7 +42,7 @@ impl Participant for Bno085 {
             let mut accelerometer = Vec::new();
             let mut gyroscope = Vec::new();
 
-            for (capability_id, capability) in &spec.capabilities {
+            for (capability_id, capability) in spec.capabilities() {
                 match capability {
                     Capability::Imu(config) => {
                         imu.push(schedule(capability_id, config.publish_rate_hz)?);
