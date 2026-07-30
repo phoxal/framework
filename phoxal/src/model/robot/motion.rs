@@ -1,7 +1,7 @@
 //! Canonical robot motion facts normalized from versioned source documents.
 
 use crate::model::component::CapabilityRef;
-use crate::model::source::robot::v0::motion as source;
+use crate::model::source::robot::v0 as source;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MotionLimits {
@@ -63,18 +63,6 @@ pub enum KinematicConfig {
         actuators: Vec<CapabilityRef>,
         encoders: Vec<CapabilityRef>,
     },
-}
-
-impl KinematicConfig {
-    #[must_use]
-    pub const fn variant_label(&self) -> &'static str {
-        match self {
-            Self::Differential { .. } => "differential",
-            Self::Mecanum { .. } => "mecanum",
-            Self::Ackermann { .. } => "ackermann",
-            Self::Omnidirectional { .. } => "omnidirectional",
-        }
-    }
 }
 
 impl From<source::CapabilityRef> for CapabilityRef {

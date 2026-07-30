@@ -315,3 +315,42 @@ impl From<source::capability::Capability> for Capability {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Camera, CameraProjection};
+    use crate::model::source::simulation::v0::capability as source;
+
+    #[test]
+    fn fully_populated_camera_source_converts_without_field_loss() {
+        let canonical = Camera::from(source::Camera {
+            sampling_period_hz: 30.0,
+            projection: Some(source::CameraProjection::Cylindrical),
+            near: Some(0.1),
+            far: Some(50.0),
+            exposure: Some(1.5),
+            anti_aliasing: Some(true),
+            ambient_occlusion_radius: Some(2.0),
+            bloom_threshold: Some(0.8),
+            noise: Some(0.01),
+            motion_blur: Some(0.2),
+            noise_mask_url: Some("mask.png".to_string()),
+        });
+        assert_eq!(
+            canonical,
+            Camera {
+                sampling_period_hz: 30.0,
+                projection: Some(CameraProjection::Cylindrical),
+                near: Some(0.1),
+                far: Some(50.0),
+                exposure: Some(1.5),
+                anti_aliasing: Some(true),
+                ambient_occlusion_radius: Some(2.0),
+                bloom_threshold: Some(0.8),
+                noise: Some(0.01),
+                motion_blur: Some(0.2),
+                noise_mask_url: Some("mask.png".to_string()),
+            }
+        );
+    }
+}

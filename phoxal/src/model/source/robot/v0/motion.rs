@@ -74,35 +74,13 @@ pub struct MotionLimits {
     pub max_angular_speed_radps: f64,
 }
 
-impl MotionLimits {
-    pub fn validate(self) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            self.max_linear_speed_mps.is_finite() && self.max_linear_speed_mps > 0.0,
-            "robot.motion_limits.max_linear_speed_mps must be finite and > 0"
-        );
-        anyhow::ensure!(
-            self.max_linear_speed_mps <= f64::from(f32::MAX),
-            "robot.motion_limits.max_linear_speed_mps must fit in f32"
-        );
-        anyhow::ensure!(
-            self.max_angular_speed_radps.is_finite() && self.max_angular_speed_radps > 0.0,
-            "robot.motion_limits.max_angular_speed_radps must be finite and > 0"
-        );
-        anyhow::ensure!(
-            self.max_angular_speed_radps <= f64::from(f32::MAX),
-            "robot.motion_limits.max_angular_speed_radps must fit in f32"
-        );
-        Ok(self)
-    }
-}
-
 /// The robot's kinematic model - a direct field of `robot:` (was
 /// `motion.kinematic`; the `motion:` wrapper is gone).
 ///
 /// Every `CapabilityRef` field carries a test-only
-/// `#[schemars(with = "String")]` override: `CapabilityRef` lives in
-/// `crate::model::component` (out of this module's schema-derive scope)
-/// and serializes as a plain `"<component>.<capability>"` string
+/// `#[schemars(with = "String")]` override. The module-local
+/// [`CapabilityRef`] uses custom string serde and does not derive `JsonSchema`;
+/// it serializes as a plain `"<component>.<capability>"` string
 /// (`#[serde(try_from = "String", into = "String")]`), so treating it as
 /// `String` in the generated JSON Schema is exact, not an approximation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,19 +132,4 @@ pub enum KinematicConfig {
         #[cfg_attr(test, schemars(with = "Vec<String>"))]
         encoders: Vec<CapabilityRef>,
     },
-}
-
-impl KinematicConfig {
-    /// Stable snake_case label for the kinematic variant; matches the serde
-    /// `kind` tag. For diagnostics only: callers
-    /// should pattern-match `KinematicConfig` directly.
-    #[must_use]
-    pub const fn variant_label(&self) -> &'static str {
-        match self {
-            Self::Differential { .. } => "differential",
-            Self::Mecanum { .. } => "mecanum",
-            Self::Ackermann { .. } => "ackermann",
-            Self::Omnidirectional { .. } => "omnidirectional",
-        }
-    }
 }

@@ -87,10 +87,10 @@ impl Participant for Safety {
         let robot = ctx.robot()?;
         let bindings = capability_bindings(robot, |capability| {
             matches!(capability, Capability::Range(_))
-        });
+        })?;
         let battery_bindings = capability_bindings(robot, |capability| {
             matches!(capability, Capability::Battery(_))
-        });
+        })?;
         let mut ranges = Vec::with_capacity(bindings.len());
         for binding in &bindings {
             ranges.push(
@@ -527,17 +527,11 @@ fn source(
 fn capability_bindings(
     robot: &Robot,
     selects: impl Fn(&Capability) -> bool,
-) -> Vec<CapabilityBinding> {
-    let mut bindings = robot
-        .components()
-        .keys()
-        .filter_map(|component_id| {
-            robot
-                .component_for_instance(component_id)
-                .ok()
-                .map(|component| (component_id, component))
-        })
-        .flat_map(|(component_id, component)| {
+) -> Result<Vec<CapabilityBinding>> {
+    let mut bindings = Vec::new();
+    for component_id in robot.components().keys() {
+        let component = robot.component_for_instance(component_id)?;
+        bindings.extend(
             component
                 .capabilities
                 .iter()
@@ -545,15 +539,15 @@ fn capability_bindings(
                 .map(|(capability_id, _)| CapabilityBinding {
                     component_id: component_id.clone(),
                     capability_id: capability_id.clone(),
-                })
-        })
-        .collect::<Vec<_>>();
+                }),
+        );
+    }
     bindings.sort_by(|left, right| {
         left.component_id
             .cmp(&right.component_id)
             .then_with(|| left.capability_id.cmp(&right.capability_id))
     });
-    bindings
+    Ok(bindings)
 }
 
 #[cfg(test)]

@@ -1,8 +1,7 @@
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::motion::{KinematicConfig, MotionLimits};
 use super::{Component, Role, capability};
@@ -167,26 +166,6 @@ pub enum ValidationError {
 }
 
 impl Manifest {
-    pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Self> {
-        crate::model::source::robot::read_from_dir(path)
-    }
-
-    pub fn read_from_string(string: &str) -> Result<Self> {
-        crate::model::source::robot::read_from_string(string)
-    }
-
-    pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Self> {
-        crate::model::source::robot::parse_from_dir(path)
-    }
-
-    pub fn parse_from_string(string: &str) -> Result<Self> {
-        crate::model::source::robot::parse_from_string(string)
-    }
-
-    pub fn write_to_dir(&self, path: impl AsRef<Path>) -> Result<()> {
-        crate::model::source::robot::write_to_dir(self, path)
-    }
-
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
@@ -336,10 +315,8 @@ fn default_structure_path() -> PathBuf {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::Manifest;
-
     /// Minimal canonical five-root-key manifest that also passes
-    /// [`Manifest::validate`] (the kinematic model has one actuator so the
+    /// [`super::Manifest::validate`] (the kinematic model has one actuator so the
     /// "must not be empty" check does not fire). `extra_top_level` is
     /// appended as additional top-level sections after `robot:`.
     fn minimal_manifest(extra_top_level: &str) -> String {
@@ -395,7 +372,7 @@ services:
 router:
   config: config/router.json5
 "#;
-        let robot = Manifest::parse_from_string(yaml)?;
+        let robot = crate::model::source::robot::parse_from_string(yaml)?;
 
         assert_eq!(robot.robot.id, "rover");
         assert_eq!(robot.robot.namespace, "dev");
@@ -421,7 +398,7 @@ router:
             .expect("canonical manifest should validate");
 
         let serialized = serde_yaml::to_string(&robot)?;
-        let reparsed = Manifest::parse_from_string(&serialized)?;
+        let reparsed = crate::model::source::robot::parse_from_string(&serialized)?;
         assert_eq!(reparsed, robot);
 
         Ok(())
@@ -429,7 +406,7 @@ router:
 
     #[test]
     fn instance_parameters_parse_emergency_stop_capability() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(
+        let robot = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -468,7 +445,7 @@ robot:
 
     #[test]
     fn user_service_config_parses() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(&minimal_manifest(
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"services:
   autonomy:
     config:
@@ -496,7 +473,7 @@ robot:
 
     #[test]
     fn user_service_without_config_round_trips_and_omits_config() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(&minimal_manifest(
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"services:
   autonomy: {}
 "#,
@@ -508,7 +485,7 @@ robot:
             "absent config should be omitted: {yaml}"
         );
 
-        let reparsed = Manifest::parse_from_string(&yaml)?;
+        let reparsed = crate::model::source::robot::parse_from_string(&yaml)?;
         assert_eq!(reparsed.services, robot.services);
 
         Ok(())
@@ -516,7 +493,7 @@ robot:
 
     #[test]
     fn router_config_parses_and_validates() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(&minimal_manifest(
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"router:
   config: config/router.json5
 "#,
@@ -535,7 +512,7 @@ robot:
 
     #[test]
     fn router_rejects_absolute_config_path() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(&minimal_manifest(
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"router:
   config: /etc/phoxal/router.json5
 "#,
@@ -555,7 +532,7 @@ robot:
 
     #[test]
     fn router_rejects_empty_config_path() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(&minimal_manifest(
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"router:
   config: ""
 "#,
@@ -570,7 +547,7 @@ robot:
 
     #[test]
     fn legacy_bus_section_is_rejected() {
-        let error = Manifest::parse_from_string(&minimal_manifest(
+        let error = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"bus:
   listen: ["tcp/127.0.0.1:7447"]
 "#,
@@ -585,7 +562,7 @@ robot:
 
     #[test]
     fn robot_section_rejects_identity_wrapper() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -613,7 +590,7 @@ robot:
 
     #[test]
     fn robot_section_rejects_motion_wrapper() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -638,7 +615,7 @@ robot:
 
     #[test]
     fn manifest_rejects_phoxal_artifacts_key() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -666,7 +643,7 @@ phoxal_artifacts:
 
     #[test]
     fn manifest_rejects_phoxal_participants_key() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -693,7 +670,7 @@ phoxal_participants: {}
 
     #[test]
     fn manifest_rejects_version_discriminator() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 version: legacy
 robot:
@@ -719,7 +696,7 @@ robot:
         // The `tools:` map declares additional user tools symmetrically with
         // `services:` (#950); the old pin-style entries (`version:`) stay
         // rejected as unknown fields inside a declaration.
-        let robot = Manifest::parse_from_string(&minimal_manifest(
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(
             r#"tools:
   lidar-viz:
     config:
@@ -745,10 +722,10 @@ robot:
         );
 
         let yaml = serde_yaml::to_string(&robot)?;
-        let reparsed = Manifest::parse_from_string(&yaml)?;
+        let reparsed = crate::model::source::robot::parse_from_string(&yaml)?;
         assert_eq!(reparsed.tools, robot.tools);
 
-        let error = Manifest::parse_from_string(&minimal_manifest(
+        let error = crate::model::source::robot::parse_from_string(&minimal_manifest(
             "tools:\n  router:\n    version: \"0.4.2\"\n",
         ))
         .expect_err("pin-style tool entries stay rejected");
@@ -761,7 +738,7 @@ robot:
 
     #[test]
     fn components_sources_nesting_no_longer_parses() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -790,7 +767,7 @@ robot:
 
     #[test]
     fn component_driver_rejects_image_field() {
-        let error = Manifest::parse_from_string(
+        let error = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -822,11 +799,13 @@ robot:
 
     #[test]
     fn artifacts_and_service_path_are_rejected() {
-        let artifacts = Manifest::parse_from_string(&minimal_manifest("artifacts:\n  pins: {}\n"))
-            .expect_err("Cargo owns source selection");
+        let artifacts = crate::model::source::robot::parse_from_string(&minimal_manifest(
+            "artifacts:\n  pins: {}\n",
+        ))
+        .expect_err("Cargo owns source selection");
         assert!(format!("{artifacts:#}").contains("unknown field `artifacts`"));
 
-        let service_path = Manifest::parse_from_string(&minimal_manifest(
+        let service_path = crate::model::source::robot::parse_from_string(&minimal_manifest(
             "services:\n  autonomy:\n    path: services/autonomy\n",
         ))
         .expect_err("workspace membership owns service discovery");
@@ -835,7 +814,7 @@ robot:
 
     #[test]
     fn robot_manifest_requires_schema_v0() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(&minimal_manifest(""))?;
+        let robot = crate::model::source::robot::parse_from_string(&minimal_manifest(""))?;
 
         let yaml = serde_yaml::to_string(&robot)?;
         assert!(
@@ -848,7 +827,7 @@ robot:
 
     #[test]
     fn empty_robot_id_is_validation_error() -> anyhow::Result<()> {
-        let robot = Manifest::parse_from_string(
+        let robot = crate::model::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:

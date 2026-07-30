@@ -19,7 +19,7 @@ pub(crate) struct FrameConfig {
 
 impl FrameConfig {
     pub(crate) fn from_robot(robot: &Robot) -> Result<Self> {
-        Self::from_structure(&robot.structure)
+        Self::from_structure(robot.structure())
     }
 
     pub(crate) fn from_structure(structure: &Structure) -> Result<Self> {

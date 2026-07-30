@@ -1077,8 +1077,9 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixture/robot/rgbd-imu-diff-drive"
         ));
-        let mut source = phoxal::model::source::robot::read_from_dir(root)
-            .expect("fixture robot source should load");
+        let (mut source, components, _, structure) =
+            phoxal::model::Robot::read_sources_from_dir(root)
+                .expect("fixture robot sources should load");
         let (actuators, encoders) = match &source.robot.kinematic {
             phoxal::model::source::robot::v0::KinematicConfig::Differential {
                 left_actuators,
@@ -1105,22 +1106,6 @@ mod tests {
                 actuators,
                 encoders,
             };
-        let components = source
-            .used_component_types()
-            .into_iter()
-            .map(|component_type| {
-                (
-                    component_type.to_string(),
-                    phoxal::model::source::component::read_from_dir(
-                        root.join("components").join(component_type),
-                    )
-                    .expect("fixture component source should load"),
-                )
-            })
-            .collect();
-        let structure =
-            phoxal::model::structure::Structure::read_from_file(root.join(&source.robot.structure))
-                .expect("fixture structure should load");
         let robot = phoxal::model::Robot::try_from_sources(
             source,
             components,

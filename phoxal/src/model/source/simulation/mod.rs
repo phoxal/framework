@@ -64,4 +64,82 @@ links:
         );
         Ok(())
     }
+
+    #[test]
+    fn simulation_parses_range_capability() -> anyhow::Result<()> {
+        let simulation = read_from_string(
+            r#"
+schema: simulation/v0
+capabilities:
+  range:
+    kind: range
+    sampling_period_hz: 20.0
+    noise: 0.02
+    resolution: 0.001
+"#,
+        )?;
+        assert!(matches!(
+            simulation.capabilities.get("range"),
+            Some(super::v0::capability::Capability::Range(_))
+        ));
+        Ok(())
+    }
+
+    /// An emergency stop carries no simulation parameters: Webots has no
+    /// button, switch, or toggle node, so no simulator drives one.
+    #[test]
+    fn simulation_parses_emergency_stop_input() -> anyhow::Result<()> {
+        let simulation = read_from_string(
+            r#"
+schema: simulation/v0
+capabilities:
+  emergency_stop:
+    kind: emergency_stop
+"#,
+        )?;
+        assert!(matches!(
+            simulation.capabilities.get("emergency_stop"),
+            Some(super::v0::capability::Capability::EmergencyStop)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_rejects_invalid_capability_id() {
+        let error = read_from_string(
+            r#"
+schema: simulation/v0
+capabilities:
+  Bad Id:
+    kind: range
+    sampling_period_hz: 20.0
+"#,
+        )
+        .expect_err("invalid capability id should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("must use a valid capability token")
+        );
+    }
+
+    #[test]
+    fn simulation_rejects_invalid_numeric_capability_config() {
+        let error = read_from_string(
+            r#"
+schema: simulation/v0
+capabilities:
+  encoder:
+    kind: encoder
+    sampling_period_hz: 0.0
+  motor:
+    kind: motor
+    control_pid: [1.0, 2.0]
+"#,
+        )
+        .expect_err("invalid numeric capability config should fail");
+        let message = error.to_string();
+        assert!(message.contains("sampling_period_hz must be finite and > 0"));
+        assert!(message.contains("control_pid must contain exactly 3 terms"));
+    }
 }

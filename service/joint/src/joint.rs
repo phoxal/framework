@@ -312,22 +312,10 @@ mod tests {
     }
 
     #[test]
-    fn no_joint_encoders_is_a_valid_inactive_configuration() {
+    fn link_targeted_encoders_are_excluded_from_joint_config() {
         let root = fixture();
-        let source = phoxal::model::source::robot::read_from_dir(&root).unwrap();
-        let mut components = source
-            .used_component_types()
-            .into_iter()
-            .map(|component_type| {
-                (
-                    component_type.to_string(),
-                    phoxal::model::source::component::read_from_dir(
-                        root.join("components").join(component_type),
-                    )
-                    .unwrap(),
-                )
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let (source, mut components, _, structure) =
+            phoxal::model::Robot::read_sources_from_dir(&root).unwrap();
         components.values_mut().for_each(|component| {
             component.capabilities.values_mut().for_each(|capability| {
                 if let phoxal::model::source::component::v0::capability::Capability::Encoder(
@@ -341,9 +329,6 @@ mod tests {
                 }
             });
         });
-        let structure =
-            phoxal::model::structure::Structure::read_from_file(root.join(&source.robot.structure))
-                .unwrap();
         let robot = phoxal::model::Robot::try_from_sources(
             source,
             components,

@@ -2,9 +2,9 @@
 
 pub mod capability;
 mod component;
-pub mod driver;
+mod driver;
 mod manifest;
-pub mod motion;
+mod motion;
 pub mod role;
 mod validation;
 

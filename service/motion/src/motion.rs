@@ -127,7 +127,7 @@ impl Participant for Motion {
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
         let limits = robot.motion_limits().validate()?;
-        let estop_bindings = emergency_stop_bindings(robot);
+        let estop_bindings = emergency_stop_bindings(robot)?;
 
         let mut component_estops = Vec::with_capacity(estop_bindings.len());
         for binding in &estop_bindings {
@@ -314,17 +314,11 @@ fn state_target(target: &api::drive::Target) -> api::motion::Target {
     }
 }
 
-fn emergency_stop_bindings(robot: &Robot) -> Vec<EmergencyStopBinding> {
-    let mut bindings = robot
-        .components()
-        .keys()
-        .filter_map(|component_id| {
-            robot
-                .component_for_instance(component_id)
-                .ok()
-                .map(|component| (component_id, component))
-        })
-        .flat_map(|(component_id, component)| {
+fn emergency_stop_bindings(robot: &Robot) -> Result<Vec<EmergencyStopBinding>> {
+    let mut bindings = Vec::new();
+    for component_id in robot.components().keys() {
+        let component = robot.component_for_instance(component_id)?;
+        bindings.extend(
             component
                 .capabilities
                 .iter()
@@ -332,15 +326,15 @@ fn emergency_stop_bindings(robot: &Robot) -> Vec<EmergencyStopBinding> {
                 .map(|(capability_id, _)| EmergencyStopBinding {
                     component_id: component_id.clone(),
                     capability_id: capability_id.clone(),
-                })
-        })
-        .collect::<Vec<_>>();
+                }),
+        );
+    }
     bindings.sort_by(|left, right| {
         left.component_id
             .cmp(&right.component_id)
             .then_with(|| left.capability_id.cmp(&right.capability_id))
     });
-    bindings
+    Ok(bindings)
 }
 
 #[cfg(test)]

@@ -17,8 +17,14 @@
 //! ```
 //!
 //! The v0 and v1 robot DTOs stay separately nameable, and each gets an
-//! explicit conversion into the same canonical builder input. Component and
-//! simulation documents remain on v0 until their own grammars change. A public
+//! explicit conversion into the same canonical builder input. That normalized
+//! builder input is intentionally crate-internal: a future source version is
+//! implemented inside `phoxal`, while external version-sensitive tools use
+//! [`crate::model::robot::SourceInputs`] and
+//! [`crate::model::Robot::try_from_sources`] for the currently supported exact
+//! inputs. The in-crate `future_robot_version_can_normalize_with_component_v0`
+//! test demonstrates the future sibling conversion. Component and simulation
+//! documents remain on v0 until their own grammars change. A public
 //! multi-version dispatcher belongs inside that one document-kind module only
 //! after the second version actually exists.
 

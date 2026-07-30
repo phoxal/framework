@@ -4,7 +4,7 @@ mod motion;
 
 pub use motion::{KinematicConfig, MotionLimits};
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::model::component::capability::{Capability, Encoder, Motor, StructuralTarget};
@@ -44,7 +44,10 @@ pub struct ComponentInstance {
 ///
 /// This type contains normalized robot facts, resolved component documents,
 /// and the validated structure. It deliberately does not retain a public
-/// source-version wrapper.
+/// source-version wrapper. Construction is intentionally fail-fast across the
+/// complete declared bundle: every present `simulation.yaml` is part of the
+/// fully loaded model and is validated even when the current participant runs
+/// against physical hardware.
 #[derive(Debug, Clone)]
 pub struct Robot {
     id: String,
@@ -55,7 +58,7 @@ pub struct Robot {
     component_instances: BTreeMap<String, ComponentInstance>,
     component_types: BTreeMap<String, Component>,
     simulation_types: BTreeMap<String, Simulation>,
-    pub structure: Structure,
+    structure: Structure,
 }
 
 struct ResolvedCapability<'a> {
@@ -85,6 +88,17 @@ struct NormalizedParameter {
     capability_kind: &'static str,
     direction_sign: i8,
 }
+
+/// Exact documents and structure accepted by [`Robot::try_from_sources`].
+///
+/// The source versions are named independently in the tuple; this is a
+/// version-sensitive tooling seam, not a version of the canonical graph.
+pub type SourceInputs = (
+    source::robot::v0::Manifest,
+    BTreeMap<String, source::component::v0::Manifest>,
+    BTreeMap<String, source::simulation::v0::Manifest>,
+    Structure,
+);
 
 impl From<source::robot::v0::Manifest> for NormalizedRobotSpec {
     fn from(value: source::robot::v0::Manifest) -> Self {
@@ -137,6 +151,23 @@ impl From<source::robot::v0::Manifest> for NormalizedRobotSpec {
 
 impl Robot {
     pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Self> {
+        let (robot_source, component_sources, simulation_sources, structure) =
+            Self::read_sources_from_dir(path)?;
+        Self::try_from_sources(
+            robot_source,
+            component_sources,
+            simulation_sources,
+            structure,
+        )
+    }
+
+    /// Load the exact source documents and structure used to build a robot.
+    ///
+    /// This version-sensitive seam is intended for fixtures and migration
+    /// tooling that must adjust exact documents before normalizing them
+    /// explicitly through [`Self::try_from_sources`]. Ordinary runtime
+    /// consumers should call [`Self::read_from_dir`].
+    pub fn read_sources_from_dir(path: impl AsRef<Path>) -> Result<SourceInputs> {
         let root = path.as_ref();
         let robot_source = source::robot::read_from_dir(root)?;
         let component_sources = Self::read_used_component_sources(root, &robot_source)?;
@@ -150,22 +181,28 @@ impl Robot {
             )
         })?;
 
-        Self::try_from_sources(
+        Ok((
             robot_source,
             component_sources,
             simulation_sources,
             structure,
-        )
+        ))
     }
 
     /// Normalize exact source documents and validate their cross-file invariants.
+    ///
+    /// Source readers already perform file-local validation. This method
+    /// deliberately repeats it because callers may construct or modify exact
+    /// DTOs directly before crossing the canonicalization boundary.
     pub fn try_from_sources(
         robot_source: source::robot::v0::Manifest,
         component_sources: BTreeMap<String, source::component::v0::Manifest>,
         simulation_sources: BTreeMap<String, source::simulation::v0::Manifest>,
         structure: Structure,
     ) -> Result<Self> {
-        robot_source.validate().map_err(source_validation_error)?;
+        robot_source.validate().map_err(|errors| {
+            source::robot::validation_error("robot.yaml passed to Robot::try_from_sources", errors)
+        })?;
         structure
             .validate()
             .context("canonical robot structure validation failed")?;
@@ -455,14 +492,6 @@ impl Robot {
         &self.component_instances
     }
 
-    #[must_use]
-    pub fn component_types(&self) -> BTreeSet<&str> {
-        self.component_instances
-            .values()
-            .map(|component| component.component_type.as_str())
-            .collect()
-    }
-
     pub fn component_instance(&self, component_id: &str) -> Result<&ComponentInstance> {
         self.component_instances.get(component_id).ok_or_else(|| {
             anyhow!("component instance '{component_id}' is not defined in robot.yaml")
@@ -489,6 +518,11 @@ impl Robot {
     pub fn simulation_for_instance(&self, component_id: &str) -> Result<Option<&Simulation>> {
         let instance = self.component_instance(component_id)?;
         Ok(self.simulation_for_component_type(&instance.component_type))
+    }
+
+    #[must_use]
+    pub fn structure(&self) -> &Structure {
+        &self.structure
     }
 
     pub fn capability(&self, reference: &CapabilityRef) -> Result<&Capability> {
@@ -576,17 +610,6 @@ impl Robot {
     }
 }
 
-fn source_validation_error(errors: Vec<source::robot::v0::ValidationError>) -> anyhow::Error {
-    anyhow!(
-        "Robot errors:\n{}",
-        errors
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-}
-
 fn component_config_path(bundle_root: &Path, component_type: &str) -> PathBuf {
     bundle_root.join(COMPONENTS_DIR).join(component_type)
 }
@@ -602,14 +625,32 @@ mod tests {
 
     use super::{
         KinematicConfig, MotionLimits, NormalizedComponentInstance, NormalizedRobotSpec, Robot,
+        SourceInputs,
     };
+
+    fn fixture_root() -> &'static str {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../fixture/robot/rgbd-imu-diff-drive"
+        )
+    }
+
+    fn fixture_inputs() -> anyhow::Result<SourceInputs> {
+        Robot::read_sources_from_dir(fixture_root())
+    }
+
+    fn canonicalization_error(inputs: SourceInputs) -> String {
+        let (robot, components, simulations, structure) = inputs;
+        format!(
+            "{:#}",
+            Robot::try_from_sources(robot, components, simulations, structure)
+                .expect_err("mutated sources must fail")
+        )
+    }
 
     #[test]
     fn v0_sources_build_the_canonical_robot() -> anyhow::Result<()> {
-        let robot = Robot::read_from_dir(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../fixture/robot/rgbd-imu-diff-drive"
-        ))?;
+        let robot = Robot::read_from_dir(fixture_root())?;
         assert_eq!(robot.robot_id(), "rgbd-imu-diff-drive");
         assert!(!robot.components().is_empty());
         assert!(
@@ -661,6 +702,169 @@ robot:
         let message = format!("{error:#}");
         assert!(message.contains("robot.yaml"));
         assert!(message.contains("components/missing/component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn parameter_capability_must_exist_in_component_source() -> anyhow::Result<()> {
+        let (mut robot, components, simulations, structure) = fixture_inputs()?;
+        let drive = robot
+            .robot
+            .components
+            .get_mut("front_left_drive")
+            .expect("fixture drive instance");
+        let parameter = drive.parameters["encoder"].clone();
+        drive.parameters.insert("missing".to_string(), parameter);
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("robot.yaml components.front_left_drive.parameters.missing"));
+        assert!(error.contains("components/drive_motor/component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn parameter_kind_must_match_component_source() -> anyhow::Result<()> {
+        let (mut robot, components, simulations, structure) = fixture_inputs()?;
+        let drive = robot
+            .robot
+            .components
+            .get_mut("front_left_drive")
+            .expect("fixture drive instance");
+        drive
+            .parameters
+            .insert("motor".to_string(), drive.parameters["encoder"].clone());
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("robot.yaml components.front_left_drive.parameters.motor"));
+        assert!(error.contains("components/drive_motor/component.yaml defines 'motor'"));
+        Ok(())
+    }
+
+    #[test]
+    fn component_mount_link_must_exist_in_structure() -> anyhow::Result<()> {
+        let (mut robot, components, simulations, structure) = fixture_inputs()?;
+        robot
+            .robot
+            .components
+            .get_mut("front_left_drive")
+            .expect("fixture drive instance")
+            .mount_link = "missing_link".to_string();
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("robot.yaml components.front_left_drive.mount_link"));
+        assert!(error.contains("missing_link"));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_source_requires_a_matching_component_source() -> anyhow::Result<()> {
+        let (robot, components, mut simulations, structure) = fixture_inputs()?;
+        simulations.insert(
+            "orphan".to_string(),
+            crate::model::source::simulation::read_from_string(
+                "schema: simulation/v0\ncapabilities: {}\n",
+            )?,
+        );
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("components/orphan/simulation.yaml"));
+        assert!(error.contains("component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_capability_requires_a_matching_component_capability() -> anyhow::Result<()> {
+        let (robot, components, mut simulations, structure) = fixture_inputs()?;
+        let simulation = simulations
+            .get_mut("drive_motor")
+            .expect("fixture simulation");
+        simulation.capabilities.insert(
+            "missing".to_string(),
+            simulation.capabilities["encoder"].clone(),
+        );
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("components/drive_motor/simulation.yaml capabilities.missing"));
+        assert!(error.contains("components/drive_motor/component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_capability_kind_must_match_component_source() -> anyhow::Result<()> {
+        let (robot, components, mut simulations, structure) = fixture_inputs()?;
+        let simulation = simulations
+            .get_mut("drive_motor")
+            .expect("fixture simulation");
+        simulation.capabilities.insert(
+            "motor".to_string(),
+            simulation.capabilities["encoder"].clone(),
+        );
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("components/drive_motor/simulation.yaml capabilities.motor"));
+        assert!(error.contains("components/drive_motor/component.yaml defines 'motor'"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_simulation_source_rejects_the_fully_loaded_canonical_robot() -> anyhow::Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir_all(root.path().join("components/sensor"))?;
+        std::fs::write(
+            root.path().join("robot.yaml"),
+            r#"
+schema: robot/v0
+robot:
+  id: simulation-validation
+  namespace: test
+  structure: structure.urdf
+  kinematic: { kind: omnidirectional, actuators: [sensor.motor], encoders: [] }
+  motion_limits: { max_linear_speed_mps: 1.0, max_angular_speed_radps: 1.0 }
+  components:
+    sensor:
+      component: sensor
+      mount_link: base_link
+"#,
+        )?;
+        std::fs::write(
+            root.path().join("structure.urdf"),
+            r#"<robot name="test">
+  <link name="base_footprint" />
+  <link name="base_link" />
+  <joint name="base" type="fixed">
+    <parent link="base_footprint" />
+    <child link="base_link" />
+  </joint>
+</robot>"#,
+        )?;
+        std::fs::write(
+            root.path().join("components/sensor/component.yaml"),
+            r#"schema: component/v0
+capabilities:
+  motor:
+    kind: motor
+    command: velocity
+    target: { kind: joint, id: base }
+"#,
+        )?;
+        std::fs::write(
+            root.path().join("components/sensor/simulation.yaml"),
+            "schema: simulation/v0\ncapabilities:\n  Bad Id: { kind: range }\n",
+        )?;
+
+        let error =
+            Robot::read_from_dir(root.path()).expect_err("invalid simulation source must fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("simulation/v0"));
+        assert!(message.contains("components/sensor/simulation.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn camera_capabilities_include_color_and_exclude_depth() -> anyhow::Result<()> {
+        let robot = Robot::read_from_dir(fixture_root())?;
+        let cameras = robot
+            .camera_capabilities()
+            .into_iter()
+            .map(|reference| reference.to_string())
+            .collect::<Vec<_>>();
+        assert!(cameras.contains(&"front_camera.rgb".to_string()));
+        assert!(!cameras.contains(&"front_camera.depth".to_string()));
         Ok(())
     }
 

@@ -315,7 +315,6 @@ fn invalid_kinematic(field: &str, message: &str) -> ValidationError {
 #[cfg(test)]
 mod tests {
     use super::ValidationError;
-    use crate::model::source::robot::v0::Manifest;
 
     /// A manifest whose single component declares role hints for two
     /// capabilities. `extra_roles` is spliced in as further `depth:` entries.
@@ -348,9 +347,10 @@ robot:
 
     #[test]
     fn distinct_role_hints_for_one_capability_validate() {
-        let robot =
-            Manifest::parse_from_string(&manifest_with_depth_roles("[localization, mapping]"))
-                .unwrap();
+        let robot = crate::model::source::robot::parse_from_string(&manifest_with_depth_roles(
+            "[localization, mapping]",
+        ))
+        .unwrap();
         robot
             .validate()
             .expect("distinct roles on one capability are legal");
@@ -358,7 +358,9 @@ robot:
 
     #[test]
     fn an_empty_role_list_is_a_validation_error() {
-        let robot = Manifest::parse_from_string(&manifest_with_depth_roles("[]")).unwrap();
+        let robot =
+            crate::model::source::robot::parse_from_string(&manifest_with_depth_roles("[]"))
+                .unwrap();
         let errors = robot.validate().expect_err("an empty role list is invalid");
         assert!(
             errors.iter().any(|error| matches!(
@@ -372,8 +374,10 @@ robot:
 
     #[test]
     fn a_repeated_role_names_the_capability_and_the_role() {
-        let robot =
-            Manifest::parse_from_string(&manifest_with_depth_roles("[mapping, mapping]")).unwrap();
+        let robot = crate::model::source::robot::parse_from_string(&manifest_with_depth_roles(
+            "[mapping, mapping]",
+        ))
+        .unwrap();
         let errors = robot.validate().expect_err("a repeated role is invalid");
         assert!(
             errors.iter().any(|error| matches!(

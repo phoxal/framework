@@ -76,6 +76,7 @@
           "type": "string"
         },
         "driver": {
+          "description": "Hardware connection metadata retained as part of the exact v0 file\ncontract. The canonical runtime model does not currently consume it.",
           "anyOf": [
             {
               "$ref": "#/$defs/DriverConfig"
@@ -95,6 +96,7 @@
           }
         },
         "roles": {
+          "description": "Authored role hints retained as part of the exact v0 file contract.\nRole-resolution policy has no current canonical runtime consumer.",
           "type": "object",
           "additionalProperties": {
             "type": "array",
@@ -353,7 +355,7 @@
       ]
     },
     "KinematicConfig": {
-      "description": "The robot's kinematic model - a direct field of `robot:` (was\n`motion.kinematic`; the `motion:` wrapper is gone).\n\nEvery `CapabilityRef` field carries a test-only\n`#[schemars(with = \"String\")]` override: `CapabilityRef` lives in\n`crate::model::component` (out of this module's schema-derive scope)\nand serializes as a plain `\"<component>.<capability>\"` string\n(`#[serde(try_from = \"String\", into = \"String\")]`), so treating it as\n`String` in the generated JSON Schema is exact, not an approximation.",
+      "description": "The robot's kinematic model - a direct field of `robot:` (was\n`motion.kinematic`; the `motion:` wrapper is gone).\n\nEvery `CapabilityRef` field carries a test-only\n`#[schemars(with = \"String\")]` override. The module-local\n[`CapabilityRef`] uses custom string serde and does not derive `JsonSchema`;\nit serializes as a plain `\"<component>.<capability>\"` string\n(`#[serde(try_from = \"String\", into = \"String\")]`), so treating it as\n`String` in the generated JSON Schema is exact, not an approximation.",
       "oneOf": [
         {
           "type": "object",

@@ -1,9 +1,7 @@
-use std::any::TypeId;
-
 use phoxal::model::{Robot, source};
 
 #[test]
-fn canonical_consumers_do_not_match_source_versions() -> anyhow::Result<()> {
+fn canonical_robot_serves_runtime_and_simulator_consumers() -> anyhow::Result<()> {
     fn runtime_consumer(robot: &Robot) -> (&str, &str) {
         (robot.robot_id(), robot.namespace())
     }
@@ -27,26 +25,31 @@ fn canonical_consumers_do_not_match_source_versions() -> anyhow::Result<()> {
 
 #[test]
 fn exact_v0_source_manifests_are_directly_nameable() {
-    fn robot_source(_: Option<source::robot::v0::Manifest>) {}
-    fn component_source(_: Option<source::component::v0::Manifest>) {}
-    fn simulation_source(_: Option<source::simulation::v0::Manifest>) {}
+    let robot: source::robot::v0::Manifest = serde_yaml::from_str(
+        "schema: robot/v0\nrobot:\n  id: bot\n  namespace: test\n  kinematic: \
+         { kind: omnidirectional, actuators: [], encoders: [] }\n  motion_limits: \
+         { max_linear_speed_mps: 1.0, max_angular_speed_radps: 1.0 }\n  components: {}\n",
+    )
+    .expect("robot/v0 DTO parses independently");
+    let component: source::component::v0::Manifest =
+        serde_yaml::from_str("schema: component/v0\ncapabilities: {}\n")
+            .expect("component/v0 DTO parses independently");
+    let simulation: source::simulation::v0::Manifest =
+        serde_yaml::from_str("schema: simulation/v0\ncapabilities: {}\n")
+            .expect("simulation/v0 DTO parses independently");
 
-    robot_source(None);
-    component_source(None);
-    simulation_source(None);
+    assert_eq!(robot.schema, source::robot::v0::Schema::V0);
+    assert_eq!(component.schema, source::component::v0::Schema::V0);
+    assert_eq!(simulation.schema, source::simulation::v0::Schema::V0);
 }
 
 #[test]
-fn mixed_document_versions_are_an_explicit_extension_point() {
-    // These are distinct document-kind version axes rather than one shared
-    // graph version. A future v1 is a sibling only for the kind whose source
-    // grammar changes.
-    assert_ne!(
-        TypeId::of::<source::robot::v0::Schema>(),
-        TypeId::of::<source::component::v0::Schema>()
-    );
-    assert_ne!(
-        TypeId::of::<source::component::v0::Schema>(),
-        TypeId::of::<source::simulation::v0::Schema>()
-    );
+fn document_kinds_expose_independent_schema_axes() {
+    fn robot_schema(_: source::robot::v0::Schema) {}
+    fn component_schema(_: source::component::v0::Schema) {}
+    fn simulation_schema(_: source::simulation::v0::Schema) {}
+
+    robot_schema(source::robot::v0::Schema::V0);
+    component_schema(source::component::v0::Schema::V0);
+    simulation_schema(source::simulation::v0::Schema::V0);
 }

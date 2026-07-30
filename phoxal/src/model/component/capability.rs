@@ -448,7 +448,7 @@ impl From<source::Capability> for Capability {
 
 #[cfg(test)]
 mod tests {
-    use super::StructuralTarget;
+    use super::{Camera, CameraMode, StructuralTarget};
 
     #[test]
     fn namespaces_structural_targets_with_component_instance_id() {
@@ -459,6 +459,35 @@ mod tests {
             .namespaced("left_drive"),
             StructuralTarget::Joint {
                 id: "left_drive__motor_joint".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn fully_populated_camera_source_converts_without_field_loss() {
+        use crate::model::source::component::v0::capability as source;
+
+        let canonical = Camera::from(source::Camera {
+            target: source::StructuralTarget::Link {
+                id: "camera_link".to_string(),
+            },
+            mode: source::CameraMode::Rgb,
+            publish_rate_hz: 29.97,
+            width_px: 1920,
+            height_px: 1080,
+            field_of_view_rad: Some(1.2),
+        });
+        assert_eq!(
+            canonical,
+            Camera {
+                target: StructuralTarget::Link {
+                    id: "camera_link".to_string(),
+                },
+                mode: CameraMode::Rgb,
+                publish_rate_hz: 29.97,
+                width_px: 1920,
+                height_px: 1080,
+                field_of_view_rad: Some(1.2),
             }
         );
     }

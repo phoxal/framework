@@ -1,4 +1,10 @@
 //! Versioned authored `robot.yaml` documents.
+//!
+//! The parser deliberately enforces a strict source contract: DTO structs deny
+//! unknown fields, `serde_yaml` rejects duplicate mapping keys and does not
+//! coerce YAML-1.1-only booleans (`yes`, `no`, `on`, `off`) into typed boolean
+//! fields, and [`strict_yaml`] additionally rejects anchors, aliases, merge
+//! keys, explicit tags, and multi-document streams.
 
 pub mod v0;
 
@@ -12,20 +18,29 @@ mod strict_yaml;
 const ROBOT_FILE: &str = "robot.yaml";
 
 pub fn read_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
+    let path = path.as_ref();
     let manifest = parse_from_dir(path)?;
-    manifest.validate().map_err(validation_error)?;
+    let location = path.join(ROBOT_FILE);
+    manifest
+        .validate()
+        .map_err(|errors| validation_error(&location.display().to_string(), errors))?;
     Ok(manifest)
 }
 
 pub fn read_from_path(path: impl AsRef<Path>) -> Result<v0::Manifest> {
+    let path = path.as_ref();
     let manifest = parse_from_path(path)?;
-    manifest.validate().map_err(validation_error)?;
+    manifest
+        .validate()
+        .map_err(|errors| validation_error(&path.display().to_string(), errors))?;
     Ok(manifest)
 }
 
 pub fn read_from_string(text: &str) -> Result<v0::Manifest> {
     let manifest = parse_from_string(text)?;
-    manifest.validate().map_err(validation_error)?;
+    manifest
+        .validate()
+        .map_err(|errors| validation_error("<inline robot.yaml>", errors))?;
     Ok(manifest)
 }
 
@@ -34,6 +49,10 @@ pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
 }
 
 /// Read one leaf document and compose its ordered direct parents.
+///
+/// Parent maps merge recursively in declaration order. Sequences and scalar
+/// values replace earlier values. Nested composition is rejected so the leaf
+/// remains the single deterministic authority for parent order.
 pub fn parse_from_path(path: impl AsRef<Path>) -> Result<v0::Manifest> {
     let leaf_path = path.as_ref().canonicalize().with_context(|| {
         format!(
@@ -164,9 +183,9 @@ fn deep_merge(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
     }
 }
 
-fn validation_error(errors: Vec<v0::ValidationError>) -> anyhow::Error {
+pub(crate) fn validation_error(location: &str, errors: Vec<v0::ValidationError>) -> anyhow::Error {
     anyhow::anyhow!(
-        "Robot errors:\n{}",
+        "invalid robot/v0 document {location}:\n{}",
         errors
             .iter()
             .map(ToString::to_string)
@@ -178,6 +197,20 @@ fn validation_error(errors: Vec<v0::ValidationError>) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{parse_from_string, read_from_dir};
+
+    const COMPOSED_LEAF: &str = r#"
+schema: robot/v0
+extends: [base.robot.yaml, host.robot.yaml]
+robot:
+  id: rover
+  namespace: dev
+  kinematic: { kind: omnidirectional, actuators: [drive.motor], encoders: [] }
+  motion_limits: { max_linear_speed_mps: 0.5, max_angular_speed_radps: 1.0 }
+  components:
+    drive:
+      component: drive
+      mount_link: base_link
+"#;
 
     #[test]
     fn direct_parents_compose_without_a_dispatcher() -> anyhow::Result<()> {
@@ -214,6 +247,61 @@ robot:
         assert!(parse_from_string("schema: robot/v1\n").is_err());
         assert!(parse_from_string("robot: {}\n").is_err());
     }
+
+    #[test]
+    fn nested_parent_extends_is_rejected() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("base.robot.yaml"),
+            "extends: [other.robot.yaml]\n",
+        )?;
+        std::fs::write(dir.path().join("host.robot.yaml"), "{}\n")?;
+        std::fs::write(dir.path().join("robot.yaml"), COMPOSED_LEAF)?;
+        let error = read_from_dir(dir.path()).expect_err("nested extends must fail");
+        assert!(format!("{error:#}").contains("declares nested extends"));
+        Ok(())
+    }
+
+    #[test]
+    fn string_parser_rejects_unresolvable_extends() {
+        let error =
+            parse_from_string(COMPOSED_LEAF).expect_err("string parsing cannot resolve parents");
+        assert!(format!("{error:#}").contains(
+            "robot extends requires a file path; use \
+                 source::robot::read_from_path or source::robot::read_from_dir"
+        ));
+    }
+
+    #[test]
+    fn duplicate_and_escaping_parents_are_rejected() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("base.robot.yaml"), "{}\n")?;
+        std::fs::write(dir.path().join("host.robot.yaml"), "{}\n")?;
+        std::fs::write(
+            dir.path().join("robot.yaml"),
+            COMPOSED_LEAF.replace(
+                "base.robot.yaml, host.robot.yaml",
+                "base.robot.yaml, base.robot.yaml",
+            ),
+        )?;
+        let duplicate = read_from_dir(dir.path()).expect_err("duplicate parent must fail");
+        assert!(format!("{duplicate:#}").contains("duplicate robot parent"));
+
+        std::fs::write(
+            dir.path().join("robot.yaml"),
+            COMPOSED_LEAF.replace("base.robot.yaml, host.robot.yaml", "../outside.robot.yaml"),
+        )?;
+        std::fs::write(
+            dir.path()
+                .parent()
+                .expect("temporary directory has a parent")
+                .join("outside.robot.yaml"),
+            "{}\n",
+        )?;
+        let escaping = read_from_dir(dir.path()).expect_err("escaping parent must fail");
+        assert!(format!("{escaping:#}").contains("escapes robot directory"));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -231,6 +319,12 @@ mod schema_guard {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SCHEMA_PATH)
     }
 
+    fn validator_for_model() -> jsonschema::Validator {
+        let schema = schemars::schema_for!(Manifest);
+        jsonschema::validator_for(&serde_json::to_value(&schema).expect("schema is valid JSON"))
+            .expect("generated schema should itself be valid")
+    }
+
     #[test]
     fn schema_matches_model() {
         let generated = generated_schema_json();
@@ -242,6 +336,45 @@ mod schema_guard {
              phoxal::model::source::robot::v0::Manifest; regenerate it with:\n\n  \
              cargo test -p phoxal schema_guard::print_schema -- --ignored --nocapture > {}\n",
             schema_path().display()
+        );
+    }
+
+    #[test]
+    fn schema_validates_the_hello_rover_example() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let robot_yaml =
+            std::fs::read_to_string(manifest_dir.join("../examples/hello-rover/robot.yaml"))
+                .expect("hello-rover manifest should be readable");
+        let value: serde_json::Value =
+            serde_yaml::from_str(&robot_yaml).expect("hello-rover manifest should parse");
+        let errors = validator_for_model()
+            .iter_errors(&value)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            errors.is_empty(),
+            "hello-rover must validate against robot.schema.json: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn schema_rejects_unknown_root_key() {
+        let value: serde_json::Value = serde_yaml::from_str(
+            r#"
+schema: robot/v0
+robot:
+  id: test-bot
+  namespace: dev
+  kinematic: { kind: omnidirectional, actuators: [], encoders: [] }
+  motion_limits: { max_linear_speed_mps: 1.0, max_angular_speed_radps: 1.0 }
+  components: {}
+not_a_real_key: {}
+"#,
+        )
+        .expect("valid YAML");
+        assert!(
+            !validator_for_model().is_valid(&value),
+            "schema should reject an unknown root key"
         );
     }
 

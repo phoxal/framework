@@ -6,10 +6,8 @@
 
 pub mod capability;
 
-use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::str::FromStr;
 
 use capability::Capability;
 
@@ -43,32 +41,6 @@ impl Gtin {
     }
 }
 
-impl FromStr for Gtin {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        let trimmed = value.trim();
-        if trimmed.len() != 13 || !trimmed.chars().all(|character| character.is_ascii_digit()) {
-            bail!("invalid GTIN '{value}': must be exactly 13 digits");
-        }
-        Ok(Self(trimmed.to_string()))
-    }
-}
-
-impl TryFrom<String> for Gtin {
-    type Error = anyhow::Error;
-
-    fn try_from(value: String) -> Result<Self> {
-        value.parse()
-    }
-}
-
-impl From<Gtin> for String {
-    fn from(value: Gtin) -> Self {
-        value.0
-    }
-}
-
 impl fmt::Display for Gtin {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -94,40 +66,6 @@ impl CapabilityRef {
 impl fmt::Display for CapabilityRef {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}.{}", self.component_id, self.capability_id)
-    }
-}
-
-impl FromStr for CapabilityRef {
-    type Err = anyhow::Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        let Some((component_id, capability_id)) = value.split_once('.') else {
-            bail!("invalid capability reference '{value}', must be 'component.capability'");
-        };
-        if capability_id.contains('.')
-            || !is_valid_token(component_id)
-            || !is_valid_token(capability_id)
-        {
-            bail!(
-                "invalid capability reference '{value}', component and capability ids must \
-                 contain only lowercase ASCII letters, digits, '_' or '-'"
-            );
-        }
-        Ok(Self::new(component_id, capability_id))
-    }
-}
-
-impl TryFrom<String> for CapabilityRef {
-    type Error = anyhow::Error;
-
-    fn try_from(value: String) -> Result<Self> {
-        value.parse()
-    }
-}
-
-impl From<CapabilityRef> for String {
-    fn from(value: CapabilityRef) -> Self {
-        value.to_string()
     }
 }
 
