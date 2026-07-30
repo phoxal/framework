@@ -14,9 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 use phoxal::api;
-use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::component::v0::capability::{Capability, StructuralTarget};
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::CapabilityRef;
+use phoxal::model::component::capability::{Capability, StructuralTarget};
 use phoxal::prelude::*;
 
 const ENCODER_STALE: std::time::Duration = std::time::Duration::from_millis(200);
@@ -54,7 +54,7 @@ impl JointConfig {
     fn from_robot(robot: &Robot) -> Result<Self> {
         let mut encoders = Vec::new();
 
-        for component_id in robot.manifest.components().keys() {
+        for component_id in robot.components().keys() {
             let component = robot.component_for_instance(component_id)?;
             for (capability_id, capability) in &component.capabilities {
                 let Capability::Encoder(_) = capability else {
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn config_from_robot_enumerates_joint_targeted_encoders() {
-        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
+        let robot = phoxal::model::Robot::read_from_dir(fixture()).unwrap();
         let config = JointConfig::from_robot(&robot).unwrap();
 
         assert_eq!(config.encoders.len(), 4);
@@ -312,17 +312,26 @@ mod tests {
     }
 
     #[test]
-    fn no_joint_encoders_is_a_valid_inactive_configuration() {
-        let robot = phoxal::model::v0::Robot::read_from_dir(fixture()).unwrap();
-        let mut robot = robot;
-        robot.components.values_mut().for_each(|component| {
-            component.capabilities.retain(|_, capability| {
-                !matches!(
-                    capability,
-                    phoxal::model::component::v0::capability::Capability::Encoder(_)
-                )
+    fn link_targeted_encoders_are_excluded_from_joint_config() {
+        let root = fixture();
+        let (source, mut components, simulations, structure) =
+            phoxal::model::Robot::read_sources_from_dir(&root).unwrap();
+        components.values_mut().for_each(|component| {
+            component.capabilities.values_mut().for_each(|capability| {
+                if let phoxal::model::source::component::v0::capability::Capability::Encoder(
+                    encoder,
+                ) = capability
+                {
+                    encoder.target =
+                        phoxal::model::source::component::v0::capability::StructuralTarget::Link {
+                            id: "rotor_link".to_string(),
+                        };
+                }
             });
         });
+        let robot =
+            phoxal::model::Robot::try_from_sources(source, components, simulations, structure)
+                .unwrap();
         assert!(JointConfig::from_robot(&robot).unwrap().encoders.is_empty());
     }
 }

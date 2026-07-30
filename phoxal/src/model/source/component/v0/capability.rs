@@ -1,3 +1,5 @@
+//! Exact component capability shapes for `component.yaml` v0.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

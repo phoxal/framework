@@ -1,12 +1,13 @@
-//! Authored manifest model.
+//! Canonical runtime model and opt-in authored source documents.
 //!
-//! The single source of truth for what a robot is: `robot.yaml`,
-//! `structure.urdf`, and `components/<name>/component.yaml` /
-//! `simulation.yaml`. Each submodule is the public schema for one authored
-//! file kind; runtimes and the CLI parse these directly.
+//! Runtime consumers use [`Robot`] and the unversioned canonical modules.
+//! Schema-aware tools and loaders can name exact YAML grammars through
+//! [`source`].
 
 pub mod component;
 pub mod robot;
 pub mod simulation;
+pub mod source;
 pub mod structure;
-pub mod v0;
+
+pub use robot::Robot;

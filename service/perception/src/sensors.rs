@@ -3,9 +3,9 @@
 
 use anyhow::Result;
 use phoxal::api;
-use phoxal::model::component::v0::CapabilityRef;
-use phoxal::model::component::v0::capability::Capability;
-use phoxal::model::v0::Robot;
+use phoxal::model::Robot;
+use phoxal::model::component::CapabilityRef;
+use phoxal::model::component::capability::Capability;
 
 #[derive(Clone)]
 pub(crate) struct SensorBinding {
@@ -49,7 +49,7 @@ impl SensorBinding {
 
 pub(crate) fn camera_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
     robot
-        .camera_capabilities()
+        .camera_capabilities()?
         .into_iter()
         .map(|reference| SensorBinding::from_ref(robot, reference))
         .collect()
@@ -57,7 +57,7 @@ pub(crate) fn camera_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
 
 pub(crate) fn depth_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
     let mut references = Vec::new();
-    for component_id in robot.manifest.components().keys() {
+    for component_id in robot.components().keys() {
         let component = robot.component_for_instance(component_id)?;
         for (capability_id, capability) in &component.capabilities {
             if matches!(capability, Capability::Depth(_)) {

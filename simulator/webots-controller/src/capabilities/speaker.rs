@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use phoxal::api;
-use phoxal::model::component::v0::CapabilityRef;
+use phoxal::model::component::CapabilityRef;
 
 /// The largest stream this controller will hold before the producer ends it.
 /// A speaker that is never told the sound finished must not be able to consume

@@ -4,7 +4,7 @@
 
 use anyhow::{Result, anyhow};
 use phoxal::api;
-use phoxal::model::component::v0::capability::GnssCoordinateSystem;
+use phoxal::model::component::capability::GnssCoordinateSystem;
 
 use super::{SampledSpec, is_due};
 

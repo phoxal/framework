@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use phoxal::api;
 use phoxal::bus::{LocalInstant, RobotInstant, TimeWindow};
-use phoxal::model::robot::v0::MotionLimits;
+use phoxal::model::robot::MotionLimits;
 
 /// Manual teleoperation is a **leased** command (#952 section F): the operator
 /// must keep proving presence in human time, so silence is measured on the host

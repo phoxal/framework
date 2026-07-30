@@ -1,16 +1,16 @@
 use std::collections::BTreeSet;
 
-use crate::model::component::v0::CapabilityRef;
+use super::motion::{CapabilityRef, KinematicConfig};
 
-use super::{KinematicConfig, Robot, ValidationError, capability};
+use super::{Manifest, ValidationError, capability};
 
-impl Robot {
+impl Manifest {
     pub(crate) fn validate_component_structure(
         &self,
         validation_errors: &mut Vec<ValidationError>,
     ) {
         for (component_id, component) in &self.robot.components {
-            if !crate::model::component::v0::is_valid_token(component_id) {
+            if !crate::model::component::is_valid_token(component_id) {
                 validation_errors.push(ValidationError::InvalidToken {
                     field: format!("robot.components.{component_id}"),
                     value: component_id.clone(),
@@ -21,7 +21,7 @@ impl Robot {
                     instance: component_id.clone(),
                 });
             }
-            if !crate::model::component::v0::is_valid_token(&component.component) {
+            if !crate::model::component::is_valid_token(&component.component) {
                 validation_errors.push(ValidationError::InvalidToken {
                     field: format!("robot.components.{component_id}.component"),
                     value: component.component.clone(),
@@ -35,7 +35,7 @@ impl Robot {
             }
 
             for (capability_key, parameters) in &component.parameters {
-                if !crate::model::component::v0::is_valid_token(capability_key) {
+                if !crate::model::component::is_valid_token(capability_key) {
                     validation_errors.push(ValidationError::InvalidToken {
                         field: format!("robot.components.{component_id}.parameters"),
                         value: capability_key.clone(),
@@ -52,7 +52,7 @@ impl Robot {
             }
 
             for capability_id in component.roles.keys() {
-                if !crate::model::component::v0::is_valid_token(capability_id) {
+                if !crate::model::component::is_valid_token(capability_id) {
                     validation_errors.push(ValidationError::InvalidToken {
                         field: format!("robot.components.{component_id}.roles"),
                         value: capability_id.clone(),
@@ -266,8 +266,8 @@ fn validate_capability_ref(
     field: &str,
     validation_errors: &mut Vec<ValidationError>,
 ) {
-    if !crate::model::component::v0::is_valid_token(&capability_ref.component_id)
-        || !crate::model::component::v0::is_valid_token(&capability_ref.capability_id)
+    if !crate::model::component::is_valid_token(&capability_ref.component_id)
+        || !crate::model::component::is_valid_token(&capability_ref.capability_id)
     {
         validation_errors.push(invalid_kinematic(
             field,
@@ -315,7 +315,6 @@ fn invalid_kinematic(field: &str, message: &str) -> ValidationError {
 #[cfg(test)]
 mod tests {
     use super::ValidationError;
-    use crate::model::robot::v0::Robot;
 
     /// A manifest whose single component declares role hints for two
     /// capabilities. `extra_roles` is spliced in as further `depth:` entries.
@@ -348,8 +347,10 @@ robot:
 
     #[test]
     fn distinct_role_hints_for_one_capability_validate() {
-        let robot = Robot::parse_from_string(&manifest_with_depth_roles("[localization, mapping]"))
-            .unwrap();
+        let robot = crate::model::source::robot::parse_from_string(&manifest_with_depth_roles(
+            "[localization, mapping]",
+        ))
+        .unwrap();
         robot
             .validate()
             .expect("distinct roles on one capability are legal");
@@ -357,7 +358,9 @@ robot:
 
     #[test]
     fn an_empty_role_list_is_a_validation_error() {
-        let robot = Robot::parse_from_string(&manifest_with_depth_roles("[]")).unwrap();
+        let robot =
+            crate::model::source::robot::parse_from_string(&manifest_with_depth_roles("[]"))
+                .unwrap();
         let errors = robot.validate().expect_err("an empty role list is invalid");
         assert!(
             errors.iter().any(|error| matches!(
@@ -371,8 +374,10 @@ robot:
 
     #[test]
     fn a_repeated_role_names_the_capability_and_the_role() {
-        let robot =
-            Robot::parse_from_string(&manifest_with_depth_roles("[mapping, mapping]")).unwrap();
+        let robot = crate::model::source::robot::parse_from_string(&manifest_with_depth_roles(
+            "[mapping, mapping]",
+        ))
+        .unwrap();
         let errors = robot.validate().expect_err("a repeated role is invalid");
         assert!(
             errors.iter().any(|error| matches!(

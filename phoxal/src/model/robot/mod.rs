@@ -1,460 +1,926 @@
-//! Data types for authored source robot manifests.
-//!
-//! The crate root is the version dispatcher for `robot.yaml`. Schema wire
-//! types live under [`v0`]; consumers that need the v0 struct directly can
-//! import [`RobotV0`] or [`v0::Robot`].
-//!
-//! Parsing is strict: every struct denies unknown fields, `serde_yaml`
-//! natively rejects duplicate mapping keys and YAML-1.1-only booleans
-//! (`yes`/`no`/`on`/`off`) coerced into typed `bool` fields, and
-//! [`strict_yaml::check`] additionally rejects anchors/aliases, merge keys,
-//! explicit tags, and multi-document streams before the manifest reaches
-//! `serde_yaml::from_str`.
+//! Unversioned canonical robot model.
 
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+mod motion;
+
+pub use motion::{KinematicConfig, MotionLimits};
+
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-mod strict_yaml;
-pub mod v0;
+use crate::model::component::capability::{Capability, Encoder, Motor, StructuralTarget};
+use crate::model::component::{CapabilityRef, Component};
+use crate::model::simulation::Simulation;
+use crate::model::source;
+use crate::model::structure::Structure;
+use anyhow::{Context, Result, anyhow, bail};
 
-pub use v0::Robot as RobotV0;
-pub use v0::ValidationError;
+const COMPONENTS_DIR: &str = "components";
+const SIMULATION_FILE: &str = "simulation.yaml";
 
-const ROBOT_FILE: &str = "robot.yaml";
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BehaviorConfig {
+    pub root: String,
+    pub autostart: bool,
+}
 
-/// Version dispatcher for `robot.yaml`.
+impl From<source::robot::v0::BehaviorConfig> for BehaviorConfig {
+    fn from(value: source::robot::v0::BehaviorConfig) -> Self {
+        Self {
+            root: value.root,
+            autostart: value.autostart,
+        }
+    }
+}
+
+/// One resolved component instance in the canonical robot.
+#[derive(Debug, Clone)]
+pub struct ComponentInstance {
+    pub component_type: String,
+    pub mount_link: String,
+    direction_signs: BTreeMap<String, i8>,
+}
+
+/// Fully loaded runtime-facing model.
 ///
-/// On the wire, manifests use `schema: robot/v0` for the manifest grammar.
-/// The single-variant enum is the future-versioning seam: a second schema
-/// generation adds a sibling variant here without disturbing `v0::Robot`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(tag = "schema")]
-pub enum Robot {
-    #[serde(rename = "robot/v0")]
-    V0(v0::Robot),
+/// This type contains normalized robot facts, resolved component documents,
+/// and the validated structure. It deliberately does not retain a public
+/// source-version wrapper. Construction is intentionally fail-fast across the
+/// complete declared bundle: every present `simulation.yaml` is part of the
+/// fully loaded model and is validated even when the current participant runs
+/// against physical hardware.
+#[derive(Debug, Clone)]
+pub struct Robot {
+    id: String,
+    namespace: String,
+    behavior: Option<BehaviorConfig>,
+    kinematic: KinematicConfig,
+    motion_limits: MotionLimits,
+    component_instances: BTreeMap<String, ComponentInstance>,
+    component_types: BTreeMap<String, Component>,
+    simulation_types: BTreeMap<String, Simulation>,
+    structure: Structure,
+}
+
+struct ResolvedCapability<'a> {
+    capability: &'a Capability,
+    direction_sign: i8,
+}
+
+#[derive(Debug)]
+struct NormalizedRobotSpec {
+    id: String,
+    namespace: String,
+    behavior: Option<BehaviorConfig>,
+    kinematic: KinematicConfig,
+    motion_limits: MotionLimits,
+    components: BTreeMap<String, NormalizedComponentInstance>,
+}
+
+#[derive(Debug)]
+struct NormalizedComponentInstance {
+    component_type: String,
+    mount_link: String,
+    parameters: BTreeMap<String, NormalizedParameter>,
+}
+
+#[derive(Debug)]
+struct NormalizedParameter {
+    capability_kind: &'static str,
+    direction_sign: i8,
+}
+
+/// Exact documents and structure accepted by [`Robot::try_from_sources`].
+///
+/// The source versions are named independently in the tuple; this is a
+/// version-sensitive tooling seam, not a version of the canonical graph.
+pub type SourceInputs = (
+    source::robot::v0::Manifest,
+    BTreeMap<String, source::component::v0::Manifest>,
+    BTreeMap<String, source::simulation::v0::Manifest>,
+    Structure,
+);
+
+impl From<source::robot::v0::Manifest> for NormalizedRobotSpec {
+    fn from(value: source::robot::v0::Manifest) -> Self {
+        let source::robot::v0::Manifest {
+            robot, behavior, ..
+        } = value;
+        Self {
+            id: robot.id,
+            namespace: robot.namespace,
+            behavior: behavior.map(Into::into),
+            kinematic: robot.kinematic.into(),
+            motion_limits: robot.motion_limits.into(),
+            components: robot
+                .components
+                .into_iter()
+                .map(|(component_id, component)| {
+                    let parameters = component
+                        .parameters
+                        .into_iter()
+                        .map(|(capability_id, parameter)| {
+                            use source::robot::v0::capability::Parameters;
+                            let capability_kind = parameter.kind_name();
+                            let direction_sign = match parameter {
+                                Parameters::Motor(parameter) => parameter.direction_sign,
+                                Parameters::Encoder(parameter) => parameter.direction_sign,
+                                _ => 1,
+                            };
+                            (
+                                capability_id,
+                                NormalizedParameter {
+                                    capability_kind,
+                                    direction_sign,
+                                },
+                            )
+                        })
+                        .collect();
+                    (
+                        component_id,
+                        NormalizedComponentInstance {
+                            component_type: component.component,
+                            mount_link: component.mount_link,
+                            parameters,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 impl Robot {
     pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Self> {
-        let robot = Self::parse_from_dir(path)?;
-        robot.validate().map_err(validation_error)?;
-        Ok(robot)
+        let (robot_source, component_sources, simulation_sources, structure) =
+            Self::read_sources_from_dir(path)?;
+        Self::try_from_sources(
+            robot_source,
+            component_sources,
+            simulation_sources,
+            structure,
+        )
     }
 
-    /// Reads, composes, and validates one robot document at an explicit path.
-    pub fn read_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let robot = Self::parse_from_path(path)?;
-        robot.validate().map_err(validation_error)?;
-        Ok(robot)
-    }
-
-    pub fn read_from_string(text: &str) -> Result<Self> {
-        let robot = Self::parse_from_string(text)?;
-        robot.validate().map_err(validation_error)?;
-        Ok(robot)
-    }
-
-    pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Self> {
-        Self::parse_from_path(path.as_ref().join(ROBOT_FILE))
-    }
-
-    /// Reads one leaf robot document and composes its ordered direct parents.
+    /// Load the exact source documents and structure used to build a robot.
     ///
-    /// Parent entries are partial strict-YAML maps relative to the leaf
-    /// directory. Maps merge recursively; sequences and scalar values replace.
-    /// Nested composition is rejected so the leaf remains the single,
-    /// deterministic authority for parent order.
-    pub fn parse_from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let leaf_path = path
-            .as_ref()
-            .canonicalize()
-            .with_context(|| format!("failed to resolve robot file {}", path.as_ref().display()))?;
-        let root = leaf_path
-            .parent()
-            .context("robot file must have a parent directory")?
-            .to_path_buf();
-        let mut leaf = read_yaml_value(&leaf_path)?;
-        let parents = take_extends(&mut leaf, &leaf_path)?;
-        let mut seen = BTreeSet::new();
-        let mut composed = serde_yaml::Value::Mapping(Default::default());
-
-        for relative in parents {
-            if relative.is_absolute() {
-                bail!(
-                    "robot extends path must be relative: {}",
-                    relative.display()
-                );
-            }
-            let parent_path = root.join(&relative).canonicalize().with_context(|| {
-                format!(
-                    "failed to resolve robot parent {} declared by {}",
-                    relative.display(),
-                    leaf_path.display()
-                )
-            })?;
-            if !parent_path.starts_with(&root) {
-                bail!(
-                    "robot parent {} escapes robot directory {}",
-                    relative.display(),
-                    root.display()
-                );
-            }
-            if parent_path == leaf_path {
-                bail!(
-                    "robot document cannot extend itself: {}",
-                    relative.display()
-                );
-            }
-            if !seen.insert(parent_path.clone()) {
-                bail!("duplicate robot parent: {}", relative.display());
-            }
-
-            let mut parent = read_yaml_value(&parent_path)?;
-            let nested = take_extends(&mut parent, &parent_path)?;
-            if !nested.is_empty() {
-                bail!(
-                    "robot parent {} declares nested extends; list every parent directly in {}",
-                    parent_path.display(),
-                    leaf_path.display()
-                );
-            }
-            deep_merge(&mut composed, parent);
-        }
-        deep_merge(&mut composed, leaf);
-
-        serde_yaml::from_value(composed)
-            .with_context(|| format!("failed to parse composed robot {}", leaf_path.display()))
-    }
-
-    pub fn parse_from_string(text: &str) -> Result<Self> {
-        strict_yaml::check(text).context("failed to parse robot")?;
-        let robot: Self = serde_yaml::from_str(text).with_context(|| "failed to parse robot")?;
-        if !robot.as_v0().extends.is_empty() {
-            bail!(
-                "robot extends requires a file path; use Robot::read_from_path or Robot::read_from_dir"
-            );
-        }
-        Ok(robot)
-    }
-
-    pub fn write_to_dir(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        std::fs::create_dir_all(path)
-            .with_context(|| format!("failed to create robot directory {}", path.display()))?;
-        let yaml = serde_yaml::to_string(self)?;
-        std::fs::write(path.join(ROBOT_FILE), yaml).with_context(|| {
+    /// This version-sensitive seam is intended for fixtures and migration
+    /// tooling that must adjust exact documents before normalizing them
+    /// explicitly through [`Self::try_from_sources`]. Ordinary runtime
+    /// consumers should call [`Self::read_from_dir`].
+    pub fn read_sources_from_dir(path: impl AsRef<Path>) -> Result<SourceInputs> {
+        let root = path.as_ref();
+        let robot_source = source::robot::read_from_dir(root)?;
+        let component_sources = Self::read_used_component_sources(root, &robot_source)?;
+        let simulation_sources = Self::read_used_simulation_sources(root, &robot_source)?;
+        let structure_path = root.join(&robot_source.robot.structure);
+        let structure = Structure::read_from_file(&structure_path).with_context(|| {
             format!(
-                "failed to write robot file {}",
-                path.join(ROBOT_FILE).display()
+                "failed to read structure declared by robot/v0 document {} at {}",
+                robot_source.robot.structure.display(),
+                structure_path.display()
             )
         })?;
-        Ok(())
+
+        Ok((
+            robot_source,
+            component_sources,
+            simulation_sources,
+            structure,
+        ))
     }
 
-    pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
-        match self {
-            Self::V0(robot) => robot.validate(),
-        }
+    /// Normalize exact source documents and validate their cross-file invariants.
+    ///
+    /// Source readers already perform file-local validation. This method
+    /// deliberately repeats it because callers may construct or modify exact
+    /// DTOs directly before crossing the canonicalization boundary.
+    pub fn try_from_sources(
+        robot_source: source::robot::v0::Manifest,
+        component_sources: BTreeMap<String, source::component::v0::Manifest>,
+        simulation_sources: BTreeMap<String, source::simulation::v0::Manifest>,
+        structure: Structure,
+    ) -> Result<Self> {
+        robot_source.validate().map_err(|errors| {
+            source::robot::validation_error("robot.yaml passed to Robot::try_from_sources", errors)
+        })?;
+        structure
+            .validate()
+            .context("canonical robot structure validation failed")?;
+
+        let component_types = component_sources
+            .into_iter()
+            .map(|(component_type, document)| {
+                document.validate_for_component(&component_type).with_context(|| {
+                    format!(
+                        "invalid component/v0 document components/{component_type}/component.yaml"
+                    )
+                })?;
+                Ok((component_type, Component::from(document)))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let simulation_types = simulation_sources
+            .into_iter()
+            .map(|(component_type, document)| {
+                document.validate().with_context(|| {
+                    format!(
+                        "invalid simulation/v0 document \
+                         components/{component_type}/simulation.yaml"
+                    )
+                })?;
+                Ok((component_type, Simulation::from(document)))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+
+        Self::try_from_normalized(
+            robot_source.into(),
+            component_types,
+            simulation_types,
+            structure,
+        )
     }
 
-    #[must_use]
-    pub fn as_v0(&self) -> &v0::Robot {
-        match self {
-            Self::V0(robot) => robot,
-        }
-    }
-
-    #[must_use]
-    pub fn into_v0(self) -> v0::Robot {
-        match self {
-            Self::V0(robot) => robot,
-        }
-    }
-}
-
-fn read_yaml_value(path: &Path) -> Result<serde_yaml::Value> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read robot file {}", path.display()))?;
-    strict_yaml::check(&text)
-        .with_context(|| format!("failed to parse robot file {}", path.display()))?;
-    serde_yaml::from_str(&text)
-        .with_context(|| format!("failed to parse robot file {}", path.display()))
-}
-
-fn take_extends(value: &mut serde_yaml::Value, path: &Path) -> Result<Vec<PathBuf>> {
-    let serde_yaml::Value::Mapping(map) = value else {
-        bail!("robot document {} must be a mapping", path.display());
-    };
-    let key = serde_yaml::Value::String("extends".to_string());
-    let Some(raw) = map.remove(&key) else {
-        return Ok(Vec::new());
-    };
-    serde_yaml::from_value(raw)
-        .with_context(|| format!("invalid extends list in {}", path.display()))
-}
-
-fn deep_merge(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
-    match (base, overlay) {
-        (serde_yaml::Value::Mapping(base), serde_yaml::Value::Mapping(overlay)) => {
-            for (key, value) in overlay {
-                match base.get_mut(&key) {
-                    Some(current) => deep_merge(current, value),
-                    None => {
-                        base.insert(key, value);
+    fn try_from_normalized(
+        robot: NormalizedRobotSpec,
+        component_types: BTreeMap<String, Component>,
+        simulation_types: BTreeMap<String, Simulation>,
+        structure: Structure,
+    ) -> Result<Self> {
+        let component_instances = robot
+            .components
+            .into_iter()
+            .map(|(component_id, source)| {
+                let definition = component_types.get(&source.component_type).ok_or_else(|| {
+                    anyhow!(
+                        "robot.yaml components.{component_id} references component type '{}' \
+                         without components/{}/component.yaml",
+                        source.component_type,
+                        source.component_type
+                    )
+                })?;
+                let mut direction_signs = BTreeMap::new();
+                for (capability_id, parameters) in source.parameters {
+                    let capability = definition.capability(&capability_id).ok_or_else(|| {
+                        anyhow!(
+                            "robot.yaml components.{component_id}.parameters.{capability_id} \
+                             references a capability missing from \
+                             components/{}/component.yaml",
+                            source.component_type
+                        )
+                    })?;
+                    if capability.kind_name() != parameters.capability_kind {
+                        bail!(
+                            "robot.yaml components.{component_id}.parameters.{capability_id} \
+                             has kind '{}', but components/{}/component.yaml defines '{}'",
+                            parameters.capability_kind,
+                            source.component_type,
+                            capability.kind_name()
+                        );
                     }
+                    direction_signs.insert(capability_id, parameters.direction_sign);
+                }
+                Ok((
+                    component_id,
+                    ComponentInstance {
+                        component_type: source.component_type,
+                        mount_link: source.mount_link,
+                        direction_signs,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+
+        let canonical = Self {
+            id: robot.id,
+            namespace: robot.namespace,
+            behavior: robot.behavior,
+            kinematic: robot.kinematic,
+            motion_limits: robot.motion_limits,
+            component_instances,
+            component_types,
+            simulation_types,
+            structure,
+        };
+        canonical.validate_cross_document_invariants()?;
+        Ok(canonical)
+    }
+
+    fn read_used_component_sources(
+        root: &Path,
+        robot: &source::robot::v0::Manifest,
+    ) -> Result<BTreeMap<String, source::component::v0::Manifest>> {
+        robot
+            .used_component_types()
+            .into_iter()
+            .map(|component_type| {
+                let component_root = component_config_path(root, component_type);
+                let document = source::component::read_from_dir(&component_root).with_context(|| {
+                    format!(
+                        "failed to load component type '{component_type}' referenced by robot.yaml"
+                    )
+                })?;
+                Ok((component_type.to_string(), document))
+            })
+            .collect()
+    }
+
+    fn read_used_simulation_sources(
+        root: &Path,
+        robot: &source::robot::v0::Manifest,
+    ) -> Result<BTreeMap<String, source::simulation::v0::Manifest>> {
+        robot
+            .used_component_types()
+            .into_iter()
+            .filter_map(|component_type| {
+                let component_root = component_config_path(root, component_type);
+                component_root
+                    .join(SIMULATION_FILE)
+                    .is_file()
+                    .then_some((component_type, component_root))
+            })
+            .map(|(component_type, component_root)| {
+                let document =
+                    source::simulation::read_from_dir(&component_root).with_context(|| {
+                        format!(
+                            "failed to load simulation/v0 document for component type \
+                             '{component_type}' referenced by robot.yaml"
+                        )
+                    })?;
+                Ok((component_type.to_string(), document))
+            })
+            .collect()
+    }
+
+    fn validate_cross_document_invariants(&self) -> Result<()> {
+        for (component_id, instance) in &self.component_instances {
+            if self.structure.link(&instance.mount_link).is_none() {
+                bail!(
+                    "robot.yaml components.{component_id}.mount_link '{}' is missing from the \
+                     canonical structure",
+                    instance.mount_link
+                );
+            }
+        }
+
+        for (component_type, simulation) in &self.simulation_types {
+            let component = self.component_types.get(component_type).ok_or_else(|| {
+                anyhow!(
+                    "components/{component_type}/simulation.yaml has no matching \
+                     component.yaml loaded by robot.yaml"
+                )
+            })?;
+            for (capability_id, simulation_capability) in &simulation.capabilities {
+                let capability = component.capability(capability_id).ok_or_else(|| {
+                    anyhow!(
+                        "components/{component_type}/simulation.yaml \
+                         capabilities.{capability_id} has no matching capability in \
+                         components/{component_type}/component.yaml"
+                    )
+                })?;
+                if simulation_capability.kind_name() != capability.kind_name() {
+                    bail!(
+                        "components/{component_type}/simulation.yaml \
+                         capabilities.{capability_id} has kind '{}', but \
+                         components/{component_type}/component.yaml defines '{}'",
+                        simulation_capability.kind_name(),
+                        capability.kind_name()
+                    );
                 }
             }
         }
-        (base, overlay) => *base = overlay,
+
+        match &self.kinematic {
+            KinematicConfig::Differential {
+                left_actuators,
+                right_actuators,
+                left_encoders,
+                right_encoders,
+                ..
+            } => {
+                for reference in left_actuators.iter().chain(right_actuators) {
+                    self.require_motor(reference).with_context(|| {
+                        format!("robot.yaml kinematic actuator '{reference}' is invalid")
+                    })?;
+                }
+                for reference in left_encoders.iter().chain(right_encoders) {
+                    self.require_encoder(reference).with_context(|| {
+                        format!("robot.yaml kinematic encoder '{reference}' is invalid")
+                    })?;
+                }
+            }
+            KinematicConfig::Mecanum {
+                front_left_actuator,
+                front_right_actuator,
+                rear_left_actuator,
+                rear_right_actuator,
+                ..
+            } => {
+                for reference in [
+                    front_left_actuator,
+                    front_right_actuator,
+                    rear_left_actuator,
+                    rear_right_actuator,
+                ] {
+                    self.require_motor(reference).with_context(|| {
+                        format!("robot.yaml kinematic actuator '{reference}' is invalid")
+                    })?;
+                }
+            }
+            KinematicConfig::Ackermann {
+                steering_actuator,
+                drive_actuator,
+                steering_encoder,
+                drive_encoder,
+                ..
+            } => {
+                for reference in [steering_actuator, drive_actuator] {
+                    self.require_motor(reference).with_context(|| {
+                        format!("robot.yaml kinematic actuator '{reference}' is invalid")
+                    })?;
+                }
+                for reference in steering_encoder.iter().chain(drive_encoder) {
+                    self.require_encoder(reference).with_context(|| {
+                        format!("robot.yaml kinematic encoder '{reference}' is invalid")
+                    })?;
+                }
+            }
+            KinematicConfig::Omnidirectional {
+                actuators,
+                encoders,
+            } => {
+                for reference in actuators {
+                    self.require_motor(reference).with_context(|| {
+                        format!("robot.yaml kinematic actuator '{reference}' is invalid")
+                    })?;
+                }
+                for reference in encoders {
+                    self.require_encoder(reference).with_context(|| {
+                        format!("robot.yaml kinematic encoder '{reference}' is invalid")
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn robot_id(&self) -> &str {
+        &self.id
+    }
+
+    #[must_use]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    #[must_use]
+    pub fn behavior(&self) -> Option<&BehaviorConfig> {
+        self.behavior.as_ref()
+    }
+
+    #[must_use]
+    pub fn kinematic(&self) -> &KinematicConfig {
+        &self.kinematic
+    }
+
+    #[must_use]
+    pub const fn motion_limits(&self) -> MotionLimits {
+        self.motion_limits
+    }
+
+    #[must_use]
+    pub fn components(&self) -> &BTreeMap<String, ComponentInstance> {
+        &self.component_instances
+    }
+
+    pub fn component_instance(&self, component_id: &str) -> Result<&ComponentInstance> {
+        self.component_instances.get(component_id).ok_or_else(|| {
+            anyhow!("component instance '{component_id}' is not defined in robot.yaml")
+        })
+    }
+
+    pub fn component_for_instance(&self, component_id: &str) -> Result<&Component> {
+        let instance = self.component_instance(component_id)?;
+        self.component_types
+            .get(&instance.component_type)
+            .ok_or_else(|| {
+                anyhow!(
+                    "component type '{}' for instance '{component_id}' is not loaded",
+                    instance.component_type
+                )
+            })
+    }
+
+    #[must_use]
+    pub fn simulation_for_component_type(&self, component_type: &str) -> Option<&Simulation> {
+        self.simulation_types.get(component_type)
+    }
+
+    pub fn simulation_for_instance(&self, component_id: &str) -> Result<Option<&Simulation>> {
+        let instance = self.component_instance(component_id)?;
+        Ok(self.simulation_for_component_type(&instance.component_type))
+    }
+
+    #[must_use]
+    pub fn structure(&self) -> &Structure {
+        &self.structure
+    }
+
+    pub fn capability(&self, reference: &CapabilityRef) -> Result<&Capability> {
+        self.component_for_instance(&reference.component_id)?
+            .capability(&reference.capability_id)
+            .ok_or_else(|| {
+                anyhow!("capability '{reference}' is not defined in its component.yaml document")
+            })
+    }
+
+    pub fn camera_capabilities(&self) -> Result<Vec<CapabilityRef>> {
+        let mut capabilities = Vec::new();
+        for component_id in self.component_instances.keys() {
+            let component = self.component_for_instance(component_id)?;
+            capabilities.extend(
+                component
+                    .capabilities
+                    .iter()
+                    .filter(|(_, capability)| matches!(capability, Capability::Camera(_)))
+                    .map(|(capability_id, _)| CapabilityRef::new(component_id, capability_id)),
+            );
+        }
+        capabilities.sort();
+        Ok(capabilities)
+    }
+
+    fn resolved_capability(&self, reference: &CapabilityRef) -> Result<ResolvedCapability<'_>> {
+        Ok(ResolvedCapability {
+            capability: self.capability(reference)?,
+            direction_sign: self
+                .component_instance(&reference.component_id)?
+                .direction_signs
+                .get(&reference.capability_id)
+                .copied()
+                .unwrap_or(1),
+        })
+    }
+
+    pub fn require_motor(&self, reference: &CapabilityRef) -> Result<(&Motor, i8)> {
+        let resolved = self.resolved_capability(reference)?;
+        let Capability::Motor(motor) = resolved.capability else {
+            bail!(
+                "capability '{reference}' must reference a motor, found {}",
+                resolved.capability.kind_name()
+            );
+        };
+        Ok((motor, resolved.direction_sign))
+    }
+
+    pub fn require_encoder(&self, reference: &CapabilityRef) -> Result<(&Encoder, i8)> {
+        let resolved = self.resolved_capability(reference)?;
+        let Capability::Encoder(encoder) = resolved.capability else {
+            bail!(
+                "capability '{reference}' must reference an encoder, found {}",
+                resolved.capability.kind_name()
+            );
+        };
+        Ok((encoder, resolved.direction_sign))
+    }
+
+    pub fn require_link_target(&self, reference: &CapabilityRef) -> Result<String> {
+        let target = self
+            .capability(reference)?
+            .target()
+            .namespaced(&reference.component_id);
+        let StructuralTarget::Link { id } = target else {
+            bail!("capability '{reference}' must target a link");
+        };
+        if self.structure.link(&id).is_some() {
+            Ok(id)
+        } else {
+            bail!("link target '{id}' for capability '{reference}' not found in structure")
+        }
+    }
+
+    pub fn component_mount_link(&self, component_id: &str) -> Result<String> {
+        Ok(self.component_instance(component_id)?.mount_link.clone())
     }
 }
 
-fn validation_error(errors: Vec<ValidationError>) -> anyhow::Error {
-    let message = errors
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    anyhow::anyhow!("Robot errors:\n{message}")
+fn component_config_path(bundle_root: &Path, component_type: &str) -> PathBuf {
+    bundle_root.join(COMPONENTS_DIR).join(component_type)
 }
 
 #[cfg(test)]
-mod composition_tests {
-    use super::Robot;
+mod tests {
+    use std::collections::BTreeMap;
 
-    const LEAF: &str = r#"
-schema: robot/v0
-extends: [base.robot.yaml, host.robot.yaml]
-robot:
-  id: leaf
-  namespace: dev
-  kinematic:
-    kind: omnidirectional
-    actuators: [drive.motor]
-    encoders: []
-  components: {}
-"#;
+    use anyhow::Context as _;
 
-    #[test]
-    fn direct_parents_deep_merge_in_order_and_are_cleared() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(
-            dir.path().join("base.robot.yaml"),
-            r#"
-robot:
-  id: base
-  motion_limits:
-    max_linear_speed_mps: 0.5
-    max_angular_speed_radps: 1.0
-services:
-  autonomy:
-    config: { planner: base, limit: 1 }
-tools:
-  lidar-viz:
-    config: { port: 9000, verbose: false }
-"#,
-        )?;
-        std::fs::write(
-            dir.path().join("host.robot.yaml"),
-            r#"
-robot:
-  motion_limits:
-    max_linear_speed_mps: 0.8
-services:
-  autonomy:
-    config: { planner: host }
-tools:
-  lidar-viz:
-    config: { verbose: true }
-"#,
-        )?;
-        std::fs::write(dir.path().join("robot.yaml"), LEAF)?;
+    use crate::model::component::Component;
+    use crate::model::structure::Structure;
 
-        let robot = Robot::read_from_dir(dir.path())?.into_v0();
-        assert!(robot.extends.is_empty());
-        assert_eq!(robot.robot.id, "leaf");
-        assert_eq!(robot.robot.motion_limits.max_linear_speed_mps, 0.8);
-        assert_eq!(robot.robot.motion_limits.max_angular_speed_radps, 1.0);
-        let config = robot.services["autonomy"].config.as_ref().unwrap();
-        assert_eq!(config["planner"], "host");
-        assert_eq!(config["limit"], 1);
-        // The tools declaration deep-merges exactly like services (#950).
-        let tool_config = robot.tools["lidar-viz"].config.as_ref().unwrap();
-        assert_eq!(tool_config["port"], 9000);
-        assert_eq!(tool_config["verbose"], true);
-        Ok(())
+    use super::{
+        KinematicConfig, MotionLimits, NormalizedComponentInstance, NormalizedRobotSpec, Robot,
+        SourceInputs,
+    };
+
+    fn fixture_root() -> &'static str {
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../fixture/robot/rgbd-imu-diff-drive"
+        )
+    }
+
+    fn fixture_inputs() -> anyhow::Result<SourceInputs> {
+        Robot::read_sources_from_dir(fixture_root())
+    }
+
+    fn canonicalization_error(inputs: SourceInputs) -> String {
+        let (robot, components, simulations, structure) = inputs;
+        format!(
+            "{:#}",
+            Robot::try_from_sources(robot, components, simulations, structure)
+                .expect_err("mutated sources must fail")
+        )
     }
 
     #[test]
-    fn nested_parent_extends_is_rejected() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(
-            dir.path().join("base.robot.yaml"),
-            "extends: [other.robot.yaml]\n",
-        )?;
-        std::fs::write(dir.path().join("host.robot.yaml"), "{}\n")?;
-        std::fs::write(dir.path().join("robot.yaml"), LEAF)?;
-
-        let error = Robot::read_from_dir(dir.path()).expect_err("nested extends must fail");
-        assert!(format!("{error:#}").contains("declares nested extends"));
-        Ok(())
-    }
-
-    #[test]
-    fn string_parser_rejects_unresolvable_extends() {
-        let manifest = LEAF.replace(
-            "  namespace: dev\n",
-            "  namespace: dev\n  motion_limits:\n    max_linear_speed_mps: 0.5\n    max_angular_speed_radps: 1.0\n",
+    fn v0_sources_build_the_canonical_robot() -> anyhow::Result<()> {
+        let robot = Robot::read_from_dir(fixture_root())?;
+        assert_eq!(robot.robot_id(), "rgbd-imu-diff-drive");
+        assert!(!robot.components().is_empty());
+        assert!(
+            robot
+                .simulation_for_component_type("drive_motor")
+                .is_some_and(|simulation| simulation.capabilities.contains_key("encoder"))
         );
-        let error = Robot::parse_from_string(&manifest)
-            .expect_err("string parsing cannot resolve parent paths");
-        assert!(format!("{error:#}").contains(
-            "robot extends requires a file path; use Robot::read_from_path or Robot::read_from_dir"
-        ));
-    }
-
-    #[test]
-    fn duplicate_and_escaping_parents_are_rejected() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("base.robot.yaml"), "{}\n")?;
-        std::fs::write(
-            dir.path().join("robot.yaml"),
-            LEAF.replace(
-                "base.robot.yaml, host.robot.yaml",
-                "base.robot.yaml, base.robot.yaml",
-            ),
-        )?;
-        let duplicate = Robot::read_from_dir(dir.path()).expect_err("duplicate must fail");
-        assert!(format!("{duplicate:#}").contains("duplicate robot parent"));
-
-        std::fs::write(
-            dir.path().join("robot.yaml"),
-            LEAF.replace("base.robot.yaml, host.robot.yaml", "../outside.robot.yaml"),
-        )?;
-        std::fs::write(
-            dir.path().parent().unwrap().join("outside.robot.yaml"),
-            "{}\n",
-        )?;
-        let escaping = Robot::read_from_dir(dir.path()).expect_err("escape must fail");
-        assert!(format!("{escaping:#}").contains("escapes robot directory"));
         Ok(())
     }
-}
 
-/// The editor-facing `robot.yaml` JSON Schema is a structural grammar aid.
-/// `Robot` and every serde-shaped type it reaches carry a
-/// `#[cfg_attr(test, derive(schemars::JsonSchema))]`, so the schema is derived
-/// from the manifest structs rather than maintained separately.
-/// `schema_matches_model` fails when the checked-in
-/// `examples/robot.schema.json` stops matching that derived serde shape.
-/// The schema is not an executable specification.
-/// It does not cover `strict_yaml::check`, semantic [`Robot::validate`]
-/// constraints, custom `FromStr` validation, or cross-file component and URDF
-/// constraints.
-///
-/// Kept test-only (not a normal dependency) on purpose: `schemars` and
-/// `jsonschema` are dev-dependencies of `phoxal` (see `phoxal/Cargo.toml`),
-/// so the published crate carries no schema-generation code or its
-/// dependency weight - only `cargo test` regenerates and checks the schema.
-#[cfg(test)]
-mod schema_guard {
-    use super::Robot;
-
-    /// Path to the checked-in JSON Schema, relative to this crate's manifest
-    /// directory (`phoxal/`).
-    const SCHEMA_PATH: &str = "../examples/robot.schema.json";
-
-    fn generated_schema_json() -> String {
-        let schema = schemars::schema_for!(Robot);
-        serde_json::to_string_pretty(&schema).expect("schema serializes to JSON") + "\n"
-    }
-
-    fn schema_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(SCHEMA_PATH)
-    }
-
-    /// Regenerate-and-diff guard: run `cargo test -p phoxal schema_guard::print_schema
-    /// -- --ignored --nocapture > examples/robot.schema.json` (from the
-    /// `framework/phoxal` directory) and re-check the file in when this fails.
     #[test]
-    fn schema_matches_model() {
-        let generated = generated_schema_json();
-        let checked_in = std::fs::read_to_string(schema_path()).unwrap_or_default();
-
-        assert_eq!(
-            generated,
-            checked_in,
-            "examples/robot.schema.json is stale relative to the schemars-derived \
-             schema for phoxal::model::robot::Robot. Regenerate it with:\n\n  \
-             cargo test -p phoxal schema_guard::print_schema -- --ignored --nocapture \
-             > {}\n\nthen re-check the file in.",
-            schema_path().display()
-        );
-    }
-
-    /// Not an assertion - an opt-in helper (`--ignored`) that prints the
-    /// freshly generated schema so `schema_matches_model`'s failure message
-    /// can be piped straight into `examples/robot.schema.json`.
-    #[test]
-    #[ignore = "prints the schema; run explicitly to regenerate examples/robot.schema.json"]
-    fn print_schema() {
-        print!("{}", generated_schema_json());
-    }
-
-    fn validator_for_model() -> jsonschema::Validator {
-        let schema = schemars::schema_for!(Robot);
-        jsonschema::validator_for(&serde_json::to_value(&schema).expect("schema is valid JSON"))
-            .expect("generated schema should itself be a valid JSON Schema")
-    }
-
-    /// The schema must actually accept the checked-in example manifest - proof
-    /// that the drift guard tracks a schema that validates real content, not
-    /// just two frozen blobs that happen to match each other.
-    #[test]
-    fn schema_validates_the_hello_rover_example() {
+    fn every_repository_robot_document_builds_the_canonical_model() -> anyhow::Result<()> {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let robot_yaml =
-            std::fs::read_to_string(manifest_dir.join("../examples/hello-rover/robot.yaml"))
-                .expect("examples/hello-rover/robot.yaml should be readable");
-        let value: serde_json::Value = serde_yaml::from_str(&robot_yaml)
-            .expect("examples/hello-rover/robot.yaml should parse as YAML");
+        let roots = [
+            "../fixture/robot/rgbd-diff-drive",
+            "../fixture/robot/rgbd-imu-diff-drive",
+            "../fixture/robot/rgbd-imu-gnss-outdoor",
+            "../fixture/robot/rgbd-imu-orb-lowres",
+            "../examples/hello-rover",
+        ];
 
-        let validator = validator_for_model();
-        let errors: Vec<_> = validator
-            .iter_errors(&value)
-            .map(|error| error.to_string())
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "examples/hello-rover/robot.yaml should validate against robot.schema.json: {errors:?}"
-        );
+        for root in roots {
+            let root = manifest_dir.join(root);
+            Robot::read_from_dir(&root)
+                .with_context(|| format!("failed to load repository robot {}", root.display()))?;
+        }
+        Ok(())
     }
 
-    /// A manifest with an unknown root key must be rejected - proof that
-    /// `deny_unknown_fields` really propagates into the schema's
-    /// `additionalProperties: false`, not just that the happy path validates.
     #[test]
-    fn schema_rejects_unknown_root_key() {
-        let yaml = r#"
+    fn cross_file_errors_retain_authored_context() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(
+            temp.path().join("robot.yaml"),
+            r#"
 schema: robot/v0
 robot:
-  id: test-bot
-  namespace: dev
-  kinematic:
-    kind: omnidirectional
-    actuators: []
-    encoders: []
-  components: {}
-not_a_real_key: {}
-"#;
-        let value: serde_json::Value = serde_yaml::from_str(yaml).expect("valid YAML");
+  id: broken
+  namespace: test
+  kinematic: { kind: omnidirectional, actuators: [drive.motor], encoders: [] }
+  motion_limits: { max_linear_speed_mps: 1.0, max_angular_speed_radps: 1.0 }
+  components:
+    drive:
+      component: missing
+      mount_link: base_link
+"#,
+        )?;
+        let error = Robot::read_from_dir(temp.path()).expect_err("missing component must fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("robot.yaml"));
+        assert!(message.contains("components/missing/component.yaml"));
+        Ok(())
+    }
 
-        assert!(
-            !validator_for_model().is_valid(&value),
-            "schema should reject an unknown root key"
+    #[test]
+    fn parameter_capability_must_exist_in_component_source() -> anyhow::Result<()> {
+        let (mut robot, components, simulations, structure) = fixture_inputs()?;
+        let drive = robot
+            .robot
+            .components
+            .get_mut("front_left_drive")
+            .expect("fixture drive instance");
+        let parameter = drive.parameters["encoder"].clone();
+        drive.parameters.insert("missing".to_string(), parameter);
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("robot.yaml components.front_left_drive.parameters.missing"));
+        assert!(error.contains("components/drive_motor/component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn parameter_kind_must_match_component_source() -> anyhow::Result<()> {
+        let (mut robot, components, simulations, structure) = fixture_inputs()?;
+        let drive = robot
+            .robot
+            .components
+            .get_mut("front_left_drive")
+            .expect("fixture drive instance");
+        drive
+            .parameters
+            .insert("motor".to_string(), drive.parameters["encoder"].clone());
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("robot.yaml components.front_left_drive.parameters.motor"));
+        assert!(error.contains("components/drive_motor/component.yaml defines 'motor'"));
+        Ok(())
+    }
+
+    #[test]
+    fn component_mount_link_must_exist_in_structure() -> anyhow::Result<()> {
+        let (mut robot, components, simulations, structure) = fixture_inputs()?;
+        robot
+            .robot
+            .components
+            .get_mut("front_left_drive")
+            .expect("fixture drive instance")
+            .mount_link = "missing_link".to_string();
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("robot.yaml components.front_left_drive.mount_link"));
+        assert!(error.contains("missing_link"));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_source_requires_a_matching_component_source() -> anyhow::Result<()> {
+        let (robot, components, mut simulations, structure) = fixture_inputs()?;
+        simulations.insert(
+            "orphan".to_string(),
+            crate::model::source::simulation::read_from_string(
+                "schema: simulation/v0\ncapabilities: {}\n",
+            )?,
         );
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("components/orphan/simulation.yaml"));
+        assert!(error.contains("component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_capability_requires_a_matching_component_capability() -> anyhow::Result<()> {
+        let (robot, components, mut simulations, structure) = fixture_inputs()?;
+        let simulation = simulations
+            .get_mut("drive_motor")
+            .expect("fixture simulation");
+        simulation.capabilities.insert(
+            "missing".to_string(),
+            simulation.capabilities["encoder"].clone(),
+        );
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("components/drive_motor/simulation.yaml capabilities.missing"));
+        assert!(error.contains("components/drive_motor/component.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn simulation_capability_kind_must_match_component_source() -> anyhow::Result<()> {
+        let (robot, components, mut simulations, structure) = fixture_inputs()?;
+        let simulation = simulations
+            .get_mut("drive_motor")
+            .expect("fixture simulation");
+        simulation.capabilities.insert(
+            "motor".to_string(),
+            simulation.capabilities["encoder"].clone(),
+        );
+        let error = canonicalization_error((robot, components, simulations, structure));
+        assert!(error.contains("components/drive_motor/simulation.yaml capabilities.motor"));
+        assert!(error.contains("components/drive_motor/component.yaml defines 'motor'"));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_simulation_source_rejects_the_fully_loaded_canonical_robot() -> anyhow::Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir_all(root.path().join("components/sensor"))?;
+        std::fs::write(
+            root.path().join("robot.yaml"),
+            r#"
+schema: robot/v0
+robot:
+  id: simulation-validation
+  namespace: test
+  structure: structure.urdf
+  kinematic: { kind: omnidirectional, actuators: [sensor.motor], encoders: [] }
+  motion_limits: { max_linear_speed_mps: 1.0, max_angular_speed_radps: 1.0 }
+  components:
+    sensor:
+      component: sensor
+      mount_link: base_link
+"#,
+        )?;
+        std::fs::write(
+            root.path().join("structure.urdf"),
+            r#"<robot name="test">
+  <link name="base_footprint" />
+  <link name="base_link" />
+  <joint name="base" type="fixed">
+    <parent link="base_footprint" />
+    <child link="base_link" />
+  </joint>
+</robot>"#,
+        )?;
+        std::fs::write(
+            root.path().join("components/sensor/component.yaml"),
+            r#"schema: component/v0
+capabilities:
+  motor:
+    kind: motor
+    command: velocity
+    target: { kind: joint, id: base }
+"#,
+        )?;
+        std::fs::write(
+            root.path().join("components/sensor/simulation.yaml"),
+            "schema: simulation/v0\ncapabilities:\n  Bad Id: { kind: range }\n",
+        )?;
+
+        let error =
+            Robot::read_from_dir(root.path()).expect_err("invalid simulation source must fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("simulation/v0"));
+        assert!(message.contains("components/sensor/simulation.yaml"));
+        Ok(())
+    }
+
+    #[test]
+    fn camera_capabilities_include_color_and_exclude_depth() -> anyhow::Result<()> {
+        let robot = Robot::read_from_dir(fixture_root())?;
+        let cameras = robot
+            .camera_capabilities()?
+            .into_iter()
+            .map(|reference| reference.to_string())
+            .collect::<Vec<_>>();
+        assert!(cameras.contains(&"front_camera.rgb".to_string()));
+        assert!(!cameras.contains(&"front_camera.depth".to_string()));
+        Ok(())
+    }
+
+    #[test]
+    fn future_robot_version_can_normalize_with_component_v0() -> anyhow::Result<()> {
+        struct FutureRobotV1 {
+            id: String,
+        }
+
+        impl From<FutureRobotV1> for NormalizedRobotSpec {
+            fn from(value: FutureRobotV1) -> Self {
+                Self {
+                    id: value.id,
+                    namespace: "future".to_string(),
+                    behavior: None,
+                    kinematic: KinematicConfig::Omnidirectional {
+                        actuators: Vec::new(),
+                        encoders: Vec::new(),
+                    },
+                    motion_limits: MotionLimits {
+                        max_linear_speed_mps: 1.0,
+                        max_angular_speed_radps: 1.0,
+                    },
+                    components: BTreeMap::from([(
+                        "sensor".to_string(),
+                        NormalizedComponentInstance {
+                            component_type: "sensor_v0".to_string(),
+                            mount_link: "base_link".to_string(),
+                            parameters: BTreeMap::new(),
+                        },
+                    )]),
+                }
+            }
+        }
+
+        let component_v0 = crate::model::source::component::read_from_string(
+            "schema: component/v0\ncapabilities: {}\n",
+        )?;
+        let structure = Structure::from_urdf_str(
+            r#"<robot name="future">
+  <link name="base_footprint" />
+  <link name="base_link" />
+  <joint name="base" type="fixed">
+    <parent link="base_footprint" />
+    <child link="base_link" />
+  </joint>
+</robot>"#,
+        )?;
+
+        let robot = Robot::try_from_normalized(
+            FutureRobotV1 {
+                id: "future-v1".to_string(),
+            }
+            .into(),
+            BTreeMap::from([("sensor_v0".to_string(), Component::from(component_v0))]),
+            BTreeMap::new(),
+            structure,
+        )?;
+        assert_eq!(robot.robot_id(), "future-v1");
+        assert_eq!(
+            robot.component_instance("sensor")?.component_type,
+            "sensor_v0"
+        );
+        Ok(())
     }
 }

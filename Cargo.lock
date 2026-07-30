@@ -2302,7 +2302,6 @@ dependencies = [
  "anyhow",
  "clap",
  "const_format",
- "derive-new",
  "jsonschema",
  "libc",
  "nalgebra",

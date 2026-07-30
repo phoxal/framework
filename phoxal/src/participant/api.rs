@@ -483,10 +483,11 @@ pub trait SetupContextApiExt<R: Participant + TypedGraphSurface> {
             + Sync
             + 'static;
 
-    /// The resolved robot model (`robot.yaml` + components + structure, D33):
-    /// participants build their typed state from it. Present only when the
-    /// runner was launched with a robot root; errors otherwise.
-    fn robot(&self) -> crate::Result<&crate::model::v0::Robot>;
+    /// The resolved robot model includes `robot.yaml`, component and simulation
+    /// documents, and structure (D33). Participants build their typed state from
+    /// it. Present only when the runner was launched with a robot root; errors
+    /// otherwise.
+    fn robot(&self) -> crate::Result<&crate::model::Robot>;
 
     /// The robot root directory (holds the robot model + assets). Present only
     /// when launched with a robot root.
@@ -588,7 +589,7 @@ impl<R: Participant + TypedGraphSurface> SetupContextApiExt<R> for SetupContext<
         Ok(())
     }
 
-    fn robot(&self) -> crate::Result<&crate::model::v0::Robot> {
+    fn robot(&self) -> crate::Result<&crate::model::Robot> {
         self.robot_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "no robot model is bound (this participant was launched without a robot root)"
@@ -716,7 +717,7 @@ pub trait SetupContextToolExt {
     fn raw_bus(&self) -> Bus;
 
     /// The resolved robot model, when the tool was launched in a robot root.
-    fn robot(&self) -> crate::Result<&crate::model::v0::Robot>;
+    fn robot(&self) -> crate::Result<&crate::model::Robot>;
 
     /// The supervised run this tool joined.
     fn execution(&self) -> crate::bus::ExecutionId;
@@ -727,7 +728,7 @@ impl<R: Participant + IsTool> SetupContextToolExt for SetupContext<R> {
         self.bus().clone()
     }
 
-    fn robot(&self) -> crate::Result<&crate::model::v0::Robot> {
+    fn robot(&self) -> crate::Result<&crate::model::Robot> {
         self.robot_ref().ok_or_else(|| {
             anyhow::anyhow!("no robot model is bound (the tool was launched without a robot root)")
         })

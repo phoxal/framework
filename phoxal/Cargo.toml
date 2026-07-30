@@ -24,7 +24,6 @@ phoxal-macros = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 const_format = { workspace = true }
-derive-new = { workspace = true }
 libc = { workspace = true }
 nalgebra = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

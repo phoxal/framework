@@ -246,7 +246,7 @@ impl PerceptionState {
 mod tests {
     use std::path::PathBuf;
 
-    use phoxal::model::v0::Robot;
+    use phoxal::model::Robot;
 
     use super::*;
     use crate::detector::RawDetection;

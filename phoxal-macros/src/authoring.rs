@@ -326,7 +326,7 @@ impl ParticipantKind {
 /// rather than leaving either to a runtime surprise.
 ///
 /// The character set mirrors the framework's other identity-token grammar
-/// (`phoxal::model::component::v0::is_valid_token`, used for component and
+/// (`phoxal::model::component::is_valid_token`, used for component and
 /// capability ids): non-empty, lowercase ASCII letters, digits, `_`, or `-`
 /// only. This is also the grammar `default_participant_id` (the default when
 /// `id = "…"` is omitted, in `expand_participant`) is *expected* to

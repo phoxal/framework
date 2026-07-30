@@ -1,6 +1,68 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::component::v0::CapabilityRef;
+use std::fmt;
+use std::str::FromStr;
+
+use anyhow::{Result, bail};
+
+use crate::model::component::is_valid_token;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CapabilityRef {
+    pub component_id: String,
+    pub capability_id: String,
+}
+
+impl CapabilityRef {
+    #[must_use]
+    pub fn new(component_id: impl Into<String>, capability_id: impl Into<String>) -> Self {
+        Self {
+            component_id: component_id.into(),
+            capability_id: capability_id.into(),
+        }
+    }
+}
+
+impl fmt::Display for CapabilityRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}.{}", self.component_id, self.capability_id)
+    }
+}
+
+impl FromStr for CapabilityRef {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let Some((component_id, capability_id)) = value.split_once('.') else {
+            bail!("invalid capability reference '{value}', must be 'component.capability'");
+        };
+        if capability_id.contains('.')
+            || !is_valid_token(component_id)
+            || !is_valid_token(capability_id)
+        {
+            bail!(
+                "invalid capability reference '{value}', component and capability ids must \
+                 contain only lowercase ASCII letters, digits, '_' or '-'"
+            );
+        }
+        Ok(Self::new(component_id, capability_id))
+    }
+}
+
+impl TryFrom<String> for CapabilityRef {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
+    }
+}
+
+impl From<CapabilityRef> for String {
+    fn from(value: CapabilityRef) -> Self {
+        value.to_string()
+    }
+}
 
 /// Robot-wide planar motion limits enforced independently by `motion` and
 /// `drive`. These are authored facts, not per-runtime configuration.
@@ -12,35 +74,13 @@ pub struct MotionLimits {
     pub max_angular_speed_radps: f64,
 }
 
-impl MotionLimits {
-    pub fn validate(self) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            self.max_linear_speed_mps.is_finite() && self.max_linear_speed_mps > 0.0,
-            "robot.motion_limits.max_linear_speed_mps must be finite and > 0"
-        );
-        anyhow::ensure!(
-            self.max_linear_speed_mps <= f64::from(f32::MAX),
-            "robot.motion_limits.max_linear_speed_mps must fit in f32"
-        );
-        anyhow::ensure!(
-            self.max_angular_speed_radps.is_finite() && self.max_angular_speed_radps > 0.0,
-            "robot.motion_limits.max_angular_speed_radps must be finite and > 0"
-        );
-        anyhow::ensure!(
-            self.max_angular_speed_radps <= f64::from(f32::MAX),
-            "robot.motion_limits.max_angular_speed_radps must fit in f32"
-        );
-        Ok(self)
-    }
-}
-
 /// The robot's kinematic model - a direct field of `robot:` (was
 /// `motion.kinematic`; the `motion:` wrapper is gone).
 ///
 /// Every `CapabilityRef` field carries a test-only
-/// `#[schemars(with = "String")]` override: `CapabilityRef` lives in
-/// `crate::model::component::v0` (out of this module's schema-derive scope)
-/// and serializes as a plain `"<component>.<capability>"` string
+/// `#[schemars(with = "String")]` override. The module-local
+/// [`CapabilityRef`] uses custom string serde and does not derive `JsonSchema`;
+/// it serializes as a plain `"<component>.<capability>"` string
 /// (`#[serde(try_from = "String", into = "String")]`), so treating it as
 /// `String` in the generated JSON Schema is exact, not an approximation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -92,19 +132,4 @@ pub enum KinematicConfig {
         #[cfg_attr(test, schemars(with = "Vec<String>"))]
         encoders: Vec<CapabilityRef>,
     },
-}
-
-impl KinematicConfig {
-    /// Stable snake_case label for the kinematic variant; matches the serde
-    /// `kind` tag. For diagnostics and conformance evidence only: callers
-    /// should pattern-match `KinematicConfig` directly.
-    #[must_use]
-    pub const fn variant_label(&self) -> &'static str {
-        match self {
-            Self::Differential { .. } => "differential",
-            Self::Mecanum { .. } => "mecanum",
-            Self::Ackermann { .. } => "ackermann",
-            Self::Omnidirectional { .. } => "omnidirectional",
-        }
-    }
 }

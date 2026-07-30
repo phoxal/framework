@@ -87,7 +87,7 @@ impl Participant for BehaviorService {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let root = ctx.robot_root()?;
-        let behavior_config = ctx.robot()?.manifest.behavior.clone();
+        let behavior_config = ctx.robot()?.behavior().cloned();
         // The topology reserves this participant before the behavior design is
         // complete. With no explicit manifest opt-in, do not inspect prototype
         // files or accept executable definitions: launch as a healthy, inert

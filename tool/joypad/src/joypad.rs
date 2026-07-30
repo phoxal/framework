@@ -136,15 +136,13 @@ struct ManualDrive {
 }
 
 impl ManualDrive {
-    fn from_robot(robot: &phoxal::model::v0::Robot) -> std::result::Result<Self, String> {
+    fn from_robot(robot: &phoxal::model::Robot) -> std::result::Result<Self, String> {
         let limits = robot
-            .manifest
-            .robot
-            .motion_limits
+            .motion_limits()
             .validate()
             .map_err(|error| error.to_string())?;
-        let phoxal::model::robot::v0::KinematicConfig::Differential { wheel_base_m, .. } =
-            &robot.manifest.robot.kinematic
+        let phoxal::model::robot::KinematicConfig::Differential { wheel_base_m, .. } =
+            robot.kinematic()
         else {
             return Err("manual input requires differential robot kinematics".to_string());
         };
@@ -152,7 +150,7 @@ impl ManualDrive {
     }
 
     fn from_parameters(
-        limits: phoxal::model::robot::v0::MotionLimits,
+        limits: phoxal::model::robot::MotionLimits,
         wheel_base_m: f64,
     ) -> std::result::Result<Self, String> {
         if !(wheel_base_m.is_finite() && wheel_base_m > 0.0) {
@@ -1034,7 +1032,7 @@ mod tests {
     #[test]
     fn side_speed_respects_authored_linear_and_angular_limits() {
         let angular_limited = ManualDrive::from_parameters(
-            phoxal::model::robot::v0::MotionLimits {
+            phoxal::model::robot::MotionLimits {
                 max_linear_speed_mps: 0.6,
                 max_angular_speed_radps: 2.0,
             },
@@ -1048,7 +1046,7 @@ mod tests {
         assert_eq!(pivot.angular_z_radps, -2.0);
 
         let linear_limited = ManualDrive::from_parameters(
-            phoxal::model::robot::v0::MotionLimits {
+            phoxal::model::robot::MotionLimits {
                 max_linear_speed_mps: 0.2,
                 max_angular_speed_radps: 10.0,
             },
@@ -1063,7 +1061,7 @@ mod tests {
 
     #[test]
     fn manual_drive_rejects_invalid_wheel_base() {
-        let limits = phoxal::model::robot::v0::MotionLimits {
+        let limits = phoxal::model::robot::MotionLimits {
             max_linear_speed_mps: 0.6,
             max_angular_speed_radps: 2.0,
         };
@@ -1075,16 +1073,42 @@ mod tests {
 
     #[test]
     fn manual_drive_rejects_non_differential_robot_model() {
-        let mut robot = phoxal::model::v0::Robot::read_from_dir(concat!(
+        let root = std::path::Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixture/robot/rgbd-imu-diff-drive"
-        ))
-        .expect("fixture robot should load");
-        robot.manifest.robot.kinematic =
-            phoxal::model::robot::v0::KinematicConfig::Omnidirectional {
-                actuators: Vec::new(),
-                encoders: Vec::new(),
+        ));
+        let (mut source, components, simulations, structure) =
+            phoxal::model::Robot::read_sources_from_dir(root)
+                .expect("fixture robot sources should load");
+        let (actuators, encoders) = match &source.robot.kinematic {
+            phoxal::model::source::robot::v0::KinematicConfig::Differential {
+                left_actuators,
+                right_actuators,
+                left_encoders,
+                right_encoders,
+                ..
+            } => (
+                left_actuators
+                    .iter()
+                    .chain(right_actuators)
+                    .cloned()
+                    .collect(),
+                left_encoders
+                    .iter()
+                    .chain(right_encoders)
+                    .cloned()
+                    .collect(),
+            ),
+            _ => unreachable!("fixture must use differential kinematics"),
+        };
+        source.robot.kinematic =
+            phoxal::model::source::robot::v0::KinematicConfig::Omnidirectional {
+                actuators,
+                encoders,
             };
+        let robot =
+            phoxal::model::Robot::try_from_sources(source, components, simulations, structure)
+                .expect("fixture sources should canonicalize");
 
         let error = ManualDrive::from_robot(&robot).unwrap_err();
         assert_eq!(error, "manual input requires differential robot kinematics");
