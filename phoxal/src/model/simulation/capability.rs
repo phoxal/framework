@@ -318,7 +318,7 @@ impl From<source::capability::Capability> for Capability {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, CameraProjection};
+    use super::{ActuatorType, Camera, CameraProjection, Motor};
     use crate::model::source::simulation::v0::capability as source;
 
     #[test]
@@ -350,6 +350,25 @@ mod tests {
                 noise: Some(0.01),
                 motion_blur: Some(0.2),
                 noise_mask_url: Some("mask.png".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn fully_populated_motor_source_converts_without_field_loss() {
+        let canonical = Motor::from(source::Motor {
+            actuator_type: source::ActuatorType::Torque,
+            acceleration_radps2: Some(7.5),
+            control_pid: Some(vec![1.0, 2.0, 3.0]),
+            sampling_period_torque_hz: Some(100.0),
+        });
+        assert_eq!(
+            canonical,
+            Motor {
+                actuator_type: ActuatorType::Torque,
+                acceleration_radps2: Some(7.5),
+                control_pid: Some(vec![1.0, 2.0, 3.0]),
+                sampling_period_torque_hz: Some(100.0),
             }
         );
     }

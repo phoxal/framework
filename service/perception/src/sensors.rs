@@ -49,7 +49,7 @@ impl SensorBinding {
 
 pub(crate) fn camera_bindings(robot: &Robot) -> Result<Vec<SensorBinding>> {
     robot
-        .camera_capabilities()
+        .camera_capabilities()?
         .into_iter()
         .map(|reference| SensorBinding::from_ref(robot, reference))
         .collect()

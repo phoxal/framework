@@ -1077,7 +1077,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../fixture/robot/rgbd-imu-diff-drive"
         ));
-        let (mut source, components, _, structure) =
+        let (mut source, components, simulations, structure) =
             phoxal::model::Robot::read_sources_from_dir(root)
                 .expect("fixture robot sources should load");
         let (actuators, encoders) = match &source.robot.kinematic {
@@ -1106,13 +1106,9 @@ mod tests {
                 actuators,
                 encoders,
             };
-        let robot = phoxal::model::Robot::try_from_sources(
-            source,
-            components,
-            std::collections::BTreeMap::new(),
-            structure,
-        )
-        .expect("fixture sources should canonicalize");
+        let robot =
+            phoxal::model::Robot::try_from_sources(source, components, simulations, structure)
+                .expect("fixture sources should canonicalize");
 
         let error = ManualDrive::from_robot(&robot).unwrap_err();
         assert_eq!(error, "manual input requires differential robot kinematics");

@@ -448,7 +448,11 @@ impl From<source::Capability> for Capability {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, CameraMode, StructuralTarget};
+    use super::{
+        Camera, CameraMode, Depth, Encoder, EncoderType, Gnss, GnssCoordinateSystem, Lidar,
+        LidarOutput, Motor, MotorCommand, StructuralTarget,
+    };
+    use crate::model::source::component::v0::capability as source;
 
     #[test]
     fn namespaces_structural_targets_with_component_instance_id() {
@@ -465,8 +469,6 @@ mod tests {
 
     #[test]
     fn fully_populated_camera_source_converts_without_field_loss() {
-        use crate::model::source::component::v0::capability as source;
-
         let canonical = Camera::from(source::Camera {
             target: source::StructuralTarget::Link {
                 id: "camera_link".to_string(),
@@ -488,6 +490,118 @@ mod tests {
                 width_px: 1920,
                 height_px: 1080,
                 field_of_view_rad: Some(1.2),
+            }
+        );
+    }
+
+    #[test]
+    fn hand_written_component_conversions_preserve_every_field() {
+        assert_eq!(
+            Motor::from(source::Motor {
+                target: source::StructuralTarget::Joint {
+                    id: "motor_joint".to_string(),
+                },
+                command: source::MotorCommand::Torque,
+                gear_ratio: 4.2,
+                max_torque_nm: Some(8.5),
+                max_velocity_radps: Some(12.0),
+            }),
+            Motor {
+                target: StructuralTarget::Joint {
+                    id: "motor_joint".to_string(),
+                },
+                command: MotorCommand::Torque,
+                gear_ratio: 4.2,
+                max_torque_nm: Some(8.5),
+                max_velocity_radps: Some(12.0),
+            }
+        );
+        assert_eq!(
+            Encoder::from(source::Encoder {
+                target: source::StructuralTarget::Joint {
+                    id: "encoder_joint".to_string(),
+                },
+                publish_rate_hz: 100.0,
+                gear_ratio: 3.0,
+                encoder_type: source::EncoderType::Absolute,
+                counts_per_revolution: 8192,
+            }),
+            Encoder {
+                target: StructuralTarget::Joint {
+                    id: "encoder_joint".to_string(),
+                },
+                publish_rate_hz: 100.0,
+                gear_ratio: 3.0,
+                encoder_type: EncoderType::Absolute,
+                counts_per_revolution: 8192,
+            }
+        );
+        assert_eq!(
+            Gnss::from(source::Gnss {
+                target: source::StructuralTarget::Link {
+                    id: "antenna".to_string(),
+                },
+                publish_rate_hz: 20.0,
+                coordinate_system: source::GnssCoordinateSystem::Wgs84,
+            }),
+            Gnss {
+                target: StructuralTarget::Link {
+                    id: "antenna".to_string(),
+                },
+                publish_rate_hz: 20.0,
+                coordinate_system: GnssCoordinateSystem::Wgs84,
+            }
+        );
+        assert_eq!(
+            Depth::from(source::Depth {
+                target: source::StructuralTarget::Link {
+                    id: "depth_link".to_string(),
+                },
+                publish_rate_hz: 15.0,
+                width_px: 640,
+                height_px: 400,
+                field_of_view_rad: Some(1.27),
+                min_range_m: Some(0.4),
+                max_range_m: Some(12.0),
+            }),
+            Depth {
+                target: StructuralTarget::Link {
+                    id: "depth_link".to_string(),
+                },
+                publish_rate_hz: 15.0,
+                width_px: 640,
+                height_px: 400,
+                field_of_view_rad: Some(1.27),
+                min_range_m: Some(0.4),
+                max_range_m: Some(12.0),
+            }
+        );
+        assert_eq!(
+            Lidar::from(source::Lidar {
+                target: source::StructuralTarget::Link {
+                    id: "lidar_link".to_string(),
+                },
+                publish_rate_hz: 25.0,
+                output: source::LidarOutput::Points,
+                min_range_m: Some(0.1),
+                max_range_m: Some(100.0),
+                horizontal_fov_rad: Some(std::f64::consts::TAU),
+                horizontal_resolution_rad: Some(0.01),
+                vertical_fov_rad: Some(0.5),
+                vertical_resolution_rad: Some(0.02),
+            }),
+            Lidar {
+                target: StructuralTarget::Link {
+                    id: "lidar_link".to_string(),
+                },
+                publish_rate_hz: 25.0,
+                output: LidarOutput::Points,
+                min_range_m: Some(0.1),
+                max_range_m: Some(100.0),
+                horizontal_fov_rad: Some(std::f64::consts::TAU),
+                horizontal_resolution_rad: Some(0.01),
+                vertical_fov_rad: Some(0.5),
+                vertical_resolution_rad: Some(0.02),
             }
         );
     }

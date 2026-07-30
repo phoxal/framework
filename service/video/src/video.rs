@@ -218,7 +218,7 @@ fn frame_is_fresh(captured_at: Option<TimeWindow>, now: RobotInstant) -> bool {
 
 fn build_video_sources(robot: &Robot) -> Result<Vec<VideoSource>> {
     robot
-        .camera_capabilities()
+        .camera_capabilities()?
         .into_iter()
         .map(|capability| {
             let Capability::Camera(camera) = robot.capability(&capability)? else {

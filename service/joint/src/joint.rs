@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn link_targeted_encoders_are_excluded_from_joint_config() {
         let root = fixture();
-        let (source, mut components, _, structure) =
+        let (source, mut components, simulations, structure) =
             phoxal::model::Robot::read_sources_from_dir(&root).unwrap();
         components.values_mut().for_each(|component| {
             component.capabilities.values_mut().for_each(|capability| {
@@ -329,13 +329,9 @@ mod tests {
                 }
             });
         });
-        let robot = phoxal::model::Robot::try_from_sources(
-            source,
-            components,
-            std::collections::BTreeMap::new(),
-            structure,
-        )
-        .unwrap();
+        let robot =
+            phoxal::model::Robot::try_from_sources(source, components, simulations, structure)
+                .unwrap();
         assert!(JointConfig::from_robot(&robot).unwrap().encoders.is_empty());
     }
 }

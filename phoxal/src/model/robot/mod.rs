@@ -533,27 +533,20 @@ impl Robot {
             })
     }
 
-    #[must_use]
-    pub fn camera_capabilities(&self) -> Vec<CapabilityRef> {
-        let mut capabilities = self
-            .component_instances
-            .keys()
-            .flat_map(|component_id| {
-                self.component_for_instance(component_id)
-                    .into_iter()
-                    .flat_map(move |component| {
-                        component
-                            .capabilities
-                            .iter()
-                            .filter(|(_, capability)| matches!(capability, Capability::Camera(_)))
-                            .map(move |(capability_id, _)| {
-                                CapabilityRef::new(component_id, capability_id)
-                            })
-                    })
-            })
-            .collect::<Vec<_>>();
+    pub fn camera_capabilities(&self) -> Result<Vec<CapabilityRef>> {
+        let mut capabilities = Vec::new();
+        for component_id in self.component_instances.keys() {
+            let component = self.component_for_instance(component_id)?;
+            capabilities.extend(
+                component
+                    .capabilities
+                    .iter()
+                    .filter(|(_, capability)| matches!(capability, Capability::Camera(_)))
+                    .map(|(capability_id, _)| CapabilityRef::new(component_id, capability_id)),
+            );
+        }
         capabilities.sort();
-        capabilities
+        Ok(capabilities)
     }
 
     fn resolved_capability(&self, reference: &CapabilityRef) -> Result<ResolvedCapability<'_>> {
@@ -859,7 +852,7 @@ capabilities:
     fn camera_capabilities_include_color_and_exclude_depth() -> anyhow::Result<()> {
         let robot = Robot::read_from_dir(fixture_root())?;
         let cameras = robot
-            .camera_capabilities()
+            .camera_capabilities()?
             .into_iter()
             .map(|reference| reference.to_string())
             .collect::<Vec<_>>();

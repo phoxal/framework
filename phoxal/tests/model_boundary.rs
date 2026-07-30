@@ -44,12 +44,24 @@ fn exact_v0_source_manifests_are_directly_nameable() {
 }
 
 #[test]
-fn document_kinds_expose_independent_schema_axes() {
-    fn robot_schema(_: source::robot::v0::Schema) {}
-    fn component_schema(_: source::component::v0::Schema) {}
-    fn simulation_schema(_: source::simulation::v0::Schema) {}
+fn independently_versioned_source_kinds_build_one_canonical_robot() -> anyhow::Result<()> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixture/robot/rgbd-imu-diff-drive");
+    let (robot, components, simulations, structure) = Robot::read_sources_from_dir(root)?;
 
-    robot_schema(source::robot::v0::Schema::V0);
-    component_schema(source::component::v0::Schema::V0);
-    simulation_schema(source::simulation::v0::Schema::V0);
+    assert_eq!(robot.schema, source::robot::v0::Schema::V0);
+    assert!(
+        components
+            .values()
+            .all(|document| document.schema == source::component::v0::Schema::V0)
+    );
+    assert!(
+        simulations
+            .values()
+            .all(|document| document.schema == source::simulation::v0::Schema::V0)
+    );
+
+    let canonical = Robot::try_from_sources(robot, components, simulations, structure)?;
+    assert_eq!(canonical.robot_id(), "rgbd-imu-diff-drive");
+    Ok(())
 }

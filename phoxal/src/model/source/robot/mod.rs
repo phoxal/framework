@@ -274,36 +274,43 @@ robot:
 
     #[test]
     fn duplicate_and_escaping_parents_are_rejected() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("base.robot.yaml"), "{}\n")?;
-        std::fs::write(dir.path().join("host.robot.yaml"), "{}\n")?;
+        let temp = tempfile::tempdir()?;
+        let robot_dir = temp.path().join("robot");
+        std::fs::create_dir(&robot_dir)?;
+        std::fs::write(robot_dir.join("base.robot.yaml"), "{}\n")?;
+        std::fs::write(robot_dir.join("host.robot.yaml"), "{}\n")?;
         std::fs::write(
-            dir.path().join("robot.yaml"),
+            robot_dir.join("robot.yaml"),
             COMPOSED_LEAF.replace(
                 "base.robot.yaml, host.robot.yaml",
                 "base.robot.yaml, base.robot.yaml",
             ),
         )?;
-        let duplicate = read_from_dir(dir.path()).expect_err("duplicate parent must fail");
+        let duplicate = read_from_dir(&robot_dir).expect_err("duplicate parent must fail");
         assert!(format!("{duplicate:#}").contains("duplicate robot parent"));
 
         std::fs::write(
-            dir.path().join("robot.yaml"),
+            robot_dir.join("robot.yaml"),
             COMPOSED_LEAF.replace("base.robot.yaml, host.robot.yaml", "../outside.robot.yaml"),
         )?;
-        std::fs::write(
-            dir.path()
-                .parent()
-                .expect("temporary directory has a parent")
-                .join("outside.robot.yaml"),
-            "{}\n",
-        )?;
-        let escaping = read_from_dir(dir.path()).expect_err("escaping parent must fail");
+        std::fs::write(temp.path().join("outside.robot.yaml"), "{}\n")?;
+        let escaping = read_from_dir(&robot_dir).expect_err("escaping parent must fail");
         assert!(format!("{escaping:#}").contains("escapes robot directory"));
         Ok(())
     }
 }
 
+/// The editor-facing `robot.yaml` JSON Schema is a structural grammar aid.
+/// [`v0::Manifest`] and every serde-shaped type it reaches derive their schema
+/// for tests, so the checked-in file follows the exact source DTO rather than
+/// a separately maintained model. The schema is not an executable
+/// specification: it does not cover [`strict_yaml::check`], semantic
+/// [`v0::Manifest::validate`] constraints, custom string parsing, or cross-file
+/// component and structure invariants.
+///
+/// `schemars` and `jsonschema` remain dev-dependencies intentionally. The
+/// published crate carries neither schema-generation code nor its dependency
+/// weight; tests alone regenerate and validate the checked-in grammar aid.
 #[cfg(test)]
 mod schema_guard {
     use super::v0::Manifest;

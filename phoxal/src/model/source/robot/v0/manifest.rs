@@ -4,7 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::motion::{KinematicConfig, MotionLimits};
-use super::{Component, Role, capability};
+use super::{Component, Role};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(schemars::JsonSchema))]
@@ -176,35 +176,6 @@ impl Manifest {
         self.validate_kinematics(&mut errors);
         self.validate_numerics(&mut errors);
         validation_result(errors)
-    }
-
-    #[must_use]
-    pub fn robot_id(&self) -> &str {
-        &self.robot.id
-    }
-
-    #[must_use]
-    pub fn namespace(&self) -> &str {
-        &self.robot.namespace
-    }
-
-    #[must_use]
-    pub fn components(&self) -> &BTreeMap<String, Component> {
-        &self.robot.components
-    }
-
-    #[must_use]
-    pub fn component_instance(&self, component_id: &str) -> Option<&Component> {
-        self.robot.components.get(component_id)
-    }
-
-    #[must_use]
-    pub fn parameter(
-        &self,
-        capability_ref: &super::motion::CapabilityRef,
-    ) -> Option<&capability::Parameters> {
-        self.component_instance(&capability_ref.component_id)
-            .and_then(|component| component.parameters.get(&capability_ref.capability_id))
     }
 
     #[must_use]
