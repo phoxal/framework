@@ -15,7 +15,6 @@ use anyhow::{Context, Result, bail};
 use cargo_metadata::DependencyKind;
 use cargo_metadata::{MetadataCommand, TargetKind};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 const LIBRARY_CRATE_DIRS: [&str; 7] = [
     "phoxal",
@@ -64,10 +63,6 @@ impl fmt::Display for ArtifactKind {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PhoxalPackageMetadata {}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct OfficialArtifact {
     /// The provider-qualified public identity, e.g. `phoxal/component-ddsm115`.
@@ -88,7 +83,6 @@ pub struct OfficialArtifact {
     /// components are driver-less.
     pub bin_name: Option<String>,
     pub id: String,
-    pub metadata: PhoxalPackageMetadata,
 }
 
 impl OfficialArtifact {
@@ -130,7 +124,6 @@ impl Workspace {
             let manifest_path = package.manifest_path.clone().into_std_path_buf();
             let manifest = classify_manifest_path(&root, &manifest_path)
                 .with_context(|| format!("failed to classify {}", manifest_path.display()))?;
-            let phoxal_metadata = parse_phoxal_metadata(&package_name, &package.metadata)?;
             let ManifestClassification::Artifact { kind, id } = manifest else {
                 if let Some((prefix_kind, prefix_id)) = classify_package_prefix(&package_name) {
                     bail!(
@@ -178,7 +171,6 @@ impl Workspace {
                 crate_dir,
                 bin_name,
                 id,
-                metadata: phoxal_metadata,
             });
         }
 
@@ -383,22 +375,6 @@ fn classify_package_prefix(package_name: &str) -> Option<(ArtifactKind, String)>
         })
 }
 
-fn parse_phoxal_metadata(package_name: &str, metadata: &Value) -> Result<PhoxalPackageMetadata> {
-    let Some(phoxal_metadata) = metadata.get("phoxal") else {
-        return Ok(PhoxalPackageMetadata::default());
-    };
-    if phoxal_metadata.get("kind").is_some() || phoxal_metadata.get("id").is_some() {
-        bail!(
-            "{package_name} [package.metadata.phoxal] must not declare kind or id; those are \
-             derived from the directory convention"
-        );
-    }
-
-    let parsed: PhoxalPackageMetadata = serde_json::from_value(phoxal_metadata.clone())
-        .with_context(|| format!("{package_name} has invalid [package.metadata.phoxal]"))?;
-    Ok(parsed)
-}
-
 fn relative_display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -410,7 +386,7 @@ fn relative_display(root: &Path, path: &Path) -> String {
 mod tests {
     use std::fs;
 
-    use serde_json::json;
+    use serde_json::Value;
 
     use super::*;
 
@@ -420,6 +396,12 @@ mod tests {
 
     fn classify(relative: &str) -> Result<ManifestClassification> {
         classify_manifest_path(&root(), &root().join(relative))
+    }
+
+    fn workspace_root() -> Result<&'static Path> {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .context("workspace-policy manifest directory has no workspace parent")
     }
 
     fn visit_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) -> Result<()> {
@@ -437,10 +419,65 @@ mod tests {
     }
 
     #[test]
+    fn phoxal_metadata_namespace_is_valid_in_every_workspace_manifest() -> Result<()> {
+        let workspace_root = workspace_root()?;
+        let metadata = MetadataCommand::new()
+            .manifest_path(workspace_root.join("Cargo.toml"))
+            .no_deps()
+            .exec()
+            .context("failed to read workspace metadata")?;
+
+        let mut declared_packages = std::collections::BTreeSet::new();
+        let mut joypad = None;
+        for package in metadata.workspace_packages() {
+            let path = package.manifest_path.clone().into_std_path_buf();
+            let source = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let requirements = phoxal_manifest::build_requirements::requirements_from_manifest(
+                &source,
+                &path.display().to_string(),
+            )?;
+            declared_packages.extend(requirements.apt.iter().cloned());
+            if package.name.as_str() == "phoxal-tool-joypad" {
+                joypad = Some(requirements);
+            }
+        }
+
+        let joypad = joypad.context("workspace has no phoxal-tool-joypad package")?;
+        assert_eq!(
+            joypad.apt.into_iter().collect::<Vec<_>>(),
+            ["libudev-dev", "pkg-config"]
+        );
+
+        let declared = declared_packages.into_iter().collect::<Vec<_>>();
+        let ci = fs::read_to_string(workspace_root.join(".github/workflows/ci.yml"))?;
+        let ci_packages = ci
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("system-packages:"))
+            .context(".github/workflows/ci.yml declares no system-packages input")?
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ci_packages, declared,
+            "CI system-packages must equal the manifest-declared union"
+        );
+        let release = fs::read_to_string(workspace_root.join(".github/workflows/release-plz.yml"))?;
+        let release_packages = release
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("sudo apt-get install -y"))
+            .context(".github/workflows/release-plz.yml installs no packaging dependencies")?
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            release_packages, declared,
+            "release packaging dependencies must equal the manifest-declared union"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn official_tools_do_not_import_logical_clock_surfaces() -> Result<()> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?;
+        let workspace_root = workspace_root()?;
         let mut sources = Vec::new();
         visit_rust_sources(&workspace_root.join("tool"), &mut sources)?;
         let forbidden = [
@@ -472,9 +509,7 @@ mod tests {
 
     #[test]
     fn official_periodic_tools_skip_missed_ticks() -> Result<()> {
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?;
+        let workspace_root = workspace_root()?;
         for tool in ["joypad", "bus", "device"] {
             let source = workspace_root
                 .join("tool")
@@ -492,10 +527,7 @@ mod tests {
 
     #[test]
     fn public_library_dependency_direction_is_exact() -> Result<()> {
-        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?
-            .join("Cargo.toml");
+        let workspace_manifest = workspace_root()?.join("Cargo.toml");
         let metadata = MetadataCommand::new()
             .manifest_path(workspace_manifest)
             .no_deps()
@@ -545,10 +577,7 @@ mod tests {
 
     #[test]
     fn canonical_crates_and_official_participants_keep_forbidden_edges_absent() -> Result<()> {
-        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?
-            .join("Cargo.toml");
+        let workspace_manifest = workspace_root()?.join("Cargo.toml");
         let metadata = MetadataCommand::new()
             .manifest_path(workspace_manifest)
             .no_deps()
@@ -594,13 +623,7 @@ mod tests {
 
         for package in &metadata.packages {
             let manifest = package.manifest_path.as_std_path();
-            let relative = manifest
-                .strip_prefix(
-                    Path::new(env!("CARGO_MANIFEST_DIR"))
-                        .parent()
-                        .context("workspace root")?,
-                )
-                .unwrap_or(manifest);
+            let relative = manifest.strip_prefix(workspace_root()?).unwrap_or(manifest);
             let mut components = relative.components();
             let top = components
                 .next()
@@ -633,10 +656,7 @@ mod tests {
 
     #[test]
     fn zenoh_dependency_profiles_keep_transport_compression_disabled() -> Result<()> {
-        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?
-            .join("Cargo.toml");
+        let workspace_manifest = workspace_root()?.join("Cargo.toml");
         let document = fs::read_to_string(&workspace_manifest)?
             .parse::<toml_edit::DocumentMut>()
             .context("workspace Cargo.toml is invalid")?;
@@ -696,10 +716,7 @@ mod tests {
 
     #[test]
     fn real_workspace_release_scope_is_valid() -> Result<()> {
-        let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?
-            .join("Cargo.toml");
+        let workspace_manifest = workspace_root()?.join("Cargo.toml");
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
@@ -852,16 +869,6 @@ mod tests {
         assert!(err.to_string().contains("expected 'phoxal-service-drive'"));
     }
 
-    #[test]
-    fn metadata_phoxal_rejects_kind_and_id() {
-        let err = parse_phoxal_metadata(
-            "phoxal-service-drive",
-            &json!({ "phoxal": { "kind": "service" } }),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("must not declare kind or id"));
-    }
-
     /// Design doc §9: a driver-less component crate that ships only its asset
     /// bundle (`component.yaml`, `simulation.yaml`, `structure.urdf`) must
     /// still pass discovery even though it has no `[[bin]]` target - that is
@@ -962,9 +969,7 @@ path = "src/lib.rs"
     fn participant_metadata_section_survives_the_linker() -> Result<()> {
         use object::{Object, ObjectSection};
 
-        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .context("workspace-policy manifest directory has no workspace parent")?;
+        let workspace_root = workspace_root()?;
         let phoxal_path = workspace_root.join("phoxal");
 
         let probe_dir = tempfile::tempdir().context("failed to create temp probe crate dir")?;

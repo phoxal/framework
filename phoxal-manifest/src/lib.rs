@@ -7,6 +7,7 @@ use anyhow::{Context as _, bail};
 pub use phoxal_model::AssetId;
 
 pub mod behavior;
+pub mod build_requirements;
 pub mod source;
 mod structure;
 

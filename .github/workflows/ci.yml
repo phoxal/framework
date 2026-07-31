@@ -9,10 +9,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# The workspace builds on a bare runner by design; a system package appears
-# here only together with the crate that needs it, so a service/driver growing
-# a native (-sys/C++) dependency stays visible. Current set:
-#   libudev-dev - tool-joypad's gilrs gamepad backend (libudev-sys) on Linux.
+# The workspace builds on a bare runner by design. Runnable crates own native
+# build requirements in package.metadata.phoxal.build; workspace-policy keeps
+# this bootstrap input synchronized with their declared union.
 # webots-rs links libController at build time, so the workspace cannot even be
 # cargo checked without a real Webots installation; the reusable workflow
 # installs it and exports WEBOTS_HOME before the clippy and test jobs build.
@@ -23,7 +22,7 @@ jobs:
       !startsWith(github.event.head_commit.message, 'chore(release): release v')
     uses: phoxal/.github/.github/workflows/rust-ci.yml@main
     with:
-      system-packages: libudev-dev
+      system-packages: libudev-dev pkg-config
       webots-version: R2025a
     secrets: inherit
 

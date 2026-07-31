@@ -21,5 +21,8 @@ gilrs = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
+[package.metadata.phoxal.build]
+apt = ["libudev-dev", "pkg-config"]
+
 [lints]
 workspace = true
