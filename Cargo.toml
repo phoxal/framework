@@ -1,5 +1,5 @@
 [workspace.package]
-version = "0.45.2"
+version = "0.45.3"
 edition = "2024"
 rust-version = "1.88"
 license = "AGPL-3.0-only"
@@ -154,13 +154,13 @@ zenoh = { version = "1.9.0", default-features = false, features = [
 # on publish/package and resolves the dep by version from the index. Without it,
 # `cargo package` fails ("all dependencies must have a version requirement") - this
 # also covers the service and component crates' dependency on `phoxal`.
-phoxal = { path = "phoxal", version = "=0.45.2" }
-phoxal-api = { path = "phoxal-api", version = "=0.45.2" }
-phoxal-bus = { path = "phoxal-bus", version = "=0.45.2" }
-phoxal-model = { path = "phoxal-model", version = "=0.45.2" }
-phoxal-manifest = { path = "phoxal-manifest", version = "=0.45.2" }
-phoxal-runtime-contract = { path = "phoxal-runtime-contract", version = "=0.45.2" }
-phoxal-macros = { path = "phoxal-macros", version = "=0.45.2" }
+phoxal = { path = "phoxal", version = "=0.45.3" }
+phoxal-api = { path = "phoxal-api", version = "=0.45.3" }
+phoxal-bus = { path = "phoxal-bus", version = "=0.45.3" }
+phoxal-model = { path = "phoxal-model", version = "=0.45.3" }
+phoxal-manifest = { path = "phoxal-manifest", version = "=0.45.3" }
+phoxal-runtime-contract = { path = "phoxal-runtime-contract", version = "=0.45.3" }
+phoxal-macros = { path = "phoxal-macros", version = "=0.45.3" }
 
 [workspace.lints.rust]
 unused = "warn"
