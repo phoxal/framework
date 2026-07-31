@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.3](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.45.2...phoxal-manifest-v0.45.3) - 2026-07-31
+
+### Added
+
+- *(manifest)* declare runtime build requirements ([#366](https://github.com/phoxal/framework/pull/366))
+
 ## [0.45.1](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.45.0...phoxal-manifest-v0.45.1) - 2026-07-30
 
 ### Added
