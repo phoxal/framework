@@ -20,12 +20,12 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 cargo_metadata = "0.23.1"
 serde = { workspace = true }
-serde_json = { workspace = true }
 toml_edit = "0.25.12"
 
 [dev-dependencies]
 phoxal = { workspace = true }
 phoxal-manifest = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 # Reads the built-artifact linker section back out for
 # `participant_metadata_section_survives_the_linker` - the one honest way to

@@ -1,6 +1,10 @@
 pub mod phoxal_manifest
 pub use phoxal_manifest::AssetId
 pub mod phoxal_manifest::behavior
+pub mod phoxal_manifest::build_requirements
+pub struct phoxal_manifest::build_requirements::BuildRequirements
+pub phoxal_manifest::build_requirements::BuildRequirements::apt: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub fn phoxal_manifest::build_requirements::requirements_from_manifest(&str, &str) -> anyhow::Result<phoxal_manifest::build_requirements::BuildRequirements>
 pub mod phoxal_manifest::source
 pub mod phoxal_manifest::source::component
 pub mod phoxal_manifest::source::component::v0
