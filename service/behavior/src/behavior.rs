@@ -1,4 +1,9 @@
 //! Headless behavior execution over the compiled canonical behavior catalog.
+//!
+//! A project with no authored `behavior:` block launches the service with no
+//! config: it keeps an empty catalog and remains available for typed requests.
+//! A configured project receives a required root and the compiler-owned
+//! `behavior/catalog.json` asset.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -9,10 +14,11 @@ use serde::Deserialize;
 
 use crate::catalog::{BehaviorCatalog, BehaviorDefinition, Node, ValueType};
 
+/// Compiler-owned selection policy for an authored `behavior:` block.
 #[derive(Debug, Deserialize, phoxal::Config)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    root: Option<String>,
+    root: String,
     #[serde(default)]
     autostart: bool,
 }
@@ -87,7 +93,7 @@ pub struct BehaviorServiceState {
     next_event: u64,
 }
 
-#[phoxal::service(config = Config, state = BehaviorServiceState, api = Api)]
+#[phoxal::service(config = Option<Config>, state = BehaviorServiceState, api = Api)]
 pub struct BehaviorService;
 
 impl Participant for BehaviorService {
@@ -96,23 +102,24 @@ impl Participant for BehaviorService {
         ctx: &mut SetupContext<Self>,
         config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let catalog = if config.root.is_some() {
-            let id = AssetId::new("behavior/catalog.json")?;
-            BehaviorCatalog::decode(&ctx.assets()?.read(&id)?)
-                .context("failed to decode compiled behavior catalog")?
-        } else {
-            BehaviorCatalog::default()
+        let (catalog, authoritative_root) = match config {
+            Some(config) => {
+                let id = AssetId::new("behavior/catalog.json")?;
+                let catalog = BehaviorCatalog::decode(&ctx.assets()?.read(&id)?)
+                    .context("failed to decode compiled behavior catalog")?;
+                catalog.validate_root(&config.root)?;
+                let authoritative_root = config.autostart.then_some(config.root);
+                (catalog, authoritative_root)
+            }
+            None => (BehaviorCatalog::default(), None),
         };
-        if let Some(root) = &config.root {
-            catalog.validate_root(root)?;
-        }
         Ok((
             BehaviorServiceState {
                 catalog,
                 execution: None,
                 queued: VecDeque::new(),
                 navigation_outcomes: BTreeMap::new(),
-                authoritative_root: config.autostart.then_some(config.root).flatten(),
+                authoritative_root,
                 next_execution: 1,
                 next_event: 1,
             },
@@ -1299,6 +1306,33 @@ mod tests {
     use phoxal::bus::TimelineId;
 
     use super::*;
+
+    #[test]
+    fn launch_config_matches_the_manifest_compiler_contract() {
+        // Pin the participant declaration itself: reverting the service macro
+        // to required `Config` must make this regression test fail.
+        let absent = serde_json::from_value::<
+            <BehaviorService as phoxal::__private::ParticipantSpec>::Config,
+        >(serde_json::Value::Null)
+        .expect("an absent launch config is valid for the behavior service");
+        assert!(absent.is_none());
+
+        let configured = serde_json::from_value::<
+            <BehaviorService as phoxal::__private::ParticipantSpec>::Config,
+        >(serde_json::json!({"root": "system.root"}))
+        .expect("a compiler-emitted behavior config decodes")
+        .expect("the behavior service is configured");
+        assert_eq!(configured.root, "system.root");
+        assert!(!configured.autostart);
+
+        assert!(
+            serde_json::from_value::<
+                <BehaviorService as phoxal::__private::ParticipantSpec>::Config,
+            >(serde_json::json!({}))
+            .is_err(),
+            "a configured behavior block requires a root"
+        );
+    }
 
     fn catalog(document: &str) -> BehaviorCatalog {
         BehaviorCatalog::from_test_documents(&[document]).expect("valid catalog")
