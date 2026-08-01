@@ -8,10 +8,7 @@ description = "Phoxal hello-rover - a minimal differential-drive example robot."
 
 [workspace]
 resolver = "3"
-members = [
-  ".",
-  "components/wheel_drive",
-]
+members = ["."]
 
 [workspace.dependencies]
 phoxal = "0.42.3"
