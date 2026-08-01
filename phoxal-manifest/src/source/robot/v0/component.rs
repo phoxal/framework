@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Role, capability, driver::DriverConfig};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
     pub component: String,

@@ -5,6 +5,15 @@ pub mod phoxal_manifest::build_requirements
 pub struct phoxal_manifest::build_requirements::BuildRequirements
 pub phoxal_manifest::build_requirements::BuildRequirements::apt: alloc::collections::btree::set::BTreeSet<alloc::string::String>
 pub fn phoxal_manifest::build_requirements::requirements_from_manifest(&str, &str) -> anyhow::Result<phoxal_manifest::build_requirements::BuildRequirements>
+pub mod phoxal_manifest::schema
+pub enum phoxal_manifest::schema::DocumentKind
+pub phoxal_manifest::schema::DocumentKind::Component
+pub phoxal_manifest::schema::DocumentKind::Robot
+pub phoxal_manifest::schema::DocumentKind::Simulation
+impl phoxal_manifest::schema::DocumentKind
+pub const phoxal_manifest::schema::DocumentKind::ALL: [Self; 3]
+pub const fn phoxal_manifest::schema::DocumentKind::file_name(self) -> &'static str
+pub fn phoxal_manifest::schema::generate(phoxal_manifest::schema::DocumentKind) -> serde_json::value::Value
 pub mod phoxal_manifest::source
 pub mod phoxal_manifest::source::component
 pub mod phoxal_manifest::source::component::v0

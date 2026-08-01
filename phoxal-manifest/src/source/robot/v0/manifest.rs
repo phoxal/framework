@@ -6,16 +6,14 @@ use std::path::PathBuf;
 use super::motion::{KinematicConfig, MotionLimits};
 use super::{Component, Role};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Schema {
     #[serde(rename = "robot/v0")]
     V0,
 }
 
 /// Exact top-level `robot.yaml` v0 document.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub schema: Schema,
@@ -50,8 +48,7 @@ pub struct Manifest {
     pub router: Router,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BehaviorConfig {
     pub root: String,
@@ -61,19 +58,17 @@ pub struct BehaviorConfig {
 
 /// `robot:` - the robot model: identity, structure, kinematic, and
 /// components.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RobotSection {
-    /// The robot id (was `identity.id`).
+    /// The robot identifier.
     pub id: String,
-    /// The bus namespace (was `identity.namespace`).
+    /// The bus namespace.
     pub namespace: String,
     /// Path to the URDF structure file, relative to the robot root.
     #[serde(default = "default_structure_path")]
     pub structure: PathBuf,
-    /// The kinematic model (was `motion.kinematic`; the `motion:` wrapper is
-    /// gone - `kinematic` is a direct field of `robot:`).
+    /// The kinematic model.
     pub kinematic: KinematicConfig,
     /// Manifest-wide planar speed limits. Both `motion` and `drive` enforce these
     /// independently so an arbitration defect cannot bypass the actuator
@@ -86,27 +81,24 @@ pub struct RobotSection {
 
 /// One declared user service: presence in `services` is the declaration;
 /// `config` is its user-owned configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UserService {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
 }
 
-/// One declared additional user tool: presence in `tools` is the declaration;
-/// `config` is its user-owned configuration. Same shape as [`UserService`],
-/// kept distinct so the two declarations stay independently documented types.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+/// A declared user-owned tool and its optional configuration.
+// Keep this distinct from `UserService` so the two authored declarations stay
+// independently documented even though their current wire shapes match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UserTool {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Router {
     /// Zenoh JSON5 configuration path relative to the resolved robot root.

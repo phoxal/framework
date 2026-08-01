@@ -8,6 +8,7 @@ pub use phoxal_model::AssetId;
 
 pub mod behavior;
 pub mod build_requirements;
+pub mod schema;
 pub mod source;
 mod structure;
 
