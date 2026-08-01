@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Simulation-specific parameters for every component defined in the architecture.
 /// These extend the physical (URDF) and component/model parameters with simulator-specific noise, resolutions, and properties.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Capability {
     Motor(Motor),
@@ -223,7 +223,9 @@ fn validate_table(table: Option<&[Vec<f64>]>, field: &str, name: &str, errors: &
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActuatorType {
     #[default]
@@ -232,7 +234,7 @@ pub enum ActuatorType {
     Torque,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CameraProjection {
     Planar,
@@ -240,7 +242,7 @@ pub enum CameraProjection {
     Spherical,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Motor {
     #[serde(default)]
@@ -253,7 +255,7 @@ pub struct Motor {
     pub sampling_period_torque_hz: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Encoder {
     pub sampling_period_hz: f64,
@@ -263,7 +265,7 @@ pub struct Encoder {
     pub noise: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Accelerometer {
     pub sampling_period_hz: f64,
@@ -273,7 +275,7 @@ pub struct Accelerometer {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Gyroscope {
     pub sampling_period_hz: f64,
@@ -283,7 +285,7 @@ pub struct Gyroscope {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Magnetometer {
     pub sampling_period_hz: f64,
@@ -293,7 +295,7 @@ pub struct Magnetometer {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Imu {
     pub sampling_period_hz: f64,
@@ -303,7 +305,7 @@ pub struct Imu {
     pub noise: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Gnss {
     pub sampling_period_hz: f64,
@@ -319,7 +321,7 @@ pub struct Gnss {
     pub speed_noise: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Camera {
     pub sampling_period_hz: f64,
@@ -345,7 +347,7 @@ pub struct Camera {
     pub noise_mask_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Depth {
     pub sampling_period_hz: f64,
@@ -357,7 +359,7 @@ pub struct Depth {
     pub motion_blur: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Range {
     pub sampling_period_hz: f64,
@@ -367,7 +369,7 @@ pub struct Range {
     pub resolution: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Lidar {
     pub sampling_period_hz: f64,
@@ -377,7 +379,7 @@ pub struct Lidar {
     pub resolution: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Mmwave {
     pub sampling_period_hz: f64,
@@ -389,7 +391,7 @@ pub struct Mmwave {
     pub lookup_table: Option<Vec<Vec<f64>>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Microphone {
     pub sampling_period_hz: f64,

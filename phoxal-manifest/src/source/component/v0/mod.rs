@@ -11,13 +11,13 @@ use serde::{Deserialize, Serialize};
 
 use capability::Capability;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum Schema {
     #[serde(rename = "component/v0")]
     V0,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub schema: Schema,
@@ -27,8 +27,11 @@ pub struct Manifest {
     pub capabilities: BTreeMap<String, Capability>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
 pub struct Gtin(String);
 
 impl Gtin {

@@ -1,3 +1,4 @@
+# $schema: ../../.phoxal/schemas/simulation.schema.json
 schema: simulation/v0
 capabilities:
   motor:

@@ -1,3 +1,4 @@
+# $schema: ../../.phoxal/schemas/component.schema.json
 schema: component/v0
 capabilities:
   motor:
