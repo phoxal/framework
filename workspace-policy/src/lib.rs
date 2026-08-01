@@ -13,7 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
 use cargo_metadata::DependencyKind;
-use cargo_metadata::{MetadataCommand, TargetKind};
+use cargo_metadata::{MetadataCommand, Target, TargetKind};
 use serde::{Deserialize, Serialize};
 
 const LIBRARY_CRATE_DIRS: [&str; 7] = [
@@ -36,11 +36,12 @@ pub const PHOXAL_PROVIDER: &str = "phoxal";
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     Service,
-    /// A component crate: the driver binary plus the component's assets
+    /// A component crate: the package-named driver binary plus its assets
     /// (`component.yaml`, `simulation.yaml`, `structure.urdf`, and `meshes/`
-    /// if present) in one package. `cargo package` picks the assets up by
-    /// default, so they need no inclusion rules. Discovered from
-    /// `component/<id>/Cargo.toml`.
+    /// if present) in one package. Like every official artifact package, it
+    /// has exactly one binary target and no library target. `cargo package`
+    /// picks the assets up by default, so they need no inclusion rules.
+    /// Discovered from `component/<id>/Cargo.toml`.
     Component,
     Tool,
     Simulator,
@@ -70,32 +71,14 @@ pub struct OfficialArtifact {
     /// projections of it.
     pub package: String,
     /// The Cargo crate name backing this package (e.g. `phoxal-component-ddsm115`).
-    /// Every discovered [`OfficialArtifact`] is crate-backed today; this stays
-    /// `Option` for a future crate with no binary target (see
-    /// [`Self::require_package_name`]).
-    pub package_name: Option<String>,
+    pub package_name: String,
     pub kind: ArtifactKind,
     pub version: String,
     pub crate_dir: PathBuf,
-    /// The release binary name, or `None` for a future driver-less component
-    /// crate (design doc §9: a crate with no `[[bin]]` ships only its asset
-    /// bundle). None of today's discovered
-    /// components are driver-less.
-    pub bin_name: Option<String>,
+    /// The serialized release binary identity. Discovery guarantees it equals
+    /// `package_name`; it remains explicit for release consumers.
+    pub bin_name: String,
     pub id: String,
-}
-
-impl OfficialArtifact {
-    /// The Cargo crate name, or an error naming the package if it has none.
-    pub fn require_package_name(&self) -> Result<&str> {
-        self.package_name.as_deref().with_context(|| {
-            format!(
-                "{} is a {} package with no Cargo crate; this operation only applies to \
-                 crate-backed packages",
-                self.package, self.kind
-            )
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -147,25 +130,11 @@ impl Workspace {
                 .parent()
                 .with_context(|| format!("{package_name} manifest has no parent directory"))?
                 .to_path_buf();
-            let bin_name = package
-                .targets
-                .iter()
-                .filter(|target| target.is_kind(TargetKind::Bin))
-                .find(|target| target.name == package_name)
-                .or_else(|| {
-                    package
-                        .targets
-                        .iter()
-                        .find(|target| target.is_kind(TargetKind::Bin))
-                })
-                .map(|target| target.name.clone());
-            if bin_name.is_none() && kind != ArtifactKind::Component {
-                bail!("{package_name} is an official artifact package but has no binary target");
-            }
+            let bin_name = validate_artifact_targets(&package_name, &package.targets)?;
 
             official_artifacts.push(OfficialArtifact {
                 package: package_identity(kind, &id),
-                package_name: Some(package_name),
+                package_name,
                 kind,
                 version: package.version.to_string(),
                 crate_dir,
@@ -206,6 +175,78 @@ impl Workspace {
 /// asset outputs (design doc §9).
 pub fn package_identity(kind: ArtifactKind, id: &str) -> String {
     format!("{PHOXAL_PROVIDER}/{}", package_name_segment(kind, id))
+}
+
+/// Enforces the executable-only target convention for every official artifact
+/// package: exactly one package-named binary and no library target. Components
+/// ship their authored assets beside that binary in the same archive; they do
+/// not need a Cargo library target for discovery or packaging.
+fn validate_artifact_targets(package_name: &str, targets: &[Target]) -> Result<String> {
+    if let Some((target, target_kind)) = targets
+        .iter()
+        .find_map(|target| unsupported_target_kind(target).map(|kind| (target, kind)))
+    {
+        if is_library_target_kind(target_kind) {
+            bail!(
+                "{package_name} is an official artifact package but target '{}' has library kind '{target_kind}'",
+                target.name
+            );
+        }
+        bail!(
+            "{package_name} is an official artifact package but target '{}' has unsupported target kind '{target_kind}'; expected bin, test, bench, example, or custom-build",
+            target.name
+        );
+    }
+
+    let binary_targets: Vec<_> = targets
+        .iter()
+        .filter(|target| target.is_kind(TargetKind::Bin))
+        .collect();
+
+    let [binary_target] = binary_targets.as_slice() else {
+        bail!(
+            "{package_name} is an official artifact package but has {} binary targets; expected exactly one",
+            binary_targets.len()
+        );
+    };
+    if binary_target.name != package_name {
+        bail!(
+            "{package_name} is an official artifact package but its only binary target is '{}'; expected '{package_name}'",
+            binary_target.name
+        );
+    }
+
+    Ok(package_name.to_owned())
+}
+
+fn unsupported_target_kind(target: &Target) -> Option<&TargetKind> {
+    target
+        .kind
+        .iter()
+        .find(|kind| !is_allowed_artifact_target_kind(kind))
+}
+
+fn is_allowed_artifact_target_kind(kind: &TargetKind) -> bool {
+    matches!(
+        kind,
+        TargetKind::Bin
+            | TargetKind::Test
+            | TargetKind::Bench
+            | TargetKind::Example
+            | TargetKind::CustomBuild
+    )
+}
+
+fn is_library_target_kind(kind: &TargetKind) -> bool {
+    matches!(
+        kind,
+        TargetKind::Lib
+            | TargetKind::RLib
+            | TargetKind::DyLib
+            | TargetKind::CDyLib
+            | TargetKind::StaticLib
+            | TargetKind::ProcMacro
+    )
 }
 
 fn package_name_segment(kind: ArtifactKind, id: &str) -> String {
@@ -869,16 +910,8 @@ mod tests {
         assert!(err.to_string().contains("expected 'phoxal-service-drive'"));
     }
 
-    /// Design doc §9: a driver-less component crate that ships only its asset
-    /// bundle (`component.yaml`, `simulation.yaml`, `structure.urdf`) must
-    /// still pass discovery even though it has no `[[bin]]` target - that is
-    /// the whole point of giving it a library target instead. This builds a
-    /// standalone throwaway workspace on disk (its own `[workspace]` table,
-    /// so it is not swallowed as a member of this repo's workspace) with one
-    /// bin-less official component package, and asserts discovery accepts it
-    /// with `bin_name: None`.
     #[test]
-    fn discovery_accepts_a_binless_official_component_package() -> Result<()> {
+    fn discovery_enforces_executable_only_official_artifacts() -> Result<()> {
         let workspace_dir = tempfile::tempdir().context("failed to create temp workspace dir")?;
         let root = workspace_dir.path();
 
@@ -886,45 +919,184 @@ mod tests {
             root.join("Cargo.toml"),
             r#"[workspace]
 resolver = "3"
-members = ["component/asset-only"]
+members = ["component/test"]
 "#,
         )?;
 
-        let package_dir = root.join("component/asset-only");
+        let package_dir = root.join("component/test");
         fs::create_dir_all(package_dir.join("src"))?;
         fs::write(
-            package_dir.join("Cargo.toml"),
-            r#"[package]
-name = "phoxal-component-asset-only"
+            package_dir.join("src/lib.rs"),
+            "//! Deliberately invalid component target fixture.\n",
+        )?;
+        fs::write(package_dir.join("src/main.rs"), "fn main() {}\n")?;
+        fs::write(package_dir.join("src/example.rs"), "fn main() {}\n")?;
+        fs::write(package_dir.join("src/test.rs"), "fn main() {}\n")?;
+        fs::write(package_dir.join("src/bench.rs"), "fn main() {}\n")?;
+        fs::write(package_dir.join("build.rs"), "fn main() {}\n")?;
+
+        let cases = [
+            (
+                "lib-only",
+                "[lib]\npath = \"src/lib.rs\"\n",
+                "target 'phoxal_component_test' has library kind 'lib'",
+            ),
+            (
+                "mixed",
+                "[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n",
+                "target 'phoxal_component_test' has library kind 'lib'",
+            ),
+            (
+                "rlib",
+                "[lib]\npath = \"src/lib.rs\"\ncrate-type = [\"rlib\"]\n\n[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n",
+                "target 'phoxal_component_test' has library kind 'rlib'",
+            ),
+            (
+                "proc-macro",
+                "[lib]\npath = \"src/lib.rs\"\nproc-macro = true\n\n[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n",
+                "target 'phoxal_component_test' has library kind 'proc-macro'",
+            ),
+            (
+                "zero-bin",
+                "[[example]]\nname = \"validation-example\"\npath = \"src/example.rs\"\n",
+                "has 0 binary targets; expected exactly one",
+            ),
+            (
+                "wrong-name",
+                "[[bin]]\nname = \"wrong-name\"\npath = \"src/main.rs\"\n",
+                "its only binary target is 'wrong-name'; expected 'phoxal-component-test'",
+            ),
+            (
+                "multiple-bins",
+                "[[bin]]\nname = \"phoxal-component-test\"\npath = \"src/main.rs\"\n\n[[bin]]\nname = \"second\"\npath = \"src/main.rs\"\n",
+                "has 2 binary targets; expected exactly one",
+            ),
+        ];
+
+        for (name, targets, expected_error) in cases {
+            fs::write(
+                package_dir.join("Cargo.toml"),
+                format!(
+                    r#"[package]
+name = "phoxal-component-test"
 version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 publish = ["phoxal"]
-description = "Driver-less official component: assets only."
+description = "Component target validation fixture."
+autobins = false
+autolib = false
 
-[lib]
-path = "src/lib.rs"
+{targets}"#
+                ),
+            )?;
+
+            let error = Workspace::discover_with(
+                MetadataCommand::new().manifest_path(root.join("Cargo.toml")),
+            )
+            .unwrap_err();
+            assert!(
+                error.to_string().contains(expected_error),
+                "{name} component fixture produced an unexpected error: {error}"
+            );
+        }
+
+        fs::write(
+            package_dir.join("Cargo.toml"),
+            r#"[package]
+name = "phoxal-component-test"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = ["phoxal"]
+description = "Component target validation fixture."
+autobins = false
+autolib = false
+autotests = false
+autoexamples = false
+autobenches = false
+build = "build.rs"
+
+[[bin]]
+name = "phoxal-component-test"
+path = "src/main.rs"
+
+[[test]]
+name = "validation-test"
+path = "src/test.rs"
+
+[[bench]]
+name = "validation-bench"
+path = "src/bench.rs"
+
+[[example]]
+name = "validation-example"
+path = "src/example.rs"
 "#,
         )?;
-        fs::write(
-            package_dir.join("src/lib.rs"),
-            "//! Cargo train anchor; this component ships no driver binary.\n",
-        )?;
-        fs::write(package_dir.join("component.yaml"), "id: asset-only\n")?;
-
         let workspace = Workspace::discover_with(
             MetadataCommand::new().manifest_path(root.join("Cargo.toml")),
         )?;
+        let artifact = workspace.official_artifacts().first().unwrap();
+        assert_eq!(artifact.package_name, "phoxal-component-test");
+        assert_eq!(artifact.bin_name, "phoxal-component-test");
+        Ok(())
+    }
 
-        assert_eq!(workspace.official_artifacts().len(), 1);
-        let artifact = &workspace.official_artifacts()[0];
-        assert_eq!(artifact.package, "phoxal/component-asset-only");
-        assert_eq!(artifact.kind, ArtifactKind::Component);
-        assert_eq!(
-            artifact.package_name.as_deref(),
-            Some("phoxal-component-asset-only")
+    #[test]
+    fn official_artifact_target_kind_allowlist_is_complete() {
+        for kind in [
+            TargetKind::Bin,
+            TargetKind::Test,
+            TargetKind::Bench,
+            TargetKind::Example,
+            TargetKind::CustomBuild,
+        ] {
+            assert!(
+                is_allowed_artifact_target_kind(&kind),
+                "{kind} must be accepted"
+            );
+        }
+        for kind in [
+            TargetKind::Lib,
+            TargetKind::RLib,
+            TargetKind::DyLib,
+            TargetKind::CDyLib,
+            TargetKind::StaticLib,
+            TargetKind::ProcMacro,
+        ] {
+            assert!(
+                is_library_target_kind(&kind),
+                "{kind} must be a library kind"
+            );
+            assert!(
+                !is_allowed_artifact_target_kind(&kind),
+                "{kind} must be rejected"
+            );
+        }
+        let unknown = TargetKind::Unknown("future".to_owned());
+        assert!(!is_library_target_kind(&unknown));
+        assert!(
+            !is_allowed_artifact_target_kind(&unknown),
+            "unknown target kinds must be rejected"
         );
-        assert_eq!(artifact.bin_name, None);
+    }
+
+    #[test]
+    fn unknown_target_kind_is_rejected_with_an_unsupported_kind_diagnostic() -> Result<()> {
+        let target: Target = serde_json::from_value(serde_json::json!({
+            "name": "future-target",
+            "kind": ["future"],
+            "crate_types": ["bin"],
+            "src_path": "/repo/src/main.rs",
+            "edition": "2024",
+        }))?;
+
+        let error = validate_artifact_targets("phoxal-component-test", &[target]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "phoxal-component-test is an official artifact package but target 'future-target' has unsupported target kind 'future'; expected bin, test, bench, example, or custom-build"
+        );
         Ok(())
     }
 
@@ -950,9 +1122,7 @@ path = "src/lib.rs"
     /// participant and inspecting the linked object file, so that is what
     /// this test does: it compiles a throwaway tool participant against the
     /// real in-tree `phoxal`/`phoxal-macros` crates in a standalone temp
-    /// workspace (the same "spin up a disposable cargo project" pattern
-    /// [`discovery_accepts_a_binless_official_component_package`] already
-    /// uses), then reads the linked binary's metadata section back with the
+    /// workspace, then reads the linked binary's metadata section back with the
     /// `object` crate - never executing it, the same "read the bytes, don't
     /// run the binary" discipline `phoxal-cli`'s reader follows - and
     /// confirms it parses to the expected id.
