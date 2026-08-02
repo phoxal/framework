@@ -45,9 +45,6 @@ pub enum ArtifactKind {
     Component,
     Tool,
     Simulator,
-    /// Phoxal-owned process infrastructure. It is released like other binary
-    /// artifacts but is not a participant and must not embed participant metadata.
-    Infrastructure,
 }
 
 impl fmt::Display for ArtifactKind {
@@ -59,7 +56,6 @@ impl fmt::Display for ArtifactKind {
             ArtifactKind::Component => "component",
             ArtifactKind::Tool => "tool",
             ArtifactKind::Simulator => "simulator",
-            ArtifactKind::Infrastructure => "infrastructure",
         })
     }
 }
@@ -255,7 +251,6 @@ fn package_name_segment(kind: ArtifactKind, id: &str) -> String {
         ArtifactKind::Component => format!("component-{id}"),
         ArtifactKind::Tool => format!("tool-{id}"),
         ArtifactKind::Simulator => format!("simulator-{id}"),
-        ArtifactKind::Infrastructure => format!("infrastructure-{id}"),
     }
 }
 
@@ -294,7 +289,7 @@ fn classify_manifest_path(root: &Path, manifest_path: &Path) -> Result<ManifestC
     if components.len() != 3 || components[2] != "Cargo.toml" || components[1].is_empty() {
         bail!(
             "workspace package manifest {} is nested under artifact root '{}'; official artifacts \
-             must live exactly at {{service,component,tool,simulator,infrastructure}}/<id>/Cargo.toml",
+             must live exactly at {{service,component,tool,simulator}}/<id>/Cargo.toml",
             relative.display(),
             top_level
         );
@@ -323,7 +318,6 @@ fn artifact_kind_from_directory(directory: &str) -> Option<ArtifactKind> {
         "component" => Some(ArtifactKind::Component),
         "tool" => Some(ArtifactKind::Tool),
         "simulator" => Some(ArtifactKind::Simulator),
-        "infrastructure" => Some(ArtifactKind::Infrastructure),
         _ => None,
     }
 }
@@ -386,7 +380,6 @@ fn expected_package_name(kind: ArtifactKind, id: &str) -> String {
         ArtifactKind::Component => format!("phoxal-component-{id}"),
         ArtifactKind::Tool => format!("phoxal-tool-{id}"),
         ArtifactKind::Simulator => format!("phoxal-simulator-{id}"),
-        ArtifactKind::Infrastructure => format!("phoxal-infrastructure-{id}"),
     }
 }
 
@@ -408,11 +401,6 @@ fn classify_package_prefix(package_name: &str) -> Option<(ArtifactKind, String)>
             package_name
                 .strip_prefix("phoxal-simulator-")
                 .map(|id| (ArtifactKind::Simulator, id.to_string()))
-        })
-        .or_else(|| {
-            package_name
-                .strip_prefix("phoxal-infrastructure-")
-                .map(|id| (ArtifactKind::Infrastructure, id.to_string()))
         })
 }
 
@@ -675,7 +663,6 @@ mod tests {
             let official = matches!(
                 (top, second),
                 (Some("service" | "component" | "simulator" | "tool"), _)
-                    | (Some("infrastructure"), Some("router"))
             );
             if official
                 && package
@@ -749,7 +736,7 @@ mod tests {
             }
         }
         assert_eq!(
-            direct_zenoh_dependencies, 3,
+            direct_zenoh_dependencies, 2,
             "every direct Zenoh dependency must be covered by this guard"
         );
         Ok(())
@@ -761,7 +748,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 26);
+        assert_eq!(workspace.official_artifacts().len(), 25);
 
         assert_eq!(
             workspace
@@ -846,13 +833,6 @@ mod tests {
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Tool,
                 id: "bus".to_string()
-            }
-        );
-        assert_eq!(
-            classify("infrastructure/router/Cargo.toml")?,
-            ManifestClassification::Artifact {
-                kind: ArtifactKind::Infrastructure,
-                id: "router".to_string()
             }
         );
         assert_eq!(
@@ -1265,10 +1245,6 @@ fn main() -> phoxal::Result<()> {
         assert_eq!(
             package_identity(ArtifactKind::Simulator, "webots-controller"),
             "phoxal/simulator-webots-controller"
-        );
-        assert_eq!(
-            package_identity(ArtifactKind::Infrastructure, "router"),
-            "phoxal/infrastructure-router"
         );
     }
 

@@ -25,8 +25,15 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time
 tracing = { workspace = true }
 zenoh = { workspace = true }
 
+[features]
+# The supervisor's embedded Zenoh router (organization#978). Off by default so
+# participants - which reach this crate through the `phoxal` facade - never see
+# a router in their API surface; only `phoxal-cli`'s supervisor enables it.
+router = []
+
 [dev-dependencies]
 serial_test = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

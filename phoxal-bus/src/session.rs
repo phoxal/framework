@@ -444,11 +444,18 @@ fn validate_segment(value: &str, what: &str, multi: bool) -> Result<()> {
 /// fast and legibly instead of silently eating the whole startup budget.
 const CONNECT_TIMEOUT_MS: u64 = 20_000;
 
-fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
-    let mut config = zenoh::Config::default();
-    // Phoxal-owned links use a nominal three-second lease and Zenoh's documented
-    // four keepalives per lease. Apply these after the authored defaults so the
-    // runtime contract is explicit at the final configuration boundary.
+/// Apply the transport policy shared by every Phoxal-owned Zenoh session: a
+/// nominal three-second link lease, Zenoh's documented four keepalives per
+/// lease, and no multicast scouting.
+///
+/// Both ends of a Phoxal link read these from here - participants through
+/// [`zenoh_config`], the supervisor's embedded router through
+/// [`crate::router`]. That single source is the point: a router disagreeing
+/// with its clients about lease or keepalive produces exactly the kind of
+/// intermittent link churn that is hardest to diagnose. They are applied after
+/// any authored defaults so the runtime contract is explicit at the final
+/// configuration boundary.
+pub(crate) fn apply_phoxal_transport_policy(config: &mut zenoh::Config) -> Result<()> {
     config
         .insert_json5("transport/link/tx/lease", "3000")
         .map_err(|error| BusError::Transport(error.to_string()))?;
@@ -458,6 +465,12 @@ fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
     config
         .insert_json5("scouting/multicast/enabled", "false")
         .map_err(|error| BusError::Transport(error.to_string()))?;
+    Ok(())
+}
+
+fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
+    let mut config = zenoh::Config::default();
+    apply_phoxal_transport_policy(&mut config)?;
     if connect_endpoints.is_empty() {
         // In-process: no listeners, no scouting. A single session still delivers
         // its own publications to its own subscribers.
