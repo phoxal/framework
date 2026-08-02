@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.46.0...phoxal-bus-v0.47.0) - 2026-08-02
+
+### Added
+
+- *(bus)* [**breaking**] report bound router endpoints and observe router link events ([#375](https://github.com/phoxal/framework/pull/375))
+
+### Other
+
+- *(bus)* [**breaking**] replace router link observation with a client-side watch ([#377](https://github.com/phoxal/framework/pull/377))
+
 ## [0.46.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.45.5...phoxal-bus-v0.46.0) - 2026-08-02
 
 ### Added
