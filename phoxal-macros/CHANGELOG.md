@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.45.5...phoxal-macros-v0.46.0) - 2026-08-02
+
+### Added
+
+- *(bus)* [**breaking**] open the Zenoh router in-process behind a `router` feature ([#373](https://github.com/phoxal/framework/pull/373))
+
 ## [0.45.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.44.0...phoxal-macros-v0.45.0) - 2026-07-30
 
 ### Other
