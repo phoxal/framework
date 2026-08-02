@@ -44,8 +44,6 @@ members = [
     "simulator/webots-controller",
     "tool/joypad",
     "tool/log",
-    "tool/bus",
-    "tool/device",
     "tool/telemetry",
     "workspace-policy",
 ]
@@ -83,8 +81,6 @@ default-members = [
     "simulator/webots-controller",
     "tool/joypad",
     "tool/log",
-    "tool/bus",
-    "tool/device",
     "tool/telemetry",
 ]
 
