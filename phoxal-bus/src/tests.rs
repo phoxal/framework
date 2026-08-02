@@ -891,3 +891,135 @@ async fn two_client_sessions_exchange_a_sample_through_an_embedded_router() {
     subscribing.close().await.unwrap();
     router.close().await.unwrap();
 }
+
+/// An ephemeral port is the whole reason `bound_endpoints` exists: the caller
+/// asks for `:0`, the OS picks, and the requested string still says `:0`.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ephemeral_port_is_reported_back_and_is_actually_connectable() {
+    let router = crate::Router::open(&["tcp/127.0.0.1:0".to_string()], None)
+        .await
+        .expect("router binds an OS-assigned port");
+
+    let bound = router.bound_endpoints().await;
+    let tcp = bound
+        .iter()
+        .find(|endpoint| endpoint.starts_with("tcp/"))
+        .expect("the router reports the tcp endpoint it bound");
+    let port: u16 = tcp
+        .rsplit(':')
+        .next()
+        .and_then(|port| port.parse().ok())
+        .expect("the reported endpoint carries a concrete port");
+    assert_ne!(
+        port, 0,
+        "`:0` must resolve to a real assigned port, got {tcp}"
+    );
+
+    // Reported is not the same as reachable - dial the port we were told.
+    let bus = Bus::open(BusConfig {
+        namespace: "dev".to_string(),
+        robot_id: "ephemeral".to_string(),
+        execution: crate::ExecutionId::mint(),
+        participant: "client".to_string(),
+        producer: ProducerId::mint(),
+        connect_endpoints: vec![tcp.clone()],
+    })
+    .await
+    .expect("the reported endpoint must be the one that actually accepts");
+
+    bus.close().await.unwrap();
+    router.close().await.unwrap();
+}
+
+/// Link events are the router's own health signal: they are transport-level, so
+/// a peer going away shows up without waiting for a Liveliness lease to expire.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn link_events_report_a_client_arriving_and_leaving() {
+    use crate::RouterLinkChange;
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempfile::Builder::new()
+        .prefix("phoxal-link-events-")
+        .tempdir_in("/tmp")
+        .expect("short-path temp dir for the unix socket");
+    let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
+    let router = crate::Router::open(std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("router binds");
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    let _observer = router
+        .observe_links(move |event| {
+            recorder
+                .lock()
+                .expect("link event mutex poisoned")
+                .push(event);
+        })
+        .await
+        .expect("observe links");
+
+    let events = || seen.lock().expect("link event mutex poisoned").clone();
+    let changes = || {
+        events()
+            .iter()
+            .map(|event: &crate::RouterLinkEvent| event.change)
+            .collect::<Vec<_>>()
+    };
+    let settle = async |predicate: &dyn Fn(&[RouterLinkChange]) -> bool| {
+        for _ in 0..100 {
+            if predicate(&changes()) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    };
+
+    let bus = Bus::open(BusConfig {
+        namespace: "dev".to_string(),
+        robot_id: "links".to_string(),
+        execution: crate::ExecutionId::mint(),
+        participant: "client".to_string(),
+        producer: ProducerId::mint(),
+        connect_endpoints: vec![endpoint.clone()],
+    })
+    .await
+    .expect("client dials the router");
+
+    assert!(
+        settle(&|changes| changes.contains(&RouterLinkChange::Opened)).await,
+        "a client connecting must produce an Opened event, saw {:?}",
+        changes()
+    );
+
+    // Pin the orientation. Zenoh names its link locators from the local
+    // session's point of view (`src` = local, `dst` = remote), which is the
+    // opposite of how they read, so an inverted mapping is easy to write and
+    // invisible to a test that only counts events.
+    let opened = events()
+        .into_iter()
+        .find(|event| event.change == RouterLinkChange::Opened)
+        .expect("an Opened event was just observed");
+    assert_eq!(
+        opened.local, endpoint,
+        "`local` must be the router's own listen endpoint, not the peer's"
+    );
+    assert_ne!(
+        opened.peer, endpoint,
+        "`peer` must be the far side of the link, not the router's own endpoint"
+    );
+
+    bus.close().await.unwrap();
+    assert!(
+        settle(&|changes| changes.contains(&RouterLinkChange::Closed)).await,
+        "a client disconnecting must produce a Closed event, saw {:?}",
+        changes()
+    );
+
+    router.close().await.unwrap();
+}

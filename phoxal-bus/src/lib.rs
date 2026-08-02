@@ -60,7 +60,7 @@ pub use liveliness::{
 pub use metadata::BusMetadata;
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
 #[cfg(feature = "router")]
-pub use router::Router;
+pub use router::{Router, RouterLinkChange, RouterLinkEvent, RouterLinkObserver};
 #[doc(hidden)]
 pub use runtime_metrics::{
     RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,

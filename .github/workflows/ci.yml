@@ -35,9 +35,11 @@ jobs:
   # This is about DEPENDENCY features. `phoxal-bus`'s `router` feature is the
   # only feature any of the seven libraries declares; it is off by default and
   # covered by the `bus-router-feature` job below, because the default workspace
-  # build never compiles it. `--no-default-features` stays untested: no library
-  # gates anything behind a default feature, so it would only re-run `ci`'s
-  # clippy and test.
+  # build never compiles it. Since it carries `zenoh/unstable`, it is also
+  # packaged separately here - enabling it really does change the isolated
+  # dependency set. `--no-default-features` stays untested: no library gates
+  # anything behind a default feature, so it would only re-run `ci`'s clippy
+  # and test.
   packaged-libraries:
     name: libraries build outside the workspace
     if: >-
@@ -55,6 +57,12 @@ jobs:
           cargo package -p phoxal-model --allow-dirty
           cargo package -p phoxal-macros --allow-dirty
           cargo package -p phoxal-bus --allow-dirty \
+            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
+          # Again with `router`, the one feature any library declares. It pulls
+          # `zenoh/unstable`, so the isolated build genuinely differs from the
+          # default one above - a consumer enabling it from crates.io compiles a
+          # dependency set nothing else here verifies.
+          cargo package -p phoxal-bus --features router --allow-dirty \
             --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
           cargo package -p phoxal-api --allow-dirty \
             --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \

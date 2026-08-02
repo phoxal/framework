@@ -29,7 +29,14 @@ zenoh = { workspace = true }
 # The supervisor's embedded Zenoh router (organization#978). Off by default so
 # participants - which reach this crate through the `phoxal` facade - never see
 # a router in their API surface; only `phoxal-cli`'s supervisor enables it.
-router = []
+#
+# It carries `zenoh/unstable`, which the router needs for two APIs with no
+# stable equivalent: `Session::info().locators()` to report the endpoints it
+# actually bound (an ephemeral `:0` is otherwise unknowable), and
+# `link_events_listener()` to observe links coming and going. Pulling
+# `unstable` in *here* rather than on the workspace dependency keeps that
+# surface out of every participant build - only the supervisor gets it.
+router = ["zenoh/unstable"]
 
 [dev-dependencies]
 serial_test = { workspace = true }
