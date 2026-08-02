@@ -765,78 +765,6 @@ phoxal_api_tree! {
                 overflowed_rows: u32,
             }
 
-            log {
-                /// Requests tool-log's complete current bounded snapshot. The
-                /// first protocol version intentionally has no pagination or
-                /// filtering surface.
-                struct SnapshotRequest {}
-
-                /// Wall-clock timestamp copied from one participant-originated
-                /// structured `v0.1::logs` event.
-                struct Timestamp {
-                    unix_seconds: i64,
-                    nanos: u32,
-                }
-
-                #[derive(Copy, Eq)]
-                #[serde(rename_all = "snake_case")]
-                enum Level {
-                    Error,
-                    Warn,
-                    Info,
-                    Debug,
-                    Trace,
-                }
-
-                #[serde(untagged)]
-                enum LogValue {
-                    Bool(bool),
-                    I64(i64),
-                    U64(u64),
-                    F64(f64),
-                    String(String),
-                }
-
-                /// One retained participant log. `sequence` is assigned by
-                /// tool-log at ingest and is independent of the producer's
-                /// `source_sequence`.
-                struct Record {
-                    sequence: u64,
-                    participant_id: String,
-                    source_sequence: u64,
-                    time: Timestamp,
-                    level: Level,
-                    target: String,
-                    message: String,
-                    fields: ::std::collections::BTreeMap<String, LogValue>,
-                    dropped: u32,
-                    truncated: u32,
-                }
-
-                /// The complete bounded tool-log state at `cursor`.
-                struct Snapshot {
-                    cursor: crate::v0_1::tool::Cursor,
-                    /// Cumulative structured log samples evicted from
-                    /// tool-log's bounded ingest subscriber in this process.
-                    /// An increase is observable, unrecoverable source loss;
-                    /// it is distinct from producer-side `Record::dropped`.
-                    ingest_dropped: u64,
-                    records: Vec<Record>,
-                }
-
-                /// One live record following the snapshot query. A consumer
-                /// must re-query when the generation changes or the sequence is
-                /// not exactly one after its installed cursor.
-                struct Follow {
-                    cursor: crate::v0_1::tool::Cursor,
-                    /// Current cumulative tool-log ingest loss counter.
-                    ingest_dropped: u64,
-                    record: Record,
-                }
-
-                topic snapshot: query SnapshotRequest => Snapshot;
-                topic follow: diagnostic Follow;
-            }
 
 
 
@@ -1412,6 +1340,78 @@ phoxal_api_tree! {
         // is the authority - and a stale participant sitting on an old key
         // physically cannot answer one of these (organization#978).
         supervisor {
+                log {
+                    /// Requests the supervisor's complete current bounded log snapshot. The
+                    /// first protocol version intentionally has no pagination or
+                    /// filtering surface.
+                    struct SnapshotRequest {}
+
+                    /// Wall-clock timestamp copied from one participant-originated
+                    /// structured `v0.1::logs` event.
+                    struct Timestamp {
+                        unix_seconds: i64,
+                        nanos: u32,
+                    }
+
+                    #[derive(Copy, Eq)]
+                    #[serde(rename_all = "snake_case")]
+                    enum Level {
+                        Error,
+                        Warn,
+                        Info,
+                        Debug,
+                        Trace,
+                    }
+
+                    #[serde(untagged)]
+                    enum LogValue {
+                        Bool(bool),
+                        I64(i64),
+                        U64(u64),
+                        F64(f64),
+                        String(String),
+                    }
+
+                    /// One retained participant log. `sequence` is assigned by
+                    /// the supervisor at ingest and is independent of the producer's
+                    /// `source_sequence`.
+                    struct Record {
+                        sequence: u64,
+                        participant_id: String,
+                        source_sequence: u64,
+                        time: Timestamp,
+                        level: Level,
+                        target: String,
+                        message: String,
+                        fields: ::std::collections::BTreeMap<String, LogValue>,
+                        dropped: u32,
+                        truncated: u32,
+                    }
+
+                    /// The complete bounded log state at `cursor`.
+                    struct Snapshot {
+                        cursor: crate::v0_1::tool::Cursor,
+                        /// Cumulative structured log samples evicted from
+                        /// the supervisor's bounded ingest subscriber in this process.
+                        /// An increase is observable, unrecoverable source loss;
+                        /// it is distinct from producer-side `Record::dropped`.
+                        ingest_dropped: u64,
+                        records: Vec<Record>,
+                    }
+
+                    /// One live record following the snapshot query. A consumer
+                    /// must re-query when the generation changes or the sequence is
+                    /// not exactly one after its installed cursor.
+                    struct Follow {
+                        cursor: crate::v0_1::tool::Cursor,
+                        /// Current cumulative the supervisor's log collector ingest loss counter.
+                        ingest_dropped: u64,
+                        record: Record,
+                    }
+
+                    topic snapshot: query SnapshotRequest => Snapshot;
+                    topic follow: diagnostic Follow;
+                }
             asset {
                 /// Fetch a stored asset by path.
                 struct GetRequest {

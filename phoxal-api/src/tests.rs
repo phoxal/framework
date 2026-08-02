@@ -52,16 +52,16 @@ fn contract_body_topic_is_version_qualified() {
         "v0.1/logs/{participant_id}"
     );
     assert_eq!(
-        <api::tool::log::SnapshotRequest as ContractBody>::TOPIC,
-        "v0.1/tool/log/snapshot"
+        <api::supervisor::log::SnapshotRequest as ContractBody>::TOPIC,
+        "v0.1/supervisor/log/snapshot"
     );
     assert_eq!(
-        <api::tool::log::Snapshot as ContractBody>::TOPIC,
-        "v0.1/tool/log/snapshot"
+        <api::supervisor::log::Snapshot as ContractBody>::TOPIC,
+        "v0.1/supervisor/log/snapshot"
     );
     assert_eq!(
-        <api::tool::log::Follow as ContractBody>::TOPIC,
-        "v0.1/tool/log/follow"
+        <api::supervisor::log::Follow as ContractBody>::TOPIC,
+        "v0.1/supervisor/log/follow"
     );
     assert_eq!(
         <api::tool::runtime::Rollup as ContractBody>::TOPIC,
@@ -538,34 +538,37 @@ fn logs_event_defaults_truncation_for_pre_field_publishers() {
 
 #[test]
 fn retained_tool_contracts_round_trip_through_messagepack() {
-    round_trip(&api::tool::log::SnapshotRequest {});
+    round_trip(&api::supervisor::log::SnapshotRequest {});
     let cursor = api::tool::Cursor {
         generation: "opaque-generation".to_string(),
         sequence: 9,
     };
-    let record = api::tool::log::Record {
+    let record = api::supervisor::log::Record {
         sequence: 9,
         participant_id: "drive".to_string(),
         source_sequence: 41,
-        time: api::tool::log::Timestamp {
+        time: api::supervisor::log::Timestamp {
             unix_seconds: 1_800_000_000,
             nanos: 123,
         },
-        level: api::tool::log::Level::Info,
+        level: api::supervisor::log::Level::Info,
         target: "drive".to_string(),
         message: "target accepted".to_string(),
-        fields: [("speed".to_string(), api::tool::log::LogValue::F64(0.4))]
-            .into_iter()
-            .collect(),
+        fields: [(
+            "speed".to_string(),
+            api::supervisor::log::LogValue::F64(0.4),
+        )]
+        .into_iter()
+        .collect(),
         dropped: 0,
         truncated: 0,
     };
-    round_trip(&api::tool::log::Snapshot {
+    round_trip(&api::supervisor::log::Snapshot {
         cursor: cursor.clone(),
         ingest_dropped: 2,
         records: vec![record.clone()],
     });
-    round_trip(&api::tool::log::Follow {
+    round_trip(&api::supervisor::log::Follow {
         cursor: cursor.clone(),
         ingest_dropped: 2,
         record,
@@ -635,7 +638,7 @@ fn runtime_rollup_rejects_malformed_payloads() {
     let corrupt = [0xc1u8, 0xc1, 0xc1];
     assert!(rmp_serde::from_slice::<api::tool::runtime::Rollup>(&corrupt).is_err());
 
-    let wrong_shape = rmp_serde::to_vec_named(&api::tool::log::SnapshotRequest {}).unwrap();
+    let wrong_shape = rmp_serde::to_vec_named(&api::supervisor::log::SnapshotRequest {}).unwrap();
     assert!(rmp_serde::from_slice::<api::tool::runtime::Rollup>(&wrong_shape).is_err());
 }
 
@@ -794,12 +797,12 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/logs/drive"
     );
     assert_eq!(
-        api::topic::client().tool().log().snapshot().key(),
-        "v0.1/tool/log/snapshot"
+        api::topic::client().supervisor().log().snapshot().key(),
+        "v0.1/supervisor/log/snapshot"
     );
     assert_eq!(
-        api::topic::client().tool().log().follow().key(),
-        "v0.1/tool/log/follow"
+        api::topic::client().supervisor().log().follow().key(),
+        "v0.1/supervisor/log/follow"
     );
     assert_eq!(
         api::topic::client().tool().runtime().rollup().key(),
@@ -877,8 +880,8 @@ fn owner_builder_produces_identical_keys() {
         "v0.1/drive/target"
     );
     assert_eq!(
-        api::topic::owner().tool().log().snapshot().key(),
-        "v0.1/tool/log/snapshot"
+        api::topic::owner().supervisor().log().snapshot().key(),
+        "v0.1/supervisor/log/snapshot"
     );
     assert_eq!(
         api::topic::owner().tool().runtime().rollup().key(),

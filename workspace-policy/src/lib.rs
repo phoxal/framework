@@ -752,7 +752,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 22);
+        assert_eq!(workspace.official_artifacts().len(), 21);
 
         assert_eq!(
             workspace
@@ -833,10 +833,10 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("tool/log/Cargo.toml")?,
+            classify("tool/joypad/Cargo.toml")?,
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Tool,
-                id: "log".to_string()
+                id: "joypad".to_string()
             }
         );
         assert_eq!(
@@ -1243,8 +1243,8 @@ fn main() -> phoxal::Result<()> {
             "phoxal/component-ddsm115"
         );
         assert_eq!(
-            package_identity(ArtifactKind::Tool, "log"),
-            "phoxal/tool-log"
+            package_identity(ArtifactKind::Tool, "joypad"),
+            "phoxal/tool-joypad"
         );
         assert_eq!(
             package_identity(ArtifactKind::Simulator, "webots-controller"),

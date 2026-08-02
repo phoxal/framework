@@ -43,7 +43,6 @@ members = [
     "service/video",
     "simulator/webots-controller",
     "tool/joypad",
-    "tool/log",
     "tool/telemetry",
     "workspace-policy",
 ]
@@ -80,7 +79,6 @@ default-members = [
     "service/video",
     "simulator/webots-controller",
     "tool/joypad",
-    "tool/log",
     "tool/telemetry",
 ]
 
