@@ -31,6 +31,8 @@ pub mod lease;
 pub mod liveliness;
 pub mod metadata;
 pub mod query;
+#[cfg(feature = "router")]
+pub mod router;
 mod runtime_metrics;
 pub mod server;
 pub mod session;
@@ -57,6 +59,8 @@ pub use liveliness::{
 };
 pub use metadata::BusMetadata;
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};
+#[cfg(feature = "router")]
+pub use router::Router;
 #[doc(hidden)]
 pub use runtime_metrics::{
     RuntimeBufferKind, RuntimeDirection, RuntimeMetricKey, RuntimeMetricSnapshot,

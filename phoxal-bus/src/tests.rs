@@ -802,3 +802,92 @@ fn retired_timelines_are_never_forgotten() {
         "a deliberately reactivated timeline is no longer retired"
     );
 }
+
+/// The load-bearing proof for the embedded router (organization#978): two
+/// *separate* client sessions exchange a real sample, which can only happen if
+/// the in-process router actually relays between them. The round-trip above
+/// proves the client works within one session; this proves the fabric works
+/// across sessions without a router child process.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_client_sessions_exchange_a_sample_through_an_embedded_router() {
+    // A short path: unix-socket addresses are length-limited, and the macOS
+    // default temp dir is long enough to overflow it.
+    let dir = tempfile::Builder::new()
+        .prefix("phoxal-embedded-router-")
+        .tempdir_in("/tmp")
+        .expect("short-path temp dir for the unix socket");
+    let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
+
+    let router = crate::Router::open(std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("the embedded router binds its endpoint");
+
+    // One execution, so both sessions compose the same key root and the sample
+    // is observable rather than scoped away (#952 section B).
+    let execution = crate::ExecutionId::mint();
+    let client = |participant: &str| BusConfig {
+        namespace: "dev".to_string(),
+        robot_id: "embedded".to_string(),
+        execution,
+        participant: participant.to_string(),
+        producer: ProducerId::mint(),
+        connect_endpoints: vec![endpoint.clone()],
+    };
+
+    let publishing = Bus::open(client("publisher"))
+        .await
+        .expect("publisher dials the embedded router");
+    let subscribing = Bus::open(client("subscriber"))
+        .await
+        .expect("subscriber dials the embedded router");
+    assert_ne!(
+        publishing.producer(),
+        subscribing.producer(),
+        "the two sides must be genuinely separate sessions for this to prove relay"
+    );
+
+    let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let publisher = StatePublisher::<Target>::new(publishing.clone(), &pub_topic).unwrap();
+    let latest = Latest::<Target>::new(&subscribing, &sub_topic)
+        .await
+        .unwrap();
+
+    // Republish each round rather than publishing once: the subscriber's
+    // declaration travels B -> router while the sample travels A -> router, and
+    // `declare_subscriber` does not wait for the router to acknowledge it, so a
+    // single publish has a small window in which it arrives before the
+    // subscription exists and is dropped. Retrying removes the flake without
+    // weakening the assertion.
+    let mut observed = None;
+    for tick in 0..100 {
+        publisher
+            .publish(
+                &step(1, 100 + tick),
+                Target {
+                    linear_x_mps: 0.4,
+                    angular_z_radps: 0.2,
+                },
+            )
+            .unwrap();
+        if let Some(sample) = latest.observed() {
+            observed = Some(sample);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let observed = observed.expect("the router must relay the sample to the other session");
+    assert_eq!(observed.body.linear_x_mps, 0.4);
+    assert_eq!(
+        observed.metadata.producer,
+        publishing.producer(),
+        "provenance must survive the hop through the router"
+    );
+
+    publishing.close().await.unwrap();
+    subscribing.close().await.unwrap();
+    router.close().await.unwrap();
+}

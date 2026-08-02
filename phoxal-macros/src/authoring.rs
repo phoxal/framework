@@ -361,18 +361,21 @@ fn validate_participant_id(value: &LitStr) -> syn::Result<()> {
 }
 
 /// The package-name prefixes an official participant crate's directory
-/// convention produces (`{service,driver,tool,simulator,component,
-/// infrastructure}/<id>/Cargo.toml` names the crate `phoxal-<kind>-<id>`;
-/// `workspace-policy`'s `expected_package_name` enforces that convention for
-/// every official crate). Stripping one of these turns the package name back
+/// convention produces: `<kind>/<id>/Cargo.toml` names the crate
+/// `phoxal-<kind>-<id>`. Stripping one of these turns the package name back
 /// into the bare id it was built from.
+///
+/// `workspace-policy`'s `expected_package_name` enforces that convention for
+/// the kinds it knows - service, component, tool, simulator. `driver` is in
+/// this list but not in that one: it is a kind of the canonical participant
+/// taxonomy with no directory in this workspace yet, so stripping it here is
+/// forward-looking rather than enforced.
 const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
     "phoxal-service-",
     "phoxal-driver-",
     "phoxal-tool-",
     "phoxal-simulator-",
     "phoxal-component-",
-    "phoxal-infrastructure-",
 ];
 
 /// The default participant id when `id = "…"` is omitted: `CARGO_PKG_NAME`
@@ -629,10 +632,6 @@ mod tests {
         assert_eq!(
             default_participant_id("phoxal-component-ddsm115"),
             "ddsm115"
-        );
-        assert_eq!(
-            default_participant_id("phoxal-infrastructure-router"),
-            "router"
         );
     }
 

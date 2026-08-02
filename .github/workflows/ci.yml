@@ -32,10 +32,12 @@ jobs:
   # `cargo package` builds each library isolated, which is what that consumer
   # actually gets.
   #
-  # This is about DEPENDENCY features. None of the seven library crates declares
-  # a feature of its own - there is no `[features]` table and no
-  # `cfg(feature = ...)` in their source - so `--no-default-features` on them is
-  # a no-op and is not tested here; it would only re-run `ci`'s clippy and test.
+  # This is about DEPENDENCY features. `phoxal-bus`'s `router` feature is the
+  # only feature any of the seven libraries declares; it is off by default and
+  # covered by the `bus-router-feature` job below, because the default workspace
+  # build never compiles it. `--no-default-features` stays untested: no library
+  # gates anything behind a default feature, so it would only re-run `ci`'s
+  # clippy and test.
   packaged-libraries:
     name: libraries build outside the workspace
     if: >-
@@ -92,3 +94,26 @@ jobs:
             cargo public-api -p "${package}" -sss --color=never > "/tmp/${package}-public-api.txt"
             diff -u "${package}/public-api.txt" "/tmp/${package}-public-api.txt"
           done
+
+  # `phoxal-bus`'s `router` feature is off by default, so `cargo test
+  # --workspace` never compiles it. Only `phoxal-cli`'s supervisor turns it on
+  # (organization#978), which means without this job the embedded router would
+  # ship untested from this repo and break in the consumer instead.
+  bus-router-feature:
+    name: phoxal-bus router feature
+    if: >-
+      github.event_name != 'push' ||
+      !startsWith(github.event.head_commit.message, 'chore(release): release v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+
+      - name: Clippy
+        run: cargo clippy -p phoxal-bus --features router --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p phoxal-bus --features router
