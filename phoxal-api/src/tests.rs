@@ -52,10 +52,6 @@ fn contract_body_topic_is_version_qualified() {
         "v0.1/logs/{participant_id}"
     );
     assert_eq!(
-        <api::bus::uplink::State as ContractBody>::TOPIC,
-        "v0.1/bus/uplink/state"
-    );
-    assert_eq!(
         <api::tool::log::SnapshotRequest as ContractBody>::TOPIC,
         "v0.1/tool/log/snapshot"
     );
@@ -68,18 +64,6 @@ fn contract_body_topic_is_version_qualified() {
         "v0.1/tool/log/follow"
     );
     assert_eq!(
-        <api::tool::bus::SnapshotRequest as ContractBody>::TOPIC,
-        "v0.1/tool/bus/snapshot"
-    );
-    assert_eq!(
-        <api::tool::bus::Snapshot as ContractBody>::TOPIC,
-        "v0.1/tool/bus/snapshot"
-    );
-    assert_eq!(
-        <api::tool::bus::Follow as ContractBody>::TOPIC,
-        "v0.1/tool/bus/follow"
-    );
-    assert_eq!(
         <api::tool::runtime::Rollup as ContractBody>::TOPIC,
         "v0.1/tool/runtime/rollup"
     );
@@ -90,18 +74,6 @@ fn contract_body_topic_is_version_qualified() {
     assert_eq!(
         <api::tool::runtime::Follow as ContractBody>::TOPIC,
         "v0.1/tool/runtime/follow"
-    );
-    assert_eq!(
-        <api::tool::device::Sample as ContractBody>::TOPIC,
-        "v0.1/tool/device/sample"
-    );
-    assert_eq!(
-        <api::tool::device::SnapshotRequest as ContractBody>::TOPIC,
-        "v0.1/tool/device/snapshot"
-    );
-    assert_eq!(
-        <api::tool::device::Follow as ContractBody>::TOPIC,
-        "v0.1/tool/device/follow"
     );
 }
 
@@ -209,12 +181,6 @@ fn generated_contract_manifest_lists_contract_shapes() {
         .find(|contract| contract.family == "v0.1::drive::State")
         .expect("drive::State should be in the generated manifest");
     assert_eq!(drive_state.topic, "v0.1/drive/state");
-    let device_sample = version
-        .contracts
-        .iter()
-        .find(|contract| contract.family == "v0.1::tool::device::Sample")
-        .expect("tool::device::Sample should be in the generated manifest");
-    assert_eq!(device_sample.topic, "v0.1/tool/device/sample");
 
     {
         let current = crate::API_CONTRACT_MANIFEST
@@ -289,8 +255,6 @@ fn generated_role_const_matches_each_topic_role() {
     // expresses no robot time.
     assert_role::<api::tool::runtime::Rollup>(TopicRole::Diagnostic);
     assert_role::<api::tool::runtime::Follow>(TopicRole::Diagnostic);
-    assert_role::<api::tool::device::Sample>(TopicRole::Diagnostic);
-    assert_role::<api::tool::device::Follow>(TopicRole::Diagnostic);
     assert_role::<api::logs::Event>(TopicRole::Diagnostic);
     assert_role::<api::joypad::Devices>(TopicRole::Diagnostic);
 
@@ -301,7 +265,6 @@ fn generated_role_const_matches_each_topic_role() {
     assert_role::<api::map::SubmapRequest>(TopicRole::Query);
     assert_role::<api::map::SubmapResponse>(TopicRole::Query);
     assert_role::<api::tool::runtime::SnapshotRequest>(TopicRole::Query);
-    assert_role::<api::tool::device::Snapshot>(TopicRole::Query);
 }
 
 fn assert_role<B: ContractBody>(expected: TopicRole) {
@@ -509,12 +472,6 @@ fn domain_bodies_round_trip_through_messagepack() {
         dropped: 2,
         truncated: 3,
     });
-    round_trip(&api::bus::uplink::State {
-        phase: api::bus::uplink::UplinkPhase::Retrying,
-        connect: Some("tls/root.example.io:7447".to_string()),
-        retry_attempt: 3,
-        detail: Some("connect failed".to_string()),
-    });
     round_trip(&api::navigation::Path {
         poses: vec![api::navigation::Pose {
             x_m: 1.0,
@@ -614,28 +571,6 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         record,
     });
 
-    round_trip(&api::tool::bus::SnapshotRequest {});
-    let window = api::tool::bus::Window {
-        sequence: 9,
-        topics: vec![api::tool::bus::TopicMetric {
-            topic: "v0.1/drive/state".to_string(),
-            from_participant: "drive".to_string(),
-            ingress_rate_hz: 10.0,
-            count: 42,
-        }],
-        throughput_msg_s: 12.5,
-        window_ns: 1_000_000_000,
-    };
-    round_trip(&api::tool::bus::Snapshot {
-        cursor: cursor.clone(),
-        current: Some(window.clone()),
-        windows: vec![window.clone()],
-    });
-    round_trip(&api::tool::bus::Follow {
-        cursor: cursor.clone(),
-        window,
-    });
-
     let topic = api::tool::RuntimeTopic {
         topic: "v0.1/drive/state".to_string(),
         direction: api::tool::RuntimeDirection::Subscribe,
@@ -693,46 +628,6 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         cursor,
         record: runtime_record,
     });
-
-    let cursor = api::tool::Cursor {
-        generation: "device-generation".to_string(),
-        sequence: 9,
-    };
-    let sample = api::tool::device::Sample {
-        cpu_pct: Some(12.5),
-        ram_used_bytes: Some(1_073_741_824),
-        ram_total_bytes: Some(17_179_869_184),
-        swap_used_bytes: None,
-        swap_total_bytes: None,
-        load_1m: Some(0.75),
-        load_5m: Some(0.5),
-        load_15m: Some(0.25),
-        uptime_s: Some(42),
-        disks: Some(vec![api::tool::device::Disk {
-            mount_point: "/".to_string(),
-            file_system: "apfs".to_string(),
-            used_bytes: 10,
-            total_bytes: 100,
-        }]),
-        window_ns: 1_000_000_000,
-    };
-    let record = api::tool::device::Record {
-        sequence: 9,
-        sample: sample.clone(),
-        truncated: 0,
-    };
-    round_trip(&sample);
-    round_trip(&api::tool::device::SnapshotRequest {
-        limit: 1,
-        before_sequence: None,
-    });
-    round_trip(&api::tool::device::Snapshot {
-        cursor: cursor.clone(),
-        records: vec![record.clone()],
-        capacity_evictions: 0,
-        next_before_sequence: None,
-    });
-    round_trip(&api::tool::device::Follow { cursor, record });
 }
 
 #[test]
@@ -899,24 +794,12 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/logs/drive"
     );
     assert_eq!(
-        api::topic::client().bus().uplink().state().key(),
-        "v0.1/bus/uplink/state"
-    );
-    assert_eq!(
         api::topic::client().tool().log().snapshot().key(),
         "v0.1/tool/log/snapshot"
     );
     assert_eq!(
         api::topic::client().tool().log().follow().key(),
         "v0.1/tool/log/follow"
-    );
-    assert_eq!(
-        api::topic::client().tool().bus().snapshot().key(),
-        "v0.1/tool/bus/snapshot"
-    );
-    assert_eq!(
-        api::topic::client().tool().bus().follow().key(),
-        "v0.1/tool/bus/follow"
     );
     assert_eq!(
         api::topic::client().tool().runtime().rollup().key(),
@@ -996,10 +879,6 @@ fn owner_builder_produces_identical_keys() {
     assert_eq!(
         api::topic::owner().tool().log().snapshot().key(),
         "v0.1/tool/log/snapshot"
-    );
-    assert_eq!(
-        api::topic::owner().tool().bus().follow().key(),
-        "v0.1/tool/bus/follow"
     );
     assert_eq!(
         api::topic::owner().tool().runtime().rollup().key(),

@@ -396,8 +396,8 @@ const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
 /// Chosen over the struct name (the previous default) because measured
 /// against all 25 official participants, the package name minus its kind
 /// prefix matches the intended id for 25/25, while kebab-casing the struct
-/// name only matched 16/25 - it fails every tool (`struct ToolBus` kebabs to
-/// `tool-bus`, not `bus`), `BehaviorService`, `WebotsControllerSimulator`,
+/// name only matched 16/25 - it fails every tool (`struct ToolLog` kebabs to
+/// `tool-log`, not `log`), `BehaviorService`, `WebotsControllerSimulator`,
 /// and the two components with an underscore in their id (`oak_d_lite`
 /// kebabs to `oak-d-lite`). A crate that defines more than one participant
 /// still needs an explicit `id = "…"` per struct - they cannot all default to
@@ -624,7 +624,7 @@ mod tests {
     fn default_participant_id_strips_the_kind_prefix_for_every_official_directory() {
         assert_eq!(default_participant_id("phoxal-service-drive"), "drive");
         assert_eq!(default_participant_id("phoxal-driver-bno085"), "bno085");
-        assert_eq!(default_participant_id("phoxal-tool-bus"), "bus");
+        assert_eq!(default_participant_id("phoxal-tool-log"), "log");
         assert_eq!(
             default_participant_id("phoxal-simulator-webots-controller"),
             "webots-controller"

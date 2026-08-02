@@ -538,8 +538,12 @@ mod tests {
 
     #[test]
     fn official_periodic_tools_skip_missed_ticks() -> Result<()> {
+        // `joypad` is the last periodic official tool; `bus` and `device` were
+        // deleted with the supervisor consolidation (organization#978). Keep
+        // this a loop so restoring the guard for a future one is a list edit.
         let workspace_root = workspace_root()?;
-        for tool in ["joypad", "bus", "device"] {
+        let periodic_tools: &[&str] = &["joypad"];
+        for tool in periodic_tools {
             let source = workspace_root
                 .join("tool")
                 .join(tool)
@@ -736,7 +740,7 @@ mod tests {
             }
         }
         assert_eq!(
-            direct_zenoh_dependencies, 2,
+            direct_zenoh_dependencies, 1,
             "every direct Zenoh dependency must be covered by this guard"
         );
         Ok(())
@@ -748,7 +752,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 24);
+        assert_eq!(workspace.official_artifacts().len(), 22);
 
         assert_eq!(
             workspace
@@ -829,10 +833,10 @@ mod tests {
             }
         );
         assert_eq!(
-            classify("tool/bus/Cargo.toml")?,
+            classify("tool/log/Cargo.toml")?,
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Tool,
-                id: "bus".to_string()
+                id: "log".to_string()
             }
         );
         assert_eq!(
@@ -1239,8 +1243,8 @@ fn main() -> phoxal::Result<()> {
             "phoxal/component-ddsm115"
         );
         assert_eq!(
-            package_identity(ArtifactKind::Tool, "bus"),
-            "phoxal/tool-bus"
+            package_identity(ArtifactKind::Tool, "log"),
+            "phoxal/tool-log"
         );
         assert_eq!(
             package_identity(ArtifactKind::Simulator, "webots-controller"),
