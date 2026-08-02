@@ -933,17 +933,19 @@ async fn an_ephemeral_port_is_reported_back_and_is_actually_connectable() {
     router.close().await.unwrap();
 }
 
-/// Link events are the router's own health signal: they are transport-level, so
-/// a peer going away shows up without waiting for a Liveliness lease to expire.
+/// The supervisor's question is "is the router I am running still there", and
+/// the only end that can answer it is the client end. Prove the whole loop: a
+/// watch reports nothing while the router is up, and fires exactly once when it
+/// goes away.
 #[cfg(feature = "router")]
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn link_events_report_a_client_arriving_and_leaving() {
-    use crate::RouterLinkChange;
-    use std::sync::{Arc, Mutex};
+async fn a_watch_fires_when_the_router_goes_away_and_not_before() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     let dir = tempfile::Builder::new()
-        .prefix("phoxal-link-events-")
+        .prefix("phoxal-router-watch-")
         .tempdir_in("/tmp")
         .expect("short-path temp dir for the unix socket");
     let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
@@ -951,75 +953,44 @@ async fn link_events_report_a_client_arriving_and_leaving() {
         .await
         .expect("router binds");
 
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let recorder = Arc::clone(&seen);
-    let _observer = router
-        .observe_links(move |event| {
-            recorder
-                .lock()
-                .expect("link event mutex poisoned")
-                .push(event);
-        })
-        .await
-        .expect("observe links");
-
-    let events = || seen.lock().expect("link event mutex poisoned").clone();
-    let changes = || {
-        events()
-            .iter()
-            .map(|event: &crate::RouterLinkEvent| event.change)
-            .collect::<Vec<_>>()
-    };
-    let settle = async |predicate: &dyn Fn(&[RouterLinkChange]) -> bool| {
-        for _ in 0..100 {
-            if predicate(&changes()) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        false
-    };
-
-    let bus = Bus::open(BusConfig {
-        namespace: "dev".to_string(),
-        robot_id: "links".to_string(),
-        execution: crate::ExecutionId::mint(),
-        participant: "client".to_string(),
-        producer: ProducerId::mint(),
-        connect_endpoints: vec![endpoint.clone()],
+    let losses = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&losses);
+    let watch = crate::RouterWatch::open(&endpoint, move || {
+        counter.fetch_add(1, Ordering::Relaxed);
     })
     .await
-    .expect("client dials the router");
+    .expect("the watch dials the running router");
 
-    assert!(
-        settle(&|changes| changes.contains(&RouterLinkChange::Opened)).await,
-        "a client connecting must produce an Opened event, saw {:?}",
-        changes()
-    );
-
-    // Pin the orientation. Zenoh names its link locators from the local
-    // session's point of view (`src` = local, `dst` = remote), which is the
-    // opposite of how they read, so an inverted mapping is easy to write and
-    // invisible to a test that only counts events.
-    let opened = events()
-        .into_iter()
-        .find(|event| event.change == RouterLinkChange::Opened)
-        .expect("an Opened event was just observed");
+    // A healthy router must stay silent. `history(true)` replays the link that
+    // already exists, so a watch that keyed off any event rather than a close
+    // would fire here.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
-        opened.local, endpoint,
-        "`local` must be the router's own listen endpoint, not the peer's"
-    );
-    assert_ne!(
-        opened.peer, endpoint,
-        "`peer` must be the far side of the link, not the router's own endpoint"
+        losses.load(Ordering::Relaxed),
+        0,
+        "a live router must not be reported as lost"
     );
 
-    bus.close().await.unwrap();
-    assert!(
-        settle(&|changes| changes.contains(&RouterLinkChange::Closed)).await,
-        "a client disconnecting must produce a Closed event, saw {:?}",
-        changes()
+    router.close().await.expect("close the router");
+
+    let mut fired = false;
+    for _ in 0..100 {
+        if losses.load(Ordering::Relaxed) > 0 {
+            fired = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(fired, "losing the router must be reported");
+
+    // Zenoh keeps retrying a dead endpoint; the loss is reported once, not per
+    // failed reconnect.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        losses.load(Ordering::Relaxed),
+        1,
+        "the loss must be reported exactly once, not once per reconnect attempt"
     );
 
-    router.close().await.unwrap();
+    watch.close().await.expect("close the watch");
 }
