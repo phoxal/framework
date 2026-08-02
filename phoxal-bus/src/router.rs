@@ -39,7 +39,8 @@ impl Router {
     ///
     /// Returning `Ok` means the router is listening: Zenoh has bound every
     /// endpoint. There is no readiness probe to run afterwards and no window in
-    /// which the endpoint exists but does not accept.
+    /// which the endpoint exists but does not accept. [`router_config`] pins
+    /// the settings that guarantee this, so an authored file cannot weaken it.
     pub async fn open(listen_endpoints: &[String], config_file: Option<&Path>) -> Result<Self> {
         if listen_endpoints.is_empty() {
             return Err(BusError::Transport(
@@ -72,14 +73,27 @@ fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Res
         None => zenoh::Config::default(),
     };
     apply_phoxal_transport_policy(&mut config)?;
-    config
-        .insert_json5("mode", "\"router\"")
-        .map_err(|error| BusError::Transport(error.to_string()))?;
     let endpoints = serde_json::to_string(listen_endpoints)
         .map_err(|error| BusError::Transport(error.to_string()))?;
-    config
-        .insert_json5("listen/endpoints", &endpoints)
-        .map_err(|error| BusError::Transport(error.to_string()))?;
+    // Everything below is applied after the authored file precisely so a file
+    // cannot weaken it. The three `listen/*` keys are what make `open`'s
+    // success mean "bound", which is the guarantee that lets the supervisor
+    // delete its readiness probe: with a nonzero `timeout_ms` or
+    // `exit_on_failure: false`, Zenoh moves binding to a background retry task
+    // and `open` returns `Ok` with nothing listening. `scouting/delay` is a
+    // flat sleep at the end of router startup, paid even though Phoxal keeps
+    // multicast scouting off, so it is pure startup latency here.
+    for (key, value) in [
+        ("mode", "\"router\""),
+        ("listen/endpoints", endpoints.as_str()),
+        ("listen/timeout_ms", "0"),
+        ("listen/exit_on_failure", "true"),
+        ("scouting/delay", "0"),
+    ] {
+        config
+            .insert_json5(key, value)
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+    }
     Ok(config)
 }
 
@@ -147,6 +161,40 @@ mod tests {
                 .expect("lease is set"),
             "3000",
             "Phoxal transport policy must win over an authored default"
+        );
+    }
+
+    #[test]
+    fn an_authored_file_cannot_weaken_the_bound_on_open_guarantee() {
+        // `Router::open` returning `Ok` means "listening", and the supervisor
+        // deletes its readiness probe on that promise. Zenoh only keeps it when
+        // binding is synchronous and fatal: a nonzero `listen/timeout_ms` or
+        // `exit_on_failure: false` moves binding to a background retry task and
+        // `open` succeeds with nothing bound. An authored file must not be able
+        // to reach that.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("zenoh.json5");
+        std::fs::write(
+            &path,
+            r#"{ listen: { timeout_ms: 60000, exit_on_failure: false } }"#,
+        )
+        .expect("write authored router config");
+
+        let config = router_config(&["tcp/127.0.0.1:7447".to_string()], Some(&path))
+            .expect("authored router config");
+        assert_eq!(
+            config
+                .get_json("listen/timeout_ms")
+                .expect("listen timeout is pinned"),
+            "0",
+            "a background-retry bind would make `open` succeed with nothing listening"
+        );
+        assert_eq!(
+            config
+                .get_json("listen/exit_on_failure")
+                .expect("listen exit_on_failure is pinned"),
+            "true",
+            "a bind failure must fail `open`, not be swallowed"
         );
     }
 

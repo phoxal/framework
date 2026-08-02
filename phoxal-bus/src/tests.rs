@@ -855,18 +855,23 @@ async fn two_client_sessions_exchange_a_sample_through_an_embedded_router() {
         .await
         .unwrap();
 
-    publisher
-        .publish(
-            &step(1, 100),
-            Target {
-                linear_x_mps: 0.4,
-                angular_z_radps: 0.2,
-            },
-        )
-        .unwrap();
-
+    // Republish each round rather than publishing once: the subscriber's
+    // declaration travels B -> router while the sample travels A -> router, and
+    // `declare_subscriber` does not wait for the router to acknowledge it, so a
+    // single publish has a small window in which it arrives before the
+    // subscription exists and is dropped. Retrying removes the flake without
+    // weakening the assertion.
     let mut observed = None;
-    for _ in 0..100 {
+    for tick in 0..100 {
+        publisher
+            .publish(
+                &step(1, 100 + tick),
+                Target {
+                    linear_x_mps: 0.4,
+                    angular_z_radps: 0.2,
+                },
+            )
+            .unwrap();
         if let Some(sample) = latest.observed() {
             observed = Some(sample);
             break;
