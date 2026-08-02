@@ -53,6 +53,60 @@ impl Router {
         Ok(Router { session })
     }
 
+    /// The endpoints the router actually bound.
+    ///
+    /// This is the answer to "which port did I get". Asking to listen on
+    /// `tcp/0.0.0.0:0` binds an ephemeral port chosen by the OS, and this is the
+    /// only way to learn it - the requested endpoint string still says `:0`.
+    /// Callers that pin a port get back what they asked for.
+    pub async fn bound_endpoints(&self) -> Vec<String> {
+        self.session
+            .info()
+            .locators()
+            .await
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    }
+
+    /// Observe transport links to this router opening and closing.
+    ///
+    /// One event per link, not per participant: a participant that reconnects
+    /// produces a [`RouterLinkChange::Closed`] then a
+    /// [`RouterLinkChange::Opened`]. This is transport-level truth, below the
+    /// participant Liveliness that [`crate::Bus`] exposes, so it sees a peer
+    /// dropping its connection immediately rather than after a lease expires.
+    ///
+    /// The returned observer stops delivering when dropped.
+    pub async fn observe_links(
+        &self,
+        callback: impl Fn(RouterLinkEvent) + Send + Sync + 'static,
+    ) -> Result<RouterLinkObserver> {
+        let listener = self
+            .session
+            .info()
+            .link_events_listener()
+            .history(true)
+            .callback(move |event| {
+                callback(RouterLinkEvent {
+                    change: match event.kind() {
+                        zenoh::sample::SampleKind::Put => RouterLinkChange::Opened,
+                        zenoh::sample::SampleKind::Delete => RouterLinkChange::Closed,
+                    },
+                    // Zenoh names these from the local session's point of
+                    // view: `src` is this router's own endpoint, `dst` is the
+                    // far side. Do not swap these back.
+                    peer: event.link().dst().to_string(),
+                    local: event.link().src().to_string(),
+                });
+            })
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        Ok(RouterLinkObserver {
+            _listener: listener,
+        })
+    }
+
     /// Close the router, dropping every link to it.
     pub async fn close(self) -> Result<()> {
         self.session
@@ -60,6 +114,30 @@ impl Router {
             .await
             .map_err(|error| BusError::Transport(error.to_string()))
     }
+}
+
+/// Whether a link appeared or went away.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouterLinkChange {
+    Opened,
+    Closed,
+}
+
+/// One transport link to the router opening or closing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouterLinkEvent {
+    pub change: RouterLinkChange,
+    /// The remote side of the link.
+    pub peer: String,
+    /// The router-side locator the link landed on - which of the router's
+    /// endpoints this peer came in through.
+    pub local: String,
+}
+
+/// Keeps [`Router::observe_links`] delivering. Dropping it stops the callback.
+#[derive(Debug)]
+pub struct RouterLinkObserver {
+    _listener: zenoh::session::LinkEventsListener<()>,
 }
 
 fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Result<zenoh::Config> {

@@ -136,7 +136,10 @@ webots-rs = "0.2"
 # compression at runtime, so no behavior changes. Re-enable defaults only after
 # zenoh ships lz4_flex >= 0.11.6 (eclipse-zenoh/zenoh#2499) and the ignore in
 # .cargo/audit.toml is removed.
-zenoh = { version = "1.9.0", default-features = false, features = [
+# Pinned exactly, not caret: `unstable` gates APIs Zenoh may change in any
+# release, so the bump must be a deliberate act that fails to compile rather
+# than something `cargo update` performs silently.
+zenoh = { version = "=1.9.0", default-features = false, features = [
     "auth_pubkey",
     "auth_usrpwd",
     "transport_multilink",
