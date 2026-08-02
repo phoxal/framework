@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.48.0...phoxal-macros-v0.49.0) - 2026-08-02
+
+### Added
+
+- *(api)* [**breaking**] delete the bus and device tools and their contracts ([#380](https://github.com/phoxal/framework/pull/380))
+
 ## [0.46.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.45.5...phoxal-macros-v0.46.0) - 2026-08-02
 
 ### Added
