@@ -1,18 +1,16 @@
 error[E0631]: type mismatch in function arguments
-  --> tests/trybuild/fail/query_request_mismatch.rs:15:54
+  --> tests/trybuild/fail/query_request_mismatch.rs:15:67
    |
-15 |           ctx.query(api::topic::owner().asset().get(), Self::get)
-   |               -----                                    ^^^^^^^^^ expected due to this
-   |               |
-   |               required by a bound introduced by this call
+15 |           ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
+   |               ----- required by a bound introduced by this call     ^^^^^^^^^ expected due to this
 ...
 22 | /     async fn get(
 23 | |         &self,
 24 | |         _api: &Api,
 25 | |         _request: api::map::SubmapRequest,
 26 | |         _state: &mut (),
-27 | |     ) -> QueryResult<api::asset::GetResponse> {
-   | |_____________________________________________- found signature defined here
+27 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
+   | |_________________________________________________________- found signature defined here
    |
    = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, GetRequest, &'a mut ())) -> _`
               found function signature `fn((&BadRequest, &Api, SubmapRequest, &mut ())) -> _`
@@ -32,22 +30,22 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    | |______________________________________________^ required by this bound in `SetupContext::<R>::query`
 help: consider wrapping the function in a closure
    |
-15 |         ctx.query(api::topic::owner().asset().get(), |arg0: (&'a BadRequest, &'a Api, GetRequest, &'a mut ())| Self::get(/* (&BadRequest, &Api, SubmapRequest, &mut ()) */))
-   |                                                      +++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++++++++
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), |arg0: (&'a BadRequest, &'a Api, GetRequest, &'a mut ())| Self::get(/* (&BadRequest, &Api, SubmapRequest, &mut ()) */))
+   |                                                                   +++++++++++++++++++++++++++++++++++++++++++++++++++++++++          +++++++++++++++++++++++++++++++++++++++++++++++++++
 
 error[E0631]: type mismatch in function arguments
   --> tests/trybuild/fail/query_request_mismatch.rs:15:9
    |
-15 |           ctx.query(api::topic::owner().asset().get(), Self::get)
-   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected due to this
+15 |           ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected due to this
 ...
 22 | /     async fn get(
 23 | |         &self,
 24 | |         _api: &Api,
 25 | |         _request: api::map::SubmapRequest,
 26 | |         _state: &mut (),
-27 | |     ) -> QueryResult<api::asset::GetResponse> {
-   | |_____________________________________________- found signature defined here
+27 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
+   | |_________________________________________________________- found signature defined here
    |
    = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, GetRequest, &'a mut ())) -> _`
               found function signature `fn((&BadRequest, &Api, SubmapRequest, &mut ())) -> _`
@@ -77,8 +75,8 @@ error[E0631]: type mismatch in function arguments
 24 | |         _api: &Api,
 25 | |         _request: api::map::SubmapRequest,
 26 | |         _state: &mut (),
-27 | |     ) -> QueryResult<api::asset::GetResponse> {
-   | |_____________________________________________- found signature defined here
+27 | |     ) -> QueryResult<api::supervisor::asset::GetResponse> {
+   | |_________________________________________________________- found signature defined here
    |
    = note: expected function signature `for<'a> fn((&'a BadRequest, &'a Api, GetRequest, &'a mut ())) -> _`
               found function signature `fn((&BadRequest, &Api, SubmapRequest, &mut ())) -> _`

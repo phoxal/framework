@@ -6,7 +6,7 @@ pub mod robot;
 pub mod simulation;
 pub mod structure;
 
-pub use asset::AssetId;
+pub use asset::{AssetError, AssetId, AssetResolver};
 pub use robot::{ROBOT_SCHEMA, Robot, RobotIdentity};
 
 /// Compiler linkage that is intentionally absent from the runtime model API.

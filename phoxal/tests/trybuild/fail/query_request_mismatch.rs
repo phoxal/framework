@@ -12,7 +12,7 @@ impl Participant for BadRequest {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().asset().get(), Self::get)
+        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
             .await?;
         Ok(((), Api))
     }
@@ -24,8 +24,8 @@ impl BadRequest {
         _api: &Api,
         _request: api::map::SubmapRequest,
         _state: &mut (),
-    ) -> QueryResult<api::asset::GetResponse> {
-        Ok(api::asset::GetResponse::Missing)
+    ) -> QueryResult<api::supervisor::asset::GetResponse> {
+        Ok(api::supervisor::asset::GetResponse::Missing)
     }
 }
 

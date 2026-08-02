@@ -1544,20 +1544,26 @@ phoxal_api_tree! {
             topic submap: query SubmapRequest => SubmapResponse;
         }
 
-        asset {
-            /// Fetch a stored asset by path.
-            struct GetRequest {
-                path: String,
-            }
+        // Contracts the supervisor itself answers. The node is part of the
+        // wire key, so a reader can tell from the key alone that the supervisor
+        // is the authority - and a stale participant sitting on an old key
+        // physically cannot answer one of these (organization#978).
+        supervisor {
+            asset {
+                /// Fetch a stored asset by path.
+                struct GetRequest {
+                    path: String,
+                }
 
-            /// The asset bytes, a not-found marker, or a rejected path.
-            enum GetResponse {
-                Found { bytes: Vec<u8> },
-                Missing,
-                InvalidPath,
-            }
+                /// The asset bytes, a not-found marker, or a rejected path.
+                enum GetResponse {
+                    Found { bytes: Vec<u8> },
+                    Missing,
+                    InvalidPath,
+                }
 
-            topic get: query GetRequest => GetResponse;
+                topic get: query GetRequest => GetResponse;
+            }
         }
 
         joypad {

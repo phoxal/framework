@@ -748,7 +748,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 25);
+        assert_eq!(workspace.official_artifacts().len(), 24);
 
         assert_eq!(
             workspace
@@ -756,7 +756,7 @@ mod tests {
                 .iter()
                 .filter(|artifact| artifact.kind == ArtifactKind::Service)
                 .count(),
-            14
+            13
         );
         let simulators = workspace
             .official_artifacts()

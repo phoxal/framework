@@ -13,7 +13,7 @@ impl Participant for TypedQueries {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().asset().get(), Self::get)
+        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
             .await?;
         ctx.query(api::topic::owner().map().submap(), Self::submap)
             .await?;
@@ -25,11 +25,11 @@ impl TypedQueries {
     async fn get(
         &self,
         _api: &Api,
-        _request: api::asset::GetRequest,
+        _request: api::supervisor::asset::GetRequest,
         state: &mut State,
-    ) -> QueryResult<api::asset::GetResponse> {
+    ) -> QueryResult<api::supervisor::asset::GetResponse> {
         state.0 += 1;
-        Ok(api::asset::GetResponse::Missing)
+        Ok(api::supervisor::asset::GetResponse::Missing)
     }
 
     async fn submap(

@@ -29,12 +29,12 @@ impl QueryParticipant {
     async fn get(
         &self,
         _api: &Api,
-        request: api::asset::GetRequest,
+        request: api::supervisor::asset::GetRequest,
         state: &mut QueryState,
-    ) -> QueryResult<api::asset::GetResponse> {
+    ) -> QueryResult<api::supervisor::asset::GetResponse> {
         state.calls.push(request.path.clone());
         if request.path == "ok" {
-            Ok(api::asset::GetResponse::Found {
+            Ok(api::supervisor::asset::GetResponse::Found {
                 bytes: vec![1, 2, 3],
             })
         } else {
@@ -45,12 +45,15 @@ impl QueryParticipant {
 
 #[tokio::test]
 async fn typed_query_dispatch_decodes_mutates_and_encodes() {
-    let registration = QueryRegistration::new("v0.1/asset/get".to_string(), QueryParticipant::get);
+    let registration = QueryRegistration::new(
+        "v0.1/supervisor/asset/get".to_string(),
+        QueryParticipant::get,
+    );
     let participant = QueryParticipant;
     let api = Api;
     let mut state = QueryState::default();
 
-    let first = MessagePack::encode(&api::asset::GetRequest {
+    let first = MessagePack::encode(&api::supervisor::asset::GetRequest {
         path: "ok".to_string(),
     })
     .unwrap();
@@ -58,10 +61,14 @@ async fn typed_query_dispatch_decodes_mutates_and_encodes() {
         .dispatch(&participant, &api, &mut state, first)
         .await
         .unwrap();
-    let response: api::asset::GetResponse = MessagePack::decode(&reply.payload).unwrap();
-    assert!(matches!(response, api::asset::GetResponse::Found { .. }));
+    let response: api::supervisor::asset::GetResponse =
+        MessagePack::decode(&reply.payload).unwrap();
+    assert!(matches!(
+        response,
+        api::supervisor::asset::GetResponse::Found { .. }
+    ));
 
-    let second = MessagePack::encode(&api::asset::GetRequest {
+    let second = MessagePack::encode(&api::supervisor::asset::GetRequest {
         path: "missing".to_string(),
     })
     .unwrap();

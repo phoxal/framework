@@ -2423,6 +2423,7 @@ version = "0.47.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 
@@ -2437,13 +2438,6 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror 2.0.19",
-]
-
-[[package]]
-name = "phoxal-service-asset"
-version = "0.47.0"
-dependencies = [
- "phoxal",
 ]
 
 [[package]]

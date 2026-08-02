@@ -52,8 +52,11 @@ impl Participant for SerializedMap {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().asset().get(), Self::get_asset)
-            .await?;
+        ctx.query(
+            api::topic::owner().supervisor().asset().get(),
+            Self::get_asset,
+        )
+        .await?;
         ctx.query(api::topic::owner().map().submap(), Self::submap)
             .await?;
         Ok((
@@ -95,16 +98,16 @@ impl SerializedMap {
     async fn get_asset(
         &self,
         _api: &Api,
-        request: api::asset::GetRequest,
+        request: api::supervisor::asset::GetRequest,
         state: &mut MapState,
-    ) -> QueryResult<api::asset::GetResponse> {
+    ) -> QueryResult<api::supervisor::asset::GetResponse> {
         state.rev = state.rev.saturating_add(1);
         if request.path == "map.cells" {
-            Ok(api::asset::GetResponse::Found {
+            Ok(api::supervisor::asset::GetResponse::Found {
                 bytes: state.grid.cells.clone(),
             })
         } else {
-            Ok(api::asset::GetResponse::Missing)
+            Ok(api::supervisor::asset::GetResponse::Missing)
         }
     }
 
