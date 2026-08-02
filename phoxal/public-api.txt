@@ -1,5 +1,7 @@
 pub mod phoxal
+pub use phoxal::AssetError
 pub use phoxal::AssetId
+pub use phoxal::AssetResolver
 pub use phoxal::Config
 pub use phoxal::Result
 pub use phoxal::api
@@ -77,6 +79,7 @@ pub use phoxal::model::robot::ROBOT_SCHEMA
 pub use phoxal::model::robot::RobotIdentity
 pub mod phoxal::prelude
 pub use phoxal::prelude::AssetId
+pub use phoxal::prelude::AssetResolver
 pub use phoxal::prelude::CaptureStamp
 pub use phoxal::prelude::CommandPublisher
 pub use phoxal::prelude::DiagnosticPublisher
@@ -99,12 +102,6 @@ pub use phoxal::prelude::TimelineId
 pub enum phoxal::prelude::ManagedTaskPolicy
 pub phoxal::prelude::ManagedTaskPolicy::AllowExit
 pub phoxal::prelude::ManagedTaskPolicy::FaultOnExit
-pub struct phoxal::prelude::AssetResolver
-impl phoxal::AssetResolver
-pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::asset::AssetId>
-pub fn phoxal::AssetResolver::open(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<std::fs::File>
-pub fn phoxal::AssetResolver::path(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<&std::path::Path>
-pub fn phoxal::AssetResolver::read(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
 pub struct phoxal::prelude::ResetContext
 impl phoxal::ResetContext
 pub fn phoxal::ResetContext::new_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
@@ -128,7 +125,7 @@ impl<R: phoxal::Participant + WorldAuthoritySurface> phoxal::SetupContext<R>
 pub fn phoxal::SetupContext<R>::timeline_authority(&self, phoxal_runtime_contract::identity::TimelineId) -> anyhow::Result<phoxal_bus::handle::TimelineAuthority>
 pub async fn phoxal::SetupContext<R>::world_clock_publisher<B: phoxal_bus::contract::WorldClockContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::WorldClockPublisher<B>>
 impl<R: phoxal::Participant> phoxal::SetupContext<R>
-pub fn phoxal::SetupContext<R>::assets(&self) -> anyhow::Result<&phoxal::AssetResolver>
+pub fn phoxal::SetupContext<R>::assets(&self) -> anyhow::Result<&phoxal_model::asset::AssetResolver>
 pub fn phoxal::SetupContext<R>::robot(&self) -> anyhow::Result<&phoxal_model::robot::Robot>
 pub fn phoxal::SetupContext<R>::spawn_managed<F>(&mut self, impl core::convert::Into<alloc::string::String>, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
 pub fn phoxal::SetupContext<R>::spawn_managed_with<F>(&mut self, impl core::convert::Into<alloc::string::String>, phoxal::prelude::ManagedTaskPolicy, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
@@ -147,12 +144,6 @@ pub async fn phoxal::prelude::Participant::shutdown(&self, &Self::Api, &mut Self
 pub async fn phoxal::prelude::Participant::step(&self, &Self::Api, phoxal::StepContext, &mut Self::State) -> anyhow::Result<()>
 pub mod phoxal::tokio
 pub async fn phoxal::tokio::run<R: phoxal::Participant>() -> anyhow::Result<()>
-pub struct phoxal::AssetResolver
-impl phoxal::AssetResolver
-pub fn phoxal::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::asset::AssetId>
-pub fn phoxal::AssetResolver::open(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<std::fs::File>
-pub fn phoxal::AssetResolver::path(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<&std::path::Path>
-pub fn phoxal::AssetResolver::read(&self, &phoxal_model::asset::AssetId) -> anyhow::Result<alloc::vec::Vec<u8>>
 pub struct phoxal::ResetContext
 impl phoxal::ResetContext
 pub fn phoxal::ResetContext::new_timeline(&self) -> phoxal_runtime_contract::identity::TimelineId
@@ -176,7 +167,7 @@ impl<R: phoxal::Participant + WorldAuthoritySurface> phoxal::SetupContext<R>
 pub fn phoxal::SetupContext<R>::timeline_authority(&self, phoxal_runtime_contract::identity::TimelineId) -> anyhow::Result<phoxal_bus::handle::TimelineAuthority>
 pub async fn phoxal::SetupContext<R>::world_clock_publisher<B: phoxal_bus::contract::WorldClockContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::WorldClockPublisher<B>>
 impl<R: phoxal::Participant> phoxal::SetupContext<R>
-pub fn phoxal::SetupContext<R>::assets(&self) -> anyhow::Result<&phoxal::AssetResolver>
+pub fn phoxal::SetupContext<R>::assets(&self) -> anyhow::Result<&phoxal_model::asset::AssetResolver>
 pub fn phoxal::SetupContext<R>::robot(&self) -> anyhow::Result<&phoxal_model::robot::Robot>
 pub fn phoxal::SetupContext<R>::spawn_managed<F>(&mut self, impl core::convert::Into<alloc::string::String>, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static
 pub fn phoxal::SetupContext<R>::spawn_managed_with<F>(&mut self, impl core::convert::Into<alloc::string::String>, phoxal::prelude::ManagedTaskPolicy, F) where F: core::future::future::Future<Output = ()> + core::marker::Send + 'static

@@ -940,7 +940,10 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/map/revision"
     );
     assert_eq!(api::topic::client().map().submap().key(), "v0.1/map/submap");
-    assert_eq!(api::topic::client().asset().get().key(), "v0.1/asset/get");
+    assert_eq!(
+        api::topic::client().supervisor().asset().get().key(),
+        "v0.1/supervisor/asset/get"
+    );
     assert_eq!(
         api::topic::client().odometry().state().key(),
         "v0.1/odometry/state"

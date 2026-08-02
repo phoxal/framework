@@ -1,5 +1,10 @@
 pub mod phoxal_model
 pub mod phoxal_model::asset
+pub enum phoxal_model::asset::AssetError
+pub phoxal_model::asset::AssetError::Io(core::io::error::Error)
+pub phoxal_model::asset::AssetError::Rejected(alloc::string::String)
+impl core::convert::From<phoxal_model::ModelError> for phoxal_model::asset::AssetError
+pub fn phoxal_model::asset::AssetError::from(phoxal_model::ModelError) -> Self
 pub struct phoxal_model::asset::AssetId(_)
 impl phoxal_model::asset::AssetId
 pub fn phoxal_model::asset::AssetId::as_str(&self) -> &str
@@ -8,6 +13,13 @@ impl serde_core::ser::Serialize for phoxal_model::asset::AssetId
 pub fn phoxal_model::asset::AssetId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for phoxal_model::asset::AssetId
 pub fn phoxal_model::asset::AssetId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct phoxal_model::asset::AssetResolver
+impl phoxal_model::asset::AssetResolver
+pub fn phoxal_model::asset::AssetResolver::discover(std::path::PathBuf) -> core::result::Result<Self, phoxal_model::asset::AssetError>
+pub fn phoxal_model::asset::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::asset::AssetId>
+pub fn phoxal_model::asset::AssetResolver::open(&self, &phoxal_model::asset::AssetId) -> core::result::Result<std::fs::File, phoxal_model::asset::AssetError>
+pub fn phoxal_model::asset::AssetResolver::path(&self, &phoxal_model::asset::AssetId) -> core::result::Result<&std::path::Path, phoxal_model::asset::AssetError>
+pub fn phoxal_model::asset::AssetResolver::read(&self, &phoxal_model::asset::AssetId) -> core::result::Result<alloc::vec::Vec<u8>, phoxal_model::asset::AssetError>
 pub mod phoxal_model::component
 pub mod phoxal_model::component::capability
 pub enum phoxal_model::component::capability::CameraMode
@@ -442,6 +454,11 @@ pub fn phoxal_model::structure::Visual::geometry(&self) -> &phoxal_model::struct
 pub fn phoxal_model::structure::Visual::material(&self) -> core::option::Option<&phoxal_model::structure::Material>
 pub fn phoxal_model::structure::Visual::name(&self) -> core::option::Option<&str>
 pub const fn phoxal_model::structure::Visual::origin(&self) -> phoxal_model::structure::Pose
+pub enum phoxal_model::AssetError
+pub phoxal_model::AssetError::Io(core::io::error::Error)
+pub phoxal_model::AssetError::Rejected(alloc::string::String)
+impl core::convert::From<phoxal_model::ModelError> for phoxal_model::asset::AssetError
+pub fn phoxal_model::asset::AssetError::from(phoxal_model::ModelError) -> Self
 pub enum phoxal_model::DecodeError
 pub phoxal_model::DecodeError::Json(serde_json::error::Error)
 pub phoxal_model::DecodeError::MissingSchema
@@ -449,6 +466,8 @@ pub phoxal_model::DecodeError::Model(phoxal_model::ModelError)
 pub phoxal_model::DecodeError::UnsupportedSchema(alloc::string::String)
 pub enum phoxal_model::ModelError
 pub phoxal_model::ModelError::Invalid(alloc::string::String)
+impl core::convert::From<phoxal_model::ModelError> for phoxal_model::asset::AssetError
+pub fn phoxal_model::asset::AssetError::from(phoxal_model::ModelError) -> Self
 pub struct phoxal_model::AssetId(_)
 impl phoxal_model::asset::AssetId
 pub fn phoxal_model::asset::AssetId::as_str(&self) -> &str
@@ -457,6 +476,13 @@ impl serde_core::ser::Serialize for phoxal_model::asset::AssetId
 pub fn phoxal_model::asset::AssetId::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for phoxal_model::asset::AssetId
 pub fn phoxal_model::asset::AssetId::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct phoxal_model::AssetResolver
+impl phoxal_model::asset::AssetResolver
+pub fn phoxal_model::asset::AssetResolver::discover(std::path::PathBuf) -> core::result::Result<Self, phoxal_model::asset::AssetError>
+pub fn phoxal_model::asset::AssetResolver::ids(&self) -> impl core::iter::traits::exact_size::ExactSizeIterator<Item = &phoxal_model::asset::AssetId>
+pub fn phoxal_model::asset::AssetResolver::open(&self, &phoxal_model::asset::AssetId) -> core::result::Result<std::fs::File, phoxal_model::asset::AssetError>
+pub fn phoxal_model::asset::AssetResolver::path(&self, &phoxal_model::asset::AssetId) -> core::result::Result<&std::path::Path, phoxal_model::asset::AssetError>
+pub fn phoxal_model::asset::AssetResolver::read(&self, &phoxal_model::asset::AssetId) -> core::result::Result<alloc::vec::Vec<u8>, phoxal_model::asset::AssetError>
 pub struct phoxal_model::EncodeError(_)
 pub struct phoxal_model::Robot
 impl phoxal_model::robot::Robot

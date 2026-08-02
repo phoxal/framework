@@ -646,6 +646,7 @@ pub(crate) fn asset_resolver_for_launch(
     bundle_root
         .map(|root| crate::AssetResolver::discover(root.join("assets")))
         .transpose()
+        .map_err(Into::into)
 }
 
 /// The failure a participant reports when it cannot trust its own clock.

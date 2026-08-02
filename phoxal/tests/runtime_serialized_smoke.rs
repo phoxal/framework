@@ -34,7 +34,7 @@ impl Participant for SerializedSmoke {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().asset().get(), Self::query)
+        ctx.query(api::topic::owner().supervisor().asset().get(), Self::query)
             .await?;
         Ok((SmokeState::default(), ()))
     }
@@ -61,11 +61,11 @@ impl SerializedSmoke {
     async fn query(
         &self,
         _api: &(),
-        _request: api::asset::GetRequest,
+        _request: api::supervisor::asset::GetRequest,
         state: &mut SmokeState,
-    ) -> QueryResult<api::asset::GetResponse> {
+    ) -> QueryResult<api::supervisor::asset::GetResponse> {
         tokio::time::sleep(Duration::from_millis(120)).await;
-        Ok(api::asset::GetResponse::Found {
+        Ok(api::supervisor::asset::GetResponse::Found {
             bytes: (state.steps as u64).to_le_bytes().to_vec(),
         })
     }
@@ -103,20 +103,20 @@ async fn a_query_waits_for_an_in_flight_step_and_stepping_resumes_afterward() {
 
         let querier = Querier::new(
             bus.clone(),
-            &api::topic::client().asset().get(),
+            &api::topic::client().supervisor().asset().get(),
             Duration::from_secs(2),
         )
         .expect("create smoke querier");
         let began = Instant::now();
         let response = querier
-            .query(api::asset::GetRequest {
+            .query(api::supervisor::asset::GetRequest {
                 path: "smoke".to_string(),
             })
             .await
             .expect("the serialized query should answer");
         let latency = began.elapsed();
 
-        let api::asset::GetResponse::Found { bytes } = response else {
+        let api::supervisor::asset::GetResponse::Found { bytes } = response else {
             panic!("smoke query returned the wrong response variant");
         };
         let observed_steps =

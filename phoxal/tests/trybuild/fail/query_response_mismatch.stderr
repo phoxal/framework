@@ -1,10 +1,8 @@
 error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
-  --> tests/trybuild/fail/query_response_mismatch.rs:15:54
+  --> tests/trybuild/fail/query_response_mismatch.rs:15:67
    |
-15 |         ctx.query(api::topic::owner().asset().get(), Self::get)
-   |             -----                                    ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
-   |             |
-   |             required by a bound introduced by this call
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
+   |             ----- required by a bound introduced by this call     ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
    |
    = note: expected enum `std::result::Result<GetResponse, QueryFailure>`
               found enum `std::result::Result<SubmapResponse, QueryFailure>`
@@ -20,8 +18,8 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
 error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
   --> tests/trybuild/fail/query_response_mismatch.rs:15:9
    |
-15 |         ctx.query(api::topic::owner().asset().get(), Self::get)
-   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found `Result<SubmapResponse, QueryFailure>`
    |
    = note: expected enum `std::result::Result<GetResponse, QueryFailure>`
               found enum `std::result::Result<SubmapResponse, QueryFailure>`

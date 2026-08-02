@@ -213,8 +213,8 @@ pub mod bus {
                 "v0.1/drive/target"
             );
             assert_eq!(
-                <api::asset::GetRequest as ContractBody>::TOPIC,
-                "v0.1/asset/get"
+                <api::supervisor::asset::GetRequest as ContractBody>::TOPIC,
+                "v0.1/supervisor/asset/get"
             );
         }
 
@@ -270,13 +270,13 @@ pub use phoxal_macros::tool;
 /// Attach a cadence to `Participant::step`.
 pub use phoxal_macros::step;
 
-pub use asset::{AssetId, AssetResolver};
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// This is the default binary entrypoint:
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use participant::run;
 pub use participant::{Participant, ResetContext, SetupContext, StepContext};
+pub use phoxal_model::{AssetError, AssetId, AssetResolver};
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
@@ -341,4 +341,3 @@ pub mod __private {
     pub use crate::participant::*;
     pub use surface::SchedulableSurface;
 }
-mod asset;

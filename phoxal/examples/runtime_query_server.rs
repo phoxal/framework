@@ -27,7 +27,7 @@ impl Participant for AssetStore {
     ) -> Result<(Self::State, Self::Api)> {
         let mut assets = BTreeMap::new();
         assets.insert("map.pgm".to_string(), vec![0x50, 0x35, 0x0a]);
-        ctx.query(api::topic::owner().asset().get(), Self::get)
+        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
             .await?;
         Ok((AssetStoreState { assets }, Api))
     }
@@ -37,14 +37,14 @@ impl AssetStore {
     async fn get(
         &self,
         _api: &Api,
-        request: api::asset::GetRequest,
+        request: api::supervisor::asset::GetRequest,
         state: &mut AssetStoreState,
-    ) -> QueryResult<api::asset::GetResponse> {
+    ) -> QueryResult<api::supervisor::asset::GetResponse> {
         match state.assets.get(&request.path) {
-            Some(bytes) => Ok(api::asset::GetResponse::Found {
+            Some(bytes) => Ok(api::supervisor::asset::GetResponse::Found {
                 bytes: bytes.clone(),
             }),
-            None => Ok(api::asset::GetResponse::Missing),
+            None => Ok(api::supervisor::asset::GetResponse::Missing),
         }
     }
 }
