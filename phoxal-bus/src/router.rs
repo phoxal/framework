@@ -69,44 +69,6 @@ impl Router {
             .collect()
     }
 
-    /// Observe transport links to this router opening and closing.
-    ///
-    /// One event per link, not per participant: a participant that reconnects
-    /// produces a [`RouterLinkChange::Closed`] then a
-    /// [`RouterLinkChange::Opened`]. This is transport-level truth, below the
-    /// participant Liveliness that [`crate::Bus`] exposes, so it sees a peer
-    /// dropping its connection immediately rather than after a lease expires.
-    ///
-    /// The returned observer stops delivering when dropped.
-    pub async fn observe_links(
-        &self,
-        callback: impl Fn(RouterLinkEvent) + Send + Sync + 'static,
-    ) -> Result<RouterLinkObserver> {
-        let listener = self
-            .session
-            .info()
-            .link_events_listener()
-            .history(true)
-            .callback(move |event| {
-                callback(RouterLinkEvent {
-                    change: match event.kind() {
-                        zenoh::sample::SampleKind::Put => RouterLinkChange::Opened,
-                        zenoh::sample::SampleKind::Delete => RouterLinkChange::Closed,
-                    },
-                    // Zenoh names these from the local session's point of
-                    // view: `src` is this router's own endpoint, `dst` is the
-                    // far side. Do not swap these back.
-                    peer: event.link().dst().to_string(),
-                    local: event.link().src().to_string(),
-                });
-            })
-            .await
-            .map_err(|error| BusError::Transport(error.to_string()))?;
-        Ok(RouterLinkObserver {
-            _listener: listener,
-        })
-    }
-
     /// Close the router, dropping every link to it.
     pub async fn close(self) -> Result<()> {
         self.session
@@ -116,28 +78,76 @@ impl Router {
     }
 }
 
-/// Whether a link appeared or went away.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RouterLinkChange {
-    Opened,
-    Closed,
-}
-
-/// One transport link to the router opening or closing.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RouterLinkEvent {
-    pub change: RouterLinkChange,
-    /// The remote side of the link.
-    pub peer: String,
-    /// The router-side locator the link landed on - which of the router's
-    /// endpoints this peer came in through.
-    pub local: String,
-}
-
-/// Keeps [`Router::observe_links`] delivering. Dropping it stops the callback.
+/// Watches the supervisor's own link to the router it is running.
+///
+/// The router runs inside the supervisor process, so "is the router still
+/// there" is not answerable from the router's own session - if that session
+/// dies it takes its own listener with it. The answer comes from the other end:
+/// a client session dialing the router sees exactly one link, and that link
+/// going away *is* the router going away.
+///
+/// This is deliberately not built on participant links. Participants report
+/// themselves through Liveliness, which names them; a transport link over the
+/// local unix socket identifies its peer only by a generated UUID, so watching
+/// those would duplicate Liveliness with strictly worse information.
 #[derive(Debug)]
-pub struct RouterLinkObserver {
+pub struct RouterWatch {
+    session: zenoh::Session,
     _listener: zenoh::session::LinkEventsListener<()>,
+}
+
+impl RouterWatch {
+    /// Dial `endpoint` and call `on_lost` if the link to the router goes away.
+    ///
+    /// Returning `Ok` means the link is up. `on_lost` fires at most once per
+    /// loss; a Zenoh client reconnects transparently, so a later recovery is
+    /// not reported here - the caller has already decided what a lost fabric
+    /// means by then.
+    pub async fn open(endpoint: &str, on_lost: impl Fn() + Send + Sync + 'static) -> Result<Self> {
+        let mut config = zenoh::Config::default();
+        apply_phoxal_transport_policy(&mut config)?;
+        let endpoints = serde_json::to_string(std::slice::from_ref(&endpoint))
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        for (key, value) in [
+            ("mode", "\"client\""),
+            ("connect/endpoints", endpoints.as_str()),
+        ] {
+            config
+                .insert_json5(key, value)
+                .map_err(|error| BusError::Transport(error.to_string()))?;
+        }
+        let session = zenoh::open(config)
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+
+        let lost = std::sync::atomic::AtomicBool::new(false);
+        let listener = session
+            .info()
+            .link_events_listener()
+            .history(true)
+            .callback(move |event| {
+                if event.kind() == zenoh::sample::SampleKind::Delete
+                    && !lost.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    on_lost();
+                }
+            })
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        Ok(RouterWatch {
+            session,
+            _listener: listener,
+        })
+    }
+
+    /// Stop watching. Call this before closing the router being watched, so an
+    /// ordinary shutdown is not reported as a loss.
+    pub async fn close(self) -> Result<()> {
+        self.session
+            .close()
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))
+    }
 }
 
 fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Result<zenoh::Config> {
