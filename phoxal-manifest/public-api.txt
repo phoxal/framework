@@ -342,7 +342,6 @@ pub phoxal_manifest::source::robot::v0::Manifest::robot: phoxal_manifest::source
 pub phoxal_manifest::source::robot::v0::Manifest::router: phoxal_manifest::source::robot::v0::Router
 pub phoxal_manifest::source::robot::v0::Manifest::schema: phoxal_manifest::source::robot::v0::Schema
 pub phoxal_manifest::source::robot::v0::Manifest::services: alloc::collections::btree::map::BTreeMap<alloc::string::String, phoxal_manifest::source::robot::v0::UserService>
-pub phoxal_manifest::source::robot::v0::Manifest::tools: alloc::collections::btree::map::BTreeMap<alloc::string::String, phoxal_manifest::source::robot::v0::UserTool>
 impl phoxal_manifest::source::robot::v0::Manifest
 pub fn phoxal_manifest::source::robot::v0::Manifest::used_component_types(&self) -> alloc::collections::btree::set::BTreeSet<&str>
 pub fn phoxal_manifest::source::robot::v0::Manifest::validate(&self) -> core::result::Result<(), alloc::vec::Vec<phoxal_manifest::source::robot::v0::ValidationError>>
@@ -362,8 +361,6 @@ impl phoxal_manifest::source::robot::v0::Router
 pub fn phoxal_manifest::source::robot::v0::Router::is_empty(&self) -> bool
 pub struct phoxal_manifest::source::robot::v0::UserService
 pub phoxal_manifest::source::robot::v0::UserService::config: core::option::Option<serde_json::value::Value>
-pub struct phoxal_manifest::source::robot::v0::UserTool
-pub phoxal_manifest::source::robot::v0::UserTool::config: core::option::Option<serde_json::value::Value>
 pub fn phoxal_manifest::source::robot::parse_from_dir(impl core::convert::AsRef<std::path::Path>) -> anyhow::Result<phoxal_manifest::source::robot::v0::Manifest>
 pub fn phoxal_manifest::source::robot::parse_from_path(impl core::convert::AsRef<std::path::Path>) -> anyhow::Result<phoxal_manifest::source::robot::v0::Manifest>
 pub fn phoxal_manifest::source::robot::parse_from_string(&str) -> anyhow::Result<phoxal_manifest::source::robot::v0::Manifest>
@@ -514,7 +511,6 @@ pub enum phoxal_manifest::ParticipantKind
 pub phoxal_manifest::ParticipantKind::Driver
 pub phoxal_manifest::ParticipantKind::Service
 pub phoxal_manifest::ParticipantKind::Simulator
-pub phoxal_manifest::ParticipantKind::Tool
 pub struct phoxal_manifest::CompiledAssets(_)
 impl phoxal_manifest::CompiledAssets
 pub fn phoxal_manifest::CompiledAssets::into_map(self) -> alloc::collections::btree::map::BTreeMap<phoxal_model::asset::AssetId, alloc::vec::Vec<u8>>

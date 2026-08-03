@@ -9,7 +9,6 @@ pub use phoxal::driver
 pub use phoxal::service
 pub use phoxal::simulator
 pub use phoxal::step
-pub use phoxal::tool
 pub mod phoxal::bus
 pub use phoxal::bus::ApiVersion
 pub use phoxal::bus::AskQuery
@@ -109,9 +108,6 @@ pub fn phoxal::ResetContext::previous_timeline(&self) -> phoxal_runtime_contract
 pub struct phoxal::prelude::SetupContext<R: phoxal::Participant>
 impl<R: phoxal::Participant + ComponentBoundSurface> phoxal::SetupContext<R>
 pub fn phoxal::SetupContext<R>::component(&self) -> anyhow::Result<&phoxal_model::robot::ComponentInstance>
-impl<R: phoxal::Participant + ToolSurface> phoxal::SetupContext<R>
-pub fn phoxal::SetupContext<R>::bus(&self) -> phoxal_bus::session::Bus
-pub fn phoxal::SetupContext<R>::execution(&self) -> phoxal_runtime_contract::identity::ExecutionId
 impl<R: phoxal::Participant + TypedIoSurface> phoxal::SetupContext<R>
 pub async fn phoxal::SetupContext<R>::command_publisher<B: phoxal_bus::contract::CommandContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::CommandPublisher<B>>
 pub async fn phoxal::SetupContext<R>::diagnostic_publisher<B: phoxal_bus::contract::DiagnosticContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::DiagnosticPublisher<B>>
@@ -151,9 +147,6 @@ pub fn phoxal::ResetContext::previous_timeline(&self) -> phoxal_runtime_contract
 pub struct phoxal::SetupContext<R: phoxal::Participant>
 impl<R: phoxal::Participant + ComponentBoundSurface> phoxal::SetupContext<R>
 pub fn phoxal::SetupContext<R>::component(&self) -> anyhow::Result<&phoxal_model::robot::ComponentInstance>
-impl<R: phoxal::Participant + ToolSurface> phoxal::SetupContext<R>
-pub fn phoxal::SetupContext<R>::bus(&self) -> phoxal_bus::session::Bus
-pub fn phoxal::SetupContext<R>::execution(&self) -> phoxal_runtime_contract::identity::ExecutionId
 impl<R: phoxal::Participant + TypedIoSurface> phoxal::SetupContext<R>
 pub async fn phoxal::SetupContext<R>::command_publisher<B: phoxal_bus::contract::CommandContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::CommandPublisher<B>>
 pub async fn phoxal::SetupContext<R>::diagnostic_publisher<B: phoxal_bus::contract::DiagnosticContract>(&self, phoxal_bus::topic::Topic<phoxal_bus::topic::Publish<B>>) -> anyhow::Result<phoxal_bus::handle::DiagnosticPublisher<B>>
