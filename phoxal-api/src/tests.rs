@@ -64,16 +64,16 @@ fn contract_body_topic_is_version_qualified() {
         "v0.1/supervisor/log/follow"
     );
     assert_eq!(
-        <api::tool::runtime::Rollup as ContractBody>::TOPIC,
-        "v0.1/tool/runtime/rollup"
+        <api::supervisor::telemetry::Rollup as ContractBody>::TOPIC,
+        "v0.1/supervisor/telemetry/rollup"
     );
     assert_eq!(
-        <api::tool::runtime::Snapshot as ContractBody>::TOPIC,
-        "v0.1/tool/runtime/snapshot"
+        <api::supervisor::telemetry::Snapshot as ContractBody>::TOPIC,
+        "v0.1/supervisor/telemetry/snapshot"
     );
     assert_eq!(
-        <api::tool::runtime::Follow as ContractBody>::TOPIC,
-        "v0.1/tool/runtime/follow"
+        <api::supervisor::telemetry::Follow as ContractBody>::TOPIC,
+        "v0.1/supervisor/telemetry/follow"
     );
 }
 
@@ -253,8 +253,8 @@ fn generated_role_const_matches_each_topic_role() {
 
     // Diagnostic: describes the participant or host, never the world, and so
     // expresses no robot time.
-    assert_role::<api::tool::runtime::Rollup>(TopicRole::Diagnostic);
-    assert_role::<api::tool::runtime::Follow>(TopicRole::Diagnostic);
+    assert_role::<api::supervisor::telemetry::Rollup>(TopicRole::Diagnostic);
+    assert_role::<api::supervisor::telemetry::Follow>(TopicRole::Diagnostic);
     assert_role::<api::logs::Event>(TopicRole::Diagnostic);
     assert_role::<api::joypad::Devices>(TopicRole::Diagnostic);
 
@@ -264,7 +264,7 @@ fn generated_role_const_matches_each_topic_role() {
     assert_role::<api::frame::LookupResponse>(TopicRole::Query);
     assert_role::<api::map::SubmapRequest>(TopicRole::Query);
     assert_role::<api::map::SubmapResponse>(TopicRole::Query);
-    assert_role::<api::tool::runtime::SnapshotRequest>(TopicRole::Query);
+    assert_role::<api::supervisor::telemetry::SnapshotRequest>(TopicRole::Query);
 }
 
 fn assert_role<B: ContractBody>(expected: TopicRole) {
@@ -539,7 +539,7 @@ fn logs_event_defaults_truncation_for_pre_field_publishers() {
 #[test]
 fn retained_tool_contracts_round_trip_through_messagepack() {
     round_trip(&api::supervisor::log::SnapshotRequest {});
-    let cursor = api::tool::Cursor {
+    let cursor = api::supervisor::Cursor {
         generation: "opaque-generation".to_string(),
         sequence: 9,
     };
@@ -574,10 +574,10 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         record,
     });
 
-    let topic = api::tool::RuntimeTopic {
+    let topic = api::supervisor::RuntimeTopic {
         topic: "v0.1/drive/state".to_string(),
-        direction: api::tool::RuntimeDirection::Subscribe,
-        buffer_kind: api::tool::RuntimeBufferKind::Latest,
+        direction: api::supervisor::RuntimeDirection::Subscribe,
+        buffer_kind: api::supervisor::RuntimeBufferKind::Latest,
         count: 42,
         rate_hz: 41.5,
         drops: 0,
@@ -590,7 +590,7 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         timeline_filtered: 0,
         overflowed_rows: 0,
     };
-    let step = api::tool::RuntimeStep {
+    let step = api::supervisor::RuntimeStep {
         target_period_ns: 20_000_000,
         completed: 49,
         errors: 1,
@@ -601,18 +601,18 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         missed_ticks: 0,
         overruns: 0,
     };
-    round_trip(&api::tool::runtime::Rollup {
+    round_trip(&api::supervisor::telemetry::Rollup {
         window_ns: 1_000_000_000,
         step: Some(step.clone()),
         topics: vec![topic.clone()],
         overflow: None,
     });
-    round_trip(&api::tool::runtime::SnapshotRequest {
+    round_trip(&api::supervisor::telemetry::SnapshotRequest {
         participant_id: Some("drive".to_string()),
         limit: 64,
         before_sequence: None,
     });
-    let runtime_record = api::tool::runtime::Record {
+    let runtime_record = api::supervisor::telemetry::Record {
         sequence: 10,
         participant_id: "drive".to_string(),
         truncated: 0,
@@ -621,13 +621,13 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
         topics: vec![topic],
         overflow: None,
     };
-    round_trip(&api::tool::runtime::Snapshot {
+    round_trip(&api::supervisor::telemetry::Snapshot {
         cursor: cursor.clone(),
         records: vec![runtime_record.clone()],
         capacity_evictions: 0,
         next_before_sequence: None,
     });
-    round_trip(&api::tool::runtime::Follow {
+    round_trip(&api::supervisor::telemetry::Follow {
         cursor,
         record: runtime_record,
     });
@@ -636,10 +636,10 @@ fn retained_tool_contracts_round_trip_through_messagepack() {
 #[test]
 fn runtime_rollup_rejects_malformed_payloads() {
     let corrupt = [0xc1u8, 0xc1, 0xc1];
-    assert!(rmp_serde::from_slice::<api::tool::runtime::Rollup>(&corrupt).is_err());
+    assert!(rmp_serde::from_slice::<api::supervisor::telemetry::Rollup>(&corrupt).is_err());
 
     let wrong_shape = rmp_serde::to_vec_named(&api::supervisor::log::SnapshotRequest {}).unwrap();
-    assert!(rmp_serde::from_slice::<api::tool::runtime::Rollup>(&wrong_shape).is_err());
+    assert!(rmp_serde::from_slice::<api::supervisor::telemetry::Rollup>(&wrong_shape).is_err());
 }
 
 #[test]
@@ -805,16 +805,20 @@ fn topic_builder_keys_match_contract_topics() {
         "v0.1/supervisor/log/follow"
     );
     assert_eq!(
-        api::topic::client().tool().runtime().rollup().key(),
-        "v0.1/tool/runtime/rollup"
+        api::topic::client().supervisor().telemetry().rollup().key(),
+        "v0.1/supervisor/telemetry/rollup"
     );
     assert_eq!(
-        api::topic::client().tool().runtime().snapshot().key(),
-        "v0.1/tool/runtime/snapshot"
+        api::topic::client()
+            .supervisor()
+            .telemetry()
+            .snapshot()
+            .key(),
+        "v0.1/supervisor/telemetry/snapshot"
     );
     assert_eq!(
-        api::topic::client().tool().runtime().follow().key(),
-        "v0.1/tool/runtime/follow"
+        api::topic::client().supervisor().telemetry().follow().key(),
+        "v0.1/supervisor/telemetry/follow"
     );
     assert_eq!(
         api::topic::client().perception().detections().key(),
@@ -884,8 +888,8 @@ fn owner_builder_produces_identical_keys() {
         "v0.1/supervisor/log/snapshot"
     );
     assert_eq!(
-        api::topic::owner().tool().runtime().rollup().key(),
-        "v0.1/tool/runtime/rollup"
+        api::topic::owner().supervisor().telemetry().rollup().key(),
+        "v0.1/supervisor/telemetry/rollup"
     );
     assert_eq!(api::topic::owner().map().submap().key(), "v0.1/map/submap");
     assert_eq!(api::topic::owner().video().open().key(), "v0.1/video/open");
