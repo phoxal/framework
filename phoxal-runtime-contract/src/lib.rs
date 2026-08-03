@@ -16,7 +16,6 @@ pub use launch::{
     env,
 };
 pub use metadata::{
-    PARTICIPANT_METADATA_SCHEMA, ParticipantClass, ParticipantKind, ParticipantMetadata,
-    parse_participant_metadata,
+    PARTICIPANT_METADATA_SCHEMA, ParticipantKind, ParticipantMetadata, parse_participant_metadata,
 };
 pub use origin::{BootId, ExecutionOrigin};

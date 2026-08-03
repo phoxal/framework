@@ -232,11 +232,3 @@ changelog_update = false
 git_tag_enable = false
 git_release_enable = false
 
-[[package]]
-name = "phoxal-tool-joypad"
-version_group = "framework-train"
-publish = false
-changelog_update = false
-git_tag_enable = false
-git_release_enable = false
-

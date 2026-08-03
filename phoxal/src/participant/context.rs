@@ -6,9 +6,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::__private::surface::{
-    ComponentBoundSurface, ToolSurface, TypedIoSurface, WorldAuthoritySurface,
-};
+use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
 use crate::AssetResolver;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
@@ -275,18 +273,6 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
         topic: Topic<Publish<B>>,
     ) -> crate::Result<WorldClockPublisher<B>> {
         Ok(WorldClockPublisher::__mint(self.bus.clone(), &topic)?)
-    }
-}
-
-impl<R: Participant + ToolSurface> SetupContext<R> {
-    /// Clone the runner-owned raw bus for privileged tool internals.
-    pub fn bus(&self) -> Bus {
-        self.bus.clone()
-    }
-
-    /// The supervised execution this tool joined.
-    pub fn execution(&self) -> crate::bus::ExecutionId {
-        self.bus.execution()
     }
 }
 

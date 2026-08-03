@@ -42,7 +42,7 @@ const RUNTIME_PERFORMANCE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// The participant macro's launch policy decides whether clock selection exists
-/// at all: services/drivers are selectable, while tools and simulators are
+/// at all: services/drivers are selectable, while simulators are
 /// structurally host-driven. The default binary entrypoint is
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub fn run<R: Participant>() -> crate::Result<()> {
@@ -199,7 +199,7 @@ pub(crate) fn spawn_simulation_clock_feed(
 }
 
 /// Run a participant against an explicit launch and shutdown trigger. The
-/// runner owns the host clock; tools therefore have no clock parameter to
+/// runner owns the host clock; simulators therefore have no clock parameter to
 /// receive or override.
 pub async fn run_with<R, S>(launch: ParticipantLaunch, shutdown: S) -> crate::Result<()>
 where
@@ -266,7 +266,7 @@ where
 }
 
 /// Deterministic clock-injection seam for clock-selectable checked graph
-/// participants. Fixed tool and simulator launch policies exclude them even if
+/// participants. The fixed simulator launch policy excludes them even if
 /// user code manually adds the public
 /// typed-I/O surface marker.
 #[doc(hidden)]

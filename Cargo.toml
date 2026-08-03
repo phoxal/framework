@@ -42,7 +42,6 @@ members = [
     "service/safety",
     "service/video",
     "simulator/webots-controller",
-    "tool/joypad",
     "workspace-policy",
 ]
 # Keep the internal automation crate out of plain root cargo builds.
@@ -77,7 +76,6 @@ default-members = [
     "service/safety",
     "service/video",
     "simulator/webots-controller",
-    "tool/joypad",
 ]
 
 [workspace.dependencies]

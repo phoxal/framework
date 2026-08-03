@@ -245,13 +245,6 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # workspace-policy keeps this bootstrap input synchronized with the
-      # package.metadata.phoxal.build union used by the managed builder image.
-      - name: Install packaging dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libudev-dev pkg-config
-
       # The checked-out source must actually BE this train. This is what stops
       # a resume publishing someone else's version: an old release commit
       # predating the registry model selects no packages at all, and any commit

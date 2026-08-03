@@ -43,9 +43,7 @@ pub enum MissedTick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::__private::surface::{
-        ComponentBoundSurface, ToolSurface, TypedIoSurface, WorldAuthoritySurface,
-    };
+    use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
     use crate::prelude::*;
 
     #[test]
@@ -66,28 +64,12 @@ mod tests {
         }
     }
 
-    #[phoxal::tool(id = "marker-tool")]
-    struct MarkerTool;
-
-    impl Participant for MarkerTool {
-        async fn setup(
-            &self,
-            _ctx: &mut SetupContext<Self>,
-            _config: Self::Config,
-        ) -> Result<(Self::State, Self::Api)> {
-            Ok(((), ()))
-        }
-    }
-
     /// Each kind macro emits its own marker, which is what gates the
-    /// kind-specific `SetupContext` accessors. A tool additionally has no
-    /// typed-graph surface.
+    /// kind-specific `SetupContext` accessors.
     #[test]
     fn kind_macros_emit_their_markers() {
         fn assert_simulator<T: WorldAuthoritySurface + ComponentBoundSurface + TypedIoSurface>() {}
-        fn assert_tool<T: ToolSurface>() {}
 
         assert_simulator::<MarkerSimulator>();
-        assert_tool::<MarkerTool>();
     }
 }

@@ -199,15 +199,13 @@ primitive_config_schema!(f64 => r#"{"type":"number","format":"double"}"#);
 #[doc(hidden)]
 pub trait ParticipantSpec: Sized + Send + Sync + 'static {
     /// The authoring kind that produced this artifact (`"service"`,
-    /// `"driver"`, `"simulator"`, or `"tool"`).
+    /// `"driver"`, or `"simulator"`).
     const KIND: &'static str;
-    /// Whether normal graph topology applies to this participant.
-    const PARTICIPANT_CLASS: &'static str;
     /// The participant id (`id = "…"`, default derived from the crate's
     /// `CARGO_PKG_NAME`; see `#[phoxal::service]`'s docs).
     const ID: &'static str;
-    /// The process launch contract. Tools use a clockless policy; checked graph
-    /// participants use the configurable robot-clock policy.
+    /// The process launch contract. Simulators use a clockless policy;
+    /// services and drivers use the configurable robot-clock policy.
     #[doc(hidden)]
     type LaunchPolicy: crate::participant::launch::ParticipantLaunchPolicy;
     /// The participant's typed config (`robot.yaml` input).

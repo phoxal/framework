@@ -6,7 +6,7 @@
 //! [Zenoh](https://zenoh.io), train-selected concrete API contracts,
 //! and a
 //! participant authoring model where a role marker plus a direct trait
-//! implementation is a complete service, driver, tool, or simulator. The framework owns the
+//! implementation is a complete service, driver, or simulator. The framework owns the
 //! awkward parts - argument parsing, bus connection, scheduling, query serving,
 //! shutdown, and health - so the code you write is the robot's behavior, not its
 //! plumbing.
@@ -31,8 +31,8 @@
 //!   [`Participant`] implementation owns lifecycle
 //!   behavior, and [`run`] turns the marker into a binary. Use `service` for ordinary robot
 //!   participants, `driver` for a participant launched once per
-//!   `robot.components` entry, `tool` for host-side utilities, and `simulator`
-//!   for simulation-only participants.
+//!   `robot.components` entry, and `simulator` for simulation-only
+//!   participants.
 //!
 //! ## Author a participant
 //!
@@ -99,18 +99,14 @@
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
 //!
-//! The four authoring kinds share the same metadata path but describe different
-//! runtime roles:
+//! The three authoring kinds share the same metadata path but describe
+//! different runtime roles:
 //!
 //! - [`macro@service`] is the ordinary typed participant surface.
 //! - [`macro@driver`] is launched once per `robot.components` entry. Only a
 //!   driver can call
 //!   [`SetupContext::component`]
 //!   to read the bound component instance.
-//! - [`macro@tool`] is for host-side utilities that inspect the robot model
-//!   through
-//!   [`SetupContext::robot`]. Its privileged low-level transport is available
-//!   only through the capability-gated [`SetupContext::bus`] method.
 //! - [`macro@simulator`] is a normal participant for simulation-only processes.
 //!   It carries a distinct kind and marker for simulation clock ownership.
 //!
@@ -164,9 +160,8 @@ pub use phoxal_api::latest as api;
 /// closes the accidental route - see
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority)'s docs for the exact
 /// strength of that claim. Checked participants build IO through
-/// [`SetupContext`] and the api-local topic builders. Privileged tool transport
-/// and simulator world authority are exposed only by their role-gated context
-/// methods.
+/// [`SetupContext`] and the api-local topic builders. Simulator world
+/// authority is exposed only by its role-gated context methods.
 pub mod bus {
     pub use phoxal_bus::{
         ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
@@ -263,10 +258,6 @@ pub use phoxal_macros::driver;
 /// simulation participant.
 pub use phoxal_macros::simulator;
 
-/// Link a participant state struct to its `Config` as a raw-bus tool (`Api`
-/// defaults to `()` - tools stay raw-bus only).
-pub use phoxal_macros::tool;
-
 /// Attach a cadence to `Participant::step`.
 pub use phoxal_macros::step;
 
@@ -305,7 +296,6 @@ pub mod __private {
     pub use crate::participant::api::__meta;
     pub use crate::participant::launch::{
         ClockedParticipantLaunch, ParticipantLaunchPolicy, SimulatorParticipantLaunch,
-        ToolParticipantLaunch,
     };
     pub use crate::participant::runner::{run_with_bus, run_with_bus_clock};
     pub mod surface {
@@ -316,10 +306,6 @@ pub mod __private {
         }
 
         #[doc(hidden)]
-        #[diagnostic::on_unimplemented(
-            message = "`{Self}` is a tool, which has no typed-graph surface",
-            label = "typed graph handles are unavailable; use the tool bus surface"
-        )]
         pub trait TypedIoSurface: sealing::Sealed {}
 
         #[doc(hidden)]
@@ -331,9 +317,6 @@ pub mod __private {
             label = "scheduled steps are available only on services and drivers"
         )]
         pub trait SchedulableSurface {}
-
-        #[doc(hidden)]
-        pub trait ToolSurface: sealing::Sealed {}
 
         #[doc(hidden)]
         pub trait WorldAuthoritySurface: sealing::Sealed {}

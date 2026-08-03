@@ -9,14 +9,6 @@ pub enum ParticipantKind {
     Service,
     Driver,
     Simulator,
-    Tool,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ParticipantClass {
-    Checked,
-    Privileged,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -25,7 +17,6 @@ pub struct ParticipantMetadata {
     pub schema: String,
     pub id: String,
     pub kind: ParticipantKind,
-    pub class: ParticipantClass,
     pub config_schema: serde_json::Value,
 }
 
@@ -52,18 +43,23 @@ mod tests {
 
     #[test]
     fn strict_metadata_shape_round_trips() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","class":"checked","config_schema":{"type":"null"}}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","config_schema":{"type":"null"}}"#;
         let metadata = parse_participant_metadata(bytes).unwrap();
         assert_eq!(metadata.kind, ParticipantKind::Service);
-        assert_eq!(metadata.class, ParticipantClass::Checked);
+        assert_eq!(metadata.id, "drive");
     }
 
     #[test]
     fn unknown_schema_and_fields_are_rejected() {
         assert!(matches!(
-            parse_participant_metadata(br#"{"schema":"v1","id":"drive","kind":"service","class":"checked","config_schema":null}"#),
+            parse_participant_metadata(
+                br#"{"schema":"v1","id":"drive","kind":"service","config_schema":null}"#
+            ),
             Err(MetadataError::Schema(_))
         ));
-        assert!(parse_participant_metadata(br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","class":"checked","config_schema":null,"extra":true}"#).is_err());
+        assert!(parse_participant_metadata(br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","config_schema":null,"extra":true}"#).is_err());
+        // `class` was the tool/checked discriminator and went with the tool
+        // concept (#978); a binary still emitting it is stale, not compatible.
+        assert!(parse_participant_metadata(br#"{"schema":"phoxal/participant-metadata/v0","id":"drive","kind":"service","class":"checked","config_schema":null}"#).is_err());
     }
 }

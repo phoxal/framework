@@ -229,7 +229,6 @@ pub enum ParticipantKind {
     Service,
     Driver,
     Simulator,
-    Tool,
 }
 
 impl ParticipantKind {
@@ -238,7 +237,6 @@ impl ParticipantKind {
             ParticipantKind::Service => "#[phoxal::service]",
             ParticipantKind::Driver => "#[phoxal::driver]",
             ParticipantKind::Simulator => "#[phoxal::simulator]",
-            ParticipantKind::Tool => "#[phoxal::tool]",
         }
     }
 
@@ -247,24 +245,11 @@ impl ParticipantKind {
             ParticipantKind::Service => "service",
             ParticipantKind::Driver => "driver",
             ParticipantKind::Simulator => "simulator",
-            ParticipantKind::Tool => "tool",
-        }
-    }
-
-    fn participant_class(self) -> &'static str {
-        match self {
-            ParticipantKind::Tool => "privileged",
-            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Simulator => {
-                "checked"
-            }
         }
     }
 
     fn launch_policy(self, phoxal: &TokenStream) -> TokenStream {
         match self {
-            ParticipantKind::Tool => {
-                quote!(#phoxal::__private::launch::ToolParticipantLaunch)
-            }
             ParticipantKind::Simulator => {
                 quote!(#phoxal::__private::launch::SimulatorParticipantLaunch)
             }
@@ -303,10 +288,6 @@ impl ParticipantKind {
                 impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
                 impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
                 impl #phoxal::__private::surface::WorldAuthoritySurface for #struct_name {}
-            },
-            ParticipantKind::Tool => quote! {
-                impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
-                impl #phoxal::__private::surface::ToolSurface for #struct_name {}
             },
         }
     }
@@ -526,7 +507,6 @@ pub fn expand_participant(
 
     let phoxal = phoxal();
     let artifact_kind = kind.artifact_kind();
-    let participant_class = kind.participant_class();
     let launch_policy = kind.launch_policy(&phoxal);
     let marker = kind.marker_impl(&phoxal, struct_name);
     let metadata_const_ident = Ident::new(
@@ -557,7 +537,6 @@ pub fn expand_participant(
 
         impl #phoxal::__private::ParticipantSpec for #struct_name {
             const KIND: &'static str = #artifact_kind;
-            const PARTICIPANT_CLASS: &'static str = #participant_class;
             const ID: &'static str = #id;
             type LaunchPolicy = #launch_policy;
             type Config = #config_ty;
@@ -583,8 +562,8 @@ pub fn expand_participant(
 
         #marker
 
-        // Process-boundary metadata is self-identifying and strict. Its schema,
-        // kind, and capability class are interpreted by the CLI before launch.
+        // Process-boundary metadata is self-identifying and strict. Its schema
+        // and kind are interpreted by the CLI before launch.
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
             #phoxal::__private::api::__meta::__concatcp!(
@@ -592,8 +571,6 @@ pub fn expand_participant(
                 #id,
                 "\",\"kind\":\"",
                 #artifact_kind,
-                "\",\"class\":\"",
-                #participant_class,
                 "\",\"config_schema\":",
                 <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
                 "}"
@@ -677,7 +654,7 @@ mod tests {
             expand_participant(
                 quote! {},
                 quote! { struct OmittedId; },
-                ParticipantKind::Tool,
+                ParticipantKind::Service,
             )
             .expect("expands with a defaulted id"),
         );
@@ -694,7 +671,7 @@ mod tests {
             expand_participant(
                 quote! { id = "custom-id" },
                 quote! { struct ExplicitId; },
-                ParticipantKind::Tool,
+                ParticipantKind::Service,
             )
             .expect("expands with the explicit id"),
         );
@@ -713,8 +690,12 @@ mod tests {
         // function could silently drop the one line that keeps the section
         // out of the linker's reachability GC.
         let expanded = compact_tokens(
-            expand_participant(quote! {}, quote! { struct Probe; }, ParticipantKind::Tool)
-                .expect("expands"),
+            expand_participant(
+                quote! {},
+                quote! { struct Probe; },
+                ParticipantKind::Service,
+            )
+            .expect("expands"),
         );
         assert!(
             expanded.contains("fn __retain_embedded_metadata () { :: std :: hint :: black_box (& __PHOXAL_PARTICIPANT_META_PROBE) ; }"),

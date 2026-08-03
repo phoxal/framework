@@ -2,7 +2,7 @@
 //!
 //! Participant binaries share one common `--flag` set with matching `PHOXAL_*`
 //! env fallbacks. Clocked services and drivers additionally accept `--clock` /
-//! `PHOXAL_CLOCK`; tools and simulators do not expose either input. Supervisors
+//! `PHOXAL_CLOCK`; simulators do not expose either input. Supervisors
 //! and systemd units use env, while humans can use flags for bench runs. Flags
 //! win over env through clap's native precedence, and `--help` is the
 //! user-facing contract documentation.
@@ -128,19 +128,6 @@ struct ClockedLaunchCli {
     clock: ClockMode,
 }
 
-/// Launch contract for host/event-driven tools. It intentionally has no clock
-/// flag or environment binding.
-#[derive(Debug, clap::Parser)]
-#[command(
-    name = "phoxal-tool",
-    about = "Run a Phoxal tool.",
-    long_about = None
-)]
-struct ToolLaunchCli {
-    #[command(flatten)]
-    common: CommonLaunchCli,
-}
-
 /// Launch contract for host/Webots-driven simulators. It intentionally has no
 /// clock flag or environment binding: a simulator produces or observes the
 /// semantic simulation clock, but never schedules itself from that feed.
@@ -230,27 +217,6 @@ impl ParticipantLaunchPolicy for ClockedParticipantLaunch {
     }
 }
 
-/// Clockless launch policy for tools.
-#[doc(hidden)]
-pub struct ToolParticipantLaunch;
-
-impl ParticipantLaunchPolicy for ToolParticipantLaunch {
-    fn from_cli(
-        default_participant_id: &'static str,
-        default_robot_id: &'static str,
-    ) -> crate::Result<ParticipantLaunch> {
-        let matches =
-            command_for::<ToolLaunchCli>(default_participant_id, default_robot_id).get_matches();
-        let cli = ToolLaunchCli::from_arg_matches(&matches)?;
-        cli.common
-            .into_launch(default_participant_id, default_robot_id)
-    }
-
-    fn clock_mode(_launch: &ParticipantLaunch) -> ClockMode {
-        ClockMode::Clockless
-    }
-}
-
 /// Clockless launch policy for host/Webots-driven simulators.
 #[doc(hidden)]
 pub struct SimulatorParticipantLaunch;
@@ -305,14 +271,6 @@ mod tests {
         let mut launch = cli.common.into_launch("default-id", "robot")?;
         launch.clock = cli.clock;
         Ok(launch)
-    }
-
-    fn parse_tool_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
-        let matches = command_for::<ToolLaunchCli>("default-id", "robot")
-            .try_get_matches_from(args)
-            .map_err(anyhow::Error::from)?;
-        let cli = ToolLaunchCli::from_arg_matches(&matches).map_err(anyhow::Error::from)?;
-        cli.common.into_launch("default-id", "robot")
     }
 
     fn parse_simulator_from(args: &[&str]) -> crate::Result<ParticipantLaunch> {
@@ -499,13 +457,14 @@ mod tests {
     fn a_malformed_identity_or_origin_is_rejected_rather_than_silently_replaced() {
         clear_env();
 
-        let error = parse_tool_from(&["tool-bin", "--execution-id", "not-an-id"]).unwrap_err();
+        let error =
+            parse_simulator_from(&["simulator-bin", "--execution-id", "not-an-id"]).unwrap_err();
         assert!(
             error.to_string().contains("PHOXAL_EXECUTION_ID is invalid"),
             "{error:#}"
         );
 
-        let error = parse_tool_from(&["tool-bin", "--producer-id", "0011"]).unwrap_err();
+        let error = parse_simulator_from(&["simulator-bin", "--producer-id", "0011"]).unwrap_err();
         assert!(
             error.to_string().contains("PHOXAL_PRODUCER_ID is invalid"),
             "{error:#}"
@@ -525,8 +484,8 @@ mod tests {
         // processes would collide on - but it does NOT invent an execution
         // origin, because that would silently defeat the missing-origin
         // trigger instead of reporting an untrustworthy clock.
-        let first = parse_tool_from(&["tool-bin"]).unwrap();
-        let second = parse_tool_from(&["tool-bin"]).unwrap();
+        let first = parse_simulator_from(&["simulator-bin"]).unwrap();
+        let second = parse_simulator_from(&["simulator-bin"]).unwrap();
         assert_ne!(first.execution, second.execution);
         assert_ne!(first.producer, second.producer);
         assert_eq!(first.execution_origin, None);
@@ -546,48 +505,6 @@ mod tests {
         let malformed =
             encoded.replace(&launch.execution_origin.unwrap().encode(), "not-an-origin");
         assert!(serde_json::from_str::<ParticipantLaunch>(&malformed).is_err());
-    }
-
-    #[test]
-    #[serial]
-    fn tool_cli_has_no_clock_input() {
-        clear_env();
-        // A generic supervisor setting is invisible to the tool launch parser.
-        // SAFETY: serialized test; see clear_env.
-        unsafe { std::env::set_var(env::CLOCK, "simulation") };
-        let launch = parse_tool_from(&["tool-bin"]).unwrap();
-        assert_eq!(launch.clock, ClockMode::Real);
-
-        let mut help = Vec::new();
-        command_for::<ToolLaunchCli>("default-id", "robot")
-            .write_long_help(&mut help)
-            .unwrap();
-        let help = String::from_utf8(help).unwrap();
-        assert!(!help.contains("--clock"));
-        assert!(!help.contains(env::CLOCK));
-
-        for arguments in [
-            vec!["tool-bin", "--clock", "simulation"],
-            vec!["tool-bin", "--simulation"],
-        ] {
-            let error = command_for::<ToolLaunchCli>("default-id", "robot")
-                .try_get_matches_from(arguments)
-                .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::UnknownArgument);
-        }
-
-        let mut programmatic = ParticipantLaunch::local("tool", "robot");
-        programmatic.clock = ClockMode::Simulation;
-        assert_eq!(
-            ToolParticipantLaunch::clock_mode(&programmatic),
-            ClockMode::Clockless,
-            "a tool ignores a requested clock mode: it joins the execution, not the clock"
-        );
-        assert_eq!(
-            ClockedParticipantLaunch::clock_mode(&programmatic),
-            ClockMode::Simulation
-        );
-        clear_env();
     }
 
     #[test]

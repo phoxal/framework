@@ -2,8 +2,8 @@
 //! and the tests that enforce them.
 //!
 //! No single crate owns these facts - that a package's directory, name and
-//! `publish` field agree, that official tools stay off the logical clock, that
-//! the zenoh dependency set keeps transport compression disabled - so they live
+//! `publish` field agree, that the zenoh dependency set keeps transport
+//! compression disabled - so they live
 //! here, in a crate whose only purpose is to be a test target under
 //! `cargo test --workspace`.
 
@@ -43,7 +43,6 @@ pub enum ArtifactKind {
     /// picks the assets up by default, so they need no inclusion rules.
     /// Discovered from `component/<id>/Cargo.toml`.
     Component,
-    Tool,
     Simulator,
 }
 
@@ -54,7 +53,6 @@ impl fmt::Display for ArtifactKind {
         formatter.pad(match self {
             ArtifactKind::Service => "service",
             ArtifactKind::Component => "component",
-            ArtifactKind::Tool => "tool",
             ArtifactKind::Simulator => "simulator",
         })
     }
@@ -249,7 +247,6 @@ fn package_name_segment(kind: ArtifactKind, id: &str) -> String {
     match kind {
         ArtifactKind::Service => format!("service-{id}"),
         ArtifactKind::Component => format!("component-{id}"),
-        ArtifactKind::Tool => format!("tool-{id}"),
         ArtifactKind::Simulator => format!("simulator-{id}"),
     }
 }
@@ -289,7 +286,7 @@ fn classify_manifest_path(root: &Path, manifest_path: &Path) -> Result<ManifestC
     if components.len() != 3 || components[2] != "Cargo.toml" || components[1].is_empty() {
         bail!(
             "workspace package manifest {} is nested under artifact root '{}'; official artifacts \
-             must live exactly at {{service,component,tool,simulator}}/<id>/Cargo.toml",
+             must live exactly at {{service,component,simulator}}/<id>/Cargo.toml",
             relative.display(),
             top_level
         );
@@ -316,7 +313,6 @@ fn artifact_kind_from_directory(directory: &str) -> Option<ArtifactKind> {
     match directory {
         "service" => Some(ArtifactKind::Service),
         "component" => Some(ArtifactKind::Component),
-        "tool" => Some(ArtifactKind::Tool),
         "simulator" => Some(ArtifactKind::Simulator),
         _ => None,
     }
@@ -378,7 +374,6 @@ fn expected_package_name(kind: ArtifactKind, id: &str) -> String {
     match kind {
         ArtifactKind::Service => format!("phoxal-service-{id}"),
         ArtifactKind::Component => format!("phoxal-component-{id}"),
-        ArtifactKind::Tool => format!("phoxal-tool-{id}"),
         ArtifactKind::Simulator => format!("phoxal-simulator-{id}"),
     }
 }
@@ -391,11 +386,6 @@ fn classify_package_prefix(package_name: &str) -> Option<(ArtifactKind, String)>
             package_name
                 .strip_prefix("phoxal-component-")
                 .map(|id| (ArtifactKind::Component, id.to_string()))
-        })
-        .or_else(|| {
-            package_name
-                .strip_prefix("phoxal-tool-")
-                .map(|id| (ArtifactKind::Tool, id.to_string()))
         })
         .or_else(|| {
             package_name
@@ -433,20 +423,6 @@ mod tests {
             .context("workspace-policy manifest directory has no workspace parent")
     }
 
-    fn visit_rust_sources(directory: &Path, sources: &mut Vec<PathBuf>) -> Result<()> {
-        for entry in fs::read_dir(directory)
-            .with_context(|| format!("failed to read {}", directory.display()))?
-        {
-            let path = entry?.path();
-            if path.is_dir() {
-                visit_rust_sources(&path, sources)?;
-            } else if path.extension().is_some_and(|extension| extension == "rs") {
-                sources.push(path);
-            }
-        }
-        Ok(())
-    }
-
     #[test]
     fn phoxal_metadata_namespace_is_valid_in_every_workspace_manifest() -> Result<()> {
         let workspace_root = workspace_root()?;
@@ -457,7 +433,6 @@ mod tests {
             .context("failed to read workspace metadata")?;
 
         let mut declared_packages = std::collections::BTreeSet::new();
-        let mut joypad = None;
         for package in metadata.workspace_packages() {
             let path = package.manifest_path.clone().into_std_path_buf();
             let source = fs::read_to_string(&path)
@@ -467,94 +442,35 @@ mod tests {
                 &path.display().to_string(),
             )?;
             declared_packages.extend(requirements.apt.iter().cloned());
-            if package.name.as_str() == "phoxal-tool-joypad" {
-                joypad = Some(requirements);
-            }
         }
 
-        let joypad = joypad.context("workspace has no phoxal-tool-joypad package")?;
-        assert_eq!(
-            joypad.apt.into_iter().collect::<Vec<_>>(),
-            ["libudev-dev", "pkg-config"]
-        );
-
+        // A workspace that declares nothing must also install nothing: the
+        // workflows carry no line at all rather than an empty one, so an
+        // absent declaration reads as the empty union.
         let declared = declared_packages.into_iter().collect::<Vec<_>>();
-        let ci = fs::read_to_string(workspace_root.join(".github/workflows/ci.yml"))?;
-        let ci_packages = ci
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("system-packages:"))
-            .context(".github/workflows/ci.yml declares no system-packages input")?
-            .split_whitespace()
-            .collect::<Vec<_>>();
+        let declared_in = |workflow: &str, prefix: &str| -> Result<Vec<String>> {
+            let source = fs::read_to_string(workspace_root.join(workflow))?;
+            Ok(source
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(prefix))
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect())
+        };
         assert_eq!(
-            ci_packages, declared,
+            declared_in(".github/workflows/ci.yml", "system-packages:")?,
+            declared,
             "CI system-packages must equal the manifest-declared union"
         );
-        let release = fs::read_to_string(workspace_root.join(".github/workflows/release-plz.yml"))?;
-        let release_packages = release
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("sudo apt-get install -y"))
-            .context(".github/workflows/release-plz.yml installs no packaging dependencies")?
-            .split_whitespace()
-            .collect::<Vec<_>>();
         assert_eq!(
-            release_packages, declared,
+            declared_in(
+                ".github/workflows/release-plz.yml",
+                "sudo apt-get install -y"
+            )?,
+            declared,
             "release packaging dependencies must equal the manifest-declared union"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn official_tools_do_not_import_logical_clock_surfaces() -> Result<()> {
-        let workspace_root = workspace_root()?;
-        let mut sources = Vec::new();
-        visit_rust_sources(&workspace_root.join("tool"), &mut sources)?;
-        let forbidden = [
-            "ClockMode",
-            "ClockSource",
-            "SimulationClock",
-            "StepContext",
-            "simulation().clock()",
-            ".clock()",
-        ];
-
-        let mut violations = Vec::new();
-        for source in sources {
-            let body = fs::read_to_string(&source)?;
-            for token in forbidden {
-                if body.contains(token) {
-                    violations.push(format!("{} imports or calls {token}", source.display()));
-                }
-            }
-        }
-
-        assert!(
-            violations.is_empty(),
-            "tools must remain host/event driven:\n{}",
-            violations.join("\n")
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn official_periodic_tools_skip_missed_ticks() -> Result<()> {
-        // `joypad` is the last periodic official tool; `bus` and `device` were
-        // deleted with the supervisor consolidation (organization#978). Keep
-        // this a loop so restoring the guard for a future one is a list edit.
-        let workspace_root = workspace_root()?;
-        let periodic_tools: &[&str] = &["joypad"];
-        for tool in periodic_tools {
-            let source = workspace_root
-                .join("tool")
-                .join(tool)
-                .join("src")
-                .join(format!("{tool}.rs"));
-            let body = fs::read_to_string(&source)?;
-            assert!(
-                body.contains("set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip)"),
-                "periodic tool {tool} must skip missed ticks instead of catching up"
-            );
-        }
         Ok(())
     }
 
@@ -666,7 +582,7 @@ mod tests {
                 .and_then(|value| value.as_os_str().to_str());
             let official = matches!(
                 (top, second),
-                (Some("service" | "component" | "simulator" | "tool"), _)
+                (Some("service" | "component" | "simulator"), _)
             );
             if official
                 && package
@@ -752,7 +668,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 20);
+        assert_eq!(workspace.official_artifacts().len(), 19);
 
         assert_eq!(
             workspace
@@ -830,13 +746,6 @@ mod tests {
             ManifestClassification::Artifact {
                 kind: ArtifactKind::Component,
                 id: "ddsm115".to_string()
-            }
-        );
-        assert_eq!(
-            classify("tool/joypad/Cargo.toml")?,
-            ManifestClassification::Artifact {
-                kind: ArtifactKind::Tool,
-                id: "joypad".to_string()
             }
         );
         assert_eq!(
@@ -1104,7 +1013,7 @@ path = "src/example.rs"
     /// review rounds missed it because every prior check only read source,
     /// never a built artifact). The only honest check is building a real
     /// participant and inspecting the linked object file, so that is what
-    /// this test does: it compiles a throwaway tool participant against the
+    /// this test does: it compiles a throwaway service participant against the
     /// real in-tree `phoxal`/`phoxal-macros` crates in a standalone temp
     /// workspace, then reads the linked binary's metadata section back with the
     /// `object` crate - never executing it, the same "read the bytes, don't
@@ -1154,7 +1063,7 @@ phoxal = {{ path = {phoxal_path:?} }}
             crate_dir.join("src/main.rs"),
             r#"use phoxal::prelude::*;
 
-#[phoxal::tool(id = "elf-meta-probe")]
+#[phoxal::service(id = "elf-meta-probe")]
 struct ElfMetaProbe;
 
 impl Participant for ElfMetaProbe {
@@ -1241,10 +1150,6 @@ fn main() -> phoxal::Result<()> {
         assert_eq!(
             package_identity(ArtifactKind::Component, "ddsm115"),
             "phoxal/component-ddsm115"
-        );
-        assert_eq!(
-            package_identity(ArtifactKind::Tool, "joypad"),
-            "phoxal/tool-joypad"
         );
         assert_eq!(
             package_identity(ArtifactKind::Simulator, "webots-controller"),

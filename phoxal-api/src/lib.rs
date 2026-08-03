@@ -1427,58 +1427,6 @@ phoxal_api_tree! {
             }
         }
 
-        joypad {
-            /// Whether an observed controller is ready for the fixed manual
-            /// input preset, disconnected, or connected without a compatible
-            /// control mapping.
-            enum DeviceStatus {
-                Ready,
-                Disconnected,
-                Unsupported,
-            }
-
-            /// One gamepad the tool can see. `id` is a STABLE wire id the tool
-            /// assigns (name/guid-derived) - NOT a process-local gilrs id.
-            struct Device {
-                id: String,
-                name: String,
-                status: DeviceStatus,
-            }
-
-            /// The joypad tool's published device state.
-            struct Devices {
-                available: Vec<Device>,
-                selected: Option<String>,
-                enabled: bool,
-                /// Structural reason manual input cannot be enabled in this
-                /// session (for example robot-model or backend limitations),
-                /// independent of transient device/request errors.
-                unavailable_reason: Option<String>,
-                /// One-shot acknowledgement of a failed select/enable/rescan
-                /// request. Event-driven consumers may show it once; periodic
-                /// state heartbeats omit it. The tool also writes the failure
-                /// to its log stream for durable diagnostics.
-                last_error: Option<String>,
-            }
-
-            /// Client asks the tool to select a device by its stable id.
-            struct Select {
-                id: String,
-            }
-
-            /// Client asks the tool to enable or disable manual input.
-            struct SetEnabled {
-                enabled: bool,
-            }
-
-            /// Client asks the tool to re-enumerate devices.
-            struct Rescan {}
-
-            topic devices: diagnostic Devices;
-            topic select: command Select;
-            topic set_enabled: command SetEnabled;
-            topic rescan: command Rescan;
-        }
     }
     latest v0_1;
 }
