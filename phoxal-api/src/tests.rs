@@ -89,39 +89,6 @@ fn folded_contracts_are_available_on_the_first_revision() {
         v0_1::topic::client().simulation().clock().key(),
         "v0.1/simulation/clock"
     );
-
-    assert_eq!(
-        <v0_1::joypad::Devices as ContractBody>::TOPIC,
-        "v0.1/joypad/devices"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().devices().key(),
-        "v0.1/joypad/devices"
-    );
-    assert_eq!(
-        <v0_1::joypad::Select as ContractBody>::TOPIC,
-        "v0.1/joypad/select"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().select().key(),
-        "v0.1/joypad/select"
-    );
-    assert_eq!(
-        <v0_1::joypad::SetEnabled as ContractBody>::TOPIC,
-        "v0.1/joypad/set_enabled"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().set_enabled().key(),
-        "v0.1/joypad/set_enabled"
-    );
-    assert_eq!(
-        <v0_1::joypad::Rescan as ContractBody>::TOPIC,
-        "v0.1/joypad/rescan"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().rescan().key(),
-        "v0.1/joypad/rescan"
-    );
 }
 
 /// Every command topic is classified as one-shot, leased, or internal
@@ -148,9 +115,6 @@ fn every_command_topic_is_classified() {
         ("v0.1::behavior::Request", "one-shot"),
         ("v0.1::component::led::Command", "one-shot"),
         ("v0.1::component::speaker::Chunk", "one-shot"),
-        ("v0.1::joypad::Select", "one-shot"),
-        ("v0.1::joypad::SetEnabled", "one-shot"),
-        ("v0.1::joypad::Rescan", "one-shot"),
     ];
 
     let declared: std::collections::BTreeSet<&str> = crate::API_CONTRACT_MANIFEST
@@ -197,21 +161,13 @@ fn generated_contract_manifest_lists_contract_shapes() {
             battery_state.topic,
             "v0.1/component/{instance}/battery/{capability}/state"
         );
-        for family in [
-            "v0.1::simulation::Clock",
-            "v0.1::joypad::Devices",
-            "v0.1::joypad::Select",
-            "v0.1::joypad::SetEnabled",
-            "v0.1::joypad::Rescan",
-        ] {
-            assert!(
-                current
-                    .contracts
-                    .iter()
-                    .any(|contract| contract.family == family),
-                "{family} should be in the v0.1 manifest entry"
-            );
-        }
+        assert!(
+            current
+                .contracts
+                .iter()
+                .any(|contract| contract.family == "v0.1::simulation::Clock"),
+            "v0.1::simulation::Clock should be in the v0.1 manifest entry"
+        );
     }
 
     assert_eq!(
@@ -233,9 +189,6 @@ fn generated_role_const_matches_each_topic_role() {
     assert_role::<api::drive::Target>(TopicRole::Command);
     assert_role::<api::power::Command>(TopicRole::Command);
     assert_role::<api::motion::ManualCommand>(TopicRole::Command);
-    assert_role::<api::joypad::Select>(TopicRole::Command);
-    assert_role::<api::joypad::SetEnabled>(TopicRole::Command);
-    assert_role::<api::joypad::Rescan>(TopicRole::Command);
 
     // State: what the owning service publishes at a logical step.
     assert_role::<api::drive::State>(TopicRole::State);
@@ -256,7 +209,6 @@ fn generated_role_const_matches_each_topic_role() {
     assert_role::<api::supervisor::telemetry::Rollup>(TopicRole::Diagnostic);
     assert_role::<api::supervisor::telemetry::Follow>(TopicRole::Diagnostic);
     assert_role::<api::logs::Event>(TopicRole::Diagnostic);
-    assert_role::<api::joypad::Devices>(TopicRole::Diagnostic);
 
     // Query: both the request and the response body of a request/response topic
     // carry the `Query` role.
@@ -652,45 +604,6 @@ fn folded_bodies_round_trip_through_messagepack() {
         serde_json::json!({ "step": 100_u64 })
     );
     round_trip(&clock);
-    round_trip(&v0_1::joypad::Device {
-        id: "xbox-controller-0".to_string(),
-        name: "Xbox Wireless Controller".to_string(),
-        status: v0_1::joypad::DeviceStatus::Ready,
-    });
-    round_trip(&v0_1::joypad::Devices {
-        available: vec![v0_1::joypad::Device {
-            id: "xbox-controller-0".to_string(),
-            name: "Xbox Wireless Controller".to_string(),
-            status: v0_1::joypad::DeviceStatus::Ready,
-        }],
-        selected: Some("xbox-controller-0".to_string()),
-        enabled: false,
-        unavailable_reason: None,
-        last_error: None,
-    });
-    round_trip(&v0_1::joypad::Select {
-        id: "xbox-controller-0".to_string(),
-    });
-    round_trip(&v0_1::joypad::SetEnabled { enabled: true });
-    round_trip(&v0_1::joypad::Rescan {});
-}
-
-#[test]
-fn session_joypad_state_rejects_malformed_payloads() {
-    let corrupt = [0xc1u8, 0xc1, 0xc1];
-    assert!(
-        rmp_serde::from_slice::<v0_1::joypad::Devices>(&corrupt).is_err(),
-        "corrupt MessagePack must not decode as joypad::Devices"
-    );
-
-    let wrong_shape = rmp_serde::to_vec_named(&v0_1::joypad::Select {
-        id: "not-session-state".to_string(),
-    })
-    .unwrap();
-    assert!(
-        rmp_serde::from_slice::<v0_1::joypad::Devices>(&wrong_shape).is_err(),
-        "a command body must not decode as joypad::Devices"
-    );
 }
 
 #[test]
@@ -849,22 +762,6 @@ fn folded_topic_builder_keys_match_contract_topics() {
     assert_eq!(
         v0_1::topic::client().simulation().clock().key(),
         "v0.1/simulation/clock"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().devices().key(),
-        "v0.1/joypad/devices"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().select().key(),
-        "v0.1/joypad/select"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().set_enabled().key(),
-        "v0.1/joypad/set_enabled"
-    );
-    assert_eq!(
-        v0_1::topic::client().joypad().rescan().key(),
-        "v0.1/joypad/rescan"
     );
 }
 

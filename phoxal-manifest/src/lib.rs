@@ -111,7 +111,6 @@ pub enum ParticipantKind {
     Service,
     Driver,
     Simulator,
-    Tool,
 }
 
 /// Deterministic compiled runtime assets.
@@ -433,12 +432,6 @@ fn compile_participants(
         kind: ParticipantKind::Service,
         component_instance: None,
         config: service.config.clone(),
-    }));
-    participants.extend(manifest.tools.iter().map(|(id, tool)| Participant {
-        id: id.clone(),
-        kind: ParticipantKind::Tool,
-        component_instance: None,
-        config: tool.config.clone(),
     }));
     if let Some(behavior) = &manifest.behavior {
         participants.push(Participant {

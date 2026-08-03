@@ -1312,7 +1312,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn identity_and_class_are_reported() {
+    fn identity_and_kind_are_reported() {
         assert_eq!(
             <WebotsControllerSimulator as ParticipantSpec>::ID,
             "webots-controller"
@@ -1320,10 +1320,6 @@ mod tests {
         assert_eq!(
             <WebotsControllerSimulator as ParticipantSpec>::KIND,
             "simulator"
-        );
-        assert_eq!(
-            <WebotsControllerSimulator as ParticipantSpec>::PARTICIPANT_CLASS,
-            "checked"
         );
         assert!(
             <WebotsControllerSimulator as Participant>::__step_schedule().is_none(),
