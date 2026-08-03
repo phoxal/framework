@@ -679,162 +679,6 @@ phoxal_api_tree! {
             topic self: diagnostic Event;
         }
 
-        tool {
-            /// Opaque identity for one retention-tool process together with a
-            /// position in its completed follow stream. A snapshot cursor
-            /// covers the retained completed items; a bus snapshot's optional
-            /// `current` window deliberately has the next sequence. Consumers
-            /// compare `generation` for equality only and must never parse or
-            /// order it.
-            #[derive(Eq)]
-            struct Cursor {
-                generation: String,
-                sequence: u64,
-            }
-
-            /// Which side of one participant-local bus buffer a runtime row
-            /// measures. The version-qualified `topic` field remains the wire
-            /// identity; direction is never inferred from its spelling.
-            #[derive(Copy, Eq, Ord, PartialOrd)]
-            #[serde(rename_all = "snake_case")]
-            enum RuntimeDirection {
-                Publish,
-                Subscribe,
-                /// Used only by the bounded overflow row, which may combine
-                /// omitted rows from both directions.
-                Mixed,
-            }
-
-            /// The concrete bounded buffer whose pressure a runtime row
-            /// measures.
-            #[derive(Copy, Eq, Ord, PartialOrd)]
-            #[serde(rename_all = "snake_case")]
-            enum RuntimeBufferKind {
-                /// Per-topic view of the one shared process outbound queue.
-                /// Its sample capacity is repeated on each row and must not be
-                /// summed; the queue's separate byte pressure is not in v0.1.
-                Outbound,
-                /// Keep-last slot. Depth `1` means occupied, never backlog.
-                Latest,
-                Subscriber,
-                /// Used only by the bounded overflow row.
-                Mixed,
-            }
-
-            /// Host-monotonic scheduled-step work completed during one rollup
-            /// window. An unscheduled participant reports `None` instead.
-            struct RuntimeStep {
-                target_period_ns: u64,
-                completed: u64,
-                errors: u64,
-                mean_duration_ns: u64,
-                max_duration_ns: u64,
-                mean_lateness_ns: u64,
-                max_lateness_ns: u64,
-                missed_ticks: u64,
-                overruns: u64,
-            }
-
-            /// One exact version-qualified topic/direction/buffer row. These
-            /// are process-lifetime setup declarations: dropping an authoring
-            /// handle does not dynamically unregister a row. Empty `topic`
-            /// plus `Mixed` direction/kind identifies the explicit overflow
-            /// row; `overflowed_rows` is zero on normal rows.
-            struct RuntimeTopic {
-                topic: String,
-                direction: RuntimeDirection,
-                buffer_kind: RuntimeBufferKind,
-                count: u64,
-                /// Finite, non-negative message rate. Retention tools clamp
-                /// malformed non-finite inputs before they reach snapshots.
-                rate_hz: f32,
-                drops: u64,
-                latest_overwrites: u64,
-                bounded_evictions: u64,
-                /// Sample capacity. Outbound rows repeat the shared process
-                /// queue capacity and are non-additive; byte pressure is not
-                /// represented. Latest capacity/depth describe slot occupancy.
-                capacity: u64,
-                current_depth: u64,
-                high_water_depth: u64,
-                decode_errors: u64,
-                /// Samples discarded because they belonged to a retired world
-                /// history, or because a quarantined candidate timeline was
-                /// purged when a different one became authoritative.
-                timeline_filtered: u64,
-                overflowed_rows: u32,
-            }
-
-
-
-
-            runtime {
-                /// Runner-originated portable performance rollup. The runner
-                /// publishes at most one per host-monotonic grid interval;
-                /// envelope provenance identifies the participant. Interval
-                /// counters are best-effort sequential atomic samples, not a
-                /// transactional stop-the-world boundary, so concurrent queue
-                /// activity may land on either neighboring rollup.
-                struct Rollup {
-                    window_ns: u64,
-                    step: Option<crate::v0_1::tool::RuntimeStep>,
-                    topics: Vec<crate::v0_1::tool::RuntimeTopic>,
-                    overflow: Option<crate::v0_1::tool::RuntimeTopic>,
-                }
-
-                /// Requests tool-telemetry's current bounded five-minute
-                /// runtime history.
-                struct SnapshotRequest {
-                    /// Optional exact participant filter. `None` selects the
-                    /// complete per-robot history.
-                    participant_id: Option<String>,
-                    /// Maximum newest records to return. Zero selects the
-                    /// tool's bounded default.
-                    limit: u32,
-                    /// Exclusive global ingest-sequence upper bound for
-                    /// backward pagination. `None` starts at the newest record.
-                    before_sequence: Option<u64>,
-                }
-
-                /// One retained rollup. `sequence` is assigned by
-                /// tool-telemetry at ingest, independent of producer metadata.
-                /// Duplicate normal topic keys are deterministically
-                /// re-aggregated before row bounds are applied.
-                struct Record {
-                    sequence: u64,
-                    participant_id: String,
-                    /// Text values truncated by tool-telemetry's ingest bound.
-                    /// Oversized/excess topic identities are not truncated;
-                    /// they are aggregated into the explicit overflow row.
-                    truncated: u32,
-                    window_ns: u64,
-                    step: Option<crate::v0_1::tool::RuntimeStep>,
-                    topics: Vec<crate::v0_1::tool::RuntimeTopic>,
-                    overflow: Option<crate::v0_1::tool::RuntimeTopic>,
-                }
-
-                struct Snapshot {
-                    cursor: crate::v0_1::tool::Cursor,
-                    records: Vec<Record>,
-                    /// Records evicted by the absolute memory cap before their
-                    /// five-minute age horizon elapsed.
-                    capacity_evictions: u64,
-                    /// Pass this as the next request's `before_sequence` to
-                    /// continue backward. `None` means the retained matching
-                    /// history is complete.
-                    next_before_sequence: Option<u64>,
-                }
-
-                struct Follow {
-                    cursor: crate::v0_1::tool::Cursor,
-                    record: Record,
-                }
-
-                topic rollup: diagnostic Rollup;
-                topic snapshot: query SnapshotRequest => Snapshot;
-                topic follow: diagnostic Follow;
-            }
-        }
 
 
 
@@ -1340,6 +1184,160 @@ phoxal_api_tree! {
         // is the authority - and a stale participant sitting on an old key
         // physically cannot answer one of these (organization#978).
         supervisor {
+            /// Opaque identity for one supervisor collector together with a
+            /// position in its completed follow stream. A snapshot cursor
+            /// covers the retained completed items; a bus snapshot's optional
+            /// `current` window deliberately has the next sequence. Consumers
+            /// compare `generation` for equality only and must never parse or
+            /// order it.
+            #[derive(Eq)]
+            struct Cursor {
+                generation: String,
+                sequence: u64,
+            }
+
+            /// Which side of one participant-local bus buffer a runtime row
+            /// measures. The version-qualified `topic` field remains the wire
+            /// identity; direction is never inferred from its spelling.
+            #[derive(Copy, Eq, Ord, PartialOrd)]
+            #[serde(rename_all = "snake_case")]
+            enum RuntimeDirection {
+                Publish,
+                Subscribe,
+                /// Used only by the bounded overflow row, which may combine
+                /// omitted rows from both directions.
+                Mixed,
+            }
+
+            /// The concrete bounded buffer whose pressure a runtime row
+            /// measures.
+            #[derive(Copy, Eq, Ord, PartialOrd)]
+            #[serde(rename_all = "snake_case")]
+            enum RuntimeBufferKind {
+                /// Per-topic view of the one shared process outbound queue.
+                /// Its sample capacity is repeated on each row and must not be
+                /// summed; the queue's separate byte pressure is not in v0.1.
+                Outbound,
+                /// Keep-last slot. Depth `1` means occupied, never backlog.
+                Latest,
+                Subscriber,
+                /// Used only by the bounded overflow row.
+                Mixed,
+            }
+
+            /// Host-monotonic scheduled-step work completed during one rollup
+            /// window. An unscheduled participant reports `None` instead.
+            struct RuntimeStep {
+                target_period_ns: u64,
+                completed: u64,
+                errors: u64,
+                mean_duration_ns: u64,
+                max_duration_ns: u64,
+                mean_lateness_ns: u64,
+                max_lateness_ns: u64,
+                missed_ticks: u64,
+                overruns: u64,
+            }
+
+            /// One exact version-qualified topic/direction/buffer row. These
+            /// are process-lifetime setup declarations: dropping an authoring
+            /// handle does not dynamically unregister a row. Empty `topic`
+            /// plus `Mixed` direction/kind identifies the explicit overflow
+            /// row; `overflowed_rows` is zero on normal rows.
+            struct RuntimeTopic {
+                topic: String,
+                direction: RuntimeDirection,
+                buffer_kind: RuntimeBufferKind,
+                count: u64,
+                /// Finite, non-negative message rate. Retention tools clamp
+                /// malformed non-finite inputs before they reach snapshots.
+                rate_hz: f32,
+                drops: u64,
+                latest_overwrites: u64,
+                bounded_evictions: u64,
+                /// Sample capacity. Outbound rows repeat the shared process
+                /// queue capacity and are non-additive; byte pressure is not
+                /// represented. Latest capacity/depth describe slot occupancy.
+                capacity: u64,
+                current_depth: u64,
+                high_water_depth: u64,
+                decode_errors: u64,
+                /// Samples discarded because they belonged to a retired world
+                /// history, or because a quarantined candidate timeline was
+                /// purged when a different one became authoritative.
+                timeline_filtered: u64,
+                overflowed_rows: u32,
+            }
+
+
+
+
+            telemetry {
+                /// Runner-originated portable performance rollup. The runner
+                /// publishes at most one per host-monotonic grid interval;
+                /// envelope provenance identifies the participant. Interval
+                /// counters are best-effort sequential atomic samples, not a
+                /// transactional stop-the-world boundary, so concurrent queue
+                /// activity may land on either neighboring rollup.
+                struct Rollup {
+                    window_ns: u64,
+                    step: Option<crate::v0_1::supervisor::RuntimeStep>,
+                    topics: Vec<crate::v0_1::supervisor::RuntimeTopic>,
+                    overflow: Option<crate::v0_1::supervisor::RuntimeTopic>,
+                }
+
+                /// Requests the supervisor's current bounded five-minute
+                /// runtime history.
+                struct SnapshotRequest {
+                    /// Optional exact participant filter. `None` selects the
+                    /// complete per-robot history.
+                    participant_id: Option<String>,
+                    /// Maximum newest records to return. Zero selects the
+                    /// supervisor's bounded default.
+                    limit: u32,
+                    /// Exclusive global ingest-sequence upper bound for
+                    /// backward pagination. `None` starts at the newest record.
+                    before_sequence: Option<u64>,
+                }
+
+                /// One retained rollup. `sequence` is assigned by
+                /// the supervisor at ingest, independent of producer metadata.
+                /// Duplicate normal topic keys are deterministically
+                /// re-aggregated before row bounds are applied.
+                struct Record {
+                    sequence: u64,
+                    participant_id: String,
+                    /// Text values truncated by the supervisor's ingest bound.
+                    /// Oversized/excess topic identities are not truncated;
+                    /// they are aggregated into the explicit overflow row.
+                    truncated: u32,
+                    window_ns: u64,
+                    step: Option<crate::v0_1::supervisor::RuntimeStep>,
+                    topics: Vec<crate::v0_1::supervisor::RuntimeTopic>,
+                    overflow: Option<crate::v0_1::supervisor::RuntimeTopic>,
+                }
+
+                struct Snapshot {
+                    cursor: crate::v0_1::supervisor::Cursor,
+                    records: Vec<Record>,
+                    /// Records evicted by the absolute memory cap before their
+                    /// five-minute age horizon elapsed.
+                    capacity_evictions: u64,
+                    /// Pass this as the next request's `before_sequence` to
+                    /// continue backward. `None` means the retained matching
+                    /// history is complete.
+                    next_before_sequence: Option<u64>,
+                }
+
+                struct Follow {
+                    cursor: crate::v0_1::supervisor::Cursor,
+                    record: Record,
+                }
+
+                topic rollup: diagnostic Rollup;
+                topic snapshot: query SnapshotRequest => Snapshot;
+                topic follow: diagnostic Follow;
+            }
                 log {
                     /// Requests the supervisor's complete current bounded log snapshot. The
                     /// first protocol version intentionally has no pagination or
@@ -1390,7 +1388,7 @@ phoxal_api_tree! {
 
                     /// The complete bounded log state at `cursor`.
                     struct Snapshot {
-                        cursor: crate::v0_1::tool::Cursor,
+                        cursor: crate::v0_1::supervisor::Cursor,
                         /// Cumulative structured log samples evicted from
                         /// the supervisor's bounded ingest subscriber in this process.
                         /// An increase is observable, unrecoverable source loss;
@@ -1403,7 +1401,7 @@ phoxal_api_tree! {
                     /// must re-query when the generation changes or the sequence is
                     /// not exactly one after its installed cursor.
                     struct Follow {
-                        cursor: crate::v0_1::tool::Cursor,
+                        cursor: crate::v0_1::supervisor::Cursor,
                         /// Current cumulative the supervisor's log collector ingest loss counter.
                         ingest_dropped: u64,
                         record: Record,

@@ -15,12 +15,12 @@ const MAX_TOPIC_ROWS: usize = 256;
 const MAX_TOPIC_BYTES: usize = 256;
 
 pub(crate) struct RuntimePerformancePublisher {
-    publisher: Option<DiagnosticPublisher<api::tool::runtime::Rollup>>,
+    publisher: Option<DiagnosticPublisher<api::supervisor::telemetry::Rollup>>,
 }
 
 impl RuntimePerformancePublisher {
     pub(crate) fn attach(bus: Bus) -> Self {
-        let topic = api::topic::owner().tool().runtime().rollup();
+        let topic = api::topic::owner().supervisor().telemetry().rollup();
         let publisher = DiagnosticPublisher::new(bus, &topic)
             .inspect_err(|error| {
                 tracing::warn!(
@@ -33,7 +33,7 @@ impl RuntimePerformancePublisher {
         Self { publisher }
     }
 
-    pub(crate) fn publish(&self, body: api::tool::runtime::Rollup) {
+    pub(crate) fn publish(&self, body: api::supervisor::telemetry::Rollup) {
         let Some(publisher) = &self.publisher else {
             return;
         };
@@ -89,12 +89,12 @@ impl RuntimePerformance {
         }
     }
 
-    pub(crate) fn take_rollup(&mut self, bus: &Bus) -> Option<api::tool::runtime::Rollup> {
+    pub(crate) fn take_rollup(&mut self, bus: &Bus) -> Option<api::supervisor::telemetry::Rollup> {
         let now = Instant::now();
         let elapsed = self.take_elapsed(now)?;
         let window_ns = nanos(elapsed);
         let (topics, overflow) = bounded_topics(bus.take_runtime_metrics(), elapsed);
-        Some(api::tool::runtime::Rollup {
+        Some(api::supervisor::telemetry::Rollup {
             window_ns,
             step: self.step.as_mut().map(StepWindow::take),
             topics,
@@ -197,9 +197,9 @@ impl StepWindow {
         }
     }
 
-    fn take(&mut self) -> api::tool::RuntimeStep {
+    fn take(&mut self) -> api::supervisor::RuntimeStep {
         let attempts = self.completed.saturating_add(self.errors);
-        let body = api::tool::RuntimeStep {
+        let body = api::supervisor::RuntimeStep {
             target_period_ns: nanos(self.target_period),
             completed: self.completed,
             errors: self.errors,
@@ -226,8 +226,8 @@ fn bounded_topics(
     rows: Vec<RuntimeMetricSnapshot>,
     elapsed: Duration,
 ) -> (
-    Vec<api::tool::RuntimeTopic>,
-    Option<api::tool::RuntimeTopic>,
+    Vec<api::supervisor::RuntimeTopic>,
+    Option<api::supervisor::RuntimeTopic>,
 ) {
     let mut converted = Vec::with_capacity(rows.len().min(MAX_TOPIC_ROWS));
     let mut omitted = Vec::new();
@@ -242,10 +242,10 @@ fn bounded_topics(
     if omitted.is_empty() {
         return (converted, None);
     }
-    let mut overflow = api::tool::RuntimeTopic {
+    let mut overflow = api::supervisor::RuntimeTopic {
         topic: String::new(),
-        direction: api::tool::RuntimeDirection::Mixed,
-        buffer_kind: api::tool::RuntimeBufferKind::Mixed,
+        direction: api::supervisor::RuntimeDirection::Mixed,
+        buffer_kind: api::supervisor::RuntimeBufferKind::Mixed,
         count: 0,
         rate_hz: 0.0,
         drops: 0,
@@ -281,17 +281,17 @@ fn bounded_topics(
     (converted, Some(overflow))
 }
 
-fn topic_row(row: RuntimeMetricSnapshot, elapsed: Duration) -> api::tool::RuntimeTopic {
-    api::tool::RuntimeTopic {
+fn topic_row(row: RuntimeMetricSnapshot, elapsed: Duration) -> api::supervisor::RuntimeTopic {
+    api::supervisor::RuntimeTopic {
         topic: row.key.topic,
         direction: match row.key.direction {
-            RuntimeDirection::Publish => api::tool::RuntimeDirection::Publish,
-            RuntimeDirection::Subscribe => api::tool::RuntimeDirection::Subscribe,
+            RuntimeDirection::Publish => api::supervisor::RuntimeDirection::Publish,
+            RuntimeDirection::Subscribe => api::supervisor::RuntimeDirection::Subscribe,
         },
         buffer_kind: match row.key.buffer_kind {
-            RuntimeBufferKind::Outbound => api::tool::RuntimeBufferKind::Outbound,
-            RuntimeBufferKind::Latest => api::tool::RuntimeBufferKind::Latest,
-            RuntimeBufferKind::Subscriber => api::tool::RuntimeBufferKind::Subscriber,
+            RuntimeBufferKind::Outbound => api::supervisor::RuntimeBufferKind::Outbound,
+            RuntimeBufferKind::Latest => api::supervisor::RuntimeBufferKind::Latest,
+            RuntimeBufferKind::Subscriber => api::supervisor::RuntimeBufferKind::Subscriber,
         },
         count: row.count,
         rate_hz: rate(row.count, elapsed),
