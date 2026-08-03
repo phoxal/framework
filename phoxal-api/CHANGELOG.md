@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.50.0...phoxal-api-v0.51.0) - 2026-08-03
+
+### Added
+
+- *(api)* [**breaking**] dissolve the tool node into supervisor and delete tool/telemetry ([#384](https://github.com/phoxal/framework/pull/384))
+
 ## [0.50.0](https://github.com/phoxal/framework/compare/phoxal-api-v0.49.0...phoxal-api-v0.50.0) - 2026-08-02
 
 ### Added
