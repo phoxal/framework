@@ -12,39 +12,48 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 
 mod strict_yaml;
 
 const ROBOT_FILE: &str = "robot.yaml";
 
-pub fn read_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
+/// A versioned authored `robot.yaml` document; the schema tag selects the variant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "schema")]
+pub enum Manifest {
+    #[serde(rename = "robot/v0")]
+    V0(v0::Manifest),
+}
+
+pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
     let path = path.as_ref();
     let manifest = parse_from_dir(path)?;
     let location = path.join(ROBOT_FILE);
-    manifest
-        .validate()
+    let Manifest::V0(body) = &manifest;
+    body.validate()
         .map_err(|errors| validation_error(&location.display().to_string(), errors))?;
     Ok(manifest)
 }
 
-pub fn read_from_path(path: impl AsRef<Path>) -> Result<v0::Manifest> {
+pub fn read_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
     let path = path.as_ref();
     let manifest = parse_from_path(path)?;
-    manifest
-        .validate()
+    let Manifest::V0(body) = &manifest;
+    body.validate()
         .map_err(|errors| validation_error(&path.display().to_string(), errors))?;
     Ok(manifest)
 }
 
-pub fn read_from_string(text: &str) -> Result<v0::Manifest> {
+pub fn read_from_string(text: &str) -> Result<Manifest> {
     let manifest = parse_from_string(text)?;
-    manifest
-        .validate()
+    let Manifest::V0(body) = &manifest;
+    body.validate()
         .map_err(|errors| validation_error("<inline robot.yaml>", errors))?;
     Ok(manifest)
 }
 
-pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
+pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
     parse_from_path(path.as_ref().join(ROBOT_FILE))
 }
 
@@ -53,7 +62,7 @@ pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
 /// Parent maps merge recursively in declaration order. Sequences and scalar
 /// values replace earlier values. Nested composition is rejected so the leaf
 /// remains the single deterministic authority for parent order.
-pub fn parse_from_path(path: impl AsRef<Path>) -> Result<v0::Manifest> {
+pub fn parse_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
     let leaf_path = path.as_ref().canonicalize().with_context(|| {
         format!(
             "failed to resolve robot/v0 document {}",
@@ -120,11 +129,12 @@ pub fn parse_from_path(path: impl AsRef<Path>) -> Result<v0::Manifest> {
     })
 }
 
-pub fn parse_from_string(text: &str) -> Result<v0::Manifest> {
+pub fn parse_from_string(text: &str) -> Result<Manifest> {
     strict_yaml::check(text).context("failed to parse robot/v0 document")?;
-    let manifest: v0::Manifest =
+    let manifest: Manifest =
         serde_yaml::from_str(text).context("failed to parse robot/v0 document")?;
-    if !manifest.extends.is_empty() {
+    let Manifest::V0(body) = &manifest;
+    if !body.extends.is_empty() {
         bail!(
             "robot extends requires a file path; use \
              source::robot::read_from_path or source::robot::read_from_dir"
@@ -133,7 +143,7 @@ pub fn parse_from_string(text: &str) -> Result<v0::Manifest> {
     Ok(manifest)
 }
 
-pub fn write_to_dir(manifest: &v0::Manifest, path: impl AsRef<Path>) -> Result<()> {
+pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create robot directory {}", path.display()))?;
@@ -237,6 +247,7 @@ robot:
 "#,
         )?;
         let manifest = read_from_dir(dir.path())?;
+        let super::Manifest::V0(manifest) = manifest;
         assert!(manifest.extends.is_empty());
         assert_eq!(manifest.robot.motion_limits.max_linear_speed_mps, 0.5);
         Ok(())
@@ -246,6 +257,30 @@ robot:
     fn string_parser_requires_the_exact_schema() {
         assert!(parse_from_string("schema: robot/v1\n").is_err());
         assert!(parse_from_string("robot: {}\n").is_err());
+    }
+
+    /// The schema tag alone selects the variant: a structurally valid body
+    /// tagged with a future version fails on the tag, not the body, and a
+    /// round trip through the enum keeps `schema:` as the first emitted key.
+    #[test]
+    fn future_schema_tag_fails_on_the_variant_not_the_body() -> anyhow::Result<()> {
+        let valid_body_future_tag =
+            COMPOSED_LEAF.replacen("schema: robot/v0", "schema: robot/v1", 1);
+        let error = parse_from_string(&valid_body_future_tag)
+            .expect_err("a valid body under an unknown schema tag must still fail");
+        assert!(format!("{error:#}").contains("robot/v1"), "got: {error:#}");
+
+        let manifest = parse_from_string(
+            COMPOSED_LEAF
+                .replacen("extends: [base.robot.yaml, host.robot.yaml]\n", "", 1)
+                .as_str(),
+        )?;
+        let serialized = serde_yaml::to_string(&manifest)?;
+        assert!(
+            serialized.starts_with("schema: robot/v0\n"),
+            "schema tag must round-trip as the first key: {serialized}"
+        );
+        Ok(())
     }
 
     #[test]

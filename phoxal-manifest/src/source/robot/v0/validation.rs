@@ -347,10 +347,11 @@ robot:
 
     #[test]
     fn distinct_role_hints_for_one_capability_validate() {
-        let robot = crate::source::robot::parse_from_string(&manifest_with_depth_roles(
+        let manifest = crate::source::robot::parse_from_string(&manifest_with_depth_roles(
             "[localization, mapping]",
         ))
         .unwrap();
+        let crate::source::robot::Manifest::V0(robot) = manifest;
         robot
             .validate()
             .expect("distinct roles on one capability are legal");
@@ -358,8 +359,9 @@ robot:
 
     #[test]
     fn an_empty_role_list_is_a_validation_error() {
-        let robot =
+        let manifest =
             crate::source::robot::parse_from_string(&manifest_with_depth_roles("[]")).unwrap();
+        let crate::source::robot::Manifest::V0(robot) = manifest;
         let errors = robot.validate().expect_err("an empty role list is invalid");
         assert!(
             errors.iter().any(|error| matches!(
@@ -373,10 +375,11 @@ robot:
 
     #[test]
     fn a_repeated_role_names_the_capability_and_the_role() {
-        let robot = crate::source::robot::parse_from_string(&manifest_with_depth_roles(
+        let manifest = crate::source::robot::parse_from_string(&manifest_with_depth_roles(
             "[mapping, mapping]",
         ))
         .unwrap();
+        let crate::source::robot::Manifest::V0(robot) = manifest;
         let errors = robot.validate().expect_err("a repeated role is invalid");
         assert!(
             errors.iter().any(|error| matches!(

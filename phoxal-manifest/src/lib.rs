@@ -163,6 +163,7 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
             path: robot_manifest.clone(),
             source,
         })?;
+    let source::robot::Manifest::V0(manifest) = manifest;
 
     let mut component_types = BTreeMap::new();
     let mut simulation_types = BTreeMap::new();
@@ -188,6 +189,7 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
                 })?;
             let authored = source::component::read_from_dir(&root)
                 .with_context(|| format!("failed to load component type '{component_type}'"))?;
+            let source::component::Manifest::V0(authored) = authored;
             authored.validate_for_component(component_type)?;
             let capabilities =
                 serde_json::from_value(serde_json::to_value(authored.capabilities)?)?;
@@ -205,6 +207,7 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
                 let authored = source::simulation::read_from_dir(&root).with_context(|| {
                     format!("failed to load simulation for component type '{component_type}'")
                 })?;
+                let source::simulation::Manifest::V0(authored) = authored;
                 let capabilities =
                     serde_json::from_value(serde_json::to_value(authored.capabilities)?)?;
                 let links = authored
