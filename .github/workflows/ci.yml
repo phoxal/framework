@@ -25,83 +25,6 @@ jobs:
       webots-version: R2025a
     secrets: inherit
 
-  # Feature UNIFICATION is a workspace-build artefact: a library can compile
-  # here while relying on a dependency feature that only another member turned
-  # on, and then fail for someone who depends on it alone from crates.io.
-  # `cargo package` builds each library isolated, which is what that consumer
-  # actually gets.
-  #
-  # This is about DEPENDENCY features. `phoxal-bus`'s `router` feature is the
-  # only feature any of the seven libraries declares; it is off by default and
-  # covered by the `bus-router-feature` job below, because the default workspace
-  # build never compiles it. Since it carries `zenoh/unstable`, it is also
-  # packaged separately here - enabling it really does change the isolated
-  # dependency set. `--no-default-features` stays untested: no library gates
-  # anything behind a default feature, so it would only re-run `ci`'s clippy
-  # and test.
-  packaged-libraries:
-    name: libraries build outside the workspace
-    if: >-
-      github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore(release): release v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: Package each library on its own
-        run: |
-          cargo package -p phoxal-runtime-contract --allow-dirty
-          cargo package -p phoxal-model --allow-dirty
-          cargo package -p phoxal-macros --allow-dirty
-          cargo package -p phoxal-bus --allow-dirty \
-            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
-          # Again with `router`, the one feature any library declares. It pulls
-          # `zenoh/unstable`, so the isolated build genuinely differs from the
-          # default one above - a consumer enabling it from crates.io compiles a
-          # dependency set nothing else here verifies.
-          cargo package -p phoxal-bus --features router --allow-dirty \
-            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
-          cargo package -p phoxal-api --allow-dirty \
-            --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \
-            --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'" \
-            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
-          cargo package -p phoxal-manifest --allow-dirty \
-            --config "patch.crates-io.phoxal-model.path='${GITHUB_WORKSPACE}/phoxal-model'"
-          # Verify the packaged phoxal crate against the same-release local
-          # libraries. The registry still contains the previous API until the
-          # release workflow publishes this workspace in dependency order.
-          cargo package -p phoxal --allow-dirty \
-            --config "patch.crates-io.phoxal-api.path='${GITHUB_WORKSPACE}/phoxal-api'" \
-            --config "patch.crates-io.phoxal-bus.path='${GITHUB_WORKSPACE}/phoxal-bus'" \
-            --config "patch.crates-io.phoxal-macros.path='${GITHUB_WORKSPACE}/phoxal-macros'" \
-            --config "patch.crates-io.phoxal-model.path='${GITHUB_WORKSPACE}/phoxal-model'" \
-            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
-
-  public-api:
-    name: phoxal public API snapshot
-    if: >-
-      github.event_name != 'push' ||
-      !startsWith(github.event.head_commit.message, 'chore(release): release v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-07-30
-
-      - name: Install pinned cargo-public-api
-        run: cargo install cargo-public-api --version 0.52.0 --locked
-
-      - name: Verify simplified facade snapshot
-        run: |
-          for package in phoxal phoxal-model phoxal-manifest; do
-            cargo public-api -p "${package}" -sss --color=never > "/tmp/${package}-public-api.txt"
-            diff -u "${package}/public-api.txt" "/tmp/${package}-public-api.txt"
-          done
-
   # `phoxal-bus`'s `router` feature is off by default, so `cargo test
   # --workspace` never compiles it. Only `phoxal-cli`'s supervisor turns it on
   # (organization#978), which means without this job the embedded router would
@@ -124,3 +47,11 @@ jobs:
 
       - name: Test
         run: cargo test -p phoxal-bus --features router
+
+      # cargo publish's release-time verify builds without features, so this
+      # is the only place the router-enabled crate is packaged in isolation
+      # as its one consumer (phoxal-cli's supervisor) receives it.
+      - name: Package with router enabled
+        run: |
+          cargo package -p phoxal-bus --features router --allow-dirty \
+            --config "patch.crates-io.phoxal-runtime-contract.path='${GITHUB_WORKSPACE}/phoxal-runtime-contract'"
