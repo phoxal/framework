@@ -11,16 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use capability::Capability;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub enum Schema {
-    #[serde(rename = "component/v0")]
-    V0,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
-    pub schema: Schema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gtin: Option<Gtin>,
     #[serde(default)]
@@ -168,12 +161,12 @@ fn is_valid_positive(value: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, Schema};
+    use crate::source::component::Manifest;
 
     #[test]
     fn schema_is_required_and_exact() -> anyhow::Result<()> {
         let manifest: Manifest = serde_yaml::from_str("schema: component/v0\ncapabilities: {}\n")?;
-        assert_eq!(manifest.schema, Schema::V0);
+        assert!(matches!(manifest, Manifest::V0(_)));
         assert!(serde_yaml::from_str::<Manifest>("capabilities: {}\n").is_err());
         assert!(serde_yaml::from_str::<Manifest>("schema: component/v1\n").is_err());
         Ok(())

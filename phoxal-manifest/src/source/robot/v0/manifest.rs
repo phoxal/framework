@@ -6,17 +6,10 @@ use std::path::PathBuf;
 use super::motion::{KinematicConfig, MotionLimits};
 use super::{Component, Role};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub enum Schema {
-    #[serde(rename = "robot/v0")]
-    V0,
-}
-
 /// Exact top-level `robot.yaml` v0 document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
-    pub schema: Schema,
     /// Ordered parent robot documents composed before this leaf manifest.
     ///
     /// Parent maps are deep-merged in declaration order, then the leaf wins.
@@ -318,7 +311,8 @@ services:
 router:
   config: config/router.json5
 "#;
-        let robot = crate::source::robot::parse_from_string(yaml)?;
+        let manifest = crate::source::robot::parse_from_string(yaml)?;
+        let crate::source::robot::Manifest::V0(robot) = manifest.clone();
 
         assert_eq!(robot.robot.id, "rover");
         assert_eq!(robot.robot.namespace, "dev");
@@ -343,16 +337,16 @@ router:
             .validate()
             .expect("canonical manifest should validate");
 
-        let serialized = serde_yaml::to_string(&robot)?;
+        let serialized = serde_yaml::to_string(&manifest)?;
         let reparsed = crate::source::robot::parse_from_string(&serialized)?;
-        assert_eq!(reparsed, robot);
+        assert_eq!(reparsed, manifest);
 
         Ok(())
     }
 
     #[test]
     fn instance_parameters_parse_emergency_stop_capability() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(
+        let manifest = crate::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -374,6 +368,7 @@ robot:
           kind: emergency_stop
 "#,
         )?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
 
         let instance = robot
             .robot
@@ -391,7 +386,7 @@ robot:
 
     #[test]
     fn user_service_config_parses() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(&minimal_manifest(
+        let manifest = crate::source::robot::parse_from_string(&minimal_manifest(
             r#"services:
   autonomy:
     config:
@@ -399,6 +394,7 @@ robot:
       enabled: true
 "#,
         ))?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
 
         let service = robot
             .services
@@ -419,12 +415,12 @@ robot:
 
     #[test]
     fn user_service_without_config_round_trips_and_omits_config() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(&minimal_manifest(
+        let manifest = crate::source::robot::parse_from_string(&minimal_manifest(
             r#"services:
   autonomy: {}
 "#,
         ))?;
-        let yaml = serde_yaml::to_string(&robot)?;
+        let yaml = serde_yaml::to_string(&manifest)?;
 
         assert!(
             !yaml.contains("config:"),
@@ -432,6 +428,8 @@ robot:
         );
 
         let reparsed = crate::source::robot::parse_from_string(&yaml)?;
+        let crate::source::robot::Manifest::V0(reparsed) = reparsed;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
         assert_eq!(reparsed.services, robot.services);
 
         Ok(())
@@ -439,11 +437,12 @@ robot:
 
     #[test]
     fn router_config_parses_and_validates() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(&minimal_manifest(
+        let manifest = crate::source::robot::parse_from_string(&minimal_manifest(
             r#"router:
   config: config/router.json5
 "#,
         ))?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
 
         assert_eq!(
             robot.router.config.as_deref(),
@@ -458,11 +457,12 @@ robot:
 
     #[test]
     fn router_rejects_absolute_config_path() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(&minimal_manifest(
+        let manifest = crate::source::robot::parse_from_string(&minimal_manifest(
             r#"router:
   config: /etc/phoxal/router.json5
 "#,
         ))?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
 
         let errors = robot
             .validate()
@@ -478,11 +478,12 @@ robot:
 
     #[test]
     fn router_rejects_empty_config_path() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(&minimal_manifest(
+        let manifest = crate::source::robot::parse_from_string(&minimal_manifest(
             r#"router:
   config: ""
 "#,
         ))?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
 
         let errors = robot
             .validate()
@@ -742,7 +743,7 @@ robot:
 
     #[test]
     fn empty_robot_id_is_validation_error() -> anyhow::Result<()> {
-        let robot = crate::source::robot::parse_from_string(
+        let manifest = crate::source::robot::parse_from_string(
             r#"
 schema: robot/v0
 robot:
@@ -758,6 +759,7 @@ robot:
   components: {}
 "#,
         )?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
 
         let errors = robot
             .validate()

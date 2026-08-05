@@ -16,6 +16,7 @@ fn workspace_root() -> PathBuf {
 fn sources(project_root: &Path) -> SourceSet {
     let manifest = phoxal_manifest::source::robot::read_from_path(project_root.join("robot.yaml"))
         .expect("repository robot manifest must parse");
+    let phoxal_manifest::source::robot::Manifest::V0(manifest) = manifest;
     let workspace = workspace_root();
     let component_roots = manifest
         .used_component_types()

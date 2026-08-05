@@ -5,32 +5,43 @@ pub mod v0;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 const SIMULATION_FILE: &str = "simulation.yaml";
 
-pub fn read_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
-    let path = path.as_ref().join(SIMULATION_FILE);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read simulation/v0 document {}", path.display()))?;
-    read_from_string(&text)
-        .with_context(|| format!("failed to parse simulation/v0 document {}", path.display()))
+/// A versioned authored `simulation.yaml` document; the schema tag selects
+/// the variant.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "schema")]
+pub enum Manifest {
+    #[serde(rename = "simulation/v0")]
+    V0(v0::Manifest),
 }
 
-pub fn read_from_string(text: &str) -> Result<v0::Manifest> {
-    let manifest: v0::Manifest =
-        serde_yaml::from_str(text).context("failed to parse simulation/v0 document")?;
-    manifest.validate()?;
+pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
+    let path = path.as_ref().join(SIMULATION_FILE);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read simulation document {}", path.display()))?;
+    read_from_string(&text)
+        .with_context(|| format!("failed to parse simulation document {}", path.display()))
+}
+
+pub fn read_from_string(text: &str) -> Result<Manifest> {
+    let manifest: Manifest =
+        serde_yaml::from_str(text).context("failed to parse simulation document")?;
+    let Manifest::V0(body) = &manifest;
+    body.validate()?;
     Ok(manifest)
 }
 
-pub fn write_to_dir(manifest: &v0::Manifest, path: impl AsRef<Path>) -> Result<()> {
+pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create simulation directory {}", path.display()))?;
     let destination = path.join(SIMULATION_FILE);
     std::fs::write(&destination, serde_yaml::to_string(manifest)?).with_context(|| {
         format!(
-            "failed to write simulation/v0 document {}",
+            "failed to write simulation document {}",
             destination.display()
         )
     })
@@ -38,7 +49,7 @@ pub fn write_to_dir(manifest: &v0::Manifest, path: impl AsRef<Path>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_from_dir, read_from_string, write_to_dir};
+    use super::{Manifest, read_from_dir, read_from_string, write_to_dir};
 
     #[test]
     fn simulation_roundtrips_through_directory() -> anyhow::Result<()> {
@@ -57,17 +68,14 @@ links:
 "#,
         )?;
         write_to_dir(&source, temp_dir.path())?;
-        assert!(
-            read_from_dir(temp_dir.path())?
-                .capabilities
-                .contains_key("motor")
-        );
+        let Manifest::V0(loaded) = read_from_dir(temp_dir.path())?;
+        assert!(loaded.capabilities.contains_key("motor"));
         Ok(())
     }
 
     #[test]
     fn simulation_parses_range_capability() -> anyhow::Result<()> {
-        let simulation = read_from_string(
+        let manifest = read_from_string(
             r#"
 schema: simulation/v0
 capabilities:
@@ -78,6 +86,7 @@ capabilities:
     resolution: 0.001
 "#,
         )?;
+        let Manifest::V0(simulation) = manifest;
         assert!(matches!(
             simulation.capabilities.get("range"),
             Some(super::v0::capability::Capability::Range(_))
@@ -89,7 +98,7 @@ capabilities:
     /// button, switch, or toggle node, so no simulator drives one.
     #[test]
     fn simulation_parses_emergency_stop_input() -> anyhow::Result<()> {
-        let simulation = read_from_string(
+        let manifest = read_from_string(
             r#"
 schema: simulation/v0
 capabilities:
@@ -97,6 +106,7 @@ capabilities:
     kind: emergency_stop
 "#,
         )?;
+        let Manifest::V0(simulation) = manifest;
         assert!(matches!(
             simulation.capabilities.get("emergency_stop"),
             Some(super::v0::capability::Capability::EmergencyStop)

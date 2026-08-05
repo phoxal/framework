@@ -10,8 +10,6 @@ mod validation;
 
 pub use component::Component;
 pub use driver::{ConnectionConfig, DriverConfig, GpioDirection, GpioPinConfig};
-pub use manifest::{
-    BehaviorConfig, Manifest, RobotSection, Router, Schema, UserService, ValidationError,
-};
+pub use manifest::{BehaviorConfig, Manifest, RobotSection, Router, UserService, ValidationError};
 pub use motion::{CapabilityRef, KinematicConfig, MotionLimits};
 pub use role::Role;

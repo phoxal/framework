@@ -58,13 +58,11 @@ impl DocumentKind {
 pub fn generate(kind: DocumentKind) -> serde_json::Value {
     let mut schema = match kind {
         DocumentKind::Robot => SchemaGenerator::new(SchemaSettings::draft2020_12())
-            .into_root_schema_for::<crate::source::robot::v0::Manifest>(),
+            .into_root_schema_for::<crate::source::robot::Manifest>(),
         DocumentKind::Component => SchemaGenerator::new(SchemaSettings::draft2020_12())
-            .into_root_schema_for::<crate::source::component::v0::Manifest>(
-        ),
+            .into_root_schema_for::<crate::source::component::Manifest>(),
         DocumentKind::Simulation => SchemaGenerator::new(SchemaSettings::draft2020_12())
-            .into_root_schema_for::<crate::source::simulation::v0::Manifest>(
-        ),
+            .into_root_schema_for::<crate::source::simulation::Manifest>(),
     };
     let (title, description) = kind.metadata();
     schema.insert("title".into(), title.into());
@@ -262,8 +260,9 @@ robot:
         let value = yaml_value(document);
         assert_valid(&validator(DocumentKind::Robot), &value);
 
-        let manifest: crate::source::robot::v0::Manifest =
+        let manifest: crate::source::robot::Manifest =
             serde_yaml::from_str(document).expect("document should match the serde DTO");
+        let crate::source::robot::Manifest::V0(manifest) = manifest;
         assert!(
             manifest.validate().is_err(),
             "semantic validation remains authoritative"

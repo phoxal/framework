@@ -5,32 +5,43 @@ pub mod v0;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 const COMPONENT_FILE: &str = "component.yaml";
 
-pub fn read_from_dir(path: impl AsRef<Path>) -> Result<v0::Manifest> {
-    let path = path.as_ref().join(COMPONENT_FILE);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read component/v0 document {}", path.display()))?;
-    read_from_string(&text)
-        .with_context(|| format!("failed to parse component/v0 document {}", path.display()))
+/// A versioned authored `component.yaml` document; the schema tag selects the
+/// variant.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "schema")]
+pub enum Manifest {
+    #[serde(rename = "component/v0")]
+    V0(v0::Manifest),
 }
 
-pub fn read_from_string(text: &str) -> Result<v0::Manifest> {
-    let manifest: v0::Manifest =
-        serde_yaml::from_str(text).context("failed to parse component/v0 document")?;
-    manifest.validate()?;
+pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
+    let path = path.as_ref().join(COMPONENT_FILE);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read component document {}", path.display()))?;
+    read_from_string(&text)
+        .with_context(|| format!("failed to parse component document {}", path.display()))
+}
+
+pub fn read_from_string(text: &str) -> Result<Manifest> {
+    let manifest: Manifest =
+        serde_yaml::from_str(text).context("failed to parse component document")?;
+    let Manifest::V0(body) = &manifest;
+    body.validate()?;
     Ok(manifest)
 }
 
-pub fn write_to_dir(manifest: &v0::Manifest, path: impl AsRef<Path>) -> Result<()> {
+pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
     let path = path.as_ref();
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create component directory {}", path.display()))?;
     let destination = path.join(COMPONENT_FILE);
     std::fs::write(&destination, serde_yaml::to_string(manifest)?).with_context(|| {
         format!(
-            "failed to write component/v0 document {}",
+            "failed to write component document {}",
             destination.display()
         )
     })
@@ -38,7 +49,7 @@ pub fn write_to_dir(manifest: &v0::Manifest, path: impl AsRef<Path>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{read_from_dir, read_from_string, write_to_dir};
+    use super::{Manifest, read_from_dir, read_from_string, write_to_dir};
 
     #[test]
     fn component_roundtrips_through_directory() -> anyhow::Result<()> {
@@ -58,6 +69,7 @@ capabilities:
 
         write_to_dir(&source, temp_dir.path())?;
         let loaded = read_from_dir(temp_dir.path())?;
+        let Manifest::V0(loaded) = loaded;
         assert!(loaded.capabilities.contains_key("motor"));
         Ok(())
     }
@@ -97,14 +109,16 @@ capabilities:
 
     #[test]
     fn component_parses_and_round_trips_gtin() -> anyhow::Result<()> {
-        let component =
+        let manifest =
             read_from_string("schema: component/v0\ngtin: \"1234567890123\"\ncapabilities: {}\n")?;
+        let Manifest::V0(component) = &manifest;
         assert_eq!(
             component.gtin.as_ref().map(super::v0::Gtin::as_str),
             Some("1234567890123")
         );
-        let yaml = serde_yaml::to_string(&component)?;
+        let yaml = serde_yaml::to_string(&manifest)?;
         let reparsed = read_from_string(&yaml)?;
+        let Manifest::V0(reparsed) = reparsed;
         assert_eq!(
             reparsed.gtin.as_ref().map(super::v0::Gtin::as_str),
             Some("1234567890123")
@@ -162,9 +176,10 @@ capabilities:
 
     #[test]
     fn component_without_gtin_is_none_and_omits_on_serialize() -> anyhow::Result<()> {
-        let component = read_from_string("schema: component/v0\ncapabilities: {}\n")?;
+        let manifest = read_from_string("schema: component/v0\ncapabilities: {}\n")?;
+        let Manifest::V0(component) = &manifest;
         assert!(component.gtin.is_none());
-        let yaml = serde_yaml::to_string(&component)?;
+        let yaml = serde_yaml::to_string(&manifest)?;
         assert!(
             !yaml.contains("gtin"),
             "gtin must be omitted when absent: {yaml}"
@@ -174,7 +189,7 @@ capabilities:
 
     #[test]
     fn component_parses_range_and_emergency_stop_capabilities() -> anyhow::Result<()> {
-        let component = read_from_string(
+        let manifest = read_from_string(
             r#"
 schema: component/v0
 capabilities:
@@ -190,6 +205,7 @@ capabilities:
     target: { kind: link, id: button_link }
 "#,
         )?;
+        let Manifest::V0(component) = manifest;
         assert!(matches!(
             component.capabilities.get("range"),
             Some(super::v0::capability::Capability::Range(_))
@@ -225,6 +241,7 @@ capabilities:
 "#,
         )?;
         let reparsed = read_from_string(&serde_yaml::to_string(&component)?)?;
+        let Manifest::V0(reparsed) = reparsed;
         for (id, width, height, rate) in [("rgb", 640, 480, 30.0), ("native_only", 320, 240, 15.0)]
         {
             let Some(super::v0::capability::Capability::Camera(camera)) =
