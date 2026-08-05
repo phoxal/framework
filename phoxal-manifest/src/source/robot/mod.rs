@@ -45,14 +45,6 @@ pub fn read_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
     Ok(manifest)
 }
 
-pub fn read_from_string(text: &str) -> Result<Manifest> {
-    let manifest = parse_from_string(text)?;
-    let Manifest::V0(body) = &manifest;
-    body.validate()
-        .map_err(|errors| validation_error("<inline robot.yaml>", errors))?;
-    Ok(manifest)
-}
-
 pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
     parse_from_path(path.as_ref().join(ROBOT_FILE))
 }
@@ -65,13 +57,13 @@ pub fn parse_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
 pub fn parse_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
     let leaf_path = path.as_ref().canonicalize().with_context(|| {
         format!(
-            "failed to resolve robot/v0 document {}",
+            "failed to resolve robot document {}",
             path.as_ref().display()
         )
     })?;
     let root = leaf_path
         .parent()
-        .context("robot/v0 document must have a parent directory")?
+        .context("robot document must have a parent directory")?
         .to_path_buf();
     let mut leaf = read_yaml_value(&leaf_path)?;
     let parents = take_extends(&mut leaf, &leaf_path)?;
@@ -87,7 +79,7 @@ pub fn parse_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
         }
         let parent_path = root.join(&relative).canonicalize().with_context(|| {
             format!(
-                "failed to resolve robot/v0 parent {} declared by {}",
+                "failed to resolve robot parent {} declared by {}",
                 relative.display(),
                 leaf_path.display()
             )
@@ -123,16 +115,16 @@ pub fn parse_from_path(path: impl AsRef<Path>) -> Result<Manifest> {
 
     serde_yaml::from_value(composed).with_context(|| {
         format!(
-            "failed to parse composed robot/v0 document {}",
+            "failed to parse composed robot document {}",
             leaf_path.display()
         )
     })
 }
 
 pub fn parse_from_string(text: &str) -> Result<Manifest> {
-    strict_yaml::check(text).context("failed to parse robot/v0 document")?;
+    strict_yaml::check(text).context("failed to parse robot document")?;
     let manifest: Manifest =
-        serde_yaml::from_str(text).context("failed to parse robot/v0 document")?;
+        serde_yaml::from_str(text).context("failed to parse robot document")?;
     let Manifest::V0(body) = &manifest;
     if !body.extends.is_empty() {
         bail!(
@@ -148,21 +140,17 @@ pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create robot directory {}", path.display()))?;
     let destination = path.join(ROBOT_FILE);
-    std::fs::write(&destination, serde_yaml::to_string(manifest)?).with_context(|| {
-        format!(
-            "failed to write robot/v0 document {}",
-            destination.display()
-        )
-    })
+    std::fs::write(&destination, serde_yaml::to_string(manifest)?)
+        .with_context(|| format!("failed to write robot document {}", destination.display()))
 }
 
 fn read_yaml_value(path: &Path) -> Result<serde_yaml::Value> {
     let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read robot/v0 document {}", path.display()))?;
+        .with_context(|| format!("failed to read robot document {}", path.display()))?;
     strict_yaml::check(&text)
-        .with_context(|| format!("failed to parse robot/v0 document {}", path.display()))?;
+        .with_context(|| format!("failed to parse robot document {}", path.display()))?;
     serde_yaml::from_str(&text)
-        .with_context(|| format!("failed to parse robot/v0 document {}", path.display()))
+        .with_context(|| format!("failed to parse robot document {}", path.display()))
 }
 
 fn take_extends(value: &mut serde_yaml::Value, path: &Path) -> Result<Vec<PathBuf>> {
@@ -195,7 +183,7 @@ fn deep_merge(base: &mut serde_yaml::Value, overlay: serde_yaml::Value) {
 
 pub(crate) fn validation_error(location: &str, errors: Vec<v0::ValidationError>) -> anyhow::Error {
     anyhow::anyhow!(
-        "invalid robot/v0 document {location}:\n{}",
+        "invalid robot document {location}:\n{}",
         errors
             .iter()
             .map(ToString::to_string)

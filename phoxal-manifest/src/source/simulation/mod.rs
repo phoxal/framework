@@ -21,14 +21,14 @@ pub enum Manifest {
 pub fn read_from_dir(path: impl AsRef<Path>) -> Result<Manifest> {
     let path = path.as_ref().join(SIMULATION_FILE);
     let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read simulation/v0 document {}", path.display()))?;
+        .with_context(|| format!("failed to read simulation document {}", path.display()))?;
     read_from_string(&text)
-        .with_context(|| format!("failed to parse simulation/v0 document {}", path.display()))
+        .with_context(|| format!("failed to parse simulation document {}", path.display()))
 }
 
 pub fn read_from_string(text: &str) -> Result<Manifest> {
     let manifest: Manifest =
-        serde_yaml::from_str(text).context("failed to parse simulation/v0 document")?;
+        serde_yaml::from_str(text).context("failed to parse simulation document")?;
     let Manifest::V0(body) = &manifest;
     body.validate()?;
     Ok(manifest)
@@ -41,7 +41,7 @@ pub fn write_to_dir(manifest: &Manifest, path: impl AsRef<Path>) -> Result<()> {
     let destination = path.join(SIMULATION_FILE);
     std::fs::write(&destination, serde_yaml::to_string(manifest)?).with_context(|| {
         format!(
-            "failed to write simulation/v0 document {}",
+            "failed to write simulation document {}",
             destination.display()
         )
     })
