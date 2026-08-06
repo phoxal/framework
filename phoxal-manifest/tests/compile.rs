@@ -190,33 +190,66 @@ fn source_set_errors_preserve_the_failed_input() {
     assert!(message.contains("resolved component root"));
 }
 
-#[test]
-fn duplicate_participant_identities_are_rejected() {
-    let workspace = workspace_root();
-    let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
-    let temp = tempfile::tempdir().unwrap();
+/// A copy of an otherwise-valid fixture project at `temp`, with `robot.yaml`
+/// extended by `extra_top_level`.
+fn staged_project(temp: &Path, extra_top_level: &str) {
+    let source_root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
     let mut yaml = std::fs::read_to_string(source_root.join("robot.yaml")).unwrap();
-    yaml.push_str("\nbehavior:\n  root: system.root\nservices:\n  behavior: {}\n");
-    std::fs::write(temp.path().join("robot.yaml"), yaml).unwrap();
+    yaml.push_str(extra_top_level);
+    std::fs::write(temp.join("robot.yaml"), yaml).unwrap();
     std::fs::copy(
         source_root.join("structure.urdf"),
-        temp.path().join("structure.urdf"),
+        temp.join("structure.urdf"),
     )
     .unwrap();
+}
+
+#[test]
+fn an_authored_behaviors_directory_is_never_read() {
+    // Nothing below `behaviors/` is a compiler input anymore. A tree that is
+    // not even valid YAML proves the compiler never opens it, rather than
+    // merely proving it produced no asset.
+    let temp = tempfile::tempdir().unwrap();
+    staged_project(temp.path(), "");
     std::fs::create_dir(temp.path().join("behaviors")).unwrap();
     std::fs::write(
         temp.path().join("behaviors/root.yaml"),
-        "schema: behavior/v0\nid: system.root\nversion: \"1\"\nroot:\n  type: wait\n  id: settle\n  duration_ms: 10\n",
+        b"\xff\xfe this is not a behavior document and must never be parsed: [",
     )
     .unwrap();
 
-    let error = compile(sources(temp.path())).unwrap_err();
-    assert!(matches!(error, CompileError::Participants { .. }));
+    let compiled = compile(sources(temp.path())).expect("a behaviors/ directory must be ignored");
     assert!(
-        error
-            .to_string()
-            .contains("duplicate participant declaration")
+        compiled
+            .assets()
+            .iter()
+            .all(|(id, _)| !id.as_str().starts_with("behavior")),
+        "no behavior asset may be produced"
     );
+    assert!(
+        compiled
+            .participants()
+            .iter()
+            .all(|participant| participant.id != "behavior"),
+        "no behavior participant may be declared"
+    );
+}
+
+#[test]
+fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
+    let temp = tempfile::tempdir().unwrap();
+    // The reference SourceSet is built before the reserved service is added,
+    // because reading the authored document is exactly what rejects it.
+    staged_project(temp.path(), "");
+    let mut sources = sources(temp.path());
+    staged_project(temp.path(), "\nservices:\n  brain: {}\n");
+    sources.project_root = temp.path().to_path_buf();
+    sources.robot_manifest = temp.path().join("robot.yaml");
+
+    let error = compile(sources).unwrap_err();
+    assert!(matches!(error, CompileError::Robot { .. }), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("services.brain is reserved"), "{message}");
 }
 
 #[test]

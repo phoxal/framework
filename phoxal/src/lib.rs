@@ -31,8 +31,9 @@
 //!   [`Participant`] implementation owns lifecycle
 //!   behavior, and [`run`] turns the marker into a binary. Use `service` for ordinary robot
 //!   participants, `driver` for a participant launched once per
-//!   `robot.components` entry, and `simulator` for simulation-only
-//!   participants.
+//!   `robot.components` entry, `simulator` for simulation-only
+//!   participants, and `brain` for the robot project's one mandatory
+//!   composition root.
 //!
 //! ## Author a participant
 //!
@@ -99,7 +100,7 @@
 //!   blocking entrypoint. For a custom Tokio main, call
 //!   [`phoxal::tokio::run::<R>().await`](tokio::run).
 //!
-//! The three authoring kinds share the same metadata path but describe
+//! The four authoring kinds share the same metadata path but describe
 //! different runtime roles:
 //!
 //! - [`macro@service`] is the ordinary typed participant surface.
@@ -109,6 +110,11 @@
 //!   to read the bound component instance.
 //! - [`macro@simulator`] is a normal participant for simulation-only processes.
 //!   It carries a distinct kind and marker for simulation clock ownership.
+//! - [`macro@brain`] is the robot project's one mandatory composition root:
+//!   the root Cargo package's binary, staged as `bin/brain`. Its identity is
+//!   fixed to `brain` and its `Config` is always `()`; it owns mission and
+//!   intent policy as ordinary Rust code and holds no capability a service
+//!   does not. It is never declared under `robot.yaml` `services:`.
 //!
 //! Worked examples live in `phoxal/examples/`.
 //!
@@ -257,6 +263,12 @@ pub use phoxal_macros::driver;
 /// Link a participant state struct to its `Config`/`Api` types as a
 /// simulation participant.
 pub use phoxal_macros::simulator;
+
+/// Declare the one mandatory root brain, the robot project's composition root.
+///
+/// Fixed identity `brain` and `Config = ()`; otherwise exactly the checked
+/// service surface.
+pub use phoxal_macros::brain;
 
 /// Attach a cadence to `Participant::step`.
 pub use phoxal_macros::step;

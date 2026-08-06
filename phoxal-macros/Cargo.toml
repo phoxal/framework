@@ -20,8 +20,8 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 serde_derive_internals = { workspace = true }
 # `visit-mut` on top of the workspace's `full`/`extra-traits`: only this crate
-# needs the mutable AST visitor (`behavior`'s `Self::Api`/`Self::Config`
-# fully-qualification rewrite).
+# needs the mutable AST visitor (`api_tree`'s `RevisionPathRewriter`, which
+# rewrites inherited body paths into the child revision's own module).
 syn = { workspace = true, features = ["visit-mut"] }
 heck = { workspace = true }
 

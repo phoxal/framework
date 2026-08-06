@@ -111,8 +111,6 @@ fn every_command_topic_is_classified() {
         // that nothing has to keep repeating.
         ("v0.1::power::Command", "one-shot"),
         ("v0.1::navigation::Request", "one-shot"),
-        ("v0.1::behavior::Command", "one-shot"),
-        ("v0.1::behavior::Request", "one-shot"),
         ("v0.1::component::led::Command", "one-shot"),
         ("v0.1::component::speaker::Chunk", "one-shot"),
     ];
@@ -263,28 +261,7 @@ fn body_round_trips_through_messagepack() {
 }
 
 #[test]
-fn behavior_navigation_and_safety_wire_shapes_are_golden() {
-    let request = api::behavior::Request {
-        request_id: api::behavior::RequestId {
-            value: "req-7".to_string(),
-        },
-        behavior_id: "navigation.return_to_dock".to_string(),
-        args: std::collections::BTreeMap::new(),
-        priority: 9,
-        conflict_policy: api::behavior::ConflictPolicy::Queue,
-    };
-    assert_eq!(
-        serde_json::to_value(&request).unwrap(),
-        serde_json::json!({
-            "request_id": {"value": "req-7"},
-            "behavior_id": "navigation.return_to_dock",
-            "args": {},
-            "priority": 9,
-            "conflict_policy": "queue"
-        })
-    );
-    round_trip(&request);
-
+fn navigation_and_safety_wire_shapes_are_golden() {
     let navigation = api::navigation::Result {
         request_id: api::navigation::RequestId {
             value: "nav-1".to_string(),
@@ -333,15 +310,12 @@ fn behavior_navigation_and_safety_wire_shapes_are_golden() {
 }
 
 #[test]
-fn behavior_navigation_and_safety_reject_malformed_payloads() {
-    let corrupt = [0xc1u8, 0xc1, 0xc1];
-    assert!(rmp_serde::from_slice::<api::behavior::Event>(&corrupt).is_err());
+fn navigation_and_safety_reject_malformed_payloads() {
     let wrong = rmp_serde::to_vec_named(&api::motion::ManualCommand {
         linear_x_mps: 0.1,
         angular_z_radps: 0.2,
     })
     .unwrap();
-    assert!(rmp_serde::from_slice::<api::behavior::Snapshot>(&wrong).is_err());
     assert!(rmp_serde::from_slice::<api::navigation::Request>(&wrong).is_err());
     assert!(rmp_serde::from_slice::<api::safety::MotionConstraints>(&wrong).is_err());
 }
@@ -675,14 +649,6 @@ fn topic_builder_keys_match_contract_topics() {
     assert_eq!(
         api::topic::client().navigation().result().key(),
         "v0.1/navigation/result"
-    );
-    assert_eq!(
-        api::topic::client().behavior().request().key(),
-        "v0.1/behavior/request"
-    );
-    assert_eq!(
-        api::topic::client().behavior().event().key(),
-        "v0.1/behavior/event"
     );
     assert_eq!(
         api::topic::client().safety().constraints().key(),

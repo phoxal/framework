@@ -64,6 +64,19 @@ mod tests {
         }
     }
 
+    #[phoxal::brain]
+    struct MarkerBrain;
+
+    impl Participant for MarkerBrain {
+        async fn setup(
+            &self,
+            _ctx: &mut SetupContext<Self>,
+            _config: Self::Config,
+        ) -> Result<(Self::State, Self::Api)> {
+            Ok(((), ()))
+        }
+    }
+
     /// Each kind macro emits its own marker, which is what gates the
     /// kind-specific `SetupContext` accessors.
     #[test]
@@ -71,5 +84,25 @@ mod tests {
         fn assert_simulator<T: WorldAuthoritySurface + ComponentBoundSurface + TypedIoSurface>() {}
 
         assert_simulator::<MarkerSimulator>();
+    }
+
+    /// The brain is a checked, schedulable participant and nothing more: it
+    /// gets typed I/O and a step, never a component binding or world
+    /// authority. The negative half is a trybuild case
+    /// (`brain_has_no_privileged_capabilities`), since an unimplemented trait
+    /// cannot be asserted from inside the crate that defines it.
+    #[test]
+    fn the_brain_marker_is_checked_and_schedulable_only() {
+        fn assert_checked_schedulable<T: TypedIoSurface + crate::__private::SchedulableSurface>() {}
+
+        assert_checked_schedulable::<MarkerBrain>();
+        assert_eq!(
+            <MarkerBrain as crate::__private::ParticipantSpec>::ID,
+            "brain"
+        );
+        assert_eq!(
+            <MarkerBrain as crate::__private::ParticipantSpec>::KIND,
+            "brain"
+        );
     }
 }

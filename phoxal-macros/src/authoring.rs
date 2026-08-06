@@ -1,6 +1,6 @@
 //! The participant authoring model: `#[derive(phoxal::Config)]` and the
-//! `#[phoxal::service]` /
-//! `#[phoxal::driver]` / `#[phoxal::simulator]` / `#[phoxal::tool]` attribute
+//! `#[phoxal::service]` / `#[phoxal::driver]` / `#[phoxal::simulator]` /
+//! `#[phoxal::brain]` attribute
 //! macros. Role attributes emit the static [`ParticipantSpec`] contract;
 //! authors implement `Participant` directly for lifecycle behavior.
 
@@ -24,7 +24,7 @@ fn as_type_path(ty: &Type) -> Option<&TypePath> {
 /// on Mach-O (macOS; segment,section syntax, section name <=16 bytes), and
 /// `.phoxal_meta` everywhere else (ELF and other platforms this
 /// framework targets - Linux robots, primarily). The section carries the
-/// strict `{schema, id, kind, class, config_schema}` process contract.
+/// strict `{schema, id, kind, config_schema}` process contract.
 /// `#[used]` keeps the
 /// linker from discarding the static during *this compilation unit's* own
 /// dead-code elimination, but not from ELF `--gc-sections` at final link
@@ -221,7 +221,7 @@ fn validate_serde_attrs(attrs: &[syn::Attribute], location: SerdeAttrLocation) -
 }
 
 // ---------------------------------------------------------------------------
-// #[phoxal::service] / #[phoxal::driver] / #[phoxal::simulator] / #[phoxal::tool]
+// #[phoxal::service] / #[phoxal::driver] / #[phoxal::simulator] / #[phoxal::brain]
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -229,7 +229,13 @@ pub enum ParticipantKind {
     Service,
     Driver,
     Simulator,
+    Brain,
 }
+
+/// The one fixed participant identity: the mandatory root brain. Shared with
+/// `phoxal-manifest`'s authored-identity reservation by value, not by
+/// dependency - `phoxal-macros` is below it in the crate graph.
+const BRAIN_ID: &str = "brain";
 
 impl ParticipantKind {
     fn attr_name(self) -> &'static str {
@@ -237,6 +243,7 @@ impl ParticipantKind {
             ParticipantKind::Service => "#[phoxal::service]",
             ParticipantKind::Driver => "#[phoxal::driver]",
             ParticipantKind::Simulator => "#[phoxal::simulator]",
+            ParticipantKind::Brain => "#[phoxal::brain]",
         }
     }
 
@@ -245,6 +252,35 @@ impl ParticipantKind {
             ParticipantKind::Service => "service",
             ParticipantKind::Driver => "driver",
             ParticipantKind::Simulator => "simulator",
+            ParticipantKind::Brain => "brain",
+        }
+    }
+
+    /// The identity this role fixes, if the role admits no `id = "…"` at all.
+    ///
+    /// Only the root brain does: exactly one brain exists per robot project
+    /// and the CLI stages it under the canonical `bin/brain`, so a
+    /// project-chosen identity would have nothing to name.
+    fn fixed_id(self) -> Option<&'static str> {
+        match self {
+            ParticipantKind::Brain => Some(BRAIN_ID),
+            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Simulator => None,
+        }
+    }
+
+    /// Whether this role admits a `config = Type` argument. The root brain
+    /// does not: there is no config side channel for it, so its `Config` is
+    /// always `()`.
+    fn accepts_config(self) -> bool {
+        !matches!(self, ParticipantKind::Brain)
+    }
+
+    /// The `(...)` keys this role accepts, for the unknown-key diagnostic.
+    fn accepted_keys(self) -> &'static str {
+        if self.accepts_config() {
+            "id, config, state, or api"
+        } else {
+            "state or api"
         }
     }
 
@@ -253,7 +289,7 @@ impl ParticipantKind {
             ParticipantKind::Simulator => {
                 quote!(#phoxal::__private::launch::SimulatorParticipantLaunch)
             }
-            ParticipantKind::Service | ParticipantKind::Driver => {
+            ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Brain => {
                 quote!(#phoxal::__private::launch::ClockedParticipantLaunch)
             }
         }
@@ -270,7 +306,10 @@ impl ParticipantKind {
     /// this expansion runs in the downstream participant crate).
     fn marker_impl(self, phoxal: &TokenStream, struct_name: &Ident) -> TokenStream {
         match self {
-            ParticipantKind::Service => {
+            // The brain is deliberately identical to a service here: the
+            // ordinary checked typed-I/O surface and a schedulable step, with
+            // no component-bound or world-authority capability.
+            ParticipantKind::Service | ParticipantKind::Brain => {
                 quote! {
                     impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
                     impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
@@ -378,7 +417,7 @@ const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
 /// against all 25 official participants, the package name minus its kind
 /// prefix matches the intended id for 25/25, while kebab-casing the struct
 /// name only matched 16/25 - it fails every tool (`struct ToolLog` kebabs to
-/// `tool-log`, not `log`), `BehaviorService`, `WebotsControllerSimulator`,
+/// `tool-log`, not `log`), `WebotsControllerSimulator`,
 /// and the two components with an underscore in their id (`oak_d_lite`
 /// kebabs to `oak-d-lite`). A crate that defines more than one participant
 /// still needs an explicit `id = "…"` per struct - they cannot all default to
@@ -403,15 +442,31 @@ struct ParticipantArgs {
 }
 
 impl ParticipantArgs {
-    fn parse(attr: TokenStream, attr_name: &str) -> syn::Result<Self> {
+    fn parse(attr: TokenStream, kind: ParticipantKind) -> syn::Result<Self> {
+        let attr_name = kind.attr_name();
+        let accepted_keys = kind.accepted_keys();
         let mut args = ParticipantArgs::default();
         let parser = syn::meta::parser(|meta: syn::meta::ParseNestedMeta| {
             if meta.path.is_ident("id") {
+                if let Some(fixed) = kind.fixed_id() {
+                    return Err(meta.error(format!(
+                        "{attr_name} does not accept an `id` argument: there is exactly one root \
+                         brain per robot project and its participant identity is fixed to \
+                         \"{fixed}\""
+                    )));
+                }
                 let value: LitStr = meta.value()?.parse()?;
                 validate_participant_id(&value)?;
                 args.id = Some(value.value());
                 Ok(())
             } else if meta.path.is_ident("config") {
+                if !kind.accepts_config() {
+                    return Err(meta.error(format!(
+                        "{attr_name} does not accept a `config` argument: the root brain has no \
+                         configuration side channel, so its Config is always () - put robot \
+                         policy in ordinary Rust code and read robot facts through ctx.robot()"
+                    )));
+                }
                 let value: Type = meta.value()?.parse()?;
                 args.config = Some(value);
                 Ok(())
@@ -425,7 +480,7 @@ impl ParticipantArgs {
                 Ok(())
             } else {
                 Err(meta.error(format!(
-                    "unknown {attr_name}(...) key (expected id, config, state, or api)"
+                    "unknown {attr_name}(...) key (expected {accepted_keys})"
                 )))
             }
         });
@@ -463,43 +518,49 @@ pub fn expand_participant(
         ));
     }
 
-    let args = ParticipantArgs::parse(attr, attr_name)?;
-    let id = match args.id {
-        // Already validated against the identity-token grammar at parse time
-        // (`ParticipantArgs::parse`), against the literal's own span.
-        Some(id) => id,
-        None => {
-            // Every real build goes through Cargo, which always sets
-            // `CARGO_PKG_NAME` for the crate it invokes `rustc` on - the
-            // process this proc-macro runs inside (see
-            // `default_participant_id`'s docs). Only a `rustc` invocation
-            // bypassing Cargo entirely would leave it unset; that is not a
-            // supported way to build a participant, so this is a compile
-            // error pointing at the fix rather than a silent fallback.
-            let pkg_name = std::env::var("CARGO_PKG_NAME").map_err(|_| {
-                syn::Error::new_spanned(
-                    struct_name,
-                    format!(
-                        "{attr_name} could not read CARGO_PKG_NAME to compute a default \
+    let args = ParticipantArgs::parse(attr, kind)?;
+    let id = match kind.fixed_id() {
+        // A fixed-identity role never reaches the `CARGO_PKG_NAME` default:
+        // `ParticipantArgs::parse` already rejected an explicit `id`, so this
+        // is the identity, unconditionally.
+        Some(fixed) => fixed.to_string(),
+        None => match args.id {
+            // Already validated against the identity-token grammar at parse time
+            // (`ParticipantArgs::parse`), against the literal's own span.
+            Some(id) => id,
+            None => {
+                // Every real build goes through Cargo, which always sets
+                // `CARGO_PKG_NAME` for the crate it invokes `rustc` on - the
+                // process this proc-macro runs inside (see
+                // `default_participant_id`'s docs). Only a `rustc` invocation
+                // bypassing Cargo entirely would leave it unset; that is not a
+                // supported way to build a participant, so this is a compile
+                // error pointing at the fix rather than a silent fallback.
+                let pkg_name = std::env::var("CARGO_PKG_NAME").map_err(|_| {
+                    syn::Error::new_spanned(
+                        struct_name,
+                        format!(
+                            "{attr_name} could not read CARGO_PKG_NAME to compute a default \
                          participant id (this build did not go through Cargo) - pass an \
                          explicit id = \"...\" instead"
-                    ),
-                )
-            })?;
-            let computed = default_participant_id(&pkg_name);
-            if !is_valid_participant_id(&computed) {
-                return Err(syn::Error::new_spanned(
-                    struct_name,
-                    format!(
-                        "computed participant id '{computed}' (from crate `{pkg_name}`, with any \
+                        ),
+                    )
+                })?;
+                let computed = default_participant_id(&pkg_name);
+                if !is_valid_participant_id(&computed) {
+                    return Err(syn::Error::new_spanned(
+                        struct_name,
+                        format!(
+                            "computed participant id '{computed}' (from crate `{pkg_name}`, with any \
                          leading phoxal-<kind>- prefix stripped) is invalid: must be non-empty \
                          and contain only lowercase ASCII letters, digits, '_' or '-' - pass an \
                          explicit id = \"...\" instead"
-                    ),
-                ));
+                        ),
+                    ));
+                }
+                computed
             }
-            computed
-        }
+        },
     };
     let config_ty: Type = args.config.unwrap_or_else(|| syn::parse_quote!(()));
     let state_ty: Type = args.state.unwrap_or_else(|| syn::parse_quote!(()));
@@ -678,6 +739,93 @@ mod tests {
         assert!(
             expanded.contains("const ID : & 'static str = \"custom-id\""),
             "an explicit id = \"...\" must win over CARGO_PKG_NAME: {expanded}"
+        );
+    }
+
+    #[test]
+    fn the_brain_role_fixes_its_identity_kind_config_and_launch_policy() {
+        let expanded = compact_tokens(
+            expand_participant(quote! {}, quote! { struct Brain; }, ParticipantKind::Brain)
+                .expect("expands"),
+        );
+        // The identity is fixed, never the `CARGO_PKG_NAME` default this test
+        // binary would otherwise produce ("phoxal-macros").
+        assert!(
+            expanded.contains("const ID : & 'static str = \"brain\""),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("const KIND : & 'static str = \"brain\""),
+            "{expanded}"
+        );
+        assert!(expanded.contains("type Config = () ;"), "{expanded}");
+        // The ordinary clocked launch policy, not a second brain-specific one.
+        assert!(
+            expanded.contains("launch :: ClockedParticipantLaunch"),
+            "{expanded}"
+        );
+        // The embedded record carries the brain kind under the fixed identity.
+        assert!(
+            expanded.contains("\"{\\\"schema\\\":\\\"phoxal/participant-metadata/v0\\\",\\\"id\\\":\\\"\" , \"brain\""),
+            "{expanded}"
+        );
+    }
+
+    #[test]
+    fn the_brain_role_grants_no_capability_beyond_the_checked_service_surface() {
+        let expanded = compact_tokens(
+            expand_participant(quote! {}, quote! { struct Brain; }, ParticipantKind::Brain)
+                .expect("expands"),
+        );
+        assert!(
+            expanded.contains("surface :: TypedIoSurface for Brain"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("SchedulableSurface for Brain"),
+            "{expanded}"
+        );
+        assert!(
+            !expanded.contains("ComponentBoundSurface"),
+            "the brain must not be component-bound: {expanded}"
+        );
+        assert!(
+            !expanded.contains("WorldAuthoritySurface"),
+            "the brain must not own simulator world authority: {expanded}"
+        );
+    }
+
+    #[test]
+    fn the_brain_role_accepts_state_and_api_but_rejects_id_and_config() {
+        expand_participant(
+            quote! { state = MyState, api = MyApi },
+            quote! { struct Brain; },
+            ParticipantKind::Brain,
+        )
+        .expect("state and api are ordinary checked-role arguments");
+
+        let id = expand_participant(
+            quote! { id = "policy" },
+            quote! { struct Brain; },
+            ParticipantKind::Brain,
+        )
+        .expect_err("an explicit id must be rejected");
+        assert!(
+            id.to_string().contains("does not accept an `id` argument"),
+            "{id}"
+        );
+
+        let config = expand_participant(
+            quote! { config = MyConfig },
+            quote! { struct Brain; },
+            ParticipantKind::Brain,
+        )
+        .expect_err("an explicit config must be rejected");
+        assert!(
+            config
+                .to_string()
+                .contains("does not accept a `config` argument"),
+            "{config}"
         );
     }
 
