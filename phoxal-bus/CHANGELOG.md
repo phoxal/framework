@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.54.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.53.0...phoxal-bus-v0.54.0) - 2026-08-06
+
+### Added
+
+- [**breaking**] embedded compatibility, session identities, protocol trees, and the finalized bundle ([#393](https://github.com/phoxal/framework/pull/393))
+
 ## [0.47.0](https://github.com/phoxal/framework/compare/phoxal-bus-v0.46.0...phoxal-bus-v0.47.0) - 2026-08-02
 
 ### Added
