@@ -25,7 +25,6 @@ use phoxal::prelude::*;
 // authority types only this simulator legitimately names, so they live behind
 // the explicit `phoxal_bus` opt-in instead - see that module's docs.
 use phoxal_bus::{TimelineAuthority, WorldClockPublisher};
-use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -94,27 +93,12 @@ struct BlockingStep {
 ///
 /// The controller joins the supervised run through `PHOXAL_EXECUTION_ID`, which
 /// the supervisor puts in the Webots application's environment and Webots
-/// passes through to this child process. It mints its own `ProducerId` if the
-/// supervisor did not pre-mint one, and it always mints its own timeline: a
-/// world history belongs to the controller process that runs it, never to the
-/// CLI (#952 section B).
+/// passes through to this child process. Its producer identity is the bus
+/// session it opens, and it always mints its own timeline: a world history
+/// belongs to the controller process that runs it, never to the CLI
+/// (#952 section B).
 pub fn run() -> Result<()> {
-    if has_explicit_producer_arg(std::env::args_os()) {
-        bail!(
-            "--producer-id is not accepted by the Webots-owned controller; it mints its own \
-             process identity"
-        );
-    }
     phoxal::run::<WebotsControllerSimulator>()
-}
-
-fn has_explicit_producer_arg(args: impl IntoIterator<Item = OsString>) -> bool {
-    args.into_iter().any(|arg| {
-        arg == "--producer-id"
-            || arg
-                .to_str()
-                .is_some_and(|arg| arg.starts_with("--producer-id="))
-    })
 }
 
 pub struct WebotsControllerState {
@@ -1328,39 +1312,10 @@ mod tests {
     }
 
     #[test]
-    fn controller_rejects_cli_producer_overrides() {
-        assert!(has_explicit_producer_arg([
-            OsString::from("webots-controller"),
-            OsString::from("--producer-id"),
-            OsString::from("00112233445566778899aabbccddeeff"),
-        ]));
-        assert!(has_explicit_producer_arg([
-            OsString::from("webots-controller"),
-            OsString::from("--producer-id=00112233445566778899aabbccddeeff"),
-        ]));
-        assert!(!has_explicit_producer_arg([
-            OsString::from("webots-controller"),
-            OsString::from("--robot-id"),
-            OsString::from("rover"),
-        ]));
-    }
-
-    #[test]
     fn webots_step_duration_must_be_positive() {
         assert_eq!(step_ns_from_ms(10).expect("10 ms is valid"), 10_000_000);
         assert!(step_ns_from_ms(0).is_err());
         assert!(step_ns_from_ms(-1).is_err());
-    }
-
-    fn test_namespace(label: &str) -> String {
-        format!(
-            "test/webots-controller-{label}/{}/{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|since| since.as_nanos())
-                .unwrap_or_default()
-        )
     }
 
     fn clock_publisher(bus: &Bus) -> WorldClockPublisher<api::simulation::Clock> {
@@ -1395,7 +1350,7 @@ mod tests {
     // assertion.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn controller_publishes_outputs_before_matching_clock() {
-        let bus = Bus::open(BusConfig::in_process(test_namespace("order"), "robot"))
+        let bus = Bus::open(BusConfig::in_process("webots-controller"))
             .await
             .expect("bus should open");
         let clock_subscriber = Subscriber::<api::simulation::Clock>::new(

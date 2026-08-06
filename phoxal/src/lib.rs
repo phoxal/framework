@@ -184,7 +184,7 @@ pub mod bus {
     /// Bus-ABI golden bindings against the train-selected API tree.
     ///
     /// The pure bus mechanics (encoding-string parsing, the codec fast-reject
-    /// in `decode_sample`, codec round-trips, namespace validation) are unit
+    /// in `decode_sample`, codec round-trips, key-root validation) are unit
     /// tested in the `phoxal-bus` crate against a hand-written `ContractBody`.
     /// These pin the *engine-level* binding: that the `phoxal_api_tree!`
     /// generated `ContractBody`/`ApiVersion` impls for `v0_1` flow through the
@@ -224,7 +224,7 @@ pub mod bus {
             let timeline = TimelineId::mint();
             let meta = BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),
-                producer: ProducerId::mint(),
+                producer: ProducerId::try_from(1).expect("a test producer is nonzero"),
                 sequence: 9,
                 produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
                 participant: "tester".to_string(),

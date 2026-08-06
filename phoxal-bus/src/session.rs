@@ -1,4 +1,4 @@
-//! The Zenoh session wrapper: key root, namespace validation, the non-blocking
+//! The Zenoh session wrapper: the execution-scoped key root, the non-blocking
 //! outbound queue (D43e), and health counters.
 
 use std::sync::Arc;
@@ -10,10 +10,15 @@ use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::error::{BusError, Result};
-use crate::identity::{ExecutionId, ProducerId};
+use crate::identity::{ExecutionId, ProducerId, producer_from_zid};
 use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 use crate::time::TimeWindow;
+
+/// First chunk of every Phoxal bus key. It exists so a Phoxal execution is
+/// recognisable in a trace and cannot collide with a non-Phoxal key tree
+/// sharing the same Zenoh fabric.
+const BUS_KEY_PREFIX: &str = "phoxal";
 
 /// Capacity (in samples) of the runner-owned outbound queue. A publish that would
 /// exceed this drops the sample and bumps the drop counter - it never blocks the
@@ -25,23 +30,20 @@ pub(crate) const OUTBOUND_CAPACITY: usize = 1024;
 const OUTBOUND_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 /// Connection inputs for opening a bus session.
+///
+/// The execution is the *only* routing input. A robot's namespace and id are
+/// model data: two robots in one execution are two participants under one root,
+/// and two executions never share a key however they are named.
 #[derive(Clone, Debug)]
 pub struct BusConfig {
-    /// The bus namespace (`identity.namespace`); concrete, non-wildcard (D38).
-    pub namespace: String,
-    /// The robot id (`identity.id`); one concrete key segment.
-    pub robot_id: String,
-    /// The supervised run this session joins (#952 section B). It is part of
-    /// the key root, so traffic from a previous execution - an ad hoc
-    /// publisher, an attached tool, a replayed recording, a second checkout
-    /// reusing the namespace - physically cannot be observed as current.
+    /// The supervised run this session joins (#952 section B). It is the key
+    /// root, so traffic from a previous execution - an ad hoc publisher, an
+    /// attached tool, a replayed recording, a second checkout of the same
+    /// project - physically cannot be observed as current.
     pub execution: ExecutionId,
     /// The participant id (`ParticipantLaunch.participant_id`, never the static
     /// participant/artifact id - D53). A diagnostic label, never identity.
     pub participant: String,
-    /// This process's producer identity. A spawned participant receives a
-    /// supervisor-pre-minted one; an ad hoc publisher mints its own.
-    pub producer: ProducerId,
     /// Zenoh connect endpoints. Empty = in-process (local sim / tests).
     pub connect_endpoints: Vec<String>,
 }
@@ -49,13 +51,10 @@ pub struct BusConfig {
 impl BusConfig {
     /// An in-process config (no endpoints, multicast off) for local sim + tests,
     /// on a freshly minted execution.
-    pub fn in_process(namespace: impl Into<String>, robot_id: impl Into<String>) -> Self {
+    pub fn in_process(participant: impl Into<String>) -> Self {
         BusConfig {
-            namespace: namespace.into(),
-            robot_id: robot_id.into(),
             execution: ExecutionId::mint(),
-            participant: "local".to_string(),
-            producer: ProducerId::mint(),
+            participant: participant.into(),
             connect_endpoints: Vec::new(),
         }
     }
@@ -106,8 +105,9 @@ struct BusInner {
     runtime_metrics: RuntimeMetrics,
 }
 
-/// A Zenoh session bound to one robot's key root, with a non-blocking publish
-/// path and health counters. Cloning shares the underlying session + queue.
+/// A Zenoh session bound to one execution's key root, with a non-blocking
+/// publish path and health counters. Cloning shares the underlying session,
+/// queue, producer identity, and sequence allocator.
 #[derive(Clone)]
 pub struct Bus {
     inner: Arc<BusInner>,
@@ -123,11 +123,10 @@ impl std::fmt::Debug for Bus {
 }
 
 impl Bus {
-    /// Open a session, validate the namespace/robot-id, and start the outbound
+    /// Open a session, compose its execution-scoped key root, adopt the
+    /// producer identity Zenoh assigned the session, and start the outbound
     /// drain task.
     pub async fn open(config: BusConfig) -> Result<Self> {
-        validate_segment(&config.namespace, "identity.namespace", true)?;
-        validate_segment(&config.robot_id, "identity.id", false)?;
         if config.participant.is_empty() {
             return Err(BusError::Namespace(
                 "participant id must not be empty".to_string(),
@@ -142,12 +141,7 @@ impl Bus {
         // Execution scoping lives in the *root*, not in any contract name: a
         // previous run's traffic lands on a different key and cannot be
         // observed as current (#952 section B).
-        let root = format!(
-            "{}/robots/{}/{}",
-            config.namespace,
-            config.robot_id,
-            config.execution.as_key_segment()
-        );
+        let root = format!("{BUS_KEY_PREFIX}/{}", config.execution);
         // Validate the composed root resolves to a legal Zenoh key.
         OwnedKeyExpr::new(root.clone())
             .map_err(|e| BusError::Namespace(format!("invalid key root '{root}': {e}")))?;
@@ -155,6 +149,9 @@ impl Bus {
         let session = zenoh::open(zenoh_config(&config.connect_endpoints)?)
             .await
             .map_err(|e| BusError::Transport(e.to_string()))?;
+        // The producer is the session, so it exists only once the session does.
+        // Everything that carries provenance is built below this line.
+        let producer = producer_from_zid(session.zid())?;
 
         let (tx, rx) = mpsc::channel::<Outbound>(OUTBOUND_CAPACITY);
         let drain_session = session.clone();
@@ -163,7 +160,7 @@ impl Bus {
             root,
             execution: config.execution,
             participant: config.participant,
-            producer: config.producer,
+            producer,
             seq: AtomicU64::new(0),
             outbound: tx,
             queued_bytes: AtomicUsize::new(0),
@@ -180,8 +177,7 @@ impl Bus {
         Ok(Bus { inner })
     }
 
-    /// The composed key root
-    /// (`<namespace>/robots/<robot-id>/x<execution-id>`).
+    /// The composed key root (`phoxal/<execution-id>`).
     pub fn root(&self) -> &str {
         &self.inner.root
     }
@@ -196,21 +192,26 @@ impl Bus {
         &self.inner.participant
     }
 
-    /// This process's producer identity.
+    /// This session's producer identity - the id Zenoh assigned the session.
+    ///
+    /// The guarantee is per *session incarnation*, not per process: a process
+    /// that closes its bus and opens another is a different producer, which is
+    /// exactly the intended reading, because the second session's sequence
+    /// starts at zero again.
     pub fn producer(&self) -> ProducerId {
         self.inner.producer
     }
 
     /// Build the provenance for one outbound sample: this producer, its next
     /// sequence, and the production instant the caller's temporal role permits.
-    pub(crate) fn metadata(&self, produced_at: Option<TimeWindow>) -> BusMetadata {
-        BusMetadata {
+    pub(crate) fn metadata(&self, produced_at: Option<TimeWindow>) -> Result<BusMetadata> {
+        Ok(BusMetadata {
             codec: crate::abi::CodecId::MessagePack.as_u8(),
             producer: self.inner.producer,
-            sequence: self.next_sequence(),
+            sequence: self.next_sequence()?,
             produced_at,
             participant: self.inner.participant.clone(),
-        }
+        })
     }
 
     /// Live health counters.
@@ -237,9 +238,15 @@ impl Bus {
         format!("{}/{}", self.inner.root, topic_key)
     }
 
-    /// Allocate the next per-producer sequence number.
-    pub fn next_sequence(&self) -> u64 {
-        self.inner.seq.fetch_add(1, Ordering::Relaxed)
+    /// Allocate the next sequence number for this session's producer.
+    ///
+    /// One session has exactly one producer and exactly one allocator, so every
+    /// sample published under this identity - from any clone of this `Bus`, on
+    /// any topic - draws from the same strictly increasing stream. Two counters
+    /// behind one identity would each start at zero and the second would be
+    /// rejected downstream as a replay.
+    pub fn next_sequence(&self) -> Result<u64> {
+        allocate_sequence(&self.inner.seq)
     }
 
     /// Non-blocking enqueue onto the outbound queue. A full queue (samples or
@@ -341,6 +348,19 @@ impl Bus {
     }
 }
 
+/// Hand out the next sequence, failing closed at the end of the range.
+///
+/// Wrapping would restart the stream at zero under an unchanged producer
+/// identity, and every downstream freshness rule reads a non-increasing
+/// sequence from a known producer as a replay - so the whole run would go
+/// silently deaf to this publisher instead of reporting a bounded failure.
+fn allocate_sequence(seq: &AtomicU64) -> Result<u64> {
+    seq.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_add(1)
+    })
+    .map_err(|_| BusError::SequenceExhausted)
+}
+
 #[allow(deprecated)]
 fn reserve_outbound_bytes(queued: &AtomicUsize, bytes: usize) -> bool {
     queued
@@ -398,32 +418,6 @@ async fn put(session: &zenoh::Session, out: Outbound) {
     {
         tracing::warn!(target: "phoxal.bus", key = %out.key, error = %e, "publish failed");
     }
-}
-
-/// Validate one or more `/`-joined key segments: no empty segments and no Zenoh
-/// wildcards. `multi` allows `a/b`; otherwise a single segment is required.
-fn validate_segment(value: &str, what: &str, multi: bool) -> Result<()> {
-    if value.is_empty() {
-        return Err(BusError::Namespace(format!("{what} must not be empty")));
-    }
-    if !multi && value.contains('/') {
-        return Err(BusError::Namespace(format!(
-            "{what} must be a single key segment, got '{value}'"
-        )));
-    }
-    for seg in value.split('/') {
-        if seg.is_empty() {
-            return Err(BusError::Namespace(format!(
-                "{what} '{value}' has an empty segment"
-            )));
-        }
-        if seg.contains('*') {
-            return Err(BusError::Namespace(format!(
-                "{what} '{value}' must be a concrete (non-wildcard) path"
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Bound on how long a client-mode `Bus::open` retries a failed connect
@@ -537,6 +531,26 @@ mod tests {
         assert_eq!(queued.load(Ordering::Relaxed), bytes);
         assert!(queued.load(Ordering::Relaxed) <= OUTBOUND_MAX_BYTES);
         assert!(!reserve_outbound_bytes(&queued, usize::MAX));
+    }
+
+    #[test]
+    fn the_sequence_allocator_fails_closed_instead_of_wrapping() {
+        let seq = AtomicU64::new(0);
+        assert_eq!(allocate_sequence(&seq).unwrap(), 0);
+        assert_eq!(allocate_sequence(&seq).unwrap(), 1);
+
+        // At the end of the range the allocator refuses rather than wrapping to
+        // zero, which a receiver would read as a replay from this producer.
+        seq.store(u64::MAX, Ordering::Relaxed);
+        assert!(matches!(
+            allocate_sequence(&seq),
+            Err(BusError::SequenceExhausted)
+        ));
+        assert_eq!(
+            seq.load(Ordering::Relaxed),
+            u64::MAX,
+            "a refused allocation must not advance the counter"
+        );
     }
 
     #[test]
