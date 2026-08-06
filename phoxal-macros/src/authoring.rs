@@ -378,7 +378,7 @@ const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
 /// against all 25 official participants, the package name minus its kind
 /// prefix matches the intended id for 25/25, while kebab-casing the struct
 /// name only matched 16/25 - it fails every tool (`struct ToolLog` kebabs to
-/// `tool-log`, not `log`), `BehaviorService`, `WebotsControllerSimulator`,
+/// `tool-log`, not `log`), `WebotsControllerSimulator`,
 /// and the two components with an underscore in their id (`oak_d_lite`
 /// kebabs to `oak-d-lite`). A crate that defines more than one participant
 /// still needs an explicit `id = "…"` per struct - they cannot all default to

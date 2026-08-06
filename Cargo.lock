@@ -2335,16 +2335,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "phoxal-service-behavior"
-version = "0.52.0"
-dependencies = [
- "anyhow",
- "phoxal",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "phoxal-service-drive"
 version = "0.52.0"
 dependencies = [

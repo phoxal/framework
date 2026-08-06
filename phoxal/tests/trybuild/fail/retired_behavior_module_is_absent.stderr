@@ -1,5 +1,0 @@
-error[E0432]: unresolved import `phoxal::behavior`
- --> tests/trybuild/fail/retired_behavior_module_is_absent.rs:1:13
-  |
-1 | use phoxal::behavior::BehaviorCatalog;
-  |             ^^^^^^^^ could not find `behavior` in `phoxal`

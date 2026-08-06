@@ -1160,7 +1160,6 @@ fn main() -> phoxal::Result<()> {
     #[test]
     fn compiled_asset_id_rules_match_at_the_producer_and_consumer_boundary() {
         let cases = [
-            ("behavior/catalog.json", true),
             ("meshes/base.stl", true),
             ("components/camera/config.json", true),
             ("", false),
