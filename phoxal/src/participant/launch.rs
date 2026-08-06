@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use clap::{CommandFactory, FromArgMatches};
 pub use phoxal_runtime_contract::{
     BusProfile, ClockMode, DEFAULT_SHUTDOWN_GRACE_MS, ExecutionId, ExecutionOrigin, LaunchEnv,
-    ParticipantLaunch, ProducerId, env,
+    ParticipantLaunch, env,
 };
 
 /// The clap-derived launch fields shared by every participant binary.
@@ -37,15 +37,6 @@ struct CommonLaunchCli {
     )]
     execution_id: Option<String>,
 
-    /// Supervisor-pre-minted producer identity. Absent means mint one.
-    #[arg(
-        long,
-        env = env::PRODUCER_ID,
-        hide_env_values = true,
-        value_name = "ID"
-    )]
-    producer_id: Option<String>,
-
     /// Supervisor-minted origin of real robot time for this execution.
     #[arg(
         long,
@@ -55,19 +46,9 @@ struct CommonLaunchCli {
     )]
     execution_origin: Option<String>,
 
-    /// Robot id for the transport root. Defaults to `robot` for local runs.
+    /// Robot this participant belongs to. Defaults to `robot` for local runs.
     #[arg(long, env = env::ROBOT_ID, hide_env_values = true, value_name = "ID")]
     robot_id: Option<String>,
-
-    /// Bus namespace for the transport root.
-    #[arg(
-        long,
-        env = env::NAMESPACE,
-        hide_env_values = true,
-        value_name = "NAMESPACE",
-        default_value = "dev"
-    )]
-    namespace: Option<String>,
 
     /// Root directory containing the resolved robot model.
     #[arg(
@@ -154,13 +135,11 @@ impl CommonLaunchCli {
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| default_participant_id.to_string()),
             execution_id: self.execution_id,
-            producer_id: self.producer_id,
             execution_origin: self.execution_origin,
             robot_id: self
                 .robot_id
                 .filter(|value| !value.is_empty())
                 .unwrap_or_else(|| default_robot_id.to_string()),
-            namespace: self.namespace,
             bundle_root: self.bundle_root,
             component_instance: self.component_instance,
             connect: self.connect,
@@ -288,7 +267,6 @@ mod tests {
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "default-id");
         assert_eq!(launch.robot_id, "robot");
-        assert_eq!(launch.namespace, "dev");
         assert_eq!(launch.bundle_root, None);
         assert_eq!(launch.config, None);
         assert!(launch.bus.connect_endpoints.is_empty());
@@ -300,16 +278,13 @@ mod tests {
     fn env_overrides_each_launch_field() {
         clear_env();
         let execution = ExecutionId::mint();
-        let producer = ProducerId::mint();
         let origin = ExecutionOrigin::mint();
         // SAFETY: serialized test; see clear_env.
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "tof-3");
             std::env::set_var(env::EXECUTION_ID, execution.to_string());
-            std::env::set_var(env::PRODUCER_ID, producer.to_string());
             std::env::set_var(env::EXECUTION_ORIGIN, origin.encode());
             std::env::set_var(env::ROBOT_ID, "robot-a");
-            std::env::set_var(env::NAMESPACE, "lab");
             std::env::set_var(env::BUNDLE_ROOT, "/robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "tof_front");
             std::env::set_var(env::CONNECT, "tcp/127.0.0.1:7447, tcp/127.0.0.1:7448");
@@ -319,10 +294,8 @@ mod tests {
         let launch = parse_clocked_from(&["participant-bin"]).unwrap();
         assert_eq!(launch.participant_id, "tof-3");
         assert_eq!(launch.execution, execution);
-        assert_eq!(launch.producer, producer);
         assert_eq!(launch.execution_origin, Some(origin));
         assert_eq!(launch.robot_id, "robot-a");
-        assert_eq!(launch.namespace, "lab");
         assert_eq!(
             launch.bundle_root.as_deref(),
             Some(std::path::Path::new("/robot"))
@@ -345,14 +318,11 @@ mod tests {
     fn flags_take_precedence_over_env() {
         clear_env();
         let flag_execution = ExecutionId::mint();
-        let flag_producer = ProducerId::mint();
         // SAFETY: serialized test; see clear_env.
         unsafe {
             std::env::set_var(env::PARTICIPANT_ID, "env-participant");
             std::env::set_var(env::EXECUTION_ID, ExecutionId::mint().to_string());
-            std::env::set_var(env::PRODUCER_ID, ProducerId::mint().to_string());
             std::env::set_var(env::ROBOT_ID, "env-robot");
-            std::env::set_var(env::NAMESPACE, "env-ns");
             std::env::set_var(env::BUNDLE_ROOT, "/env-robot");
             std::env::set_var(env::COMPONENT_INSTANCE, "env-component");
             std::env::set_var(env::CONNECT, "tcp/env:7447");
@@ -366,12 +336,8 @@ mod tests {
             "flag-participant",
             "--execution-id",
             &flag_execution.to_string(),
-            "--producer-id",
-            &flag_producer.to_string(),
             "--robot-id",
             "flag-robot",
-            "--namespace",
-            "flag-ns",
             "--bundle-root",
             "/flag-robot",
             "--component-instance",
@@ -387,9 +353,7 @@ mod tests {
 
         assert_eq!(launch.participant_id, "flag-participant");
         assert_eq!(launch.execution, flag_execution);
-        assert_eq!(launch.producer, flag_producer);
         assert_eq!(launch.robot_id, "flag-robot");
-        assert_eq!(launch.namespace, "flag-ns");
         assert_eq!(
             launch.bundle_root.as_deref(),
             Some(std::path::Path::new("/flag-robot"))
@@ -435,10 +399,8 @@ mod tests {
         for (flag, env_name) in [
             ("--participant-id", env::PARTICIPANT_ID),
             ("--execution-id", env::EXECUTION_ID),
-            ("--producer-id", env::PRODUCER_ID),
             ("--execution-origin", env::EXECUTION_ORIGIN),
             ("--robot-id", env::ROBOT_ID),
-            ("--namespace", env::NAMESPACE),
             ("--bundle-root", env::BUNDLE_ROOT),
             ("--component-instance", env::COMPONENT_INSTANCE),
             ("--connect", env::CONNECT),
@@ -464,10 +426,12 @@ mod tests {
             "{error:#}"
         );
 
+        // Nothing on this surface names a producer: a participant's producer is
+        // the session it opens, so there is no flag or variable to get wrong.
         let error = parse_simulator_from(&["simulator-bin", "--producer-id", "0011"]).unwrap_err();
         assert!(
-            error.to_string().contains("PHOXAL_PRODUCER_ID is invalid"),
-            "{error:#}"
+            error.to_string().contains("--producer-id"),
+            "an unknown argument should be reported as such, got: {error:#}"
         );
 
         let error =
@@ -487,7 +451,6 @@ mod tests {
         let first = parse_simulator_from(&["simulator-bin"]).unwrap();
         let second = parse_simulator_from(&["simulator-bin"]).unwrap();
         assert_ne!(first.execution, second.execution);
-        assert_ne!(first.producer, second.producer);
         assert_eq!(first.execution_origin, None);
         clear_env();
     }

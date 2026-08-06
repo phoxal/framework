@@ -124,7 +124,7 @@ impl IncomingQuery {
     pub async fn reply(&self, bus: &Bus, payload: Vec<u8>) -> Result<()> {
         // A reply expresses no robot time: it answers a question, it does not
         // observe the world.
-        let metadata = bus.metadata(None);
+        let metadata = bus.metadata(None)?;
         self.query
             .reply(self.query.key_expr(), payload)
             .encoding(encoding_string(CodecId::MessagePack))

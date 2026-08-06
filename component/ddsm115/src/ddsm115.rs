@@ -371,6 +371,12 @@ fn integrate(position_rad: f64, velocity_radps: f32, dt_s: f64) -> f64 {
 mod tests {
     use super::*;
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
     fn start() -> LocalInstant {
         LocalInstant::from_boot_ns(1_000_000_000)
     }
@@ -450,7 +456,7 @@ mod tests {
     /// buy a full fresh window.
     #[test]
     fn a_stale_queued_command_does_not_buy_a_fresh_permit() {
-        let producer = ProducerId::mint();
+        let producer = producer(1);
         let mut motor = Motor::default();
         // Observed at `start`, drained a full permit window later.
         motor.admit(observed_command(
@@ -471,8 +477,8 @@ mod tests {
     /// accepted producer must not renew it either (#952 section G).
     #[test]
     fn a_superseded_or_replayed_command_cannot_renew_the_permit() {
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = producer(2);
+        let second = producer(3);
         let mut motor = Motor::default();
 
         motor.admit(observed_command(

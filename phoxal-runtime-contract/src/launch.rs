@@ -2,7 +2,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ExecutionId, ExecutionOrigin, ProducerId};
+use crate::{ExecutionId, ExecutionOrigin};
+
+/// The launch ABI a participant binary declares: this launch record plus the
+/// environment-variable encoding below.
+pub const LAUNCH_ABI: &str = "phoxal/participant-launch/v0";
 
 /// Default bounded shutdown grace, in milliseconds.
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
@@ -11,10 +15,8 @@ pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
 pub mod env {
     pub const PARTICIPANT_ID: &str = "PHOXAL_PARTICIPANT_ID";
     pub const EXECUTION_ID: &str = "PHOXAL_EXECUTION_ID";
-    pub const PRODUCER_ID: &str = "PHOXAL_PRODUCER_ID";
     pub const EXECUTION_ORIGIN: &str = "PHOXAL_EXECUTION_ORIGIN";
     pub const ROBOT_ID: &str = "PHOXAL_ROBOT_ID";
-    pub const NAMESPACE: &str = "PHOXAL_NAMESPACE";
     pub const BUNDLE_ROOT: &str = "PHOXAL_BUNDLE_ROOT";
     pub const COMPONENT_INSTANCE: &str = "PHOXAL_COMPONENT_INSTANCE";
     pub const CONNECT: &str = "PHOXAL_CONNECT";
@@ -24,10 +26,8 @@ pub mod env {
     pub const ALL: &[&str] = &[
         PARTICIPANT_ID,
         EXECUTION_ID,
-        PRODUCER_ID,
         EXECUTION_ORIGIN,
         ROBOT_ID,
-        NAMESPACE,
         BUNDLE_ROOT,
         COMPONENT_INSTANCE,
         CONNECT,
@@ -42,10 +42,8 @@ pub mod env {
 pub struct ParticipantLaunch {
     pub participant_id: String,
     pub execution: ExecutionId,
-    pub producer: ProducerId,
     #[serde(default, with = "origin_serde")]
     pub execution_origin: Option<ExecutionOrigin>,
-    pub namespace: String,
     pub robot_id: String,
     #[serde(default)]
     pub bus: BusProfile,
@@ -70,9 +68,7 @@ impl ParticipantLaunch {
         Self {
             participant_id: participant_id.into(),
             execution: ExecutionId::mint(),
-            producer: ProducerId::mint(),
             execution_origin: None,
-            namespace: "dev".to_string(),
             robot_id: robot_id.into(),
             bus: BusProfile::default(),
             clock: ClockMode::Real,
@@ -98,9 +94,7 @@ impl ParticipantLaunch {
         let mut values = vec![
             (env::PARTICIPANT_ID, self.participant_id.clone()),
             (env::EXECUTION_ID, self.execution.to_string()),
-            (env::PRODUCER_ID, self.producer.to_string()),
             (env::ROBOT_ID, self.robot_id.clone()),
-            (env::NAMESPACE, self.namespace.clone()),
             (env::CONNECT, self.bus.connect_endpoints.join(",")),
             (env::CLOCK, self.clock.to_string()),
         ];
@@ -126,17 +120,12 @@ impl ParticipantLaunch {
             launch.execution = ExecutionId::parse(&value)
                 .map_err(|source| LaunchError::ExecutionId { value, source })?;
         }
-        if let Some(value) = nonempty(values.producer_id) {
-            launch.producer = ProducerId::parse(&value)
-                .map_err(|source| LaunchError::ProducerId { value, source })?;
-        }
         if let Some(value) = nonempty(values.execution_origin) {
             launch.execution_origin = Some(
                 ExecutionOrigin::decode(&value)
                     .ok_or_else(|| LaunchError::ExecutionOrigin(value.clone()))?,
             );
         }
-        launch.namespace = nonempty(values.namespace).unwrap_or_else(|| "dev".to_string());
         launch.bus.connect_endpoints = nonempty(values.connect)
             .map(|endpoints| {
                 endpoints
@@ -172,10 +161,8 @@ fn nonempty(value: Option<String>) -> Option<String> {
 pub struct LaunchEnv {
     pub participant_id: String,
     pub execution_id: Option<String>,
-    pub producer_id: Option<String>,
     pub execution_origin: Option<String>,
     pub robot_id: String,
-    pub namespace: Option<String>,
     pub bundle_root: Option<PathBuf>,
     pub component_instance: Option<String>,
     pub connect: Option<String>,
@@ -188,11 +175,6 @@ pub struct LaunchEnv {
 pub enum LaunchError {
     #[error("PHOXAL_EXECUTION_ID is invalid ('{value}'): {source}")]
     ExecutionId {
-        value: String,
-        source: crate::InvalidIdentity,
-    },
-    #[error("PHOXAL_PRODUCER_ID is invalid ('{value}'): {source}")]
-    ProducerId {
         value: String,
         source: crate::InvalidIdentity,
     },

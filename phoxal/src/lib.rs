@@ -134,8 +134,9 @@
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
 //!   the four non-interchangeable time types, body-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
-//! - [`model`] - immutable canonical runtime robot facts decoded from the
-//!   compiled `robot.json`; authored YAML and URDF live in `phoxal-manifest`.
+//! - [`model`] - immutable canonical runtime robot facts, loaded from the
+//!   finalized bundle by [`bundle`]; the document readers live in
+//!   `phoxal-manifest`.
 //! - The **official service set** ships alongside this crate in the workspace
 //!   `service/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
@@ -149,6 +150,7 @@
 #[cfg(test)]
 extern crate self as phoxal;
 
+pub mod bundle;
 pub mod model;
 mod participant;
 
@@ -184,7 +186,7 @@ pub mod bus {
     /// Bus-ABI golden bindings against the train-selected API tree.
     ///
     /// The pure bus mechanics (encoding-string parsing, the codec fast-reject
-    /// in `decode_sample`, codec round-trips, namespace validation) are unit
+    /// in `decode_sample`, codec round-trips, key-root validation) are unit
     /// tested in the `phoxal-bus` crate against a hand-written `ContractBody`.
     /// These pin the *engine-level* binding: that the `phoxal_api_tree!`
     /// generated `ContractBody`/`ApiVersion` impls for `v0_1` flow through the
@@ -224,7 +226,7 @@ pub mod bus {
             let timeline = TimelineId::mint();
             let meta = BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),
-                producer: ProducerId::mint(),
+                producer: ProducerId::try_from(1).expect("a test producer is nonzero"),
                 sequence: 9,
                 produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline, 42))),
                 participant: "tester".to_string(),
@@ -279,7 +281,7 @@ pub use phoxal_macros::step;
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use participant::run;
 pub use participant::{Participant, ResetContext, SetupContext, StepContext};
-pub use phoxal_model::{AssetError, AssetId, AssetResolver};
+pub use phoxal_model::{AssetError, AssetId, ParticipantAssetResolver};
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
@@ -299,12 +301,38 @@ pub mod prelude {
     pub use crate::participant::{
         ManagedTaskPolicy, Participant, ResetContext, SetupContext, StepContext,
     };
-    pub use crate::{AssetId, AssetResolver};
+    pub use crate::{AssetId, ParticipantAssetResolver};
 }
 
 /// Macro/runtime linkage that is intentionally absent from the authoring API.
 #[doc(hidden)]
 pub mod __private {
+    /// The one compatibility declaration a participant binary carries.
+    ///
+    /// Every constant here is re-exported from the crate that owns the
+    /// contract it names, so a train can only ever say one thing about each.
+    /// The role macros splice these into the participant's embedded
+    /// `.phoxal_meta` document at compile time; that embedded document is the
+    /// only compatibility artifact - there is no Cargo package-metadata table,
+    /// no version file, and no framework-SemVer floor.
+    pub mod compatibility {
+        /// The train-selected API revision (`phoxal::api`).
+        pub const API: &str = <phoxal_api::latest::Api as phoxal_bus::ApiVersion>::ID;
+        /// The bus wire ABI.
+        pub const BUS: &str = phoxal_bus::BUS_ABI;
+        /// The launch record / environment ABI.
+        pub const LAUNCH: &str = phoxal_runtime_contract::LAUNCH_ABI;
+        /// The authored robot document grammar.
+        pub const ROBOT: &str = phoxal_runtime_contract::ROBOT_DOCUMENT_SCHEMA;
+        /// The authored component document grammar.
+        pub const COMPONENT: &str = phoxal_runtime_contract::COMPONENT_DOCUMENT_SCHEMA;
+        /// The authored simulation document grammar.
+        pub const SIMULATION: &str = phoxal_runtime_contract::SIMULATION_DOCUMENT_SCHEMA;
+        /// The schema tag of the embedded document itself, so the role macro
+        /// never spells the tag out a second time.
+        pub const METADATA: &str = phoxal_runtime_contract::PARTICIPANT_METADATA_SCHEMA;
+    }
+
     pub use crate::participant::api::__meta;
     pub use crate::participant::launch::{
         ClockedParticipantLaunch, ParticipantLaunchPolicy, SimulatorParticipantLaunch,

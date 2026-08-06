@@ -370,12 +370,63 @@ mod tests {
         DifferentialDrive, DriveConfig, Duration, MotionLimits, TARGET_HOLD, TARGET_SILENCE,
         resolve_target, stopped_target,
     };
-    use std::path::PathBuf;
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
+    /// Stage a finalized bundle from the checked-in authored fixtures and take
+    /// its canonical model.
+    ///
+    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
+    /// authored document (pin the resolved clock, resolve the structure path
+    /// into `assets/`) are small enough to reproduce here, so this crate reads
+    /// a real bundle without any bundle being checked in.
     fn fixture() -> phoxal::model::Robot {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
-        phoxal::model::Robot::decode(&std::fs::read(path).unwrap()).unwrap()
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture");
+        let project = fixture.join("robot/rgbd-imu-diff-drive");
+        let bundle = tempfile::tempdir().expect("a staging directory");
+        let assets = bundle.path().join("assets");
+
+        std::fs::create_dir_all(assets.join("robot")).unwrap();
+        std::fs::copy(
+            project.join("structure.urdf"),
+            assets.join("robot/structure.urdf"),
+        )
+        .unwrap();
+        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
+            let source = fixture.join("component").join(component_type);
+            let staged = assets.join("components").join(component_type);
+            std::fs::create_dir_all(&staged).unwrap();
+            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
+                std::fs::copy(source.join(document), staged.join(document)).unwrap();
+            }
+            for mesh in std::fs::read_dir(source.join("meshes"))
+                .into_iter()
+                .flatten()
+            {
+                let mesh = mesh.unwrap();
+                std::fs::create_dir_all(staged.join("meshes")).unwrap();
+                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
+            }
+        }
+        std::fs::write(
+            bundle.path().join("robot.yaml"),
+            std::fs::read_to_string(project.join("robot.yaml"))
+                .unwrap()
+                .replacen("schema: robot/v0", "schema: robot/v0\nclock: real", 1)
+                .replacen(
+                    "structure: structure.urdf",
+                    "structure: robot/structure.urdf",
+                    1,
+                ),
+        )
+        .unwrap();
+        phoxal::bundle::FinalizedBundle::load(bundle.path())
+            .expect("the staged bundle must load")
+            .into_robot()
     }
 
     #[test]
@@ -461,7 +512,7 @@ mod tests {
             angular_z_radps: 0.0,
             curvature_limit_radpm: None,
         };
-        let producer = ProducerId::mint();
+        let producer = producer(1);
         let line = TimelineId::mint();
         let host_start = LocalInstant::from_boot_ns(0);
         let robot_start = RobotInstant::new(line, 0);
@@ -495,8 +546,8 @@ mod tests {
             angular_z_radps: 0.0,
             curvature_limit_radpm: None,
         };
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = producer(2);
+        let second = producer(3);
         let host_now = LocalInstant::from_boot_ns(0);
         let now = RobotInstant::new(TimelineId::mint(), 0);
 

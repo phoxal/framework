@@ -97,10 +97,16 @@ mod tests {
     use super::*;
     use crate::identity::TimelineId;
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
     fn metadata(produced_at: Option<TimeWindow>) -> BusMetadata {
         BusMetadata {
             codec: CodecId::MessagePack.as_u8(),
-            producer: ProducerId::mint(),
+            producer: producer(1),
             sequence: 7,
             produced_at,
             participant: "unit".to_string(),

@@ -538,8 +538,8 @@ mod tests {
         let token = state.install_sender(sender);
         let subscriber = tracing_subscriber::registry().with(BusLogLayer::new(Arc::clone(&state)));
 
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = ProducerId::try_from(1).expect("a test producer is nonzero");
+        let second = ProducerId::try_from(2).expect("a test producer is nonzero");
         let silence = Duration::from_millis(150);
         let start = LocalInstant::from_boot_ns(0);
         let step = RobotInstant::new(TimelineId::mint(), 0);

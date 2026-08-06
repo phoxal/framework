@@ -494,6 +494,10 @@ mod tests {
             ("phoxal", "phoxal-api"),
             ("phoxal", "phoxal-bus"),
             ("phoxal", "phoxal-macros"),
+            // A finalized bundle carries no compiled model document, so the
+            // participant runner builds the canonical model from the bundle's
+            // own finalized documents through the manifest crate's loader.
+            ("phoxal", "phoxal-manifest"),
             ("phoxal", "phoxal-model"),
             ("phoxal", "phoxal-runtime-contract"),
             ("phoxal-api", "phoxal-bus"),
@@ -551,7 +555,6 @@ mod tests {
                 "phoxal-runtime-contract",
                 &["phoxal", "phoxal-model", "tokio", "clap", "zenoh"],
             ),
-            ("phoxal", &["phoxal-manifest"]),
         ];
         let mut violations = Vec::new();
         for (package_name, forbidden) in bans {
@@ -1092,16 +1095,115 @@ fn main() -> phoxal::Result<()> {
 }
 "#,
         )?;
+        use phoxal::__private::compatibility as compat;
         assert_eq!(
             meta,
             serde_json::json!({
-                "schema": "phoxal/participant-metadata/v0",
+                "schema": compat::METADATA,
+                "api": compat::API,
+                "schemas": {
+                    "bus": compat::BUS,
+                    "launch": compat::LAUNCH,
+                    "robot": compat::ROBOT,
+                    "component": compat::COMPONENT,
+                    "simulation": compat::SIMULATION,
+                },
                 "id": "brain",
                 "kind": "brain",
                 "config_schema": {"type": "null"},
             }),
             "unexpected root brain metadata in the linked section"
         );
+        Ok(())
+    }
+
+    /// The embedded record is a document, not a struct with a schema field:
+    /// it must parse straight into the tagged `V0` variant, and it must carry
+    /// no framework version in any spelling.
+    #[test]
+    fn a_linked_participant_record_parses_as_the_tagged_v0_document() -> Result<()> {
+        let meta = linked_participant_metadata(
+            "phoxal-tagged-meta-probe",
+            r#"use phoxal::prelude::*;
+
+#[phoxal::service(id = "tagged-meta-probe")]
+struct TaggedMetaProbe;
+
+impl Participant for TaggedMetaProbe {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
+    }
+}
+
+fn main() -> phoxal::Result<()> {
+    phoxal::run::<TaggedMetaProbe>()
+}
+"#,
+        )?;
+        let object = meta.as_object().expect("the record is a JSON object");
+        for absent in ["framework", "framework_version", "version", "phoxal"] {
+            assert!(
+                !object.contains_key(absent),
+                "the embedded record must carry no framework version ('{absent}'): {meta:?}"
+            );
+        }
+
+        use phoxal::__private::compatibility as compat;
+        use phoxal::__private::metadata::{ParticipantKind, ParticipantMeta};
+
+        let bytes = serde_json::to_vec(&meta)?;
+        let ParticipantMeta::V0 {
+            api, schemas, kind, ..
+        } = phoxal::__private::metadata::parse_participant_metadata(&bytes)
+            .context("the linked record must parse as the tagged v0 document")?;
+        assert_eq!(api, compat::API);
+        assert_eq!(schemas.bus, compat::BUS);
+        assert_eq!(schemas.launch, compat::LAUNCH);
+        assert_eq!(schemas.robot, compat::ROBOT);
+        assert_eq!(schemas.component, compat::COMPONENT);
+        assert_eq!(schemas.simulation, compat::SIMULATION);
+        assert_eq!(kind, ParticipantKind::Service);
+        assert_ne!(kind, ParticipantKind::Brain);
+        Ok(())
+    }
+
+    /// The facade's manifest-grammar constants and `phoxal-manifest`'s own
+    /// `#[serde(tag = "schema")]` variants are one contract. A serde rename
+    /// takes a literal, so the only way to pin the two together is to parse a
+    /// real document whose tag is written from the constant.
+    #[test]
+    fn the_facade_manifest_schemas_match_the_documents_phoxal_manifest_accepts() -> Result<()> {
+        use phoxal::__private::compatibility as compat;
+
+        phoxal_manifest::source::robot::parse_from_string(&format!(
+            r#"schema: {}
+robot:
+  id: rover
+  namespace: dev
+  kinematic: {{ kind: omnidirectional, actuators: [drive.motor], encoders: [] }}
+  motion_limits: {{ max_linear_speed_mps: 0.5, max_angular_speed_radps: 1.0 }}
+  components:
+    drive:
+      component: drive
+      mount_link: base_link
+"#,
+            compat::ROBOT
+        ))
+        .context("phoxal-manifest must accept the robot grammar the facade declares")?;
+        phoxal_manifest::source::component::read_from_string(&format!(
+            "schema: {}\ncapabilities: {{}}\n",
+            compat::COMPONENT
+        ))
+        .context("phoxal-manifest must accept the component grammar the facade declares")?;
+        phoxal_manifest::source::simulation::read_from_string(&format!(
+            "schema: {}\ncapabilities: {{}}\n",
+            compat::SIMULATION
+        ))
+        .context("phoxal-manifest must accept the simulation grammar the facade declares")?;
         Ok(())
     }
 

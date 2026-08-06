@@ -221,11 +221,8 @@ where
         );
     }
     let bus = Bus::open(BusConfig {
-        namespace: launch.namespace.clone(),
-        robot_id: launch.robot_id.clone(),
         execution: launch.execution,
         participant: launch.participant_id.clone(),
-        producer: launch.producer,
         connect_endpoints: launch.bus.connect_endpoints.clone(),
     })
     .await?;
@@ -396,8 +393,7 @@ where
     S: Future<Output = ()>,
 {
     let config: R::Config = participant_config(launch.config.as_ref())?;
-    let robot = robot_for_launch(launch.bundle_root.as_deref())?;
-    let assets = asset_resolver_for_launch(launch.bundle_root.as_deref())?;
+    let (robot, assets) = bundle_for_launch(launch.bundle_root.as_deref())?;
 
     let mut ctx = SetupContext::<R>::new(
         bus.clone(),
@@ -624,29 +620,26 @@ pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
     Ok(serde_json::from_value(value)?)
 }
 
-/// Decode the one canonical runtime model from `<bundle>/robot.json`.
-pub(crate) fn robot_for_launch(
+/// Load the finalized bundle a launch names, if it names one.
+///
+/// The model and the participant asset fence come from the same load: a
+/// participant either has both or neither, because they are two views of one
+/// bundle.
+pub(crate) fn bundle_for_launch(
     bundle_root: Option<&std::path::Path>,
-) -> crate::Result<Option<Arc<crate::model::Robot>>> {
-    match bundle_root {
-        Some(root) => {
-            let path = root.join("robot.json");
-            let bytes = std::fs::read(&path).map_err(|error| {
-                anyhow::anyhow!("failed to read compiled model {}: {error}", path.display())
-            })?;
-            Ok(Some(Arc::new(crate::model::Robot::decode(&bytes)?)))
-        }
-        None => Ok(None),
-    }
-}
-
-pub(crate) fn asset_resolver_for_launch(
-    bundle_root: Option<&std::path::Path>,
-) -> crate::Result<Option<crate::AssetResolver>> {
-    bundle_root
-        .map(|root| crate::AssetResolver::discover(root.join("assets")))
-        .transpose()
-        .map_err(Into::into)
+) -> crate::Result<(
+    Option<Arc<crate::model::Robot>>,
+    Option<crate::ParticipantAssetResolver>,
+)> {
+    let Some(root) = bundle_root else {
+        return Ok((None, None));
+    };
+    let (robot, assets) = crate::bundle::FinalizedBundle::load(root)
+        .map_err(|error| {
+            anyhow::anyhow!("failed to load runtime bundle {}: {error}", root.display())
+        })?
+        .into_participant_inputs();
+    Ok((Some(Arc::new(robot)), Some(assets)))
 }
 
 /// The failure a participant reports when it cannot trust its own clock.
@@ -1060,6 +1053,55 @@ mod tests {
         RobotInstant::new(line(timeline), ticks)
     }
 
+    /// Stage a finalized bundle from the checked-in authored fixtures.
+    ///
+    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
+    /// authored document (pin the resolved clock, resolve the structure path
+    /// into `assets/`) are small enough to reproduce here, so no bundle is
+    /// checked in anywhere.
+    fn staged_bundle() -> tempfile::TempDir {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture");
+        let project = fixture.join("robot/rgbd-imu-diff-drive");
+        let bundle = tempfile::tempdir().expect("a staging directory");
+        let assets = bundle.path().join("assets");
+
+        std::fs::create_dir_all(assets.join("robot")).unwrap();
+        std::fs::copy(
+            project.join("structure.urdf"),
+            assets.join("robot/structure.urdf"),
+        )
+        .unwrap();
+        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
+            let source = fixture.join("component").join(component_type);
+            let staged = assets.join("components").join(component_type);
+            std::fs::create_dir_all(&staged).unwrap();
+            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
+                std::fs::copy(source.join(document), staged.join(document)).unwrap();
+            }
+            for mesh in std::fs::read_dir(source.join("meshes"))
+                .into_iter()
+                .flatten()
+            {
+                let mesh = mesh.unwrap();
+                std::fs::create_dir_all(staged.join("meshes")).unwrap();
+                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
+            }
+        }
+        std::fs::write(
+            bundle.path().join("robot.yaml"),
+            std::fs::read_to_string(project.join("robot.yaml"))
+                .unwrap()
+                .replacen("schema: robot/v0", "schema: robot/v0\nclock: real", 1)
+                .replacen(
+                    "structure: structure.urdf",
+                    "structure: robot/structure.urdf",
+                    1,
+                ),
+        )
+        .unwrap();
+        bundle
+    }
+
     #[test]
     fn step_scheduler_for_selects_real_or_simulation_by_clock_mode() {
         let schedule = Some(StepSchedule::hz(100.0));
@@ -1386,53 +1428,40 @@ mod tests {
         participant_config::<Required>(Some(&supplied)).expect("a supplied config deserializes");
     }
 
-    /// The launch bundle binds the compiled model a participant reads through
-    /// `ctx.robot()`. No bundle means no model, which is what makes
-    /// `ctx.robot()` an error rather than a panic.
+    /// The launch bundle binds the model and assets a participant reads through
+    /// `ctx.robot()` and `ctx.assets()`. No bundle means neither, which is what
+    /// makes both an error rather than a panic.
     #[test]
-    fn the_robot_model_is_bound_only_when_the_launch_carries_a_root() {
-        assert!(
-            robot_for_launch(None)
-                .expect("no root is not an error")
-                .is_none()
-        );
+    fn the_bundle_binds_the_model_and_assets_together() {
+        let (robot, assets) = bundle_for_launch(None).expect("no root is not an error");
+        assert!(robot.is_none());
+        assert!(assets.is_none());
 
-        let bundle = tempfile::tempdir().expect("temporary bundle");
-        std::fs::write(
-            bundle.path().join("robot.json"),
-            br#"{
-  "schema": "phoxal/robot/v0",
-  "robot": {
-    "identity": {"id": "test-robot", "namespace": "test"},
-    "motion": {
-      "kinematic": {"kind": "omnidirectional", "actuators": [], "encoders": []},
-      "limits": {"max_linear_speed_mps": 1.0, "max_angular_speed_radps": 1.0}
-    },
-    "component_instances": {},
-    "component_types": {},
-    "simulation_types": {},
-    "structure": {
-      "name": "test",
-      "links": [
-        {"name": "base_footprint", "inertial": {"origin": {"xyz": [0.0,0.0,0.0], "rpy": [0.0,0.0,0.0]}, "mass_kg": 0.0, "inertia": {"ixx":0.0,"ixy":0.0,"ixz":0.0,"iyy":0.0,"iyz":0.0,"izz":0.0}}, "visuals": [], "collisions": []},
-        {"name": "base_link", "inertial": {"origin": {"xyz": [0.0,0.0,0.0], "rpy": [0.0,0.0,0.0]}, "mass_kg": 0.0, "inertia": {"ixx":0.0,"ixy":0.0,"ixz":0.0,"iyy":0.0,"iyz":0.0,"izz":0.0}}, "visuals": [], "collisions": []}
-      ],
-      "joints": [{"name":"base_joint","kind":"fixed","origin":{"xyz":[0.0,0.0,0.0],"rpy":[0.0,0.0,0.0]},"parent":"base_footprint","child":"base_link","axis":[0.0,0.0,0.0],"limit":{"lower":0.0,"upper":0.0,"effort":0.0,"velocity":0.0},"calibration":null,"dynamics":null,"mimic":null,"safety":null}],
-      "materials": []
-    }
-  }
-}"#,
-        )
-        .unwrap();
-        let robot = robot_for_launch(Some(bundle.path()))
-            .expect("the fixture root should load")
-            .expect("a root binds a model");
-        assert_eq!(robot.robot_id(), "test-robot");
+        let bundle = staged_bundle();
+        let (robot, assets) =
+            bundle_for_launch(Some(bundle.path())).expect("the staged bundle loads");
+        assert_eq!(
+            robot.expect("a root binds a model").robot_id(),
+            "rgbd-imu-diff-drive"
+        );
+        let assets = assets.expect("a root binds the asset fence");
+        assert!(
+            assets
+                .path(&crate::AssetId::new("components/drive_motor/structure.urdf").unwrap())
+                .is_ok()
+        );
+        // `bin/` is outside the participant fence even though it is inside the
+        // bundle the runner was pointed at.
+        assert!(
+            assets
+                .path(&crate::AssetId::new("bin/brain").unwrap())
+                .is_err()
+        );
 
         let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture/robot");
         assert!(
-            robot_for_launch(Some(&missing)).is_err(),
-            "a bundle without robot.json must fail the launch, not bind nothing"
+            bundle_for_launch(Some(&missing)).is_err(),
+            "a directory that is not a finalized bundle must fail the launch, not bind nothing"
         );
     }
 

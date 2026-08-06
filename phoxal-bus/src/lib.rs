@@ -5,7 +5,7 @@
 //! client is generic over.
 //!
 //! Samples are Zenoh-native: the key
-//! (`<namespace>/robots/<robot-id>/<version>/<topic>`, the version folded
+//! (`phoxal/<execution-id>/<version>/<topic>`, the version folded
 //! in per D1), an encoding string + a [`BusMetadata`] attachment (codec and
 //! provenance only - no schema/family/api identity, D1), and a plain MessagePack
 //! body payload - there is no Phoxal frame independent of Zenoh, and no
@@ -39,7 +39,7 @@ pub mod session;
 pub mod time;
 pub mod topic;
 
-pub use abi::{CodecId, encoding_string, parse_encoding_string};
+pub use abi::{BUS_ABI, CodecId, encoding_string, parse_encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,

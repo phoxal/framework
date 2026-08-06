@@ -212,9 +212,11 @@ fn normalize_asset_id(
         );
     }
     let relative = relative.strip_prefix("meshes/").unwrap_or(relative);
+    // A logical asset id is exactly the path below `<bundle>/assets`, so the
+    // finalized bundle needs no second mapping table to serve it.
     let logical = match component_type {
-        None => format!("meshes/robot/{relative}"),
-        Some(component_type) => format!("meshes/components/{component_type}/{relative}"),
+        None => format!("robot/meshes/{relative}"),
+        Some(component_type) => format!("components/{component_type}/meshes/{relative}"),
     };
     Ok(phoxal_model::AssetId::new(logical)?.as_str().to_string())
 }
@@ -869,7 +871,7 @@ mod tests {
     fn normalizes_only_local_asset_references() -> anyhow::Result<()> {
         assert_eq!(
             normalize_asset_id("package://robot/body.stl", None, false)?,
-            "meshes/robot/body.stl"
+            "robot/meshes/body.stl"
         );
         assert_eq!(
             normalize_asset_id(
@@ -877,15 +879,15 @@ mod tests {
                 Some("drive_motor"),
                 false,
             )?,
-            "meshes/components/drive_motor/rotor.stl"
+            "components/drive_motor/meshes/rotor.stl"
         );
         assert_eq!(
             normalize_asset_id("model://meshes/sensor.obj", Some("camera"), false)?,
-            "meshes/components/camera/sensor.obj"
+            "components/camera/meshes/sensor.obj"
         );
         assert_eq!(
             normalize_asset_id("wood.png", Some("camera"), true)?,
-            "meshes/components/camera/wood.png"
+            "components/camera/meshes/wood.png"
         );
         assert!(normalize_asset_id("body.stl", None, false).is_err());
         assert!(

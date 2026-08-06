@@ -2191,6 +2191,7 @@ dependencies = [
  "phoxal-api",
  "phoxal-bus",
  "phoxal-macros",
+ "phoxal-manifest",
  "phoxal-model",
  "phoxal-runtime-contract",
  "schemars 1.2.1",
@@ -2340,6 +2341,7 @@ version = "0.53.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "tempfile",
  "tracing",
 ]
 
@@ -2350,6 +2352,7 @@ dependencies = [
  "anyhow",
  "nalgebra",
  "phoxal",
+ "tempfile",
 ]
 
 [[package]]
@@ -2358,6 +2361,7 @@ version = "0.53.0"
 dependencies = [
  "anyhow",
  "phoxal",
+ "tempfile",
 ]
 
 [[package]]
@@ -2406,6 +2410,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -2416,6 +2421,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2442,6 +2448,7 @@ dependencies = [
  "anyhow",
  "phoxal",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

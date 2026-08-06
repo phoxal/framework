@@ -28,18 +28,25 @@ mod util;
 
 use proc_macro::TokenStream;
 
-/// Declare a versioned API tree of version-local wire bodies + topics.
+/// Declare a tree of wire bodies + typed topics, in one of two modes.
 ///
-/// One invocation owns one or more `version vM_N { … }` blocks and exactly one
-/// final `latest vM_N;` declaration. A child may `extends` one earlier parent;
-/// inherited definitions are fully materialized with the child's concrete
-/// identity. Additions are direct and same-path changes require explicit
-/// `replace` or `remove`. The generated tree references the bus ABI floor as
-/// `::phoxal_bus`.
+/// **API mode** (`version`) is the robot API: one invocation owns one or more
+/// `version vM_N { … }` blocks and exactly one final `latest vM_N;`
+/// declaration. A child may `extends` one earlier parent; inherited definitions
+/// are fully materialized with the child's concrete identity. Additions are
+/// direct and same-path changes require explicit `replace` or `remove`.
+///
+/// **Protocol mode** (`protocol`) is a process-boundary protocol such as the
+/// supervisor's: one invocation owns one or more `protocol <name> { … }` trees,
+/// with no revision axis at all - no `latest`, no `extends`/`replace`/`remove`,
+/// and no version segment in the keys. See *Protocol mode* below. The two modes
+/// are disjoint; one invocation is either one or the other.
+///
+/// The generated tree references the bus ABI floor as `::phoxal_bus`.
 ///
 /// # Node grammar
 ///
-/// A version body is a tree of **nodes**. A node is either static (`name { … }`)
+/// A tree body is a tree of **nodes**. A node is either static (`name { … }`)
 /// or dynamic (`name(var) { … }`, binding exactly one variable), and may nest to
 /// any depth. Inside a node block, in any order:
 ///
@@ -86,6 +93,47 @@ use proc_macro::TokenStream;
 /// `command` leaf is `Publish<Body>`, a `state` leaf is `Subscribe<Body>`, and a
 /// `query` leaf is `AskQuery<Req, Resp>`; on the owner side those flip to
 /// `Subscribe<Body>` / `Publish<Body>` / `ServeQuery<Req, Resp>`.
+///
+/// # Protocol mode
+///
+/// ```text
+/// phoxal_api_tree! {
+///     protocol supervisor {
+///         connect {
+///             #[serde(tag = "schema")]
+///             enum Hello {
+///                 #[serde(rename = "supervisor.hello/v0")]
+///                 V0 { token: String },
+///             }
+///             topic hello: command Hello;   // key `supervisor/connect/hello`
+///         }
+///         run(execution) {
+///             struct SnapshotRequest {}
+///             struct Snapshot { running: bool }
+///             topic snapshot: query SnapshotRequest => Snapshot;
+///         }
+///     }
+/// }
+/// ```
+///
+/// Node grammar, roles, query typing, dynamic segments, and both builder trees
+/// are exactly as above. What differs:
+///
+/// - keys are **relative**: no `v0.1/` segment. The leading segment is the
+///   protocol name, which is the same slot the dotted revision fills in API
+///   mode, so a protocol topic composes under the bus's execution-scoped root
+///   (`phoxal/<execution-id>/supervisor/connect/hello`) the same way a robot
+///   API topic does;
+/// - there is no revision history: `latest`, `extends`, `replace`, and `remove`
+///   are all rejected. Pre-1.0, edit the declaration in place;
+/// - the **developer owns the payload's schema version**. A document that
+///   crosses a process boundary is authored as a serde-tagged enum whose
+///   variants are its versions; this macro never reads a body's shape, never
+///   infers a breaking change, and never mints a version;
+/// - the generated marker's `ApiVersion::ID` (and each body's
+///   `ContractBody::VERSION`) is the protocol name. The marker's job is
+///   unchanged - it keeps one tree's bodies from being mistaken for another's
+///   at compile time.
 #[proc_macro]
 pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
     api_tree::expand(input.into())
