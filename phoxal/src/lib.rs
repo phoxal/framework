@@ -134,8 +134,9 @@
 //!   key scheme, MessagePack codec, [`BusMetadata`](bus::BusMetadata) attachment,
 //!   the four non-interchangeable time types, body-typed handles, and
 //!   side-branded [`Topic`](bus::Topic) values.
-//! - [`model`] - immutable canonical runtime robot facts decoded from the
-//!   compiled `robot.json`; authored YAML and URDF live in `phoxal-manifest`.
+//! - [`model`] - immutable canonical runtime robot facts, loaded from the
+//!   finalized bundle by [`bundle`]; the document readers live in
+//!   `phoxal-manifest`.
 //! - The **official service set** ships alongside this crate in the workspace
 //!   `service/` tree (`drive`, `localize`, `map`, `safety`, …): full platform
 //!   participants authored on exactly this surface, useful as reference reading.
@@ -149,6 +150,7 @@
 #[cfg(test)]
 extern crate self as phoxal;
 
+pub mod bundle;
 pub mod model;
 mod participant;
 
@@ -279,7 +281,7 @@ pub use phoxal_macros::step;
 /// `fn main() -> phoxal::Result<()> { phoxal::run::<Participant>() }`.
 pub use participant::run;
 pub use participant::{Participant, ResetContext, SetupContext, StepContext};
-pub use phoxal_model::{AssetError, AssetId, AssetResolver};
+pub use phoxal_model::{AssetError, AssetId, ParticipantAssetResolver};
 
 /// Async host runner entrypoint for custom Tokio mains
 /// (`phoxal::tokio::run::<Participant>().await`).
@@ -299,7 +301,7 @@ pub mod prelude {
     pub use crate::participant::{
         ManagedTaskPolicy, Participant, ResetContext, SetupContext, StepContext,
     };
-    pub use crate::{AssetId, AssetResolver};
+    pub use crate::{AssetId, ParticipantAssetResolver};
 }
 
 /// Macro/runtime linkage that is intentionally absent from the authoring API.

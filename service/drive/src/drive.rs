@@ -373,9 +373,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture() -> phoxal::model::Robot {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
-        phoxal::model::Robot::decode(&std::fs::read(path).unwrap()).unwrap()
+        phoxal::bundle::FinalizedBundle::load(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixture/bundle/rgbd-imu-diff-drive"),
+        )
+        .expect("the fixture bundle must load")
+        .into_robot()
     }
 
     #[test]

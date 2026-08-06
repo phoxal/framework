@@ -2191,6 +2191,7 @@ dependencies = [
  "phoxal-api",
  "phoxal-bus",
  "phoxal-macros",
+ "phoxal-manifest",
  "phoxal-model",
  "phoxal-runtime-contract",
  "schemars 1.2.1",
