@@ -1,12 +1,11 @@
 //! Authored manifest readers and deterministic source-to-canonical compilation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 pub use phoxal_model::AssetId;
 
-pub mod behavior;
 pub mod build_requirements;
 pub mod schema;
 pub mod source;
@@ -71,12 +70,6 @@ pub enum CompileError {
     },
     #[error("failed to compile runtime assets below {}: {source:#}", path.display())]
     Assets {
-        path: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("failed to compile behavior documents below {}: {source:#}", path.display())]
-    Behavior {
         path: PathBuf,
         #[source]
         source: anyhow::Error,
@@ -370,23 +363,6 @@ fn compile_inner(sources: SourceSet) -> Result<CompiledProject, CompileError> {
             source,
         })?;
     }
-    if manifest.behavior.is_some() {
-        let behavior_root = project_root.join("behaviors");
-        let catalog =
-            behavior::compile(&project_root).map_err(|source| CompileError::Behavior {
-                path: behavior_root,
-                source,
-            })?;
-        assets
-            .insert(
-                AssetId::new("behavior/catalog.json").expect("static asset id is normalized"),
-                catalog,
-            )
-            .map_err(|source| CompileError::Assets {
-                path: project_root.join("assets"),
-                source,
-            })?;
-    }
     for asset_id in robot.structure().asset_ids() {
         if !assets.0.contains_key(asset_id) {
             return Err(CompileError::Assets {
@@ -429,6 +405,10 @@ fn compile_participants(
     manifest: &source::robot::v0::Manifest,
     component_roots: &BTreeMap<String, PathBuf>,
 ) -> anyhow::Result<ParticipantDeclarations> {
+    // `services` cannot contain the reserved `brain` identity here: every
+    // entry into this compiler validates the authored document first
+    // (`source::robot::read_from_path`), and
+    // `Manifest::validate_reserved_identities` owns that rejection.
     let mut participants = Vec::new();
     participants.extend(manifest.services.iter().map(|(id, service)| Participant {
         id: id.clone(),
@@ -436,17 +416,6 @@ fn compile_participants(
         component_instance: None,
         config: service.config.clone(),
     }));
-    if let Some(behavior) = &manifest.behavior {
-        participants.push(Participant {
-            id: "behavior".to_string(),
-            kind: ParticipantKind::Service,
-            component_instance: None,
-            config: Some(serde_json::json!({
-                "root": behavior.root,
-                "autostart": behavior.autostart,
-            })),
-        });
-    }
     for (instance, component) in &manifest.robot.components {
         if let Some(driver) = &component.driver {
             participants.push(Participant {
@@ -475,6 +444,10 @@ fn compile_participants(
             });
         }
     }
+    // Every constructor above is keyed by a distinct authored map: `services`
+    // by service id, and the driver/simulator declarations by component
+    // instance. The `(kind, id, component_instance)` triple is therefore
+    // unique by construction, so there is no duplicate check to run here.
     participants.sort_by(|left, right| {
         (
             left.kind as u8,
@@ -487,25 +460,6 @@ fn compile_participants(
                 right.component_instance.as_deref(),
             ))
     });
-    let mut seen = BTreeSet::new();
-    for participant in &participants {
-        let key = (
-            participant.kind as u8,
-            participant.id.as_str(),
-            participant.component_instance.as_deref(),
-        );
-        if !seen.insert(key) {
-            bail!(
-                "duplicate participant declaration '{}'{}",
-                participant.id,
-                participant
-                    .component_instance
-                    .as_deref()
-                    .map(|instance| format!(" for component '{instance}'"))
-                    .unwrap_or_default()
-            );
-        }
-    }
     Ok(ParticipantDeclarations(participants))
 }
 

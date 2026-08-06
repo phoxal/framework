@@ -17,16 +17,15 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<PathBuf>,
     pub robot: RobotSection,
-    /// Authoritative behavior root selected for this robot. Behavior
-    /// definitions themselves live under `behaviors/` in the robot root.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub behavior: Option<BehaviorConfig>,
     /// The user services this robot runs, keyed by service identity, each with
     /// its user-owned configuration. The Cargo workspace is the candidate set
     /// (a declared service must have a matching workspace crate); this map
     /// selects which discovered services belong to the robot and are built,
     /// staged, and launched. An undeclared workspace service crate is legal
     /// and simply not part of the robot.
+    ///
+    /// [`RESERVED_BRAIN_ID`] is not an available key: the mandatory root brain
+    /// is the root Cargo package's binary, never an authored service.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, UserService>,
     /// Optional project-relative Zenoh router configuration.
@@ -34,12 +33,22 @@ pub struct Manifest {
     pub router: Router,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct BehaviorConfig {
-    pub root: String,
-    #[serde(default)]
-    pub autostart: bool,
+/// The participant identity of the one mandatory root brain.
+///
+/// The brain is the root Cargo package's binary, discovered and staged by the
+/// CLI as `bin/brain`. It is never an authored participant, so this identity
+/// is reserved against every authored identity map in this document.
+pub const RESERVED_BRAIN_ID: &str = "brain";
+
+/// The actionable diagnostic for an authored map that claims
+/// [`RESERVED_BRAIN_ID`]. `map` is the authored top-level key, e.g. `services`.
+#[must_use]
+pub fn reserved_brain_id_message(map: &str) -> String {
+    format!(
+        "{map}.{RESERVED_BRAIN_ID} is reserved for the mandatory root brain: the brain is the \
+         root Cargo package's binary (src/main.rs with #[phoxal::brain]) and is never declared \
+         under {map}: - rename this entry"
+    )
 }
 
 /// `robot:` - the robot model: identity, structure, kinematic, and
@@ -131,12 +140,18 @@ pub enum ValidationError {
         instance: String,
         capability: String,
     },
+    /// An authored identity map claimed [`RESERVED_BRAIN_ID`].
+    ReservedBrainId {
+        /// The authored top-level map, e.g. `services`.
+        map: String,
+    },
 }
 
 impl Manifest {
     pub fn validate(&self) -> std::result::Result<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         self.validate_basics(&mut errors);
+        self.validate_reserved_identities(&mut errors);
         self.validate_router(&mut errors);
         self.validate_component_structure(&mut errors);
         self.validate_driver_structure(&mut errors);
@@ -161,6 +176,14 @@ impl Manifest {
         }
         if self.robot.namespace.trim().is_empty() {
             errors.push(ValidationError::EmptyRobotNamespace);
+        }
+    }
+
+    fn validate_reserved_identities(&self, errors: &mut Vec<ValidationError>) {
+        if self.services.contains_key(RESERVED_BRAIN_ID) {
+            errors.push(ValidationError::ReservedBrainId {
+                map: "services".to_string(),
+            });
         }
     }
 
@@ -232,6 +255,7 @@ impl fmt::Display for ValidationError {
                 formatter,
                 "robot.components.{instance}.parameters.{capability}.direction_sign must be either -1 or 1"
             ),
+            Self::ReservedBrainId { map } => formatter.write_str(&reserved_brain_id_message(map)),
         }
     }
 }
@@ -651,6 +675,46 @@ robot:
             format!("{error:#}").contains("unknown field `tools`"),
             "got: {error:#}"
         );
+    }
+
+    #[test]
+    fn a_root_behavior_block_no_longer_parses() {
+        // The configurable behavior subsystem is gone: one mandatory root
+        // brain owns project policy, so `behavior:` is an unknown field rather
+        // than an optional block the compiler still honours.
+        let error = crate::source::robot::parse_from_string(&minimal_manifest(
+            "behavior:\n  root: system.root\n  autostart: true\n",
+        ))
+        .expect_err("a behavior: block must no longer parse");
+        assert!(
+            format!("{error:#}").contains("unknown field `behavior`"),
+            "got: {error:#}"
+        );
+    }
+
+    #[test]
+    fn a_service_named_brain_is_rejected_with_an_actionable_diagnostic() -> anyhow::Result<()> {
+        let manifest =
+            crate::source::robot::parse_from_string(&minimal_manifest("services:\n  brain: {}\n"))?;
+        let crate::source::robot::Manifest::V0(robot) = manifest;
+
+        let errors = robot
+            .validate()
+            .expect_err("services.brain must be reserved for the mandatory root brain");
+        assert!(
+            errors.contains(&super::ValidationError::ReservedBrainId {
+                map: "services".to_string(),
+            }),
+            "{errors:?}"
+        );
+        let message = super::ValidationError::ReservedBrainId {
+            map: "services".to_string(),
+        }
+        .to_string();
+        assert!(message.contains("services.brain is reserved"), "{message}");
+        assert!(message.contains("#[phoxal::brain]"), "{message}");
+
+        Ok(())
     }
 
     #[test]

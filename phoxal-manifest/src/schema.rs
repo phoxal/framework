@@ -169,6 +169,32 @@ mod tests {
     }
 
     #[test]
+    fn the_generated_robot_schema_carries_no_behavior_definition_or_field() {
+        // The generated schema is derived straight from the source DTO, so
+        // this is the standing proof that deleting `BehaviorConfig` and
+        // `Manifest::behavior` also removed them from every editor schema -
+        // there is no committed schema file to rebaseline.
+        let schema = generate(DocumentKind::Robot);
+        let serialized = serde_json::to_string(&schema).expect("schema serializes");
+        assert!(
+            !serialized.to_lowercase().contains("behavior"),
+            "the robot schema still mentions the retired behavior subsystem: {serialized}"
+        );
+
+        // A `behavior:` root property must also fail structurally, not merely
+        // be undescribed.
+        let mut document = hello_rover_fixture(DocumentKind::Robot);
+        document
+            .as_object_mut()
+            .expect("authored document is an object")
+            .insert(
+                "behavior".into(),
+                serde_json::json!({ "root": "system.root" }),
+            );
+        assert!(!validator(DocumentKind::Robot).is_valid(&document));
+    }
+
+    #[test]
     fn schema_generation_is_deterministic() {
         for kind in DocumentKind::ALL {
             let first = serde_json::to_string_pretty(&generate(kind))
