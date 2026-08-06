@@ -600,6 +600,11 @@ pub fn expand_participant(
             const KIND: &'static str = #artifact_kind;
             const ID: &'static str = #id;
             type LaunchPolicy = #launch_policy;
+            // The train-selected facade revision, spliced from the framework
+            // path rather than named by the author: a participant does not get
+            // to pick an API revision, and every handle it builds is bounded on
+            // this one.
+            type ContractApi = #phoxal::api::Api;
             type Config = #config_ty;
             type State = #state_ty;
             type Api = #api_ty;
@@ -881,6 +886,31 @@ mod tests {
             !expanded.contains("CARGO_PKG_VERSION") && !expanded.contains("framework_version"),
             "no framework version may reach the embedded record: {expanded}"
         );
+    }
+
+    /// The API a participant's handles may come from is fixed by the role
+    /// attribute to the train-selected facade, never named by the author. Every
+    /// `SetupContext` builder is bounded on this associated type, so a
+    /// participant that reached for a second API revision - or another
+    /// `phoxal_api_tree!` tree - fails to compile rather than embedding an
+    /// `api` claim its handles contradict.
+    #[test]
+    fn every_role_fixes_its_contract_api_to_the_train_selected_facade() {
+        for kind in [
+            ParticipantKind::Service,
+            ParticipantKind::Driver,
+            ParticipantKind::Simulator,
+            ParticipantKind::Brain,
+        ] {
+            let expanded = compact_tokens(
+                expand_participant(quote! {}, quote! { struct Probe; }, kind).expect("expands"),
+            );
+            assert!(
+                expanded.contains("type ContractApi = :: phoxal :: api :: Api ;"),
+                "{} must fix ContractApi to the facade revision: {expanded}",
+                kind.attr_name()
+            );
+        }
     }
 
     #[test]
