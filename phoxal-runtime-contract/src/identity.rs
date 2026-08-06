@@ -34,8 +34,11 @@ const ZID_BYTES: usize = 16;
 /// Rendered width of a full-width session identity.
 const ZID_HEX_LEN: usize = ZID_BYTES * 2;
 
-/// Set on a minted execution so its rendering never loses a leading nibble and
-/// therefore never renders narrower than [`ZID_HEX_LEN`].
+/// The repair applied to a minted execution whose draw came up with a zero most
+/// significant nibble, so its rendering never loses a leading nibble and
+/// therefore never renders narrower than [`ZID_HEX_LEN`]. A draw that is already
+/// nonzero up there is left alone, so every one of the fifteen nonzero leading
+/// digits stays reachable.
 const CANONICAL_TOP_NIBBLE: u128 = 1 << 124;
 
 /// One supervised run.
@@ -57,10 +60,21 @@ impl ExecutionId {
     pub const LEN: usize = ZID_HEX_LEN;
 
     /// Mint a fresh execution identity.
+    ///
+    /// The draw is repaired only when it would render narrower than
+    /// [`ExecutionId::LEN`], which is to say only when its most significant
+    /// nibble came up zero. Forcing the nibble unconditionally would pin the
+    /// leading digit to the odd half of the alphabet; leaving a nonzero draw
+    /// alone keeps the full nonzero leading-digit range that the transport's
+    /// own session ids cover.
     pub fn mint() -> Self {
         let mut bytes = [0_u8; ZID_BYTES];
         getrandom::fill(&mut bytes).expect("the host must provide randomness");
-        ExecutionId(u128::from_be_bytes(bytes) | CANONICAL_TOP_NIBBLE)
+        let mut value = u128::from_be_bytes(bytes);
+        if value >> 124 == 0 {
+            value |= CANONICAL_TOP_NIBBLE;
+        }
+        ExecutionId(value)
     }
 
     /// Parse a rendered execution identity (as it appears in the launch
@@ -288,6 +302,26 @@ mod tests {
         assert!(rendered.bytes().all(is_lowercase_hex));
         assert!(!rendered.contains('/') && !rendered.contains('*'));
         assert_eq!(ExecutionId::parse(&rendered), Ok(first));
+    }
+
+    #[test]
+    fn minting_does_not_pin_the_leading_digit_to_half_the_alphabet() {
+        // Forcing the top nibble unconditionally would leave only the odd
+        // leading digits reachable. Over this many draws, seeing no even one is
+        // astronomically less likely than any real flake.
+        let saw_even_leading_digit = (0..64).any(|_| {
+            let leading = ExecutionId::mint().to_string().as_bytes()[0];
+            let digit = if leading.is_ascii_digit() {
+                leading - b'0'
+            } else {
+                leading - b'a' + 10
+            };
+            digit % 2 == 0
+        });
+        assert!(
+            saw_even_leading_digit,
+            "a minted execution covers the whole nonzero leading-digit range"
+        );
     }
 
     #[test]
