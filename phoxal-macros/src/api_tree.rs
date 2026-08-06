@@ -213,6 +213,14 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     tree.expand()
 }
 
+/// The diagnostic for an invocation that reaches a `protocol` tree from inside
+/// the other mode. The protocol-first direction has its own wording at the top
+/// of [`ApiTree::parse`]; this is every other direction, so a misplaced
+/// `protocol` never lands on the generic "expected a child node" error.
+const MODES_DO_NOT_MIX: &str = "a `protocol <name> { … }` tree stands alone at the top of its own `phoxal_api_tree!` \
+     invocation: it has no `version` revisions and no `latest` selection, so the two modes never \
+     mix in one invocation";
+
 /// One `phoxal_api_tree!` invocation, in exactly one of its two modes.
 ///
 /// The modes are disjoint by construction: a robot API tree is a revision
@@ -409,6 +417,9 @@ impl Parse for ApiTree {
         while input.peek(kw::version) {
             versions.push(input.parse()?);
         }
+        if input.peek(kw::protocol) {
+            return Err(input.error(MODES_DO_NOT_MIX));
+        }
         if versions.is_empty() {
             return Err(input.error(
                 "phoxal_api_tree! requires at least one `version` block or one \
@@ -418,6 +429,9 @@ impl Parse for ApiTree {
         input.parse::<kw::latest>()?;
         let latest = input.parse()?;
         input.parse::<Token![;]>()?;
+        if input.peek(kw::protocol) {
+            return Err(input.error(MODES_DO_NOT_MIX));
+        }
         if !input.is_empty() {
             return Err(input.error("expected exactly one final `latest <revision>;` declaration"));
         }
@@ -521,6 +535,12 @@ impl Parse for Node {
         } else {
             false
         };
+        // `protocol <name> {` here is a protocol tree nested inside another
+        // tree. A node literally called `protocol` is followed by `{` or `(`,
+        // never by a second identifier, so this only catches the mix-up.
+        if input.peek(kw::protocol) && input.peek2(Ident) {
+            return Err(input.error(MODES_DO_NOT_MIX));
+        }
         let name: Ident = input.parse()?;
         // Optional `(var)` makes the node dynamic.
         let var = if input.peek(syn::token::Paren) {
@@ -603,6 +623,8 @@ impl Parse for Node {
                 let mut child: Node = body.parse()?;
                 child.replace = replace_item;
                 children.push(child);
+            } else if body.peek(kw::protocol) && body.peek2(Ident) {
+                return Err(body.error(MODES_DO_NOT_MIX));
             } else {
                 return Err(body.error(
                     "expected `struct`, `enum`, `topic …;`, or a child node `name { … }` / \
@@ -2000,6 +2022,56 @@ mod tests {
             error.to_string().contains("no `version` revisions"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn a_protocol_tree_after_a_version_tree_is_rejected_as_mode_mixing() {
+        for tokens in [
+            quote! {
+                version v0_1 { drive { struct Target { value: u8 } } }
+                protocol supervisor { connect { struct Hello { token: String } } }
+                latest v0_1;
+            },
+            quote! {
+                version v0_1 { drive { struct Target { value: u8 } } }
+                latest v0_1;
+                protocol supervisor { connect { struct Hello { token: String } } }
+            },
+        ] {
+            let error = expand(tokens).expect_err("mixing the two modes must be rejected");
+            assert!(
+                error.to_string().contains("stands alone"),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_protocol_tree_nested_inside_a_version_tree_is_rejected_as_mode_mixing() {
+        for tokens in [
+            // Directly in a version body.
+            quote! {
+                version v0_1 {
+                    protocol supervisor { connect { struct Hello { token: String } } }
+                }
+                latest v0_1;
+            },
+            // One level down, inside a node body.
+            quote! {
+                version v0_1 {
+                    drive {
+                        protocol supervisor { connect { struct Hello { token: String } } }
+                    }
+                }
+                latest v0_1;
+            },
+        ] {
+            let error = expand(tokens).expect_err("a nested protocol tree must be rejected");
+            assert!(
+                error.to_string().contains("stands alone"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
