@@ -26,7 +26,8 @@ use crate::participant::spec::StepSchedule;
 
 /// Const-eval plumbing the participant attribute macros
 /// (`phoxal-macros/src/authoring.rs`'s `expand_participant`) use to build the
-/// binary's embedded linker-section metadata static: `{"id", "config_schema"}`.
+/// binary's embedded linker-section metadata static:
+/// `{"schema", "api", "schemas", "id", "kind", "config_schema"}`.
 ///
 /// The problem this solves: a config schema is composed recursively from
 /// nested `ParticipantConfig` impls (`Self::SCHEMA_JSON`, itself built the

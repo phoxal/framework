@@ -305,6 +305,32 @@ pub mod prelude {
 /// Macro/runtime linkage that is intentionally absent from the authoring API.
 #[doc(hidden)]
 pub mod __private {
+    /// The one compatibility declaration a participant binary carries.
+    ///
+    /// Every constant here is re-exported from the crate that owns the
+    /// contract it names, so a train can only ever say one thing about each.
+    /// The role macros splice these into the participant's embedded
+    /// `.phoxal_meta` document at compile time; that embedded document is the
+    /// only compatibility artifact - there is no Cargo package-metadata table,
+    /// no version file, and no framework-SemVer floor.
+    pub mod compatibility {
+        /// The train-selected API revision (`phoxal::api`).
+        pub const API: &str = <phoxal_api::latest::Api as phoxal_bus::ApiVersion>::ID;
+        /// The bus wire ABI.
+        pub const BUS: &str = phoxal_bus::BUS_ABI;
+        /// The launch record / environment ABI.
+        pub const LAUNCH: &str = phoxal_runtime_contract::LAUNCH_ABI;
+        /// The authored robot document grammar.
+        pub const ROBOT: &str = phoxal_runtime_contract::ROBOT_DOCUMENT_SCHEMA;
+        /// The authored component document grammar.
+        pub const COMPONENT: &str = phoxal_runtime_contract::COMPONENT_DOCUMENT_SCHEMA;
+        /// The authored simulation document grammar.
+        pub const SIMULATION: &str = phoxal_runtime_contract::SIMULATION_DOCUMENT_SCHEMA;
+        /// The schema tag of the embedded document itself, so the role macro
+        /// never spells the tag out a second time.
+        pub const METADATA: &str = phoxal_runtime_contract::PARTICIPANT_METADATA_SCHEMA;
+    }
+
     pub use crate::participant::api::__meta;
     pub use crate::participant::launch::{
         ClockedParticipantLaunch, ParticipantLaunchPolicy, SimulatorParticipantLaunch,

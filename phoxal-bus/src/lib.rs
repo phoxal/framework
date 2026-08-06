@@ -39,7 +39,7 @@ pub mod session;
 pub mod time;
 pub mod topic;
 
-pub use abi::{CodecId, encoding_string, parse_encoding_string};
+pub use abi::{BUS_ABI, CodecId, encoding_string, parse_encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,

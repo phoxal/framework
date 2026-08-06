@@ -24,7 +24,7 @@ fn as_type_path(ty: &Type) -> Option<&TypePath> {
 /// on Mach-O (macOS; segment,section syntax, section name <=16 bytes), and
 /// `.phoxal_meta` everywhere else (ELF and other platforms this
 /// framework targets - Linux robots, primarily). The section carries the
-/// strict `{schema, id, kind, config_schema}` process contract.
+/// strict `{schema, api, schemas, id, kind, config_schema}` process contract.
 /// `#[used]` keeps the
 /// linker from discarding the static during *this compilation unit's* own
 /// dead-code elimination, but not from ELF `--gc-sections` at final link
@@ -623,12 +623,29 @@ pub fn expand_participant(
 
         #marker
 
-        // Process-boundary metadata is self-identifying and strict. Its schema
-        // and kind are interpreted by the CLI before launch.
+        // Process-boundary metadata is self-identifying and strict. Every
+        // identifier comes from `__private::compatibility`, so this expansion
+        // never restates a contract token the owning crate already fixes. The
+        // CLI reads this record out of the built artifact before launch; it is
+        // the binary's whole compatibility declaration.
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
             #phoxal::__private::api::__meta::__concatcp!(
-                "{\"schema\":\"phoxal/participant-metadata/v0\",\"id\":\"",
+                "{\"schema\":\"",
+                #phoxal::__private::compatibility::METADATA,
+                "\",\"api\":\"",
+                #phoxal::__private::compatibility::API,
+                "\",\"schemas\":{\"bus\":\"",
+                #phoxal::__private::compatibility::BUS,
+                "\",\"launch\":\"",
+                #phoxal::__private::compatibility::LAUNCH,
+                "\",\"robot\":\"",
+                #phoxal::__private::compatibility::ROBOT,
+                "\",\"component\":\"",
+                #phoxal::__private::compatibility::COMPONENT,
+                "\",\"simulation\":\"",
+                #phoxal::__private::compatibility::SIMULATION,
+                "\"},\"id\":\"",
                 #id,
                 "\",\"kind\":\"",
                 #artifact_kind,
@@ -764,9 +781,14 @@ mod tests {
             expanded.contains("launch :: ClockedParticipantLaunch"),
             "{expanded}"
         );
-        // The embedded record carries the brain kind under the fixed identity.
+        // The embedded record carries the brain kind under the fixed identity,
+        // and every contract token comes from the facade compatibility set
+        // rather than a literal in this expansion.
+        assert!(expanded.contains("compatibility :: METADATA"), "{expanded}");
         assert!(
-            expanded.contains("\"{\\\"schema\\\":\\\"phoxal/participant-metadata/v0\\\",\\\"id\\\":\\\"\" , \"brain\""),
+            expanded.contains(
+                "\"\\\"},\\\"id\\\":\\\"\" , \"brain\" , \"\\\",\\\"kind\\\":\\\"\" , \"brain\""
+            ),
             "{expanded}"
         );
     }
@@ -826,6 +848,38 @@ mod tests {
                 .to_string()
                 .contains("does not accept a `config` argument"),
             "{config}"
+        );
+    }
+
+    #[test]
+    fn the_embedded_record_names_every_compatibility_constant_and_no_framework_version() {
+        let expanded = compact_tokens(
+            expand_participant(
+                quote! {},
+                quote! { struct Probe; },
+                ParticipantKind::Service,
+            )
+            .expect("expands"),
+        );
+        for constant in [
+            "METADATA",
+            "API",
+            "BUS",
+            "LAUNCH",
+            "ROBOT",
+            "COMPONENT",
+            "SIMULATION",
+        ] {
+            assert!(
+                expanded.contains(&format!("compatibility :: {constant}")),
+                "the embedded record must name compatibility::{constant}: {expanded}"
+            );
+        }
+        // The embedded document is the only compatibility artifact, and a
+        // framework SemVer is deliberately not part of it.
+        assert!(
+            !expanded.contains("CARGO_PKG_VERSION") && !expanded.contains("framework_version"),
+            "no framework version may reach the embedded record: {expanded}"
         );
     }
 
