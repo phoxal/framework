@@ -1,4 +1,4 @@
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: rgbd-diff-drive
   namespace: dev

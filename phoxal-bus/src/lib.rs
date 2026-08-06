@@ -39,7 +39,7 @@ pub mod session;
 pub mod time;
 pub mod topic;
 
-pub use abi::{BUS_ABI, CodecId, encoding_string, parse_encoding_string};
+pub use abi::{CodecId, encoding_string, parse_encoding_string};
 pub use codec::{Codec, CodecError, MessagePack};
 pub use contract::{
     ApiVersion, CommandContract, ContractBody, DiagnosticContract, MeasurementContract,
@@ -54,8 +54,8 @@ pub use handle::{
 pub use identity::{ExecutionId, InvalidIdentity, ProducerId, TimelineId};
 pub use lease::{LEASE_TRACE_TARGET, Lease, LeaseDecision, LeaseRejection, ProducerFence};
 pub use liveliness::{
-    ParticipantLivelinessEvent, ParticipantLivelinessKey, ParticipantLivelinessObserver,
-    ParticipantLivelinessStatus, ParticipantLivelinessToken,
+    KeyLivelinessObserver, LivelinessStatus, ParticipantLivelinessEvent, ParticipantLivelinessKey,
+    ParticipantLivelinessObserver, ParticipantLivelinessToken,
 };
 pub use metadata::BusMetadata;
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};

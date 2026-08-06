@@ -329,7 +329,7 @@ mod tests {
     fn manifest_with_depth_roles(depth_roles: &str) -> String {
         format!(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev

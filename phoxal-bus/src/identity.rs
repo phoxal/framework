@@ -27,6 +27,20 @@ pub(crate) fn zenoh_id_for(execution: ExecutionId) -> Result<ZenohId> {
     })
 }
 
+/// The execution a router is routing, read back from its session id.
+///
+/// The inverse of [`zenoh_id_for`]: a Phoxal router opens with its execution as
+/// its Zenoh id, so a router's id *is* the execution. A session id that is not
+/// a legal execution therefore belongs to something that is not a Phoxal
+/// router, which is a fact worth an error rather than a silent skip.
+pub(crate) fn execution_from_zid(zid: ZenohId) -> Result<ExecutionId> {
+    ExecutionId::try_from(u128::from_le_bytes(zid.to_le_bytes())).map_err(|error| {
+        BusError::Transport(format!(
+            "router session id '{zid}' is not a phoxal execution: {error}"
+        ))
+    })
+}
+
 /// The producer identity of a session, read back from the id Zenoh assigned it.
 pub(crate) fn producer_from_zid(zid: ZenohId) -> Result<ProducerId> {
     ProducerId::try_from(u128::from_le_bytes(zid.to_le_bytes())).map_err(|error| {

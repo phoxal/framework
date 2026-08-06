@@ -2212,6 +2212,7 @@ version = "0.54.0"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
+ "phoxal-runtime-contract",
  "rmp-serde",
  "serde",
  "serde_bytes",
@@ -2326,6 +2327,7 @@ dependencies = [
 name = "phoxal-runtime-contract"
 version = "0.54.0"
 dependencies = [
+ "const_format",
  "getrandom 0.3.4",
  "libc",
  "rmp-serde",

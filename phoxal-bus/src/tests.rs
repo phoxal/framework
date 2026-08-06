@@ -1021,3 +1021,309 @@ async fn a_watch_fires_when_the_router_goes_away_and_not_before() {
 
     watch.close().await.expect("close the watch");
 }
+
+/// A short unix-socket endpoint. The macOS default temp dir overflows the
+/// address length limit, so these tests bind under `/tmp` directly.
+#[cfg(feature = "router")]
+fn socket_endpoint(prefix: &str) -> (tempfile::TempDir, String) {
+    let dir = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in("/tmp")
+        .expect("short-path temp dir for the unix socket");
+    let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
+    (dir, endpoint)
+}
+
+/// A client attaching to a running robot knows an endpoint and nothing else -
+/// not even which execution is on the other end. The probe is what turns the
+/// endpoint into that execution, and it must report the router's own identity,
+/// not a fresh one.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_probe_reports_the_execution_of_the_router_behind_an_endpoint() {
+    let (_dir, endpoint) = socket_endpoint("phoxal-probe-");
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("the router binds its endpoint");
+
+    let probed = Bus::probe_routers(&endpoint)
+        .await
+        .expect("a running router must be reachable");
+    assert_eq!(
+        probed,
+        vec![execution],
+        "the probe must report exactly the router that is there"
+    );
+
+    // The probe owns its whole session: a bus opened afterwards on the same
+    // endpoint is unaffected by it having come and gone.
+    let bus = Bus::open(BusConfig {
+        execution,
+        participant: "after-probe".to_string(),
+        connect_endpoints: vec![endpoint.clone()],
+    })
+    .await
+    .expect("the probe must leave the endpoint usable");
+    assert_eq!(
+        Bus::probe_routers(&endpoint)
+            .await
+            .expect("probing again while a bus is open must work"),
+        vec![execution],
+        "a probe must not disturb - or be disturbed by - an existing session"
+    );
+
+    bus.close().await.unwrap();
+    router.close().await.unwrap();
+}
+
+/// Nothing behind the endpoint has to fail promptly and say so: a client
+/// deciding "there is no robot here" cannot wait out a connect-retry budget.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_probe_of_a_dead_endpoint_fails_without_waiting_out_a_retry_budget() {
+    let (dir, endpoint) = socket_endpoint("phoxal-probe-dead-");
+    drop(dir);
+
+    let started = std::time::Instant::now();
+    let probed = Bus::probe_routers(&endpoint).await;
+    let error = probed.expect_err("an endpoint with nothing behind it is not connectable");
+    assert!(
+        error.to_string().contains("Unable to connect"),
+        "the failure must name the unreachable endpoint: {error}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the probe must not spend the shared connect-retry budget, took {:?}",
+        started.elapsed()
+    );
+}
+
+/// The supervisor's identity token is one exact key, and a client attaching
+/// mid-run has to learn both that it is already there and, later, that it is
+/// gone. Neither half is answerable from the participant-scoped observer.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exact_key_observation_reports_a_token_that_was_already_live_and_then_its_loss() {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    let (_dir, endpoint) = socket_endpoint("phoxal-identity-");
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("the router binds its endpoint");
+
+    let session = |participant: &str| BusConfig {
+        execution,
+        participant: participant.to_string(),
+        connect_endpoints: vec![endpoint.clone()],
+    };
+
+    // The declaring side goes first, so the observer genuinely attaches late.
+    let declaring = Bus::open(session("supervisor")).await.unwrap();
+    let token = declaring
+        .session()
+        .liveliness()
+        .declare_token(declaring.full_key("supervisor/identity"))
+        .await
+        .expect("the supervisor declares its identity token");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let observing = Bus::open(session("client")).await.unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&seen);
+    let observer = observing
+        .observe_liveliness_key("supervisor/identity", move |status| {
+            recorder.lock().expect("status mutex poisoned").push(status);
+        })
+        .await
+        .expect("the exact key is observable");
+    assert_eq!(
+        observer.initial(),
+        crate::LivelinessStatus::Alive,
+        "a token declared before the observer must be reported as present"
+    );
+
+    drop(token);
+
+    let mut lost = false;
+    for _ in 0..100 {
+        if seen
+            .lock()
+            .expect("status mutex poisoned")
+            .contains(&crate::LivelinessStatus::Lost)
+        {
+            lost = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(lost, "undeclaring the token must be reported as loss");
+
+    drop(observer);
+    observing.close().await.unwrap();
+    declaring.close().await.unwrap();
+    router.close().await.unwrap();
+}
+
+/// An observation that reported presence for a token that was never there
+/// would make an attach succeed against a dead robot.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_exact_key_observation_reports_an_absent_token_as_lost() {
+    let (_dir, endpoint) = socket_endpoint("phoxal-identity-absent-");
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("the router binds its endpoint");
+
+    let observing = Bus::open(BusConfig {
+        execution,
+        participant: "client".to_string(),
+        connect_endpoints: vec![endpoint.clone()],
+    })
+    .await
+    .unwrap();
+    let observer = observing
+        .observe_liveliness_key("supervisor/identity", |_| {})
+        .await
+        .expect("an absent token is still an observable key");
+    assert_eq!(observer.initial(), crate::LivelinessStatus::Lost);
+
+    // A wildcard would silently widen the observation to whatever else exists.
+    assert!(
+        observing
+            .observe_liveliness_key("supervisor/*", |_| {})
+            .await
+            .is_err(),
+        "an exact-key observation must reject a selector"
+    );
+
+    drop(observer);
+    observing.close().await.unwrap();
+    router.close().await.unwrap();
+}
+
+/// A router that is not a Phoxal router answers the probe with a session id
+/// that is not an execution. Reporting that as "no robot here" would be wrong
+/// in the one direction that matters - something *is* listening on that
+/// endpoint - so the probe errors and names the id it could not read.
+///
+/// The foreign router is spun in-process with a deliberately narrow Zenoh id:
+/// `zenoh::open` accepts short ids, while an execution is pinned to the full
+/// 32-hex width, so `abc` is a legal session id that is not a legal execution.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_probe_of_a_router_that_is_not_a_phoxal_execution_fails_naming_the_id() {
+    let (_dir, endpoint) = socket_endpoint("phoxal-probe-foreign-");
+
+    let mut config = zenoh::Config::default();
+    let endpoints =
+        serde_json::to_string(std::slice::from_ref(&endpoint)).expect("endpoints serialize");
+    for (key, value) in [
+        // Narrow on purpose: a legal `ZenohId`, never a legal `ExecutionId`.
+        ("id", "\"abc\""),
+        ("mode", "\"router\""),
+        ("listen/endpoints", endpoints.as_str()),
+        ("listen/timeout_ms", "0"),
+        ("listen/exit_on_failure", "true"),
+        ("scouting/delay", "0"),
+        ("scouting/multicast/enabled", "false"),
+    ] {
+        config.insert_json5(key, value).expect("router config key");
+    }
+    let foreign = zenoh::open(config)
+        .await
+        .expect("a plain zenoh router binds the endpoint");
+
+    let error = Bus::probe_routers(&endpoint)
+        .await
+        .expect_err("a router whose id is not an execution is not a phoxal robot");
+    let message = error.to_string();
+    assert!(
+        message.contains("abc"),
+        "the failure must name the id it could not read: {message}"
+    );
+    assert!(
+        message.contains("phoxal execution"),
+        "the failure must say what the id failed to be: {message}"
+    );
+
+    foreign.close().await.expect("close the foreign router");
+}
+
+/// The observer is the subscription: dropping it has to stop delivery, or a
+/// client that tore down its attach would keep mutating state behind a screen
+/// it no longer shows. Delivery is proven live first, so the silence afterwards
+/// is the drop taking effect and not a setup that never worked.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_an_exact_key_observer_stops_callback_delivery() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    let (_dir, endpoint) = socket_endpoint("phoxal-identity-drop-");
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("the router binds its endpoint");
+
+    let session = |participant: &str| BusConfig {
+        execution,
+        participant: participant.to_string(),
+        connect_endpoints: vec![endpoint.clone()],
+    };
+    let declaring = Bus::open(session("supervisor")).await.unwrap();
+    let observing = Bus::open(session("client")).await.unwrap();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let observer = observing
+        .observe_liveliness_key("supervisor/identity", move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        })
+        .await
+        .expect("the exact key is observable");
+    assert_eq!(observer.initial(), crate::LivelinessStatus::Lost);
+
+    // Prove the subscription is live: a first declaration must reach it.
+    let token = declaring
+        .session()
+        .liveliness()
+        .declare_token(declaring.full_key("supervisor/identity"))
+        .await
+        .expect("the supervisor declares its identity token");
+    let mut delivered = false;
+    for _ in 0..100 {
+        if calls.load(Ordering::Relaxed) > 0 {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(delivered, "a live observer must receive the declaration");
+    let before_drop = calls.load(Ordering::Relaxed);
+
+    drop(observer);
+    // The undeclare that follows would be delivered to a still-declared
+    // subscriber, so any increment here is the observer having outlived its
+    // handle.
+    drop(token);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        before_drop,
+        "a dropped observer must not receive further changes"
+    );
+
+    observing.close().await.unwrap();
+    declaring.close().await.unwrap();
+    router.close().await.unwrap();
+}

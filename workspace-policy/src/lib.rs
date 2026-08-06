@@ -1096,22 +1096,28 @@ fn main() -> phoxal::Result<()> {
 "#,
         )?;
         use phoxal::__private::compatibility as compat;
+        use phoxal::__private::metadata::{
+            ParticipantKind, ParticipantMetadataRecord, ParticipantSchemas,
+        };
+
+        // Compared against the framework's own typed writer rather than a
+        // hand-written JSON literal: the linked bytes and the record the
+        // framework says it emits are the same document or this fails.
         assert_eq!(
             meta,
-            serde_json::json!({
-                "schema": compat::METADATA,
-                "api": compat::API,
-                "schemas": {
-                    "bus": compat::BUS,
-                    "launch": compat::LAUNCH,
-                    "robot": compat::ROBOT,
-                    "component": compat::COMPONENT,
-                    "simulation": compat::SIMULATION,
+            serde_json::to_value(ParticipantMetadataRecord::V0 {
+                api: compat::API,
+                schemas: ParticipantSchemas {
+                    bus: compat::BUS,
+                    launch: compat::LAUNCH,
+                    robot: compat::ROBOT,
+                    component: compat::COMPONENT,
+                    simulation: compat::SIMULATION,
                 },
-                "id": "brain",
-                "kind": "brain",
-                "config_schema": {"type": "null"},
-            }),
+                id: "brain",
+                kind: ParticipantKind::Brain,
+                config_schema: serde_json::json!({"type": "null"}),
+            })?,
             "unexpected root brain metadata in the linked section"
         );
         Ok(())
@@ -1171,13 +1177,23 @@ fn main() -> phoxal::Result<()> {
         Ok(())
     }
 
-    /// The facade's manifest-grammar constants and `phoxal-manifest`'s own
-    /// `#[serde(tag = "schema")]` variants are one contract. A serde rename
-    /// takes a literal, so the only way to pin the two together is to parse a
-    /// real document whose tag is written from the constant.
+    /// The declared document identities and `phoxal-manifest`'s own
+    /// `#[serde(tag = "schema")]` variants are one contract, owned by two
+    /// crates that do not depend on each other. A serde rename takes a
+    /// literal, so the only way to pin the two together is to feed the
+    /// manifest compiler a real document whose tag is written from the
+    /// identity enum.
     #[test]
     fn the_facade_manifest_schemas_match_the_documents_phoxal_manifest_accepts() -> Result<()> {
         use phoxal::__private::compatibility as compat;
+
+        // Serialized, not `as_str`: what a peer writes on the wire is what
+        // `phoxal-manifest` has to accept.
+        fn tag(value: impl serde::Serialize) -> Result<String> {
+            Ok(serde_json::from_value::<String>(serde_json::to_value(
+                value,
+            )?)?)
+        }
 
         phoxal_manifest::source::robot::parse_from_string(&format!(
             r#"schema: {}
@@ -1191,17 +1207,17 @@ robot:
       component: drive
       mount_link: base_link
 "#,
-            compat::ROBOT
+            tag(compat::ROBOT)?
         ))
         .context("phoxal-manifest must accept the robot grammar the facade declares")?;
         phoxal_manifest::source::component::read_from_string(&format!(
             "schema: {}\ncapabilities: {{}}\n",
-            compat::COMPONENT
+            tag(compat::COMPONENT)?
         ))
         .context("phoxal-manifest must accept the component grammar the facade declares")?;
         phoxal_manifest::source::simulation::read_from_string(&format!(
             "schema: {}\ncapabilities: {{}}\n",
-            compat::SIMULATION
+            tag(compat::SIMULATION)?
         ))
         .context("phoxal-manifest must accept the simulation grammar the facade declares")?;
         Ok(())

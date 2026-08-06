@@ -165,10 +165,11 @@ mod tests {
 
     #[test]
     fn schema_is_required_and_exact() -> anyhow::Result<()> {
-        let manifest: Manifest = serde_yaml::from_str("schema: component/v0\ncapabilities: {}\n")?;
+        let manifest: Manifest =
+            serde_yaml::from_str("schema: phoxal/component/v0\ncapabilities: {}\n")?;
         assert!(matches!(manifest, Manifest::V0(_)));
         assert!(serde_yaml::from_str::<Manifest>("capabilities: {}\n").is_err());
-        assert!(serde_yaml::from_str::<Manifest>("schema: component/v1\n").is_err());
+        assert!(serde_yaml::from_str::<Manifest>("schema: phoxal/component/v1\n").is_err());
         Ok(())
     }
 }

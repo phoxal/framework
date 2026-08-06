@@ -247,13 +247,17 @@ impl ParticipantKind {
         }
     }
 
-    fn artifact_kind(self) -> &'static str {
-        match self {
-            ParticipantKind::Service => "service",
-            ParticipantKind::Driver => "driver",
-            ParticipantKind::Simulator => "simulator",
-            ParticipantKind::Brain => "brain",
-        }
+    /// The framework-owned kind value this role declares. Emitted as a path,
+    /// never as a token: the wire spelling belongs to
+    /// `phoxal_runtime_contract::ParticipantKind`'s serde rename.
+    fn artifact_kind(self, phoxal: &TokenStream) -> TokenStream {
+        let variant = match self {
+            ParticipantKind::Service => quote!(Service),
+            ParticipantKind::Driver => quote!(Driver),
+            ParticipantKind::Simulator => quote!(Simulator),
+            ParticipantKind::Brain => quote!(Brain),
+        };
+        quote!(#phoxal::__private::metadata::ParticipantKind::#variant)
     }
 
     /// The identity this role fixes, if the role admits no `id = "…"` at all.
@@ -567,7 +571,7 @@ pub fn expand_participant(
     let api_ty: Type = args.api.unwrap_or_else(|| syn::parse_quote!(()));
 
     let phoxal = phoxal();
-    let artifact_kind = kind.artifact_kind();
+    let artifact_kind = kind.artifact_kind(&phoxal);
     let launch_policy = kind.launch_policy(&phoxal);
     let marker = kind.marker_impl(&phoxal, struct_name);
     let metadata_const_ident = Ident::new(
@@ -597,7 +601,7 @@ pub fn expand_participant(
         #item_struct
 
         impl #phoxal::__private::ParticipantSpec for #struct_name {
-            const KIND: &'static str = #artifact_kind;
+            const KIND: #phoxal::__private::metadata::ParticipantKind = #artifact_kind;
             const ID: &'static str = #id;
             type LaunchPolicy = #launch_policy;
             // The train-selected facade revision, spliced from the framework
@@ -629,34 +633,24 @@ pub fn expand_participant(
         #marker
 
         // Process-boundary metadata is self-identifying and strict. Every
-        // identifier comes from `__private::compatibility`, so this expansion
-        // never restates a contract token the owning crate already fixes. The
-        // CLI reads this record out of the built artifact before launch; it is
-        // the binary's whole compatibility declaration.
+        // version comes in as a typed value from `__private::compatibility`
+        // and the document is composed by the framework-owned writer, so this
+        // expansion contains no contract token of any kind. The CLI reads this
+        // record out of the built artifact before launch; it is the binary's
+        // whole compatibility declaration.
         #[doc(hidden)]
         const #metadata_const_ident: &'static str =
-            #phoxal::__private::api::__meta::__concatcp!(
-                "{\"schema\":\"",
-                #phoxal::__private::compatibility::METADATA,
-                "\",\"api\":\"",
-                #phoxal::__private::compatibility::API,
-                "\",\"schemas\":{\"bus\":\"",
-                #phoxal::__private::compatibility::BUS,
-                "\",\"launch\":\"",
-                #phoxal::__private::compatibility::LAUNCH,
-                "\",\"robot\":\"",
-                #phoxal::__private::compatibility::ROBOT,
-                "\",\"component\":\"",
-                #phoxal::__private::compatibility::COMPONENT,
-                "\",\"simulation\":\"",
-                #phoxal::__private::compatibility::SIMULATION,
-                "\"},\"id\":\"",
-                #id,
-                "\",\"kind\":\"",
-                #artifact_kind,
-                "\",\"config_schema\":",
-                <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
-                "}"
+            #phoxal::__private::compatibility::participant_metadata_json!(
+                api = #phoxal::__private::compatibility::API,
+                bus = #phoxal::__private::compatibility::BUS,
+                launch = #phoxal::__private::compatibility::LAUNCH,
+                robot = #phoxal::__private::compatibility::ROBOT,
+                component = #phoxal::__private::compatibility::COMPONENT,
+                simulation = #phoxal::__private::compatibility::SIMULATION,
+                id = #id,
+                kind = #artifact_kind,
+                config_schema =
+                    <#config_ty as #phoxal::__private::ParticipantConfig>::SCHEMA_JSON,
             );
         #[doc(hidden)]
         const #metadata_len_ident: usize = #metadata_const_ident.len();
@@ -777,7 +771,7 @@ mod tests {
             "{expanded}"
         );
         assert!(
-            expanded.contains("const KIND : & 'static str = \"brain\""),
+            expanded.contains("const KIND : :: phoxal :: __private :: metadata :: ParticipantKind = :: phoxal :: __private :: metadata :: ParticipantKind :: Brain"),
             "{expanded}"
         );
         assert!(expanded.contains("type Config = () ;"), "{expanded}");
@@ -787,12 +781,15 @@ mod tests {
             "{expanded}"
         );
         // The embedded record carries the brain kind under the fixed identity,
-        // and every contract token comes from the facade compatibility set
-        // rather than a literal in this expansion.
-        assert!(expanded.contains("compatibility :: METADATA"), "{expanded}");
+        // and every version comes from the facade compatibility set as a typed
+        // value rather than a literal in this expansion.
+        assert!(
+            expanded.contains("compatibility :: participant_metadata_json !"),
+            "{expanded}"
+        );
         assert!(
             expanded.contains(
-                "\"\\\"},\\\"id\\\":\\\"\" , \"brain\" , \"\\\",\\\"kind\\\":\\\"\" , \"brain\""
+                "id = \"brain\" , kind = :: phoxal :: __private :: metadata :: ParticipantKind :: Brain"
             ),
             "{expanded}"
         );
@@ -866,15 +863,7 @@ mod tests {
             )
             .expect("expands"),
         );
-        for constant in [
-            "METADATA",
-            "API",
-            "BUS",
-            "LAUNCH",
-            "ROBOT",
-            "COMPONENT",
-            "SIMULATION",
-        ] {
+        for constant in ["API", "BUS", "LAUNCH", "ROBOT", "COMPONENT", "SIMULATION"] {
             assert!(
                 expanded.contains(&format!("compatibility :: {constant}")),
                 "the embedded record must name compatibility::{constant}: {expanded}"
@@ -886,6 +875,39 @@ mod tests {
             !expanded.contains("CARGO_PKG_VERSION") && !expanded.contains("framework_version"),
             "no framework version may reach the embedded record: {expanded}"
         );
+    }
+
+    /// A version identity has exactly one spelling, owned by the crate that
+    /// owns the contract. This expansion must therefore contain no version
+    /// token at all - it names typed values and hands them to the
+    /// framework-owned writer.
+    #[test]
+    fn the_expansion_spells_no_version_identity() {
+        for kind in [
+            ParticipantKind::Service,
+            ParticipantKind::Driver,
+            ParticipantKind::Simulator,
+            ParticipantKind::Brain,
+        ] {
+            let expanded = compact_tokens(
+                expand_participant(quote! {}, quote! { struct Probe; }, kind).expect("expands"),
+            );
+            for token in [
+                "participant-metadata",
+                "bus-abi",
+                "robot-api",
+                "participant-launch",
+                "phoxal/robot/v0",
+                "phoxal/component/v0",
+                "phoxal/simulation/v0",
+                "v0.1",
+            ] {
+                assert!(
+                    !expanded.contains(token),
+                    "the expansion must not spell the version token '{token}': {expanded}"
+                );
+            }
+        }
     }
 
     /// The API a participant's handles may come from is fixed by the role

@@ -14,7 +14,7 @@ const COMPONENT_FILE: &str = "component.yaml";
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema")]
 pub enum Manifest {
-    #[serde(rename = "component/v0")]
+    #[serde(rename = "phoxal/component/v0")]
     V0(v0::Manifest),
 }
 
@@ -56,7 +56,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let source = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   motor:
     kind: motor
@@ -79,11 +79,11 @@ capabilities:
         let temp_dir = tempfile::tempdir()?;
         std::fs::write(
             temp_dir.path().join("component.yaml"),
-            "schema: component/v1\n",
+            "schema: phoxal/component/v1\n",
         )?;
         let error = read_from_dir(temp_dir.path()).expect_err("unknown version must fail");
         let message = format!("{error:#}");
-        assert!(message.contains("component/v0"));
+        assert!(message.contains("phoxal/component/v0"));
         assert!(message.contains("component.yaml"));
         Ok(())
     }
@@ -92,7 +92,7 @@ capabilities:
     fn component_validates_token_ids() {
         let error = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   InvalidCapability:
     kind: motor
@@ -109,8 +109,9 @@ capabilities:
 
     #[test]
     fn component_parses_and_round_trips_gtin() -> anyhow::Result<()> {
-        let manifest =
-            read_from_string("schema: component/v0\ngtin: \"1234567890123\"\ncapabilities: {}\n")?;
+        let manifest = read_from_string(
+            "schema: phoxal/component/v0\ngtin: \"1234567890123\"\ncapabilities: {}\n",
+        )?;
         let Manifest::V0(component) = &manifest;
         assert_eq!(
             component.gtin.as_ref().map(super::v0::Gtin::as_str),
@@ -130,7 +131,7 @@ capabilities:
     fn component_rejects_non_positive_motor_gear_ratio() {
         let error = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   motor:
     kind: motor
@@ -150,7 +151,7 @@ capabilities:
     fn component_rejects_non_positive_encoder_values() {
         let error = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   encoder:
     kind: encoder
@@ -169,14 +170,15 @@ capabilities:
 
     #[test]
     fn component_rejects_malformed_gtin() {
-        let error = read_from_string("schema: component/v0\ngtin: \"123\"\ncapabilities: {}\n")
-            .expect_err("13-digit GTIN must be enforced");
+        let error =
+            read_from_string("schema: phoxal/component/v0\ngtin: \"123\"\ncapabilities: {}\n")
+                .expect_err("13-digit GTIN must be enforced");
         assert!(format!("{error:#}").contains("13 digits"), "got: {error:#}");
     }
 
     #[test]
     fn component_without_gtin_is_none_and_omits_on_serialize() -> anyhow::Result<()> {
-        let manifest = read_from_string("schema: component/v0\ncapabilities: {}\n")?;
+        let manifest = read_from_string("schema: phoxal/component/v0\ncapabilities: {}\n")?;
         let Manifest::V0(component) = &manifest;
         assert!(component.gtin.is_none());
         let yaml = serde_yaml::to_string(&manifest)?;
@@ -191,7 +193,7 @@ capabilities:
     fn component_parses_range_and_emergency_stop_capabilities() -> anyhow::Result<()> {
         let manifest = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   range:
     kind: range
@@ -221,7 +223,7 @@ capabilities:
     fn camera_native_envelope_roundtrips_without_component_profiles() -> anyhow::Result<()> {
         let component = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   rgb:
     kind: camera
@@ -261,7 +263,7 @@ capabilities:
     fn component_profiles_list_is_rejected() {
         let error = read_from_string(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   rgb:
     kind: camera

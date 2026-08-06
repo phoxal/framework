@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! <bundle>/
-//!   robot.yaml                         finalized robot/v0: no `extends`, explicit `clock`
+//!   robot.yaml                         finalized phoxal/robot/v0: no `extends`, explicit `clock`
 //!   assets/
 //!     robot/structure.urdf             `robot.structure` resolves below `assets/`
 //!     robot/meshes/...                 logical asset id `robot/meshes/...`
@@ -464,7 +464,7 @@ mod tests {
     #[test]
     fn the_whole_bundle_is_servable_including_binaries() {
         let root = bundle_with(&[
-            ("robot.yaml", b"schema: robot/v0"),
+            ("robot.yaml", b"schema: phoxal/robot/v0"),
             ("assets/robot/structure.urdf", b"<robot/>"),
             ("bin/brain", b"ELF"),
         ]);
@@ -483,7 +483,10 @@ mod tests {
 
     #[test]
     fn expected_refusals_are_outcomes_rather_than_errors() {
-        let root = bundle_with(&[("robot.yaml", b"schema: robot/v0"), ("bin/brain", b"ELF")]);
+        let root = bundle_with(&[
+            ("robot.yaml", b"schema: phoxal/robot/v0"),
+            ("bin/brain", b"ELF"),
+        ]);
         let resolver = BundleResolver::index(root.path(), 2).expect("index succeeds");
 
         assert!(matches!(
@@ -543,7 +546,7 @@ mod tests {
 
     #[test]
     fn a_symlink_anywhere_in_the_bundle_refuses_the_whole_index() {
-        let root = bundle_with(&[("robot.yaml", b"schema: robot/v0")]);
+        let root = bundle_with(&[("robot.yaml", b"schema: phoxal/robot/v0")]);
         let outside = root.path().join("outside.txt");
         std::fs::write(&outside, b"outside").unwrap();
         std::os::unix::fs::symlink(&outside, root.path().join("bin-link")).unwrap();
