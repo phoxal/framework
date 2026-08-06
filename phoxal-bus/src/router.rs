@@ -17,7 +17,7 @@ use std::path::Path;
 
 use crate::error::{BusError, Result};
 use crate::identity::{ExecutionId, zenoh_id_for};
-use crate::session::apply_phoxal_transport_policy;
+use crate::session::{apply_phoxal_transport_policy, client_config};
 
 /// A running Zenoh router session.
 ///
@@ -114,19 +114,7 @@ impl RouterWatch {
     /// not reported here - the caller has already decided what a lost fabric
     /// means by then.
     pub async fn open(endpoint: &str, on_lost: impl Fn() + Send + Sync + 'static) -> Result<Self> {
-        let mut config = zenoh::Config::default();
-        apply_phoxal_transport_policy(&mut config)?;
-        let endpoints = serde_json::to_string(std::slice::from_ref(&endpoint))
-            .map_err(|error| BusError::Transport(error.to_string()))?;
-        for (key, value) in [
-            ("mode", "\"client\""),
-            ("connect/endpoints", endpoints.as_str()),
-        ] {
-            config
-                .insert_json5(key, value)
-                .map_err(|error| BusError::Transport(error.to_string()))?;
-        }
-        let session = zenoh::open(config)
+        let session = zenoh::open(client_config(endpoint)?)
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
 

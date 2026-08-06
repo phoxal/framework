@@ -54,8 +54,8 @@ pub use handle::{
 pub use identity::{ExecutionId, InvalidIdentity, ProducerId, TimelineId};
 pub use lease::{LEASE_TRACE_TARGET, Lease, LeaseDecision, LeaseRejection, ProducerFence};
 pub use liveliness::{
-    ParticipantLivelinessEvent, ParticipantLivelinessKey, ParticipantLivelinessObserver,
-    ParticipantLivelinessStatus, ParticipantLivelinessToken,
+    KeyLivelinessObserver, LivelinessStatus, ParticipantLivelinessEvent, ParticipantLivelinessKey,
+    ParticipantLivelinessObserver, ParticipantLivelinessToken,
 };
 pub use metadata::BusMetadata;
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};

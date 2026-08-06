@@ -82,18 +82,27 @@ impl ParticipantLivelinessKey {
     }
 }
 
-/// Appearance or disappearance of one participant.
+/// Presence or absence of one Liveliness token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParticipantLivelinessStatus {
+pub enum LivelinessStatus {
     Alive,
     Lost,
+}
+
+impl From<SampleKind> for LivelinessStatus {
+    fn from(kind: SampleKind) -> Self {
+        match kind {
+            SampleKind::Put => LivelinessStatus::Alive,
+            SampleKind::Delete => LivelinessStatus::Lost,
+        }
+    }
 }
 
 /// A parsed participant Liveliness observation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParticipantLivelinessEvent {
     pub key: ParticipantLivelinessKey,
-    pub status: ParticipantLivelinessStatus,
+    pub status: LivelinessStatus,
 }
 
 /// Keeps a declared participant token alive until it is dropped.
@@ -112,6 +121,23 @@ impl ParticipantLivelinessToken {
 /// Keeps a history-enabled participant observer declared until it is dropped.
 pub struct ParticipantLivelinessObserver {
     _subscriber: zenoh::pubsub::Subscriber<()>,
+}
+
+/// Keeps an observation of one exact Liveliness key declared until it is
+/// dropped, and carries the state that key was in when it was established.
+pub struct KeyLivelinessObserver {
+    _subscriber: zenoh::pubsub::Subscriber<()>,
+    initial: LivelinessStatus,
+}
+
+impl KeyLivelinessObserver {
+    /// The token's state at the moment this observation was established.
+    ///
+    /// A client that attached after the token was declared learns it is there
+    /// from this, not from a change event that already happened.
+    pub fn initial(&self) -> LivelinessStatus {
+        self.initial
+    }
 }
 
 impl Bus {
@@ -161,6 +187,75 @@ impl Bus {
             _subscriber: subscriber,
         })
     }
+
+    /// Observe one exact Liveliness key below this session's root.
+    ///
+    /// `relative_key` is a concrete key path below the execution root, for
+    /// example `supervisor/identity`; the root is this session's, so an
+    /// observer can never accidentally watch another execution's token.
+    ///
+    /// The returned observer carries the token's current state
+    /// ([`KeyLivelinessObserver::initial`]) and `callback` receives every
+    /// change after that. Statuses are levels, not edges: the subscriber is
+    /// declared before the state is read, so a token that appears during that
+    /// window is reported twice - once through the callback and once as the
+    /// initial state - and a consumer must be indifferent to that.
+    ///
+    /// The callback runs on Zenoh's runtime and must not perform Zenoh network
+    /// operations.
+    pub async fn observe_liveliness_key(
+        &self,
+        relative_key: &str,
+        callback: impl Fn(LivelinessStatus) + Send + Sync + 'static,
+    ) -> Result<KeyLivelinessObserver> {
+        validate_relative_key(relative_key)?;
+        let raw = self.full_key(relative_key);
+        let key = OwnedKeyExpr::new(raw.clone()).map_err(|error| {
+            BusError::Namespace(format!("invalid Liveliness key '{raw}': {error}"))
+        })?;
+
+        // Declared before the state is read, so a token lost in between is
+        // reported by the subscriber rather than missed by both.
+        let subscriber = self
+            .session()
+            .liveliness()
+            .declare_subscriber(key.clone())
+            .callback(move |sample| callback(LivelinessStatus::from(sample.kind())))
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+
+        let replies = self
+            .session()
+            .liveliness()
+            .get(key)
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        let mut initial = LivelinessStatus::Lost;
+        while let Ok(reply) = replies.recv_async().await {
+            if reply.result().is_ok() {
+                initial = LivelinessStatus::Alive;
+            }
+        }
+
+        Ok(KeyLivelinessObserver {
+            _subscriber: subscriber,
+            initial,
+        })
+    }
+}
+
+fn validate_relative_key(relative_key: &str) -> Result<()> {
+    if relative_key.is_empty()
+        || relative_key
+            .split('/')
+            .any(|segment| segment.is_empty() || segment.contains('*'))
+    {
+        return Err(BusError::Namespace(format!(
+            "a liveliness key must be a concrete non-empty key path below the \
+             execution root, got '{relative_key}'"
+        )));
+    }
+    Ok(())
 }
 
 fn participant_event(
@@ -169,11 +264,10 @@ fn participant_event(
     kind: SampleKind,
 ) -> Option<ParticipantLivelinessEvent> {
     let key = ParticipantLivelinessKey::parse(root, key)?;
-    let status = match kind {
-        SampleKind::Put => ParticipantLivelinessStatus::Alive,
-        SampleKind::Delete => ParticipantLivelinessStatus::Lost,
-    };
-    Some(ParticipantLivelinessEvent { key, status })
+    Some(ParticipantLivelinessEvent {
+        key,
+        status: LivelinessStatus::from(kind),
+    })
 }
 
 fn validate_participant(participant: &str) -> Result<()> {
@@ -249,8 +343,8 @@ mod tests {
 
         assert_eq!(alive.key.participant(), "drive");
         assert_eq!(alive.key.producer(), producer);
-        assert_eq!(alive.status, ParticipantLivelinessStatus::Alive);
-        assert_eq!(lost.status, ParticipantLivelinessStatus::Lost);
+        assert_eq!(alive.status, LivelinessStatus::Alive);
+        assert_eq!(lost.status, LivelinessStatus::Lost);
         assert!(participant_event(ROOT, "other/robot/key", SampleKind::Put).is_none());
     }
 

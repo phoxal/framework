@@ -10,7 +10,7 @@ use zenoh::bytes::{Encoding, ZBytes};
 use zenoh::key_expr::OwnedKeyExpr;
 
 use crate::error::{BusError, Result};
-use crate::identity::{ExecutionId, ProducerId, producer_from_zid};
+use crate::identity::{ExecutionId, ProducerId, execution_from_zid, producer_from_zid};
 use crate::metadata::{BusMetadata, MAX_SOURCE_PARTICIPANT_BYTES};
 use crate::runtime_metrics::{RuntimeMetricHandle, RuntimeMetricSnapshot, RuntimeMetrics};
 use crate::time::TimeWindow;
@@ -175,6 +175,36 @@ impl Bus {
         *inner.drain.lock().expect("drain mutex poisoned") = Some(drain);
 
         Ok(Bus { inner })
+    }
+
+    /// The executions whose routers a session at `endpoint` is *directly*
+    /// connected to.
+    ///
+    /// This opens and closes its own short-lived session rather than taking a
+    /// `&self`, because it answers the question that has to be settled *before*
+    /// a [`Bus`] can exist: a bus is execution-scoped, and the execution is
+    /// what this reports. The session is independent of any other in the
+    /// process - opening and closing it disturbs nothing.
+    ///
+    /// It shares the Phoxal transport policy, so multicast scouting is off and
+    /// only routers reachable through `endpoint` are ever reported. Connect
+    /// retry is deliberately *not* shared: the answer is "what is connected
+    /// now", so an endpoint with nothing behind it fails immediately instead of
+    /// spending [`CONNECT_TIMEOUT_MS`] hoping a router appears.
+    ///
+    /// Cardinality is the caller's rule. This reports what is connected -
+    /// none, one, or several - and errors only when a connected session id is
+    /// not a Phoxal execution at all.
+    pub async fn probe_routers(endpoint: &str) -> Result<Vec<ExecutionId>> {
+        let session = zenoh::open(client_config(endpoint)?)
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        let zids: Vec<_> = session.info().routers_zid().await.collect();
+        session
+            .close()
+            .await
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+        zids.into_iter().map(execution_from_zid).collect()
     }
 
     /// The composed key root (`phoxal/<execution-id>`).
@@ -460,6 +490,25 @@ pub(crate) fn apply_phoxal_transport_policy(config: &mut zenoh::Config) -> Resul
         .insert_json5("scouting/multicast/enabled", "false")
         .map_err(|error| BusError::Transport(error.to_string()))?;
     Ok(())
+}
+
+/// A client config for a single endpoint carrying the shared transport policy
+/// and no connect retry, for the callers whose question is "what is there right
+/// now" rather than "get me attached eventually".
+pub(crate) fn client_config(endpoint: &str) -> Result<zenoh::Config> {
+    let mut config = zenoh::Config::default();
+    apply_phoxal_transport_policy(&mut config)?;
+    let endpoints = serde_json::to_string(std::slice::from_ref(&endpoint))
+        .map_err(|error| BusError::Transport(error.to_string()))?;
+    for (key, value) in [
+        ("mode", "\"client\""),
+        ("connect/endpoints", endpoints.as_str()),
+    ] {
+        config
+            .insert_json5(key, value)
+            .map_err(|error| BusError::Transport(error.to_string()))?;
+    }
+    Ok(config)
 }
 
 fn zenoh_config(connect_endpoints: &[String]) -> Result<zenoh::Config> {
