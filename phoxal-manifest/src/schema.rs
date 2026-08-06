@@ -34,15 +34,15 @@ impl DocumentKind {
     const fn metadata(self) -> (&'static str, &'static str) {
         match self {
             Self::Robot => (
-                "Phoxal robot/v0 manifest",
+                "Phoxal robot manifest (phoxal/robot/v0)",
                 "Editor schema for an authored Phoxal robot.yaml document.",
             ),
             Self::Component => (
-                "Phoxal component/v0 manifest",
+                "Phoxal component manifest (phoxal/component/v0)",
                 "Editor schema for an authored Phoxal component.yaml document.",
             ),
             Self::Simulation => (
-                "Phoxal simulation/v0 manifest",
+                "Phoxal simulation manifest (phoxal/simulation/v0)",
                 "Editor schema for an authored Phoxal simulation.yaml document.",
             ),
         }
@@ -122,13 +122,18 @@ mod tests {
         );
         for kind in DocumentKind::ALL {
             let (title, file_name) = match kind {
-                DocumentKind::Robot => ("Phoxal robot/v0 manifest", "robot.schema.json"),
-                DocumentKind::Component => {
-                    ("Phoxal component/v0 manifest", "component.schema.json")
-                }
-                DocumentKind::Simulation => {
-                    ("Phoxal simulation/v0 manifest", "simulation.schema.json")
-                }
+                DocumentKind::Robot => (
+                    "Phoxal robot manifest (phoxal/robot/v0)",
+                    "robot.schema.json",
+                ),
+                DocumentKind::Component => (
+                    "Phoxal component manifest (phoxal/component/v0)",
+                    "component.schema.json",
+                ),
+                DocumentKind::Simulation => (
+                    "Phoxal simulation manifest (phoxal/simulation/v0)",
+                    "simulation.schema.json",
+                ),
             };
             let generated = generate(kind);
             assert_eq!(kind.file_name(), file_name);
@@ -209,7 +214,7 @@ mod tests {
     fn schemas_cover_tagged_shapes_and_custom_string_wire_types() {
         let robot = yaml_value(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: schema-bot
   namespace: dev
@@ -241,7 +246,7 @@ robot:
 
         let component = yaml_value(
             r#"
-schema: component/v0
+schema: phoxal/component/v0
 gtin: "1234567890123"
 capabilities:
   motor:
@@ -254,7 +259,7 @@ capabilities:
 
         let simulation = yaml_value(
             r#"
-schema: simulation/v0
+schema: phoxal/simulation/v0
 capabilities:
   motor:
     kind: motor
@@ -276,7 +281,7 @@ capabilities:
     #[test]
     fn schema_is_structural_while_manifest_validation_is_semantic() {
         let document = r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: ""
   namespace: dev

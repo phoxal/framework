@@ -33,7 +33,7 @@ macro_rules! version_identity {
         }
     ) => {
         $(#[$enum_meta])*
-        #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+        #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
         pub enum $name {
             $(
                 $(#[$variant_meta])*
@@ -99,21 +99,21 @@ version_identity! {
 version_identity! {
     /// The authored robot document grammar (`robot.yaml`).
     RobotSchema {
-        V0 = "robot/v0",
+        V0 = "phoxal/robot/v0",
     }
 }
 
 version_identity! {
     /// The authored component document grammar (`component.yaml`).
     ComponentSchema {
-        V0 = "component/v0",
+        V0 = "phoxal/component/v0",
     }
 }
 
 version_identity! {
     /// The authored simulation document grammar (`simulation.yaml`).
     SimulationSchema {
-        V0 = "simulation/v0",
+        V0 = "phoxal/simulation/v0",
     }
 }
 
@@ -152,9 +152,9 @@ mod tests {
         assert_eq!(BusAbi::V0.as_str(), "phoxal/bus-abi/v0");
         assert_eq!(RobotApi::V0_1.as_str(), "phoxal/robot-api/v0.1");
         assert_eq!(LaunchAbi::V0.as_str(), "phoxal/participant-launch/v0");
-        assert_eq!(RobotSchema::V0.as_str(), "robot/v0");
-        assert_eq!(ComponentSchema::V0.as_str(), "component/v0");
-        assert_eq!(SimulationSchema::V0.as_str(), "simulation/v0");
+        assert_eq!(RobotSchema::V0.as_str(), "phoxal/robot/v0");
+        assert_eq!(ComponentSchema::V0.as_str(), "phoxal/component/v0");
+        assert_eq!(SimulationSchema::V0.as_str(), "phoxal/simulation/v0");
     }
 
     #[test]

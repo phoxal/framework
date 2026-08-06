@@ -86,7 +86,7 @@ pub struct MetadataError(#[from] serde_json::Error);
 mod tests {
     use super::*;
 
-    const SCHEMAS: &str = r#"{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0","simulation":"simulation/v0"}"#;
+    const SCHEMAS: &str = r#"{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"phoxal/robot/v0","component":"phoxal/component/v0","simulation":"phoxal/simulation/v0"}"#;
 
     fn record(fields: &str) -> Vec<u8> {
         format!(
@@ -162,6 +162,76 @@ mod tests {
         assert!(message.contains("phoxal/robot-api/v0.1"), "{message}");
     }
 
+    /// The 0.53-era embedded document, byte for byte: a bare `v0.1` API
+    /// revision, an unqualified `phoxal/bus/v0`, and unnamespaced authored
+    /// grammars. Deliberately a frozen literal rather than anything composed
+    /// from this crate's constants - it is a record of what that train actually
+    /// shipped, and a later rename here must not quietly rewrite the artifact
+    /// the test claims to be about.
+    ///
+    /// The diagnostic has to do both halves of the operator's job at once: name
+    /// the token the stale binary carries, so it is identifiable, and name the
+    /// token this train expects, so the fix is obvious without reading source.
+    const ERA_0_53_RECORD: &str = r#"{"schema":"phoxal/participant-metadata/v0","api":"v0.1","schemas":{"bus":"phoxal/bus/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0","simulation":"simulation/v0"},"id":"drive","kind":"service","config_schema":null}"#;
+
+    #[test]
+    fn a_0_53_era_binary_is_rejected_naming_its_token_and_the_expected_spelling() {
+        let message = parse_participant_metadata(ERA_0_53_RECORD.as_bytes())
+            .expect_err("a 0.53-era binary is not a peer this train can speak to")
+            .to_string();
+
+        // Backticked, so this asserts the bare `v0.1` the stale binary carries
+        // and is not satisfied by the `v0.1` tail of the expected spelling.
+        assert!(
+            message.contains("`v0.1`"),
+            "the diagnostic must name the token the stale binary carries: {message}"
+        );
+        assert!(
+            message.contains(RobotApi::V0_1.as_str()),
+            "the diagnostic must name the spelling this train expects: {message}"
+        );
+        assert_eq!(
+            RobotApi::V0_1.as_str(),
+            "phoxal/robot-api/v0.1",
+            "the expected spelling is pinned here too, so a rename cannot make \
+             the assertion above vacuous"
+        );
+    }
+
+    /// The same upgrade, one field deeper: with the API revision made current,
+    /// the stale `schemas` entries are caught by name too rather than accepted
+    /// as unknown-but-harmless strings. Serde reports the first one it reaches,
+    /// which is `bus`.
+    #[test]
+    fn a_0_53_era_schema_spelling_is_rejected_by_name() {
+        let bytes = ERA_0_53_RECORD.replace(r#""api":"v0.1""#, r#""api":"phoxal/robot-api/v0.1""#);
+
+        let message = parse_participant_metadata(bytes.as_bytes())
+            .expect_err("the old bus spelling is not a version this train speaks")
+            .to_string();
+
+        assert!(message.contains("`phoxal/bus/v0`"), "{message}");
+        assert!(message.contains(BusAbi::V0.as_str()), "{message}");
+    }
+
+    /// And with `bus` current as well, the authored-grammar rename to the
+    /// namespaced form is what the stale binary trips on. This is the assertion
+    /// that would have been silently satisfied if `robot/v0` were still legal.
+    #[test]
+    fn a_0_53_era_authored_grammar_spelling_is_rejected_by_name() {
+        let bytes = ERA_0_53_RECORD
+            .replace(r#""api":"v0.1""#, r#""api":"phoxal/robot-api/v0.1""#)
+            .replace(r#""bus":"phoxal/bus/v0""#, r#""bus":"phoxal/bus-abi/v0""#);
+
+        let message = parse_participant_metadata(bytes.as_bytes())
+            .expect_err("the unnamespaced robot grammar is not a version this train speaks")
+            .to_string();
+
+        assert!(message.contains("`robot/v0`"), "{message}");
+        assert!(message.contains(RobotSchema::V0.as_str()), "{message}");
+        assert_eq!(RobotSchema::V0.as_str(), "phoxal/robot/v0", "{message}");
+    }
+
     #[test]
     fn an_unknown_field_is_rejected() {
         assert!(
@@ -189,7 +259,7 @@ mod tests {
 
     #[test]
     fn a_record_missing_a_participant_schema_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0"},"id":"drive","kind":"service","config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"phoxal/robot/v0","component":"phoxal/component/v0"},"id":"drive","kind":"service","config_schema":null}"#;
         assert!(parse_participant_metadata(bytes).is_err());
     }
 }

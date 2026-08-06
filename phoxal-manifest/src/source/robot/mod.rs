@@ -22,7 +22,7 @@ const ROBOT_FILE: &str = "robot.yaml";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema")]
 pub enum Manifest {
-    #[serde(rename = "robot/v0")]
+    #[serde(rename = "phoxal/robot/v0")]
     V0(v0::Manifest),
 }
 
@@ -197,7 +197,7 @@ mod tests {
     use super::{parse_from_string, read_from_dir};
 
     const COMPOSED_LEAF: &str = r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 extends: [base.robot.yaml, host.robot.yaml]
 robot:
   id: rover
@@ -220,7 +220,7 @@ robot:
         std::fs::write(
             dir.path().join("robot.yaml"),
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 extends: [base.robot.yaml]
 robot:
   id: rover
@@ -243,7 +243,7 @@ robot:
 
     #[test]
     fn string_parser_requires_the_exact_schema() {
-        assert!(parse_from_string("schema: robot/v1\n").is_err());
+        assert!(parse_from_string("schema: phoxal/robot/v1\n").is_err());
         assert!(parse_from_string("robot: {}\n").is_err());
     }
 
@@ -253,10 +253,13 @@ robot:
     #[test]
     fn future_schema_tag_fails_on_the_variant_not_the_body() -> anyhow::Result<()> {
         let valid_body_future_tag =
-            COMPOSED_LEAF.replacen("schema: robot/v0", "schema: robot/v1", 1);
+            COMPOSED_LEAF.replacen("schema: phoxal/robot/v0", "schema: phoxal/robot/v1", 1);
         let error = parse_from_string(&valid_body_future_tag)
             .expect_err("a valid body under an unknown schema tag must still fail");
-        assert!(format!("{error:#}").contains("robot/v1"), "got: {error:#}");
+        assert!(
+            format!("{error:#}").contains("phoxal/robot/v1"),
+            "got: {error:#}"
+        );
 
         let manifest = parse_from_string(
             COMPOSED_LEAF
@@ -265,7 +268,7 @@ robot:
         )?;
         let serialized = serde_yaml::to_string(&manifest)?;
         assert!(
-            serialized.starts_with("schema: robot/v0\n"),
+            serialized.starts_with("schema: phoxal/robot/v0\n"),
             "schema tag must round-trip as the first key: {serialized}"
         );
         Ok(())

@@ -323,7 +323,7 @@ mod tests {
     fn minimal_manifest(extra_top_level: &str) -> String {
         format!(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -342,7 +342,7 @@ robot:
     #[test]
     fn canonical_five_root_key_manifest_parses_and_round_trips() -> anyhow::Result<()> {
         let yaml = r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: rover
   namespace: dev
@@ -410,7 +410,7 @@ router:
     fn instance_parameters_parse_emergency_stop_capability() -> anyhow::Result<()> {
         let manifest = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -573,7 +573,7 @@ robot:
     fn robot_section_rejects_identity_wrapper() {
         let error = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   identity:
     id: test-bot
@@ -601,7 +601,7 @@ robot:
     fn robot_section_rejects_motion_wrapper() {
         let error = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -626,7 +626,7 @@ robot:
     fn manifest_rejects_phoxal_artifacts_key() {
         let error = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -654,7 +654,7 @@ phoxal_artifacts:
     fn manifest_rejects_phoxal_participants_key() {
         let error = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -759,7 +759,7 @@ robot:
     fn components_sources_nesting_no_longer_parses() {
         let error = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -788,7 +788,7 @@ robot:
     fn component_driver_rejects_image_field() {
         let error = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: test-bot
   namespace: dev
@@ -836,7 +836,7 @@ robot:
 
         let yaml = serde_yaml::to_string(&robot)?;
         assert!(
-            yaml.starts_with("schema: robot/v0\nclock: real\nrobot:\n"),
+            yaml.starts_with("schema: phoxal/robot/v0\nclock: real\nrobot:\n"),
             "the schema tag leads, and the resolved clock is always explicit: {yaml}"
         );
 
@@ -847,7 +847,7 @@ robot:
     fn empty_robot_id_is_validation_error() -> anyhow::Result<()> {
         let manifest = crate::source::robot::parse_from_string(
             r#"
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: ""
   namespace: dev

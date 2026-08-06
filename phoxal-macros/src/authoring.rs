@@ -897,9 +897,9 @@ mod tests {
                 "bus-abi",
                 "robot-api",
                 "participant-launch",
-                "robot/v0",
-                "component/v0",
-                "simulation/v0",
+                "phoxal/robot/v0",
+                "phoxal/component/v0",
+                "phoxal/simulation/v0",
                 "v0.1",
             ] {
                 assert!(

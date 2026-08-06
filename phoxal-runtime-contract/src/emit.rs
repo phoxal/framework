@@ -52,6 +52,11 @@ pub enum ParticipantMetadataRecord<'a> {
 /// in particular no proc-macro expansion - ever spells a version out. `id` is
 /// the participant identity literal and `config_schema` is a `&'static str`
 /// holding already-composed JSON.
+///
+/// Hidden from the docs: this is the ABI writer the role macros expand into,
+/// not a surface a participant author calls. It is `#[macro_export]` only
+/// because macro expansion in another crate needs it to be nameable.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! participant_metadata_json {
     (

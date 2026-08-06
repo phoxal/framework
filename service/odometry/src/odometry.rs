@@ -368,7 +368,11 @@ mod tests {
             bundle.path().join("robot.yaml"),
             std::fs::read_to_string(project.join("robot.yaml"))
                 .unwrap()
-                .replacen("schema: robot/v0", "schema: robot/v0\nclock: real", 1)
+                .replacen(
+                    "schema: phoxal/robot/v0",
+                    "schema: phoxal/robot/v0\nclock: real",
+                    1,
+                )
                 .replacen(
                     "structure: structure.urdf",
                     "structure: robot/structure.urdf",

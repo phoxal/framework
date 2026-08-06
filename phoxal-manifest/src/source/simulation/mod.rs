@@ -14,7 +14,7 @@ const SIMULATION_FILE: &str = "simulation.yaml";
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema")]
 pub enum Manifest {
-    #[serde(rename = "simulation/v0")]
+    #[serde(rename = "phoxal/simulation/v0")]
     V0(v0::Manifest),
 }
 
@@ -56,7 +56,7 @@ mod tests {
         let temp_dir = tempfile::tempdir()?;
         let source = read_from_string(
             r#"
-schema: simulation/v0
+schema: phoxal/simulation/v0
 capabilities:
   motor:
     kind: motor
@@ -77,7 +77,7 @@ links:
     fn simulation_parses_range_capability() -> anyhow::Result<()> {
         let manifest = read_from_string(
             r#"
-schema: simulation/v0
+schema: phoxal/simulation/v0
 capabilities:
   range:
     kind: range
@@ -100,7 +100,7 @@ capabilities:
     fn simulation_parses_emergency_stop_input() -> anyhow::Result<()> {
         let manifest = read_from_string(
             r#"
-schema: simulation/v0
+schema: phoxal/simulation/v0
 capabilities:
   emergency_stop:
     kind: emergency_stop
@@ -118,7 +118,7 @@ capabilities:
     fn simulation_rejects_invalid_capability_id() {
         let error = read_from_string(
             r#"
-schema: simulation/v0
+schema: phoxal/simulation/v0
 capabilities:
   Bad Id:
     kind: range
@@ -137,7 +137,7 @@ capabilities:
     fn simulation_rejects_invalid_numeric_capability_config() {
         let error = read_from_string(
             r#"
-schema: simulation/v0
+schema: phoxal/simulation/v0
 capabilities:
   encoder:
     kind: encoder

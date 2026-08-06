@@ -1,4 +1,4 @@
-schema: component/v0
+schema: phoxal/component/v0
 capabilities:
   range:
     kind: range

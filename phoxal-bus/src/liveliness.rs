@@ -201,6 +201,12 @@ impl Bus {
     /// window is reported twice - once through the callback and once as the
     /// initial state - and a consumer must be indifferent to that.
     ///
+    /// Reading that initial state is a query, and a query can fail. A failed
+    /// reply is surfaced as [`BusError::Transport`] rather than reported as
+    /// [`LivelinessStatus::Lost`]: "the query broke" and "the token is not
+    /// there" lead a client to opposite conclusions, so they are never the same
+    /// value. No reply at all does mean absent, and stays `Lost`.
+    ///
     /// The callback runs on Zenoh's runtime and must not perform Zenoh network
     /// operations.
     pub async fn observe_liveliness_key(
@@ -232,8 +238,19 @@ impl Bus {
             .map_err(|error| BusError::Transport(error.to_string()))?;
         let mut initial = LivelinessStatus::Lost;
         while let Ok(reply) = replies.recv_async().await {
-            if reply.result().is_ok() {
-                initial = LivelinessStatus::Alive;
+            match reply.result() {
+                Ok(_) => initial = LivelinessStatus::Alive,
+                // An error reply is a failed query, not an answer of "absent".
+                // Folding it into `Lost` would report a token as gone on the
+                // strength of the query having broken, which is exactly the
+                // reading a client uses to decide the robot is not there.
+                // Silence - the channel closing with no reply at all - genuinely
+                // does mean absent and stays `Lost`.
+                Err(error) => {
+                    return Err(BusError::Transport(format!(
+                        "the liveliness query for '{raw}' failed: {error:?}"
+                    )));
+                }
             }
         }
 

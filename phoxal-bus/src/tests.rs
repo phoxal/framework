@@ -1208,3 +1208,122 @@ async fn an_exact_key_observation_reports_an_absent_token_as_lost() {
     observing.close().await.unwrap();
     router.close().await.unwrap();
 }
+
+/// A router that is not a Phoxal router answers the probe with a session id
+/// that is not an execution. Reporting that as "no robot here" would be wrong
+/// in the one direction that matters - something *is* listening on that
+/// endpoint - so the probe errors and names the id it could not read.
+///
+/// The foreign router is spun in-process with a deliberately narrow Zenoh id:
+/// `zenoh::open` accepts short ids, while an execution is pinned to the full
+/// 32-hex width, so `abc` is a legal session id that is not a legal execution.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_probe_of_a_router_that_is_not_a_phoxal_execution_fails_naming_the_id() {
+    let (_dir, endpoint) = socket_endpoint("phoxal-probe-foreign-");
+
+    let mut config = zenoh::Config::default();
+    let endpoints =
+        serde_json::to_string(std::slice::from_ref(&endpoint)).expect("endpoints serialize");
+    for (key, value) in [
+        // Narrow on purpose: a legal `ZenohId`, never a legal `ExecutionId`.
+        ("id", "\"abc\""),
+        ("mode", "\"router\""),
+        ("listen/endpoints", endpoints.as_str()),
+        ("listen/timeout_ms", "0"),
+        ("listen/exit_on_failure", "true"),
+        ("scouting/delay", "0"),
+        ("scouting/multicast/enabled", "false"),
+    ] {
+        config.insert_json5(key, value).expect("router config key");
+    }
+    let foreign = zenoh::open(config)
+        .await
+        .expect("a plain zenoh router binds the endpoint");
+
+    let error = Bus::probe_routers(&endpoint)
+        .await
+        .expect_err("a router whose id is not an execution is not a phoxal robot");
+    let message = error.to_string();
+    assert!(
+        message.contains("abc"),
+        "the failure must name the id it could not read: {message}"
+    );
+    assert!(
+        message.contains("phoxal execution"),
+        "the failure must say what the id failed to be: {message}"
+    );
+
+    foreign.close().await.expect("close the foreign router");
+}
+
+/// The observer is the subscription: dropping it has to stop delivery, or a
+/// client that tore down its attach would keep mutating state behind a screen
+/// it no longer shows. Delivery is proven live first, so the silence afterwards
+/// is the drop taking effect and not a setup that never worked.
+#[cfg(feature = "router")]
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_an_exact_key_observer_stops_callback_delivery() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicUsize;
+
+    let (_dir, endpoint) = socket_endpoint("phoxal-identity-drop-");
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, std::slice::from_ref(&endpoint), None)
+        .await
+        .expect("the router binds its endpoint");
+
+    let session = |participant: &str| BusConfig {
+        execution,
+        participant: participant.to_string(),
+        connect_endpoints: vec![endpoint.clone()],
+    };
+    let declaring = Bus::open(session("supervisor")).await.unwrap();
+    let observing = Bus::open(session("client")).await.unwrap();
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let observer = observing
+        .observe_liveliness_key("supervisor/identity", move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        })
+        .await
+        .expect("the exact key is observable");
+    assert_eq!(observer.initial(), crate::LivelinessStatus::Lost);
+
+    // Prove the subscription is live: a first declaration must reach it.
+    let token = declaring
+        .session()
+        .liveliness()
+        .declare_token(declaring.full_key("supervisor/identity"))
+        .await
+        .expect("the supervisor declares its identity token");
+    let mut delivered = false;
+    for _ in 0..100 {
+        if calls.load(Ordering::Relaxed) > 0 {
+            delivered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(delivered, "a live observer must receive the declaration");
+    let before_drop = calls.load(Ordering::Relaxed);
+
+    drop(observer);
+    // The undeclare that follows would be delivered to a still-declared
+    // subscriber, so any increment here is the observer having outlived its
+    // handle.
+    drop(token);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        before_drop,
+        "a dropped observer must not receive further changes"
+    );
+
+    observing.close().await.unwrap();
+    declaring.close().await.unwrap();
+    router.close().await.unwrap();
+}

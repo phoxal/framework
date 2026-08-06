@@ -220,12 +220,12 @@ fn an_unresolved_extends_is_refused() {
 fn a_foreign_schema_tag_is_refused() {
     let bundle = staged_bundle();
     rewrite_manifest(&bundle, |text| {
-        text.replacen("schema: robot/v0", "schema: robot/v1", 1)
+        text.replacen("schema: phoxal/robot/v0", "schema: phoxal/robot/v1", 1)
     });
 
     let error = FinalizedBundle::load(bundle.path()).expect_err("an unknown schema must fail");
     assert!(
-        format!("{error:#}").contains("robot/v1"),
+        format!("{error:#}").contains("phoxal/robot/v1"),
         "the schema tag selects the variant: {error:#}"
     );
 }
@@ -305,7 +305,11 @@ fn a_simulated_clock_cannot_coexist_with_a_component_driver() {
 
     std::fs::write(
         temp.path().join("robot.yaml"),
-        yaml.replacen("schema: robot/v0", "schema: robot/v0\nclock: simulated", 1),
+        yaml.replacen(
+            "schema: phoxal/robot/v0",
+            "schema: phoxal/robot/v0\nclock: simulated",
+            1,
+        ),
     )
     .unwrap();
     let error = source::robot::read_from_dir(temp.path())

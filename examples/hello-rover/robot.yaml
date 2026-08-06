@@ -1,5 +1,5 @@
 # $schema: ./.phoxal/schemas/robot.schema.json
-schema: robot/v0
+schema: phoxal/robot/v0
 robot:
   id: hello-rover
   namespace: dev
