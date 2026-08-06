@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ExecutionId, ExecutionOrigin, ProducerId};
 
+/// The launch ABI a participant binary declares: this launch record plus the
+/// environment-variable encoding below.
+pub const LAUNCH_ABI: &str = "phoxal/participant-launch/v0";
+
 /// Default bounded shutdown grace, in milliseconds.
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
 

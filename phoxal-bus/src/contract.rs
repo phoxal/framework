@@ -10,18 +10,24 @@
 //! re-exports this bus crate at `phoxal::bus`, so they are also reachable as
 //! `phoxal::bus::ApiVersion` / `phoxal::bus::ContractBody`.
 
-/// Marker trait identifying one API version (D60).
+/// Marker trait identifying one generated contract tree (D60).
 ///
 /// Implemented only by the zero-variant `enum Api {}` that
-/// [`phoxal_api_tree!`] generates inside each revision module. The [`ID`] is the
-/// dotted wire revision (`"v0.1"`) and is carried in bus metadata as
-/// informational provenance, never in the wire body or the topic key (D62).
+/// [`phoxal_api_tree!`] generates inside each tree module. The [`ID`] is the
+/// dotted wire revision (`"v0.1"`) for a robot API revision, and the protocol
+/// name (`"supervisor"`) for a `protocol` tree - in both cases the tree's
+/// identity and the leading segment of every key it declares. It is carried in
+/// bus metadata as informational provenance, never in the wire body (D62).
+///
+/// The marker's job is the same in both modes: it keeps one tree's bodies from
+/// standing in for another's at compile time. `ParticipantSpec::ContractApi`
+/// pins a participant to exactly one of them.
 ///
 /// [`ID`]: ApiVersion::ID
 /// [`phoxal_api_tree!`]: https://docs.rs/phoxal
 pub trait ApiVersion: 'static {
-    /// The dotted wire-revision identifier, e.g. `"v0.1"` (the corresponding
-    /// Rust module is `v0_1`).
+    /// The tree's wire identifier: a dotted revision such as `"v0.1"` (Rust
+    /// module `v0_1`), or a protocol name such as `"supervisor"`.
     const ID: &'static str;
 }
 
@@ -164,8 +170,9 @@ pub trait DiagnosticContract: ContractBody {}
 pub trait ContractBody:
     serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static
 {
-    /// The single API version this body belongs to. Two bodies from different
-    /// versions have different `Api`, so the type system keeps them apart.
+    /// The single tree this body belongs to - one API revision, or one
+    /// protocol. Two bodies from different trees have different `Api`, so the
+    /// type system keeps them apart.
     type Api: ApiVersion;
     /// The version-qualified type identity: the dotted wire revision, then the `::`-joined node path
     /// (dynamic-node vars are topic params, never type-path segments), then
@@ -181,12 +188,14 @@ pub trait ContractBody:
     /// independently use the two split consts instead - a joined name is not
     /// machine-parseable without assuming the version naming scheme.
     const NAME: &'static str;
-    /// This body's dotted wire revision alone, e.g. `"v0.1"` - equal to
+    /// This body's tree identity alone, e.g. `"v0.1"` - equal to
     /// `<Self::Api as ApiVersion>::ID`, but exposed directly on the body so a
     /// metadata or diagnostics recorder can const-splice it without routing
     /// through `Self::Api`.
     /// Split from [`CONTRACT`](ContractBody::CONTRACT) so a consumer can read
-    /// the revision without parsing a joined name.
+    /// the revision without parsing a joined name. In a `protocol` tree this is
+    /// the protocol name: a protocol's payload version is a serde tag the
+    /// document's author owns, not something the generator mints.
     const VERSION: &'static str;
     /// This body's contract path within its own version: the `::`-joined
     /// node path (dynamic-node vars excluded, as with `NAME`) plus the
@@ -195,12 +204,13 @@ pub trait ContractBody:
     /// pairing it with [`VERSION`](ContractBody::VERSION) recovers the
     /// full version-qualified identity (`NAME`).
     const CONTRACT: &'static str;
-    /// The version-qualified wire key: the dotted wire revision, then the
-    /// `/`-joined node path plus the topic leaf, with each dynamic node
-    /// contributing a `{var}` placeholder, e.g. `"v0.1/drive/state"` or
-    /// `"v0.1/component/{instance}/motor/{capability}/command"`. The concrete
-    /// key is produced by the api-local `topic` builder, which fills the
-    /// placeholders.
+    /// The tree-qualified wire key: the tree identity, then the `/`-joined
+    /// node path plus the topic leaf, with each dynamic node contributing a
+    /// `{var}` placeholder, e.g. `"v0.1/drive/state"`,
+    /// `"v0.1/component/{instance}/motor/{capability}/command"`, or a
+    /// protocol's `"supervisor/connect/hello"`. The concrete key is produced by
+    /// the tree-local `topic` builder, which fills the placeholders, and the
+    /// bus session mounts it under its execution-scoped root.
     const TOPIC: &'static str;
     /// The topic role this body was declared with, which fixes both the side
     /// brand and the robot time a publisher of it can express.

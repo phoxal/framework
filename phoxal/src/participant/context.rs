@@ -157,36 +157,42 @@ impl<R: Participant> SetupContext<R> {
     }
 }
 
+/// Every typed-IO builder below binds its body's `ContractBody::Api` to
+/// `R::ContractApi`, the one revision the role attribute fixed for this
+/// participant. A body from any other API - a second revision, or another
+/// `phoxal_api_tree!` tree such as a process-boundary protocol - is a compile
+/// error at the builder call, not a runtime mismatch: this is what makes the
+/// `api` field of the participant's embedded metadata record truthful.
 impl<R: Participant + TypedIoSurface> SetupContext<R> {
-    pub async fn state_publisher<B: StateContract>(
+    pub async fn state_publisher<B: StateContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<StatePublisher<B>> {
         Ok(StatePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn measurement_publisher<B: MeasurementContract>(
+    pub async fn measurement_publisher<B: MeasurementContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<MeasurementPublisher<B>> {
         Ok(MeasurementPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn command_publisher<B: CommandContract>(
+    pub async fn command_publisher<B: CommandContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<CommandPublisher<B>> {
         Ok(CommandPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn diagnostic_publisher<B: DiagnosticContract>(
+    pub async fn diagnostic_publisher<B: DiagnosticContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<DiagnosticPublisher<B>> {
         Ok(DiagnosticPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn latest<B: ContractBody>(
+    pub async fn latest<B: ContractBody<Api = R::ContractApi>>(
         &mut self,
         topic: Topic<Subscribe<B>>,
     ) -> crate::Result<Latest<B>> {
@@ -198,7 +204,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn subscriber<B: ContractBody>(
+    pub async fn subscriber<B: ContractBody<Api = R::ContractApi>>(
         &mut self,
         topic: Topic<Subscribe<B>>,
         depth: usize,
@@ -211,7 +217,10 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn querier<Req: ContractBody, Resp: ContractBody>(
+    pub async fn querier<
+        Req: ContractBody<Api = R::ContractApi>,
+        Resp: ContractBody<Api = R::ContractApi>,
+    >(
         &self,
         topic: Topic<AskQuery<Req, Resp>>,
     ) -> crate::Result<Querier<Req, Resp>> {
@@ -228,8 +237,8 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         handler: H,
     ) -> crate::Result<()>
     where
-        Req: ContractBody,
-        Resp: ContractBody,
+        Req: ContractBody<Api = R::ContractApi>,
+        Resp: ContractBody<Api = R::ContractApi>,
         H: for<'a> std::ops::AsyncFn(
                 &'a R,
                 &'a R::Api,
@@ -268,7 +277,7 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
         Ok(TimelineAuthority::__mint(timeline)?)
     }
 
-    pub async fn world_clock_publisher<B: WorldClockContract>(
+    pub async fn world_clock_publisher<B: WorldClockContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<WorldClockPublisher<B>> {

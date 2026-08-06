@@ -60,6 +60,51 @@
 //! }
 //! ```
 //!
+//! # Protocol mode
+//!
+//! The second mode declares a **protocol tree**: one flat contract surface with
+//! no revision history.
+//!
+//! ```text
+//! phoxal_api_tree! {
+//!     protocol supervisor {
+//!         connect {
+//!             #[serde(tag = "schema")]
+//!             enum Hello {
+//!                 #[serde(rename = "supervisor.hello/v0")]
+//!                 V0 { token: String },
+//!             }
+//!             topic hello: command Hello;      // key supervisor/connect/hello
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Everything below the tree root is identical to API mode - nested static and
+//! dynamic `name(var) { … }` nodes, temporal roles, query typing, the two
+//! side-branded builder trees, and the same self-contained path scheme. The
+//! differences are all at the root:
+//!
+//! - **No revision axis.** There are no `version` blocks, no `latest`, and no
+//!   `extends` / `replace` / `remove`. Pre-1.0 a protocol is edited in place.
+//! - **Relative keys.** A protocol key carries no `v0.1/` segment. The leading
+//!   segment is the protocol name itself (`supervisor/connect/hello`), which is
+//!   the same slot the dotted revision fills in API mode, so a protocol
+//!   composes under the host's execution-scoped bus root exactly like a robot
+//!   API topic does (`<namespace>/robots/<robot>/<execution>/supervisor/…`).
+//! - **The developer owns the schema version.** A protocol body is an ordinary
+//!   authored `struct`/`enum`; a document that crosses a process boundary is a
+//!   serde-tagged enum whose variants are its schema versions. The macro never
+//!   infers a breaking change and never mints a version - it does not read the
+//!   body's shape at all.
+//! - **`Api::ID` is the protocol name.** A protocol still gets the zero-variant
+//!   `enum Api {}` marker every `ContractBody` binds to, so a protocol body and
+//!   an API body remain non-interchangeable in the type system. Its
+//!   `ApiVersion::ID` - and so each body's `ContractBody::VERSION` - is the
+//!   protocol name rather than a dotted revision, because the tree identity is
+//!   what that slot names; the payload's own schema version lives in the body's
+//!   serde tag, where the developer put it.
+//!
 //! Each `version` becomes a `pub mod vN` carrying a marker `enum Api {}`
 //! (`ApiVersion`), a nested `pub mod` per node holding that node's version-local
 //! bodies (plain serde types, no `{"v":…}` wrapper — D62) and their
@@ -150,6 +195,7 @@ use crate::util::body_derives;
 mod kw {
     syn::custom_keyword!(extends);
     syn::custom_keyword!(latest);
+    syn::custom_keyword!(protocol);
     syn::custom_keyword!(remove);
     syn::custom_keyword!(replace);
     syn::custom_keyword!(version);
@@ -167,9 +213,32 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     tree.expand()
 }
 
-struct ApiTree {
-    versions: Vec<Version>,
-    latest: Ident,
+/// One `phoxal_api_tree!` invocation, in exactly one of its two modes.
+///
+/// The modes are disjoint by construction: a robot API tree is a revision
+/// history with a selected `latest`, and a protocol tree is a single flat
+/// contract surface whose payload versioning the developer owns. Mixing them in
+/// one invocation is rejected at parse time.
+enum ApiTree {
+    /// Robot API mode: one or more `version` revisions plus the `latest`
+    /// selection.
+    Api {
+        versions: Vec<Version>,
+        latest: Ident,
+    },
+    /// Protocol mode: one or more `protocol <name> { … }` trees.
+    Protocols(Vec<Protocol>),
+}
+
+/// One `protocol <name> { … }` tree.
+///
+/// A protocol has no revision history and no version segment. Its `name` is
+/// both the generated module and the tree's identity, and it is the leading
+/// wire-key segment - exactly the slot the dotted revision occupies in API
+/// mode.
+struct Protocol {
+    name: Ident,
+    nodes: Vec<Node>,
 }
 
 struct Version {
@@ -323,12 +392,28 @@ struct ManifestContract {
 
 impl Parse for ApiTree {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(kw::protocol) {
+            let mut protocols = Vec::new();
+            while input.peek(kw::protocol) {
+                protocols.push(input.parse()?);
+            }
+            if !input.is_empty() {
+                return Err(input.error(
+                    "a `protocol` invocation declares only `protocol <name> { … }` trees: it has \
+                     no `version` revisions and no `latest` selection",
+                ));
+            }
+            return Ok(ApiTree::Protocols(protocols));
+        }
         let mut versions = Vec::new();
         while input.peek(kw::version) {
             versions.push(input.parse()?);
         }
         if versions.is_empty() {
-            return Err(input.error("phoxal_api_tree! requires at least one `version` block"));
+            return Err(input.error(
+                "phoxal_api_tree! requires at least one `version` block or one \
+                 `protocol <name> { … }` tree",
+            ));
         }
         input.parse::<kw::latest>()?;
         let latest = input.parse()?;
@@ -336,7 +421,39 @@ impl Parse for ApiTree {
         if !input.is_empty() {
             return Err(input.error("expected exactly one final `latest <revision>;` declaration"));
         }
-        Ok(ApiTree { versions, latest })
+        Ok(ApiTree::Api { versions, latest })
+    }
+}
+
+impl Parse for Protocol {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<kw::protocol>()?;
+        let name: Ident = input.parse()?;
+        let text = name.to_string();
+        let valid = text
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase())
+            && text
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+        if !valid {
+            return Err(syn::Error::new(
+                name.span(),
+                "a protocol name is a lowercase Rust identifier such as `supervisor`; it is both \
+                 the generated module and the leading wire-key segment",
+            ));
+        }
+        let body;
+        syn::braced!(body in input);
+        let mut nodes = Vec::new();
+        while !body.is_empty() {
+            if body.peek(kw::remove) {
+                return Err(body.error(format!("`remove` {PROTOCOL_HAS_NO_DELTAS}")));
+            }
+            nodes.push(body.parse()?);
+        }
+        Ok(Protocol { name, nodes })
     }
 }
 
@@ -580,12 +697,64 @@ impl Parse for Removal {
     }
 }
 
+/// The diagnostic tail for a `replace`/`remove` inside a revision that has no
+/// parent to delta against.
+const VERSION_HAS_NO_PARENT: &str =
+    "is only valid inside a revision that `extends` another revision";
+
+/// The diagnostic tail for a `replace`/`remove` inside a protocol tree. A
+/// protocol has no revision history at all, so there is nothing to delta - the
+/// declaration is edited in place.
+const PROTOCOL_HAS_NO_DELTAS: &str = "is not valid inside a `protocol` tree: a protocol has no revision history, so edit the \
+     declaration in place";
+
 impl ApiTree {
     fn expand(&self) -> syn::Result<TokenStream> {
+        match self {
+            ApiTree::Api { versions, latest } => Self::expand_api(versions, latest),
+            ApiTree::Protocols(protocols) => Self::expand_protocols(protocols),
+        }
+    }
+
+    fn expand_protocols(protocols: &[Protocol]) -> syn::Result<TokenStream> {
+        let mut out = TokenStream::new();
+        let mut manifest_trees = Vec::new();
+        let mut declared = std::collections::BTreeSet::<String>::new();
+        for protocol in protocols {
+            let id = protocol.name.to_string();
+            if !declared.insert(id.clone()) {
+                return Err(syn::Error::new_spanned(
+                    &protocol.name,
+                    format!("duplicate protocol tree `{id}`"),
+                ));
+            }
+            validate_complete_tree(&protocol.nodes, &[], PROTOCOL_HAS_NO_DELTAS)?;
+            manifest_trees.push(ManifestVersion {
+                name: id.clone(),
+                contracts: contract_manifest_entries(&id, &protocol.nodes)?,
+            });
+            out.extend(expand_tree(&MaterializedTree {
+                module: protocol.name.clone(),
+                doc: format!(
+                    "Protocol tree `{id}` - relative wire keys, developer-owned schema-tagged \
+                     bodies."
+                ),
+                id,
+                nodes: protocol.nodes.clone(),
+            })?);
+        }
+        let manifest = expand_contract_manifest(&manifest_trees);
+        Ok(quote! {
+            #manifest
+            #out
+        })
+    }
+
+    fn expand_api(versions: &[Version], latest: &Ident) -> syn::Result<TokenStream> {
         let mut out = TokenStream::new();
         let mut manifest_versions = Vec::new();
         let mut materialized = std::collections::BTreeMap::<String, Vec<Node>>::new();
-        for version in &self.versions {
+        for version in versions {
             let name = version.name.to_string();
             if materialized.contains_key(&name) {
                 return Err(syn::Error::new_spanned(
@@ -603,28 +772,31 @@ impl ApiTree {
                 })?;
                 apply_version_delta(base, version)?
             } else {
-                validate_complete_tree(&version.nodes, &version.removals)?;
+                validate_complete_tree(&version.nodes, &version.removals, VERSION_HAS_NO_PARENT)?;
                 version.nodes.clone()
             };
-            let concrete = MaterializedVersion {
-                name: version.name.clone(),
-                wire_id: version.wire_id.clone(),
+            let concrete = MaterializedTree {
+                module: version.name.clone(),
+                id: version.wire_id.clone(),
+                doc: format!(
+                    "Concrete API revision `{}` - version-local wire bodies + topics.",
+                    version.wire_id
+                ),
                 nodes: nodes.clone(),
             };
             manifest_versions.push(ManifestVersion {
                 name: version.wire_id.clone(),
                 contracts: contract_manifest_entries(&version.wire_id, &nodes)?,
             });
-            out.extend(expand_version(&concrete)?);
+            out.extend(expand_tree(&concrete)?);
             materialized.insert(name, nodes);
         }
-        if !materialized.contains_key(&self.latest.to_string()) {
+        if !materialized.contains_key(&latest.to_string()) {
             return Err(syn::Error::new_spanned(
-                &self.latest,
+                latest,
                 "`latest` must name a declared concrete API revision",
             ));
         }
-        let latest = &self.latest;
         let manifest = expand_contract_manifest(&manifest_versions);
         Ok(quote! {
             #manifest
@@ -635,37 +807,52 @@ impl ApiTree {
     }
 }
 
-struct MaterializedVersion {
-    name: Ident,
-    wire_id: String,
+/// One fully resolved tree ready to emit, from either mode.
+///
+/// `id` is the tree's identity AND its leading wire-key segment: the dotted
+/// revision (`"v0.1"`) for an API revision, the protocol name (`"supervisor"`)
+/// for a protocol. Everything below this point is mode-agnostic - the two modes
+/// differ only in how a tree is parsed, validated, and identified, never in how
+/// its modules, bodies, or builders are shaped.
+struct MaterializedTree {
+    module: Ident,
+    id: String,
+    doc: String,
     nodes: Vec<Node>,
 }
 
-fn validate_complete_tree(nodes: &[Node], removals: &[Removal]) -> syn::Result<()> {
+/// Reject the delta forms (`replace` / `remove`) anywhere in a tree that has
+/// nothing to delta against. `reason` is the tail of the diagnostic, naming why
+/// this particular tree has no parent revision.
+fn validate_complete_tree(
+    nodes: &[Node],
+    removals: &[Removal],
+    reason: &'static str,
+) -> syn::Result<()> {
     if let Some(removal) = removals.first() {
         return Err(syn::Error::new_spanned(
             &removal.segments[0],
-            "`remove` is only valid inside a revision that `extends` another revision",
+            format!("`remove` {reason}"),
         ));
     }
     for node in nodes {
         if node.replace {
             return Err(syn::Error::new_spanned(
                 &node.name,
-                "`replace` is only valid inside a revision that `extends` another revision",
+                format!("`replace` {reason}"),
             ));
         }
         if let Some(removal) = node.removals.first() {
             return Err(syn::Error::new_spanned(
                 &removal.segments[0],
-                "`remove` is only valid inside a revision that `extends` another revision",
+                format!("`remove` {reason}"),
             ));
         }
         for ty in &node.types {
             if ty.replace {
                 return Err(syn::Error::new_spanned(
                     ty.ident(),
-                    "`replace` is only valid inside a revision that `extends` another revision",
+                    format!("`replace` {reason}"),
                 ));
             }
         }
@@ -673,11 +860,11 @@ fn validate_complete_tree(nodes: &[Node], removals: &[Removal]) -> syn::Result<(
             if topic.replace {
                 return Err(syn::Error::new_spanned(
                     topic.leaf.method_ident(),
-                    "`replace` is only valid inside a revision that `extends` another revision",
+                    format!("`replace` {reason}"),
                 ));
             }
         }
-        validate_complete_tree(&node.children, &[])?;
+        validate_complete_tree(&node.children, &[], reason)?;
     }
     Ok(())
 }
@@ -741,7 +928,7 @@ fn merge_nodes(base: &mut Vec<Node>, deltas: &[Node]) -> syn::Result<()> {
             (Some(index), true) => {
                 let mut replacement = delta.clone();
                 replacement.replace = false;
-                validate_complete_tree(&[replacement.clone()], &[])?;
+                validate_complete_tree(&[replacement.clone()], &[], VERSION_HAS_NO_PARENT)?;
                 base[index] = replacement;
             }
             (Some(index), false) => merge_node(&mut base[index], delta)?,
@@ -752,7 +939,7 @@ fn merge_nodes(base: &mut Vec<Node>, deltas: &[Node]) -> syn::Result<()> {
                 ));
             }
             (None, false) => {
-                validate_complete_tree(std::slice::from_ref(delta), &[])?;
+                validate_complete_tree(std::slice::from_ref(delta), &[], VERSION_HAS_NO_PARENT)?;
                 base.push(delta.clone());
             }
         }
@@ -967,9 +1154,9 @@ fn expand_contract_manifest(versions: &[ManifestVersion]) -> TokenStream {
     }
 }
 
-fn contract_manifest_entries(version: &str, nodes: &[Node]) -> syn::Result<Vec<ManifestContract>> {
+fn contract_manifest_entries(tree_id: &str, nodes: &[Node]) -> syn::Result<Vec<ManifestContract>> {
     let mut contracts = Vec::new();
-    collect_contract_manifest_entries(version, nodes, "", "", &mut contracts);
+    collect_contract_manifest_entries(tree_id, nodes, "", "", &mut contracts);
     contracts.sort_by(|left, right| {
         left.family
             .cmp(&right.family)
@@ -979,7 +1166,7 @@ fn contract_manifest_entries(version: &str, nodes: &[Node]) -> syn::Result<Vec<M
 }
 
 fn collect_contract_manifest_entries(
-    version: &str,
+    tree_id: &str,
     nodes: &[Node],
     family_prefix: &str,
     key_prefix: &str,
@@ -995,23 +1182,23 @@ fn collect_contract_manifest_entries(
         let node_key_prefix = join_seg(key_prefix, "/", &key_seg);
 
         for topic in &node.topics {
-            let topic_key = format!("{version}/{}", topic_key(&node_key_prefix, &topic.leaf));
+            let topic_key = format!("{tree_id}/{}", topic_key(&node_key_prefix, &topic.leaf));
             match &topic.kind {
                 TopicKind::PubSub(body) => {
                     contracts.push(ManifestContract {
-                        family: format!("{version}::{family_path}::{body}"),
+                        family: format!("{tree_id}::{family_path}::{body}"),
                         topic: topic_key,
                         role: topic.role,
                     });
                 }
                 TopicKind::Query { request, response } => {
                     contracts.push(ManifestContract {
-                        family: format!("{version}::{family_path}::{request}"),
+                        family: format!("{tree_id}::{family_path}::{request}"),
                         topic: topic_key.clone(),
                         role: topic.role,
                     });
                     contracts.push(ManifestContract {
-                        family: format!("{version}::{family_path}::{response}"),
+                        family: format!("{tree_id}::{family_path}::{response}"),
                         topic: topic_key,
                         role: topic.role,
                     });
@@ -1020,7 +1207,7 @@ fn collect_contract_manifest_entries(
         }
 
         collect_contract_manifest_entries(
-            version,
+            tree_id,
             &node.children,
             &family_path,
             &node_key_prefix,
@@ -1029,17 +1216,17 @@ fn collect_contract_manifest_entries(
     }
 }
 
-fn expand_version(version: &MaterializedVersion) -> syn::Result<TokenStream> {
-    let mod_name = &version.name;
-    let id = version.wire_id.clone();
-    let nodes = &version.nodes;
+fn expand_tree(tree: &MaterializedTree) -> syn::Result<TokenStream> {
+    let mod_name = &tree.module;
+    let id = tree.id.clone();
+    let nodes = &tree.nodes;
 
     // Node modules (types + ContractBody impls), recursive. The family prefix
     // (`::`-joined node names) and the key prefix (`/`-joined `name` or
-    // `name/{var}` segments) are threaded down the walk. `id` (the version name)
-    // is threaded down too so every emitted `TOPIC` is version-qualified (D1):
-    // the version is folded into the wire key, so different versioned
-    // contracts can never collide.
+    // `name/{var}` segments) are threaded down the walk. `id` (the tree's own
+    // identity) is threaded down too so every emitted `TOPIC` is qualified by
+    // it (D1): the revision - or, in protocol mode, the protocol name - is
+    // folded into the wire key, so two trees can never collide.
     let mut node_mods = TokenStream::new();
     for node in nodes {
         node_mods.extend(expand_node_module(node, &id, "", "")?);
@@ -1047,12 +1234,13 @@ fn expand_version(version: &MaterializedVersion) -> syn::Result<TokenStream> {
 
     let topic_mod = expand_topic_module(&id, nodes)?;
 
-    let module_doc = format!("Concrete API revision `{id}` - version-local wire bodies + topics.");
+    let module_doc = &tree.doc;
 
     Ok(quote! {
         #[doc = #module_doc]
         pub mod #mod_name {
-            /// Zero-variant marker identifying this API version (D60).
+            /// Zero-variant marker identifying this tree (D60): the API
+            /// revision in `version` mode, the protocol in `protocol` mode.
             #[derive(Clone, Copy, Debug)]
             pub enum Api {}
             impl ::phoxal_bus::ApiVersion for Api {
@@ -1076,18 +1264,19 @@ fn expand_version(version: &MaterializedVersion) -> syn::Result<TokenStream> {
     })
 }
 
-/// Emit a `pub mod <name>` for a node under the version. The module carries the
+/// Emit a `pub mod <name>` for a node under the tree. The module carries the
 /// node's types, the `ContractBody` impls for its topics, and — recursively —
 /// its child node modules. Variables never appear in the module path (D61).
 ///
-/// `version` is the version name (e.g. `"v1"`), threaded down so every
-/// emitted `TOPIC` is version-qualified (D1). `family_prefix` is the
+/// `tree_id` is the tree's identity (the dotted revision `"v0.1"`, or a
+/// protocol name), threaded down so every emitted `TOPIC` carries it (D1).
+/// `family_prefix` is the
 /// `::`-joined ancestor node names (empty at the root); `key_prefix` is the
 /// `/`-joined ancestor key segments (`name` or `name/{var}`, empty at the root).
 /// The node appends its own contribution to each.
 fn expand_node_module(
     node: &Node,
-    version: &str,
+    tree_id: &str,
     family_prefix: &str,
     key_prefix: &str,
 ) -> syn::Result<TokenStream> {
@@ -1119,22 +1308,22 @@ fn expand_node_module(
 
     let mut impls = TokenStream::new();
     for topic in &node.topics {
-        // The version-qualified wire key (D1): folding the version in here is
-        // what makes different versioned names physically distinct Zenoh keys.
-        let key = format!("{version}/{}", topic_key(&node_key_prefix, &topic.leaf));
+        // The tree-qualified wire key (D1): folding the tree's identity in here
+        // is what makes two trees' contracts physically distinct Zenoh keys.
+        let key = format!("{tree_id}/{}", topic_key(&node_key_prefix, &topic.leaf));
         let role = topic.role.bus_variant();
-        // The version-qualified type-path name (D1): the version, then the
+        // The tree-qualified type-path name (D1): the tree identity, then the
         // `::`-joined node path (vars excluded - they are topic params, not
         // type-path segments), then the body's own PascalCase leaf. This is the
         // exact same identity `contract_manifest_entries`' `family` computes for
         // the generated manifest, kept in lockstep by construction (both derive
-        // it from `family_path`/`version`). `VERSION`/`CONTRACT` are the split
+        // it from `family_path`/`tree_id`). `VERSION`/`CONTRACT` are the split
         // form of the same identity: `VERSION`
-        // is just `version` (already a plain literal at this point, not spliced
-        // per-body), `CONTRACT` is `family_path::body` with the version
+        // is just `tree_id` (already a plain literal at this point, not spliced
+        // per-body), `CONTRACT` is `family_path::body` with the tree identity
         // dropped - `NAME == VERSION + "::" + CONTRACT` by construction.
-        let version = version.to_string();
-        let name_for = |body: &Ident| format!("{version}::{family_path}::{body}");
+        let tree_id = tree_id.to_string();
+        let name_for = |body: &Ident| format!("{tree_id}::{family_path}::{body}");
         let contract_for = |body: &Ident| format!("{family_path}::{body}");
         match &topic.kind {
             TopicKind::PubSub(body) => {
@@ -1153,7 +1342,7 @@ fn expand_node_module(
                     impl ::phoxal_bus::ContractBody for #body {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #name;
-                        const VERSION: &'static str = #version;
+                        const VERSION: &'static str = #tree_id;
                         const CONTRACT: &'static str = #contract;
                         const TOPIC: &'static str = #key;
                         const ROLE: ::phoxal_bus::TopicRole = #role;
@@ -1170,7 +1359,7 @@ fn expand_node_module(
                     impl ::phoxal_bus::ContractBody for #request {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #request_name;
-                        const VERSION: &'static str = #version;
+                        const VERSION: &'static str = #tree_id;
                         const CONTRACT: &'static str = #request_contract;
                         const TOPIC: &'static str = #key;
                         const ROLE: ::phoxal_bus::TopicRole = #role;
@@ -1178,7 +1367,7 @@ fn expand_node_module(
                     impl ::phoxal_bus::ContractBody for #response {
                         type Api = self::__PhoxalApiMarker;
                         const NAME: &'static str = #response_name;
-                        const VERSION: &'static str = #version;
+                        const VERSION: &'static str = #tree_id;
                         const CONTRACT: &'static str = #response_contract;
                         const TOPIC: &'static str = #key;
                         const ROLE: ::phoxal_bus::TopicRole = #role;
@@ -1193,7 +1382,7 @@ fn expand_node_module(
     for child in &node.children {
         child_mods.extend(expand_node_module(
             child,
-            version,
+            tree_id,
             &family_path,
             &node_key_prefix,
         )?);
@@ -1203,8 +1392,8 @@ fn expand_node_module(
         pub mod #name {
             //! Version-local bodies for the `#name_str` node.
 
-            // Forward the version root's `Api` marker down exactly one hop from
-            // this node's own parent (the version module for a top-level node, or
+            // Forward the tree root's `Api` marker down exactly one hop from
+            // this node's own parent (the tree module for a top-level node, or
             // the parent node module for a nested one). Every node module - at any
             // depth - carries this same single-hop re-export, so `Api` is always
             // reachable as `self::__PhoxalApiMarker` without computing how deep
@@ -1280,19 +1469,19 @@ fn type_root_alias_ident(node_name: &Ident) -> Ident {
 /// it forward; a leaf method formats the final key from the carried vars.
 ///
 /// Self-contained absolute paths (D1): a builder leaf needs to name a body type
-/// that lives in the PARALLEL type-tree hanging off the same version module
+/// that lives in the PARALLEL type-tree hanging off the same tree module
 /// (`topic::component::motor::Builder` needs `component::motor::Command`). Rather
-/// than counting `super::` hops back to the version root and down again per leaf,
+/// than counting `super::` hops back to the tree root and down again per leaf,
 /// `topic` seeds one hidden alias per top-level node
 /// (`#[doc(hidden)] pub use super::component as __phoxal_type_root_component;`,
-/// a single, always-valid hop since `topic` is a direct child of the version
+/// a single, always-valid hop since `topic` is a direct child of the tree
 /// module) and `owner` re-forwards each of them one hop further. Every builder
 /// module under either side then imports its own top-level node's alias - a
 /// single hop from its immediate parent - under the uniform local name
 /// `__phoxal_type_root`, and deeper builder modules just forward THAT one hop at
 /// a time. A leaf reference is then always `self::__phoxal_type_root::…::Body`:
 /// no supers count, no dependency on how deep the node was authored.
-fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream> {
+fn expand_topic_module(tree_id: &str, nodes: &[Node]) -> syn::Result<TokenStream> {
     let mut client_root_methods = TokenStream::new();
     let mut client_builder_mods = TokenStream::new();
     let mut owner_root_methods = TokenStream::new();
@@ -1304,9 +1493,9 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
         let alias = type_root_alias_ident(name);
 
         client_root_methods.extend(node_entry_method(node));
-        client_builder_mods.extend(expand_builder_module(node, version, &[], Side::Client)?);
+        client_builder_mods.extend(expand_builder_module(node, tree_id, &[], Side::Client)?);
         owner_root_methods.extend(node_entry_method(node));
-        owner_builder_mods.extend(expand_builder_module(node, version, &[], Side::Owner)?);
+        owner_builder_mods.extend(expand_builder_module(node, tree_id, &[], Side::Owner)?);
 
         type_root_seeds.extend(quote! {
             #[doc(hidden)]
@@ -1322,9 +1511,9 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
         /// Api-local topic builders (D61), side-branded for L1 (plan #00). The
         /// PUBLIC `topic::client()...` chain is the CLIENT side; the OWNER side is
         /// the equally explicit [`topic::owner()`](owner). Every leaf binds the
-        /// topic's node-path/kind to a version-local body and the side it grants.
+        /// topic's node-path/kind to a tree-local body and the side it grants.
         pub mod topic {
-            /// Begin a CLIENT topic path for this API version.
+            /// Begin a CLIENT topic path for this tree.
             pub fn client() -> Root {
                 Root
             }
@@ -1339,12 +1528,12 @@ fn expand_topic_module(version: &str, nodes: &[Node]) -> syn::Result<TokenStream
 
             // Per-top-level-node type-tree aliases (self-contained absolute
             // paths, D1): seeded here because `topic` is always exactly one hop
-            // from the version module that holds the type tree.
+            // from the tree module that holds the type tree.
             #type_root_seeds
 
             #client_builder_mods
 
-            /// Begin an OWNER topic path for this API version.
+            /// Begin an OWNER topic path for this tree.
             pub fn owner() -> owner::Root {
                 owner::Root
             }
@@ -1411,7 +1600,7 @@ fn node_entry_method(node: &Node) -> TokenStream {
 /// `side` (the same structure/keys on both sides; only the leaf brand differs).
 fn expand_builder_module(
     node: &Node,
-    version: &str,
+    tree_id: &str,
     ancestors: &[NodeSeg],
     side: Side,
 ) -> syn::Result<TokenStream> {
@@ -1488,7 +1677,7 @@ fn expand_builder_module(
     for topic in &node.topics {
         let leaf = topic.leaf.method_ident();
         let kind_ty = builder_leaf_kind(topic, &path, side);
-        let (fmt_str, doc_key) = builder_leaf_key_parts(version, &path, &topic.leaf);
+        let (fmt_str, doc_key) = builder_leaf_key_parts(tree_id, &path, &topic.leaf);
         let constructor = if field_idents.is_empty() {
             quote! { ::phoxal_bus::Topic::new_static(#fmt_str) }
         } else {
@@ -1509,7 +1698,7 @@ fn expand_builder_module(
     let mut child_mods = TokenStream::new();
     for child in &node.children {
         child_methods.extend(node_entry_method(child));
-        child_mods.extend(expand_builder_module(child, version, &path, side)?);
+        child_mods.extend(expand_builder_module(child, tree_id, &path, side)?);
     }
 
     // Self-contained absolute path to this top-level node's type-tree (D1): at the
@@ -1601,15 +1790,15 @@ fn builder_leaf_kind(topic: &TopicDef, path: &[NodeSeg], side: Side) -> TokenStr
     }
 }
 
-/// Build a leaf's key in two forms: the `format!` template (the version as a
-/// literal leading segment, then literal node-name segments, `{}` for each
+/// Build a leaf's key in two forms: the `format!` template (the tree identity
+/// as a literal leading segment, then literal node-name segments, `{}` for each
 /// dynamic var, optionally then `/leaf`) and the human-readable
 /// `{var}`-placeholder doc key. Both are derived from the node path so the
 /// concrete key and the documented key stay in lockstep with
 /// `ContractBody::TOPIC` (D1).
-fn builder_leaf_key_parts(version: &str, path: &[NodeSeg], leaf: &TopicLeaf) -> (String, String) {
-    let mut fmt_segs = vec![version.to_string()];
-    let mut doc_segs = vec![version.to_string()];
+fn builder_leaf_key_parts(tree_id: &str, path: &[NodeSeg], leaf: &TopicLeaf) -> (String, String) {
+    let mut fmt_segs = vec![tree_id.to_string()];
+    let mut doc_segs = vec![tree_id.to_string()];
     for seg in path {
         let name = seg.name.to_string();
         match &seg.var {
@@ -1745,6 +1934,123 @@ mod tests {
             expanded.contains("Topic :: new_static (\"v0.1/drive/target\")"),
             "the api-local topic builder must build the same version-qualified key as \
              ContractBody::TOPIC: {expanded}"
+        );
+    }
+
+    #[test]
+    fn protocol_keys_are_relative_to_the_protocol_name() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                protocol supervisor {
+                    connect {
+                        struct Hello { token: String }
+                        topic hello: command Hello;
+                    }
+                }
+            })
+            .expect("protocol tree expands"),
+        );
+        assert!(
+            expanded.contains("const TOPIC : & 'static str = \"supervisor/connect/hello\""),
+            "a protocol key carries no version segment, only the protocol name: {expanded}"
+        );
+        assert!(
+            expanded.contains("Topic :: new_static (\"supervisor/connect/hello\")"),
+            "the builder must produce the same relative key as TOPIC: {expanded}"
+        );
+        assert!(
+            expanded.contains("const ID : & 'static str = \"supervisor\""),
+            "the protocol marker's ID is the protocol name: {expanded}"
+        );
+        assert!(
+            expanded.contains("const NAME : & 'static str = \"supervisor::connect::Hello\""),
+            "the protocol-qualified type identity mirrors API mode: {expanded}"
+        );
+        assert!(
+            !expanded.contains("as latest"),
+            "a protocol tree has no `latest` selection: {expanded}"
+        );
+    }
+
+    #[test]
+    fn protocol_mode_rejects_the_version_delta_forms() {
+        for source in [
+            "protocol supervisor { connect { replace struct Hello { token: String } } }",
+            "protocol supervisor { connect { struct Hello { token: String } remove Hello; } }",
+            "protocol supervisor { remove connect; }",
+        ] {
+            let tokens: TokenStream = source.parse().expect("test source tokenizes");
+            let error = expand(tokens).expect_err("a delta form must be rejected");
+            assert!(
+                error.to_string().contains("no revision history"),
+                "unexpected error for {source}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_and_version_modes_do_not_mix_in_one_invocation() {
+        let error = expand(quote! {
+            protocol supervisor { connect { struct Hello { token: String } } }
+            version v0_1 { drive { struct Target { value: u8 } topic target: command Target; } }
+            latest v0_1;
+        })
+        .expect_err("mixing the two modes must be rejected");
+        assert!(
+            error.to_string().contains("no `version` revisions"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn duplicate_protocol_names_in_one_invocation_are_rejected() {
+        let error = expand(quote! {
+            protocol supervisor { connect { struct Hello { token: String } } }
+            protocol supervisor { connect { struct Hello { token: String } } }
+        })
+        .expect_err("a duplicate protocol name must be rejected");
+        assert!(
+            error.to_string().contains("duplicate protocol tree"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_protocol_name_must_be_a_lowercase_identifier() {
+        let error = expand(quote! {
+            protocol Supervisor { connect { struct Hello { token: String } } }
+        })
+        .expect_err("an uppercase protocol name must be rejected");
+        assert!(
+            error.to_string().contains("lowercase Rust identifier"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// API mode is untouched by protocol mode: its keys stay
+    /// version-qualified. The rest of the API-mode suite in this module is the
+    /// full regression; this one names the property explicitly.
+    #[test]
+    fn api_mode_keys_stay_version_qualified_alongside_protocol_mode() {
+        let expanded = compact_tokens(
+            expand(quote! {
+                version v0_1 {
+                    supervisor {
+                        struct Hello { token: String }
+                        topic hello: command Hello;
+                    }
+                }
+                latest v0_1;
+            })
+            .expect("tree expands"),
+        );
+        assert!(
+            expanded.contains("const TOPIC : & 'static str = \"v0.1/supervisor/hello\""),
+            "an API-mode key keeps its version segment: {expanded}"
+        );
+        assert!(
+            expanded.contains("const VERSION : & 'static str = \"v0.1\""),
+            "an API-mode body keeps its dotted revision: {expanded}"
         );
     }
 

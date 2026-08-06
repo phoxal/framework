@@ -5,6 +5,16 @@
 //! encoding string records the codec. A receiver therefore sees only samples
 //! for its subscribed contract key and validates their encoding.
 
+/// The bus ABI a participant binary declares in its embedded compatibility
+/// record: the key grammar, the sample metadata, and the encoding string
+/// together.
+///
+/// Distinct from the `phoxal/v0` prefix inside [`encoding_string`]: that token
+/// is per-sample wire overhead and stays short, while this one is a document
+/// identifier that has to be unambiguous alongside the launch and manifest
+/// schemas it sits next to.
+pub const BUS_ABI: &str = "phoxal/bus/v0";
+
 /// The wire codec identifier carried in bus metadata. One codec in v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
