@@ -102,7 +102,7 @@ mod tests {
         );
         assert_eq!(
             <MarkerBrain as crate::__private::ParticipantSpec>::KIND,
-            "brain"
+            crate::participant::metadata::ParticipantKind::Brain
         );
     }
 }

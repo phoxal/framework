@@ -1,80 +1,27 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-/// Exact linker-section metadata schema written by participant macros.
-pub const PARTICIPANT_METADATA_SCHEMA: &str = "phoxal/participant-metadata/v0";
+use crate::version::{BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema};
 
-/// An API revision identifier as it crosses a process boundary, for example
-/// `v0.1`. Opaque: the only operation either side performs on it is equality
-/// against its own authoritative constant.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct ApiId(String);
-
-/// A document-schema identifier as it crosses a process boundary, for example
-/// `phoxal/bus/v0` or `robot/v0`. Opaque in exactly the same sense as
-/// [`ApiId`]; the two are separate types so a schema can never be compared
-/// against an API revision.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(transparent)]
-pub struct SchemaId(String);
-
-macro_rules! opaque_id {
-    ($ty:ident) => {
-        impl $ty {
-            #[must_use]
-            pub fn new(value: impl Into<String>) -> Self {
-                Self(value.into())
-            }
-
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl std::fmt::Display for $ty {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-
-        impl PartialEq<str> for $ty {
-            fn eq(&self, other: &str) -> bool {
-                self.0 == other
-            }
-        }
-
-        impl PartialEq<&str> for $ty {
-            fn eq(&self, other: &&str) -> bool {
-                self.0 == *other
-            }
-        }
-    };
-}
-
-opaque_id!(ApiId);
-opaque_id!(SchemaId);
-
-/// Every document schema one participant binary speaks. This is the whole
+/// Every version identity one participant binary speaks. This is the whole
 /// compatibility surface between a `phoxal-cli` and a built participant: there
 /// is no package-metadata table, no version file, and no framework-SemVer
 /// floor anywhere in the process contract.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParticipantSchemas {
     /// The bus wire ABI.
-    pub bus: SchemaId,
+    pub bus: BusAbi,
     /// The launch record / environment ABI.
-    pub launch: SchemaId,
+    pub launch: LaunchAbi,
     /// The authored robot document grammar.
-    pub robot: SchemaId,
+    pub robot: RobotSchema,
     /// The authored component document grammar.
-    pub component: SchemaId,
+    pub component: ComponentSchema,
     /// The authored simulation document grammar.
-    pub simulation: SchemaId,
+    pub simulation: SimulationSchema,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantKind {
     Service,
@@ -87,19 +34,33 @@ pub enum ParticipantKind {
     Brain,
 }
 
+impl ParticipantKind {
+    /// The wire token for this kind, identical to the `snake_case` rename
+    /// serde derives. Const so the role macro can splice it into the embedded
+    /// document during const-eval; pinned to the rename by a test below.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ParticipantKind::Service => "service",
+            ParticipantKind::Driver => "driver",
+            ParticipantKind::Simulator => "simulator",
+            ParticipantKind::Brain => "brain",
+        }
+    }
+}
+
 /// The record every participant binary embeds in its `.phoxal_meta` /
 /// `__DATA,__phoxal_meta` section at compile time.
 ///
-/// Deserialize-only on purpose. The sole writer is the role macro, which
-/// composes the JSON document as a const string in the participant crate;
-/// giving this type a `Serialize` impl would invite a second persisted copy of
-/// a document that must have exactly one producer.
+/// Deserialize-only on purpose: the sole writer is
+/// [`emit::ParticipantMetadataRecord`], so a reader can never accidentally
+/// re-persist a document it merely parsed.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "schema", deny_unknown_fields)]
 pub enum ParticipantMetadata {
     #[serde(rename = "phoxal/participant-metadata/v0")]
     V0 {
-        api: ApiId,
+        api: RobotApi,
         schemas: ParticipantSchemas,
         id: String,
         kind: ParticipantKind,
@@ -108,13 +69,15 @@ pub enum ParticipantMetadata {
 }
 
 /// Strictly parse an embedded metadata record. The schema tag selects the
-/// variant at parse time; there is no post-hoc string check.
+/// variant at parse time, and every version identity inside it selects a
+/// variant of its own enum; there is no post-hoc string check anywhere.
 pub fn parse_participant_metadata(bytes: &[u8]) -> Result<ParticipantMetadata, MetadataError> {
     serde_json::from_slice(bytes).map_err(MetadataError)
 }
 
 /// An embedded metadata section that is not a document this framework train
-/// understands: malformed JSON, an unknown schema tag, or an unknown field.
+/// understands: malformed JSON, an unknown schema tag, an unknown version
+/// identity, or an unknown field.
 #[derive(Debug, thiserror::Error)]
 #[error("participant metadata is not a readable phoxal document: {0}")]
 pub struct MetadataError(#[from] serde_json::Error);
@@ -123,15 +86,17 @@ pub struct MetadataError(#[from] serde_json::Error);
 mod tests {
     use super::*;
 
-    const SCHEMAS: &str = r#"{"bus":"phoxal/bus/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0","simulation":"simulation/v0"}"#;
+    const SCHEMAS: &str = r#"{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0","simulation":"simulation/v0"}"#;
 
     fn record(fields: &str) -> Vec<u8> {
-        format!(r#"{{"schema":"{PARTICIPANT_METADATA_SCHEMA}","api":"v0.1","schemas":{SCHEMAS},{fields}}}"#)
-            .into_bytes()
+        format!(
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{SCHEMAS},{fields}}}"#
+        )
+        .into_bytes()
     }
 
     #[test]
-    fn a_v0_record_parses_into_the_tagged_variant_with_every_boundary_identifier() {
+    fn a_v0_record_parses_into_the_tagged_variant_with_every_boundary_identity() {
         let ParticipantMetadata::V0 {
             api,
             schemas,
@@ -143,12 +108,12 @@ mod tests {
         ))
         .expect("the exact document a role macro embeds must parse");
 
-        assert_eq!(api, "v0.1");
-        assert_eq!(schemas.bus, "phoxal/bus/v0");
-        assert_eq!(schemas.launch, "phoxal/participant-launch/v0");
-        assert_eq!(schemas.robot, "robot/v0");
-        assert_eq!(schemas.component, "component/v0");
-        assert_eq!(schemas.simulation, "simulation/v0");
+        assert_eq!(api, RobotApi::V0_1);
+        assert_eq!(schemas.bus, BusAbi::V0);
+        assert_eq!(schemas.launch, LaunchAbi::V0);
+        assert_eq!(schemas.robot, RobotSchema::V0);
+        assert_eq!(schemas.component, ComponentSchema::V0);
+        assert_eq!(schemas.simulation, SimulationSchema::V0);
         assert_eq!(id, "drive");
         assert_eq!(kind, ParticipantKind::Service);
         assert_eq!(config_schema, serde_json::json!({"type": "null"}));
@@ -166,9 +131,35 @@ mod tests {
     }
 
     #[test]
+    fn the_kind_wire_token_is_the_serde_rename() {
+        for kind in [
+            ParticipantKind::Service,
+            ParticipantKind::Driver,
+            ParticipantKind::Simulator,
+            ParticipantKind::Brain,
+        ] {
+            let json = serde_json::to_string(&kind).expect("a unit variant serializes");
+            assert_eq!(json, format!("\"{}\"", kind.as_str()));
+        }
+    }
+
+    #[test]
     fn an_unknown_schema_tag_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","api":"v0.1","id":"drive","kind":"service","config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","api":"phoxal/robot-api/v0.1","id":"drive","kind":"service","config_schema":null}"#;
         assert!(parse_participant_metadata(bytes).is_err());
+    }
+
+    #[test]
+    fn a_version_identity_from_another_train_is_rejected_by_name() {
+        let bytes = format!(
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},"id":"drive","kind":"service","config_schema":null}}"#
+        )
+        .into_bytes();
+        let message = parse_participant_metadata(&bytes)
+            .expect_err("an API revision this train does not speak must not parse")
+            .to_string();
+        assert!(message.contains("phoxal/robot-api/v0.2"), "{message}");
+        assert!(message.contains("phoxal/robot-api/v0.1"), "{message}");
     }
 
     #[test]
@@ -198,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_record_missing_a_participant_schema_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","api":"v0.1","schemas":{"bus":"phoxal/bus/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0"},"id":"drive","kind":"service","config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","robot":"robot/v0","component":"component/v0"},"id":"drive","kind":"service","config_schema":null}"#;
         assert!(parse_participant_metadata(bytes).is_err());
     }
 }

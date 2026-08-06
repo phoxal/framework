@@ -4,16 +4,11 @@
 //! (`<Body as ContractBody>::TOPIC`, e.g. `v0.1/drive/target`), while the
 //! encoding string records the codec. A receiver therefore sees only samples
 //! for its subscribed contract key and validates their encoding.
-
-/// The bus ABI a participant binary declares in its embedded compatibility
-/// record: the key grammar, the sample metadata, and the encoding string
-/// together.
-///
-/// Distinct from the `phoxal/v0` prefix inside [`encoding_string`]: that token
-/// is per-sample wire overhead and stays short, while this one is a document
-/// identifier that has to be unambiguous alongside the launch and manifest
-/// schemas it sits next to.
-pub const BUS_ABI: &str = "phoxal/bus/v0";
+//!
+//! The identity of this ABI as a whole is
+//! [`phoxal_runtime_contract::BusAbi`], declared in every participant's
+//! embedded metadata record. The `phoxal/v0` prefix below is unrelated: it is
+//! per-sample wire overhead and stays short.
 
 /// The wire codec identifier carried in bus metadata. One codec in v1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

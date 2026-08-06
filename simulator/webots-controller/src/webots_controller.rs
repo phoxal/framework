@@ -1303,7 +1303,7 @@ mod tests {
         );
         assert_eq!(
             <WebotsControllerSimulator as ParticipantSpec>::KIND,
-            "simulator"
+            phoxal::__private::metadata::ParticipantKind::Simulator
         );
         assert!(
             <WebotsControllerSimulator as Participant>::__step_schedule().is_none(),

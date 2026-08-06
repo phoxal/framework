@@ -309,28 +309,33 @@ pub mod prelude {
 pub mod __private {
     /// The one compatibility declaration a participant binary carries.
     ///
-    /// Every constant here is re-exported from the crate that owns the
-    /// contract it names, so a train can only ever say one thing about each.
-    /// The role macros splice these into the participant's embedded
-    /// `.phoxal_meta` document at compile time; that embedded document is the
-    /// only compatibility artifact - there is no Cargo package-metadata table,
-    /// no version file, and no framework-SemVer floor.
+    /// Every constant here is a value of the version enum that owns the
+    /// contract it names, so a train can only ever say one thing about each and
+    /// no version is ever spelled as a string. The role macros splice these
+    /// into the participant's embedded `.phoxal_meta` document at compile time
+    /// through `participant_metadata_json!`; that embedded document is the only
+    /// compatibility artifact - there is no Cargo package-metadata table, no
+    /// version file, and no framework-SemVer floor. The document's own version
+    /// is the tag on `ParticipantMetadata` itself, so it needs no entry here.
     pub mod compatibility {
+        use phoxal_runtime_contract::{
+            BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema,
+        };
+
         /// The train-selected API revision (`phoxal::api`).
-        pub const API: &str = <phoxal_api::latest::Api as phoxal_bus::ApiVersion>::ID;
+        pub const API: RobotApi = RobotApi::V0_1;
         /// The bus wire ABI.
-        pub const BUS: &str = phoxal_bus::BUS_ABI;
+        pub const BUS: BusAbi = BusAbi::V0;
         /// The launch record / environment ABI.
-        pub const LAUNCH: &str = phoxal_runtime_contract::LAUNCH_ABI;
+        pub const LAUNCH: LaunchAbi = LaunchAbi::V0;
         /// The authored robot document grammar.
-        pub const ROBOT: &str = phoxal_runtime_contract::ROBOT_DOCUMENT_SCHEMA;
+        pub const ROBOT: RobotSchema = RobotSchema::V0;
         /// The authored component document grammar.
-        pub const COMPONENT: &str = phoxal_runtime_contract::COMPONENT_DOCUMENT_SCHEMA;
+        pub const COMPONENT: ComponentSchema = ComponentSchema::V0;
         /// The authored simulation document grammar.
-        pub const SIMULATION: &str = phoxal_runtime_contract::SIMULATION_DOCUMENT_SCHEMA;
-        /// The schema tag of the embedded document itself, so the role macro
-        /// never spells the tag out a second time.
-        pub const METADATA: &str = phoxal_runtime_contract::PARTICIPANT_METADATA_SCHEMA;
+        pub const SIMULATION: SimulationSchema = SimulationSchema::V0;
+
+        pub use phoxal_runtime_contract::participant_metadata_json;
     }
 
     pub use crate::participant::api::__meta;

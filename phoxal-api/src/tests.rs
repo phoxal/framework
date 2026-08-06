@@ -18,6 +18,22 @@ fn v0_1_is_the_single_train_selected_revision() {
     assert_eq!(<crate::latest::Api as ApiVersion>::ID, "v0.1");
 }
 
+/// The cross-binary API identity and the bus key segment are the same
+/// revision wearing two spellings: the metadata record needs a namespaced
+/// identity that is unambiguous next to four other version identities, while
+/// the key segment is addressing inside an already-Phoxal keyspace and stays
+/// bare. This is the only place the two are tied together.
+#[test]
+fn the_declared_api_identity_namespaces_the_train_selected_revision() {
+    assert_eq!(
+        phoxal_runtime_contract::RobotApi::V0_1.as_str(),
+        format!(
+            "phoxal/robot-api/{}",
+            <crate::latest::Api as ApiVersion>::ID
+        )
+    );
+}
+
 #[test]
 fn contract_body_topic_is_version_qualified() {
     // D1: the API version is folded into the wire key, so two participants using
