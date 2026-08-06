@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.55.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.54.0...phoxal-macros-v0.55.0) - 2026-08-06
+
+### Added
+
+- [**breaking**] version identities as serde enums, namespaced grammars, and bus attachment APIs ([#395](https://github.com/phoxal/framework/pull/395))
+
 ## [0.54.0](https://github.com/phoxal/framework/compare/phoxal-macros-v0.53.0...phoxal-macros-v0.54.0) - 2026-08-06
 
 ### Added

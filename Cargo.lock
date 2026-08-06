@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2208,7 +2208,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-api"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "phoxal-bus",
  "phoxal-macros",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-bus"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "libc",
  "phoxal-runtime-contract",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-bno085"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-ddsm115"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2258,7 +2258,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-oak_d_lite"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-vl53l1x"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2276,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-component-zed_f9p"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-macros"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -2298,7 +2298,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-manifest"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "jsonschema",
@@ -2315,7 +2315,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-model"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2325,7 +2325,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-runtime-contract"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "const_format",
  "getrandom 0.3.4",
@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-drive"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2349,7 +2349,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-frame"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "nalgebra",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-joint"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2368,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-localize"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2377,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-map"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2386,7 +2386,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-motion"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-navigation"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-odometry"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-perception"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-power"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2437,7 +2437,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-safety"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2445,7 +2445,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-service-video"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -2455,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "phoxal-simulator-webots-controller"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "phoxal",
@@ -4485,7 +4485,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "workspace-policy"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
