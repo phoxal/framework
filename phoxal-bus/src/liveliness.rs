@@ -28,16 +28,12 @@ impl ParticipantLivelinessKey {
     }
 
     /// Build and validate a producer-qualified participant key below an
-    /// existing robot root.
-    pub fn new(
-        robot_root: &str,
-        participant: impl Into<String>,
-        producer: ProducerId,
-    ) -> Result<Self> {
-        validate_robot_root(robot_root)?;
+    /// existing execution root.
+    pub fn new(root: &str, participant: impl Into<String>, producer: ProducerId) -> Result<Self> {
+        validate_root(root)?;
         let participant = participant.into();
         validate_participant(&participant)?;
-        let raw = format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{producer}");
+        let raw = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{producer}");
         let key = OwnedKeyExpr::new(raw.clone()).map_err(|error| {
             BusError::Namespace(format!("invalid Liveliness key '{raw}': {error}"))
         })?;
@@ -48,7 +44,7 @@ impl ParticipantLivelinessKey {
         })
     }
 
-    /// The complete robot-rooted Zenoh key.
+    /// The complete execution-rooted Zenoh key.
     pub fn as_str(&self) -> &str {
         self.key.as_str()
     }
@@ -63,9 +59,9 @@ impl ParticipantLivelinessKey {
         self.producer
     }
 
-    /// Parse a concrete participant key emitted below `robot_root`.
-    pub fn parse(robot_root: &str, key: &str) -> Option<Self> {
-        let suffix = key.strip_prefix(robot_root)?.strip_prefix('/')?;
+    /// Parse a concrete participant key emitted below `root`.
+    pub fn parse(root: &str, key: &str) -> Option<Self> {
+        let suffix = key.strip_prefix(root)?.strip_prefix('/')?;
         let suffix = suffix
             .strip_prefix(PARTICIPANT_LIVELINESS_PREFIX)?
             .strip_prefix('/')?;
@@ -73,13 +69,13 @@ impl ParticipantLivelinessKey {
         if producer.contains('/') {
             return None;
         }
-        Self::new(robot_root, participant, ProducerId::parse(producer).ok()?).ok()
+        Self::new(root, participant, ProducerId::parse(producer).ok()?).ok()
     }
 
-    /// Wildcard selector used by a robot-scoped observer.
-    pub fn selector(robot_root: &str) -> Result<OwnedKeyExpr> {
-        validate_robot_root(robot_root)?;
-        let selector = format!("{robot_root}/{PARTICIPANT_LIVELINESS_PREFIX}/*/*");
+    /// Wildcard selector used by an execution-scoped observer.
+    pub fn selector(root: &str) -> Result<OwnedKeyExpr> {
+        validate_root(root)?;
+        let selector = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/*/*");
         OwnedKeyExpr::new(selector.clone()).map_err(|error| {
             BusError::Namespace(format!("invalid Liveliness selector '{selector}': {error}"))
         })
@@ -168,11 +164,11 @@ impl Bus {
 }
 
 fn participant_event(
-    robot_root: &str,
+    root: &str,
     key: &str,
     kind: SampleKind,
 ) -> Option<ParticipantLivelinessEvent> {
-    let key = ParticipantLivelinessKey::parse(robot_root, key)?;
+    let key = ParticipantLivelinessKey::parse(root, key)?;
     let status = match kind {
         SampleKind::Put => ParticipantLivelinessStatus::Alive,
         SampleKind::Delete => ParticipantLivelinessStatus::Lost,
@@ -194,14 +190,14 @@ fn validate_participant(participant: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_robot_root(root: &str) -> Result<()> {
+fn validate_root(root: &str) -> Result<()> {
     if root.is_empty()
         || root
             .split('/')
             .any(|segment| segment.is_empty() || segment.contains('*'))
     {
         return Err(BusError::Namespace(format!(
-            "robot root must be a concrete non-empty key path, got '{root}'"
+            "an execution root must be a concrete non-empty key path, got '{root}'"
         )));
     }
     Ok(())
@@ -211,11 +207,17 @@ fn validate_robot_root(root: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    const ROOT: &str = "dev/robots/rover/xffffffffffffffffffffffffffffffff";
+    const ROOT: &str = "phoxal/ffffffffffffffffffffffffffffffff";
+
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
 
     #[test]
     fn key_builder_owns_validation_and_round_trips_identity() {
-        let producer = ProducerId::mint();
+        let producer = producer(1);
         let key = ParticipantLivelinessKey::new(ROOT, "drive", producer).unwrap();
         assert_eq!(
             key.as_str(),
@@ -228,7 +230,7 @@ mod tests {
         assert_eq!(key.participant(), "drive");
         assert_eq!(key.producer(), producer);
         assert!(ParticipantLivelinessKey::new(ROOT, "bad/id", producer).is_err());
-        assert!(ParticipantLivelinessKey::new("dev/*", "drive", producer).is_err());
+        assert!(ParticipantLivelinessKey::new("phoxal/*", "drive", producer).is_err());
         assert!(
             ParticipantLivelinessKey::parse(
                 ROOT,
@@ -240,7 +242,7 @@ mod tests {
 
     #[test]
     fn participant_event_maps_sample_kinds() {
-        let producer = ProducerId::mint();
+        let producer = producer(2);
         let key = format!("{ROOT}/liveliness/participants/drive/{producer}");
         let alive = participant_event(ROOT, &key, SampleKind::Put).unwrap();
         let lost = participant_event(ROOT, &key, SampleKind::Delete).unwrap();
@@ -256,7 +258,7 @@ mod tests {
     fn observer_selector_covers_exactly_the_emitted_identity_segments() {
         let root = ROOT;
         let selector = ParticipantLivelinessKey::selector(root).unwrap();
-        let key = ParticipantLivelinessKey::new(root, "drive", ProducerId::mint()).unwrap();
+        let key = ParticipantLivelinessKey::new(root, "drive", producer(3)).unwrap();
         assert_eq!(
             selector.as_str(),
             format!("{ROOT}/liveliness/participants/*/*")

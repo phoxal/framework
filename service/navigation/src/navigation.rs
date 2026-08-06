@@ -647,7 +647,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn lifecycle_runs_replays_and_cancels_over_the_real_bus() {
-        let bus = Bus::open(BusConfig::in_process("test/navigation-lifecycle", "robot"))
+        let bus = Bus::open(BusConfig::in_process("navigation-lifecycle"))
             .await
             .expect("open shared bus");
         let request = CommandPublisher::<api::navigation::Request>::new(

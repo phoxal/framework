@@ -221,11 +221,8 @@ where
         );
     }
     let bus = Bus::open(BusConfig {
-        namespace: launch.namespace.clone(),
-        robot_id: launch.robot_id.clone(),
         execution: launch.execution,
         participant: launch.participant_id.clone(),
-        producer: launch.producer,
         connect_endpoints: launch.bus.connect_endpoints.clone(),
     })
     .await?;

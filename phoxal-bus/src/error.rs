@@ -5,9 +5,16 @@ use crate::codec::CodecError;
 /// A bus-layer error.
 #[derive(Debug, thiserror::Error)]
 pub enum BusError {
-    /// The namespace / robot id / key root was not a legal, concrete key.
-    #[error("invalid bus namespace: {0}")]
+    /// The participant id or the composed key root was not a legal, concrete
+    /// key.
+    #[error("invalid bus key: {0}")]
     Namespace(String),
+
+    /// This session's producer ran out of sequence numbers. The allocator fails
+    /// closed rather than wrapping to zero, which every receiver would read as
+    /// a replay from the same producer.
+    #[error("this session's sample sequence is exhausted")]
+    SequenceExhausted,
 
     /// A codec failure encoding or decoding a body.
     #[error(transparent)]

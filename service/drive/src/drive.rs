@@ -372,6 +372,12 @@ mod tests {
     };
     use std::path::PathBuf;
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
     fn fixture() -> phoxal::model::Robot {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
@@ -461,7 +467,7 @@ mod tests {
             angular_z_radps: 0.0,
             curvature_limit_radpm: None,
         };
-        let producer = ProducerId::mint();
+        let producer = producer(1);
         let line = TimelineId::mint();
         let host_start = LocalInstant::from_boot_ns(0);
         let robot_start = RobotInstant::new(line, 0);
@@ -495,8 +501,8 @@ mod tests {
             angular_z_radps: 0.0,
             curvature_limit_radpm: None,
         };
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = producer(2);
+        let second = producer(3);
         let host_now = LocalInstant::from_boot_ns(0);
         let now = RobotInstant::new(TimelineId::mint(), 0);
 

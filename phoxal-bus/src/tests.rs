@@ -1,7 +1,6 @@
 //! Pure-bus-mechanic tests: the wire-envelope slots (encoding string, metadata,
-//! codec id), the
-//! `<namespace>/robots/<robot-id>/x<execution-id>/<version-qualified-key>`
-//! root + namespace validation (D38/D43b), the codec fast-reject in
+//! codec id), the `phoxal/<execution-id>/<version-qualified-key>` root and its
+//! participant-label validation (D38/D43b), the codec fast-reject in
 //! `decode_sample`, and a live in-process publisher → `Latest` round-trip.
 //!
 //! These exercise the bus client against hand-written [`ContractBody`]s (no
@@ -108,10 +107,16 @@ fn step(line: u64, ticks: u64) -> StepToken {
     StepToken::__mint(RobotInstant::new(timeline(line), ticks))
 }
 
+/// A distinct test producer. Nothing mints a producer in production - a
+/// session's identity is the session - so tests name theirs explicitly.
+fn producer(value: u128) -> ProducerId {
+    ProducerId::try_from(value).expect("a test producer is nonzero")
+}
+
 fn metadata() -> BusMetadata {
     BusMetadata {
         codec: CodecId::MessagePack.as_u8(),
-        producer: ProducerId::mint(),
+        producer: producer(1),
         sequence: 7,
         produced_at: Some(TimeWindow::exact(RobotInstant::new(timeline(1), 42))),
         participant: "tester".to_string(),
@@ -130,8 +135,7 @@ fn sample_with(codec: u8, payload: Vec<u8>) -> zenoh::sample::Sample {
 fn sample_with_encoding(codec: u8, encoding: String, payload: Vec<u8>) -> zenoh::sample::Sample {
     let mut meta = metadata();
     meta.codec = codec;
-    let key: KeyExpr<'static> =
-        KeyExpr::try_from("dev/robots/r1/xdead/yTEST/drive/target").unwrap();
+    let key: KeyExpr<'static> = KeyExpr::try_from("phoxal/dead/yTEST/drive/target").unwrap();
     SampleBuilder::put(key, payload)
         .encoding(encoding)
         .attachment(meta.encode())
@@ -259,35 +263,70 @@ fn query_failure_details_round_trip() {
 }
 
 #[tokio::test]
-async fn namespace_must_be_concrete_non_wildcard() {
-    let err = Bus::open(BusConfig::in_process("dev/*", "r1"))
-        .await
-        .unwrap_err();
+async fn a_participant_label_must_be_one_concrete_key_segment() {
+    let mut config = BusConfig::in_process("r1");
+    config.participant = String::new();
+    let err = Bus::open(config).await.unwrap_err();
     assert!(matches!(err, BusError::Namespace(_)));
 
-    let err = Bus::open(BusConfig::in_process("", "r1"))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, BusError::Namespace(_)));
-
-    let mut config = BusConfig::in_process("dev", "r1");
+    let mut config = BusConfig::in_process("r1");
     config.participant = "x".repeat(513);
     let err = Bus::open(config).await.unwrap_err();
     assert!(matches!(err, BusError::Namespace(_)));
 }
 
+/// The root is the execution and nothing else: no namespace, no robot id, and
+/// no prefix character in front of the identity - a canonical session id always
+/// starts with a legal chunk character.
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn key_root_scopes_the_robot_by_execution() {
-    let config = BusConfig::in_process("dev", "r1");
+async fn the_key_root_is_the_execution() {
+    let config = BusConfig::in_process("r1");
     let execution = config.execution;
     let bus = Bus::open(config).await.unwrap();
-    let expected_root = format!("dev/robots/r1/{}", execution.as_key_segment());
+    let expected_root = format!("phoxal/{execution}");
     assert_eq!(bus.root(), expected_root);
+    assert!(!bus.root().contains("r1"), "the robot id is not routing");
     assert_eq!(
         bus.full_key("yTEST/drive/state"),
         format!("{expected_root}/yTEST/drive/state")
     );
+    bus.close().await.unwrap();
+}
+
+/// A session publishes under the identity Zenoh gave it, so provenance can be
+/// matched against the transport without a side channel.
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_producer_is_the_publishing_session() {
+    let bus = Bus::open(BusConfig::in_process("producer")).await.unwrap();
+    assert_eq!(bus.producer().to_string(), bus.session().zid().to_string());
+
+    let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
+    let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
+    let latest = Latest::<Target>::new(&bus, &sub_topic).await.unwrap();
+
+    let mut observed = None;
+    for tick in 0..100 {
+        publisher
+            .publish(
+                &step(1, 100 + tick),
+                Target {
+                    linear_x_mps: 1.0,
+                    angular_z_radps: 0.0,
+                },
+            )
+            .unwrap();
+        if let Some(sample) = latest.observed() {
+            observed = Some(sample);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let observed = observed.expect("the sample must arrive");
+    assert_eq!(observed.metadata.producer, bus.producer());
+
     bus.close().await.unwrap();
 }
 
@@ -297,12 +336,8 @@ async fn key_root_scopes_the_robot_by_execution() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_previous_execution_cannot_be_observed_as_current() {
-    let previous = Bus::open(BusConfig::in_process("dev", "scoped"))
-        .await
-        .unwrap();
-    let current = Bus::open(BusConfig::in_process("dev", "scoped"))
-        .await
-        .unwrap();
+    let previous = Bus::open(BusConfig::in_process("scoped")).await.unwrap();
+    let current = Bus::open(BusConfig::in_process("scoped")).await.unwrap();
     assert_ne!(previous.root(), current.root());
 
     let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
@@ -332,7 +367,7 @@ async fn a_previous_execution_cannot_be_observed_as_current() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_publisher_to_latest_round_trip() {
-    let bus = Bus::open(BusConfig::in_process("dev", "rt")).await.unwrap();
+    let bus = Bus::open(BusConfig::in_process("rt")).await.unwrap();
     let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
     let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
 
@@ -378,7 +413,7 @@ async fn live_publisher_to_latest_round_trip() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn timeline_barrier_preserves_new_timeline_samples_and_rejects_late_old_samples() {
-    let bus = Bus::open(BusConfig::in_process("dev", "timeline-barrier"))
+    let bus = Bus::open(BusConfig::in_process("timeline-barrier"))
         .await
         .unwrap();
     let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
@@ -504,9 +539,7 @@ async fn timeline_barrier_preserves_new_timeline_samples_and_rejects_late_old_sa
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_rows() {
-    let bus = Bus::open(BusConfig::in_process("dev", "metrics"))
-        .await
-        .unwrap();
+    let bus = Bus::open(BusConfig::in_process("metrics")).await.unwrap();
     let pub_topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
     let sub_topic = Topic::<Subscribe<Target>>::new_static(<Target as ContractBody>::TOPIC);
     let publisher = StatePublisher::<Target>::new(bus.clone(), &pub_topic).unwrap();
@@ -597,9 +630,7 @@ async fn runtime_metrics_cover_quiet_latest_overwrite_eviction_and_decode_error_
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn publishing_on_a_closed_bus_reports_the_loss() {
-    let bus = Bus::open(BusConfig::in_process("dev", "closed"))
-        .await
-        .unwrap();
+    let bus = Bus::open(BusConfig::in_process("closed")).await.unwrap();
     let topic = Topic::<Publish<Target>>::new_static(<Target as ContractBody>::TOPIC);
     let publisher = StatePublisher::<Target>::new(bus.clone(), &topic).unwrap();
     bus.close().await.unwrap();
@@ -621,9 +652,7 @@ async fn publishing_on_a_closed_bus_reports_the_loss() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_carries_no_production_instant_and_survives_a_reset() {
-    let bus = Bus::open(BusConfig::in_process("dev", "commands"))
-        .await
-        .unwrap();
+    let bus = Bus::open(BusConfig::in_process("commands")).await.unwrap();
     let pub_topic = Topic::<Publish<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
     let sub_topic = Topic::<Subscribe<Manual>>::new_static(<Manual as ContractBody>::TOPIC);
     let commands = CommandPublisher::<Manual>::new(bus.clone(), &pub_topic).unwrap();
@@ -650,9 +679,7 @@ async fn a_command_carries_no_production_instant_and_survives_a_reset() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_query_timeout_maps_to_deadline_exceeded() {
-    let bus = Bus::open(BusConfig::in_process("dev", "timeout"))
-        .await
-        .unwrap();
+    let bus = Bus::open(BusConfig::in_process("timeout")).await.unwrap();
     let server = bus.declare_server("yTEST/asset/get").await.unwrap();
 
     let server_task = tokio::spawn(async move {
@@ -684,7 +711,7 @@ async fn live_query_timeout_maps_to_deadline_exceeded() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn incoming_query_rejects_encoding_attachment_codec_mismatch() {
-    let bus = Bus::open(BusConfig::in_process("dev", "q-mismatch"))
+    let bus = Bus::open(BusConfig::in_process("q-mismatch"))
         .await
         .unwrap();
     let server = bus.declare_server("yTEST/asset/get").await.unwrap();
@@ -722,7 +749,7 @@ async fn incoming_query_rejects_encoding_attachment_codec_mismatch() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_query_round_trip_ok_then_error() {
-    let bus = Bus::open(BusConfig::in_process("dev", "q")).await.unwrap();
+    let bus = Bus::open(BusConfig::in_process("q")).await.unwrap();
     let server = bus.declare_server("yTEST/asset/get").await.unwrap();
     let server_bus = bus.clone();
 
@@ -820,19 +847,17 @@ async fn two_client_sessions_exchange_a_sample_through_an_embedded_router() {
         .expect("short-path temp dir for the unix socket");
     let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
 
-    let router = crate::Router::open(std::slice::from_ref(&endpoint), None)
+    // One execution for the router and both clients, so the sessions compose
+    // the same key root and the sample is observable rather than scoped away
+    // (#952 section B).
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, std::slice::from_ref(&endpoint), None)
         .await
         .expect("the embedded router binds its endpoint");
 
-    // One execution, so both sessions compose the same key root and the sample
-    // is observable rather than scoped away (#952 section B).
-    let execution = crate::ExecutionId::mint();
     let client = |participant: &str| BusConfig {
-        namespace: "dev".to_string(),
-        robot_id: "embedded".to_string(),
         execution,
         participant: participant.to_string(),
-        producer: ProducerId::mint(),
         connect_endpoints: vec![endpoint.clone()],
     };
 
@@ -898,7 +923,8 @@ async fn two_client_sessions_exchange_a_sample_through_an_embedded_router() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_ephemeral_port_is_reported_back_and_is_actually_connectable() {
-    let router = crate::Router::open(&["tcp/127.0.0.1:0".to_string()], None)
+    let execution = crate::ExecutionId::mint();
+    let router = crate::Router::open(execution, &["tcp/127.0.0.1:0".to_string()], None)
         .await
         .expect("router binds an OS-assigned port");
 
@@ -919,11 +945,8 @@ async fn an_ephemeral_port_is_reported_back_and_is_actually_connectable() {
 
     // Reported is not the same as reachable - dial the port we were told.
     let bus = Bus::open(BusConfig {
-        namespace: "dev".to_string(),
-        robot_id: "ephemeral".to_string(),
-        execution: crate::ExecutionId::mint(),
+        execution,
         participant: "client".to_string(),
-        producer: ProducerId::mint(),
         connect_endpoints: vec![tcp.clone()],
     })
     .await
@@ -949,9 +972,13 @@ async fn a_watch_fires_when_the_router_goes_away_and_not_before() {
         .tempdir_in("/tmp")
         .expect("short-path temp dir for the unix socket");
     let endpoint = format!("unixsock-stream/{}", dir.path().join("r.sock").display());
-    let router = crate::Router::open(std::slice::from_ref(&endpoint), None)
-        .await
-        .expect("router binds");
+    let router = crate::Router::open(
+        crate::ExecutionId::mint(),
+        std::slice::from_ref(&endpoint),
+        None,
+    )
+    .await
+    .expect("router binds");
 
     let losses = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&losses);

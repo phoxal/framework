@@ -411,13 +411,19 @@ mod tests {
         RobotInstant::new(line, ticks)
     }
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
     fn ms(value: u64) -> u64 {
         value * 1_000_000
     }
 
     #[test]
     fn a_sequence_that_does_not_increase_is_rejected_without_touching_the_lease() {
-        let producer = ProducerId::mint();
+        let producer = producer(1);
         let start = LocalInstant::from_boot_ns(1_000);
         let mut lease = Lease::new("test/input", SILENCE, HOLD);
 
@@ -446,8 +452,8 @@ mod tests {
 
     #[test]
     fn a_fresh_producer_starting_at_zero_supersedes_and_fences_the_previous_one() {
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = producer(2);
+        let second = producer(3);
         let start = LocalInstant::from_boot_ns(1_000);
         let mut lease = Lease::new("test/input", SILENCE, HOLD);
 
@@ -482,8 +488,8 @@ mod tests {
     /// a process that already lost authority.
     #[test]
     fn clearing_a_lease_does_not_unfence_a_superseded_producer() {
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = producer(4);
+        let second = producer(5);
         let start = LocalInstant::from_boot_ns(0);
         let mut lease = Lease::new("test/input", SILENCE, HOLD);
 
@@ -503,8 +509,8 @@ mod tests {
 
     #[test]
     fn a_superseded_producer_cannot_renew_an_actuator_permit() {
-        let first = ProducerId::mint();
-        let second = ProducerId::mint();
+        let first = producer(6);
+        let second = producer(7);
         let mut fence = ProducerFence::new();
         fence.admit(first, 1);
         fence.admit(second, 0);
@@ -530,11 +536,11 @@ mod tests {
     /// has to survive an arbitrary number of restarts.
     #[test]
     fn a_superseded_producer_stays_fenced_after_many_replacements() {
-        let first = ProducerId::mint();
+        let first = producer(8);
         let mut fence = ProducerFence::new();
         fence.admit(first, 1);
-        for _ in 0..64 {
-            fence.admit(ProducerId::mint(), 0);
+        for replacement in 100..164 {
+            fence.admit(producer(replacement), 0);
         }
         assert!(matches!(
             fence.admit(first, 2),
@@ -545,7 +551,7 @@ mod tests {
 
     #[test]
     fn host_silence_expires_the_lease_independently_of_logical_time() {
-        let producer = ProducerId::mint();
+        let producer = producer(9);
         let line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
         let mut lease = Lease::new("test/input", SILENCE, HOLD);
@@ -565,7 +571,7 @@ mod tests {
 
     #[test]
     fn the_logical_horizon_expires_the_lease_independently_of_host_time() {
-        let producer = ProducerId::mint();
+        let producer = producer(10);
         let line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
         let mut lease = Lease::new("test/input", SILENCE, HOLD);
@@ -582,7 +588,7 @@ mod tests {
 
     #[test]
     fn a_lease_that_expired_while_paused_does_not_apply_on_the_first_resumed_step() {
-        let producer = ProducerId::mint();
+        let producer = producer(11);
         let line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);
         let mut lease = Lease::new("test/input", SILENCE, HOLD);
@@ -598,7 +604,7 @@ mod tests {
 
     #[test]
     fn a_replacement_timeline_drops_a_held_command_rather_than_comparing_across_worlds() {
-        let producer = ProducerId::mint();
+        let producer = producer(12);
         let first_line = TimelineId::mint();
         let second_line = TimelineId::mint();
         let start = LocalInstant::from_boot_ns(0);

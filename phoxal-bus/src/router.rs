@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use crate::error::{BusError, Result};
+use crate::identity::{ExecutionId, zenoh_id_for};
 use crate::session::apply_phoxal_transport_policy;
 
 /// A running Zenoh router session.
@@ -30,24 +31,33 @@ pub struct Router {
 }
 
 impl Router {
-    /// Open a router listening on `listen_endpoints`.
+    /// Open a router for `execution`, listening on `listen_endpoints`.
+    ///
+    /// The router's session id *is* the execution, so the fabric a trace names
+    /// and the key root that trace carries are the same string. An authored
+    /// `id` cannot win: the run it would name is not the run it is routing.
     ///
     /// `config_file` is an optional native Zenoh JSON5 file supplying authored
-    /// defaults. Phoxal's transport policy and the mode/listen settings are
-    /// applied *after* it, so an authored file can tune what Phoxal does not
-    /// pin but cannot silently put the router at odds with its clients.
+    /// defaults. Phoxal's transport policy, the session id, and the mode/listen
+    /// settings are applied *after* it, so an authored file can tune what
+    /// Phoxal does not pin but cannot silently put the router at odds with its
+    /// clients.
     ///
     /// Returning `Ok` means the router is listening: Zenoh has bound every
     /// endpoint. There is no readiness probe to run afterwards and no window in
     /// which the endpoint exists but does not accept. [`router_config`] pins
     /// the settings that guarantee this, so an authored file cannot weaken it.
-    pub async fn open(listen_endpoints: &[String], config_file: Option<&Path>) -> Result<Self> {
+    pub async fn open(
+        execution: ExecutionId,
+        listen_endpoints: &[String],
+        config_file: Option<&Path>,
+    ) -> Result<Self> {
         if listen_endpoints.is_empty() {
             return Err(BusError::Transport(
                 "a router needs at least one listen endpoint".to_string(),
             ));
         }
-        let session = zenoh::open(router_config(listen_endpoints, config_file)?)
+        let session = zenoh::open(router_config(execution, listen_endpoints, config_file)?)
             .await
             .map_err(|error| BusError::Transport(error.to_string()))?;
         Ok(Router { session })
@@ -150,7 +160,11 @@ impl RouterWatch {
     }
 }
 
-fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Result<zenoh::Config> {
+fn router_config(
+    execution: ExecutionId,
+    listen_endpoints: &[String],
+    config_file: Option<&Path>,
+) -> Result<zenoh::Config> {
     let mut config = match config_file {
         Some(path) => zenoh::Config::from_file(path).map_err(|error| {
             BusError::Transport(format!(
@@ -163,6 +177,11 @@ fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Res
     apply_phoxal_transport_policy(&mut config)?;
     let endpoints = serde_json::to_string(listen_endpoints)
         .map_err(|error| BusError::Transport(error.to_string()))?;
+    // Rendered through the session-id conversion rather than from the
+    // execution's own text, so this is the value Zenoh will report back, not a
+    // string that merely looks like it.
+    let id = serde_json::to_string(&zenoh_id_for(execution)?.to_string())
+        .map_err(|error| BusError::Transport(error.to_string()))?;
     // Everything below is applied after the authored file precisely so a file
     // cannot weaken it. The three `listen/*` keys are what make `open`'s
     // success mean "bound", which is the guarantee that lets the supervisor
@@ -172,6 +191,7 @@ fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Res
     // flat sleep at the end of router startup, paid even though Phoxal keeps
     // multicast scouting off, so it is pure startup latency here.
     for (key, value) in [
+        ("id", id.as_str()),
         ("mode", "\"router\""),
         ("listen/endpoints", endpoints.as_str()),
         ("listen/timeout_ms", "0"),
@@ -189,10 +209,15 @@ fn router_config(listen_endpoints: &[String], config_file: Option<&Path>) -> Res
 mod tests {
     use super::*;
 
+    const ENDPOINT: &str = "tcp/127.0.0.1:7447";
+
+    fn endpoints() -> Vec<String> {
+        vec![ENDPOINT.to_string()]
+    }
+
     #[test]
     fn router_config_pins_mode_and_listen_endpoints() {
-        let config =
-            router_config(&["tcp/127.0.0.1:7447".to_string()], None).expect("router config");
+        let config = router_config(ExecutionId::mint(), &endpoints(), None).expect("router config");
         assert_eq!(config.get_json("mode").expect("mode is set"), "\"router\"");
         assert_eq!(
             config
@@ -202,12 +227,39 @@ mod tests {
         );
     }
 
+    /// The router's session id is the execution it routes, and an authored file
+    /// cannot rename the run.
+    #[test]
+    fn the_router_session_id_is_the_execution_and_an_authored_id_cannot_override_it() {
+        let execution = ExecutionId::mint();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("zenoh.json5");
+        std::fs::write(&path, r#"{ id: "abcdef" }"#).expect("write authored router config");
+
+        for authored in [None, Some(path.as_path())] {
+            let config = router_config(execution, &endpoints(), authored).expect("router config");
+            assert_eq!(
+                config.get_json("id").expect("the session id is pinned"),
+                format!("\"{execution}\""),
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_running_router_reports_the_execution_as_its_own_session_id() {
+        let execution = ExecutionId::mint();
+        let router = Router::open(execution, &["tcp/127.0.0.1:0".to_string()], None)
+            .await
+            .expect("the router binds an OS-assigned port");
+        assert_eq!(router.session.zid().to_string(), execution.to_string());
+        router.close().await.expect("the router closes");
+    }
+
     #[test]
     fn router_config_carries_the_same_transport_policy_as_a_client() {
         // The whole reason this lives in phoxal-bus: both ends of a link must
         // agree, so assert it rather than trusting the call order.
-        let config =
-            router_config(&["tcp/127.0.0.1:7447".to_string()], None).expect("router config");
+        let config = router_config(ExecutionId::mint(), &endpoints(), None).expect("router config");
         assert_eq!(
             config
                 .get_json("transport/link/tx/lease")
@@ -240,7 +292,7 @@ mod tests {
         )
         .expect("write authored router config");
 
-        let config = router_config(&["tcp/127.0.0.1:7447".to_string()], Some(&path))
+        let config = router_config(ExecutionId::mint(), &endpoints(), Some(&path))
             .expect("authored router config");
         assert_eq!(config.get_json("mode").expect("mode is set"), "\"router\"");
         assert_eq!(
@@ -268,7 +320,7 @@ mod tests {
         )
         .expect("write authored router config");
 
-        let config = router_config(&["tcp/127.0.0.1:7447".to_string()], Some(&path))
+        let config = router_config(ExecutionId::mint(), &endpoints(), Some(&path))
             .expect("authored router config");
         assert_eq!(
             config
@@ -289,7 +341,8 @@ mod tests {
     #[test]
     fn a_missing_config_file_names_the_path_it_could_not_read() {
         let error = router_config(
-            &["tcp/127.0.0.1:7447".to_string()],
+            ExecutionId::mint(),
+            &endpoints(),
             Some(Path::new("/nonexistent/zenoh.json5")),
         )
         .expect_err("a missing config file must fail");
@@ -301,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn opening_without_a_listen_endpoint_is_rejected() {
-        let error = Router::open(&[], None)
+        let error = Router::open(ExecutionId::mint(), &[], None)
             .await
             .expect_err("a router with nowhere to listen must fail");
         assert!(error.to_string().contains("listen endpoint"));

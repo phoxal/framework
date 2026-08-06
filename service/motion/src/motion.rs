@@ -342,6 +342,12 @@ mod tests {
 
     use super::*;
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
     fn line() -> TimelineId {
         TimelineId::from_raw(1).expect("test timeline must be nonzero")
     }
@@ -372,7 +378,7 @@ mod tests {
             linear_x_mps: 0.4,
             angular_z_radps: 0.0,
         };
-        let producer = ProducerId::mint();
+        let producer = producer(1);
         let host_start = LocalInstant::from_boot_ns(0);
 
         let mut silent = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
@@ -398,7 +404,7 @@ mod tests {
     /// the first resumed arbitration step.
     #[test]
     fn a_lease_expired_while_paused_does_not_apply_on_the_first_resumed_step() {
-        let producer = ProducerId::mint();
+        let producer = producer(2);
         let host_start = LocalInstant::from_boot_ns(0);
         let mut lease = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         lease.offer(

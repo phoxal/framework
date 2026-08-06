@@ -312,7 +312,7 @@ impl<B: ContractBody> Outbox<B> {
     /// [`BusError::Closed`].
     fn emit(&self, produced_at: Option<TimeWindow>, body: B) -> Result<()> {
         let payload = MessagePack::encode(&body)?;
-        let metadata = self.bus.metadata(produced_at);
+        let metadata = self.bus.metadata(produced_at)?;
         let encoding = encoding_string(MessagePack::ID);
         self.bus.enqueue(
             self.key.clone(),
@@ -517,7 +517,10 @@ where
     pub async fn query(&self, request: Req) -> std::result::Result<Resp, QueryError> {
         let payload =
             MessagePack::encode(&request).map_err(|e| QueryError::Protocol(e.to_string()))?;
-        let metadata = self.bus.metadata(None);
+        let metadata = self
+            .bus
+            .metadata(None)
+            .map_err(|e| QueryError::Protocol(e.to_string()))?;
         let key = OwnedKeyExpr::new(self.key.clone())
             .map_err(|e| QueryError::Protocol(format!("invalid query key '{}': {e}", self.key)))?;
 
@@ -1299,12 +1302,18 @@ mod subscriber_ring_tests {
         TimelineId::from_raw(value).expect("test timeline must be nonzero")
     }
 
+    /// A distinct test producer. Nothing mints a producer in production - a
+    /// session's identity is the session - so tests name theirs explicitly.
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from(value).expect("a test producer is nonzero")
+    }
+
     fn observed(body: u8, line: Option<u64>) -> Observed<u8> {
         Observed {
             body,
             metadata: BusMetadata {
                 codec: CodecId::MessagePack.as_u8(),
-                producer: ProducerId::mint(),
+                producer: producer(1),
                 sequence: u64::from(body),
                 produced_at: line
                     .map(|line| TimeWindow::exact(RobotInstant::new(timeline(line), 0))),
