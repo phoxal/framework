@@ -74,6 +74,12 @@ pub enum BundleError {
     ForbiddenSymlink { path: PathBuf },
     #[error("bundle contains unsupported entry {}", path.display())]
     UnsupportedEntry { path: PathBuf },
+    #[error(
+        "bundle file {} changed after it was indexed: the index is the fence, so a path that no \
+         longer matches what was fenced is refused rather than served",
+        path.display()
+    )]
+    ChangedAfterIndex { path: PathBuf },
     #[error("bundle path {} is not valid UTF-8", path.display())]
     NotUtf8 { path: PathBuf },
 }
@@ -322,6 +328,13 @@ impl BundleResolver {
     }
 
     /// Read one indexed file.
+    ///
+    /// Indexing established the fence - a regular file, of a known size, below
+    /// the canonical root - but the read happens later, so the fence is
+    /// re-checked here against the stored path before any bytes are read. An
+    /// entry that has since become a symlink or a directory, or that no longer
+    /// has the size it was indexed at, is refused as a hard failure: it is not
+    /// something an operator can legitimately ask for, so it is not an outcome.
     pub fn get(&self, request: &str) -> Result<BundleFile, BundleError> {
         let path = match BundlePath::new(request) {
             Ok(path) => path,
@@ -334,6 +347,16 @@ impl BundleResolver {
             return Ok(BundleFile::TooLarge {
                 size_bytes: file.size_bytes,
                 limit_bytes: self.max_response_bytes,
+            });
+        }
+        let metadata =
+            std::fs::symlink_metadata(&file.path).map_err(|source| BundleError::Read {
+                path: file.path.clone(),
+                source,
+            })?;
+        if !metadata.file_type().is_file() || metadata.len() != file.size_bytes {
+            return Err(BundleError::ChangedAfterIndex {
+                path: file.path.clone(),
             });
         }
         let bytes = std::fs::read(&file.path).map_err(|source| BundleError::Read {
@@ -484,6 +507,38 @@ mod tests {
                 limit_bytes: 2
             }
         ));
+    }
+
+    #[test]
+    fn a_file_that_changed_after_indexing_is_refused_rather_than_served() {
+        let root = bundle_with(&[("bin/brain", b"ELF")]);
+        let resolver = BundleResolver::index(root.path(), 1024).expect("index succeeds");
+        let indexed = root.path().join("bin/brain");
+
+        // Growing past the indexed size defeats the size bound the index
+        // established, so the read must not happen at all.
+        std::fs::write(&indexed, b"ELF and a great deal more").unwrap();
+        let error = resolver
+            .get("bin/brain")
+            .expect_err("a changed file must fail");
+        assert!(
+            matches!(error, BundleError::ChangedAfterIndex { .. }),
+            "{error}"
+        );
+
+        // Swapping the entry for a symlink defeats the symlink fence the same
+        // way, even when the target happens to be the same size.
+        std::fs::remove_file(&indexed).unwrap();
+        let outside = root.path().join("outside.txt");
+        std::fs::write(&outside, b"ELF").unwrap();
+        std::os::unix::fs::symlink(&outside, &indexed).unwrap();
+        let error = resolver
+            .get("bin/brain")
+            .expect_err("a swapped-in symlink must fail");
+        assert!(
+            matches!(error, BundleError::ChangedAfterIndex { .. }),
+            "{error}"
+        );
     }
 
     #[test]
