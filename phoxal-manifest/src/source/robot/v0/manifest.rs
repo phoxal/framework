@@ -47,7 +47,7 @@ pub fn reserved_brain_id_message(map: &str) -> String {
     format!(
         "{map}.{RESERVED_BRAIN_ID} is reserved for the mandatory root brain: the brain is the \
          root Cargo package's binary (src/main.rs with #[phoxal::brain]) and is never declared \
-         under {map}: - rename this entry"
+         under `{map}:`; rename this entry"
     )
 }
 
