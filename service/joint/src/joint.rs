@@ -214,8 +214,14 @@ mod tests {
 
     use super::{EncoderBinding, JointConfig, joint_state};
 
-    const GOLDEN: &[u8] =
-        include_bytes!("../../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
+    fn fixture() -> Robot {
+        phoxal::bundle::FinalizedBundle::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixture/bundle/rgbd-imu-diff-drive"),
+        )
+        .expect("the fixture bundle must load")
+        .into_robot()
+    }
 
     fn binding(direction_sign: i8, gear_ratio: f64) -> EncoderBinding {
         EncoderBinding {
@@ -236,7 +242,7 @@ mod tests {
 
     #[test]
     fn robot_config_uses_the_canonical_component_joint_namespace() {
-        let robot = Robot::decode(GOLDEN).unwrap();
+        let robot = fixture();
         let config = JointConfig::from_robot(&robot).unwrap();
         assert!(config.encoders.iter().any(|binding| {
             binding.component_id == "front_left_drive"

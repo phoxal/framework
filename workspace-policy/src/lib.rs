@@ -494,6 +494,10 @@ mod tests {
             ("phoxal", "phoxal-api"),
             ("phoxal", "phoxal-bus"),
             ("phoxal", "phoxal-macros"),
+            // A finalized bundle carries no compiled model document, so the
+            // participant runner builds the canonical model from the bundle's
+            // own finalized documents through the manifest crate's loader.
+            ("phoxal", "phoxal-manifest"),
             ("phoxal", "phoxal-model"),
             ("phoxal", "phoxal-runtime-contract"),
             ("phoxal-api", "phoxal-bus"),
@@ -551,7 +555,6 @@ mod tests {
                 "phoxal-runtime-contract",
                 &["phoxal", "phoxal-model", "tokio", "clap", "zenoh"],
             ),
-            ("phoxal", &["phoxal-manifest"]),
         ];
         let mut violations = Vec::new();
         for (package_name, forbidden) in bans {

@@ -91,7 +91,7 @@
 //!   segment is the protocol name itself (`supervisor/connect/hello`), which is
 //!   the same slot the dotted revision fills in API mode, so a protocol
 //!   composes under the host's execution-scoped bus root exactly like a robot
-//!   API topic does (`<namespace>/robots/<robot>/<execution>/supervisor/…`).
+//!   API topic does (`phoxal/<execution-id>/supervisor/…`).
 //! - **The developer owns the schema version.** A protocol body is an ordinary
 //!   authored `struct`/`enum`; a document that crosses a process boundary is a
 //!   serde-tagged enum whose variants are its schema versions. The macro never

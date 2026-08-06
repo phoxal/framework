@@ -16,6 +16,12 @@ pub struct Manifest {
     /// Sequence and scalar values replace earlier values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<PathBuf>,
+    /// The time domain this robot runs on.
+    ///
+    /// Authored documents omit it and get [`Clock::Real`]; finalization writes
+    /// the resolved value explicitly into the bundle's `robot.yaml`.
+    #[serde(default)]
+    pub clock: Clock,
     pub robot: RobotSection,
     /// The user services this robot runs, keyed by service identity, each with
     /// its user-owned configuration. The Cargo workspace is the candidate set
@@ -31,6 +37,28 @@ pub struct Manifest {
     /// Optional project-relative Zenoh router configuration.
     #[serde(default, skip_serializing_if = "Router::is_empty")]
     pub router: Router,
+}
+
+/// Authored `clock:` - the time domain the robot runs on.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Clock {
+    /// Host wall/monotonic time driven by real hardware.
+    #[default]
+    Real,
+    /// Time published by a simulation world authority.
+    Simulated,
+}
+
+impl From<Clock> for phoxal_model::Clock {
+    fn from(clock: Clock) -> Self {
+        match clock {
+            Clock::Real => phoxal_model::Clock::Real,
+            Clock::Simulated => phoxal_model::Clock::Simulated,
+        }
+    }
 }
 
 /// The participant identity of the one mandatory root brain.
@@ -126,6 +154,10 @@ pub enum ValidationError {
         role: Role,
     },
     InvalidRuntimeClock {
+        instance: String,
+    },
+    /// `clock: simulated` cannot coexist with a physical component driver.
+    DriverUnderSimulatedClock {
         instance: String,
     },
     InvalidKinematicField {
@@ -241,6 +273,12 @@ impl fmt::Display for ValidationError {
             Self::InvalidRuntimeClock { instance } => write!(
                 formatter,
                 "robot.components.{instance}.driver.runtime_clock_ms must be > 0"
+            ),
+            Self::DriverUnderSimulatedClock { instance } => write!(
+                formatter,
+                "robot.components.{instance}.driver cannot run under `clock: simulated`: a \
+                 component driver owns physical hardware IO; remove the driver block or run \
+                 this robot on the real clock"
             ),
             Self::InvalidKinematicField { field, message } => {
                 write!(formatter, "robot.kinematic.{field} {message}")
@@ -798,8 +836,8 @@ robot:
 
         let yaml = serde_yaml::to_string(&robot)?;
         assert!(
-            yaml.starts_with("schema: robot/v0\nrobot:\n"),
-            "schema should be the first root key: {yaml}"
+            yaml.starts_with("schema: robot/v0\nclock: real\nrobot:\n"),
+            "the schema tag leads, and the resolved clock is always explicit: {yaml}"
         );
 
         Ok(())

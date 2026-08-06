@@ -122,8 +122,8 @@ use proc_macro::TokenStream;
 /// - keys are **relative**: no `v0.1/` segment. The leading segment is the
 ///   protocol name, which is the same slot the dotted revision fills in API
 ///   mode, so a protocol topic composes under the bus's execution-scoped root
-///   (`<namespace>/robots/<robot>/<execution>/supervisor/connect/hello`) the
-///   same way a robot API topic does;
+///   (`phoxal/<execution-id>/supervisor/connect/hello`) the same way a robot
+///   API topic does;
 /// - there is no revision history: `latest`, `extends`, `replace`, and `remove`
 ///   are all rejected. Pre-1.0, edit the declaration in place;
 /// - the **developer owns the payload's schema version**. A document that

@@ -74,17 +74,21 @@ impl From<ModelError> for AssetError {
 
 /// Read-only resolver for the declared assets below `<bundle>/assets`.
 ///
+/// This is the participant-facing half of bundle access: exactly the frozen
+/// documents and meshes a participant may read. Serving arbitrary bundle files
+/// (including `bin/`) is a separate supervisor-only capability.
+///
 /// Discovery is the fence: the tree is walked once, every entry validated into
 /// an [`AssetId`], and only that map is ever consulted afterwards. A request
-/// therefore cannot reach `robot.json`, participant binaries, undeclared files,
-/// or anything outside the asset root - not because a request is inspected for
-/// traversal, but because no path outside the map is reachable at all.
+/// therefore cannot reach participant binaries, undeclared files, or anything
+/// outside the asset root - not because a request is inspected for traversal,
+/// but because no path outside the map is reachable at all.
 #[derive(Clone, Debug, Default)]
-pub struct AssetResolver {
+pub struct ParticipantAssetResolver {
     paths: BTreeMap<AssetId, PathBuf>,
 }
 
-impl AssetResolver {
+impl ParticipantAssetResolver {
     /// Walk `root` and validate every entry into the declared set.
     ///
     /// A missing root is an empty set, not an error: a bundle may legitimately
@@ -206,7 +210,7 @@ mod tests {
 
     #[test]
     fn a_missing_root_is_an_empty_set_not_a_failure() {
-        let resolver = AssetResolver::discover(PathBuf::from("/nonexistent/assets"))
+        let resolver = ParticipantAssetResolver::discover(PathBuf::from("/nonexistent/assets"))
             .expect("a bundle may declare no assets");
         assert_eq!(resolver.ids().len(), 0);
     }
@@ -217,11 +221,12 @@ mod tests {
         let assets = root.path().join("assets");
         std::fs::create_dir_all(assets.join("meshes")).unwrap();
         std::fs::write(assets.join("meshes/base.stl"), b"mesh").unwrap();
-        // A sibling of the asset root, exactly like `robot.json` and `bin/` in a
-        // real bundle: reachable on disk, never through the resolver.
-        std::fs::write(root.path().join("robot.json"), b"secret").unwrap();
+        // A sibling of the asset root, exactly like `bin/` in a real bundle:
+        // reachable on disk, never through the resolver.
+        std::fs::create_dir_all(root.path().join("bin")).unwrap();
+        std::fs::write(root.path().join("bin/phoxal-service-drive"), b"secret").unwrap();
 
-        let resolver = AssetResolver::discover(assets).expect("discovery succeeds");
+        let resolver = ParticipantAssetResolver::discover(assets).expect("discovery succeeds");
         assert_eq!(resolver.ids().len(), 1);
         assert_eq!(
             resolver
@@ -231,7 +236,7 @@ mod tests {
         );
         // Nothing outside the declared set resolves, and the fencing does not
         // depend on inspecting the request: these ids simply are not keys.
-        for undeclared in ["robot.json", "meshes/other.stl", "bin/phoxal-service-drive"] {
+        for undeclared in ["robot.yaml", "meshes/other.stl", "bin/phoxal-service-drive"] {
             let id = AssetId::new(undeclared).expect("a syntactically valid id");
             assert!(resolver.path(&id).is_err(), "{undeclared}");
         }
@@ -246,7 +251,8 @@ mod tests {
         std::fs::write(&outside, b"outside").unwrap();
         std::os::unix::fs::symlink(&outside, assets.join("link.txt")).unwrap();
 
-        let error = AssetResolver::discover(assets).expect_err("a symlink must fail discovery");
+        let error =
+            ParticipantAssetResolver::discover(assets).expect_err("a symlink must fail discovery");
         assert!(error.to_string().contains("forbidden symlink"), "{error}");
     }
 }

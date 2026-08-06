@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::__private::surface::{ComponentBoundSurface, TypedIoSurface, WorldAuthoritySurface};
-use crate::AssetResolver;
+use crate::ParticipantAssetResolver;
 use crate::bus::{
     AskQuery, CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT,
     DiagnosticContract, DiagnosticPublisher, Latest, MeasurementContract, MeasurementPublisher,
@@ -25,7 +25,7 @@ pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
 pub struct SetupContext<R: Participant> {
     bus: Bus,
     robot: Option<Arc<Robot>>,
-    assets: Option<AssetResolver>,
+    assets: Option<ParticipantAssetResolver>,
     component_instance: Option<String>,
     managed_tasks: ManagedTasks,
     timeline_retentions: Vec<TimelineRetention>,
@@ -37,7 +37,7 @@ impl<R: Participant> SetupContext<R> {
     pub(crate) fn new(
         bus: Bus,
         robot: Option<Arc<Robot>>,
-        assets: Option<AssetResolver>,
+        assets: Option<ParticipantAssetResolver>,
         component_instance: Option<String>,
     ) -> Self {
         SetupContext {
@@ -140,7 +140,7 @@ impl<R: Participant> SetupContext<R> {
         self.robot.as_deref()
     }
 
-    /// The immutable canonical model decoded from `<bundle>/robot.json`.
+    /// The immutable canonical model loaded from the finalized bundle.
     pub fn robot(&self) -> crate::Result<&Robot> {
         self.robot_ref().ok_or_else(|| {
             anyhow::anyhow!(
@@ -149,10 +149,10 @@ impl<R: Participant> SetupContext<R> {
         })
     }
 
-    /// The validated assets compiled into this participant's runtime bundle.
-    pub fn assets(&self) -> crate::Result<&AssetResolver> {
+    /// The validated assets this participant's runtime bundle declares.
+    pub fn assets(&self) -> crate::Result<&ParticipantAssetResolver> {
         self.assets.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("no compiled assets are bound (this participant has no bundle root)")
+            anyhow::anyhow!("no bundle assets are bound (this participant has no bundle root)")
         })
     }
 }

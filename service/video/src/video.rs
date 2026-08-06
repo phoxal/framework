@@ -315,9 +315,12 @@ mod tests {
     use super::*;
 
     fn fixture() -> Robot {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
-        Robot::decode(&std::fs::read(path).unwrap()).unwrap()
+        phoxal::bundle::FinalizedBundle::load(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixture/bundle/rgbd-imu-diff-drive"),
+        )
+        .expect("the fixture bundle must load")
+        .into_robot()
     }
 
     fn request(capability: &str) -> api::video::OpenRequest {

@@ -64,10 +64,18 @@ impl Manifest {
 
     pub(crate) fn validate_driver_structure(&self, validation_errors: &mut Vec<ValidationError>) {
         for (component_id, component) in &self.robot.components {
-            if let Some(driver) = &component.driver
-                && driver.runtime_clock_ms == 0
-            {
+            let Some(driver) = &component.driver else {
+                continue;
+            };
+            if driver.runtime_clock_ms == 0 {
                 validation_errors.push(ValidationError::InvalidRuntimeClock {
+                    instance: component_id.clone(),
+                });
+            }
+            // A component driver owns physical hardware IO; stepping it with
+            // simulated time is never a meaningful robot.
+            if self.clock == super::Clock::Simulated {
+                validation_errors.push(ValidationError::DriverUnderSimulatedClock {
                     instance: component_id.clone(),
                 });
             }

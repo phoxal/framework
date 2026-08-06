@@ -1,0 +1,68 @@
+<?xml version="1.0" ?>
+<robot name="camera_rgbd_640x480_device">
+
+  <link name="mount" />
+
+  <joint name="body_joint" type="fixed">
+    <parent link="mount" />
+    <child link="body_link" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+
+  <link name="body_link">
+    <!-- Simplified cover approximation for the generic RGB-D camera enclosure. -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.0175 0.091 0.028" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="0.0175 0.091 0.028" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.061" />
+      <inertia ixx="0.000046" ixy="0.0" ixz="0.0" iyy="0.000006" iyz="0.0" izz="0.000044" />
+    </inertial>
+  </link>
+
+  <joint name="left_mono_joint" type="fixed">
+    <parent link="body_link" />
+    <child link="left_mono_link" />
+    <origin xyz="0.00875 -0.0375 0.005" rpy="0 0 0" />
+  </joint>
+  <link name="left_mono_link" />
+
+  <joint name="rgb_joint" type="fixed">
+    <parent link="body_link" />
+    <child link="rgb_link" />
+    <origin xyz="0.00875 0 0.005" rpy="0 0 0" />
+  </joint>
+  <link name="rgb_link" />
+
+  <joint name="right_mono_joint" type="fixed">
+    <parent link="body_link" />
+    <child link="right_mono_link" />
+    <origin xyz="0.00875 0.0375 0.005" rpy="0 0 0" />
+  </joint>
+  <link name="right_mono_link" />
+
+  <joint name="stereo_center_joint" type="fixed">
+    <parent link="body_link" />
+    <child link="stereo_center_link" />
+    <origin xyz="0.00875 0 0.005" rpy="0 0 0" />
+  </joint>
+  <link name="stereo_center_link" />
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="body_link" />
+    <child link="imu_link" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+  <link name="imu_link" />
+
+</robot>

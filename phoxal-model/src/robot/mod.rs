@@ -6,28 +6,36 @@ pub use motion::{KinematicConfig, MotionLimits};
 
 use std::collections::BTreeMap;
 
+use crate::ModelError;
 use crate::component::capability::{
     Capability, Encoder, Motor, StructuralTarget, namespaced_structure_id,
 };
 use crate::component::{CapabilityRef, Component};
 use crate::simulation::Simulation;
 use crate::structure::{JointKind, Structure};
-use crate::{DecodeError, EncodeError, ModelError, strict_json};
 
-/// Exact compiled-model wire schema. There is no legacy fallback.
-pub const ROBOT_SCHEMA: &str = "phoxal/robot/v0";
+/// The time domain this robot runs on.
+///
+/// Authored documents omit it and get [`Clock::Real`]; finalization writes the
+/// resolved value explicitly, so a finalized bundle never leaves it implicit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Clock {
+    /// Host wall/monotonic time driven by real hardware.
+    #[default]
+    Real,
+    /// Time published by a simulation world authority.
+    Simulated,
+}
 
 /// Stable canonical robot identity.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct RobotIdentity {
     id: String,
     namespace: String,
 }
 
 /// One resolved component instance in the canonical robot.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct ComponentInstance {
     id: String,
     component_type: String,
@@ -36,8 +44,7 @@ pub struct ComponentInstance {
 }
 
 /// Canonical motion facts.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone)]
 pub struct MotionModel {
     kinematic: KinematicConfig,
     limits: MotionLimits,
@@ -48,6 +55,7 @@ pub struct MotionModel {
 pub struct RobotParts {
     pub id: String,
     pub namespace: String,
+    pub clock: Clock,
     pub kinematic: KinematicConfig,
     pub motion_limits: MotionLimits,
     pub component_instances: BTreeMap<String, ComponentInstance>,
@@ -60,6 +68,7 @@ pub struct RobotParts {
 #[derive(Debug, Clone)]
 pub struct Robot {
     identity: RobotIdentity,
+    clock: Clock,
     motion: MotionModel,
     component_instances: BTreeMap<String, ComponentInstance>,
     component_types: BTreeMap<String, Component>,
@@ -133,6 +142,7 @@ impl Robot {
                 id: parts.id,
                 namespace: parts.namespace,
             },
+            clock: parts.clock,
             motion: MotionModel {
                 kinematic: parts.kinematic,
                 limits: parts.motion_limits,
@@ -146,49 +156,15 @@ impl Robot {
         Ok(robot)
     }
 
-    /// Encode the canonical runtime wire document deterministically.
-    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
-        serde_json::to_vec_pretty(&RobotWire {
-            schema: ROBOT_SCHEMA,
-            robot: RobotPayloadRef {
-                identity: &self.identity,
-                motion: &self.motion,
-                component_instances: &self.component_instances,
-                component_types: &self.component_types,
-                simulation_types: &self.simulation_types,
-                structure: &self.structure,
-            },
-        })
-        .map_err(EncodeError::from)
-    }
-
-    /// Strictly decode and validate the canonical runtime wire document.
-    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        let value = strict_json::parse(bytes)?;
-        let schema = value
-            .get("schema")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(DecodeError::MissingSchema)?;
-        if schema != ROBOT_SCHEMA {
-            return Err(DecodeError::UnsupportedSchema(schema.to_string()));
-        }
-        let wire: RobotWireOwned = serde_json::from_value(value)?;
-        Self::__from_compiler(RobotParts {
-            id: wire.robot.identity.id,
-            namespace: wire.robot.identity.namespace,
-            kinematic: wire.robot.motion.kinematic,
-            motion_limits: wire.robot.motion.limits,
-            component_instances: wire.robot.component_instances,
-            component_types: wire.robot.component_types,
-            simulation_types: wire.robot.simulation_types,
-            structure: wire.robot.structure,
-        })
-        .map_err(DecodeError::Model)
-    }
-
     #[must_use]
     pub fn identity(&self) -> &RobotIdentity {
         &self.identity
+    }
+
+    /// The time domain this robot runs on.
+    #[must_use]
+    pub const fn clock(&self) -> Clock {
+        self.clock
     }
 
     #[must_use]
@@ -564,39 +540,4 @@ fn validate_runtime_joint_kind(
             "{owner} joint '{joint_id}' uses unsupported runtime kind '{kind:?}'"
         )))
     }
-}
-
-#[derive(serde::Serialize)]
-struct RobotWire<'a> {
-    schema: &'static str,
-    robot: RobotPayloadRef<'a>,
-}
-
-#[derive(serde::Serialize)]
-struct RobotPayloadRef<'a> {
-    identity: &'a RobotIdentity,
-    motion: &'a MotionModel,
-    component_instances: &'a BTreeMap<String, ComponentInstance>,
-    component_types: &'a BTreeMap<String, Component>,
-    simulation_types: &'a BTreeMap<String, Simulation>,
-    structure: &'a Structure,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RobotWireOwned {
-    #[serde(rename = "schema")]
-    _schema: String,
-    robot: RobotPayloadOwned,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RobotPayloadOwned {
-    identity: RobotIdentity,
-    motion: MotionModel,
-    component_instances: BTreeMap<String, ComponentInstance>,
-    component_types: BTreeMap<String, Component>,
-    simulation_types: BTreeMap<String, Simulation>,
-    structure: Structure,
 }

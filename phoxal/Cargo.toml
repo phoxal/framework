@@ -21,6 +21,7 @@ path = "src/lib.rs"
 phoxal-api = { workspace = true }
 phoxal-bus = { workspace = true }
 phoxal-macros = { workspace = true }
+phoxal-manifest = { workspace = true }
 phoxal-model = { workspace = true }
 phoxal-runtime-contract = { workspace = true }
 anyhow = { workspace = true }

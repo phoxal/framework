@@ -198,12 +198,18 @@ mod tests {
     use phoxal::model::Robot;
     use phoxal::model::component::CapabilityRef;
 
-    const GOLDEN: &[u8] =
-        include_bytes!("../../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
+    fn fixture() -> Robot {
+        phoxal::bundle::FinalizedBundle::load(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixture/bundle/rgbd-imu-diff-drive"),
+        )
+        .expect("the fixture bundle must load")
+        .into_robot()
+    }
 
     #[test]
     fn composes_component_frames_and_namespaced_dynamic_joints() {
-        let robot = Robot::decode(GOLDEN).unwrap();
+        let robot = fixture();
         let config = FrameConfig::from_robot(&robot).unwrap();
 
         assert_eq!(

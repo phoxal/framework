@@ -3,9 +3,6 @@ use std::path::{Path, PathBuf};
 
 use phoxal_manifest::{CompileError, SourceSet, compile};
 
-const GOLDEN: &[u8] =
-    include_bytes!("../../phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json");
-
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -56,22 +53,6 @@ fn every_repository_robot_compiles_to_the_canonical_model() {
 }
 
 #[test]
-fn canonical_golden_is_pinned_to_its_authored_producer() {
-    let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
-    let compiled = compile(sources(&root)).expect("fixture must compile");
-    let encoded = compiled.robot().encode().unwrap();
-    if std::env::var_os("PHOXAL_UPDATE_MODEL_GOLDEN").is_some() {
-        std::fs::write(
-            workspace_root().join("phoxal-model/tests/golden/rgbd-imu-diff-drive.robot.json"),
-            &encoded,
-        )
-        .unwrap();
-        return;
-    }
-    assert_eq!(encoded, GOLDEN);
-}
-
-#[test]
 fn canonical_mesh_references_are_backed_by_compiled_assets() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
     let compiled = compile(sources(&root)).expect("fixture must compile");
@@ -98,7 +79,7 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
         )
         .map(phoxal_model::AssetId::as_str)
         .collect::<std::collections::BTreeSet<_>>();
-    assert!(model_ids.contains("meshes/components/drive_motor/drive_motor.obj"));
+    assert!(model_ids.contains("components/drive_motor/meshes/drive_motor.obj"));
     assert!(model_ids.is_subset(&asset_ids));
 }
 
@@ -125,7 +106,7 @@ fn missing_canonical_mesh_is_rejected_at_compile_time() {
     assert!(
         error
             .to_string()
-            .contains("meshes/components/drive_motor/drive_motor.obj")
+            .contains("components/drive_motor/meshes/drive_motor.obj")
     );
 }
 
@@ -171,7 +152,7 @@ fn relative_material_texture_is_normalized_into_the_local_component_namespace() 
         component
             .structure()
             .asset_ids()
-            .any(|id| id.as_str() == "meshes/components/drive_motor/wood.png")
+            .any(|id| id.as_str() == "components/drive_motor/meshes/wood.png")
     );
 }
 
