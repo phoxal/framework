@@ -1,4 +1,4 @@
-//! `phoxal_api_tree!` — the single API layer (D60/D61/D1).
+//! `phoxal_api_tree!` - the single API layer (D60/D61/D1).
 //!
 //! Grammar. The body of a `version` is a tree of **nodes**. A node is either
 //! static (`name { … }`) or dynamic (`name(var) { … }`); it can be nested to any
@@ -107,7 +107,7 @@
 //!
 //! Each `version` becomes a `pub mod vN` carrying a marker `enum Api {}`
 //! (`ApiVersion`), a nested `pub mod` per node holding that node's version-local
-//! bodies (plain serde types, no `{"v":…}` wrapper — D62) and their
+//! bodies (plain serde types, no `{"v":…}` wrapper - D62) and their
 //! `ContractBody` impls, plus an api-local `topic` builder module.
 //!
 //! **Wire identity is the version-qualified key, not a transitive-shape hash
@@ -593,7 +593,7 @@ impl Parse for Node {
             } else if body.peek(Ident)
                 && (body.peek2(syn::token::Paren) || body.peek2(syn::token::Brace))
             {
-                // `name(var) { … }` or `name { … }` — a child node.
+                // `name(var) { … }` or `name { … }` - a child node.
                 if let Some(attr) = attrs.first() {
                     return Err(syn::Error::new_spanned(
                         attr,
@@ -1265,7 +1265,7 @@ fn expand_tree(tree: &MaterializedTree) -> syn::Result<TokenStream> {
 }
 
 /// Emit a `pub mod <name>` for a node under the tree. The module carries the
-/// node's types, the `ContractBody` impls for its topics, and — recursively —
+/// node's types, the `ContractBody` impls for its topics, and - recursively -
 /// its child node modules. Variables never appear in the module path (D61).
 ///
 /// `tree_id` is the tree's identity (the dotted revision `"v0.1"`, or a
