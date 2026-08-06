@@ -668,7 +668,7 @@ mod tests {
         let workspace =
             Workspace::discover_with(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 19);
+        assert_eq!(workspace.official_artifacts().len(), 18);
 
         assert_eq!(
             workspace
@@ -676,7 +676,7 @@ mod tests {
                 .iter()
                 .filter(|artifact| artifact.kind == ArtifactKind::Service)
                 .count(),
-            13
+            12
         );
         let simulators = workspace
             .official_artifacts()
@@ -1030,37 +1030,8 @@ path = "src/example.rs"
     /// regression - CI is what does).
     #[test]
     fn participant_metadata_section_survives_the_linker() -> Result<()> {
-        use object::{Object, ObjectSection};
-
-        let workspace_root = workspace_root()?;
-        let phoxal_path = workspace_root.join("phoxal");
-
-        let probe_dir = tempfile::tempdir().context("failed to create temp probe crate dir")?;
-        let crate_dir = probe_dir.path();
-        fs::create_dir_all(crate_dir.join("src"))?;
-        fs::write(
-            crate_dir.join("Cargo.toml"),
-            format!(
-                r#"[workspace]
-
-[package]
-name = "phoxal-elf-meta-probe"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
-[[bin]]
-name = "phoxal-elf-meta-probe"
-path = "src/main.rs"
-
-[dependencies]
-phoxal = {{ path = {phoxal_path:?} }}
-"#,
-                phoxal_path = phoxal_path.display().to_string(),
-            ),
-        )?;
-        fs::write(
-            crate_dir.join("src/main.rs"),
+        let meta = linked_participant_metadata(
+            "phoxal-elf-meta-probe",
             r#"use phoxal::prelude::*;
 
 #[phoxal::service(id = "elf-meta-probe")]
@@ -1081,6 +1052,93 @@ fn main() -> phoxal::Result<()> {
 }
 "#,
         )?;
+        assert_eq!(
+            meta.get("id").and_then(Value::as_str),
+            Some("elf-meta-probe"),
+            "unexpected participant metadata in the linked section: {meta:?}"
+        );
+        Ok(())
+    }
+
+    /// The root brain's complete process contract, proven on a real linked
+    /// binary rather than on macro tokens: `#[phoxal::brain]` embeds exactly
+    /// the fixed `brain` identity, the distinct `brain` kind, and the ordinary
+    /// unit-config schema every `Config = ()` role emits - no more fields and
+    /// no project-chosen identity. This is what `phoxal-cli` reads out of
+    /// `bin/brain` before launching it.
+    #[test]
+    fn a_brain_binary_embeds_the_exact_root_brain_metadata_record() -> Result<()> {
+        // The probe package is deliberately NOT named `brain`: the identity is
+        // fixed by the role attribute, never derived from the package name.
+        let meta = linked_participant_metadata(
+            "some-robot-project",
+            r#"use phoxal::prelude::*;
+
+#[phoxal::brain]
+struct Brain;
+
+impl Participant for Brain {
+    async fn setup(
+        &self,
+        _ctx: &mut SetupContext<Self>,
+        _config: Self::Config,
+    ) -> Result<(Self::State, Self::Api)> {
+        Ok(((), ()))
+    }
+}
+
+fn main() -> phoxal::Result<()> {
+    phoxal::run::<Brain>()
+}
+"#,
+        )?;
+        assert_eq!(
+            meta,
+            serde_json::json!({
+                "schema": "phoxal/participant-metadata/v0",
+                "id": "brain",
+                "kind": "brain",
+                "config_schema": {"type": "null"},
+            }),
+            "unexpected root brain metadata in the linked section"
+        );
+        Ok(())
+    }
+
+    /// Build `main_rs` as a standalone `package` binary against the in-tree
+    /// `phoxal` crate and read its embedded participant-metadata section back
+    /// out of the linked artifact. The binary is never executed.
+    fn linked_participant_metadata(package: &str, main_rs: &str) -> Result<Value> {
+        use object::{Object, ObjectSection};
+
+        let workspace_root = workspace_root()?;
+        let phoxal_path = workspace_root.join("phoxal");
+
+        let probe_dir = tempfile::tempdir().context("failed to create temp probe crate dir")?;
+        let crate_dir = probe_dir.path();
+        fs::create_dir_all(crate_dir.join("src"))?;
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!(
+                r#"[workspace]
+
+[package]
+name = "{package}"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "{package}"
+path = "src/main.rs"
+
+[dependencies]
+phoxal = {{ path = {phoxal_path:?} }}
+"#,
+                phoxal_path = phoxal_path.display().to_string(),
+            ),
+        )?;
+        fs::write(crate_dir.join("src/main.rs"), main_rs)?;
 
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let status = std::process::Command::new(&cargo)
@@ -1095,9 +1153,9 @@ fn main() -> phoxal::Result<()> {
         );
 
         let binary_name = if cfg!(windows) {
-            "phoxal-elf-meta-probe.exe"
+            format!("{package}.exe")
         } else {
-            "phoxal-elf-meta-probe"
+            package.to_string()
         };
         let binary_path = crate_dir.join("target").join("debug").join(binary_name);
         let data = fs::read(&binary_path).with_context(|| {
@@ -1131,14 +1189,8 @@ fn main() -> phoxal::Result<()> {
             )
         })?;
 
-        let meta: Value = serde_json::from_slice(section_bytes)
-            .context("the participant metadata section did not parse as JSON")?;
-        assert_eq!(
-            meta.get("id").and_then(Value::as_str),
-            Some("elf-meta-probe"),
-            "unexpected participant metadata in the linked section: {meta:?}"
-        );
-        Ok(())
+        serde_json::from_slice(section_bytes)
+            .context("the participant metadata section did not parse as JSON")
     }
 
     #[test]

@@ -7,14 +7,14 @@
 //!   `ContractBody`/`ApiVersion` impls, and the api-local topic builders.
 //! - [`derive@Config`] - derives the config schema embedded in participant
 //!   metadata.
-//! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] / [`macro@tool`] -
-//!   declare a unit marker's `Config`/`State`/`Api` types and identity
-//!   (`ParticipantSpec`).
+//! - [`macro@service`] / [`macro@driver`] / [`macro@simulator`] /
+//!   [`macro@brain`] - declare a unit marker's `Config`/`State`/`Api` types
+//!   and identity (`ParticipantSpec`).
 //! - [`macro@step`] - records cadence on the ordinary `Participant::step`
 //!   override. Setup, reset, shutdown, and query handlers are plain Rust.
 //!
 //! The participant authoring macros (`macro@service` / `macro@driver` /
-//! `macro@tool` / `macro@simulator` / `macro@step`) reference the framework
+//! `macro@simulator` / `macro@brain` / `macro@step`) reference the framework
 //! through `::phoxal::…`; the engine crate makes that path resolve to itself with
 //! `extern crate self as phoxal;`. The
 //! `phoxal_api_tree!` output instead targets the bus ABI floor directly as
@@ -153,4 +153,46 @@ pub fn simulator(attr: TokenStream, item: TokenStream) -> TokenStream {
     )
     .unwrap_or_else(syn::Error::into_compile_error)
     .into()
+}
+
+/// Declare the one mandatory root brain: the robot project's composition root.
+///
+/// The brain is the root Cargo package's binary (`src/main.rs`). It is a
+/// checked, clocked graph participant with exactly the typed-I/O and step
+/// scheduling surface [`service`] has, and no privileged capability.
+///
+/// It differs from [`service`] in two fixed ways:
+///
+/// - its participant identity is always `brain`, so an `id = "…"` argument is
+///   rejected - there is exactly one per robot project, and the CLI stages it
+///   under the canonical `bin/brain`; and
+/// - its `Config` is always `()`, so a `config = …` argument is rejected -
+///   robot policy is ordinary Rust code compiled into this binary, not an
+///   authored configuration side channel.
+///
+/// `state = …` and `api = …` work exactly as on every other checked role.
+///
+/// ```ignore
+/// use phoxal::prelude::*;
+///
+/// #[phoxal::brain]
+/// struct Brain;
+///
+/// impl Participant for Brain {
+///     async fn setup(
+///         &self,
+///         _ctx: &mut SetupContext<Self>,
+///         _config: Self::Config,
+///     ) -> Result<(Self::State, Self::Api)> {
+///         Ok(((), ()))
+///     }
+/// }
+///
+/// fn main() -> phoxal::Result<()> { phoxal::run::<Brain>() }
+/// ```
+#[proc_macro_attribute]
+pub fn brain(attr: TokenStream, item: TokenStream) -> TokenStream {
+    authoring::expand_participant(attr.into(), item.into(), authoring::ParticipantKind::Brain)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

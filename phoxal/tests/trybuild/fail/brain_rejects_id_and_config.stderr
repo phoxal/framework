@@ -1,0 +1,11 @@
+error: #[phoxal::brain] does not accept an `id` argument: there is exactly one root brain per robot project and its participant identity is fixed to "brain"
+ --> tests/trybuild/fail/brain_rejects_id_and_config.rs:4:17
+  |
+4 | #[phoxal::brain(id = "policy")]
+  |                 ^^
+
+error: #[phoxal::brain] does not accept a `config` argument: the root brain has no configuration side channel, so its Config is always () - put robot policy in ordinary Rust code and read robot facts through ctx.robot()
+  --> tests/trybuild/fail/brain_rejects_id_and_config.rs:10:17
+   |
+10 | #[phoxal::brain(config = BrainConfig)]
+   |                 ^^^^^^

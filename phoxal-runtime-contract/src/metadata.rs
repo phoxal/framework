@@ -9,6 +9,11 @@ pub enum ParticipantKind {
     Service,
     Driver,
     Simulator,
+    /// The one mandatory root brain: the robot project's composition root,
+    /// built from the root Cargo package and staged as `bin/brain`. It is a
+    /// checked, clocked graph participant with the ordinary typed-I/O surface
+    /// and no privileged capability, and it is never an authored service.
+    Brain,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -47,6 +52,18 @@ mod tests {
         let metadata = parse_participant_metadata(bytes).unwrap();
         assert_eq!(metadata.kind, ParticipantKind::Service);
         assert_eq!(metadata.id, "drive");
+    }
+
+    #[test]
+    fn the_root_brain_decodes_as_its_own_kind() {
+        // The exact record a `#[phoxal::brain]` binary embeds: a fixed `brain`
+        // identity, the distinct `brain` kind, and the ordinary unit-config
+        // schema every `Config = ()` role emits.
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v0","id":"brain","kind":"brain","config_schema":{"type":"null"}}"#;
+        let metadata = parse_participant_metadata(bytes).unwrap();
+        assert_eq!(metadata.kind, ParticipantKind::Brain);
+        assert_eq!(metadata.id, "brain");
+        assert_eq!(metadata.config_schema, serde_json::json!({"type": "null"}));
     }
 
     #[test]
