@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0](https://github.com/phoxal/framework/compare/v0.52.0...v0.53.0) - 2026-08-06
+
+### Added
+
+- [**breaking**] replace the behavior subsystem with the mandatory root brain role ([#391](https://github.com/phoxal/framework/pull/391))
+
+### Other
+
+- drop the public API snapshot and isolated packaging jobs ([#390](https://github.com/phoxal/framework/pull/390))
+
 ## [0.52.0](https://github.com/phoxal/framework/compare/v0.51.0...v0.52.0) - 2026-08-03
 
 ### Added
