@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.53.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.52.0...phoxal-manifest-v0.53.0) - 2026-08-06
+
+### Added
+
+- [**breaking**] replace the behavior subsystem with the mandatory root brain role ([#391](https://github.com/phoxal/framework/pull/391))
+
+### Other
+
+- drop the public API snapshot and isolated packaging jobs ([#390](https://github.com/phoxal/framework/pull/390))
+- *(manifest)* [**breaking**] make the schema tag select a versioned manifest enum ([#388](https://github.com/phoxal/framework/pull/388))
+
 ## [0.52.0](https://github.com/phoxal/framework/compare/phoxal-manifest-v0.51.0...phoxal-manifest-v0.52.0) - 2026-08-03
 
 ### Added
