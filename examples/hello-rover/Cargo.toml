@@ -11,7 +11,7 @@ resolver = "3"
 members = ["."]
 
 [workspace.dependencies]
-phoxal = "0.42.3"
+phoxal = "0.53.0"
 
 [workspace.lints.rust]
 unused = "warn"
@@ -28,7 +28,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
-description = "Hello-rover Cargo train anchor."
+description = "Hello-rover root brain - the example robot project's composition root."
 
 [dependencies]
 phoxal = { workspace = true }
