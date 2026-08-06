@@ -1,14 +1,13 @@
 //! The finalized-bundle contract: what a bundle looks like on disk, and what
 //! loading one guarantees.
 //!
-//! `fixture/bundle/rgbd-imu-diff-drive` is a real finalized bundle checked into
-//! the repository. It is the executable specification of the layout the CLI
-//! writes and this loader reads, and it is what the framework's own runtime
-//! consumers load in their tests. `staging_is_pinned_to_the_checked_in_fixture`
-//! keeps it honest; regenerate it with
-//! `PHOXAL_UPDATE_BUNDLE_FIXTURE=1 cargo test -p phoxal-manifest`.
+//! Every test here stages its own bundle from the checked-in authored sources
+//! (`fixture/robot`, `fixture/component`) into a temporary directory and then
+//! loads it back. That round trip - compile, stage, load - is the contract:
+//! the layout is proven by producing it, not by comparing against a frozen
+//! copy of it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use phoxal_manifest::bundle::{
@@ -22,10 +21,6 @@ fn workspace_root() -> PathBuf {
         .parent()
         .expect("manifest crate has a workspace parent")
         .to_path_buf()
-}
-
-fn fixture_bundle() -> PathBuf {
-    workspace_root().join("fixture/bundle/rgbd-imu-diff-drive")
 }
 
 fn sources(project_root: &Path) -> SourceSet {
@@ -97,56 +92,29 @@ fn stage(project_root: &Path, clock: Clock, bundle_root: &Path) {
     std::fs::write(bundle_root.join("bin/brain"), b"not a real executable").unwrap();
 }
 
-fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
-    let mut files = BTreeMap::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                pending.push(path);
-            } else {
-                files.insert(
-                    path.strip_prefix(root)
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned(),
-                    std::fs::read(&path).unwrap(),
-                );
-            }
-        }
-    }
-    files
-}
-
-#[test]
-fn staging_is_pinned_to_the_checked_in_fixture() {
-    let staged = tempfile::tempdir().unwrap();
+/// One finalized bundle, staged for the test that asked for it and removed
+/// with the returned directory.
+fn staged_bundle() -> tempfile::TempDir {
+    let bundle = tempfile::tempdir().unwrap();
     stage(
         &workspace_root().join("fixture/robot/rgbd-imu-diff-drive"),
         Clock::Real,
-        staged.path(),
+        bundle.path(),
     );
-    if std::env::var_os("PHOXAL_UPDATE_BUNDLE_FIXTURE").is_some() {
-        let fixture = fixture_bundle();
-        let _ = std::fs::remove_dir_all(&fixture);
-        for (relative, bytes) in tree(staged.path()) {
-            let path = fixture.join(&relative);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, bytes).unwrap();
-        }
-        return;
-    }
-    assert_eq!(
-        tree(staged.path()),
-        tree(&fixture_bundle()),
-        "the checked-in finalized bundle drifted from what staging produces"
-    );
+    bundle
+}
+
+/// Rewrite a staged bundle's finalized robot document in place.
+fn rewrite_manifest(bundle: &tempfile::TempDir, edit: impl FnOnce(String) -> String) {
+    let path = bundle.path().join("robot.yaml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, edit(text)).unwrap();
 }
 
 #[test]
 fn a_finalized_bundle_loads_without_any_compiled_model_document() {
-    let bundle = FinalizedBundle::load(fixture_bundle()).expect("the fixture bundle must load");
+    let staged = staged_bundle();
+    let bundle = FinalizedBundle::load(staged.path()).expect("the staged bundle must load");
     let robot = bundle.robot();
 
     assert_eq!(
@@ -162,7 +130,7 @@ fn a_finalized_bundle_loads_without_any_compiled_model_document() {
             .is_some()
     );
     assert!(
-        !fixture_bundle().join("robot.json").exists(),
+        !staged.path().join("robot.json").exists(),
         "the bundle carries no duplicate compiled model"
     );
     assert!(bundle.router_config().is_none());
@@ -177,7 +145,8 @@ fn a_finalized_bundle_loads_without_any_compiled_model_document() {
 
 #[test]
 fn the_participant_resolver_serves_declared_assets_and_nothing_else() {
-    let bundle = FinalizedBundle::load(fixture_bundle()).expect("the fixture bundle must load");
+    let staged = staged_bundle();
+    let bundle = FinalizedBundle::load(staged.path()).expect("the staged bundle must load");
     let assets = bundle.assets();
     let ids = assets
         .ids()
@@ -202,7 +171,8 @@ fn the_participant_resolver_serves_declared_assets_and_nothing_else() {
 
 #[test]
 fn the_bundle_resolver_serves_the_whole_bundle_safely() {
-    let resolver = BundleResolver::index(fixture_bundle(), 4 * 1024 * 1024).expect("index");
+    let staged = staged_bundle();
+    let resolver = BundleResolver::index(staged.path(), 4 * 1024 * 1024).expect("index");
     let paths = resolver
         .paths()
         .map(phoxal_manifest::bundle::BundlePath::as_str)
@@ -225,31 +195,19 @@ fn the_bundle_resolver_serves_the_whole_bundle_safely() {
         BundleFile::Missing
     ));
 
-    let bounded = BundleResolver::index(fixture_bundle(), 8).expect("index");
+    let bounded = BundleResolver::index(staged.path(), 8).expect("index");
     assert!(matches!(
         bounded.get("bin/brain").unwrap(),
         BundleFile::TooLarge { .. }
     ));
 }
 
-/// A bundle copy with `robot.yaml` replaced.
-fn bundle_with_manifest(text: &str) -> tempfile::TempDir {
-    let temp = tempfile::tempdir().unwrap();
-    let fixture = fixture_bundle();
-    for (relative, bytes) in tree(&fixture) {
-        let path = temp.path().join(&relative);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
-    }
-    std::fs::write(temp.path().join("robot.yaml"), text).unwrap();
-    temp
-}
-
 #[test]
 fn an_unresolved_extends_is_refused() {
-    let mut text = std::fs::read_to_string(fixture_bundle().join("robot.yaml")).unwrap();
-    text = text.replace("clock: real\n", "clock: real\nextends: [base.robot.yaml]\n");
-    let bundle = bundle_with_manifest(&text);
+    let bundle = staged_bundle();
+    rewrite_manifest(&bundle, |text| {
+        text.replace("clock: real\n", "clock: real\nextends: [base.robot.yaml]\n")
+    });
 
     let error = FinalizedBundle::load(bundle.path()).expect_err("extends must be resolved");
     assert!(
@@ -260,10 +218,10 @@ fn an_unresolved_extends_is_refused() {
 
 #[test]
 fn a_foreign_schema_tag_is_refused() {
-    let text = std::fs::read_to_string(fixture_bundle().join("robot.yaml"))
-        .unwrap()
-        .replacen("schema: robot/v0", "schema: robot/v1", 1);
-    let bundle = bundle_with_manifest(&text);
+    let bundle = staged_bundle();
+    rewrite_manifest(&bundle, |text| {
+        text.replacen("schema: robot/v0", "schema: robot/v1", 1)
+    });
 
     let error = FinalizedBundle::load(bundle.path()).expect_err("an unknown schema must fail");
     assert!(
@@ -274,14 +232,14 @@ fn a_foreign_schema_tag_is_refused() {
 
 #[test]
 fn a_structure_path_outside_the_bundle_is_refused() {
-    let text = std::fs::read_to_string(fixture_bundle().join("robot.yaml"))
-        .unwrap()
-        .replacen(
+    let bundle = staged_bundle();
+    rewrite_manifest(&bundle, |text| {
+        text.replacen(
             "structure: robot/structure.urdf",
             "structure: ../robot.yaml",
             1,
-        );
-    let bundle = bundle_with_manifest(&text);
+        )
+    });
 
     let error = FinalizedBundle::load(bundle.path()).expect_err("an escaping path must fail");
     assert!(format!("{error:#}").contains("robot root"), "{error:#}");
@@ -289,11 +247,10 @@ fn a_structure_path_outside_the_bundle_is_refused() {
 
 #[test]
 fn a_declared_router_configuration_resolves_inside_the_bundle() {
-    let text = format!(
-        "{}router:\n  config: router/config.json5\n",
-        std::fs::read_to_string(fixture_bundle().join("robot.yaml")).unwrap()
-    );
-    let bundle = bundle_with_manifest(&text);
+    let bundle = staged_bundle();
+    rewrite_manifest(&bundle, |text| {
+        format!("{text}router:\n  config: router/config.json5\n")
+    });
     std::fs::create_dir_all(bundle.path().join("assets/router")).unwrap();
     std::fs::write(
         bundle.path().join("assets/router/config.json5"),
@@ -313,17 +270,10 @@ fn a_declared_router_configuration_resolves_inside_the_bundle() {
 
 #[test]
 fn a_missing_component_directory_is_refused() {
-    let temp = tempfile::tempdir().unwrap();
-    for (relative, bytes) in tree(&fixture_bundle()) {
-        if relative.starts_with("assets/components/imu/") {
-            continue;
-        }
-        let path = temp.path().join(&relative);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
-    }
+    let bundle = staged_bundle();
+    std::fs::remove_dir_all(bundle.path().join("assets/components/imu")).unwrap();
 
-    let error = FinalizedBundle::load(temp.path()).expect_err("a missing component must fail");
+    let error = FinalizedBundle::load(bundle.path()).expect_err("a missing component must fail");
     assert!(format!("{error:#}").contains("imu"), "{error:#}");
 }
 

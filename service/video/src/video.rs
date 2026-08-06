@@ -308,19 +308,61 @@ fn validate_requested_dimensions(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use phoxal::bus::QueryCode;
 
     use super::*;
 
+    /// Stage a finalized bundle from the checked-in authored fixtures and take
+    /// its canonical model.
+    ///
+    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
+    /// authored document (pin the resolved clock, resolve the structure path
+    /// into `assets/`) are small enough to reproduce here, so this crate reads
+    /// a real bundle without any bundle being checked in.
     fn fixture() -> Robot {
-        phoxal::bundle::FinalizedBundle::load(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../fixture/bundle/rgbd-imu-diff-drive"),
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture");
+        let project = fixture.join("robot/rgbd-imu-diff-drive");
+        let bundle = tempfile::tempdir().expect("a staging directory");
+        let assets = bundle.path().join("assets");
+
+        std::fs::create_dir_all(assets.join("robot")).unwrap();
+        std::fs::copy(
+            project.join("structure.urdf"),
+            assets.join("robot/structure.urdf"),
         )
-        .expect("the fixture bundle must load")
-        .into_robot()
+        .unwrap();
+        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
+            let source = fixture.join("component").join(component_type);
+            let staged = assets.join("components").join(component_type);
+            std::fs::create_dir_all(&staged).unwrap();
+            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
+                std::fs::copy(source.join(document), staged.join(document)).unwrap();
+            }
+            for mesh in std::fs::read_dir(source.join("meshes"))
+                .into_iter()
+                .flatten()
+            {
+                let mesh = mesh.unwrap();
+                std::fs::create_dir_all(staged.join("meshes")).unwrap();
+                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
+            }
+        }
+        std::fs::write(
+            bundle.path().join("robot.yaml"),
+            std::fs::read_to_string(project.join("robot.yaml"))
+                .unwrap()
+                .replacen("schema: robot/v0", "schema: robot/v0\nclock: real", 1)
+                .replacen(
+                    "structure: structure.urdf",
+                    "structure: robot/structure.urdf",
+                    1,
+                ),
+        )
+        .unwrap();
+        phoxal::bundle::FinalizedBundle::load(bundle.path())
+            .expect("the staged bundle must load")
+            .into_robot()
     }
 
     fn request(capability: &str) -> api::video::OpenRequest {

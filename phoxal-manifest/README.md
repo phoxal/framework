@@ -15,8 +15,9 @@ deliberately separate views of the bundle:
 - `BundleResolver`: a safe index of every regular file in the bundle, `bin/`
   included, for the supervisor's remote `bundle/get`. Participants never get one.
 
-The exact on-disk layout is documented on the `bundle` module and pinned by the
-checked-in `fixture/bundle/rgbd-imu-diff-drive`.
+The exact on-disk layout is documented on the `bundle` module and proven by
+`tests/bundle.rs`, which stages a bundle from the checked-in authored fixtures
+and loads it back.
 
 `schema::generate` generates Draft 2020-12 editor schemas from the exact authored
 serde DTOs. They provide portable YAML completion and inspection only;
