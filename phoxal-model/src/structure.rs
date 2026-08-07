@@ -995,6 +995,263 @@ mod tests {
         );
     }
 
+    /// Every structural fact the canonical model carries must be statable
+    /// through [`crate::builder::RobotBuilder`]. A field the builder cannot
+    /// state is a robot that can only be described by authored documents, and
+    /// the builder silently substituting a default for it is worse still.
+    ///
+    /// This test lives beside the definitions rather than beside the builder
+    /// because only this module may destructure [`Link`] and [`Joint`], whose
+    /// fields are private. That is what makes the guarantee a compile-time one:
+    /// adding a field to either stops this test compiling until the builder can
+    /// state it and the assertions below read it back. The [`Geometry`] match
+    /// is exhaustive for the same reason.
+    #[test]
+    fn every_structural_field_is_statable_through_the_builder() {
+        use crate::asset::AssetId;
+        use crate::builder;
+
+        let mesh = AssetId::new("meshes/mast.stl").expect("a normalized asset id");
+        let texture = AssetId::new("textures/paint.png").expect("a normalized asset id");
+        let robot = builder::RobotBuilder::new("rover")
+            // Spelled field by field rather than with `..Joint::default()`, so
+            // that a field added to the builder's own `Joint` fails here too.
+            .joint(builder::Joint {
+                name: "mast_joint",
+                kind: JointKind::Revolute,
+                parent: "base_link",
+                child: "mast",
+                xyz: [0.1, 0.2, 0.3],
+                rpy: [0.4, 0.5, 0.6],
+                axis: [0.0, 1.0, 0.0],
+                limit: builder::JointLimit {
+                    lower: -1.5,
+                    upper: 1.5,
+                    effort: 8.0,
+                    velocity: 2.0,
+                },
+                calibration: Some(builder::Calibration {
+                    rising: Some(0.1),
+                    falling: Some(-0.1),
+                }),
+                dynamics: Some(builder::Dynamics {
+                    damping: 0.7,
+                    friction: 0.2,
+                }),
+                mimic: Some(builder::Mimic {
+                    joint: "base_joint",
+                    multiplier: Some(2.0),
+                    offset: Some(0.25),
+                }),
+                safety: Some(builder::Safety {
+                    soft_lower_limit: -1.4,
+                    soft_upper_limit: 1.4,
+                    k_position: 12.0,
+                    k_velocity: 3.0,
+                }),
+            })
+            .link(builder::Link {
+                name: "mast",
+                inertial: builder::Inertial {
+                    xyz: [0.01, 0.02, 0.03],
+                    rpy: [0.04, 0.05, 0.06],
+                    mass_kg: 2.5,
+                    inertia: builder::Inertia {
+                        ixx: 2.0,
+                        ixy: 0.1,
+                        ixz: 0.2,
+                        iyy: 3.0,
+                        iyz: 0.3,
+                        izz: 4.0,
+                    },
+                },
+                // One visual per geometry variant, in the order the match
+                // below expects them back.
+                visuals: vec![
+                    builder::Visual {
+                        name: Some("hull"),
+                        xyz: [1.0, 2.0, 3.0],
+                        rpy: [0.7, 0.8, 0.9],
+                        geometry: Geometry::Box {
+                            size: [0.4, 0.3, 0.2],
+                        },
+                        material: Some(builder::Material {
+                            name: "grey",
+                            color: Some([0.5, 0.5, 0.5, 1.0]),
+                            texture: Some(texture.clone()),
+                        }),
+                    },
+                    builder::Visual::new(Geometry::Cylinder {
+                        radius: 0.1,
+                        length: 0.5,
+                    }),
+                    builder::Visual::new(Geometry::Capsule {
+                        radius: 0.2,
+                        length: 0.6,
+                    }),
+                    builder::Visual::new(Geometry::Sphere { radius: 0.3 }),
+                    builder::Visual::new(Geometry::Mesh {
+                        asset: mesh.clone(),
+                        scale: Some([1.0, 2.0, 3.0]),
+                    }),
+                ],
+                collisions: vec![builder::Collision {
+                    name: Some("hull_bounds"),
+                    xyz: [4.0, 5.0, 6.0],
+                    rpy: [0.11, 0.12, 0.13],
+                    geometry: Geometry::Sphere { radius: 0.35 },
+                }],
+            })
+            .material(builder::Material {
+                name: "grey",
+                color: Some([0.5, 0.5, 0.5, 1.0]),
+                texture: Some(texture.clone()),
+            })
+            .build()
+            .expect("every structural fact composes a valid robot");
+
+        let structure = robot.structure();
+        let link = structure.link("mast").expect("the stated link");
+        let Link {
+            name,
+            inertial,
+            visuals,
+            collisions,
+        } = link;
+        assert_eq!(name, &LinkId::new("mast"));
+        assert_eq!(inertial.origin().xyz(), [0.01, 0.02, 0.03]);
+        assert_eq!(inertial.origin().rpy(), [0.04, 0.05, 0.06]);
+        assert_eq!(inertial.mass_kg(), 2.5);
+        assert_eq!(inertial.inertia().values(), [2.0, 0.1, 0.2, 3.0, 0.3, 4.0]);
+        assert_eq!(visuals.len(), 5);
+        assert_eq!(collisions.len(), 1);
+
+        let mut shapes = Vec::new();
+        for visual in link.visuals() {
+            let Visual {
+                name,
+                origin,
+                geometry,
+                material,
+            } = visual;
+            shapes.push(match geometry {
+                Geometry::Box { size } => {
+                    assert_eq!(*size, [0.4, 0.3, 0.2]);
+                    // Only the first visual states the rest; the others prove
+                    // the shape alone is enough.
+                    assert_eq!(name.as_deref(), Some("hull"));
+                    assert_eq!(origin.xyz(), [1.0, 2.0, 3.0]);
+                    assert_eq!(origin.rpy(), [0.7, 0.8, 0.9]);
+                    let Material {
+                        name,
+                        color,
+                        texture: painted,
+                    } = material.as_ref().expect("the stated material");
+                    assert_eq!(name, "grey");
+                    assert_eq!(*color, Some([0.5, 0.5, 0.5, 1.0]));
+                    assert_eq!(painted.as_ref(), Some(&texture));
+                    "box"
+                }
+                Geometry::Cylinder { radius, length } => {
+                    assert_eq!((*radius, *length), (0.1, 0.5));
+                    "cylinder"
+                }
+                Geometry::Capsule { radius, length } => {
+                    assert_eq!((*radius, *length), (0.2, 0.6));
+                    "capsule"
+                }
+                Geometry::Sphere { radius } => {
+                    assert_eq!(*radius, 0.3);
+                    "sphere"
+                }
+                Geometry::Mesh { asset, scale } => {
+                    assert_eq!(asset, &mesh);
+                    assert_eq!(*scale, Some([1.0, 2.0, 3.0]));
+                    "mesh"
+                }
+            });
+        }
+        assert_eq!(shapes, ["box", "cylinder", "capsule", "sphere", "mesh"]);
+
+        let collision = link.collisions().next().expect("the stated collision");
+        let Collision {
+            name,
+            origin,
+            geometry,
+        } = collision;
+        assert_eq!(name.as_deref(), Some("hull_bounds"));
+        assert_eq!(origin.xyz(), [4.0, 5.0, 6.0]);
+        assert_eq!(origin.rpy(), [0.11, 0.12, 0.13]);
+        assert!(matches!(geometry, Geometry::Sphere { radius } if *radius == 0.35));
+
+        let joint = structure.joint("mast_joint").expect("the stated joint");
+        let Joint {
+            name,
+            kind,
+            origin,
+            parent,
+            child,
+            axis,
+            limit,
+            calibration,
+            dynamics,
+            mimic,
+            safety,
+        } = joint;
+        assert_eq!(name, &JointId::new("mast_joint"));
+        assert_eq!(*kind, JointKind::Revolute);
+        assert_eq!(origin.xyz(), [0.1, 0.2, 0.3]);
+        assert_eq!(origin.rpy(), [0.4, 0.5, 0.6]);
+        assert_eq!(parent, &LinkId::new("base_link"));
+        assert_eq!(child, &LinkId::new("mast"));
+        assert_eq!(*axis, [0.0, 1.0, 0.0]);
+        assert_eq!(
+            (
+                limit.lower(),
+                limit.upper(),
+                limit.effort(),
+                limit.velocity()
+            ),
+            (-1.5, 1.5, 8.0, 2.0)
+        );
+        let calibration = calibration.expect("the stated calibration");
+        assert_eq!(
+            (calibration.rising(), calibration.falling()),
+            (Some(0.1), Some(-0.1))
+        );
+        let dynamics = dynamics.expect("the stated dynamics");
+        assert_eq!((dynamics.damping(), dynamics.friction()), (0.7, 0.2));
+        let mimic = mimic.as_ref().expect("the stated mimic");
+        assert_eq!(mimic.joint(), &JointId::new("base_joint"));
+        assert_eq!(
+            (mimic.multiplier(), mimic.offset()),
+            (Some(2.0), Some(0.25))
+        );
+        let safety = safety.expect("the stated safety");
+        assert_eq!(
+            (
+                safety.soft_lower_limit(),
+                safety.soft_upper_limit(),
+                safety.k_position(),
+                safety.k_velocity()
+            ),
+            (-1.4, 1.4, 12.0, 3.0)
+        );
+
+        // The structure's own material catalogue, and the assets everything
+        // above declares, come back too.
+        let catalogue = structure.materials().collect::<Vec<_>>();
+        assert_eq!(catalogue.len(), 1);
+        assert_eq!(catalogue[0].name(), "grey");
+        assert_eq!(catalogue[0].texture(), Some(&texture));
+        let mut assets = structure
+            .asset_ids()
+            .map(AssetId::as_str)
+            .collect::<Vec<_>>();
+        assets.sort_unstable();
+        assert_eq!(assets, ["meshes/mast.stl", "textures/paint.png"]);
+    }
+
     #[test]
     fn a_robot_structure_must_carry_the_conventional_base_frames() {
         let wrong_root = document(vec![link("chassis")], Vec::new());

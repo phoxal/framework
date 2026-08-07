@@ -149,12 +149,17 @@ pub struct Component {
     /// configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<DriverConfig>,
-    /// Authored role hints.
+    /// What each capability on this instance is declared to be for.
     ///
-    /// Part of the exact v0 file contract and validated for shape, but no
-    /// compiler or runtime stage consumes them: role-resolution policy has no
-    /// canonical owner yet. The field stays because `robot.yaml` denies unknown
-    /// fields, so removing it would reject documents that parse today.
+    /// This is the input to service activation: which services a robot runs is
+    /// to be decided from the roles its capabilities declare, so that a robot
+    /// with no capability serving a role does not start the service that
+    /// consumes it. The resolver that reads this is not built yet, so today the
+    /// field is validated for shape and otherwise carried through untouched.
+    ///
+    /// It is authored contract, not dead weight: do not remove it because
+    /// nothing reads it. Beyond that, `robot.yaml` denies unknown fields, so
+    /// removing it would reject documents that parse today.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub roles: BTreeMap<String, Vec<Role>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

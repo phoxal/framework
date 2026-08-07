@@ -49,7 +49,7 @@
             },
             "type": "array"
           },
-          "description": "Authored role hints.\n\nPart of the exact v0 file contract and validated for shape, but no\ncompiler or runtime stage consumes them: role-resolution policy has no\ncanonical owner yet. The field stays because `robot.yaml` denies unknown\nfields, so removing it would reject documents that parse today.",
+          "description": "What each capability on this instance is declared to be for.\n\nThis is the input to service activation: which services a robot runs is\nto be decided from the roles its capabilities declare, so that a robot\nwith no capability serving a role does not start the service that\nconsumes it. The resolver that reads this is not built yet, so today the\nfield is validated for shape and otherwise carried through untouched.\n\nIt is authored contract, not dead weight: do not remove it because\nnothing reads it. Beyond that, `robot.yaml` denies unknown fields, so\nremoving it would reject documents that parse today.",
           "type": "object"
         }
       },

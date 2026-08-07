@@ -33,10 +33,32 @@
 //!   `j_link`, and a link target `l` becomes that link, fixed to `mount` by a
 //!   joint `l_joint`. Two capabilities naming one target share it, which is how
 //!   a motor and the encoder measuring it end up on a single joint.
+//! - A stated [`Link`] that no stated joint attaches is added the same way a
+//!   mount link is, so giving a link a body is enough to put it on the robot.
 //!
 //! Generated links carry a unit inertial and no geometry, and generated joints
-//! sit at their parent's origin turning about Z. State a [`Joint`] to say
-//! otherwise.
+//! sit at their parent's origin turning about Z. State a [`Joint`] or a
+//! [`Link`] to say otherwise: between them they reach every field the canonical
+//! [`structure`](crate::structure) carries.
+//!
+//! # Why the structural values are stated twice
+//!
+//! [`Joint`], [`Link`], [`Inertial`], [`Inertia`], [`Visual`], [`Collision`],
+//! [`Material`], [`JointLimit`], [`Calibration`], [`Dynamics`], [`Mimic`] and
+//! [`Safety`] name the same facts as their counterparts in
+//! [`structure`](crate::structure), and exist only because the canonical types
+//! deliberately cannot be built from raw values. A canonical structural value
+//! exists only as part of a validated [`Structure`], so it has no public
+//! constructor and none is added here; what the builder holds is a plain
+//! statement of intent, borrowing its names, which it normalizes into the
+//! canonical structure document and hands to the one construction seam. The
+//! canonical values therefore stay unreachable in an unvalidated state, and
+//! nothing about the serialized form depends on this module.
+//!
+//! [`Geometry`] is the exception, and is used directly: it is already a plain
+//! public vocabulary with no invariant of its own beyond the dimension check
+//! [`RobotBuilder::build`] runs, so mirroring it would only risk the two
+//! drifting apart.
 //!
 //! ```
 //! use phoxal_model::builder::{Kinematics, RobotBuilder};
@@ -65,6 +87,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
 
+use crate::asset::AssetId;
 use crate::compiler::{self, RobotParts};
 use crate::component::Component;
 use crate::component::capability::{
@@ -79,7 +102,7 @@ use crate::identity::{
 };
 use crate::robot::{Clock, KinematicConfig, MotionLimits, Robot};
 use crate::simulation;
-use crate::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, JointKind, Structure};
+use crate::structure::{BASE_FOOTPRINT_LINK, BASE_LINK, Geometry, JointKind, Structure};
 
 /// The root link of every component structure this module generates.
 pub const COMPONENT_ROOT_LINK: &str = "mount";
@@ -182,10 +205,12 @@ pub enum Kinematics<'a> {
 /// a joint is also how a structure grows a link.
 ///
 /// Every field but the three names has a default: the joint sits at its
-/// parent's origin, turns about Z, and is [`JointKind::Fixed`].
+/// parent's origin, turns about Z, is [`JointKind::Fixed`], carries the all-zero
+/// limits a URDF joint without a `<limit>` compiles to, and states no
+/// calibration, dynamics, mimic or safety.
 ///
 /// ```
-/// use phoxal_model::builder::{Joint, RobotBuilder};
+/// use phoxal_model::builder::{Joint, JointLimit, RobotBuilder};
 /// use phoxal_model::structure::JointKind;
 ///
 /// let robot = RobotBuilder::new("rover")
@@ -195,10 +220,18 @@ pub enum Kinematics<'a> {
 ///         parent: "base_link",
 ///         child: "mast",
 ///         xyz: [0.0, 0.0, 0.4],
+///         limit: JointLimit {
+///             lower: -1.5,
+///             upper: 1.5,
+///             effort: 8.0,
+///             velocity: 2.0,
+///         },
 ///         ..Joint::default()
 ///     })
 ///     .build()?;
 ///
+/// let mast = robot.structure().joint("mast_joint").expect("the stated joint");
+/// assert_eq!(mast.limit().upper(), 1.5);
 /// assert!(robot.structure().link("mast").is_some());
 /// # Ok::<(), phoxal_model::ModelError>(())
 /// ```
@@ -218,6 +251,16 @@ pub struct Joint<'a> {
     pub rpy: [f64; 3],
     /// The axis a movable joint turns or slides along, in the parent's frame.
     pub axis: [f64; 3],
+    /// How far, how hard and how fast the joint may be driven.
+    pub limit: JointLimit,
+    /// Where the joint's reference switch trips, when it has one.
+    pub calibration: Option<Calibration>,
+    /// The joint's passive damping and friction, when they are modelled.
+    pub dynamics: Option<Dynamics>,
+    /// The joint this one follows instead of being driven independently.
+    pub mimic: Option<Mimic<'a>>,
+    /// The soft envelope a safety controller holds the joint inside.
+    pub safety: Option<Safety>,
 }
 
 impl Default for Joint<'_> {
@@ -230,6 +273,314 @@ impl Default for Joint<'_> {
             xyz: [0.0; 3],
             rpy: [0.0; 3],
             axis: [0.0, 0.0, 1.0],
+            limit: JointLimit::default(),
+            calibration: None,
+            dynamics: None,
+            mimic: None,
+            safety: None,
+        }
+    }
+}
+
+/// How far, how hard and how fast a joint may be driven.
+///
+/// The default is all zeroes, which is what the document compiler emits for a
+/// URDF joint that authors no `<limit>`. The range must be finite and
+/// non-inverted, which [`RobotBuilder::build`] checks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JointLimit {
+    /// The lowest position the joint may reach, in metres or radians.
+    pub lower: f64,
+    /// The highest position the joint may reach, in metres or radians.
+    pub upper: f64,
+    /// The largest force or torque the joint may apply, in N or Nm.
+    pub effort: f64,
+    /// The largest speed the joint may move at, in m/s or rad/s.
+    pub velocity: f64,
+}
+
+/// Where a joint's reference switch trips.
+///
+/// Either end may be left unstated, which is what a switch that only reports
+/// one edge means.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Calibration {
+    /// The position the switch rises at, in metres or radians.
+    pub rising: Option<f64>,
+    /// The position the switch falls at, in metres or radians.
+    pub falling: Option<f64>,
+}
+
+/// A joint's passive damping and friction.
+///
+/// Both must be finite and non-negative, which [`RobotBuilder::build`] checks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Dynamics {
+    /// Resistance proportional to speed, in Ns/m or Nms/rad.
+    pub damping: f64,
+    /// Resistance opposing motion at any speed, in N or Nm.
+    pub friction: f64,
+}
+
+/// The joint another joint follows, and the affine relation it follows it by.
+///
+/// The named joint must exist in the same structure, which
+/// [`RobotBuilder::build`] checks.
+#[derive(Clone, Copy, Debug)]
+pub struct Mimic<'a> {
+    /// The joint whose position drives this one.
+    pub joint: &'a str,
+    /// The factor the driving position is scaled by; unstated means one.
+    pub multiplier: Option<f64>,
+    /// The constant added after scaling; unstated means zero.
+    pub offset: Option<f64>,
+}
+
+impl<'a> Mimic<'a> {
+    /// Follow `joint` one for one, with no offset.
+    #[must_use]
+    pub const fn new(joint: &'a str) -> Self {
+        Self {
+            joint,
+            multiplier: None,
+            offset: None,
+        }
+    }
+}
+
+/// The soft envelope a safety controller holds a joint inside.
+///
+/// The range must be finite and non-inverted, which [`RobotBuilder::build`]
+/// checks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Safety {
+    /// Where the controller starts pushing back, at the low end.
+    pub soft_lower_limit: f64,
+    /// Where the controller starts pushing back, at the high end.
+    pub soft_upper_limit: f64,
+    /// The position gain the controller pushes back with.
+    pub k_position: f64,
+    /// The velocity gain the controller pushes back with.
+    pub k_velocity: f64,
+}
+
+/// One link of a built structure: the mass it has, and the shapes it is drawn
+/// and collided with.
+///
+/// A link that no stated joint attaches is added beneath the structure's body
+/// frame by a fixed joint named `<link>_joint`, exactly as a mount link is, so
+/// stating a link is also how a structure grows one. Naming a link some joint
+/// already provides gives that link its body instead.
+///
+/// Every field but the name has a default: a link carries the same unit
+/// inertial a generated link does, and no geometry at all.
+///
+/// ```
+/// use phoxal_model::builder::{Inertia, Inertial, Link, RobotBuilder};
+///
+/// let robot = RobotBuilder::new("rover")
+///     .link(Link {
+///         name: "base_link",
+///         inertial: Inertial {
+///             mass_kg: 12.0,
+///             inertia: Inertia {
+///                 ixx: 0.8,
+///                 iyy: 1.2,
+///                 izz: 1.6,
+///                 ..Inertia::default()
+///             },
+///             ..Inertial::default()
+///         },
+///         ..Link::default()
+///     })
+///     .build()?;
+///
+/// let base = robot.structure().link("base_link").expect("the stated link");
+/// assert_eq!(base.inertial().mass_kg(), 12.0);
+/// # Ok::<(), phoxal_model::ModelError>(())
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct Link<'a> {
+    /// The link's own identity, unique within its structure.
+    pub name: &'a str,
+    /// The link's mass properties.
+    pub inertial: Inertial,
+    /// The shapes the link is drawn with.
+    pub visuals: Vec<Visual<'a>>,
+    /// The shapes the link collides with.
+    pub collisions: Vec<Collision<'a>>,
+}
+
+/// The mass properties of one link.
+///
+/// The default is the unit inertial a generated link carries: one kilogram at
+/// the link's own origin, with a unit tensor.
+#[derive(Clone, Copy, Debug)]
+pub struct Inertial {
+    /// The centre of mass, offset from the link's origin, in metres.
+    pub xyz: [f64; 3],
+    /// The inertia frame's roll, pitch and yaw relative to the link, in radians.
+    pub rpy: [f64; 3],
+    /// The link's mass, in kilograms.
+    pub mass_kg: f64,
+    /// The inertia tensor about the centre of mass.
+    pub inertia: Inertia,
+}
+
+impl Default for Inertial {
+    fn default() -> Self {
+        Self {
+            xyz: [0.0; 3],
+            rpy: [0.0; 3],
+            mass_kg: 1.0,
+            inertia: Inertia::default(),
+        }
+    }
+}
+
+/// The symmetric inertia tensor of one link, in kg*m^2.
+///
+/// The default is the unit tensor. The tensor must describe a physically
+/// realizable body, which [`RobotBuilder::build`] checks.
+#[derive(Clone, Copy, Debug)]
+pub struct Inertia {
+    /// The moment about X.
+    pub ixx: f64,
+    /// The product of inertia between X and Y.
+    pub ixy: f64,
+    /// The product of inertia between X and Z.
+    pub ixz: f64,
+    /// The moment about Y.
+    pub iyy: f64,
+    /// The product of inertia between Y and Z.
+    pub iyz: f64,
+    /// The moment about Z.
+    pub izz: f64,
+}
+
+impl Default for Inertia {
+    fn default() -> Self {
+        Self {
+            ixx: 1.0,
+            ixy: 0.0,
+            ixz: 0.0,
+            iyy: 1.0,
+            iyz: 0.0,
+            izz: 1.0,
+        }
+    }
+}
+
+/// One shape a link is drawn with.
+///
+/// The shape itself is the one thing a visual cannot default, so
+/// [`Visual::new`] takes it and leaves the rest to `..`.
+///
+/// ```
+/// use phoxal_model::AssetId;
+/// use phoxal_model::builder::{Link, Material, RobotBuilder, Visual};
+/// use phoxal_model::structure::Geometry;
+///
+/// let robot = RobotBuilder::new("rover")
+///     .link(Link {
+///         name: "base_link",
+///         visuals: vec![Visual {
+///             material: Some(Material {
+///                 color: Some([0.2, 0.2, 0.2, 1.0]),
+///                 ..Material::new("carbon")
+///             }),
+///             ..Visual::new(Geometry::Mesh {
+///                 asset: AssetId::new("meshes/chassis.stl")?,
+///                 scale: None,
+///             })
+///         }],
+///         ..Link::default()
+///     })
+///     .build()?;
+///
+/// let base = robot.structure().link("base_link").expect("the stated link");
+/// assert_eq!(base.visuals().len(), 1);
+/// # Ok::<(), phoxal_model::ModelError>(())
+/// ```
+#[derive(Clone, Debug)]
+pub struct Visual<'a> {
+    /// The visual's own name, when the structure gives it one.
+    pub name: Option<&'a str>,
+    /// The shape's offset from the link's origin, in metres.
+    pub xyz: [f64; 3],
+    /// The shape's roll, pitch and yaw relative to the link, in radians.
+    pub rpy: [f64; 3],
+    /// The shape itself.
+    pub geometry: Geometry,
+    /// How the shape is rendered, when the structure says.
+    pub material: Option<Material<'a>>,
+}
+
+impl Visual<'_> {
+    /// An unnamed, unpainted visual of `geometry` at the link's own origin.
+    #[must_use]
+    pub fn new(geometry: Geometry) -> Self {
+        Self {
+            name: None,
+            xyz: [0.0; 3],
+            rpy: [0.0; 3],
+            geometry,
+            material: None,
+        }
+    }
+}
+
+/// One shape a link collides with.
+///
+/// The shape itself is the one thing a collision cannot default, so
+/// [`Collision::new`] takes it and leaves the rest to `..`.
+#[derive(Clone, Debug)]
+pub struct Collision<'a> {
+    /// The collision's own name, when the structure gives it one.
+    pub name: Option<&'a str>,
+    /// The shape's offset from the link's origin, in metres.
+    pub xyz: [f64; 3],
+    /// The shape's roll, pitch and yaw relative to the link, in radians.
+    pub rpy: [f64; 3],
+    /// The shape itself.
+    pub geometry: Geometry,
+}
+
+impl Collision<'_> {
+    /// An unnamed collision of `geometry` at the link's own origin.
+    #[must_use]
+    pub fn new(geometry: Geometry) -> Self {
+        Self {
+            name: None,
+            xyz: [0.0; 3],
+            rpy: [0.0; 3],
+            geometry,
+        }
+    }
+}
+
+/// How a visual is rendered.
+///
+/// A material is stated where it is used, and may also be added to the
+/// structure's own catalogue with [`RobotBuilder::material`].
+#[derive(Clone, Debug)]
+pub struct Material<'a> {
+    /// The material's name, which is how a structure refers to it.
+    pub name: &'a str,
+    /// Linear RGBA in `0.0..=1.0`, when the material states a colour.
+    pub color: Option<[f64; 4]>,
+    /// The texture image, when the material states one.
+    pub texture: Option<AssetId>,
+}
+
+impl<'a> Material<'a> {
+    /// A material named `name`, with neither colour nor texture.
+    #[must_use]
+    pub const fn new(name: &'a str) -> Self {
+        Self {
+            name,
+            color: None,
+            texture: None,
         }
     }
 }
@@ -244,6 +595,19 @@ struct JointSpec {
     xyz: [f64; 3],
     rpy: [f64; 3],
     axis: [f64; 3],
+    limit: JointLimit,
+    calibration: Option<Calibration>,
+    dynamics: Option<Dynamics>,
+    mimic: Option<MimicSpec>,
+    safety: Option<Safety>,
+}
+
+/// One mimic relationship as the builder holds it, with its joint owned.
+#[derive(Debug)]
+struct MimicSpec {
+    joint: String,
+    multiplier: Option<f64>,
+    offset: Option<f64>,
 }
 
 impl From<Joint<'_>> for JointSpec {
@@ -256,7 +620,46 @@ impl From<Joint<'_>> for JointSpec {
             xyz: joint.xyz,
             rpy: joint.rpy,
             axis: joint.axis,
+            limit: joint.limit,
+            calibration: joint.calibration,
+            dynamics: joint.dynamics,
+            mimic: joint.mimic.map(MimicSpec::from),
+            safety: joint.safety,
         }
+    }
+}
+
+impl From<Mimic<'_>> for MimicSpec {
+    fn from(mimic: Mimic<'_>) -> Self {
+        Self {
+            joint: mimic.joint.to_owned(),
+            multiplier: mimic.multiplier,
+            offset: mimic.offset,
+        }
+    }
+}
+
+/// The links and materials of one structure, each keyed by its own name and
+/// already normalized into the canonical document the compiler reads.
+///
+/// The document is the only route into a [`Structure`], so the builder keeps
+/// what it was told in that form rather than in a third copy of the shape.
+#[derive(Debug, Default)]
+struct Bodies {
+    links: BTreeMap<String, Value>,
+    materials: BTreeMap<String, Value>,
+}
+
+impl Bodies {
+    /// State one link's body, replacing any earlier statement of it.
+    fn link(&mut self, link: &Link<'_>) {
+        self.links.insert(link.name.to_owned(), link_value(link));
+    }
+
+    /// Add one material to the catalogue, replacing any earlier one of its name.
+    fn material(&mut self, material: &Material<'_>) {
+        self.materials
+            .insert(material.name.to_owned(), material_value(material));
     }
 }
 
@@ -265,6 +668,7 @@ impl From<Joint<'_>> for JointSpec {
 struct TypeSpec {
     capabilities: BTreeMap<String, Capability>,
     joints: Vec<JointSpec>,
+    bodies: Bodies,
     simulated: BTreeMap<String, simulation::Capability>,
     contact_materials: BTreeMap<String, String>,
 }
@@ -305,6 +709,7 @@ pub struct RobotBuilder {
     /// forcing every caller to handle one mid-chain.
     kinematic: Result<KinematicConfig, ModelError>,
     joints: Vec<JointSpec>,
+    bodies: Bodies,
     types: BTreeMap<String, TypeSpec>,
     instances: BTreeMap<String, InstanceSpec>,
 }
@@ -355,6 +760,7 @@ impl RobotBuilder {
                 encoders: Vec::new(),
             }),
             joints: Vec::new(),
+            bodies: Bodies::default(),
             types: BTreeMap::new(),
             instances: BTreeMap::new(),
         }
@@ -409,6 +815,74 @@ impl RobotBuilder {
     #[must_use]
     pub fn joint(mut self, joint: Joint<'_>) -> Self {
         self.joints.push(joint.into());
+        self
+    }
+
+    /// Give one link of the robot's own structure a body.
+    ///
+    /// A link no stated joint attaches is added beneath `base_link` by a fixed
+    /// joint named `<link>_joint`, so this is enough on its own to put a link
+    /// on the robot. Stating the same link twice replaces the earlier body.
+    ///
+    /// ```
+    /// use phoxal_model::AssetId;
+    /// use phoxal_model::builder::{
+    ///     Collision, Inertia, Inertial, Link, Material, RobotBuilder, Visual,
+    /// };
+    /// use phoxal_model::structure::Geometry;
+    ///
+    /// let robot = RobotBuilder::new("rover")
+    ///     .link(Link {
+    ///         name: "chassis",
+    ///         inertial: Inertial {
+    ///             xyz: [0.0, 0.0, 0.05],
+    ///             mass_kg: 12.0,
+    ///             inertia: Inertia {
+    ///                 ixx: 0.8,
+    ///                 iyy: 1.2,
+    ///                 izz: 1.6,
+    ///                 ..Inertia::default()
+    ///             },
+    ///             ..Inertial::default()
+    ///         },
+    ///         visuals: vec![Visual {
+    ///             name: Some("shell"),
+    ///             material: Some(Material {
+    ///                 color: Some([0.2, 0.2, 0.2, 1.0]),
+    ///                 texture: Some(AssetId::new("textures/carbon.png")?),
+    ///                 ..Material::new("carbon")
+    ///             }),
+    ///             ..Visual::new(Geometry::Mesh {
+    ///                 asset: AssetId::new("meshes/chassis.stl")?,
+    ///                 scale: None,
+    ///             })
+    ///         }],
+    ///         collisions: vec![Collision::new(Geometry::Box {
+    ///             size: [0.6, 0.4, 0.2],
+    ///         })],
+    ///         ..Link::default()
+    ///     })
+    ///     .build()?;
+    ///
+    /// let chassis = robot.structure().link("chassis").expect("the stated link");
+    /// assert_eq!(chassis.inertial().mass_kg(), 12.0);
+    /// assert_eq!(chassis.collisions().len(), 1);
+    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// ```
+    #[must_use]
+    pub fn link(mut self, link: Link<'_>) -> Self {
+        self.bodies.link(&link);
+        self
+    }
+
+    /// Add one material to the robot structure's own catalogue.
+    ///
+    /// This is the structure-level material table, which is one of the places a
+    /// bundle's declared assets are read from; a visual states the material it
+    /// is drawn with itself. Restating a name replaces the earlier material.
+    #[must_use]
+    pub fn material(mut self, material: Material<'_>) -> Self {
+        self.bodies.material(&material);
         self
     }
 
@@ -548,7 +1022,7 @@ impl RobotBuilder {
                 ),
             );
         }
-        let structure = robot_structure(&id, self.joints, &mounts)?;
+        let structure = robot_structure(&id, self.joints, &mounts, &self.bodies)?;
         compiler::robot(RobotParts {
             id,
             namespace,
@@ -612,6 +1086,53 @@ impl ComponentTypeBuilder {
     #[must_use]
     pub fn joint(mut self, joint: Joint<'_>) -> Self {
         self.spec.joints.push(joint.into());
+        self
+    }
+
+    /// Give one link of this component's structure a body.
+    ///
+    /// A link no stated joint attaches is added beneath `mount` by a fixed
+    /// joint named `<link>_joint`, so this is enough on its own to put a link
+    /// on the component. Stating the same link twice replaces the earlier body.
+    ///
+    /// ```
+    /// use phoxal_model::builder::{Link, RobotBuilder, Visual};
+    /// use phoxal_model::structure::Geometry;
+    ///
+    /// let robot = RobotBuilder::new("rover")
+    ///     .component_type("rgbd", |camera| {
+    ///         camera.camera("rgb", "lens").link(Link {
+    ///             name: "lens",
+    ///             visuals: vec![Visual::new(Geometry::Cylinder {
+    ///                 radius: 0.02,
+    ///                 length: 0.01,
+    ///             })],
+    ///             ..Link::default()
+    ///         })
+    ///     })
+    ///     .component("front_camera", "rgbd")
+    ///     .build()?;
+    ///
+    /// let camera = robot
+    ///     .component_for_instance("front_camera")
+    ///     .expect("the mounted type is loaded");
+    /// let lens = camera.structure().link("lens").expect("the stated link");
+    /// assert_eq!(lens.visuals().len(), 1);
+    /// # Ok::<(), phoxal_model::ModelError>(())
+    /// ```
+    #[must_use]
+    pub fn link(mut self, link: Link<'_>) -> Self {
+        self.spec.bodies.link(&link);
+        self
+    }
+
+    /// Add one material to this component structure's own catalogue.
+    ///
+    /// The component counterpart of [`RobotBuilder::material`]. Restating a
+    /// name replaces the earlier material.
+    #[must_use]
+    pub fn material(mut self, material: Material<'_>) -> Self {
+        self.spec.bodies.material(&material);
         self
     }
 
@@ -996,7 +1517,8 @@ fn build_types(types: BTreeMap<String, TypeSpec>) -> Result<NormalizedTypes, Mod
         for (capability, declared) in spec.capabilities {
             capabilities.insert(CapabilityId::new(capability)?, declared);
         }
-        let structure = component_structure(&component_type, &capabilities, spec.joints)?;
+        let structure =
+            component_structure(&component_type, &capabilities, spec.joints, &spec.bodies)?;
         // A simulation is only carried for a type that states one: an empty
         // simulation and no simulation are different facts.
         if !spec.simulated.is_empty() || !spec.contact_materials.is_empty() {
@@ -1023,11 +1545,13 @@ fn build_types(types: BTreeMap<String, TypeSpec>) -> Result<NormalizedTypes, Mod
     })
 }
 
-/// The component structure its stated joints and capability targets imply.
+/// The component structure its stated joints, links and capability targets
+/// imply.
 fn component_structure(
     component_type: &ComponentTypeId,
     capabilities: &BTreeMap<CapabilityId, Capability>,
     mut joints: Vec<JointSpec>,
+    bodies: &Bodies,
 ) -> Result<Structure, ModelError> {
     for capability in capabilities.values() {
         match capability.target() {
@@ -1041,28 +1565,32 @@ fn component_structure(
                     ));
                 }
             }
-            StructuralTarget::Link { id } => {
-                if id.as_str() != COMPONENT_ROOT_LINK
-                    && !joints.iter().any(|joint| joint.child == id.as_str())
-                {
-                    joints.push(generated_joint(
-                        &format!("{id}{LINK_JOINT_SUFFIX}"),
-                        JointKind::Fixed,
-                        COMPONENT_ROOT_LINK,
-                        id.as_str(),
-                    ));
-                }
-            }
+            StructuralTarget::Link { id } => attach(
+                &mut joints,
+                COMPONENT_ROOT_LINK,
+                COMPONENT_ROOT_LINK,
+                id.as_str(),
+            ),
         }
     }
-    structure(component_type.as_str(), COMPONENT_ROOT_LINK, &joints)
+    for link in bodies.links.keys() {
+        attach(&mut joints, COMPONENT_ROOT_LINK, COMPONENT_ROOT_LINK, link);
+    }
+    structure(
+        component_type.as_str(),
+        COMPONENT_ROOT_LINK,
+        &joints,
+        bodies,
+    )
 }
 
-/// The robot structure its stated joints and every mount link imply.
+/// The robot structure its stated joints, stated links and every mount link
+/// imply.
 fn robot_structure(
     id: &RobotId,
     mut joints: Vec<JointSpec>,
     mounts: &BTreeSet<LinkId>,
+    bodies: &Bodies,
 ) -> Result<Structure, ModelError> {
     if !joints.iter().any(|joint| joint.child == BASE_LINK) {
         joints.push(generated_joint(
@@ -1072,22 +1600,31 @@ fn robot_structure(
             BASE_LINK,
         ));
     }
-    for mount in mounts {
-        // Mounting straight onto a base frame needs no link of its own.
-        if mount == BASE_FOOTPRINT_LINK
-            || mount == BASE_LINK
-            || joints.iter().any(|joint| joint.child == mount.as_str())
-        {
-            continue;
-        }
-        joints.push(generated_joint(
-            &format!("{mount}{LINK_JOINT_SUFFIX}"),
-            JointKind::Fixed,
-            BASE_LINK,
-            mount.as_str(),
-        ));
+    for link in mounts
+        .iter()
+        .map(LinkId::as_str)
+        .chain(bodies.links.keys().map(String::as_str))
+    {
+        attach(&mut joints, BASE_FOOTPRINT_LINK, BASE_LINK, link);
     }
-    structure(id.as_str(), BASE_FOOTPRINT_LINK, &joints)
+    structure(id.as_str(), BASE_FOOTPRINT_LINK, &joints, bodies)
+}
+
+/// Hang `link` beneath `parent` unless the structure already provides it.
+///
+/// The root is provided by being the root and any link a joint already moves is
+/// provided by that joint; a link nothing provides would leave the structure in
+/// pieces rather than as a single tree.
+fn attach(joints: &mut Vec<JointSpec>, root: &str, parent: &str, link: &str) {
+    if link == root || joints.iter().any(|joint| joint.child == link) {
+        return;
+    }
+    joints.push(generated_joint(
+        &format!("{link}{LINK_JOINT_SUFFIX}"),
+        JointKind::Fixed,
+        parent,
+        link,
+    ));
 }
 
 /// A joint the builder adds because nothing stated one.
@@ -1103,37 +1640,92 @@ fn generated_joint(name: &str, kind: JointKind, parent: &str, child: &str) -> Jo
 
 /// The canonical structure rooted at `root`, with a link for the root and one
 /// for every joint's child.
-fn structure(name: &str, root: &str, joints: &[JointSpec]) -> Result<Structure, ModelError> {
-    let mut links = vec![link_value(root)];
-    links.extend(joints.iter().map(|joint| link_value(&joint.child)));
+///
+/// A link the caller gave a body carries it; every other link gets the unit
+/// inertial and no geometry that being a frame requires and nothing more.
+fn structure(
+    name: &str,
+    root: &str,
+    joints: &[JointSpec],
+    bodies: &Bodies,
+) -> Result<Structure, ModelError> {
+    let body_of = |link: &str| {
+        bodies.links.get(link).cloned().unwrap_or_else(|| {
+            link_value(&Link {
+                name: link,
+                ..Link::default()
+            })
+        })
+    };
+    let mut links = vec![body_of(root)];
+    links.extend(joints.iter().map(|joint| body_of(&joint.child)));
     compiler::structure(json!({
         "name": name,
         "links": links,
         "joints": joints.iter().map(joint_value).collect::<Vec<_>>(),
-        "materials": []
+        "materials": bodies.materials.values().collect::<Vec<_>>()
     }))
 }
 
-/// A link with a unit inertial and no geometry: enough to be a frame, and
-/// nothing more than the model requires.
-fn link_value(name: &str) -> Value {
+/// One link as the canonical structure document carries it.
+fn link_value(link: &Link<'_>) -> Value {
     json!({
-        "name": name,
-        "inertial": {
-            "origin": pose_value([0.0; 3], [0.0; 3]),
-            "mass_kg": 1.0,
-            "inertia": { "ixx": 1.0, "ixy": 0.0, "ixz": 0.0, "iyy": 1.0, "iyz": 0.0, "izz": 1.0 }
-        },
-        "visuals": [],
-        "collisions": []
+        "name": link.name,
+        "inertial": inertial_value(link.inertial),
+        "visuals": link.visuals.iter().map(visual_value).collect::<Vec<_>>(),
+        "collisions": link.collisions.iter().map(collision_value).collect::<Vec<_>>()
+    })
+}
+
+fn inertial_value(inertial: Inertial) -> Value {
+    let Inertia {
+        ixx,
+        ixy,
+        ixz,
+        iyy,
+        iyz,
+        izz,
+    } = inertial.inertia;
+    json!({
+        "origin": pose_value(inertial.xyz, inertial.rpy),
+        "mass_kg": inertial.mass_kg,
+        "inertia": { "ixx": ixx, "ixy": ixy, "ixz": ixz, "iyy": iyy, "iyz": iyz, "izz": izz }
+    })
+}
+
+fn visual_value(visual: &Visual<'_>) -> Value {
+    json!({
+        "name": visual.name,
+        "origin": pose_value(visual.xyz, visual.rpy),
+        "geometry": visual.geometry,
+        "material": visual.material.as_ref().map(material_value)
+    })
+}
+
+fn collision_value(collision: &Collision<'_>) -> Value {
+    json!({
+        "name": collision.name,
+        "origin": pose_value(collision.xyz, collision.rpy),
+        "geometry": collision.geometry
+    })
+}
+
+fn material_value(material: &Material<'_>) -> Value {
+    json!({
+        "name": material.name,
+        "color": material.color,
+        "texture": material.texture
     })
 }
 
 /// One joint as the canonical structure document carries it.
-///
-/// The limits are all zero, which is what the document compiler emits for a
-/// URDF joint that authors no `<limit>`.
 fn joint_value(joint: &JointSpec) -> Value {
+    let JointLimit {
+        lower,
+        upper,
+        effort,
+        velocity,
+    } = joint.limit;
     json!({
         "name": joint.name,
         "kind": joint.kind,
@@ -1141,7 +1733,26 @@ fn joint_value(joint: &JointSpec) -> Value {
         "parent": joint.parent,
         "child": joint.child,
         "axis": joint.axis,
-        "limit": { "lower": 0.0, "upper": 0.0, "effort": 0.0, "velocity": 0.0 }
+        "limit": { "lower": lower, "upper": upper, "effort": effort, "velocity": velocity },
+        "calibration": joint.calibration.map(|calibration| json!({
+            "rising": calibration.rising,
+            "falling": calibration.falling
+        })),
+        "dynamics": joint.dynamics.map(|dynamics| json!({
+            "damping": dynamics.damping,
+            "friction": dynamics.friction
+        })),
+        "mimic": joint.mimic.as_ref().map(|mimic| json!({
+            "joint": mimic.joint,
+            "multiplier": mimic.multiplier,
+            "offset": mimic.offset
+        })),
+        "safety": joint.safety.map(|safety| json!({
+            "soft_lower_limit": safety.soft_lower_limit,
+            "soft_upper_limit": safety.soft_upper_limit,
+            "k_position": safety.k_position,
+            "k_velocity": safety.k_velocity
+        }))
     })
 }
 
@@ -1171,7 +1782,10 @@ fn optional_reference(value: Option<&str>) -> Result<Option<CapabilityRef>, Mode
 
 #[cfg(test)]
 mod tests {
-    use super::{Joint, Kinematics, RobotBuilder};
+    use super::{
+        Collision, Dynamics, Inertial, Joint, JointLimit, Kinematics, Link, Material, Mimic,
+        RobotBuilder, Visual,
+    };
     use crate::component::capability::{
         Capability, CapabilityKind, Motor, MotorCommand, StructuralTarget,
     };
@@ -1179,7 +1793,7 @@ mod tests {
     use crate::identity::{CapabilityRef, JointId, LinkId};
     use crate::robot::{Clock, DriveKinematics, KinematicConfig, MotionLimits};
     use crate::simulation;
-    use crate::structure::JointKind;
+    use crate::structure::{Geometry, JointKind};
 
     fn reference(value: &str) -> CapabilityRef {
         value.parse().expect("a well formed capability reference")
@@ -1485,6 +2099,203 @@ mod tests {
             structure.joint("rear_camera_mount_joint").is_some(),
             "an unstated mount link is attached beneath base_link"
         );
+    }
+
+    /// A stated link is a body for a link the tree already has, or a new link
+    /// hung where a mount link would be. Either way nothing else changes: a
+    /// link nobody described keeps the unit inertial and no geometry.
+    #[test]
+    fn a_stated_link_carries_its_body_and_leaves_the_rest_generated() {
+        let robot = RobotBuilder::new("rover")
+            .link(Link {
+                name: "base_link",
+                inertial: Inertial {
+                    mass_kg: 12.0,
+                    ..Inertial::default()
+                },
+                ..Link::default()
+            })
+            .link(Link {
+                name: "mast",
+                collisions: vec![Collision::new(Geometry::Sphere { radius: 0.2 })],
+                ..Link::default()
+            })
+            .build()
+            .expect("a valid robot");
+
+        let structure = robot.structure();
+        // A body given to a link the base frames already provide does not
+        // attach it a second time.
+        assert_eq!(
+            structure
+                .link("base_link")
+                .expect("the body frame")
+                .inertial()
+                .mass_kg(),
+            12.0
+        );
+        assert!(structure.joint("base_link_joint").is_none());
+        // A link nothing else provides is hung beneath the body frame.
+        let mast_joint = structure.joint("mast_joint").expect("the generated joint");
+        assert_eq!(mast_joint.parent(), &LinkId::new("base_link"));
+        assert_eq!(
+            structure
+                .link("mast")
+                .expect("the stated link")
+                .collisions()
+                .len(),
+            1
+        );
+        // The root was never described, so it is still a bare frame.
+        let root = structure.link("base_footprint").expect("the root link");
+        assert_eq!(root.inertial().mass_kg(), 1.0);
+        assert_eq!(root.visuals().len(), 0);
+    }
+
+    /// A component type states its structure exactly the way the robot does,
+    /// rooted at `mount` instead of the base frames.
+    #[test]
+    fn a_component_type_states_its_own_links_joints_and_materials() {
+        let robot = RobotBuilder::new("rover")
+            .component_type("pan_tilt", |head| {
+                head.motor("pan", "pan_joint")
+                    .joint(Joint {
+                        name: "pan_joint",
+                        kind: JointKind::Revolute,
+                        parent: "mount",
+                        child: "lens",
+                        limit: JointLimit {
+                            lower: -3.0,
+                            upper: 3.0,
+                            effort: 1.0,
+                            velocity: 4.0,
+                        },
+                        dynamics: Some(Dynamics {
+                            damping: 0.05,
+                            friction: 0.01,
+                        }),
+                        ..Joint::default()
+                    })
+                    .link(Link {
+                        name: "lens",
+                        visuals: vec![Visual::new(Geometry::Cylinder {
+                            radius: 0.02,
+                            length: 0.01,
+                        })],
+                        ..Link::default()
+                    })
+                    .link(Link {
+                        name: "shade",
+                        inertial: Inertial {
+                            mass_kg: 0.05,
+                            ..Inertial::default()
+                        },
+                        ..Link::default()
+                    })
+                    .material(Material {
+                        color: Some([0.0, 0.0, 0.0, 1.0]),
+                        ..Material::new("matte")
+                    })
+            })
+            .component("head", "pan_tilt")
+            .build()
+            .expect("a valid robot");
+
+        let structure = robot
+            .component_for_instance("head")
+            .expect("the mounted type is loaded")
+            .structure();
+        assert_eq!(structure.root_link(), &LinkId::new("mount"));
+        let pan = structure.joint("pan_joint").expect("the stated joint");
+        assert_eq!(pan.limit().velocity(), 4.0);
+        assert_eq!(
+            pan.dynamics().map(|dynamics| dynamics.damping()),
+            Some(0.05)
+        );
+        assert_eq!(
+            structure
+                .link("lens")
+                .expect("the stated link")
+                .visuals()
+                .len(),
+            1
+        );
+        // A stated link no joint attaches is hung beneath the component root.
+        assert_eq!(
+            structure
+                .joint("shade_joint")
+                .expect("the generated joint")
+                .parent(),
+            &LinkId::new("mount")
+        );
+        let catalogue = structure.materials().collect::<Vec<_>>();
+        assert_eq!(catalogue.len(), 1);
+        assert_eq!(catalogue[0].name(), "matte");
+    }
+
+    /// A joint's own fields are checked by the same canonical rules a compiled
+    /// document is, and the builder is not a way around any of them.
+    #[test]
+    fn a_structural_value_the_model_refuses_is_refused_here_too() {
+        let inverted = |limit| {
+            RobotBuilder::new("rover")
+                .joint(Joint {
+                    name: "mast_joint",
+                    kind: JointKind::Revolute,
+                    parent: "base_link",
+                    child: "mast",
+                    limit,
+                    ..Joint::default()
+                })
+                .build()
+        };
+        assert!(matches!(
+            inverted(JointLimit {
+                lower: 1.0,
+                upper: -1.0,
+                effort: 0.0,
+                velocity: 0.0,
+            }),
+            Err(ModelError::Structure(StructureError::JointLimits { .. }))
+        ));
+        assert!(matches!(
+            RobotBuilder::new("rover")
+                .joint(Joint {
+                    name: "mast_joint",
+                    kind: JointKind::Revolute,
+                    parent: "base_link",
+                    child: "mast",
+                    mimic: Some(Mimic::new("no_such_joint")),
+                    ..Joint::default()
+                })
+                .build(),
+            Err(ModelError::Structure(
+                StructureError::UnknownMimicJoint { .. }
+            ))
+        ));
+        assert!(matches!(
+            RobotBuilder::new("rover")
+                .link(Link {
+                    name: "mast",
+                    inertial: Inertial {
+                        mass_kg: -1.0,
+                        ..Inertial::default()
+                    },
+                    ..Link::default()
+                })
+                .build(),
+            Err(ModelError::Structure(StructureError::Mass { .. }))
+        ));
+        assert!(matches!(
+            RobotBuilder::new("rover")
+                .link(Link {
+                    name: "mast",
+                    visuals: vec![Visual::new(Geometry::Sphere { radius: 0.0 })],
+                    ..Link::default()
+                })
+                .build(),
+            Err(ModelError::Structure(StructureError::Geometry { .. }))
+        ));
     }
 
     #[test]
