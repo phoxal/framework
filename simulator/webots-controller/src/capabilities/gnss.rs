@@ -1,46 +1,40 @@
-//! GNSS capability: publishes `component::gnss::Sample` from the Webots
-//! `Gps` device. Moved from the monolith's `GnssSpec` (main.rs:600-604) and
-//! `NativeGnss` (main.rs:1465-1496).
+//! GNSS capability: publishes `component::gnss::Sample` from the Webots `Gps`
+//! device, whose reading is already a latitude/longitude/altitude triple.
+//!
+//! Webots models no fix quality, so the covariance is reported as all zeros:
+//! the contract has no way to say "unknown", and any non-zero figure invented
+//! here would describe an uncertainty nobody measured.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
-use phoxal::model::component::capability::GnssCoordinateSystem;
 
-use super::{SampledSpec, is_due};
-
-#[derive(Clone, Debug)]
-pub(crate) struct GnssSpec {
-    pub(crate) sampled: SampledSpec,
-    pub(crate) coordinate_system: GnssCoordinateSystem,
-}
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 pub(crate) struct NativeGnss {
     gps: webots_rs::device::gps::Gps,
-    spec: GnssSpec,
+    spec: SampledSpec,
 }
 
 impl NativeGnss {
-    pub(crate) fn new(webots: &webots_rs::Webots, spec: &GnssSpec) -> Result<Self> {
-        let gps = webots
-            .gps(spec.sampled.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        gps.enable(spec.sampled.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+    pub(crate) fn new(webots: &webots_rs::Webots, spec: &SampledSpec) -> Result<Self> {
+        let gps = webots.gps(spec.reference.to_string())?;
+        gps.enable(spec.sampling_period_ms)?;
         Ok(Self {
             gps,
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::gnss::Sample>> {
-        if !is_due(step_index, self.spec.sampled.publish_every_steps) {
-            return Ok(None);
-        }
-        let reading = self.gps.reading().map_err(|error| anyhow!(error))?;
-        let _coordinate_system = self.spec.coordinate_system;
+impl SimulatedSensor for NativeGnss {
+    type Sample = api::component::gnss::Sample;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
+        let reading = self.gps.reading()?;
         Ok(Some(api::component::gnss::Sample {
             latitude: reading.position[0],
             longitude: reading.position[1],

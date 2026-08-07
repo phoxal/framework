@@ -2,6 +2,15 @@
 
 use serde::{Deserialize, Serialize};
 
+// The closed vocabularies below are canonical: an authored document and the
+// runtime model must agree on exactly which names exist, so there is one
+// definition of each and this layer only describes it for editors. They are
+// imported, not re-exported: `phoxal_model::component::capability` stays their
+// only path.
+use phoxal_model::component::capability::{
+    CameraMode, CapabilityKind, EncoderType, GnssCoordinateSystem, LidarOutput, MotorCommand,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Capability {
@@ -24,66 +33,16 @@ pub enum Capability {
     Led(Led),
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EncoderType {
-    Incremental,
-    Absolute,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MotorCommand {
-    Position,
-    Velocity,
-    Torque,
-}
-
+/// The component-local structural item a capability is attached to.
+///
+/// Authored structural ids are URDF names, whose grammar is wider than a
+/// canonical token, so they stay plain strings until the compiler adopts them
+/// into `phoxal-model`'s `LinkId` / `JointId`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StructuralTarget {
     Joint { id: String },
     Link { id: String },
-}
-
-pub const MODULE_INSTANCE_SEPARATOR: &str = "__";
-
-impl StructuralTarget {
-    #[must_use]
-    pub fn namespaced(&self, component_id: &str) -> Self {
-        match self {
-            Self::Joint { id } => Self::Joint {
-                id: format!("{component_id}{MODULE_INSTANCE_SEPARATOR}{id}"),
-            },
-            Self::Link { id } => Self::Link {
-                id: format!("{component_id}{MODULE_INSTANCE_SEPARATOR}{id}"),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum LidarOutput {
-    Ranges,
-    Points,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CameraMode {
-    Mono,
-    Rgb,
-}
-
-#[derive(
-    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum GnssCoordinateSystem {
-    #[default]
-    Local,
-    Wgs84,
 }
 
 impl Capability {
@@ -99,31 +58,32 @@ impl Capability {
         1.0
     }
 
+    /// The device kind this capability declares.
     #[must_use]
-    pub fn kind_name(&self) -> &'static str {
+    pub const fn kind(&self) -> CapabilityKind {
         match self {
-            Self::Motor { .. } => "motor",
-            Self::Encoder { .. } => "encoder",
-            Self::Imu { .. } => "imu",
-            Self::Accelerometer { .. } => "accelerometer",
-            Self::Gyroscope { .. } => "gyroscope",
-            Self::Magnetometer { .. } => "magnetometer",
-            Self::Gnss { .. } => "gnss",
-            Self::Camera { .. } => "camera",
-            Self::Depth { .. } => "depth",
-            Self::EmergencyStop { .. } => "emergency_stop",
-            Self::Range { .. } => "range",
-            Self::Lidar { .. } => "lidar",
-            Self::Mmwave { .. } => "mmwave",
-            Self::Microphone { .. } => "microphone",
-            Self::Speaker { .. } => "speaker",
-            Self::Battery { .. } => "battery",
-            Self::Led { .. } => "led",
+            Self::Motor(_) => CapabilityKind::Motor,
+            Self::Encoder(_) => CapabilityKind::Encoder,
+            Self::Accelerometer(_) => CapabilityKind::Accelerometer,
+            Self::Gyroscope(_) => CapabilityKind::Gyroscope,
+            Self::Magnetometer(_) => CapabilityKind::Magnetometer,
+            Self::Imu(_) => CapabilityKind::Imu,
+            Self::Gnss(_) => CapabilityKind::Gnss,
+            Self::Camera(_) => CapabilityKind::Camera,
+            Self::Depth(_) => CapabilityKind::Depth,
+            Self::EmergencyStop(_) => CapabilityKind::EmergencyStop,
+            Self::Range(_) => CapabilityKind::Range,
+            Self::Lidar(_) => CapabilityKind::Lidar,
+            Self::Mmwave(_) => CapabilityKind::Mmwave,
+            Self::Microphone(_) => CapabilityKind::Microphone,
+            Self::Speaker(_) => CapabilityKind::Speaker,
+            Self::Battery(_) => CapabilityKind::Battery,
+            Self::Led(_) => CapabilityKind::Led,
         }
     }
 
     #[must_use]
-    pub fn target(&self) -> &StructuralTarget {
+    pub const fn target(&self) -> &StructuralTarget {
         match self {
             Self::Motor(nm) => &nm.target,
             Self::Encoder(nm) => &nm.target,
@@ -347,29 +307,7 @@ pub struct Led {
 
 #[cfg(test)]
 mod tests {
-    use super::{Capability, GnssCoordinateSystem, StructuralTarget};
-
-    #[test]
-    fn namespaces_structural_targets_with_component_instance_id() {
-        assert_eq!(
-            StructuralTarget::Joint {
-                id: "motor_joint".to_string()
-            }
-            .namespaced("left_drive"),
-            StructuralTarget::Joint {
-                id: "left_drive__motor_joint".to_string()
-            }
-        );
-        assert_eq!(
-            StructuralTarget::Link {
-                id: "sensor_link".to_string()
-            }
-            .namespaced("front_sensor"),
-            StructuralTarget::Link {
-                id: "front_sensor__sensor_link".to_string()
-            }
-        );
-    }
+    use super::{Capability, GnssCoordinateSystem};
 
     #[test]
     fn gnss_coordinate_system_defaults_to_local_in_source_schema() {

@@ -1,6 +1,5 @@
 //! `safety` - world-input assessment into typed, expiring motion constraints.
 //!
-//! This is intentionally not the deleted authorization-envelope runtime.
 //! Emergency stop remains owned by `motion`; safety consumes localization, map,
 //! proximity, drive, and optional battery state and emits one diagnosable
 //! constraint product. Autonomous motion treats a missing, stale, future-dated,
@@ -8,11 +7,13 @@
 //! product, while any valid protective stop or limit still applies.
 
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use phoxal::api;
-use phoxal::model::Robot;
+use phoxal::bus::ContractBody;
 use phoxal::model::component::capability::Capability;
+use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
 
 const INPUT_STALE: Duration = Duration::from_nanos(1_000_000_000);
@@ -23,60 +24,290 @@ const PROTECTIVE_STOP_DISTANCE_M: f32 = 0.25;
 const PROXIMITY_LIMIT_DISTANCE_M: f32 = 0.60;
 const PROXIMITY_LINEAR_LIMIT_MPS: f32 = 0.15;
 
-#[derive(Clone)]
-struct Timed<T> {
-    body: T,
-    at: RobotInstant,
+// The participant a constraint names as its source. These are published wire
+// values, so each spelling is written once here rather than at the call sites
+// that build a constraint.
+const LOCALIZE_PARTICIPANT_ID: &str = "localize";
+const MAP_PARTICIPANT_ID: &str = "map";
+const DRIVE_PARTICIPANT_ID: &str = "drive";
+const BATTERY_PARTICIPANT_ID: &str = "battery-provider";
+const WORLD_MODEL_PARTICIPANT_ID: &str = "safety";
+const OPERATOR_PARTICIPANT_ID: &str = "operator";
+/// A range constraint normally names the component that observed it. This is
+/// the fallback for a range source raised with no bound capability behind it.
+const RANGE_PARTICIPANT_ID: &str = "range-provider";
+
+/// One declared component capability and the subscription carrying its samples.
+struct BoundInput<B> {
+    reference: CapabilityRef,
+    samples: Subscriber<B>,
 }
 
-#[derive(Clone)]
-struct CapabilityBinding {
-    component_id: String,
-    capability_id: String,
-}
-
+/// The newest sample of every world input this service reads.
+///
+/// The per-capability inputs are keyed by the capability they came from, not by
+/// a subscriber position, so a sample can never be attributed to a different
+/// sensor than the one that published it. A declared capability with no sample
+/// yet is present with `None`, which is what lets a silent range sensor raise a
+/// constraint naming itself.
 struct WorldInputs {
     localization: Option<Timed<api::localize::LocalizationState>>,
     map: Option<Timed<api::map::Revision>>,
     drivable_space: Option<Timed<bool>>,
     drive: Option<Timed<api::drive::State>>,
-    batteries: Vec<Option<Timed<api::component::battery::State>>>,
-    ranges: Vec<Option<Timed<api::component::range::Sample>>>,
+    batteries: BTreeMap<CapabilityRef, Option<Timed<api::component::battery::State>>>,
+    ranges: BTreeMap<CapabilityRef, Option<Timed<api::component::range::Sample>>>,
 }
 
 impl WorldInputs {
-    fn new(range_count: usize, battery_count: usize) -> Self {
+    fn new(
+        ranges: impl IntoIterator<Item = CapabilityRef>,
+        batteries: impl IntoIterator<Item = CapabilityRef>,
+    ) -> Self {
         Self {
             localization: None,
             map: None,
             drivable_space: None,
             drive: None,
-            batteries: vec![None; battery_count],
-            ranges: vec![None; range_count],
+            batteries: batteries
+                .into_iter()
+                .map(|reference| (reference, None))
+                .collect(),
+            ranges: ranges
+                .into_iter()
+                .map(|reference| (reference, None))
+                .collect(),
         }
+    }
+
+    /// Drop every sample while keeping the declared capabilities: the samples
+    /// describe a world that has been replaced, the declarations have not.
+    fn clear(&mut self) {
+        self.localization = None;
+        self.map = None;
+        self.drivable_space = None;
+        self.drive = None;
+        for sample in self.batteries.values_mut() {
+            *sample = None;
+        }
+        for sample in self.ranges.values_mut() {
+            *sample = None;
+        }
+    }
+
+    /// Assess this step's world into one constraint product.
+    ///
+    /// Range constraints are emitted in declared `(component id, capability id)`
+    /// order, because [`Robot::capability_refs`](phoxal::model::Robot::capability_refs)
+    /// guarantees that order and the map preserves it: two runs over the same
+    /// robot must produce the same constraint sequence, and the nearest-obstacle
+    /// tie-break must resolve the same way.
+    fn assess(&self, sequence: u64, now: RobotInstant) -> Result<api::safety::MotionConstraints> {
+        let expires_at = now.saturating_add(CONSTRAINT_TTL);
+        let mut constraints = Vec::new();
+
+        match usable(self.localization.as_ref(), now, INPUT_STALE) {
+            None => constraints.push(stop_constraint(
+                api::safety::ConstraintReason::LocalizationUnavailable,
+                source(api::safety::ConstraintSourceKind::Localization, None),
+                None,
+                now,
+                expires_at,
+            )),
+            Some(localization) => {
+                if !(localization.x_m.is_finite()
+                    && localization.y_m.is_finite()
+                    && localization.yaw_rad.is_finite()
+                    && localization.confidence.is_finite())
+                {
+                    bail!("localization world input contains a non-finite value");
+                }
+                if localization.confidence < MIN_LOCALIZATION_CONFIDENCE {
+                    constraints.push(stop_constraint(
+                        api::safety::ConstraintReason::LocalizationUncertain,
+                        source(api::safety::ConstraintSourceKind::Localization, None),
+                        Some(localization.confidence),
+                        now,
+                        expires_at,
+                    ));
+                }
+            }
+        }
+
+        if usable(self.map.as_ref(), now, MAP_STALE).is_none() {
+            constraints.push(stop_constraint(
+                api::safety::ConstraintReason::MapUnavailable,
+                source(api::safety::ConstraintSourceKind::Map, None),
+                None,
+                now,
+                expires_at,
+            ));
+        }
+
+        match usable(self.drivable_space.as_ref(), now, MAP_STALE) {
+            None => constraints.push(stop_constraint(
+                api::safety::ConstraintReason::WorldUnavailable,
+                source(api::safety::ConstraintSourceKind::WorldModel, None),
+                None,
+                now,
+                expires_at,
+            )),
+            Some(false) => constraints.push(stop_constraint(
+                api::safety::ConstraintReason::DrivableSpaceUnavailable,
+                source(api::safety::ConstraintSourceKind::WorldModel, None),
+                None,
+                now,
+                expires_at,
+            )),
+            Some(true) => {}
+        }
+
+        let mut nearest_range = None::<(f32, &CapabilityRef)>;
+        for (reference, sample) in &self.ranges {
+            let Some(sample) = usable(sample.as_ref(), now, INPUT_STALE) else {
+                constraints.push(stop_constraint(
+                    api::safety::ConstraintReason::WorldUnavailable,
+                    source(api::safety::ConstraintSourceKind::Range, Some(reference)),
+                    None,
+                    now,
+                    expires_at,
+                ));
+                continue;
+            };
+            if !sample.distance_m.is_finite()
+                || matches!(sample.health, api::component::range::SensorHealth::Fault)
+                || sample
+                    .quality
+                    .as_ref()
+                    .is_some_and(|quality| !quality.valid)
+            {
+                constraints.push(stop_constraint(
+                    api::safety::ConstraintReason::RangeSensorFault,
+                    source(api::safety::ConstraintSourceKind::Range, Some(reference)),
+                    Some(sample.distance_m),
+                    now,
+                    expires_at,
+                ));
+                continue;
+            }
+            if nearest_range.is_none_or(|(distance, _)| sample.distance_m < distance) {
+                nearest_range = Some((sample.distance_m, reference));
+            }
+        }
+
+        if let Some((distance, reference)) = nearest_range {
+            if distance <= PROTECTIVE_STOP_DISTANCE_M {
+                constraints.push(stop_constraint(
+                    api::safety::ConstraintReason::ObstacleProximity,
+                    source(api::safety::ConstraintSourceKind::Range, Some(reference)),
+                    Some(distance),
+                    now,
+                    expires_at,
+                ));
+            } else if distance <= PROXIMITY_LIMIT_DISTANCE_M {
+                constraints.push(limit_constraint(
+                    api::safety::ConstraintReason::ObstacleProximity,
+                    source(api::safety::ConstraintSourceKind::Range, Some(reference)),
+                    PROXIMITY_LINEAR_LIMIT_MPS,
+                    Some(distance),
+                    now,
+                    expires_at,
+                ));
+            }
+        }
+
+        if let Some(drive) = usable(self.drive.as_ref(), now, INPUT_STALE)
+            && matches!(
+                drive.stop_reason,
+                Some(
+                    api::drive::StopReason::Fault
+                        | api::drive::StopReason::ActuatorCommandNotFinite
+                )
+            )
+        {
+            constraints.push(stop_constraint(
+                api::safety::ConstraintReason::DriveFault,
+                source(api::safety::ConstraintSourceKind::Drive, None),
+                None,
+                now,
+                expires_at,
+            ));
+        }
+
+        // A robot may carry several packs. The emptiest usable one decides: a
+        // healthy pack cannot vouch for a flat one.
+        let mut lowest_charge_ratio: Option<f32> = None;
+        for battery in self.batteries.values() {
+            let Some(battery) = usable(battery.as_ref(), now, INPUT_STALE) else {
+                continue;
+            };
+            if !battery.charge_ratio.is_finite() {
+                bail!("battery world input contains a non-finite charge ratio");
+            }
+            lowest_charge_ratio = Some(match lowest_charge_ratio {
+                Some(lowest) => lowest.min(battery.charge_ratio),
+                None => battery.charge_ratio,
+            });
+        }
+        if let Some(charge_ratio) = lowest_charge_ratio {
+            if charge_ratio <= 0.05 {
+                constraints.push(stop_constraint(
+                    api::safety::ConstraintReason::BatteryCritical,
+                    source(api::safety::ConstraintSourceKind::Battery, None),
+                    Some(charge_ratio),
+                    now,
+                    expires_at,
+                ));
+            } else if charge_ratio <= 0.15 {
+                constraints.push(limit_constraint(
+                    api::safety::ConstraintReason::BatteryLow,
+                    source(api::safety::ConstraintSourceKind::Battery, None),
+                    PROXIMITY_LINEAR_LIMIT_MPS,
+                    Some(charge_ratio),
+                    now,
+                    expires_at,
+                ));
+            }
+        }
+
+        let stop = constraints.iter().any(|constraint| constraint.stop);
+        let max_linear_speed_mps = constraints
+            .iter()
+            .filter_map(|constraint| constraint.max_linear_speed_mps)
+            .reduce(f32::min);
+        let max_angular_speed_radps = constraints
+            .iter()
+            .filter_map(|constraint| constraint.max_angular_speed_radps)
+            .reduce(f32::min);
+        Ok(api::safety::MotionConstraints {
+            sequence,
+            stop,
+            max_linear_speed_mps,
+            max_angular_speed_radps,
+            constraints,
+            expires_at,
+        })
     }
 }
 
-pub struct Api {
+pub(crate) struct Api {
     localization: Subscriber<api::localize::LocalizationState>,
     map: Subscriber<api::map::Revision>,
     map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
     drive: Subscriber<api::drive::State>,
-    batteries: Vec<Subscriber<api::component::battery::State>>,
-    ranges: Vec<Subscriber<api::component::range::Sample>>,
+    batteries: Vec<BoundInput<api::component::battery::State>>,
+    ranges: Vec<BoundInput<api::component::range::Sample>>,
     constraints: StatePublisher<api::safety::MotionConstraints>,
     state: StatePublisher<api::safety::State>,
 }
 
-pub struct SafetyState {
-    bindings: Vec<CapabilityBinding>,
-    battery_bindings: Vec<CapabilityBinding>,
+pub(crate) struct SafetyState {
     inputs: WorldInputs,
     sequence: u64,
 }
 
 #[phoxal::service(state = SafetyState, api = Api)]
-pub struct Safety;
+pub(crate) struct Safety;
 
 impl Participant for Safety {
     async fn setup(
@@ -85,43 +316,44 @@ impl Participant for Safety {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
-        let bindings = capability_bindings(robot, |capability| {
-            matches!(capability, Capability::Range(_))
-        })?;
-        let battery_bindings = capability_bindings(robot, |capability| {
-            matches!(capability, Capability::Battery(_))
-        })?;
-        let mut ranges = Vec::with_capacity(bindings.len());
-        for binding in &bindings {
-            ranges.push(
-                ctx.subscriber(
-                    api::topic::client()
-                        .component(&binding.component_id)
-                        .range(&binding.capability_id)
-                        .sample(),
-                    32,
-                )
-                .await?,
-            );
+        let range_refs =
+            robot.capability_refs(|capability| matches!(capability, Capability::Range(_)));
+        let battery_refs =
+            robot.capability_refs(|capability| matches!(capability, Capability::Battery(_)));
+
+        let mut ranges = Vec::with_capacity(range_refs.len());
+        for reference in &range_refs {
+            ranges.push(BoundInput {
+                reference: reference.clone(),
+                samples: ctx
+                    .subscriber(
+                        api::topic::client()
+                            .component(&reference.component_id)
+                            .range(&reference.capability_id)
+                            .sample(),
+                        32,
+                    )
+                    .await?,
+            });
         }
-        let mut batteries = Vec::with_capacity(battery_bindings.len());
-        for binding in &battery_bindings {
-            batteries.push(
-                ctx.subscriber(
-                    api::topic::client()
-                        .component(&binding.component_id)
-                        .battery(&binding.capability_id)
-                        .state(),
-                    32,
-                )
-                .await?,
-            );
+        let mut batteries = Vec::with_capacity(battery_refs.len());
+        for reference in &battery_refs {
+            batteries.push(BoundInput {
+                reference: reference.clone(),
+                samples: ctx
+                    .subscriber(
+                        api::topic::client()
+                            .component(&reference.component_id)
+                            .battery(&reference.capability_id)
+                            .state(),
+                        32,
+                    )
+                    .await?,
+            });
         }
         Ok((
             SafetyState {
-                inputs: WorldInputs::new(bindings.len(), battery_bindings.len()),
-                bindings,
-                battery_bindings,
+                inputs: WorldInputs::new(range_refs, battery_refs),
                 sequence: 0,
             },
             Api {
@@ -153,7 +385,7 @@ impl Participant for Safety {
         _api: &Self::Api,
         state: &mut Self::State,
     ) -> Result<()> {
-        state.inputs = WorldInputs::new(state.bindings.len(), state.battery_bindings.len());
+        state.inputs.clear();
         state.sequence = 0;
         Ok(())
     }
@@ -165,14 +397,18 @@ impl Participant for Safety {
         step: StepContext,
         state: &mut Self::State,
     ) -> Result<()> {
-        drain_latest(&mut state.inputs.localization, &api.localization);
-        drain_latest(&mut state.inputs.map, &api.map);
-        drain_latest(&mut state.inputs.drive, &api.drive);
-        for (slot, subscriber) in state.inputs.batteries.iter_mut().zip(&api.batteries) {
-            drain_latest(slot, subscriber);
+        retain_newest_stamped(&mut state.inputs.localization, &api.localization);
+        retain_newest_stamped(&mut state.inputs.map, &api.map);
+        retain_newest_stamped(&mut state.inputs.drive, &api.drive);
+        for bound in &api.batteries {
+            if let Some(slot) = state.inputs.batteries.get_mut(&bound.reference) {
+                retain_newest_stamped(slot, &bound.samples);
+            }
         }
-        for (slot, subscriber) in state.inputs.ranges.iter_mut().zip(&api.ranges) {
-            drain_latest(slot, subscriber);
+        for bound in &api.ranges {
+            if let Some(slot) = state.inputs.ranges.get_mut(&bound.reference) {
+                retain_newest_stamped(slot, &bound.samples);
+            }
         }
 
         state.inputs.drivable_space = if let Some(localization) =
@@ -189,10 +425,10 @@ impl Participant for Safety {
                 })
                 .await;
             match response {
-                Ok(response) => Some(Timed {
-                    body: submap_has_drivable_space(&response)?,
-                    at: step.now(),
-                }),
+                Ok(response) => Some(Timed::new(
+                    submap_has_drivable_space(&response)?,
+                    step.now(),
+                )),
                 Err(_) => None,
             }
         } else {
@@ -200,10 +436,10 @@ impl Participant for Safety {
         };
 
         state.sequence = state.sequence.saturating_add(1);
-        let motion = assess(&state.inputs, &state.bindings, state.sequence, step.now())?;
-        api.constraints.publish(step.token(), motion.clone())?;
+        let motion = state.inputs.assess(state.sequence, step.now())?;
+        api.constraints.publish(&step.token, motion.clone())?;
         api.state.publish(
-            step.token(),
+            &step.token,
             api::safety::State {
                 clear: !motion.stop && motion.constraints.is_empty(),
                 motion,
@@ -213,210 +449,20 @@ impl Participant for Safety {
     }
 }
 
-fn drain_latest<T: phoxal::bus::ContractBody + Clone>(
-    slot: &mut Option<Timed<T>>,
-    subscriber: &Subscriber<T>,
-) {
+/// Consume everything buffered on `subscriber` and keep the newest sample that
+/// expresses a robot instant.
+///
+/// A sample with no exact production instant expresses no robot time, so it can
+/// never satisfy a freshness gate; dropping it here keeps the "missing means
+/// fail closed" rule in one place. An empty drain leaves the retained sample
+/// alone - it is the freshness gate, not the arrival of a newer sample, that
+/// decides when a held value stops counting.
+fn retain_newest_stamped<T: ContractBody>(slot: &mut Option<Timed<T>>, subscriber: &Subscriber<T>) {
     while let Some(observed) = subscriber.try_recv() {
-        // A sample with no exact production instant expresses no robot time, so
-        // it can never satisfy a freshness gate; dropping it here keeps the
-        // "missing means fail closed" rule in one place.
         if let Some(at) = observed.metadata.produced_exactly_at() {
-            *slot = Some(Timed {
-                body: observed.body,
-                at,
-            });
+            *slot = Some(Timed::new(observed.body, at));
         }
     }
-}
-
-fn assess(
-    world: &WorldInputs,
-    bindings: &[CapabilityBinding],
-    sequence: u64,
-    now: RobotInstant,
-) -> Result<api::safety::MotionConstraints> {
-    let expires_at = now.saturating_add(CONSTRAINT_TTL);
-    let mut constraints = Vec::new();
-
-    match usable(world.localization.as_ref(), now, INPUT_STALE) {
-        None => constraints.push(stop_constraint(
-            api::safety::ConstraintReason::LocalizationUnavailable,
-            source(api::safety::ConstraintSourceKind::Localization, None),
-            None,
-            now,
-            expires_at,
-        )),
-        Some(localization) => {
-            if !(localization.x_m.is_finite()
-                && localization.y_m.is_finite()
-                && localization.yaw_rad.is_finite()
-                && localization.confidence.is_finite())
-            {
-                bail!("localization world input contains a non-finite value");
-            }
-            if localization.confidence < MIN_LOCALIZATION_CONFIDENCE {
-                constraints.push(stop_constraint(
-                    api::safety::ConstraintReason::LocalizationUncertain,
-                    source(api::safety::ConstraintSourceKind::Localization, None),
-                    Some(localization.confidence),
-                    now,
-                    expires_at,
-                ));
-            }
-        }
-    }
-
-    if usable(world.map.as_ref(), now, MAP_STALE).is_none() {
-        constraints.push(stop_constraint(
-            api::safety::ConstraintReason::MapUnavailable,
-            source(api::safety::ConstraintSourceKind::Map, None),
-            None,
-            now,
-            expires_at,
-        ));
-    }
-
-    match usable(world.drivable_space.as_ref(), now, MAP_STALE) {
-        None => constraints.push(stop_constraint(
-            api::safety::ConstraintReason::WorldUnavailable,
-            source(api::safety::ConstraintSourceKind::WorldModel, None),
-            None,
-            now,
-            expires_at,
-        )),
-        Some(false) => constraints.push(stop_constraint(
-            api::safety::ConstraintReason::DrivableSpaceUnavailable,
-            source(api::safety::ConstraintSourceKind::WorldModel, None),
-            None,
-            now,
-            expires_at,
-        )),
-        Some(true) => {}
-    }
-
-    let mut nearest_range = None::<(f32, &CapabilityBinding)>;
-    for (binding, sample) in bindings.iter().zip(&world.ranges) {
-        let Some(sample) = usable(sample.as_ref(), now, INPUT_STALE) else {
-            constraints.push(stop_constraint(
-                api::safety::ConstraintReason::WorldUnavailable,
-                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
-                None,
-                now,
-                expires_at,
-            ));
-            continue;
-        };
-        if !sample.distance_m.is_finite()
-            || matches!(sample.health, api::component::range::SensorHealth::Fault)
-            || sample
-                .quality
-                .as_ref()
-                .is_some_and(|quality| !quality.valid)
-        {
-            constraints.push(stop_constraint(
-                api::safety::ConstraintReason::RangeSensorFault,
-                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
-                Some(sample.distance_m),
-                now,
-                expires_at,
-            ));
-            continue;
-        }
-        if nearest_range.is_none_or(|(distance, _)| sample.distance_m < distance) {
-            nearest_range = Some((sample.distance_m, binding));
-        }
-    }
-
-    if let Some((distance, binding)) = nearest_range {
-        if distance <= PROTECTIVE_STOP_DISTANCE_M {
-            constraints.push(stop_constraint(
-                api::safety::ConstraintReason::ObstacleProximity,
-                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
-                Some(distance),
-                now,
-                expires_at,
-            ));
-        } else if distance <= PROXIMITY_LIMIT_DISTANCE_M {
-            constraints.push(limit_constraint(
-                api::safety::ConstraintReason::ObstacleProximity,
-                source(api::safety::ConstraintSourceKind::Range, Some(binding)),
-                PROXIMITY_LINEAR_LIMIT_MPS,
-                Some(distance),
-                now,
-                expires_at,
-            ));
-        }
-    }
-
-    if let Some(drive) = usable(world.drive.as_ref(), now, INPUT_STALE)
-        && matches!(
-            drive.stop_reason,
-            Some(api::drive::StopReason::Fault | api::drive::StopReason::ActuatorCommandNotFinite)
-        )
-    {
-        constraints.push(stop_constraint(
-            api::safety::ConstraintReason::DriveFault,
-            source(api::safety::ConstraintSourceKind::Drive, None),
-            None,
-            now,
-            expires_at,
-        ));
-    }
-
-    // A robot may carry several packs. The emptiest usable one decides: a
-    // healthy pack cannot vouch for a flat one.
-    let mut lowest_charge_ratio: Option<f32> = None;
-    for battery in world.batteries.iter() {
-        let Some(battery) = usable(battery.as_ref(), now, INPUT_STALE) else {
-            continue;
-        };
-        if !battery.charge_ratio.is_finite() {
-            bail!("battery world input contains a non-finite charge ratio");
-        }
-        lowest_charge_ratio = Some(match lowest_charge_ratio {
-            Some(lowest) => lowest.min(battery.charge_ratio),
-            None => battery.charge_ratio,
-        });
-    }
-    if let Some(charge_ratio) = lowest_charge_ratio {
-        if charge_ratio <= 0.05 {
-            constraints.push(stop_constraint(
-                api::safety::ConstraintReason::BatteryCritical,
-                source(api::safety::ConstraintSourceKind::Battery, None),
-                Some(charge_ratio),
-                now,
-                expires_at,
-            ));
-        } else if charge_ratio <= 0.15 {
-            constraints.push(limit_constraint(
-                api::safety::ConstraintReason::BatteryLow,
-                source(api::safety::ConstraintSourceKind::Battery, None),
-                PROXIMITY_LINEAR_LIMIT_MPS,
-                Some(charge_ratio),
-                now,
-                expires_at,
-            ));
-        }
-    }
-
-    let stop = constraints.iter().any(|constraint| constraint.stop);
-    let max_linear_speed_mps = constraints
-        .iter()
-        .filter_map(|constraint| constraint.max_linear_speed_mps)
-        .reduce(f32::min);
-    let max_angular_speed_radps = constraints
-        .iter()
-        .filter_map(|constraint| constraint.max_angular_speed_radps)
-        .reduce(f32::min);
-    Ok(api::safety::MotionConstraints {
-        sequence,
-        stop,
-        max_linear_speed_mps,
-        max_angular_speed_radps,
-        constraints,
-        expires_at,
-    })
 }
 
 /// A sample is usable only if it belongs to this step's world history, is not
@@ -424,11 +470,7 @@ fn assess(
 /// checked error, so it fails closed rather than silently passing.
 fn usable<T>(sample: Option<&Timed<T>>, now: RobotInstant, stale: Duration) -> Option<&T> {
     sample
-        .filter(|sample| {
-            TimeWindow::exact(sample.at)
-                .possibly_fresh_within(now, stale)
-                .unwrap_or(false)
-        })
+        .filter(|sample| sample.fresh_within(now, stale))
         .map(|sample| &sample.body)
 }
 
@@ -503,119 +545,117 @@ fn limit_constraint(
 
 fn source(
     kind: api::safety::ConstraintSourceKind,
-    binding: Option<&CapabilityBinding>,
+    reference: Option<&CapabilityRef>,
 ) -> api::safety::ConstraintSource {
     let participant_id = match kind {
-        api::safety::ConstraintSourceKind::Map => "map",
-        api::safety::ConstraintSourceKind::Localization => "localize",
-        api::safety::ConstraintSourceKind::Drive => "drive",
-        api::safety::ConstraintSourceKind::Battery => "battery-provider",
-        api::safety::ConstraintSourceKind::Range => binding
-            .map(|binding| binding.component_id.as_str())
-            .unwrap_or("range-provider"),
-        api::safety::ConstraintSourceKind::WorldModel => "safety",
-        api::safety::ConstraintSourceKind::Operator => "operator",
+        api::safety::ConstraintSourceKind::Map => MAP_PARTICIPANT_ID,
+        api::safety::ConstraintSourceKind::Localization => LOCALIZE_PARTICIPANT_ID,
+        api::safety::ConstraintSourceKind::Drive => DRIVE_PARTICIPANT_ID,
+        api::safety::ConstraintSourceKind::Battery => BATTERY_PARTICIPANT_ID,
+        api::safety::ConstraintSourceKind::Range => reference
+            .map_or(RANGE_PARTICIPANT_ID, |reference| {
+                reference.component_id.as_str()
+            }),
+        api::safety::ConstraintSourceKind::WorldModel => WORLD_MODEL_PARTICIPANT_ID,
+        api::safety::ConstraintSourceKind::Operator => OPERATOR_PARTICIPANT_ID,
     };
     api::safety::ConstraintSource {
         kind,
         participant_id: participant_id.to_string(),
-        component_id: binding.map(|binding| binding.component_id.clone()),
-        capability_id: binding.map(|binding| binding.capability_id.clone()),
+        component_id: reference.map(|reference| reference.component_id.to_string()),
+        capability_id: reference.map(|reference| reference.capability_id.to_string()),
     }
-}
-
-fn capability_bindings(
-    robot: &Robot,
-    selects: impl Fn(&Capability) -> bool,
-) -> Result<Vec<CapabilityBinding>> {
-    let mut bindings = Vec::new();
-    for component_id in robot.component_ids() {
-        let component = robot.component_for_instance(component_id)?;
-        bindings.extend(
-            component
-                .capabilities()
-                .filter(|(_, capability)| selects(capability))
-                .map(|(capability_id, _)| CapabilityBinding {
-                    component_id: component_id.to_string(),
-                    capability_id: capability_id.to_string(),
-                }),
-        );
-    }
-    bindings.sort_by(|left, right| {
-        left.component_id
-            .cmp(&right.component_id)
-            .then_with(|| left.capability_id.cmp(&right.capability_id))
-    });
-    Ok(bindings)
 }
 
 #[cfg(test)]
 mod tests {
-    fn line(seed: u64) -> phoxal::bus::TimelineId {
-        phoxal::bus::TimelineId::from_raw(seed).expect("test timeline must be nonzero")
-    }
-
     use super::*;
+
+    fn line(seed: u64) -> TimelineId {
+        TimelineId::from_raw(seed).expect("test timeline must be nonzero")
+    }
 
     fn now() -> RobotInstant {
         RobotInstant::new(line(3), 2_000_000_000)
     }
 
-    fn nominal_world() -> (Vec<CapabilityBinding>, WorldInputs) {
-        let binding = CapabilityBinding {
-            component_id: "front".to_string(),
-            capability_id: "range".to_string(),
-        };
+    fn capability(reference: &str) -> CapabilityRef {
+        reference
+            .parse()
+            .expect("a test capability reference is well formed")
+    }
+
+    fn range_ref() -> CapabilityRef {
+        capability("front.range")
+    }
+
+    fn nominal_world() -> WorldInputs {
         let at = now();
-        let mut world = WorldInputs::new(1, 1);
-        world.localization = Some(Timed {
-            body: api::localize::LocalizationState {
+        let mut world = WorldInputs::new([range_ref()], [capability("pack.battery")]);
+        world.localization = Some(Timed::new(
+            api::localize::LocalizationState {
                 x_m: 0.0,
                 y_m: 0.0,
                 yaw_rad: 0.0,
                 confidence: 1.0,
             },
             at,
-        });
-        world.map = Some(Timed {
-            body: api::map::Revision {
+        ));
+        world.map = Some(Timed::new(
+            api::map::Revision {
                 revision: 1,
                 resolution_m: 0.05,
             },
             at,
-        });
-        world.drivable_space = Some(Timed { body: true, at });
-        world.ranges[0] = Some(Timed {
-            body: api::component::range::Sample {
-                distance_m: 2.0,
-                limits: None,
-                quality: None,
-                health: api::component::range::SensorHealth::Nominal,
-            },
-            at,
-        });
-        (vec![binding], world)
+        ));
+        world.drivable_space = Some(Timed::new(true, at));
+        world.ranges.insert(
+            range_ref(),
+            Some(Timed::new(
+                api::component::range::Sample {
+                    distance_m: 2.0,
+                    limits: None,
+                    quality: None,
+                    health: api::component::range::SensorHealth::Nominal,
+                },
+                at,
+            )),
+        );
+        world
+    }
+
+    fn set_range_distance(world: &mut WorldInputs, distance_m: f32) {
+        world
+            .ranges
+            .get_mut(&range_ref())
+            .and_then(Option::as_mut)
+            .expect("the nominal world declares a range sample")
+            .body
+            .distance_m = distance_m;
     }
 
     fn battery(charge_ratio: f32) -> Timed<api::component::battery::State> {
-        Timed {
-            body: api::component::battery::State {
+        Timed::new(
+            api::component::battery::State {
                 voltage_v: 16.0,
                 current_a: 2.0,
                 charge_ratio,
             },
-            at: now(),
-        }
+            now(),
+        )
     }
 
     /// A robot with several packs is only as safe as its emptiest one: a full
     /// pack must not mask a flat one sitting next to it.
     #[test]
     fn the_lowest_pack_decides_the_battery_constraint() {
-        let (bindings, mut world) = nominal_world();
-        world.batteries = vec![Some(battery(1.0)), Some(battery(0.04))];
+        let mut world = nominal_world();
+        world.batteries = BTreeMap::from([
+            (capability("pack_a.battery"), Some(battery(1.0))),
+            (capability("pack_b.battery"), Some(battery(0.04))),
+        ]);
 
-        let result = assess(&world, &bindings, 1, now()).unwrap();
+        let result = world.assess(1, now()).unwrap();
         assert!(result.stop);
         let constraint = result
             .constraints
@@ -627,12 +667,12 @@ mod tests {
 
     #[test]
     fn a_stale_pack_is_ignored_rather_than_trusted() {
-        let (bindings, mut world) = nominal_world();
+        let mut world = nominal_world();
         let mut stale = battery(0.04);
         stale.at = RobotInstant::new(line(3), 0);
-        world.batteries = vec![Some(stale)];
+        world.batteries = BTreeMap::from([(capability("pack.battery"), Some(stale))]);
 
-        let result = assess(&world, &bindings, 1, now()).unwrap();
+        let result = world.assess(1, now()).unwrap();
         assert!(
             !result.constraints.iter().any(|constraint| {
                 constraint.reason == api::safety::ConstraintReason::BatteryCritical
@@ -643,8 +683,7 @@ mod tests {
 
     #[test]
     fn nominal_world_is_clear_and_expires_after_three_periods() {
-        let (bindings, world) = nominal_world();
-        let result = assess(&world, &bindings, 7, now()).unwrap();
+        let result = nominal_world().assess(7, now()).unwrap();
         assert!(!result.stop);
         assert!(result.constraints.is_empty());
         assert_eq!(result.sequence, 7);
@@ -656,11 +695,8 @@ mod tests {
 
     #[test]
     fn missing_world_inputs_fail_closed_with_typed_reasons() {
-        let bindings = vec![CapabilityBinding {
-            component_id: "front".to_string(),
-            capability_id: "range".to_string(),
-        }];
-        let result = assess(&WorldInputs::new(1, 1), &bindings, 1, now()).unwrap();
+        let world = WorldInputs::new([range_ref()], [capability("pack.battery")]);
+        let result = world.assess(1, now()).unwrap();
         assert!(result.stop);
         assert!(result.constraints.iter().any(|constraint| {
             constraint.reason == api::safety::ConstraintReason::LocalizationUnavailable
@@ -674,11 +710,46 @@ mod tests {
         }));
     }
 
+    /// The declared order that `Robot::capability_refs` guarantees is the order
+    /// constraints are raised in, so a silent sensor is always reported at the
+    /// same position and the nearest-obstacle tie-break resolves the same way.
+    #[test]
+    fn range_constraints_follow_the_declared_capability_order() {
+        let world = WorldInputs::new(
+            [
+                capability("rear.range"),
+                capability("front.b_range"),
+                capability("front.a_range"),
+            ],
+            [],
+        );
+        let result = world.assess(1, now()).unwrap();
+        let reported: Vec<_> = result
+            .constraints
+            .iter()
+            .filter(|constraint| constraint.source.kind == api::safety::ConstraintSourceKind::Range)
+            .map(|constraint| {
+                (
+                    constraint.source.component_id.clone(),
+                    constraint.source.capability_id.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            vec![
+                (Some("front".to_string()), Some("a_range".to_string())),
+                (Some("front".to_string()), Some("b_range".to_string())),
+                (Some("rear".to_string()), Some("range".to_string())),
+            ]
+        );
+    }
+
     #[test]
     fn proximity_stops_or_limits_with_provenance() {
-        let (bindings, mut world) = nominal_world();
-        world.ranges[0].as_mut().unwrap().body.distance_m = 0.2;
-        let stopped = assess(&world, &bindings, 1, now()).unwrap();
+        let mut world = nominal_world();
+        set_range_distance(&mut world, 0.2);
+        let stopped = world.assess(1, now()).unwrap();
         assert!(stopped.stop);
         assert_eq!(
             stopped.constraints[0].reason,
@@ -689,8 +760,8 @@ mod tests {
             Some("front")
         );
 
-        world.ranges[0].as_mut().unwrap().body.distance_m = 0.5;
-        let limited = assess(&world, &bindings, 2, now()).unwrap();
+        set_range_distance(&mut world, 0.5);
+        let limited = world.assess(2, now()).unwrap();
         assert!(!limited.stop);
         assert_eq!(
             limited.max_linear_speed_mps,
@@ -700,12 +771,26 @@ mod tests {
 
     #[test]
     fn samples_from_a_retired_world_never_authorize_motion() {
-        let (bindings, mut world) = nominal_world();
+        let mut world = nominal_world();
         world.localization.as_mut().unwrap().at = RobotInstant::new(line(2), now().ticks());
-        let result = assess(&world, &bindings, 1, now()).unwrap();
+        let result = world.assess(1, now()).unwrap();
         assert!(result.stop);
         assert!(result.constraints.iter().any(|constraint| {
             constraint.reason == api::safety::ConstraintReason::LocalizationUnavailable
+        }));
+    }
+
+    /// A world replacement retires every sample while keeping the declared
+    /// capabilities, so each one must publish again before it counts.
+    #[test]
+    fn clearing_retires_every_sample_and_keeps_the_declared_capabilities() {
+        let mut world = nominal_world();
+        world.clear();
+        let result = world.assess(1, now()).unwrap();
+        assert!(result.stop);
+        assert!(result.constraints.iter().any(|constraint| {
+            constraint.reason == api::safety::ConstraintReason::WorldUnavailable
+                && constraint.source.component_id.as_deref() == Some("front")
         }));
     }
 

@@ -9,19 +9,14 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use phoxal::api;
-use phoxal::model::component::CapabilityRef;
+use phoxal::model::identity::CapabilityRef;
 
 /// The largest stream this controller will hold before the producer ends it.
 /// A speaker that is never told the sound finished must not be able to consume
 /// the machine; 64 MiB is minutes of uncompressed audio.
 const MAX_STREAM_BYTES: usize = 64 * 1024 * 1024;
-
-#[derive(Clone, Debug)]
-pub(crate) struct SpeakerSpec {
-    pub(crate) reference: CapabilityRef,
-}
 
 pub(crate) struct NativeSpeaker {
     speaker: webots_rs::device::speaker::Speaker,
@@ -33,10 +28,8 @@ pub(crate) struct NativeSpeaker {
 }
 
 impl NativeSpeaker {
-    pub(crate) fn new(webots: &webots_rs::Webots, spec: &SpeakerSpec) -> Result<Self> {
-        let speaker = webots
-            .speaker(spec.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
+    pub(crate) fn new(webots: &webots_rs::Webots, reference: &CapabilityRef) -> Result<Self> {
+        let speaker = webots.speaker(reference.to_string())?;
         let directory = std::env::temp_dir().join(format!("phoxal-speaker-{}", std::process::id()));
         std::fs::create_dir_all(&directory).with_context(|| {
             format!(
@@ -46,7 +39,7 @@ impl NativeSpeaker {
         })?;
         Ok(Self {
             speaker,
-            reference: spec.reference.clone(),
+            reference: reference.clone(),
             directory,
             buffer: Vec::new(),
             playing: None,
@@ -106,8 +99,7 @@ impl NativeSpeaker {
             1.0,
             0.0,
             false,
-        )
-        .map_err(|error| anyhow!(error))?;
+        )?;
         if let Some(previous) = self.playing.replace(path) {
             let _ = std::fs::remove_file(previous);
         }
@@ -121,9 +113,8 @@ impl NativeSpeaker {
         let Some(playing) = self.playing.as_ref() else {
             return Ok(());
         };
-        self.speaker
-            .stop(&playing.to_string_lossy())
-            .map_err(|error| anyhow!(error))
+        self.speaker.stop(&playing.to_string_lossy())?;
+        Ok(())
     }
 }
 

@@ -6,12 +6,12 @@
 //! the world's `Lidar` node is what actually decides them, so reporting the
 //! authored numbers instead would let a scan describe a sensor nobody built.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 use phoxal::model::component::capability::LidarOutput;
 use webots_rs::device::lidar::{LidarConfig, LidarReading};
 
-use super::{SampledSpec, is_due};
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LidarSpec {
@@ -29,25 +29,16 @@ pub(crate) struct NativeLidar {
 impl NativeLidar {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &LidarSpec) -> Result<Self> {
         let point_cloud = matches!(spec.output, LidarOutput::Points);
-        let lidar = webots
-            .lidar(
-                spec.sampled.reference.to_string(),
-                LidarConfig::new().with_point_cloud(point_cloud),
-            )
-            .map_err(|error| anyhow!(error))?;
-        lidar
-            .enable(spec.sampled.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let lidar = webots.lidar(
+            spec.sampled.reference.to_string(),
+            LidarConfig::new().with_point_cloud(point_cloud),
+        )?;
+        lidar.enable(spec.sampled.sampling_period_ms)?;
         let limits = api::component::lidar::RangeLimits {
-            min_m: lidar.get_min_range().map_err(|error| anyhow!(error))? as f32,
-            max_m: lidar.get_max_range().map_err(|error| anyhow!(error))? as f32,
+            min_m: lidar.get_min_range()? as f32,
+            max_m: lidar.get_max_range()? as f32,
         };
-        let geometry = scan_geometry(
-            lidar.get_fov().map_err(|error| anyhow!(error))?,
-            lidar
-                .get_horizontal_resolution()
-                .map_err(|error| anyhow!(error))?,
-        );
+        let geometry = scan_geometry(lidar.get_fov()?, lidar.get_horizontal_resolution()?);
         Ok(Self {
             lidar,
             spec: spec.clone(),
@@ -55,16 +46,17 @@ impl NativeLidar {
             limits,
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::lidar::Scan>> {
-        if !is_due(step_index, self.spec.sampled.publish_every_steps) {
-            return Ok(None);
-        }
-        let reading = self.lidar.reading().map_err(|error| anyhow!(error))?;
-        Ok(Some(match reading {
+impl SimulatedSensor for NativeLidar {
+    type Sample = api::component::lidar::Scan;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.sampled.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
+        Ok(Some(match self.lidar.reading()? {
             LidarReading::RangeImage(ranges) => {
                 let valid_points = ranges.iter().filter(|range| range.is_finite()).count();
                 api::component::lidar::Scan::Ranges(api::component::lidar::Ranges {

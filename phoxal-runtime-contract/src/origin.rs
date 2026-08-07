@@ -1,6 +1,13 @@
+//! Where one real execution started: a host boot, an offset on that boot's
+//! clock, and the timeline the execution runs on.
+//!
+//! The boot identity is what makes a boot-clock reading comparable at all. Two
+//! readings taken during different boots measure from different zeroes, so a
+//! consumer compares [`BootId`] first and only then the nanosecond offset.
+
 use std::time::Duration;
 
-use crate::TimelineId;
+use crate::identity::TimelineId;
 
 /// An identity for one host boot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,8 +19,11 @@ impl BootId {
         Self(host_boot_identity())
     }
 
-    /// Construct a boot identity for contract tests.
-    #[doc(hidden)]
+    /// Construct a boot identity from an opaque value.
+    ///
+    /// The value carries no structure, so this is only meaningful for a
+    /// consumer that already holds one: a decoded launch record, or a test
+    /// constructing a boot deliberately unequal to [`BootId::current`].
     pub const fn from_raw(value: u64) -> Self {
         Self(value)
     }
@@ -43,12 +53,26 @@ impl ExecutionOrigin {
     }
 
     /// Mint an origin now, panicking on a host without a readable boot clock.
+    ///
+    /// A supervisor that wants to report the failure rather than abort calls
+    /// [`ExecutionOrigin::try_mint`] instead. This form exists for the
+    /// bootstrap path, where a host whose monotonic clock cannot be read cannot
+    /// time an execution at all and there is nothing to degrade to.
+    #[expect(
+        clippy::expect_used,
+        reason = "every robot instant this execution stamps is an offset on the boot clock \
+                  read here; a host that cannot read it can produce no trustworthy instant, \
+                  so continuing would mean fabricating time"
+    )]
     pub fn mint() -> Self {
         Self::try_mint().expect("the host boot clock must be readable to start an execution")
     }
 
     /// Rebuild an origin from its typed fields.
-    #[doc(hidden)]
+    ///
+    /// The counterpart to the accessors below, for a consumer that already
+    /// holds the three values: a decoded launch record, or a test pinning an
+    /// origin to a specific boot.
     pub const fn new(boot: BootId, boot_ns: u64, timeline: TimelineId) -> Self {
         Self {
             boot,

@@ -1,41 +1,30 @@
 //! IMU capability: publishes `component::imu::Sample` from the Webots
-//! `InertialUnit` + `Accelerometer` + `Gyro` devices. Moved from the
-//! monolith's `NativeImu` (main.rs:1189-1257) and the
-//! `quaternion_wxyz_from_rpy` helper (main.rs:1520-1533).
+//! `InertialUnit`, `Accelerometer` and `Gyro` devices.
+//!
+//! Webots has no single inertial device, so one declared IMU binds three world
+//! nodes. The two extra nodes are named by suffixing the capability, which is
+//! the naming a simulated component must use for its IMU to bind at all.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 
-use super::{SampledSpec, is_due};
-
-pub(crate) type ImuSpec = SampledSpec;
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 pub(crate) struct NativeImu {
     inertial_unit: webots_rs::device::inertial_unit::InertialUnit,
     accelerometer: webots_rs::device::accelerometer::Accelerometer,
     gyro: webots_rs::device::gyro::Gyro,
-    spec: ImuSpec,
+    spec: SampledSpec,
 }
 
 impl NativeImu {
-    pub(crate) fn new(webots: &webots_rs::Webots, spec: &ImuSpec) -> Result<Self> {
-        let inertial_unit = webots
-            .inertial_unit(spec.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        let accelerometer = webots
-            .accelerometer(format!("{}__accel", spec.reference))
-            .map_err(|error| anyhow!(error))?;
-        let gyro = webots
-            .gyro(format!("{}__gyro", spec.reference))
-            .map_err(|error| anyhow!(error))?;
-        inertial_unit
-            .enable(spec.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
-        accelerometer
-            .enable(spec.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
-        gyro.enable(spec.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+    pub(crate) fn new(webots: &webots_rs::Webots, spec: &SampledSpec) -> Result<Self> {
+        let inertial_unit = webots.inertial_unit(spec.reference.to_string())?;
+        let accelerometer = webots.accelerometer(format!("{}__accel", spec.reference))?;
+        let gyro = webots.gyro(format!("{}__gyro", spec.reference))?;
+        inertial_unit.enable(spec.sampling_period_ms)?;
+        accelerometer.enable(spec.sampling_period_ms)?;
+        gyro.enable(spec.sampling_period_ms)?;
         Ok(Self {
             inertial_unit,
             accelerometer,
@@ -43,28 +32,19 @@ impl NativeImu {
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::imu::Sample>> {
-        if !is_due(step_index, self.spec.publish_every_steps) {
-            return Ok(None);
-        }
-        let [roll, pitch, yaw] = self
-            .inertial_unit
-            .get_roll_pitch_yaw()
-            .map_err(|error| anyhow!(error))?;
-        let acceleration = self
-            .accelerometer
-            .values()
-            .map_err(|error| anyhow!(error))?
-            .map(|value| value as f32);
-        let angular_velocity = self
-            .gyro
-            .values()
-            .map_err(|error| anyhow!(error))?
-            .map(|value| value as f32);
+impl SimulatedSensor for NativeImu {
+    type Sample = api::component::imu::Sample;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
+        let [roll, pitch, yaw] = self.inertial_unit.get_roll_pitch_yaw()?;
+        let acceleration = self.accelerometer.values()?.map(|value| value as f32);
+        let angular_velocity = self.gyro.values()?.map(|value| value as f32);
         Ok(Some(api::component::imu::Sample {
             orientation: Some(quaternion_wxyz_from_rpy(roll, pitch, yaw)),
             angular_velocity_radps: angular_velocity,

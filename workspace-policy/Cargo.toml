@@ -19,17 +19,23 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 cargo_metadata = "0.23.1"
-serde = { workspace = true }
-toml_edit = "0.25.12"
 
 [dev-dependencies]
 phoxal = { workspace = true }
 phoxal-manifest = { workspace = true }
+# The producer/consumer boundary `tests/facade_agreement.rs` pins is the model
+# crate's own asset-id rule, and the record `tests/participant_metadata.rs`
+# reads back out of a linked binary is the runtime contract's own document, so
+# both are named at their canonical paths rather than through `phoxal`.
+phoxal-model = { workspace = true }
+phoxal-runtime-contract = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-# Reads the built-artifact linker section back out for
-# `participant_metadata_section_survives_the_linker` - the one honest way to
-# prove the ELF `--gc-sections` defeat (`phoxal-macros`'
+toml_edit = "0.25.12"
+# Reads the built-artifact linker section back out in
+# `tests/participant_metadata.rs` - the one honest way to prove the ELF
+# `--gc-sections` defeat (`phoxal-macros`'
 # `link_section_attrs`/`Participant::__retain_embedded_metadata`) actually
 # holds through a real link, not just at the source level. Version pinned to
 # match `phoxal-cli`'s own object-file reader

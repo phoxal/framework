@@ -1,0 +1,873 @@
+{
+  "$defs": {
+    "Clock": {
+      "description": "Authored `clock:` - the time domain the robot runs on.\n\nThis mirrors [`phoxal_model::Clock`] rather than reusing it: the canonical\nvalue deliberately carries no wire form, and the exhaustive [`From`] impl\nbelow turns any future divergence between the two into a compile error.",
+      "oneOf": [
+        {
+          "const": "real",
+          "description": "Host wall/monotonic time driven by real hardware.",
+          "type": "string"
+        },
+        {
+          "const": "simulated",
+          "description": "Time published by a simulation world authority.",
+          "type": "string"
+        }
+      ]
+    },
+    "Component": {
+      "additionalProperties": false,
+      "description": "One mounted component instance.",
+      "properties": {
+        "component": {
+          "type": "string"
+        },
+        "driver": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DriverConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hardware connection metadata. Its presence is what declares a component\ndriver participant for this instance, and its body is that participant's\nconfiguration."
+        },
+        "mount_link": {
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Parameters"
+          },
+          "type": "object"
+        },
+        "roles": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/Role"
+            },
+            "type": "array"
+          },
+          "description": "Authored role hints.\n\nPart of the exact v0 file contract and validated for shape, but no\ncompiler or runtime stage consumes them: role-resolution policy has no\ncanonical owner yet. The field stays because `robot.yaml` denies unknown\nfields, so removing it would reject documents that parse today.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "component",
+        "mount_link"
+      ],
+      "type": "object"
+    },
+    "ConnectionConfig": {
+      "description": "Connection configuration for executable drivers.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "CAN bus connection.",
+          "properties": {
+            "bus": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "node_id": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "can",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "bus",
+            "node_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "I2C connection.",
+          "properties": {
+            "address": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "bus": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "i2c",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "bus",
+            "address"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "SPI connection.",
+          "properties": {
+            "bus": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "chip_select": {
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "spi",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "bus",
+            "chip_select"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Serial port connection (RS-232/RS-485).",
+          "properties": {
+            "baud": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "port": {
+              "type": "string"
+            },
+            "type": {
+              "const": "serial",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "port",
+            "baud"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "UART connection (distinct from Serial for hardware-specific drivers).",
+          "properties": {
+            "baud_rate": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "port": {
+              "type": "string"
+            },
+            "type": {
+              "const": "uart",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "port",
+            "baud_rate"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "USB connection.",
+          "properties": {
+            "product_id": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "usb",
+              "type": "string"
+            },
+            "vendor_id": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "GPIO pins.",
+          "properties": {
+            "chip": {
+              "type": "string"
+            },
+            "pins": {
+              "items": {
+                "$ref": "#/$defs/GpioPinConfig"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "gpio",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "chip",
+            "pins"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "DriverConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "connection": {
+          "$ref": "#/$defs/ConnectionConfig"
+        },
+        "runtime_clock_ms": {
+          "default": 100,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "connection"
+      ],
+      "type": "object"
+    },
+    "GpioDirection": {
+      "enum": [
+        "input",
+        "output"
+      ],
+      "type": "string"
+    },
+    "GpioPinConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "active_low": {
+          "default": false,
+          "type": "boolean"
+        },
+        "direction": {
+          "$ref": "#/$defs/GpioDirection"
+        },
+        "line": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "line",
+        "direction"
+      ],
+      "type": "object"
+    },
+    "KinematicConfig": {
+      "description": "The drive geometry, and the capabilities that realize it.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "differential",
+              "type": "string"
+            },
+            "left_actuators": {
+              "items": {
+                "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "left_encoders": {
+              "items": {
+                "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "right_actuators": {
+              "items": {
+                "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "right_encoders": {
+              "items": {
+                "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "wheel_base_m": {
+              "format": "double",
+              "type": "number"
+            },
+            "wheel_radius_m": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "left_actuators",
+            "right_actuators",
+            "left_encoders",
+            "right_encoders",
+            "wheel_radius_m",
+            "wheel_base_m"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "front_left_actuator": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": "string"
+            },
+            "front_right_actuator": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "mecanum",
+              "type": "string"
+            },
+            "rear_left_actuator": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": "string"
+            },
+            "rear_right_actuator": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": "string"
+            },
+            "track_m": {
+              "format": "double",
+              "type": "number"
+            },
+            "wheel_base_m": {
+              "format": "double",
+              "type": "number"
+            },
+            "wheel_radius_m": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "front_left_actuator",
+            "front_right_actuator",
+            "rear_left_actuator",
+            "rear_right_actuator",
+            "wheel_radius_m",
+            "wheel_base_m",
+            "track_m"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "drive_actuator": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": "string"
+            },
+            "drive_encoder": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "ackermann",
+              "type": "string"
+            },
+            "max_steering_angle_rad": {
+              "format": "double",
+              "type": "number"
+            },
+            "steering_actuator": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": "string"
+            },
+            "steering_encoder": {
+              "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "track_m": {
+              "format": "double",
+              "type": "number"
+            },
+            "wheel_base_m": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "steering_actuator",
+            "drive_actuator",
+            "wheel_base_m",
+            "track_m",
+            "max_steering_angle_rad"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actuators": {
+              "items": {
+                "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "encoders": {
+              "items": {
+                "description": "One capability of one component instance, written `component.capability`.\n\nThe wire form is that single dotted string, not a two-field object.",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "omnidirectional",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "actuators",
+            "encoders"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MotionLimits": {
+      "additionalProperties": false,
+      "description": "The outer envelope every motion command is clamped to.",
+      "properties": {
+        "max_angular_speed_radps": {
+          "format": "double",
+          "type": "number"
+        },
+        "max_linear_speed_mps": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "max_linear_speed_mps",
+        "max_angular_speed_radps"
+      ],
+      "type": "object"
+    },
+    "Parameters": {
+      "description": "Per-instance overrides for one capability the component type declares.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "direction_sign": {
+              "default": 1,
+              "format": "int8",
+              "maximum": 127,
+              "minimum": -128,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "motor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "direction_sign": {
+              "default": 1,
+              "format": "int8",
+              "maximum": 127,
+              "minimum": -128,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "encoder",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "accelerometer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gyroscope",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "magnetometer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "imu",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "gnss",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "camera",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "depth",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "range",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "lidar",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "mmwave",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "microphone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "speaker",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "battery",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "led",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RobotSection": {
+      "additionalProperties": false,
+      "description": "`robot:` - the robot model: identity, structure, kinematic, and\ncomponents.",
+      "properties": {
+        "components": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Component"
+          },
+          "description": "Component instance map: instance-id -> instance.",
+          "type": "object"
+        },
+        "id": {
+          "description": "The robot identifier.",
+          "type": "string"
+        },
+        "kinematic": {
+          "$ref": "#/$defs/KinematicConfig",
+          "description": "The kinematic model."
+        },
+        "motion_limits": {
+          "$ref": "#/$defs/MotionLimits",
+          "description": "Manifest-wide planar speed limits. Both `motion` and `drive` enforce these\nindependently so an arbitration defect cannot bypass the actuator\nbackstop."
+        },
+        "namespace": {
+          "description": "The bus namespace.",
+          "type": "string"
+        },
+        "structure": {
+          "default": "structure.urdf",
+          "description": "Path to the URDF structure file, relative to the robot root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "namespace",
+        "kinematic",
+        "motion_limits"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "description": "What an authored role hint claims a capability is used for.",
+      "enum": [
+        "localization",
+        "mapping",
+        "traversability",
+        "odometry",
+        "perception"
+      ],
+      "type": "string"
+    },
+    "Router": {
+      "additionalProperties": false,
+      "description": "Authored `router:` - how this robot configures the Zenoh router it runs on.\n\nNamed for what it is rather than what it configures: the running router\nitself is `phoxal-bus`'s `Router`, and one value configuring another is not\na reason for the two to share a name.",
+      "properties": {
+        "config": {
+          "description": "Zenoh JSON5 configuration path relative to the resolved robot root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "UserService": {
+      "additionalProperties": false,
+      "description": "One declared user service: presence in `services` is the declaration;\n`config` is its user-owned configuration.",
+      "properties": {
+        "config": true
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Editor schema for an authored Phoxal robot.yaml document.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Exact top-level `robot.yaml` v0 document.",
+      "properties": {
+        "clock": {
+          "$ref": "#/$defs/Clock",
+          "default": "real",
+          "description": "The time domain this robot runs on.\n\nAuthored documents omit it and get [`Clock::Real`]; finalization writes\nthe resolved value explicitly into the bundle's `robot.yaml`."
+        },
+        "extends": {
+          "description": "Ordered parent robot documents composed before this leaf manifest.\n\nParent maps are deep-merged in declaration order, then the leaf wins.\nSequence and scalar values replace earlier values.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "robot": {
+          "$ref": "#/$defs/RobotSection"
+        },
+        "router": {
+          "$ref": "#/$defs/Router",
+          "description": "Optional project-relative Zenoh router configuration."
+        },
+        "schema": {
+          "const": "phoxal/robot/v0",
+          "type": "string"
+        },
+        "services": {
+          "additionalProperties": {
+            "$ref": "#/$defs/UserService"
+          },
+          "description": "The user services this robot runs, keyed by service identity, each with\nits user-owned configuration. The Cargo workspace is the candidate set\n(a declared service must have a matching workspace crate); this map\nselects which discovered services belong to the robot and are built,\nstaged, and launched. An undeclared workspace service crate is legal\nand simply not part of the robot.\n\n[`RESERVED_BRAIN_ID`] is not an available key: the mandatory root brain\nis the root Cargo package's binary, never an authored service.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema",
+        "robot"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Phoxal robot manifest (phoxal/robot/v0)"
+}

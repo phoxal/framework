@@ -2,10 +2,10 @@
 //! Webots `Microphone` device. Webots hands back the raw encoded sample block
 //! for the elapsed window, so the frame carries it through untouched.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 
-use super::{SampledSpec, is_due};
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 pub(crate) struct NativeMicrophone {
     microphone: webots_rs::device::microphone::Microphone,
@@ -14,29 +14,24 @@ pub(crate) struct NativeMicrophone {
 
 impl NativeMicrophone {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &SampledSpec) -> Result<Self> {
-        let microphone = webots
-            .microphone(spec.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        microphone
-            .enable(spec.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let microphone = webots.microphone(spec.reference.to_string())?;
+        microphone.enable(spec.sampling_period_ms)?;
         Ok(Self {
             microphone,
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::microphone::Frame>> {
-        if !is_due(step_index, self.spec.publish_every_steps) {
-            return Ok(None);
-        }
-        let data = self
-            .microphone
-            .get_sample_data()
-            .map_err(|error| anyhow!(error))?;
+impl SimulatedSensor for NativeMicrophone {
+    type Sample = api::component::microphone::Frame;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
+        let data = self.microphone.get_sample_data()?;
         // A silent window yields no samples; publishing an empty frame would
         // claim an observation the sensor did not make.
         if data.is_empty() {

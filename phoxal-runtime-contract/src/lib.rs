@@ -2,25 +2,27 @@
 //!
 //! This crate deliberately contains no participant runner, bus transport,
 //! command-line parser, or project compiler. It is the shared vocabulary used
-//! by the framework runtime and `phoxal-cli`: execution identities, the version
-//! identities that cross a process boundary, the launch record/env ABI, and the
-//! strict linker-section metadata record.
+//! by the framework runtime and `phoxal-cli`.
+//!
+//! There is no crate-root facade: every public item is reached through the
+//! module that owns its contract, so a type has exactly one path and an import
+//! already says which process-boundary contract it belongs to.
+//!
+//! - [`identity`] - the execution, producer, and timeline identities that reach
+//!   the wire.
+//! - [`version`] - the version identities two binaries compare to establish
+//!   that they speak the same contracts.
+//! - [`metadata`] - the record every participant binary embeds at compile time,
+//!   and its strict parser.
+//! - [`emit`] - the one sanctioned writer of that record, in both of its
+//!   evaluation modes.
+//! - [`launch`] - the launch record and environment ABI a supervisor hands a
+//!   participant process.
+//! - [`origin`] - the boot-anchored origin of one real execution.
 
 pub mod emit;
-mod identity;
-mod launch;
-mod metadata;
-mod origin;
-mod version;
-
-pub use identity::{ExecutionId, InvalidIdentity, ProducerId, TimelineId};
-pub use launch::{
-    BusProfile, ClockMode, DEFAULT_SHUTDOWN_GRACE_MS, LaunchEnv, LaunchError, ParticipantLaunch,
-    env,
-};
-pub use metadata::{
-    MetadataError, ParticipantKind, ParticipantMetadata, ParticipantSchemas,
-    parse_participant_metadata,
-};
-pub use origin::{BootId, ExecutionOrigin};
-pub use version::{BusAbi, ComponentSchema, LaunchAbi, RobotApi, RobotSchema, SimulationSchema};
+pub mod identity;
+pub mod launch;
+pub mod metadata;
+pub mod origin;
+pub mod version;

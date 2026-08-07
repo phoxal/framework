@@ -1,8 +1,8 @@
-// The package that cannot support a target owns that truth (organization#951,
-// Decision 7). This controller links Webots' `libController` at build time, and
-// Cyberbotics ships it only for the desktop platforms Webots itself runs on -
-// so the unsupported targets fail here, legibly, instead of as a linker error
-// or as release metadata the build never consults.
+// The package that cannot support a target owns that truth. This controller
+// links Webots' `libController` at build time, and Cyberbotics ships it only
+// for the desktop platforms Webots itself runs on - so the unsupported targets
+// fail here, legibly, instead of as a linker error or as release metadata the
+// build never consults.
 #[cfg(target_env = "musl")]
 compile_error!(
     "phoxal-simulator-webots-controller does not support musl targets: it links Webots' \
@@ -17,9 +17,13 @@ compile_error!(
      against. Run simulation on an x86_64 Linux or an Apple Silicon macOS host."
 );
 
+mod backend;
 mod capabilities;
-mod webots_controller;
+mod catalog;
+mod channel;
+mod controller;
+mod runtime;
 
 fn main() -> phoxal::Result<()> {
-    webots_controller::run()
+    controller::run()
 }

@@ -16,7 +16,7 @@ phoxal = "0.53.0"
 [workspace.lints.rust]
 unused = "warn"
 
-# Profiles are Cargo's stock `dev` and `release`, unmodified (organization#951).
+# Profiles are Cargo's stock `dev` and `release`, unmodified.
 # A `[profile]` table here would apply only to workspace builds - `cargo install`
 # builds each registry package as its own root and never reads it - so tuning it
 # would silently split the bundle between tuned project runtimes and stock

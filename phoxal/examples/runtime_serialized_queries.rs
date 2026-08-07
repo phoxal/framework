@@ -84,7 +84,7 @@ impl Participant for SerializedMap {
             state.rev = state.rev.saturating_add(1);
         }
         api.revision.publish(
-            step.token(),
+            &step.token,
             api::map::Revision {
                 revision: state.rev,
                 resolution_m: state.grid.resolution_m,

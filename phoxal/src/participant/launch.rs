@@ -10,10 +10,7 @@
 use std::path::PathBuf;
 
 use clap::{CommandFactory, FromArgMatches};
-pub use phoxal_runtime_contract::{
-    BusProfile, ClockMode, DEFAULT_SHUTDOWN_GRACE_MS, ExecutionId, ExecutionOrigin, LaunchEnv,
-    ParticipantLaunch, env,
-};
+pub use phoxal_runtime_contract::launch::{ClockMode, LaunchEnv, ParticipantLaunch, env};
 
 /// The clap-derived launch fields shared by every participant binary.
 #[derive(Debug, clap::Args)]
@@ -232,6 +229,8 @@ fn parse_clock_mode(value: &str) -> Result<ClockMode, String> {
 mod tests {
     use super::*;
     use clap::error::ErrorKind;
+    use phoxal_runtime_contract::identity::ExecutionId;
+    use phoxal_runtime_contract::origin::ExecutionOrigin;
     use serial_test::serial;
 
     fn clear_env() {

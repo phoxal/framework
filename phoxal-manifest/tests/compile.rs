@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use phoxal_manifest::{CompileError, SourceSet, compile};
+use phoxal_manifest::{CompileError, SourceSet};
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -11,7 +11,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn sources(project_root: &Path) -> SourceSet {
-    let manifest = phoxal_manifest::source::robot::read_from_path(project_root.join("robot.yaml"))
+    let manifest = phoxal_manifest::source::robot::Manifest::load(project_root.join("robot.yaml"))
         .expect("repository robot manifest must parse");
     let phoxal_manifest::source::robot::Manifest::V0(manifest) = manifest;
     let workspace = workspace_root();
@@ -34,20 +34,20 @@ fn sources(project_root: &Path) -> SourceSet {
     }
 }
 
+/// The fixture robot declares one instance of every component type the
+/// repository authors, so compiling it exercises each authored component
+/// grammar once. Variants that differ only in identity, a wheel width or a role
+/// hint compile through exactly the same path and prove nothing further, which
+/// is why there is one robot here rather than several.
 #[test]
 fn every_repository_robot_compiles_to_the_canonical_model() {
     let workspace = workspace_root();
-    let roots = [
-        "fixture/robot/rgbd-diff-drive",
-        "fixture/robot/rgbd-imu-diff-drive",
-        "fixture/robot/rgbd-imu-gnss-outdoor",
-        "fixture/robot/rgbd-imu-orb-lowres",
-        "examples/hello-rover",
-    ];
+    let roots = ["fixture/robot/rgbd-imu-diff-drive", "examples/hello-rover"];
 
     for relative in roots {
         let root = workspace.join(relative);
-        compile(sources(&root))
+        sources(&root)
+            .compile()
             .unwrap_or_else(|error| panic!("failed to compile {relative}: {error}"));
     }
 }
@@ -55,7 +55,7 @@ fn every_repository_robot_compiles_to_the_canonical_model() {
 #[test]
 fn canonical_mesh_references_are_backed_by_compiled_assets() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
-    let compiled = compile(sources(&root)).expect("fixture must compile");
+    let compiled = sources(&root).compile().expect("fixture must compile");
     let asset_ids = compiled
         .assets()
         .iter()
@@ -72,7 +72,7 @@ fn canonical_mesh_references_are_backed_by_compiled_assets() {
                 .map(|instance| {
                     compiled
                         .robot()
-                        .component_for_instance(instance.id())
+                        .component_for_instance(instance.id().as_str())
                         .unwrap()
                 })
                 .flat_map(|component| component.structure().asset_ids()),
@@ -101,7 +101,7 @@ fn missing_canonical_mesh_is_rejected_at_compile_time() {
         "drive_motor".to_string(),
         component_root.path().to_path_buf(),
     );
-    let error = compile(sources).unwrap_err();
+    let error = sources.compile().unwrap_err();
     assert!(matches!(error, CompileError::Assets { .. }));
     assert!(
         error
@@ -143,7 +143,7 @@ fn relative_material_texture_is_normalized_into_the_local_component_namespace() 
         "drive_motor".to_string(),
         component_root.path().to_path_buf(),
     );
-    let compiled = compile(sources).unwrap();
+    let compiled = sources.compile().unwrap();
     let component = compiled
         .robot()
         .component_for_instance("front_left_drive")
@@ -161,11 +161,14 @@ fn source_set_errors_preserve_the_failed_input() {
     let root = workspace_root().join("fixture/robot/rgbd-imu-diff-drive");
     let mut sources = sources(&root);
     sources.component_roots.remove("imu");
-    let error = compile(sources).unwrap_err();
-    assert!(matches!(
-        &error,
-        CompileError::Component { component_type, .. } if component_type == "imu"
-    ));
+    let error = sources.compile().unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            CompileError::UnresolvedComponentRoot { component_type } if component_type == "imu"
+        ),
+        "{error}"
+    );
     let message = error.to_string();
     assert!(message.contains("imu"));
     assert!(message.contains("resolved component root"));
@@ -199,7 +202,9 @@ fn an_authored_behaviors_directory_is_never_read() {
     )
     .unwrap();
 
-    let compiled = compile(sources(temp.path())).expect("a behaviors/ directory must be ignored");
+    let compiled = sources(temp.path())
+        .compile()
+        .expect("a behaviors/ directory must be ignored");
     assert!(
         compiled
             .assets()
@@ -227,8 +232,8 @@ fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
     sources.project_root = temp.path().to_path_buf();
     sources.robot_manifest = temp.path().join("robot.yaml");
 
-    let error = compile(sources).unwrap_err();
-    assert!(matches!(error, CompileError::Robot { .. }), "{error}");
+    let error = sources.compile().unwrap_err();
+    assert!(matches!(error, CompileError::Document { .. }), "{error}");
     let message = error.to_string();
     assert!(message.contains("services.brain is reserved"), "{message}");
 }
@@ -257,7 +262,9 @@ fn one_component_can_have_distinct_driver_and_simulator_participants() {
     )
     .unwrap();
 
-    let compiled = compile(sources(temp.path())).expect("driver plus simulator must compile");
+    let compiled = sources(temp.path())
+        .compile()
+        .expect("driver plus simulator must compile");
     let matching = compiled
         .participants()
         .iter()

@@ -6,11 +6,12 @@
 //! root is execution-scoped, a previous run's tokens are on different keys
 //! entirely and can never be mistaken for the current run's.
 
+use phoxal_runtime_contract::identity::ProducerId;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
 
-use crate::identity::ProducerId;
-use crate::{Bus, BusError, Result};
+use crate::error::{BusError, KeyProblem, Result};
+use crate::session::Bus;
 
 const PARTICIPANT_LIVELINESS_PREFIX: &str = "liveliness/participants";
 
@@ -34,9 +35,8 @@ impl ParticipantLivelinessKey {
         let participant = participant.into();
         validate_participant(&participant)?;
         let raw = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/{participant}/{producer}");
-        let key = OwnedKeyExpr::new(raw.clone()).map_err(|error| {
-            BusError::Namespace(format!("invalid Liveliness key '{raw}': {error}"))
-        })?;
+        let key = OwnedKeyExpr::new(raw.clone())
+            .map_err(|error| BusError::not_a_key_expression(&raw, error))?;
         Ok(Self {
             key,
             participant,
@@ -76,16 +76,17 @@ impl ParticipantLivelinessKey {
     pub fn selector(root: &str) -> Result<OwnedKeyExpr> {
         validate_root(root)?;
         let selector = format!("{root}/{PARTICIPANT_LIVELINESS_PREFIX}/*/*");
-        OwnedKeyExpr::new(selector.clone()).map_err(|error| {
-            BusError::Namespace(format!("invalid Liveliness selector '{selector}': {error}"))
-        })
+        OwnedKeyExpr::new(selector.clone())
+            .map_err(|error| BusError::not_a_key_expression(&selector, error))
     }
 }
 
 /// Presence or absence of one Liveliness token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LivelinessStatus {
+    /// The token is declared.
     Alive,
+    /// The token is not declared, or stopped being declared.
     Lost,
 }
 
@@ -101,7 +102,9 @@ impl From<SampleKind> for LivelinessStatus {
 /// A parsed participant Liveliness observation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParticipantLivelinessEvent {
+    /// The exact producer-qualified key the change was observed on.
     pub key: ParticipantLivelinessKey,
+    /// Whether that key's token appeared or went away.
     pub status: LivelinessStatus,
 }
 
@@ -216,9 +219,8 @@ impl Bus {
     ) -> Result<KeyLivelinessObserver> {
         validate_relative_key(relative_key)?;
         let raw = self.full_key(relative_key);
-        let key = OwnedKeyExpr::new(raw.clone()).map_err(|error| {
-            BusError::Namespace(format!("invalid Liveliness key '{raw}': {error}"))
-        })?;
+        let key = OwnedKeyExpr::new(raw.clone())
+            .map_err(|error| BusError::not_a_key_expression(&raw, error))?;
 
         // Declared before the state is read, so a token lost in between is
         // reported by the subscriber rather than missed by both.
@@ -261,18 +263,10 @@ impl Bus {
     }
 }
 
+/// A liveliness key must be a concrete path below the execution root: a
+/// wildcard would silently widen the observation to whatever else exists.
 fn validate_relative_key(relative_key: &str) -> Result<()> {
-    if relative_key.is_empty()
-        || relative_key
-            .split('/')
-            .any(|segment| segment.is_empty() || segment.contains('*'))
-    {
-        return Err(BusError::Namespace(format!(
-            "a liveliness key must be a concrete non-empty key path below the \
-             execution root, got '{relative_key}'"
-        )));
-    }
-    Ok(())
+    validate_concrete_path(relative_key)
 }
 
 fn participant_event(
@@ -287,29 +281,34 @@ fn participant_event(
     })
 }
 
+/// A participant id becomes exactly one key segment, so it may carry neither a
+/// separator nor a wildcard.
 fn validate_participant(participant: &str) -> Result<()> {
     if participant.is_empty() {
-        return Err(BusError::Namespace(
-            "participant id must not be empty".to_string(),
+        return Err(BusError::invalid_key(participant, KeyProblem::Empty));
+    }
+    if participant.contains('/') {
+        return Err(BusError::invalid_key(
+            participant,
+            KeyProblem::NotOneSegment,
         ));
     }
-    if participant.contains('/') || participant.contains('*') {
-        return Err(BusError::Namespace(format!(
-            "participant id must be one concrete key segment, got '{participant}'"
-        )));
+    if participant.contains('*') {
+        return Err(BusError::invalid_key(participant, KeyProblem::Wildcard));
     }
     Ok(())
 }
 
 fn validate_root(root: &str) -> Result<()> {
-    if root.is_empty()
-        || root
-            .split('/')
-            .any(|segment| segment.is_empty() || segment.contains('*'))
-    {
-        return Err(BusError::Namespace(format!(
-            "an execution root must be a concrete non-empty key path, got '{root}'"
-        )));
+    validate_concrete_path(root)
+}
+
+fn validate_concrete_path(path: &str) -> Result<()> {
+    if path.is_empty() || path.split('/').any(str::is_empty) {
+        return Err(BusError::invalid_key(path, KeyProblem::Empty));
+    }
+    if path.contains('*') {
+        return Err(BusError::invalid_key(path, KeyProblem::Wildcard));
     }
     Ok(())
 }
@@ -375,5 +374,193 @@ mod tests {
             format!("{ROOT}/liveliness/participants/*/*")
         );
         assert!(selector.includes(&key.key));
+    }
+
+    /// The supervisor's identity token is one exact key, and a client attaching
+    /// mid-run has to learn both that it is already there and, later, that it is
+    /// gone. Neither half is answerable from the participant-scoped observer.
+    ///
+    /// These need two separate sessions to reach each other, so they run behind
+    /// the `router` feature: an in-process session cannot observe another one.
+    #[cfg(feature = "router")]
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exact_key_observation_reports_a_token_that_was_already_live_and_then_its_loss() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use std::time::Duration;
+
+        use crate::session::BusConfig;
+        use crate::test_support::socket_endpoint;
+
+        let (_dir, endpoint) = socket_endpoint("phoxal-identity-");
+        let execution = phoxal_runtime_contract::identity::ExecutionId::mint();
+        let router = crate::router::Router::open(execution, std::slice::from_ref(&endpoint), None)
+            .await
+            .expect("the router binds its endpoint");
+
+        let session = |participant: &str| BusConfig {
+            execution,
+            participant: participant.to_string(),
+            connect_endpoints: vec![endpoint.clone()],
+        };
+
+        // The declaring side goes first, so the observer genuinely attaches late.
+        let declaring = Bus::open(session("supervisor")).await.unwrap();
+        let token = declaring
+            .session()
+            .liveliness()
+            .declare_token(declaring.full_key("supervisor/identity"))
+            .await
+            .expect("the supervisor declares its identity token");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let observing = Bus::open(session("client")).await.unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let observer = observing
+            .observe_liveliness_key("supervisor/identity", move |status| {
+                crate::lock::lock(&recorder).push(status);
+            })
+            .await
+            .expect("the exact key is observable");
+        assert_eq!(
+            observer.initial(),
+            LivelinessStatus::Alive,
+            "a token declared before the observer must be reported as present"
+        );
+
+        drop(token);
+
+        let mut lost = false;
+        for _ in 0..100 {
+            if crate::lock::lock(&seen).contains(&LivelinessStatus::Lost) {
+                lost = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(lost, "undeclaring the token must be reported as loss");
+
+        drop(observer);
+        observing.close().await.unwrap();
+        declaring.close().await.unwrap();
+        router.close().await.unwrap();
+    }
+
+    /// An observation that reported presence for a token that was never there
+    /// would make an attach succeed against a dead robot.
+    #[cfg(feature = "router")]
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_exact_key_observation_reports_an_absent_token_as_lost() {
+        use crate::session::BusConfig;
+        use crate::test_support::socket_endpoint;
+
+        let (_dir, endpoint) = socket_endpoint("phoxal-identity-absent-");
+        let execution = phoxal_runtime_contract::identity::ExecutionId::mint();
+        let router = crate::router::Router::open(execution, std::slice::from_ref(&endpoint), None)
+            .await
+            .expect("the router binds its endpoint");
+
+        let observing = Bus::open(BusConfig {
+            execution,
+            participant: "client".to_string(),
+            connect_endpoints: vec![endpoint.clone()],
+        })
+        .await
+        .unwrap();
+        let observer = observing
+            .observe_liveliness_key("supervisor/identity", |_| {})
+            .await
+            .expect("an absent token is still an observable key");
+        assert_eq!(observer.initial(), LivelinessStatus::Lost);
+
+        // A wildcard would silently widen the observation to whatever else exists.
+        assert!(
+            observing
+                .observe_liveliness_key("supervisor/*", |_| {})
+                .await
+                .is_err(),
+            "an exact-key observation must reject a selector"
+        );
+
+        drop(observer);
+        observing.close().await.unwrap();
+        router.close().await.unwrap();
+    }
+
+    /// The observer is the subscription: dropping it has to stop delivery, or a
+    /// client that tore down its attach would keep mutating state behind a screen
+    /// it no longer shows. Delivery is proven live first, so the silence afterwards
+    /// is the drop taking effect and not a setup that never worked.
+    #[cfg(feature = "router")]
+    #[serial_test::serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_an_exact_key_observer_stops_callback_delivery() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use crate::session::BusConfig;
+        use crate::test_support::socket_endpoint;
+
+        let (_dir, endpoint) = socket_endpoint("phoxal-identity-drop-");
+        let execution = phoxal_runtime_contract::identity::ExecutionId::mint();
+        let router = crate::router::Router::open(execution, std::slice::from_ref(&endpoint), None)
+            .await
+            .expect("the router binds its endpoint");
+
+        let session = |participant: &str| BusConfig {
+            execution,
+            participant: participant.to_string(),
+            connect_endpoints: vec![endpoint.clone()],
+        };
+        let declaring = Bus::open(session("supervisor")).await.unwrap();
+        let observing = Bus::open(session("client")).await.unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let observer = observing
+            .observe_liveliness_key("supervisor/identity", move |_| {
+                counter.fetch_add(1, Ordering::Relaxed);
+            })
+            .await
+            .expect("the exact key is observable");
+        assert_eq!(observer.initial(), LivelinessStatus::Lost);
+
+        // Prove the subscription is live: a first declaration must reach it.
+        let token = declaring
+            .session()
+            .liveliness()
+            .declare_token(declaring.full_key("supervisor/identity"))
+            .await
+            .expect("the supervisor declares its identity token");
+        let mut delivered = false;
+        for _ in 0..100 {
+            if calls.load(Ordering::Relaxed) > 0 {
+                delivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(delivered, "a live observer must receive the declaration");
+        let before_drop = calls.load(Ordering::Relaxed);
+
+        drop(observer);
+        // The undeclare that follows would be delivered to a still-declared
+        // subscriber, so any increment here is the observer having outlived its
+        // handle.
+        drop(token);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            before_drop,
+            "a dropped observer must not receive further changes"
+        );
+
+        observing.close().await.unwrap();
+        declaring.close().await.unwrap();
+        router.close().await.unwrap();
     }
 }

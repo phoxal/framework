@@ -23,8 +23,6 @@
 
 mod api_tree;
 mod authoring;
-mod step;
-mod util;
 
 use proc_macro::TokenStream;
 
@@ -73,8 +71,8 @@ use proc_macro::TokenStream;
 ///   segments plus the leaf, where a static node contributes `name` and a
 ///   dynamic node contributes `name/{var}` (e.g.
 ///   `v0.1/component/{instance}/motor/{capability}/command`). Folding the
-///   version into the key (D1) makes differently-versioned contracts
-///   physically distinct Zenoh keys.
+///   version into the key makes differently-versioned contracts physically
+///   distinct Zenoh keys.
 /// - **body type path** - `phoxal_api::vM_N::<node>::…::<Body>`; variables never
 ///   appear in the module path.
 ///
@@ -83,8 +81,8 @@ use proc_macro::TokenStream;
 ///
 /// # Generated topic builders
 ///
-/// Each version also gets an api-local `topic` module emitted with BOTH side trees
-/// (L1, plan #00). `topic::client()` returns a `Root` for the PUBLIC **client** side;
+/// Each version also gets an api-local `topic` module emitted with BOTH side
+/// trees. `topic::client()` returns a `Root` for the PUBLIC **client** side;
 /// `topic::owner()` returns a `Root` for the OWNER side. Both
 /// have a method per node that walks the identical
 /// tree (a dynamic node's method takes its variable as `impl Display`) and a leaf
@@ -145,7 +143,7 @@ pub fn phoxal_api_tree(input: TokenStream) -> TokenStream {
 /// [`Participant::step`](https://docs.rs/phoxal) override.
 #[proc_macro_attribute]
 pub fn step(attr: TokenStream, item: TokenStream) -> TokenStream {
-    step::expand(attr.into(), item.into())
+    authoring::expand_step(attr.into(), item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

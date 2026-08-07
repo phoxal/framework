@@ -1,12 +1,11 @@
 //! `power` - systemd-native host lifecycle control.
 //!
 //! The participant invokes the host's `systemctl reboot` or `systemctl poweroff`
-//! command. Hosts without systemd remain explicitly inactive; command failures
-//! are reported as faults without assuming a Balena supervisor.
+//! command. A host that has no systemd stays idle and publishes why; a command
+//! the host refuses or never answers is published as a fault.
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -17,18 +16,21 @@ use tokio::time::timeout;
 
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub struct Api {
+pub(crate) struct Api {
     commands: Subscriber<api::power::Command>,
     state: StatePublisher<api::power::State>,
 }
 
-pub struct PowerState {
+pub(crate) struct PowerState {
     latched: api::power::State,
-    executor: Option<Arc<dyn PowerExecutor>>,
+    /// Absent on a host with no systemd. That is the whole of the "cannot act"
+    /// case: every command is then answered `Idle` with the reason, never
+    /// silently dropped.
+    executor: Option<Box<dyn PowerExecutor>>,
 }
 
 #[phoxal::service(state = PowerState, api = Api)]
-pub struct Power;
+pub(crate) struct Power;
 
 impl Participant for Power {
     async fn setup(
@@ -36,12 +38,10 @@ impl Participant for Power {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let executor = SystemdExecutor::detect().map(|executor| Arc::new(executor) as _);
+        let executor =
+            SystemdExecutor::detect().map(|executor| Box::new(executor) as Box<dyn PowerExecutor>);
         Ok((
-            PowerState {
-                latched: idle_state(None),
-                executor,
-            },
+            PowerState::new(executor),
             Api {
                 commands: ctx
                     .subscriber(api::topic::owner().power().command(), 32)
@@ -61,24 +61,94 @@ impl Participant for Power {
         state: &mut Self::State,
     ) -> Result<()> {
         while let Some(received) = api.commands.try_recv() {
-            state.latched = state_for_command(received.body, state.executor.as_deref()).await;
+            state.apply(received.body).await;
         }
-        api.state.publish(step.token(), state.latched.clone())?;
+        api.state.publish(&step.token, state.latched.clone())?;
         Ok(())
     }
 }
 
+impl PowerState {
+    fn new(executor: Option<Box<dyn PowerExecutor>>) -> Self {
+        Self {
+            latched: idle_state(None),
+            executor,
+        }
+    }
+
+    /// Run `command` on the host and latch the state the next step publishes.
+    async fn apply(&mut self, command: api::power::Command) {
+        let Some(executor) = self.executor.as_deref() else {
+            self.latched = idle_state(Some("systemd host integration is unavailable".to_string()));
+            return;
+        };
+        let facts = CommandFacts::of(command);
+        self.latched = match executor.submit(command).await {
+            ExecutorOutcome::Accepted => api::power::State {
+                status: facts.accepted,
+                detail: Some(format!("systemd accepted {}", facts.label)),
+            },
+            ExecutorOutcome::Failed(detail) => api::power::State {
+                status: api::power::Status::Failed,
+                detail: Some(detail),
+            },
+        };
+    }
+}
+
+/// The host mechanism that carries out a power command.
+///
+/// [`SystemdExecutor`] is the only implementation the participant ships. The
+/// trait exists so `tests::StaticExecutor` can stand in for a host that is not
+/// running systemd, which is the only way the accepted and failed paths are
+/// reachable off a real machine.
+///
+/// The returned future is boxed by hand rather than written as `async fn`: an
+/// `async fn` in a trait is not dyn-compatible, and the executor is held as
+/// `Box<dyn PowerExecutor>` precisely so the test double can replace it.
 trait PowerExecutor: Send + Sync {
-    fn submit<'a>(
-        &'a self,
+    fn submit(
+        &self,
         command: api::power::Command,
-    ) -> Pin<Box<dyn Future<Output = ExecutorOutcome> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = ExecutorOutcome> + Send + '_>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExecutorOutcome {
     Accepted,
     Failed(String),
+}
+
+/// What one command is called at each boundary it crosses, resolved by a single
+/// match so the spellings cannot drift apart.
+#[derive(Clone, Copy)]
+struct CommandFacts {
+    /// The `systemctl` verb. Fixed by the host rather than by this service:
+    /// systemd names the shutdown action `poweroff`, so that is what crosses
+    /// the process boundary.
+    verb: &'static str,
+    /// The contract's own name for the command, as the published `detail` text
+    /// spells it.
+    label: &'static str,
+    /// The status latched once the host accepts the command.
+    accepted: api::power::Status,
+}
+
+impl CommandFacts {
+    const fn of(command: api::power::Command) -> Self {
+        match command {
+            api::power::Command::Reboot => Self {
+                verb: "reboot",
+                label: "reboot",
+                accepted: api::power::Status::Rebooting,
+            },
+            api::power::Command::Shutdown => Self {
+                verb: "poweroff",
+                label: "shutdown",
+                accepted: api::power::Status::ShuttingDown,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -93,18 +163,15 @@ impl SystemdExecutor {
 }
 
 impl PowerExecutor for SystemdExecutor {
-    fn submit<'a>(
-        &'a self,
+    fn submit(
+        &self,
         command: api::power::Command,
-    ) -> Pin<Box<dyn Future<Output = ExecutorOutcome> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = ExecutorOutcome> + Send + '_>> {
         Box::pin(async move {
-            let action = match command {
-                api::power::Command::Reboot => "reboot",
-                api::power::Command::Shutdown => "poweroff",
-            };
+            let verb = CommandFacts::of(command).verb;
             match timeout(
                 COMMAND_TIMEOUT,
-                Command::new("/usr/bin/systemctl").arg(action).output(),
+                Command::new("/usr/bin/systemctl").arg(verb).output(),
             )
             .await
             {
@@ -121,28 +188,6 @@ impl PowerExecutor for SystemdExecutor {
     }
 }
 
-async fn state_for_command(
-    command: api::power::Command,
-    executor: Option<&dyn PowerExecutor>,
-) -> api::power::State {
-    let Some(executor) = executor else {
-        return idle_state(Some("systemd host integration is unavailable".to_string()));
-    };
-    match executor.submit(command).await {
-        ExecutorOutcome::Accepted => api::power::State {
-            status: match command {
-                api::power::Command::Reboot => api::power::Status::Rebooting,
-                api::power::Command::Shutdown => api::power::Status::ShuttingDown,
-            },
-            detail: Some(format!("systemd accepted {}", command_label(command))),
-        },
-        ExecutorOutcome::Failed(detail) => api::power::State {
-            status: api::power::Status::Failed,
-            detail: Some(detail),
-        },
-    }
-}
-
 fn idle_state(detail: Option<String>) -> api::power::State {
     api::power::State {
         status: api::power::Status::Idle,
@@ -150,46 +195,65 @@ fn idle_state(detail: Option<String>) -> api::power::State {
     }
 }
 
-fn command_label(command: api::power::Command) -> &'static str {
-    match command {
-        api::power::Command::Reboot => "reboot",
-        api::power::Command::Shutdown => "shutdown",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An executor that reports a fixed outcome, standing in for a systemd host
+    /// the test machine does not have.
     struct StaticExecutor(ExecutorOutcome);
 
     impl PowerExecutor for StaticExecutor {
-        fn submit<'a>(
-            &'a self,
+        fn submit(
+            &self,
             _command: api::power::Command,
-        ) -> Pin<Box<dyn Future<Output = ExecutorOutcome> + Send + 'a>> {
+        ) -> Pin<Box<dyn Future<Output = ExecutorOutcome> + Send + '_>> {
             Box::pin(async move { self.0.clone() })
         }
     }
 
+    fn state_with(outcome: Option<ExecutorOutcome>) -> PowerState {
+        PowerState::new(
+            outcome.map(|outcome| Box::new(StaticExecutor(outcome)) as Box<dyn PowerExecutor>),
+        )
+    }
+
     #[tokio::test]
     async fn unavailable_host_stays_idle() {
-        let state = state_for_command(api::power::Command::Reboot, None).await;
-        assert_eq!(state.status, api::power::Status::Idle);
+        let mut state = state_with(None);
+        state.apply(api::power::Command::Reboot).await;
+        assert_eq!(state.latched.status, api::power::Status::Idle);
     }
 
     #[tokio::test]
     async fn accepted_command_transitions_to_requested_state() {
-        let executor = StaticExecutor(ExecutorOutcome::Accepted);
-        let state = state_for_command(api::power::Command::Shutdown, Some(&executor)).await;
-        assert_eq!(state.status, api::power::Status::ShuttingDown);
+        let mut state = state_with(Some(ExecutorOutcome::Accepted));
+        state.apply(api::power::Command::Shutdown).await;
+        assert_eq!(state.latched.status, api::power::Status::ShuttingDown);
+        assert_eq!(
+            state.latched.detail.as_deref(),
+            Some("systemd accepted shutdown")
+        );
     }
 
     #[tokio::test]
     async fn backend_failure_is_typed_as_failed_state() {
-        let executor = StaticExecutor(ExecutorOutcome::Failed("denied".to_string()));
-        let state = state_for_command(api::power::Command::Reboot, Some(&executor)).await;
-        assert_eq!(state.status, api::power::Status::Failed);
-        assert_eq!(state.detail.as_deref(), Some("denied"));
+        let mut state = state_with(Some(ExecutorOutcome::Failed("denied".to_string())));
+        state.apply(api::power::Command::Reboot).await;
+        assert_eq!(state.latched.status, api::power::Status::Failed);
+        assert_eq!(state.latched.detail.as_deref(), Some("denied"));
+    }
+
+    /// The verb crosses a process boundary and the label crosses the wire, so
+    /// they are pinned separately even though one command names both.
+    #[test]
+    fn the_shutdown_command_keeps_both_of_its_spellings() {
+        let shutdown = CommandFacts::of(api::power::Command::Shutdown);
+        assert_eq!(shutdown.verb, "poweroff");
+        assert_eq!(shutdown.label, "shutdown");
+
+        let reboot = CommandFacts::of(api::power::Command::Reboot);
+        assert_eq!(reboot.verb, "reboot");
+        assert_eq!(reboot.label, "reboot");
     }
 }

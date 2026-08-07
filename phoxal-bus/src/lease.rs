@@ -1,4 +1,4 @@
-//! Receiver-owned command leases and producer fencing (#952 sections F and G).
+//! Receiver-owned command leases and producer fencing.
 //!
 //! A command envelope carries execution membership (structurally, through the
 //! bus root), producer identity, a monotonic sequence, and the body. It carries
@@ -26,7 +26,8 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use crate::identity::ProducerId;
+use phoxal_runtime_contract::identity::ProducerId;
+
 use crate::time::{LocalInstant, RobotInstant, TimelineMismatch};
 
 /// Why a command was not accepted.
@@ -402,19 +403,15 @@ impl<B> Lease<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::TimelineId;
+    use phoxal_runtime_contract::identity::TimelineId;
+
+    use crate::test_support::producer;
 
     const SILENCE: Duration = Duration::from_millis(150);
     const HOLD: Duration = Duration::from_millis(500);
 
     fn step(line: TimelineId, ticks: u64) -> RobotInstant {
         RobotInstant::new(line, ticks)
-    }
-
-    /// A distinct test producer. Nothing mints a producer in production - a
-    /// session's identity is the session - so tests name theirs explicitly.
-    fn producer(value: u128) -> ProducerId {
-        ProducerId::try_from(value).expect("a test producer is nonzero")
     }
 
     fn ms(value: u64) -> u64 {

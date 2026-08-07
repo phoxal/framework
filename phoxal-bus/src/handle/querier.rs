@@ -1,0 +1,259 @@
+//! The caller side of the request/response leg.
+
+use std::marker::PhantomData;
+use std::time::Duration;
+
+use zenoh::bytes::Encoding;
+use zenoh::key_expr::OwnedKeyExpr;
+use zenoh::sample::Sample;
+
+use crate::abi::{Codec, MessagePack};
+use crate::contract::ContractBody;
+use crate::error::Result;
+use crate::handle::decode_sample;
+use crate::query::{QueryError, QueryFailure};
+use crate::session::Bus;
+use crate::topic::{AskQuery, Topic};
+
+/// The Phoxal-pinned finite query timeout - not Zenoh's 10 s default.
+pub const DEFAULT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Issues queries on an exclusive query topic and returns
+/// `Result<Resp, QueryError>`.
+///
+/// A query carries a finite, Phoxal-pinned
+/// [`timeout`](DEFAULT_QUERY_TIMEOUT) - not Zenoh's 10 s default - and expects
+/// exactly one responder:
+///
+/// - a success reply decodes to the plain `Resp` body;
+/// - a handler error rides Zenoh's native `ReplyError` and surfaces as
+///   [`QueryError::Server`] carrying the [`QueryFailure`];
+/// - the deadline elapsing with no reply is [`QueryError::Timeout`], and the
+///   reply stream closing with no reply is [`QueryError::Unavailable`];
+/// - a second reply (a duplicate responder, also a launch-topology error) is
+///   [`QueryError::TooManyResponders`].
+pub struct Querier<Req, Resp> {
+    bus: Bus,
+    key: String,
+    timeout: Duration,
+    _p: PhantomData<fn() -> (Req, Resp)>,
+}
+
+// Manual, unbounded on `Req`/`Resp` - see `Outbox`'s `Clone` impl docs for
+// why (identical reasoning: `query` takes `&self`, so a clone is just a
+// second handle to the same query key).
+impl<Req, Resp> Clone for Querier<Req, Resp> {
+    fn clone(&self) -> Self {
+        Querier {
+            bus: self.bus.clone(),
+            key: self.key.clone(),
+            timeout: self.timeout,
+            _p: PhantomData,
+        }
+    }
+}
+
+impl<Req, Resp> Querier<Req, Resp>
+where
+    Req: ContractBody,
+    Resp: ContractBody,
+{
+    /// Build a querier over a query topic.
+    ///
+    /// The author-facing path is `ctx.querier(...)` in `Participant::setup`.
+    /// `pub` only because the generated api tree and the runner live in other
+    /// crates; see [`crate::handle::stamp`]'s module docs.
+    #[doc(hidden)]
+    pub fn new(bus: Bus, topic: &Topic<AskQuery<Req, Resp>>, timeout: Duration) -> Result<Self> {
+        let key = bus.full_key(topic.publish_key()?);
+        Ok(Querier {
+            bus,
+            key,
+            timeout,
+            _p: PhantomData,
+        })
+    }
+
+    /// Issue a query and await the single response (or a typed error).
+    ///
+    /// The request body is MessagePack-encoded with mirroring provenance; a
+    /// request expresses no robot time, so `produced_at` is `None`. The wait is
+    /// bounded by this querier's timeout.
+    pub async fn query(&self, request: Req) -> std::result::Result<Resp, QueryError> {
+        let payload =
+            MessagePack::encode(&request).map_err(|e| QueryError::Protocol(e.to_string()))?;
+        let metadata = self
+            .bus
+            .metadata(None)
+            .map_err(|e| QueryError::Protocol(e.to_string()))?;
+        let attachment = metadata
+            .encode()
+            .map_err(|e| QueryError::Protocol(format!("failed to encode bus metadata: {e}")))?;
+        let key = OwnedKeyExpr::new(self.key.clone())
+            .map_err(|e| QueryError::Protocol(format!("invalid query key '{}': {e}", self.key)))?;
+
+        let replies = self
+            .bus
+            .session()
+            .get(key)
+            .payload(payload)
+            .encoding(Encoding::from(MessagePack::ID.encoding_string()))
+            .attachment(attachment)
+            // Target ALL matching responders (not just BestMatching) and do not
+            // consolidate, so a duplicate responder on an exclusive topic surfaces
+            // as a second reply (→ `TooManyResponders`) rather than being hidden.
+            .target(zenoh::query::QueryTarget::All)
+            .consolidation(zenoh::query::ConsolidationMode::None)
+            .await
+            .map_err(|e| QueryError::Protocol(e.to_string()))?;
+
+        // An exclusive query topic has exactly one responder: collect replies
+        // until the stream closes, returning the single reply. A second reply is
+        // `TooManyResponders` (a duplicate responder - also a launch-topology
+        // error). The Phoxal-pinned finite timeout bounds the wait: deadline with
+        // no reply → `Timeout`; the stream closing with no reply → `Unavailable`.
+        let deadline = tokio::time::Instant::now() + self.timeout;
+        let mut outcome: Option<std::result::Result<Resp, QueryError>> = None;
+        loop {
+            match tokio::time::timeout_at(deadline, replies.recv_async()).await {
+                Ok(Ok(reply)) => {
+                    if outcome.is_some() {
+                        return Err(QueryError::TooManyResponders);
+                    }
+                    outcome = Some(decode_reply_result::<Resp>(reply.into_result()));
+                }
+                Ok(Err(_)) => break, // reply stream closed
+                Err(_elapsed) => {
+                    return outcome.unwrap_or_else(|| {
+                        Err(QueryError::Timeout(QueryFailure::deadline_exceeded(
+                            "query deadline exceeded",
+                        )))
+                    });
+                }
+            }
+        }
+        outcome.unwrap_or(Err(QueryError::Unavailable))
+    }
+}
+
+fn decode_reply_result<Resp: ContractBody>(
+    result: std::result::Result<Sample, zenoh::query::ReplyError>,
+) -> std::result::Result<Resp, QueryError> {
+    match result {
+        Ok(sample) => decode_sample::<Resp>(&sample, Resp::TOPIC)
+            .map(|(body, _)| body)
+            .map_err(|e| QueryError::Decode(e.to_string())),
+        Err(reply_error) => {
+            let bytes = reply_error.payload().to_bytes();
+            match QueryFailure::decode(bytes.as_ref()) {
+                Ok(failure) => Err(QueryError::Server(failure)),
+                Err(e) => Err(QueryError::Protocol(format!("malformed error reply: {e}"))),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    use crate::query::QueryCode;
+    use crate::session::BusConfig;
+    use crate::test_support::{GetRequest, GetResponse};
+
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_query_round_trip_ok_then_error() {
+        let bus = Bus::open(BusConfig::in_process("q")).await.unwrap();
+        let server = bus.declare_server("yTEST/asset/get").await.unwrap();
+        let server_bus = bus.clone();
+
+        let server_task = tokio::spawn(async move {
+            // First query -> a Found response. Scoped so the query is dropped
+            // right after replying, letting the complete queryable's reply
+            // stream close.
+            {
+                let incoming = server.recv().await.unwrap();
+                let response = GetResponse::Found {
+                    bytes: vec![9, 9, 9],
+                };
+                let payload = rmp_serde::to_vec_named(&response).unwrap();
+                incoming.reply(&server_bus, payload).await.unwrap();
+            }
+
+            // Second query -> a structured error on the native error leg.
+            {
+                let incoming = server.recv().await.unwrap();
+                incoming
+                    .reply_err(&QueryFailure::not_found("no such asset"))
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let topic = Topic::<AskQuery<GetRequest, GetResponse>>::new_static(
+            <GetRequest as ContractBody>::TOPIC,
+        );
+        let querier =
+            Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_secs(5))
+                .unwrap();
+
+        let ok = querier
+            .query(GetRequest {
+                path: "a".to_string(),
+            })
+            .await
+            .expect("first query should succeed");
+        assert!(matches!(ok, GetResponse::Found { .. }));
+
+        let error = querier
+            .query(GetRequest {
+                path: "b".to_string(),
+            })
+            .await
+            .expect_err("second query should be a server error");
+        match error {
+            QueryError::Server(failure) => assert_eq!(failure.code, QueryCode::NotFound),
+            other => panic!("expected QueryError::Server, got {other:?}"),
+        }
+
+        server_task.await.unwrap();
+        bus.close().await.unwrap();
+    }
+
+    /// The caller-side deadline is the querier's own, not Zenoh's: a handler
+    /// that never answers must not hold the caller for Zenoh's 10 s default.
+    #[serial]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn live_query_timeout_maps_to_deadline_exceeded() {
+        let bus = Bus::open(BusConfig::in_process("timeout")).await.unwrap();
+        let server = bus.declare_server("yTEST/asset/get").await.unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let _incoming = server.recv().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let topic = Topic::<AskQuery<GetRequest, GetResponse>>::new_static(
+            <GetRequest as ContractBody>::TOPIC,
+        );
+        let querier =
+            Querier::<GetRequest, GetResponse>::new(bus.clone(), &topic, Duration::from_millis(20))
+                .unwrap();
+
+        let error = querier
+            .query(GetRequest {
+                path: "slow".to_string(),
+            })
+            .await
+            .expect_err("query should time out");
+        match error {
+            QueryError::Timeout(failure) => assert_eq!(failure.code, QueryCode::DeadlineExceeded),
+            other => panic!("expected QueryError::Timeout, got {other:?}"),
+        }
+
+        server_task.await.unwrap();
+        bus.close().await.unwrap();
+    }
+}

@@ -1,14 +1,14 @@
-//! Typed topics - the api-local builder output (D61), side-branded for L1 (plan #00).
+//! Typed topics: the api-local builder output.
 //!
 //! A [`Topic`] is a version-qualified topic key plus a phantom [`TopicKind`]
 //! that ties the key to its body type(s) **and to the side** the holder may
 //! take. The api tree's `topic` builders return these; the `SetupContext` handle
 //! builders consume them. The wire body never appears in the key, but the
-//! version does - the key is `v0.1/drive/state`, not `drive/state` (D62/D1):
-//! folding the version into the key is what makes different versioned names
-//! physically distinct Zenoh keys.
+//! version does - the key is `v0.1/drive/state`, not `drive/state`: folding the
+//! version into the key is what makes different versioned names physically
+//! distinct Zenoh keys.
 //!
-//! # Side branding (L1)
+//! # Side branding
 //!
 //! The kind marker is the compile-time gate that makes taking the **wrong side**
 //! of a topic a type error. The four markers split each wire shape by side:
@@ -30,23 +30,20 @@
 use std::borrow::Cow;
 use std::marker::PhantomData;
 
-/// A pub/sub topic the participant **publishes** `B` on (client command, or owner
-/// state). The publish side of the former side-agnostic `PubSub<B>`.
+/// A pub/sub topic the participant **publishes** `B` on (client command, or
+/// owner state).
 pub struct Publish<B>(PhantomData<fn() -> B>);
 
 /// A pub/sub topic the participant **subscribes/observes** `B` on (client
-/// observing state, or owner reading its command input). The subscribe side of
-/// the former side-agnostic `PubSub<B>`.
+/// observing state, or owner reading its command input).
 pub struct Subscribe<B>(PhantomData<fn() -> B>);
 
 /// The **client** side of a query topic carrying request `Req`/response `Resp`:
-/// the holder *calls* the owner. The caller side of the former side-agnostic
-/// `Query<Req, Resp>`.
+/// the holder *calls* the owner.
 pub struct AskQuery<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
 
 /// The **owner** side of a query topic carrying request `Req`/response `Resp`:
-/// the holder *serves* requests. The server side of the former side-agnostic
-/// `Query<Req, Resp>`.
+/// the holder *serves* requests.
 pub struct ServeQuery<Req, Resp>(PhantomData<fn() -> (Req, Resp)>);
 
 mod sealed {
@@ -74,19 +71,20 @@ pub struct Topic<Kind> {
 impl<Kind> Topic<Kind> {
     /// Construct a topic from a static key.
     ///
-    /// `#[doc(hidden)] pub` raw constructor - an unsupported escape hatch, NOT
-    /// part of the authored surface. It is `pub` only because it must be callable
-    /// across the `phoxal-api` / `phoxal-bus` crate split: the `phoxal_api_tree!`
-    /// macro (invoked in the `phoxal-api` crate, where the versioned APIs live)
-    /// calls it over each contract's canonical key, and a `pub(crate)` constructor
-    /// cannot cross that boundary. Author correctness does not come from hiding
-    /// this: it comes from the typed handles and the api-tree builders
-    /// (`api::topic::client()....()`), which keep the typed `Kind` and the bus key in
-    /// lockstep (D61/D62). The owner-side builder (`api::topic::owner()`) makes the intended side
-    /// explicit. This `#[doc(hidden)]` raw constructor remains an escape hatch: it
-    /// is generic over `Kind`, so hand-written code can forge either branded topic.
-    /// That is inherent to the macro/crate split because generated builder code in a
-    /// downstream crate needs a `pub` constructor.
+    /// # Why this is `pub`
+    ///
+    /// The `phoxal_api_tree!` macro expands in the `phoxal-api` crate, where the
+    /// versioned APIs live, and its generated builders call this over each
+    /// contract's canonical key. Generated code in a downstream crate needs a
+    /// `pub` constructor, and Rust has no visibility between "this crate" and
+    /// "the world", so `pub(crate)` cannot express the real boundary. The one
+    /// caller this exists for is `phoxal-api`'s generated builder tree.
+    ///
+    /// It is generic over `Kind`, so a caller that reaches for it directly can
+    /// forge either branded side of a topic. Author correctness does not come
+    /// from this being hidden: it comes from the typed handles and the api-tree
+    /// builders (`api::topic::client()` / `api::topic::owner()`), which keep the
+    /// typed `Kind` and the bus key in lockstep.
     #[doc(hidden)]
     pub fn new_static(key: &'static str) -> Self {
         Topic {
@@ -97,15 +95,10 @@ impl<Kind> Topic<Kind> {
 
     /// Construct a topic from an owned (dynamically built) key.
     ///
-    /// `#[doc(hidden)] pub` raw constructor, the owned-key counterpart of
-    /// [`new_static`](Self::new_static): an unsupported escape hatch that is `pub`
-    /// only to cross the `phoxal-api` / `phoxal-bus` crate split. The generated api
-    /// builder calls it for nodes with dynamic segments, filling the carried
-    /// variables into the canonical key. Not part of the authored surface;
-    /// correctness for authors comes from the typed handles + api-tree builders.
-    /// The owner-side builder is [`api::topic::owner()`](https://docs.rs/phoxal-api),
-    /// while this constructor remains an explicit raw escape hatch like
-    /// [`new_static`](Self::new_static).
+    /// The owned-key counterpart of [`new_static`](Self::new_static), called by
+    /// the same generated builder for nodes with dynamic segments, filling the
+    /// carried variables into the canonical key. It is `pub` for exactly the
+    /// same crate-split reason, with exactly the same one intended caller.
     #[doc(hidden)]
     pub fn new_owned(key: String) -> Self {
         Topic {
@@ -147,4 +140,28 @@ impl<Kind> Clone for Topic<Kind> {
 pub struct WildcardPublish {
     /// The offending key.
     pub key: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_concrete_key_is_publishable_and_a_wildcard_one_is_not() {
+        let concrete = Topic::<Publish<()>>::new_static("v0.1/drive/state");
+        assert_eq!(
+            concrete
+                .publish_key()
+                .expect("a concrete key is publishable"),
+            "v0.1/drive/state"
+        );
+
+        for wildcard in ["v0.1/component/*/state", "v0.1/component/**"] {
+            let topic = Topic::<Subscribe<()>>::new_owned(wildcard.to_string());
+            let rejected = topic
+                .publish_key()
+                .expect_err("a wildcard topic is subscribe-only");
+            assert_eq!(rejected.key, wildcard);
+        }
+    }
 }

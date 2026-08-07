@@ -6,9 +6,8 @@
 #     by the release workflow with `cargo package` + `margo add`.
 #
 # Both are listed here. Executables are listed **so their changes cut trains**:
-# a package release-plz cannot see cannot bump the version, which is exactly the
-# defect this configuration fixes (organization#951, Decision 11). A commit
-# touching only `simulator/webots-controller` used to produce no release PR at
+# a package release-plz cannot see cannot bump the version, so a commit touching
+# only `simulator/webots-controller` would otherwise produce no release PR at
 # all.
 [workspace]
 release_always = true

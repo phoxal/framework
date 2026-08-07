@@ -1,6 +1,7 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use phoxal::api;
+use phoxal::geometry::{normalize_angle, planar_distance};
 
 const GOAL_TOLERANCE_M: f64 = 0.15;
 const GOAL_YAW_TOLERANCE_RAD: f64 = 0.10;
@@ -24,13 +25,13 @@ pub(crate) fn pursue(
     localization: &api::localize::LocalizationState,
 ) -> Option<Output> {
     let final_pose = path.poses.last()?;
-    if !valid_localization(localization) {
+    if !localization.is_usable() {
         return None;
     }
 
-    let robot_xy = [localization.x_m, localization.y_m];
+    let robot_xy = (localization.x_m, localization.y_m);
     let final_index = path.poses.len() - 1;
-    let distance_remaining_m = distance(robot_xy, pose_xy(final_pose));
+    let distance_remaining_m = planar_distance(robot_xy, pose_xy(final_pose));
     if distance_remaining_m <= GOAL_TOLERANCE_M {
         if let Some(goal_yaw) = final_pose.yaw_rad {
             let yaw_error = normalize_angle(goal_yaw - localization.yaw_rad);
@@ -83,7 +84,7 @@ pub(crate) fn pursue(
     })
 }
 
-fn lookahead_index(poses: &[api::navigation::Pose], robot_xy: [f64; 2]) -> usize {
+fn lookahead_index(poses: &[api::navigation::Pose], robot_xy: (f64, f64)) -> usize {
     let nearest = poses
         .iter()
         .enumerate()
@@ -92,12 +93,12 @@ fn lookahead_index(poses: &[api::navigation::Pose], robot_xy: [f64; 2]) -> usize
                 .total_cmp(&squared_distance(robot_xy, pose_xy(right)))
         })
         .map_or(0, |(index, _)| index);
-    let mut along = distance(robot_xy, pose_xy(&poses[nearest]));
+    let mut along = planar_distance(robot_xy, pose_xy(&poses[nearest]));
     if along >= LOOKAHEAD_M {
         return nearest;
     }
     for index in (nearest + 1)..poses.len() {
-        along += distance(pose_xy(&poses[index - 1]), pose_xy(&poses[index]));
+        along += planar_distance(pose_xy(&poses[index - 1]), pose_xy(&poses[index]));
         if along >= LOOKAHEAD_M {
             return index;
         }
@@ -105,31 +106,20 @@ fn lookahead_index(poses: &[api::navigation::Pose], robot_xy: [f64; 2]) -> usize
     poses.len() - 1
 }
 
-fn pose_xy(pose: &api::navigation::Pose) -> [f64; 2] {
-    [pose.x_m, pose.y_m]
+fn pose_xy(pose: &api::navigation::Pose) -> (f64, f64) {
+    (pose.x_m, pose.y_m)
 }
 
-fn distance(left: [f64; 2], right: [f64; 2]) -> f64 {
-    squared_distance(left, right).sqrt()
-}
-
-fn squared_distance(left: [f64; 2], right: [f64; 2]) -> f64 {
-    let dx = right[0] - left[0];
-    let dy = right[1] - left[1];
+/// Distance squared, for ranking candidates against each other.
+///
+/// Picking the nearest pose only needs the order, and comparing squares keeps
+/// that comparison exact - a square root would round two genuinely different
+/// candidates onto the same value and make the choice depend on iteration
+/// order.
+fn squared_distance(left: (f64, f64), right: (f64, f64)) -> f64 {
+    let dx = right.0 - left.0;
+    let dy = right.1 - left.1;
     dx * dx + dy * dy
-}
-
-fn normalize_angle(angle_rad: f64) -> f64 {
-    let normalized = (angle_rad + PI).rem_euclid(2.0 * PI) - PI;
-    if normalized <= -PI { PI } else { normalized }
-}
-
-fn valid_localization(localization: &api::localize::LocalizationState) -> bool {
-    localization.x_m.is_finite()
-        && localization.y_m.is_finite()
-        && localization.yaw_rad.is_finite()
-        && localization.confidence.is_finite()
-        && localization.confidence > 0.0
 }
 
 #[cfg(test)]

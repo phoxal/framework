@@ -4,7 +4,7 @@ error[E0277]: `ScheduledSimulator` has a clockless launch policy and cannot own 
 15 |     #[phoxal::step(hz = 10)]
    |     ^^^^^^^^^^^^^^^^^^^^^^^^ scheduled steps are available only on services and drivers
    |
-help: the trait `phoxal::__private::SchedulableSurface` is not implemented for `ScheduledSimulator`
+help: the trait `phoxal::__private::surface::SchedulableSurface` is not implemented for `ScheduledSimulator`
   --> tests/trybuild/fail/simulator_cannot_schedule_step.rs:4:1
    |
  4 | struct ScheduledSimulator;

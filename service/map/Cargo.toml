@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Phoxal official service: map - localization-trace occupancy-grid placeholder with a concurrent submap snapshot server."
+description = "Phoxal official service: map - localization-trace occupancy grid with a concurrent submap snapshot server."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -17,9 +17,6 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true }
 anyhow = { workspace = true }
-
-[dev-dependencies]
-serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -2,7 +2,7 @@
 //!
 //! A scheduled participant that bridges component-level encoders to joint-level state.
 //! At setup it enumerates every joint-targeted encoder capability in the robot
-//! model (D33), rejecting any with a non-positive gear ratio or zero counts per
+//! model, rejecting any with a non-positive gear ratio or zero counts per
 //! revolution. A robot with no joint-targeted encoder reports `Inactive`.
 //! It subscribes to the per-capability `component/<id>/encoder/<cap>/sample` topic
 //! for each binding, and publishes the per-joint `joint/<id>/state` topic.
@@ -15,87 +15,92 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 use phoxal::api;
 use phoxal::model::Robot;
-use phoxal::model::component::CapabilityRef;
 use phoxal::model::component::capability::{Capability, StructuralTarget};
+use phoxal::model::identity::{CapabilityRef, JointId};
 use phoxal::prelude::*;
 
-const ENCODER_STALE: std::time::Duration = std::time::Duration::from_millis(200);
-
-#[derive(Clone, Debug)]
+/// One joint-targeted encoder resolved from the robot model.
 struct EncoderBinding {
-    joint_id: String,
-    component_id: String,
-    capability_id: String,
+    joint_id: JointId,
+    reference: CapabilityRef,
     direction_sign: i8,
     gear_ratio: f64,
 }
 
 impl EncoderBinding {
+    /// Every joint-targeted encoder the robot declares, ordered by the
+    /// capability reference so two runs over the same robot bind the same way.
+    fn resolve(robot: &Robot) -> Result<Vec<Self>> {
+        let mut bindings = Vec::new();
+        for reference in
+            robot.capability_refs(|capability| matches!(capability, Capability::Encoder(_)))
+        {
+            let (encoder, direction_sign) = robot.require_encoder(&reference)?;
+            if !(encoder.gear_ratio.is_finite() && encoder.gear_ratio > 0.0) {
+                bail!("capability '{reference}' gear_ratio must be finite and > 0");
+            }
+            if encoder.counts_per_revolution == 0 {
+                bail!("capability '{reference}' counts_per_revolution must be > 0");
+            }
+
+            let StructuralTarget::Joint { id } = encoder.target.namespaced(&reference.component_id)
+            else {
+                continue;
+            };
+            bindings.push(EncoderBinding {
+                joint_id: id,
+                reference,
+                direction_sign,
+                gear_ratio: encoder.gear_ratio,
+            });
+        }
+        Ok(bindings)
+    }
+
     /// Joint CONSUMES encoder samples (the encoder driver owns/publishes them), so
     /// this is the client `Subscribe` side from the public builder.
     fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
         api::topic::client()
-            .component(&self.component_id)
-            .encoder(&self.capability_id)
+            .component(&self.reference.component_id)
+            .encoder(&self.reference.capability_id)
             .sample()
     }
-}
 
-struct JointConfig {
-    encoders: Vec<EncoderBinding>,
-}
-
-pub struct Api {
-    encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    states: BTreeMap<String, StatePublisher<api::joint::JointState>>,
-}
-
-impl JointConfig {
-    fn from_robot(robot: &Robot) -> Result<Self> {
-        let mut encoders = Vec::new();
-
-        for component_id in robot.component_ids() {
-            let component = robot.component_for_instance(component_id)?;
-            for (capability_id, capability) in component.capabilities() {
-                let Capability::Encoder(_) = capability else {
-                    continue;
-                };
-
-                let reference = CapabilityRef::new(component_id, capability_id);
-                let (encoder, direction_sign) = robot.require_encoder(&reference)?;
-                if !(encoder.gear_ratio.is_finite() && encoder.gear_ratio > 0.0) {
-                    bail!("capability '{reference}' gear_ratio must be finite and > 0");
-                }
-                if encoder.counts_per_revolution == 0 {
-                    bail!("capability '{reference}' counts_per_revolution must be > 0");
-                }
-
-                let target = encoder.target.namespaced(component_id);
-                let StructuralTarget::Joint { id } = target else {
-                    continue;
-                };
-
-                encoders.push(EncoderBinding {
-                    joint_id: id,
-                    component_id: component_id.to_string(),
-                    capability_id: capability_id.to_string(),
-                    direction_sign,
-                    gear_ratio: encoder.gear_ratio,
-                });
-            }
+    /// `sample` expressed at the joint: encoder radians scaled by this
+    /// binding's direction sign over its gear ratio.
+    ///
+    /// `None` when the encoder published a non-finite reading, which no scaling
+    /// can make usable.
+    fn joint_state(
+        &self,
+        sample: &api::component::encoder::Sample,
+    ) -> Option<api::joint::JointState> {
+        if !(sample.position_rad.is_finite() && sample.velocity_radps.is_finite()) {
+            return None;
         }
-
-        Ok(Self { encoders })
+        let scale = f64::from(self.direction_sign) / self.gear_ratio;
+        Some(api::joint::JointState {
+            position_rad: sample.position_rad * scale,
+            velocity_radps: f64::from(sample.velocity_radps) * scale,
+            effort_nm: None,
+        })
     }
 }
 
-pub struct JointState {
-    config: JointConfig,
-    sample_at: Vec<Option<RobotInstant>>,
+/// One bound encoder: its model binding and the subscriber that carries its
+/// samples, so a sample can never be scaled by another binding's gear ratio.
+struct BoundEncoder {
+    binding: EncoderBinding,
+    subscriber: Subscriber<api::component::encoder::Sample>,
 }
 
-#[phoxal::service(state = JointState, api = Api)]
-pub struct Joint;
+pub(crate) struct Api {
+    encoders: Vec<BoundEncoder>,
+    states: BTreeMap<JointId, StatePublisher<api::joint::JointState>>,
+}
+
+#[phoxal::service(api = Api)]
+pub(crate) struct Joint;
 
 impl Participant for Joint {
     async fn setup(
@@ -103,46 +108,32 @@ impl Participant for Joint {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let config = JointConfig::from_robot(ctx.robot()?)?;
-
-        let mut encoders = Vec::with_capacity(config.encoders.len());
-        for binding in &config.encoders {
-            encoders.push(ctx.subscriber(binding.topic(), 32).await?);
-        }
-
-        let joint_ids = config
-            .encoders
+        let bindings = EncoderBinding::resolve(ctx.robot()?)?;
+        let joint_ids = bindings
             .iter()
             .map(|binding| binding.joint_id.clone())
             .collect::<BTreeSet<_>>();
-        let mut states = BTreeMap::new();
-        for joint_id in joint_ids {
-            states.insert(
-                joint_id.clone(),
-                // Joint OWNS each `joint/{id}` node's state telemetry -> owner
-                // owner builder.
-                ctx.state_publisher(api::topic::owner().joint(&joint_id).state())
-                    .await?,
-            );
+
+        let mut encoders = Vec::with_capacity(bindings.len());
+        for binding in bindings {
+            let subscriber = ctx.subscriber(binding.topic(), 32).await?;
+            encoders.push(BoundEncoder {
+                binding,
+                subscriber,
+            });
         }
 
-        Ok((
-            JointState {
-                sample_at: vec![None; config.encoders.len()],
-                config,
-            },
-            Api { encoders, states },
-        ))
-    }
+        let mut states = BTreeMap::new();
+        for joint_id in joint_ids {
+            // Joint OWNS each `joint/{id}` node's state telemetry, so this is
+            // the owner builder.
+            let publisher = ctx
+                .state_publisher(api::topic::owner().joint(&joint_id).state())
+                .await?;
+            states.insert(joint_id, publisher);
+        }
 
-    async fn reset(
-        &self,
-        _ctx: ResetContext,
-        _api: &Self::Api,
-        state: &mut Self::State,
-    ) -> Result<()> {
-        state.sample_at.fill(None);
-        Ok(())
+        Ok(((), Api { encoders, states }))
     }
 
     #[phoxal::step(hz = 50)]
@@ -150,131 +141,57 @@ impl Participant for Joint {
         &self,
         api: &Self::Api,
         step: StepContext,
-        state: &mut Self::State,
+        _state: &mut Self::State,
     ) -> Result<()> {
-        let mut latest_by_joint = BTreeMap::new();
         let now = step.now();
-        for ((subscriber, binding), sample_at) in api
-            .encoders
-            .iter()
-            .zip(&state.config.encoders)
-            .zip(&mut state.sample_at)
-        {
+        let mut latest_by_joint = BTreeMap::new();
+
+        for encoder in &api.encoders {
+            // Only the newest sample of this step matters, and only while it is
+            // still fresh: a joint whose encoder has gone silent publishes
+            // nothing rather than repeating a stale position.
             let mut latest = None;
-            while let Some(received) = subscriber.try_recv() {
-                *sample_at = received.metadata.produced_exactly_at();
-                latest = Some(received.body);
+            while let Some(received) = encoder.subscriber.try_recv() {
+                let produced_at = received.metadata.produced_exactly_at();
+                latest = produced_at.map(|at| Timed::new(received.body, at));
             }
 
-            if let Some(sample) = latest
-                && sample_at.is_some_and(|at| {
-                    TimeWindow::exact(at)
-                        .possibly_fresh_within(now, ENCODER_STALE)
-                        .unwrap_or(false)
-                })
-            {
-                let state = joint_state(&sample, binding).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "encoder '{}' published a non-finite sample",
-                        binding.joint_id
-                    )
-                })?;
-                latest_by_joint.insert(binding.joint_id.clone(), state);
+            let Some(sample) = latest else {
+                continue;
+            };
+            if !sample.fresh_within(now, api::component::encoder::Sample::STALE_AFTER) {
+                continue;
             }
+            let state = encoder.binding.joint_state(&sample.body).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "encoder '{}' published a non-finite sample",
+                    encoder.binding.joint_id
+                )
+            })?;
+            latest_by_joint.insert(&encoder.binding.joint_id, state);
         }
 
         for (joint_id, state) in latest_by_joint {
-            if let Some(publisher) = api.states.get(&joint_id) {
-                publisher.publish(step.token(), state)?;
+            if let Some(publisher) = api.states.get(joint_id) {
+                publisher.publish(&step.token, state)?;
             }
         }
         Ok(())
     }
 }
 
-fn joint_state(
-    sample: &api::component::encoder::Sample,
-    binding: &EncoderBinding,
-) -> Option<api::joint::JointState> {
-    if !(sample.position_rad.is_finite() && sample.velocity_radps.is_finite()) {
-        return None;
-    }
-    let scale = f64::from(binding.direction_sign) / binding.gear_ratio;
-    Some(api::joint::JointState {
-        position_rad: sample.position_rad * scale,
-        velocity_radps: f64::from(sample.velocity_radps) * scale,
-        effort_nm: None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use phoxal::api;
-    use phoxal::model::Robot;
+    use phoxal::model::RobotBuilder;
+    use phoxal::model::identity::JointId;
 
-    use super::{EncoderBinding, JointConfig, joint_state};
-
-    /// Stage a finalized bundle from the checked-in authored fixtures and take
-    /// its canonical model.
-    ///
-    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
-    /// authored document (pin the resolved clock, resolve the structure path
-    /// into `assets/`) are small enough to reproduce here, so this crate reads
-    /// a real bundle without any bundle being checked in.
-    fn fixture() -> Robot {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture");
-        let project = fixture.join("robot/rgbd-imu-diff-drive");
-        let bundle = tempfile::tempdir().expect("a staging directory");
-        let assets = bundle.path().join("assets");
-
-        std::fs::create_dir_all(assets.join("robot")).unwrap();
-        std::fs::copy(
-            project.join("structure.urdf"),
-            assets.join("robot/structure.urdf"),
-        )
-        .unwrap();
-        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
-            let source = fixture.join("component").join(component_type);
-            let staged = assets.join("components").join(component_type);
-            std::fs::create_dir_all(&staged).unwrap();
-            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
-                std::fs::copy(source.join(document), staged.join(document)).unwrap();
-            }
-            for mesh in std::fs::read_dir(source.join("meshes"))
-                .into_iter()
-                .flatten()
-            {
-                let mesh = mesh.unwrap();
-                std::fs::create_dir_all(staged.join("meshes")).unwrap();
-                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
-            }
-        }
-        std::fs::write(
-            bundle.path().join("robot.yaml"),
-            std::fs::read_to_string(project.join("robot.yaml"))
-                .unwrap()
-                .replacen(
-                    "schema: phoxal/robot/v0",
-                    "schema: phoxal/robot/v0\nclock: real",
-                    1,
-                )
-                .replacen(
-                    "structure: structure.urdf",
-                    "structure: robot/structure.urdf",
-                    1,
-                ),
-        )
-        .unwrap();
-        phoxal::bundle::FinalizedBundle::load(bundle.path())
-            .expect("the staged bundle must load")
-            .into_robot()
-    }
+    use super::EncoderBinding;
 
     fn binding(direction_sign: i8, gear_ratio: f64) -> EncoderBinding {
         EncoderBinding {
-            joint_id: "arm_joint".to_string(),
-            component_id: "arm".to_string(),
-            capability_id: "encoder".to_string(),
+            joint_id: JointId::new("arm_joint"),
+            reference: "arm.encoder".parse().expect("a normalized reference"),
             direction_sign,
             gear_ratio,
         }
@@ -287,26 +204,38 @@ mod tests {
         );
     }
 
+    /// The joint an encoder reports on is the component-local joint it targets,
+    /// namespaced under the instance that mounts it - not the capability's own
+    /// id, which is why the two are deliberately named differently here.
     #[test]
     fn robot_config_uses_the_canonical_component_joint_namespace() {
-        let robot = fixture();
-        let config = JointConfig::from_robot(&robot).unwrap();
-        assert!(config.encoders.iter().any(|binding| {
-            binding.component_id == "front_left_drive"
-                && binding.joint_id == "front_left_drive__motor_joint"
-        }));
+        let robot = RobotBuilder::new("rover")
+            .component_type("drive_motor", |motor| {
+                motor
+                    .motor("motor", "motor_joint")
+                    .encoder("encoder", "motor_joint")
+            })
+            .component("front_left_drive", "drive_motor")
+            .build()
+            .expect("a valid robot");
+
+        let bindings = EncoderBinding::resolve(&robot).unwrap();
+
+        let [binding] = bindings.as_slice() else {
+            panic!("the robot declares exactly one encoder");
+        };
+        assert_eq!(binding.reference.component_id, "front_left_drive");
+        assert_eq!(binding.joint_id, "front_left_drive__motor_joint");
     }
 
     #[test]
     fn encoder_radians_are_scaled_to_joint_radians() {
-        let state = joint_state(
-            &api::component::encoder::Sample {
+        let state = binding(1, 2.0)
+            .joint_state(&api::component::encoder::Sample {
                 position_rad: 4.0,
                 velocity_radps: 6.0,
-            },
-            &binding(1, 2.0),
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         assert_close(state.position_rad, 2.0);
         assert_close(state.velocity_radps, 3.0);
@@ -315,14 +244,12 @@ mod tests {
 
     #[test]
     fn direction_sign_flips_position_and_velocity() {
-        let state = joint_state(
-            &api::component::encoder::Sample {
+        let state = binding(-1, 1.0)
+            .joint_state(&api::component::encoder::Sample {
                 position_rad: 1.25,
                 velocity_radps: 2.5,
-            },
-            &binding(-1, 1.0),
-        )
-        .unwrap();
+            })
+            .unwrap();
 
         assert_close(state.position_rad, -1.25);
         assert_close(state.velocity_radps, -2.5);
@@ -331,24 +258,20 @@ mod tests {
     #[test]
     fn non_finite_encoder_samples_are_rejected() {
         assert!(
-            joint_state(
-                &api::component::encoder::Sample {
+            binding(1, 1.0)
+                .joint_state(&api::component::encoder::Sample {
                     position_rad: f64::NAN,
                     velocity_radps: 1.0,
-                },
-                &binding(1, 1.0),
-            )
-            .is_none()
+                })
+                .is_none()
         );
         assert!(
-            joint_state(
-                &api::component::encoder::Sample {
+            binding(1, 1.0)
+                .joint_state(&api::component::encoder::Sample {
                     position_rad: 1.0,
                     velocity_radps: f32::INFINITY,
-                },
-                &binding(1, 1.0),
-            )
-            .is_none()
+                })
+                .is_none()
         );
     }
 }

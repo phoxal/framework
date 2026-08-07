@@ -2,49 +2,38 @@
 //!
 //! This is the forward-kinematics counterpart to `drive`: it subscribes to each
 //! wheel encoder on dynamic per-component topics, reconstructs the body twist,
-//! integrates planar pose, and publishes `odometry/state`. It exercises the
-//! SUBSCRIBE side of dynamic per-component topics on the new participant surface.
+//! integrates planar pose, and publishes `odometry/state`.
 //!
 //! Encoder bindings come from the robot model's differential kinematic config
 //! (per-side encoder lists, wheel radius, wheel base). A non-differential model
 //! is explicitly inactive; invalid required differential bindings still fail
 //! setup. Missing or stale samples produce waiting state and no invented pose.
 
-use std::f64::consts::PI;
-
 use anyhow::{Result, bail};
 use phoxal::api;
+use phoxal::geometry::normalize_angle;
 use phoxal::model::Robot;
-use phoxal::model::component::CapabilityRef;
-use phoxal::model::robot::KinematicConfig;
+use phoxal::model::identity::CapabilityRef;
+use phoxal::model::robot::{DifferentialDrive, DifferentialWheelSpeeds, KinematicConfig};
 use phoxal::prelude::*;
 
-/// A wheel whose last encoder sample is older than this is dropped from the twist
-/// estimate, so a dead encoder publisher stops contributing motion (and the pose
-/// stops drifting) rather than integrating a frozen velocity forever. The drivers
-/// publish encoder samples well above this rate (`ddsm115` at 100 Hz), so this only
-/// trips on a genuinely silent encoder. Mirrors `drive`'s stale-target guard.
-const ENCODER_STALE: std::time::Duration = std::time::Duration::from_millis(200);
-
 /// One encoder binding resolved from the robot model.
-#[derive(Clone)]
 struct EncoderBinding {
-    component_id: String,
-    capability_id: String,
+    reference: CapabilityRef,
     direction_sign: i8,
 }
 
 impl EncoderBinding {
-    fn resolve(robot: &Robot, refs: &[CapabilityRef], field: &str) -> Result<Vec<Self>> {
-        if refs.is_empty() {
+    fn resolve(robot: &Robot, references: &[CapabilityRef], field: &str) -> Result<Vec<Self>> {
+        if references.is_empty() {
             bail!("robot.kinematic.{field} must list at least one encoder");
         }
-        refs.iter()
-            .map(|r| {
-                let (_encoder, direction_sign) = robot.require_encoder(r)?;
+        references
+            .iter()
+            .map(|reference| {
+                let (_encoder, direction_sign) = robot.require_encoder(reference)?;
                 Ok(EncoderBinding {
-                    component_id: r.component_id.clone(),
-                    capability_id: r.capability_id.clone(),
+                    reference: reference.clone(),
                     direction_sign,
                 })
             })
@@ -56,19 +45,25 @@ impl EncoderBinding {
     /// is the client `Subscribe` side from the public builder.
     fn topic(&self) -> phoxal::bus::Topic<phoxal::bus::Subscribe<api::component::encoder::Sample>> {
         api::topic::client()
-            .component(&self.component_id)
-            .encoder(&self.capability_id)
+            .component(&self.reference.component_id)
+            .encoder(&self.reference.capability_id)
             .sample()
     }
 }
 
+/// One wheel encoder the service reads: its model binding and the subscriber
+/// that carries its samples, so a sample can never be read with another
+/// wheel's direction sign.
+struct BoundEncoder {
+    binding: EncoderBinding,
+    subscriber: Subscriber<api::component::encoder::Sample>,
+}
+
 /// Typed odometry config built from the robot model.
 struct OdometryConfig {
-    wheel_radius_m: f64,
-    wheel_base_m: f64,
+    kinematics: Option<DifferentialDrive>,
     left: Vec<EncoderBinding>,
     right: Vec<EncoderBinding>,
-    active: bool,
 }
 
 impl OdometryConfig {
@@ -79,52 +74,119 @@ impl OdometryConfig {
             wheel_radius_m,
             wheel_base_m,
             ..
-        } = robot.kinematic()
+        } = robot.motion().kinematic()
         else {
             return Ok(Self {
-                wheel_radius_m: 0.0,
-                wheel_base_m: 0.0,
+                kinematics: None,
                 left: Vec::new(),
                 right: Vec::new(),
-                active: false,
             });
         };
-        if !(wheel_radius_m.is_finite() && *wheel_radius_m > 0.0) {
-            bail!("wheel_radius_m must be finite and > 0");
-        }
-        if !(wheel_base_m.is_finite() && *wheel_base_m > 0.0) {
-            bail!("wheel_base_m must be finite and > 0");
-        }
         Ok(OdometryConfig {
-            wheel_radius_m: *wheel_radius_m,
-            wheel_base_m: *wheel_base_m,
+            kinematics: Some(DifferentialDrive::new(*wheel_radius_m, *wheel_base_m).validate()?),
             left: EncoderBinding::resolve(robot, left_encoders, "left_encoders")?,
             right: EncoderBinding::resolve(robot, right_encoders, "right_encoders")?,
-            active: true,
         })
     }
 }
 
-pub struct Api {
-    left_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    right_encoders: Vec<Subscriber<api::component::encoder::Sample>>,
-    state: StatePublisher<api::odometry::State>,
-}
-
-pub struct OdometryState {
-    // Runtime-private typed state (not handles).
-    config: OdometryConfig,
+/// The integrated planar pose, in the odometry frame.
+#[derive(Clone, Copy, Default)]
+struct Pose {
     x_m: f64,
     y_m: f64,
     yaw_rad: f64,
-    left_velocity_radps: Vec<f64>,
-    right_velocity_radps: Vec<f64>,
-    left_sample_at: Vec<Option<RobotInstant>>,
-    right_sample_at: Vec<Option<RobotInstant>>,
+}
+
+impl Pose {
+    /// Advance the pose by `dt_s` of the given body twist.
+    ///
+    /// Both translation components are taken at the heading held *entering* the
+    /// interval, so the heading update comes last.
+    fn integrate(&mut self, linear_x_mps: f64, angular_z_radps: f64, dt_s: f64) {
+        self.x_m += linear_x_mps * dt_s * self.yaw_rad.cos();
+        self.y_m += linear_x_mps * dt_s * self.yaw_rad.sin();
+        self.yaw_rad = normalize_angle(self.yaw_rad + angular_z_radps * dt_s);
+    }
+}
+
+pub(crate) struct Api {
+    left: Vec<BoundEncoder>,
+    right: Vec<BoundEncoder>,
+    state: StatePublisher<api::odometry::State>,
+}
+
+pub(crate) struct OdometryState {
+    /// `None` when the robot is not a differential drive: the service then
+    /// publishes nothing rather than inventing a pose.
+    kinematics: Option<DifferentialDrive>,
+    pose: Pose,
+    /// The newest reading from each wheel on a side, positionally aligned with
+    /// that side's [`BoundEncoder`]s - both are built from the same binding
+    /// list, in order, and neither grows or shrinks afterwards.
+    left: Vec<Option<Timed<f64>>>,
+    right: Vec<Option<Timed<f64>>>,
+}
+
+impl OdometryState {
+    /// Take every encoder sample that has arrived, keeping the newest per wheel.
+    ///
+    /// A sample whose producer cannot name an exact production instant leaves
+    /// the wheel with no reading at all: a velocity that cannot be aged must
+    /// not be integrated.
+    fn drain(&mut self, api: &Api) {
+        for (encoders, wheels) in [(&api.left, &mut self.left), (&api.right, &mut self.right)] {
+            for (encoder, wheel) in encoders.iter().zip(wheels.iter_mut()) {
+                while let Some(sample) = encoder.subscriber.try_recv() {
+                    let velocity = f64::from(sample.body.velocity_radps)
+                        * f64::from(encoder.binding.direction_sign);
+                    *wheel = sample
+                        .metadata
+                        .produced_exactly_at()
+                        .map(|at| Timed::new(velocity, at));
+                }
+            }
+        }
+    }
+
+    /// The body twist the wheels report at `now`, or `None` when the robot is
+    /// not a differential drive or either side has no fresh wheel.
+    fn twist(&self, now: RobotInstant) -> Option<(f64, f64)> {
+        let kinematics = self.kinematics?;
+        let left_radps = Self::side_average(&self.left, now)?;
+        let right_radps = Self::side_average(&self.right, now)?;
+        let twist = kinematics.body_twist(DifferentialWheelSpeeds {
+            left_radps,
+            right_radps,
+        });
+        Some((twist.linear_x_mps, twist.angular_z_radps))
+    }
+
+    /// Mean angular velocity of the wheels on one side, counting only wheels
+    /// with a finite reading no older than the encoder contract's staleness
+    /// horizon. A side with no fresh wheel has no reading at all, so a dead
+    /// encoder cannot keep the pose drifting on a frozen velocity.
+    fn side_average(wheels: &[Option<Timed<f64>>], now: RobotInstant) -> Option<f64> {
+        let mut sum = 0.0;
+        let mut fresh = 0u32;
+        for wheel in wheels.iter().flatten() {
+            if wheel.fresh_within(now, api::component::encoder::Sample::STALE_AFTER)
+                && wheel.body.is_finite()
+            {
+                sum += wheel.body;
+                fresh += 1;
+            }
+        }
+        if fresh == 0 {
+            None
+        } else {
+            Some(sum / f64::from(fresh))
+        }
+    }
 }
 
 #[phoxal::service(state = OdometryState, api = Api)]
-pub struct Odometry;
+pub(crate) struct Odometry;
 
 impl Participant for Odometry {
     async fn setup(
@@ -134,13 +196,21 @@ impl Participant for Odometry {
     ) -> Result<(Self::State, Self::Api)> {
         let config = OdometryConfig::from_robot(ctx.robot()?)?;
 
-        let mut left_encoders = Vec::with_capacity(config.left.len());
-        for binding in &config.left {
-            left_encoders.push(ctx.subscriber(binding.topic(), 32).await?);
+        let mut left = Vec::with_capacity(config.left.len());
+        for binding in config.left {
+            let subscriber = ctx.subscriber(binding.topic(), 32).await?;
+            left.push(BoundEncoder {
+                binding,
+                subscriber,
+            });
         }
-        let mut right_encoders = Vec::with_capacity(config.right.len());
-        for binding in &config.right {
-            right_encoders.push(ctx.subscriber(binding.topic(), 32).await?);
+        let mut right = Vec::with_capacity(config.right.len());
+        for binding in config.right {
+            let subscriber = ctx.subscriber(binding.topic(), 32).await?;
+            right.push(BoundEncoder {
+                binding,
+                subscriber,
+            });
         }
         let state = ctx
             .state_publisher(api::topic::owner().odometry().state())
@@ -148,20 +218,12 @@ impl Participant for Odometry {
 
         Ok((
             OdometryState {
-                left_velocity_radps: vec![0.0; config.left.len()],
-                right_velocity_radps: vec![0.0; config.right.len()],
-                left_sample_at: vec![None; config.left.len()],
-                right_sample_at: vec![None; config.right.len()],
-                config,
-                x_m: 0.0,
-                y_m: 0.0,
-                yaw_rad: 0.0,
+                kinematics: config.kinematics,
+                pose: Pose::default(),
+                left: vec![None; left.len()],
+                right: vec![None; right.len()],
             },
-            Api {
-                left_encoders,
-                right_encoders,
-                state,
-            },
+            Api { left, right, state },
         ))
     }
 
@@ -171,13 +233,9 @@ impl Participant for Odometry {
         _api: &Self::Api,
         state: &mut Self::State,
     ) -> Result<()> {
-        state.x_m = 0.0;
-        state.y_m = 0.0;
-        state.yaw_rad = 0.0;
-        state.left_velocity_radps.fill(0.0);
-        state.right_velocity_radps.fill(0.0);
-        state.left_sample_at.fill(None);
-        state.right_sample_at.fill(None);
+        state.pose = Pose::default();
+        state.left.fill(None);
+        state.right.fill(None);
         Ok(())
     }
 
@@ -188,53 +246,21 @@ impl Participant for Odometry {
         step: StepContext,
         state: &mut Self::State,
     ) -> Result<()> {
-        if !state.config.active {
-            return Ok(());
-        }
-        drain_encoders(
-            &api.left_encoders,
-            &state.config.left,
-            &mut state.left_velocity_radps,
-            &mut state.left_sample_at,
-        );
-        drain_encoders(
-            &api.right_encoders,
-            &state.config.right,
-            &mut state.right_velocity_radps,
-            &mut state.right_sample_at,
-        );
+        state.drain(api);
 
-        let now = step.now();
-        let left_radps = average_side(&state.left_velocity_radps, &state.left_sample_at, now);
-        let right_radps = average_side(&state.right_velocity_radps, &state.right_sample_at, now);
-        let (Some(left_radps), Some(right_radps)) = (left_radps, right_radps) else {
+        let Some((linear_x_mps, angular_z_radps)) = state.twist(step.now()) else {
             return Ok(());
         };
-        let (linear_x_mps, angular_z_radps) = forward(
-            left_radps,
-            right_radps,
-            state.config.wheel_radius_m,
-            state.config.wheel_base_m,
-        );
-
-        let (x_m, y_m, yaw_rad) = integrate_pose(
-            state.x_m,
-            state.y_m,
-            state.yaw_rad,
-            linear_x_mps,
-            angular_z_radps,
-            step.dt().as_secs_f64(),
-        );
-        state.x_m = x_m;
-        state.y_m = y_m;
-        state.yaw_rad = yaw_rad;
+        state
+            .pose
+            .integrate(linear_x_mps, angular_z_radps, step.dt.as_secs_f64());
 
         api.state.publish(
-            step.token(),
+            &step.token,
             api::odometry::State {
-                x_m: state.x_m,
-                y_m: state.y_m,
-                yaw_rad: state.yaw_rad,
+                x_m: state.pose.x_m,
+                y_m: state.pose.y_m,
+                yaw_rad: state.pose.yaw_rad,
                 linear_x_mps: linear_x_mps as f32,
                 angular_z_radps: angular_z_radps as f32,
             },
@@ -243,147 +269,16 @@ impl Participant for Odometry {
     }
 }
 
-fn drain_encoders(
-    subscribers: &[Subscriber<api::component::encoder::Sample>],
-    bindings: &[EncoderBinding],
-    velocities: &mut [f64],
-    sample_at: &mut [Option<RobotInstant>],
-) {
-    for (((subscriber, binding), velocity), seen_at) in subscribers
-        .iter()
-        .zip(bindings)
-        .zip(velocities.iter_mut())
-        .zip(sample_at.iter_mut())
-    {
-        while let Some(sample) = subscriber.try_recv() {
-            *velocity = f64::from(sample.body.velocity_radps) * f64::from(binding.direction_sign);
-            *seen_at = sample.metadata.produced_exactly_at();
-        }
-    }
-}
-
-/// Mean angular velocity of the wheels on one side, counting only wheels with a
-/// fresh sample (seen at least once and not older than [`ENCODER_STALE`]). A
-/// side with no fresh wheel reads as stationary, so a dead encoder cannot keep
-/// the pose drifting on a frozen velocity.
-fn average_side(
-    velocities: &[f64],
-    sample_at: &[Option<RobotInstant>],
-    now: RobotInstant,
-) -> Option<f64> {
-    let mut sum = 0.0;
-    let mut fresh = 0u32;
-    for (velocity, seen_at) in velocities.iter().zip(sample_at) {
-        if seen_at.is_some_and(|at| {
-            TimeWindow::exact(at)
-                .possibly_fresh_within(now, ENCODER_STALE)
-                .unwrap_or(false)
-        }) && velocity.is_finite()
-        {
-            sum += *velocity;
-            fresh += 1;
-        }
-    }
-    if fresh == 0 {
-        None
-    } else {
-        Some(sum / f64::from(fresh))
-    }
-}
-
-/// Differential-drive forward kinematics: wheel angular speeds → body twist.
-fn forward(v_left_radps: f64, v_right_radps: f64, radius: f64, base: f64) -> (f64, f64) {
-    let v_left = v_left_radps * radius;
-    let v_right = v_right_radps * radius;
-    ((v_left + v_right) / 2.0, (v_right - v_left) / base)
-}
-
-fn integrate_pose(
-    x_m: f64,
-    y_m: f64,
-    yaw_rad: f64,
-    linear_x_mps: f64,
-    angular_z_radps: f64,
-    dt_s: f64,
-) -> (f64, f64, f64) {
-    (
-        x_m + linear_x_mps * dt_s * yaw_rad.cos(),
-        y_m + linear_x_mps * dt_s * yaw_rad.sin(),
-        normalize_yaw(yaw_rad + angular_z_radps * dt_s),
-    )
-}
-
-fn normalize_yaw(yaw_rad: f64) -> f64 {
-    let two_pi = 2.0 * PI;
-    let normalized = (yaw_rad + PI).rem_euclid(two_pi) - PI;
-    if normalized <= -PI { PI } else { normalized }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::f64::consts::PI;
+    use phoxal::api;
+    use phoxal::bus::{RobotInstant, Timed, TimelineId};
+    use phoxal::model::RobotBuilder;
+    use phoxal::model::builder::Kinematics;
 
-    use phoxal::bus::{RobotInstant, TimelineId};
+    use super::{DifferentialDrive, DifferentialWheelSpeeds, OdometryConfig, OdometryState, Pose};
 
-    use super::{
-        ENCODER_STALE, OdometryConfig, average_side, forward, integrate_pose, normalize_yaw,
-    };
-
-    /// Stage a finalized bundle from the checked-in authored fixtures and take
-    /// its canonical model.
-    ///
-    /// Finalization belongs to `phoxal-cli`; the two edits it makes to the
-    /// authored document (pin the resolved clock, resolve the structure path
-    /// into `assets/`) are small enough to reproduce here, so this crate reads
-    /// a real bundle without any bundle being checked in.
-    fn fixture() -> phoxal::model::Robot {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixture");
-        let project = fixture.join("robot/rgbd-imu-diff-drive");
-        let bundle = tempfile::tempdir().expect("a staging directory");
-        let assets = bundle.path().join("assets");
-
-        std::fs::create_dir_all(assets.join("robot")).unwrap();
-        std::fs::copy(
-            project.join("structure.urdf"),
-            assets.join("robot/structure.urdf"),
-        )
-        .unwrap();
-        for component_type in ["camera_rgbd_640x480", "drive_motor", "imu", "range_tof"] {
-            let source = fixture.join("component").join(component_type);
-            let staged = assets.join("components").join(component_type);
-            std::fs::create_dir_all(&staged).unwrap();
-            for document in ["component.yaml", "simulation.yaml", "structure.urdf"] {
-                std::fs::copy(source.join(document), staged.join(document)).unwrap();
-            }
-            for mesh in std::fs::read_dir(source.join("meshes"))
-                .into_iter()
-                .flatten()
-            {
-                let mesh = mesh.unwrap();
-                std::fs::create_dir_all(staged.join("meshes")).unwrap();
-                std::fs::copy(mesh.path(), staged.join("meshes").join(mesh.file_name())).unwrap();
-            }
-        }
-        std::fs::write(
-            bundle.path().join("robot.yaml"),
-            std::fs::read_to_string(project.join("robot.yaml"))
-                .unwrap()
-                .replacen(
-                    "schema: phoxal/robot/v0",
-                    "schema: phoxal/robot/v0\nclock: real",
-                    1,
-                )
-                .replacen(
-                    "structure: structure.urdf",
-                    "structure: robot/structure.urdf",
-                    1,
-                ),
-        )
-        .unwrap();
-        phoxal::bundle::FinalizedBundle::load(bundle.path())
-            .expect("the staged bundle must load")
-            .into_robot()
-    }
+    const KINEMATICS: DifferentialDrive = DifferentialDrive::new(0.1, 0.4);
 
     fn assert_close(actual: f64, expected: f64) {
         assert!(
@@ -394,88 +289,107 @@ mod tests {
 
     #[test]
     fn forward_kinematics_reconstructs_body_twist() {
-        let (linear_x, angular_z) = forward(10.0, 10.0, 0.1, 0.4);
+        let twist = KINEMATICS.body_twist(DifferentialWheelSpeeds {
+            left_radps: 10.0,
+            right_radps: 10.0,
+        });
+        let (linear_x, angular_z) = (twist.linear_x_mps, twist.angular_z_radps);
         assert_close(linear_x, 1.0);
         assert_close(angular_z, 0.0);
 
-        let (linear_x, angular_z) = forward(-2.0, 2.0, 0.1, 0.4);
+        let twist = KINEMATICS.body_twist(DifferentialWheelSpeeds {
+            left_radps: -2.0,
+            right_radps: 2.0,
+        });
+        let (linear_x, angular_z) = (twist.linear_x_mps, twist.angular_z_radps);
         assert_close(linear_x, 0.0);
         assert_close(angular_z, 1.0);
     }
 
     #[test]
     fn pose_integration_advances_forward_twist() {
-        let mut x_m = 0.0;
-        let mut y_m = 0.0;
-        let mut yaw_rad = 0.0;
+        let mut pose = Pose::default();
         for _ in 0..50 {
-            (x_m, y_m, yaw_rad) = integrate_pose(x_m, y_m, yaw_rad, 0.5, 0.0, 0.02);
+            pose.integrate(0.5, 0.0, 0.02);
         }
 
-        assert_close(x_m, 0.5);
-        assert_close(y_m, 0.0);
-        assert_close(yaw_rad, 0.0);
+        assert_close(pose.x_m, 0.5);
+        assert_close(pose.y_m, 0.0);
+        assert_close(pose.yaw_rad, 0.0);
     }
 
     #[test]
-    fn yaw_normalization_uses_negative_pi_exclusive_positive_pi_inclusive_range() {
-        assert_close(normalize_yaw(PI), PI);
-        assert_close(normalize_yaw(-PI), PI);
-        assert_close(normalize_yaw(3.0 * PI), PI);
-        assert_close(normalize_yaw(PI + 0.25), -PI + 0.25);
-        assert_close(normalize_yaw(-PI - 0.25), PI - 0.25);
-    }
-
-    #[test]
-    fn average_side_counts_only_fresh_wheels() {
+    fn side_average_counts_only_fresh_wheels() {
         let line = TimelineId::mint();
-        let stale_ns = u64::try_from(ENCODER_STALE.as_nanos()).unwrap();
+        let stale_ns =
+            u64::try_from(api::component::encoder::Sample::STALE_AFTER.as_nanos()).unwrap();
         let now_ns = 10 * stale_ns;
         let now = RobotInstant::new(line, now_ns);
-        // No wheel ever sampled → stationary.
-        assert_eq!(average_side(&[3.0, 5.0], &[None, None], now), None);
-        // Both fresh → plain mean.
-        let fresh = Some(RobotInstant::new(line, now_ns - 1));
+        let wheel = |velocity, at| Some(Timed::new(velocity, at));
+        let fresh_at = RobotInstant::new(line, now_ns - 1);
+        let stale_at = RobotInstant::new(line, now_ns - stale_ns - 1);
+        let average = |wheels: &[Option<Timed<f64>>]| OdometryState::side_average(wheels, now);
+
+        // No wheel ever sampled -> stationary.
+        assert_eq!(average(&[None, None]), None);
+        // Both fresh -> plain mean.
         assert_close(
-            average_side(&[3.0, 5.0], &[fresh, fresh], now).unwrap(),
+            average(&[wheel(3.0, fresh_at), wheel(5.0, fresh_at)]).unwrap(),
             4.0,
         );
-        // One wheel went silent (stale) → average over the fresh wheel only.
-        let stale = Some(RobotInstant::new(line, now_ns - stale_ns - 1));
+        // One wheel went silent (stale) -> average over the fresh wheel only.
         assert_close(
-            average_side(&[3.0, 5.0], &[fresh, stale], now).unwrap(),
+            average(&[wheel(3.0, fresh_at), wheel(5.0, stale_at)]).unwrap(),
             3.0,
         );
-        // Both stale → treated as stationary (no drift on a dead encoder).
-        assert_eq!(average_side(&[3.0, 5.0], &[stale, stale], now), None);
+        // Both stale -> treated as stationary (no drift on a dead encoder).
+        assert_eq!(average(&[wheel(3.0, stale_at), wheel(5.0, stale_at)]), None);
         assert_eq!(
-            average_side(&[f64::NAN, 5.0], &[fresh, fresh], now),
+            average(&[wheel(f64::NAN, fresh_at), wheel(5.0, fresh_at)]),
             Some(5.0)
         );
-        assert_eq!(average_side(&[f64::INFINITY], &[fresh], now), None);
+        assert_eq!(average(&[wheel(f64::INFINITY, fresh_at)]), None);
         // Samples from this step's future, and from a replaced world, must not
         // resurrect after a reset.
         assert_eq!(
-            average_side(
-                &[3.0, 5.0],
-                &[
-                    Some(RobotInstant::new(line, now_ns + 1)),
-                    Some(RobotInstant::new(TimelineId::mint(), now_ns)),
-                ],
-                now,
-            ),
+            average(&[
+                wheel(3.0, RobotInstant::new(line, now_ns + 1)),
+                wheel(5.0, RobotInstant::new(TimelineId::mint(), now_ns)),
+            ]),
             None
         );
     }
 
     #[test]
     fn config_from_robot_resolves_per_side_encoders() {
-        let robot = fixture();
+        // A 4-wheel differential: 2 encoders per side, and the per-side lists
+        // are what the config has to split on.
+        let robot = RobotBuilder::new("rover")
+            .component_type("drive_motor", |motor| {
+                motor
+                    .motor("motor", "motor_joint")
+                    .encoder("encoder", "motor_joint")
+            })
+            .component("front_left_drive", "drive_motor")
+            .component("front_right_drive", "drive_motor")
+            .component("rear_left_drive", "drive_motor")
+            .component("rear_right_drive", "drive_motor")
+            .kinematics(Kinematics::Differential {
+                left_actuators: &["front_left_drive.motor", "rear_left_drive.motor"],
+                right_actuators: &["front_right_drive.motor", "rear_right_drive.motor"],
+                left_encoders: &["front_left_drive.encoder", "rear_left_drive.encoder"],
+                right_encoders: &["front_right_drive.encoder", "rear_right_drive.encoder"],
+                wheel_radius_m: 0.1,
+                wheel_base_m: 0.4,
+            })
+            .build()
+            .expect("a valid robot");
+
         let config = OdometryConfig::from_robot(&robot).unwrap();
-        // The fixture is a 4-wheel differential: 2 encoders per side.
+
         assert_eq!(config.left.len(), 2);
         assert_eq!(config.right.len(), 2);
-        assert!(config.wheel_radius_m > 0.0);
+        assert_eq!(config.kinematics.unwrap().wheel_radius_m, 0.1);
 
         for binding in config.left.iter().chain(&config.right) {
             let topic = binding.topic();

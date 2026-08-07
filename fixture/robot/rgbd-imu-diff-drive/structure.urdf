@@ -87,4 +87,12 @@
     <origin xyz="0.26 0 0.03" rpy="0 0 0" />
   </joint>
 
+  <link name="gnss_mount" />
+
+  <joint name="gnss_mount_joint" type="fixed">
+    <parent link="base_link" />
+    <child link="gnss_mount" />
+    <origin xyz="0 0 0.10" rpy="0 0 0" />
+  </joint>
+
 </robot>

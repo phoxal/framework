@@ -1,17 +1,18 @@
 //! The one sanctioned writer of the embedded participant-metadata document.
 //!
-//! [`ParticipantMetadata`](crate::ParticipantMetadata) is deserialize-only, so
-//! the document's serialized shape is defined exactly once, here, by
-//! [`ParticipantMetadataRecord`]. Every field is a typed version identity; no
-//! writer anywhere restates a version as a string literal.
+//! [`ParticipantMetadata`](crate::metadata::ParticipantMetadata) is
+//! deserialize-only, so the document's serialized shape is defined exactly
+//! once, here, by [`ParticipantMetadataRecord`]. Every field is a typed version
+//! identity; no writer anywhere restates a version as a string literal.
 //!
 //! A role macro cannot call `serde_json` though: the record it emits lands in a
 //! `#[link_section]` static, whose length must be a constant, and its
 //! `config_schema` is only known after `rustc` const-evaluates the recursive
 //! `ParticipantConfig::SCHEMA_JSON` tree in the participant's own crate. So the
-//! const-eval path is [`participant_metadata_json!`], which composes the same
-//! document from the same typed values through `const_format`. The two are one
-//! writer in two evaluation modes, and
+//! const-eval path is
+//! [`participant_metadata_json!`](crate::participant_metadata_json), which
+//! composes the same document from the same typed values through
+//! `const_format`. The two are one writer in two evaluation modes, and
 //! `the_const_writer_emits_exactly_what_the_typed_record_serializes` fails if
 //! they ever disagree.
 
@@ -20,17 +21,24 @@ use serde::Serialize;
 use crate::metadata::{ParticipantKind, ParticipantSchemas};
 use crate::version::RobotApi;
 
-/// Re-exported so a participant crate needs no direct `const_format`
-/// dependency to expand [`participant_metadata_json!`].
+/// `const_format::concatcp!`, made reachable as `$crate::emit::concatcp!`.
+///
+/// [`participant_metadata_json!`](crate::participant_metadata_json) expands
+/// inside a participant's own crate, which does not depend on `const_format`,
+/// so the macro cannot name that crate directly. Routing the call through this
+/// crate is what makes the expansion hygienic: it resolves in the participant
+/// crate no matter what is in scope there. That obligation is the only reason
+/// this is public, and it is why the item cannot be made private or removed
+/// while the macro exists.
 #[doc(hidden)]
-pub use const_format::concatcp as __concatcp;
+pub use const_format::concatcp;
 
 /// The serialize side of the embedded metadata document.
 ///
 /// Its variants and renames mirror
-/// [`ParticipantMetadata`](crate::ParticipantMetadata) exactly - that is the
-/// point: a record written through this type is, by construction, a document
-/// the parser accepts.
+/// [`ParticipantMetadata`](crate::metadata::ParticipantMetadata) exactly - that
+/// is the point: a record written through this type is, by construction, a
+/// document the parser accepts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "schema")]
 pub enum ParticipantMetadataRecord<'a> {
@@ -80,7 +88,7 @@ macro_rules! participant_metadata_json {
         const __PHOXAL_SIMULATION: &str = $simulation.as_str();
         const __PHOXAL_KIND: &str = $kind.as_str();
 
-        $crate::emit::__concatcp!(
+        $crate::emit::concatcp!(
             "{\"schema\":\"phoxal/participant-metadata/v0\",\"api\":\"",
             __PHOXAL_API,
             "\",\"schemas\":{\"bus\":\"",
@@ -107,7 +115,7 @@ macro_rules! participant_metadata_json {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metadata::{ParticipantMetadata, parse_participant_metadata};
+    use crate::metadata::ParticipantMetadata;
     use crate::version::{BusAbi, ComponentSchema, LaunchAbi, RobotSchema, SimulationSchema};
 
     const CONFIG_SCHEMA: &str = r#"{"type":"null"}"#;
@@ -156,7 +164,7 @@ mod tests {
             id,
             kind,
             config_schema,
-        } = parse_participant_metadata(EMBEDDED.as_bytes())
+        } = ParticipantMetadata::from_bytes(EMBEDDED.as_bytes())
             .expect("the writer's own output must satisfy the parser");
 
         assert_eq!(api, RobotApi::V0_1);

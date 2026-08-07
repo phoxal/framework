@@ -1,53 +1,19 @@
-//! The participant authoring model: `#[derive(phoxal::Config)]` and the
+//! The participant authoring model: `#[derive(phoxal::Config)]`, the
 //! `#[phoxal::service]` / `#[phoxal::driver]` / `#[phoxal::simulator]` /
-//! `#[phoxal::brain]` attribute
-//! macros. Role attributes emit the static [`ParticipantSpec`] contract;
-//! authors implement `Participant` directly for lifecycle behavior.
+//! `#[phoxal::brain]` role attributes, and the method-level
+//! `#[phoxal::step(hz = N)]`. Role attributes emit the static
+//! [`ParticipantSpec`] contract; authors implement `Participant` directly for
+//! lifecycle behavior.
+//!
+//! Everything emitted here reaches the framework through the `::phoxal` path,
+//! which the engine crate makes resolve to itself with
+//! `extern crate self as phoxal;`.
 
 use heck::ToShoutySnakeCase;
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::parse::Parser;
-use syn::{Data, DeriveInput, Fields, Ident, LitStr, Type, TypePath};
-
-use crate::util::phoxal;
-
-fn as_type_path(ty: &Type) -> Option<&TypePath> {
-    match ty {
-        Type::Path(p) => Some(p),
-        _ => None,
-    }
-}
-
-/// The cross-platform `#[link_section]` pair a metadata static is placed
-/// under (cargo-auditable's embedding pattern): `__DATA,__phoxal_meta`
-/// on Mach-O (macOS; segment,section syntax, section name <=16 bytes), and
-/// `.phoxal_meta` everywhere else (ELF and other platforms this
-/// framework targets - Linux robots, primarily). The section carries the
-/// strict `{schema, api, schemas, id, kind, config_schema}` process contract.
-/// `#[used]` keeps the
-/// linker from discarding the static during *this compilation unit's* own
-/// dead-code elimination, but not from ELF `--gc-sections` at final link
-/// time, which drops any section unreachable from `main` regardless of
-/// `#[used]` - see `Participant::__retain_embedded_metadata`'s docs for the
-/// mechanism that closes that gap. The section's *bytes*, not the symbol, are
-/// the payload a reader (today `phoxal-cli`'s config-schema validation) lifts
-/// straight out of the built artifact file, never by executing it.
-fn link_section_attrs() -> TokenStream {
-    quote! {
-        #[used]
-        #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_meta"))]
-        #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_meta"))]
-    }
-}
-
-/// A `syn::LitStr` token for a JSON literal fragment used as a
-/// `__concatcp!`/`concat!`-style macro argument. Used by the config-schema
-/// derive to splice literal JSON around resolved schema consts.
-fn json_lit(s: &str) -> TokenStream {
-    let lit = syn::LitStr::new(s, proc_macro2::Span::call_site());
-    quote!(#lit)
-}
+use syn::{Data, DeriveInput, Expr, ExprLit, Fields, Ident, ImplItemFn, Lit, LitStr, Type, UnOp};
 
 // ---------------------------------------------------------------------------
 // #[derive(phoxal::Config)]
@@ -89,7 +55,13 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
         ));
     };
 
-    let phoxal = phoxal();
+    let phoxal = quote!(::phoxal);
+    // A JSON literal fragment spliced between the resolved per-field schema
+    // consts, as a `concat!`-style macro argument.
+    let json_lit = |fragment: &str| {
+        let lit = LitStr::new(fragment, Span::call_site());
+        quote!(#lit)
+    };
     let title = container.attrs.name().deserialize_name();
     let mut schema_args = vec![json_lit(&format!(
         "{{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":{},\"type\":\"object\",\"properties\":{{",
@@ -125,17 +97,20 @@ pub fn expand_config(input: TokenStream) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl #phoxal::__private::ParticipantConfig for #struct_name {
-            const __SCHEMA: #phoxal::__private::api::__meta::ConstSchema =
-                #phoxal::__private::api::__meta::ConstSchema::new()
+            const __SCHEMA: #phoxal::__private::meta::ConstSchema =
+                #phoxal::__private::meta::ConstSchema::new()
                     #(.push_str(#schema_args))*;
         }
     })
 }
 
 fn is_option_type(ty: &Type) -> bool {
-    as_type_path(ty)
-        .and_then(|path| path.path.segments.last())
-        .is_some_and(|segment| segment.ident == "Option")
+    matches!(ty, Type::Path(path)
+        if path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Option"))
 }
 
 fn serde_json_string(value: &str) -> String {
@@ -148,10 +123,7 @@ fn serde_json_string(value: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            ch if ch <= '\u{1f}' => {
-                use std::fmt::Write;
-                write!(out, "\\u{:04x}", ch as u32).expect("writing to String cannot fail");
-            }
+            ch if ch <= '\u{1f}' => out.push_str(&format!("\\u{:04x}", ch as u32)),
             ch => out.push(ch),
         }
     }
@@ -160,7 +132,7 @@ fn serde_json_string(value: &str) -> String {
 }
 
 fn validate_config_serde_attributes(input: &DeriveInput) -> syn::Result<()> {
-    validate_serde_attrs(&input.attrs, SerdeAttrLocation::Container)?;
+    SerdeAttrLocation::Container.validate(&input.attrs)?;
     let Data::Struct(data) = &input.data else {
         return Err(syn::Error::new_spanned(
             input,
@@ -168,56 +140,64 @@ fn validate_config_serde_attributes(input: &DeriveInput) -> syn::Result<()> {
         ));
     };
     for field in &data.fields {
-        validate_serde_attrs(&field.attrs, SerdeAttrLocation::Field)?;
+        SerdeAttrLocation::Field.validate(&field.attrs)?;
     }
     Ok(())
 }
 
+/// Where a `#[serde(...)]` attribute sits, which is what decides the keys the
+/// schema derive can honor: a container reads the whole-type knobs, a field
+/// only the two that describe one property.
 #[derive(Clone, Copy)]
 enum SerdeAttrLocation {
     Container,
     Field,
 }
 
-fn validate_serde_attrs(attrs: &[syn::Attribute], location: SerdeAttrLocation) -> syn::Result<()> {
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
-        attr.parse_nested_meta(|meta| {
-            let path = &meta.path;
-            let name = meta
-                .path
-                .get_ident()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| quote!(#path).to_string());
-            let supported = match location {
-                SerdeAttrLocation::Container => {
-                    matches!(name.as_str(), "rename" | "rename_all" | "default" | "deny_unknown_fields")
-                }
-                SerdeAttrLocation::Field => matches!(name.as_str(), "rename" | "default"),
-            };
-            if !supported {
-                return Err(meta.error(format!(
-                    "unsupported serde attribute `{name}` for #[derive(phoxal::Config)]; supported container attributes: rename, rename_all, default, deny_unknown_fields; supported field attributes: rename, default"
-                )));
-            }
-
-            match name.as_str() {
-                "rename" | "rename_all" => {
-                    let _: LitStr = meta.value()?.parse()?;
-                }
-                "default" if meta.input.peek(syn::Token![=]) => {
-                    let _: LitStr = meta.value()?.parse()?;
-                }
-                "default" | "deny_unknown_fields" if meta.input.is_empty() => {}
-                _ => {
+impl SerdeAttrLocation {
+    /// Reject any serde attribute the emitted schema would silently ignore.
+    /// The derive promises the schema matches what `Deserialize` accepts, so an
+    /// unsupported key is a compile error rather than an approximate schema.
+    fn validate(self, attrs: &[syn::Attribute]) -> syn::Result<()> {
+        for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+            attr.parse_nested_meta(|meta| {
+                let path = &meta.path;
+                let name = meta
+                    .path
+                    .get_ident()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| quote!(#path).to_string());
+                let supported = match self {
+                    SerdeAttrLocation::Container => {
+                        matches!(name.as_str(), "rename" | "rename_all" | "default" | "deny_unknown_fields")
+                    }
+                    SerdeAttrLocation::Field => matches!(name.as_str(), "rename" | "default"),
+                };
+                if !supported {
                     return Err(meta.error(format!(
-                        "unsupported form of serde attribute `{name}` for #[derive(phoxal::Config)]"
+                        "unsupported serde attribute `{name}` for #[derive(phoxal::Config)]; supported container attributes: rename, rename_all, default, deny_unknown_fields; supported field attributes: rename, default"
                     )));
                 }
-            }
-            Ok(())
-        })?;
+
+                match name.as_str() {
+                    "rename" | "rename_all" => {
+                        let _: LitStr = meta.value()?.parse()?;
+                    }
+                    "default" if meta.input.peek(syn::Token![=]) => {
+                        let _: LitStr = meta.value()?.parse()?;
+                    }
+                    "default" | "deny_unknown_fields" if meta.input.is_empty() => {}
+                    _ => {
+                        return Err(meta.error(format!(
+                            "unsupported form of serde attribute `{name}` for #[derive(phoxal::Config)]"
+                        )));
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +237,7 @@ impl ParticipantKind {
             ParticipantKind::Simulator => quote!(Simulator),
             ParticipantKind::Brain => quote!(Brain),
         };
-        quote!(#phoxal::__private::metadata::ParticipantKind::#variant)
+        quote!(#phoxal::__private::ParticipantKind::#variant)
     }
 
     /// The identity this role fixes, if the role admits no `id = "…"` at all.
@@ -291,10 +271,10 @@ impl ParticipantKind {
     fn launch_policy(self, phoxal: &TokenStream) -> TokenStream {
         match self {
             ParticipantKind::Simulator => {
-                quote!(#phoxal::__private::launch::SimulatorParticipantLaunch)
+                quote!(#phoxal::__private::SimulatorParticipantLaunch)
             }
             ParticipantKind::Service | ParticipantKind::Driver | ParticipantKind::Brain => {
-                quote!(#phoxal::__private::launch::ClockedParticipantLaunch)
+                quote!(#phoxal::__private::ClockedParticipantLaunch)
             }
         }
     }
@@ -317,14 +297,14 @@ impl ParticipantKind {
                 quote! {
                     impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
                     impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
-                    impl #phoxal::__private::SchedulableSurface for #struct_name {}
+                    impl #phoxal::__private::surface::SchedulableSurface for #struct_name {}
                 }
             }
             ParticipantKind::Driver => quote! {
                 impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
                 impl #phoxal::__private::surface::TypedIoSurface for #struct_name {}
                 impl #phoxal::__private::surface::ComponentBoundSurface for #struct_name {}
-                impl #phoxal::__private::SchedulableSurface for #struct_name {}
+                impl #phoxal::__private::surface::SchedulableSurface for #struct_name {}
             },
             ParticipantKind::Simulator => quote! {
                 impl #phoxal::__private::surface::sealing::Sealed for #struct_name {}
@@ -341,7 +321,7 @@ impl ParticipantKind {
 ///
 /// An `id` ends up in two places that both require this: it is spliced
 /// directly between JSON quotes in the embedded linker-section metadata
-/// (`expand_participant`'s `#metadata_const_ident`, via `__concatcp!`, which
+/// (`expand_participant`'s `#metadata_const_ident`, via `concatcp!`, which
 /// concatenates raw `&str` values with no escaping), and it is used as a
 /// literal Zenoh key segment (a Liveliness token's participant segment,
 /// `phoxal-bus/src/liveliness.rs`'s `validate_participant`; a dynamic
@@ -417,15 +397,16 @@ const PARTICIPANT_PACKAGE_PREFIXES: &[&str] = &[
 /// `std::env::var("CARGO_PKG_NAME")` while building `phoxal-component-bno085`
 /// reported `"phoxal-component-bno085"`, never `"phoxal-macros"`).
 ///
-/// Chosen over the struct name (the previous default) because measured
+/// The package name is the default rather than the marker struct's name
+/// because it is the one that actually matches the intended id: measured
 /// against all 25 official participants, the package name minus its kind
-/// prefix matches the intended id for 25/25, while kebab-casing the struct
-/// name only matched 16/25 - it fails every tool (`struct ToolLog` kebabs to
-/// `tool-log`, not `log`), `WebotsControllerSimulator`,
-/// and the two components with an underscore in their id (`oak_d_lite`
-/// kebabs to `oak-d-lite`). A crate that defines more than one participant
-/// still needs an explicit `id = "…"` per struct - they cannot all default to
-/// the one package name - which is why the override stays fully supported.
+/// prefix matches 25/25, while kebab-casing the struct name matches only
+/// 16/25 - it fails every tool (`struct ToolLog` kebabs to `tool-log`, not
+/// `log`), `WebotsControllerSimulator`, and the two components with an
+/// underscore in their id (`oak_d_lite` kebabs to `oak-d-lite`). A crate that
+/// defines more than one participant still needs an explicit `id = "…"` per
+/// struct - they cannot all default to the one package name - which is why the
+/// override stays fully supported.
 fn default_participant_id(pkg_name: &str) -> String {
     for prefix in PARTICIPANT_PACKAGE_PREFIXES {
         if let Some(stripped) = pkg_name.strip_prefix(prefix)
@@ -570,7 +551,7 @@ pub fn expand_participant(
     let state_ty: Type = args.state.unwrap_or_else(|| syn::parse_quote!(()));
     let api_ty: Type = args.api.unwrap_or_else(|| syn::parse_quote!(()));
 
-    let phoxal = phoxal();
+    let phoxal = quote!(::phoxal);
     let artifact_kind = kind.artifact_kind(&phoxal);
     let launch_policy = kind.launch_policy(&phoxal);
     let marker = kind.marker_impl(&phoxal, struct_name);
@@ -595,13 +576,12 @@ pub fn expand_participant(
         ),
         struct_name.span(),
     );
-    let link_section = link_section_attrs();
 
     Ok(quote! {
         #item_struct
 
         impl #phoxal::__private::ParticipantSpec for #struct_name {
-            const KIND: #phoxal::__private::metadata::ParticipantKind = #artifact_kind;
+            const KIND: #phoxal::__private::ParticipantKind = #artifact_kind;
             const ID: &'static str = #id;
             type LaunchPolicy = #launch_policy;
             // The train-selected facade revision, spliced from the framework
@@ -620,10 +600,10 @@ pub fn expand_participant(
 
             // Defeats ELF `--gc-sections` dropping `#metadata_static_ident`
             // as unreachable from `main` (see this method's own docs on
-            // `ParticipantSpec`, and `link_section_attrs`'s docs on why `#[used]`
-            // alone is not enough). `black_box` is an unmistakable "reads
-            // this on purpose" marker, not an accident a future cleanup pass
-            // would delete as a no-op.
+            // `ParticipantSpec`, and the metadata static's own `#[used]`
+            // comment below on why `#[used]` alone is not enough). `black_box`
+            // is an unmistakable "reads this on purpose" marker, not an
+            // accident a future cleanup pass would delete as a no-op.
             #[doc(hidden)]
             fn __retain_embedded_metadata() {
                 ::std::hint::black_box(&#metadata_static_ident);
@@ -654,11 +634,118 @@ pub fn expand_participant(
             );
         #[doc(hidden)]
         const #metadata_len_ident: usize = #metadata_const_ident.len();
-        #link_section
+
+        // The cross-platform `#[link_section]` pair the metadata static is
+        // placed under (cargo-auditable's embedding pattern):
+        // `__DATA,__phoxal_meta` on Mach-O (macOS; segment,section syntax,
+        // section name <=16 bytes), and `.phoxal_meta` everywhere else (ELF and
+        // the other platforms this framework targets - Linux robots,
+        // primarily). `#[used]` keeps the linker from discarding the static
+        // during *this compilation unit's* own dead-code elimination, but not
+        // from ELF `--gc-sections` at final link time, which drops any section
+        // unreachable from `main` regardless of `#[used]` - the
+        // `__retain_embedded_metadata` black-box read above closes that gap.
+        // The section's *bytes*, not the symbol, are the payload a reader
+        // (today `phoxal-cli`'s config-schema validation) lifts straight out of
+        // the built artifact file, never by executing it.
+        #[used]
+        #[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__phoxal_meta"))]
+        #[cfg_attr(not(target_os = "macos"), unsafe(link_section = ".phoxal_meta"))]
         #[doc(hidden)]
         static #metadata_static_ident: [u8; #metadata_len_ident] =
-            #phoxal::__private::api::__meta::__bytes_of(#metadata_const_ident);
+            #phoxal::__private::meta::bytes_of(#metadata_const_ident);
     })
+}
+
+// ---------------------------------------------------------------------------
+// #[phoxal::step(hz = N)]
+// ---------------------------------------------------------------------------
+
+/// Record the step cadence on the ordinary `Participant::step` override. The
+/// schedule rides on a hidden associated fn rather than replacing the method,
+/// so the authored body stays exactly as written.
+pub fn expand_step(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream> {
+    let hz = parse_step_hz(attr)?;
+    let method: ImplItemFn = syn::parse2(item)?;
+
+    if method.sig.ident != "step" {
+        return Err(syn::Error::new_spanned(
+            &method.sig.ident,
+            "#[phoxal::step] must annotate the `step` Participant method",
+        ));
+    }
+    if method.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            &method.sig,
+            "#[phoxal::step] requires an async method",
+        ));
+    }
+
+    let phoxal = quote!(::phoxal);
+    Ok(quote! {
+        #[doc(hidden)]
+        fn __step_schedule() -> ::core::option::Option<#phoxal::__private::StepSchedule> {
+            fn __assert_schedulable_surface<T: #phoxal::__private::surface::SchedulableSurface>() {}
+            __assert_schedulable_surface::<Self>();
+            ::core::option::Option::Some(#phoxal::__private::StepSchedule::hz(#hz))
+        }
+
+        #method
+    })
+}
+
+fn parse_step_hz(attr: TokenStream) -> syn::Result<f64> {
+    let mut hz = None;
+    let parser = syn::meta::parser(|meta| {
+        if !meta.path.is_ident("hz") {
+            return Err(meta.error("unknown #[phoxal::step(...)] key (expected `hz`)"));
+        }
+        if hz.is_some() {
+            return Err(meta.error("duplicate `hz`"));
+        }
+        let value: Expr = meta.value()?.parse()?;
+        hz = Some(step_hz_literal(&value)?);
+        Ok(())
+    });
+    parser.parse2(attr)?;
+
+    let hz = hz.ok_or_else(|| {
+        syn::Error::new(
+            Span::call_site(),
+            "#[phoxal::step(hz = N)] requires a frequency",
+        )
+    })?;
+    if !hz.is_finite() || hz <= 0.0 {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "#[phoxal::step(hz = N)] frequency must be positive and finite",
+        ));
+    }
+    Ok(hz)
+}
+
+/// A step frequency is a numeric literal (optionally negated, so the
+/// positive-and-finite check above reports the real value rather than a parse
+/// error). It is never an arbitrary expression: the schedule has to be readable
+/// at expansion time.
+fn step_hz_literal(expr: &Expr) -> syn::Result<f64> {
+    match expr {
+        Expr::Lit(ExprLit {
+            lit: Lit::Int(value),
+            ..
+        }) => value.base10_parse(),
+        Expr::Lit(ExprLit {
+            lit: Lit::Float(value),
+            ..
+        }) => value.base10_parse(),
+        Expr::Unary(unary) if matches!(unary.op, UnOp::Neg(_)) => {
+            Ok(-step_hz_literal(&unary.expr)?)
+        }
+        _ => Err(syn::Error::new_spanned(
+            expr,
+            "step frequency must be a numeric literal",
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -737,8 +824,8 @@ mod tests {
         );
         assert!(
             expanded.contains("const ID : & 'static str = \"phoxal-macros\""),
-            "the default id must come from CARGO_PKG_NAME, not the struct name \
-             (`omitted-id`, the old default, must NOT appear): {expanded}"
+            "the default id must come from CARGO_PKG_NAME, never from the struct \
+             name (which would read `omitted-id`): {expanded}"
         );
     }
 
@@ -771,13 +858,13 @@ mod tests {
             "{expanded}"
         );
         assert!(
-            expanded.contains("const KIND : :: phoxal :: __private :: metadata :: ParticipantKind = :: phoxal :: __private :: metadata :: ParticipantKind :: Brain"),
+            expanded.contains("const KIND : :: phoxal :: __private :: ParticipantKind = :: phoxal :: __private :: ParticipantKind :: Brain"),
             "{expanded}"
         );
         assert!(expanded.contains("type Config = () ;"), "{expanded}");
         // The ordinary clocked launch policy, not a second brain-specific one.
         assert!(
-            expanded.contains("launch :: ClockedParticipantLaunch"),
+            expanded.contains("__private :: ClockedParticipantLaunch"),
             "{expanded}"
         );
         // The embedded record carries the brain kind under the fixed identity,
@@ -789,7 +876,7 @@ mod tests {
         );
         assert!(
             expanded.contains(
-                "id = \"brain\" , kind = :: phoxal :: __private :: metadata :: ParticipantKind :: Brain"
+                "id = \"brain\" , kind = :: phoxal :: __private :: ParticipantKind :: Brain"
             ),
             "{expanded}"
         );
@@ -937,8 +1024,9 @@ mod tests {
 
     #[test]
     fn expand_participant_emits_a_black_box_read_of_its_own_metadata_static() {
-        // The ELF `--gc-sections` defeat (this file's `link_section_attrs`
-        // docs, and `Participant::__retain_embedded_metadata`'s docs): every
+        // The ELF `--gc-sections` defeat (the `#[used]` comment in
+        // `expand_participant`'s emitted metadata static, and
+        // `Participant::__retain_embedded_metadata`'s docs): every
         // participant's generated `impl Participant` must read its metadata
         // static through `std::hint::black_box`, or a future edit to this
         // function could silently drop the one line that keeps the section
@@ -955,5 +1043,29 @@ mod tests {
             expanded.contains("fn __retain_embedded_metadata () { :: std :: hint :: black_box (& __PHOXAL_PARTICIPANT_META_PROBE) ; }"),
             "expected a black_box read of the participant's own metadata static: {expanded}"
         );
+    }
+
+    #[test]
+    fn step_emits_the_hidden_schedule_hook_and_original_method() {
+        let expanded = expand_step(
+            quote!(hz = 50),
+            quote! {
+                async fn step(
+                    &self,
+                    _api: &Self::Api,
+                    _step: StepContext,
+                    _state: &mut Self::State,
+                ) -> Result<()> {
+                    Ok(())
+                }
+            },
+        )
+        .expect("step expands")
+        .to_string();
+
+        assert!(expanded.contains("__step_schedule"));
+        assert!(expanded.contains("__assert_schedulable_surface"));
+        assert!(expanded.contains("StepSchedule :: hz (50f64)"));
+        assert!(expanded.contains("async fn step"));
     }
 }

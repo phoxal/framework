@@ -1,11 +1,11 @@
 //! Range capability: publishes `component::range::Sample` from the Webots
-//! `DistanceSensor` device. Moved from the monolith's `RangeSpec`
-//! (main.rs:578-583) and `NativeRange` (main.rs:1327-1368).
+//! `DistanceSensor` device, bounded by the range limits the component
+//! declares.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 
-use super::{SampledSpec, is_due};
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 #[derive(Clone, Debug)]
 pub(crate) struct RangeSpec {
@@ -21,27 +21,25 @@ pub(crate) struct NativeRange {
 
 impl NativeRange {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &RangeSpec) -> Result<Self> {
-        let sensor = webots
-            .distance_sensor(spec.sampled.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        sensor
-            .enable(spec.sampled.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let sensor = webots.distance_sensor(spec.sampled.reference.to_string())?;
+        sensor.enable(spec.sampled.sampling_period_ms)?;
         Ok(Self {
             sensor,
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::range::Sample>> {
-        if !is_due(step_index, self.spec.sampled.publish_every_steps) {
-            return Ok(None);
-        }
+impl SimulatedSensor for NativeRange {
+    type Sample = api::component::range::Sample;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.sampled.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
         Ok(Some(api::component::range::Sample {
-            distance_m: self.sensor.value().map_err(|error| anyhow!(error))? as f32,
+            distance_m: self.sensor.value()? as f32,
             limits: Some(api::component::range::Limits {
                 min_m: self.spec.min_range_m,
                 max_m: self.spec.max_range_m,

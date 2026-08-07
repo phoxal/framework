@@ -1,31 +1,34 @@
-//! `map` - localization-trace occupancy-grid placeholder.
+//! `map` - localization-trace occupancy grid.
 //!
 //! A scheduled participant with a serialized query handler. It subscribes to
 //! `localize/state`, publishes `map/revision` (the current revision and grid
 //! resolution), and serves `map/submap` from the same state the step mutates.
 //! Each step it marks the cell under the latest localization pose as free,
 //! bumping the revision only when a cell actually changes.
-//! This is a placeholder: it does not integrate range/depth/lidar observations
-//! yet, the grid is a fixed 64x64 window, and `map/submap` ignores the request
-//! bounds and always returns the whole grid.
+//!
+//! The grid is a fixed 64x64 window anchored at the map origin, it is built
+//! from the localization trace alone (no range, depth or lidar observation
+//! reaches it), and `map/submap` returns that whole window whatever bounds the
+//! request asks for - so a consumer must treat the response's own
+//! `width`/`height`/`resolution_m` as the extent it received, never the extent
+//! it requested.
 
-use anyhow::Result;
 use phoxal::api;
 use phoxal::bus::QueryFailure;
 use phoxal::prelude::*;
 
 const LOCALIZATION_STALE: std::time::Duration = std::time::Duration::from_secs(1);
 
-pub struct Api {
+pub(crate) struct Api {
     localize: Subscriber<api::localize::LocalizationState>,
     revision: StatePublisher<api::map::Revision>,
 }
 
-pub struct MapState {
+pub(crate) struct MapState {
     grid: Grid,
     rev: u64,
     has_localization: bool,
-    last_localization: Option<(api::localize::LocalizationState, RobotInstant)>,
+    last_localization: Option<Timed<api::localize::LocalizationState>>,
 }
 
 #[derive(Clone)]
@@ -46,6 +49,12 @@ impl Grid {
         }
     }
 
+    /// The whole grid, whatever window `request` asks for.
+    ///
+    /// The requested bounds are not honoured: the response describes its own
+    /// extent, so a caller that reads `width`/`height`/`resolution_m` off the
+    /// response is correct, and one that assumes it received the window it
+    /// asked for reads cells from the wrong place.
     fn submap(&self, _request: &api::map::SubmapRequest) -> api::map::SubmapResponse {
         api::map::SubmapResponse {
             width: self.width,
@@ -54,10 +63,36 @@ impl Grid {
             cells: self.cells.clone(),
         }
     }
+
+    /// Mark the cell containing `(x_m, y_m)` free, reporting whether that
+    /// changed the grid.
+    fn mark_free(&mut self, x_m: f64, y_m: f64) -> bool {
+        // Floor (not truncate-toward-zero) so a coordinate just below the origin maps
+        // to a negative cell and is rejected, rather than folding onto cell 0.
+        let x = (x_m / f64::from(self.resolution_m)).floor();
+        let y = (y_m / f64::from(self.resolution_m)).floor();
+        if !x.is_finite()
+            || !y.is_finite()
+            || x < 0.0
+            || y < 0.0
+            || x >= f64::from(self.width)
+            || y >= f64::from(self.height)
+        {
+            return false;
+        }
+
+        let idx = (y as u32 * self.width + x as u32) as usize;
+        if self.cells[idx] == 0 {
+            return false;
+        }
+
+        self.cells[idx] = 0;
+        true
+    }
 }
 
 #[phoxal::service(state = MapState, api = Api)]
-pub struct Map;
+pub(crate) struct Map;
 
 impl Participant for Map {
     async fn setup(
@@ -112,24 +147,36 @@ impl Participant for Map {
     ) -> Result<()> {
         while let Some(observed) = api.localize.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_localization = Some((observed.body, at));
+                state.last_localization = Some(Timed::new(observed.body, at));
             }
         }
 
-        if !localization_is_usable(state.last_localization.as_ref(), step.now())? {
+        // Only a real, finite, fresh pose may write the grid; anything else
+        // leaves the revision where it is and marks the map unbacked. The gate
+        // hands the pose it proved straight to the writer.
+        let Some(localization) = state.last_localization.as_ref() else {
+            state.has_localization = false;
+            return Ok(());
+        };
+        // A sample from a replaced world, from this step's future, or older than
+        // the window is not usable; `fresh_within` answers all three and fails
+        // closed across timelines.
+        if !localization.fresh_within(step.now(), LOCALIZATION_STALE) {
             state.has_localization = false;
             return Ok(());
         }
+        if !localization_is_finite(&localization.body) {
+            anyhow::bail!("localization sample contains a non-finite value");
+        }
 
-        if let Some((loc, _)) = &state.last_localization {
-            state.has_localization = true;
-            if mark_free(&mut state.grid, loc.x_m, loc.y_m) {
-                state.rev += 1;
-            }
+        state.has_localization = true;
+        let (x_m, y_m) = (localization.body.x_m, localization.body.y_m);
+        if state.grid.mark_free(x_m, y_m) {
+            state.rev = state.rev.saturating_add(1);
         }
 
         api.revision.publish(
-            step.token(),
+            &step.token,
             api::map::Revision {
                 revision: state.rev,
                 resolution_m: state.grid.resolution_m,
@@ -155,63 +202,28 @@ impl Map {
     }
 }
 
-fn localization_is_usable(
-    sample: Option<&(api::localize::LocalizationState, RobotInstant)>,
-    now: RobotInstant,
-) -> Result<bool> {
-    match sample {
-        None => Ok(false),
-        // A sample from a replaced world, from this step's future, or older
-        // than the window is not usable; the checked predicate answers all
-        // three and can never silently pass across timelines.
-        Some((_, at))
-            if !TimeWindow::exact(*at)
-                .possibly_fresh_within(now, LOCALIZATION_STALE)
-                .unwrap_or(false) =>
-        {
-            Ok(false)
-        }
-        Some((loc, _))
-            if !loc.x_m.is_finite()
-                || !loc.y_m.is_finite()
-                || !loc.yaw_rad.is_finite()
-                || !loc.confidence.is_finite() =>
-        {
-            anyhow::bail!("localization sample contains a non-finite value")
-        }
-        Some(_) => Ok(true),
-    }
-}
-
-fn mark_free(grid: &mut Grid, x_m: f64, y_m: f64) -> bool {
-    // Floor (not truncate-toward-zero) so a coordinate just below the origin maps
-    // to a negative cell and is rejected, rather than folding onto cell 0.
-    let x = (x_m / f64::from(grid.resolution_m)).floor();
-    let y = (y_m / f64::from(grid.resolution_m)).floor();
-    if !x.is_finite()
-        || !y.is_finite()
-        || x < 0.0
-        || y < 0.0
-        || x >= f64::from(grid.width)
-        || y >= f64::from(grid.height)
-    {
-        return false;
-    }
-
-    let idx = (y as u32 * grid.width + x as u32) as usize;
-    if grid.cells[idx] == 0 {
-        return false;
-    }
-
-    grid.cells[idx] = 0;
-    true
+/// A non-finite pose would floor into a meaningless cell index, so it stops the
+/// step instead of reaching the grid.
+fn localization_is_finite(localization: &api::localize::LocalizationState) -> bool {
+    localization.x_m.is_finite()
+        && localization.y_m.is_finite()
+        && localization.yaw_rad.is_finite()
+        && localization.confidence.is_finite()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Grid, LOCALIZATION_STALE, localization_is_usable, mark_free};
+    use super::{Grid, localization_is_finite};
     use phoxal::api;
-    use phoxal::bus::RobotInstant;
+
+    fn localization(x_m: f64) -> api::localize::LocalizationState {
+        api::localize::LocalizationState {
+            x_m,
+            y_m: 0.0,
+            yaw_rad: 0.0,
+            confidence: 1.0,
+        }
+    }
 
     #[test]
     fn submap_returns_full_grid_window() {
@@ -234,55 +246,51 @@ mod tests {
     fn mark_free_sets_cell_and_reports_change() {
         let mut grid = Grid::empty(4, 3, 0.5);
 
-        assert!(mark_free(&mut grid, 1.1, 0.6));
+        assert!(grid.mark_free(1.1, 0.6));
         assert_eq!(grid.cells[(grid.width + 2) as usize], 0);
 
         let after_first_mark = grid.cells.clone();
-        assert!(!mark_free(&mut grid, 1.1, 0.6));
+        assert!(!grid.mark_free(1.1, 0.6));
         assert_eq!(grid.cells, after_first_mark);
 
-        assert!(!mark_free(&mut grid, 10.0, 10.0));
+        assert!(!grid.mark_free(10.0, 10.0));
         assert_eq!(grid.cells, after_first_mark);
 
         // A coordinate just below the origin floors to a negative cell and is
         // rejected (it must not fold onto cell 0).
-        assert!(!mark_free(&mut grid, -0.01, 0.0));
-        assert!(!mark_free(&mut grid, 0.0, -0.01));
+        assert!(!grid.mark_free(-0.01, 0.0));
+        assert!(!grid.mark_free(0.0, -0.01));
         assert_eq!(grid.cells, after_first_mark);
     }
 
+    /// Every field is checked, so a non-finite value anywhere in the pose stops
+    /// the step rather than reaching the grid.
     #[test]
-    fn localization_gate_rejects_unavailable_stale_cross_timeline_and_invalid_samples() {
-        let sample = |x_m, timeline, at| {
-            (
-                api::localize::LocalizationState {
-                    x_m,
-                    y_m: 0.0,
-                    yaw_rad: 0.0,
-                    confidence: 1.0,
-                },
-                RobotInstant::new(timeline, at),
-            )
-        };
-        let line = phoxal::bus::TimelineId::mint();
-        let replaced = phoxal::bus::TimelineId::mint();
-        let stale_ns = u64::try_from(LOCALIZATION_STALE.as_nanos()).unwrap();
-        let now = RobotInstant::new(line, stale_ns + 10);
+    fn a_non_finite_field_anywhere_makes_the_pose_unusable() {
+        assert!(localization_is_finite(&localization(0.0)));
 
-        assert!(!localization_is_usable(None, now).unwrap());
-        assert!(localization_is_usable(Some(&sample(0.0, line, 10)), now).unwrap());
-        assert!(
-            !localization_is_usable(Some(&sample(0.0, replaced, now.ticks())), now).unwrap(),
-            "a sample from a replaced world is incomparable, never usable"
-        );
-        assert!(
-            !localization_is_usable(Some(&sample(0.0, line, now.ticks() + 1)), now).unwrap(),
-            "a sample from this step's future is not usable"
-        );
-        assert!(
-            !localization_is_usable(Some(&sample(0.0, line, 9)), now).unwrap(),
-            "a sample older than the window is not usable"
-        );
-        assert!(localization_is_usable(Some(&sample(f64::NAN, line, now.ticks())), now).is_err());
+        for broken in [
+            api::localize::LocalizationState {
+                x_m: f64::NAN,
+                ..localization(0.0)
+            },
+            api::localize::LocalizationState {
+                y_m: f64::INFINITY,
+                ..localization(0.0)
+            },
+            api::localize::LocalizationState {
+                yaw_rad: f64::NEG_INFINITY,
+                ..localization(0.0)
+            },
+            api::localize::LocalizationState {
+                confidence: f32::NAN,
+                ..localization(0.0)
+            },
+        ] {
+            assert!(
+                !localization_is_finite(&broken),
+                "{broken:?} must not be finite"
+            );
+        }
     }
 }

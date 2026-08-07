@@ -1,0 +1,702 @@
+{
+  "$defs": {
+    "CameraMode": {
+      "enum": [
+        "mono",
+        "rgb"
+      ],
+      "type": "string"
+    },
+    "Capability": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "$ref": "#/$defs/MotorCommand"
+            },
+            "gear_ratio": {
+              "default": 1.0,
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "motor",
+              "type": "string"
+            },
+            "max_torque_nm": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_velocity_radps": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "counts_per_revolution": {
+              "default": 1024,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "encoder_type": {
+              "$ref": "#/$defs/EncoderType",
+              "default": "incremental"
+            },
+            "gear_ratio": {
+              "default": 1.0,
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "encoder",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axes": {
+              "default": null,
+              "items": {
+                "type": "boolean"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "accelerometer",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget",
+              "description": "Publishes raw accelerometer samples in the sensor-local frame in m/s^2.\n\nThis capability does not imply gravity compensation, zero-bias removal,\nor motion-state filtering. Small non-zero readings while stationary are\nvalid unless a producer-specific contract says otherwise."
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axes": {
+              "default": null,
+              "items": {
+                "type": "boolean"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "gyroscope",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget",
+              "description": "Publishes raw angular velocity samples in the sensor-local frame in rad/s.\n\nThis capability does not imply zero-bias removal or rest-state filtering.\nSmall non-zero readings while stationary are valid unless a producer-specific\ncontract says otherwise."
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axes": {
+              "default": null,
+              "items": {
+                "type": "boolean"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "magnetometer",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axes": {
+              "default": null,
+              "items": {
+                "type": "boolean"
+              },
+              "maxItems": 3,
+              "minItems": 3,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "imu",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget",
+              "description": "Publishes orientation samples in the sensor-local frame.\n\nOrientation is reported independently of the raw accelerometer and gyroscope\nstreams; consumers must not assume those streams are de-biased, filtered, or\nfused to match this orientation estimate exactly."
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "coordinate_system": {
+              "$ref": "#/$defs/GnssCoordinateSystem",
+              "default": "local"
+            },
+            "kind": {
+              "const": "gnss",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field_of_view_rad": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "height_px": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "camera",
+              "type": "string"
+            },
+            "mode": {
+              "$ref": "#/$defs/CameraMode"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            },
+            "width_px": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "mode",
+            "publish_rate_hz",
+            "width_px",
+            "height_px"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Shared depth capability.\n\nContract:\n- payload data stores unsigned 16-bit millimeter samples\n- `width_px` and `height_px` are static metadata and are not repeated in\n  each payload\n- published payloads contain complete grids with valid non-zero samples\n- pixels represent forward-axis depth, not radial range\n- columns increase to sensor-right and rows increase downward\n\nAny simulation or hardware driver that publishes this capability should\nfollow that same geometry rule.",
+          "properties": {
+            "field_of_view_rad": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "height_px": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "depth",
+              "type": "string"
+            },
+            "max_range_m": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "min_range_m": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            },
+            "width_px": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz",
+            "width_px",
+            "height_px"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "emergency_stop",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "field_of_view_rad": {
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "range",
+              "type": "string"
+            },
+            "max_range_m": {
+              "format": "double",
+              "type": "number"
+            },
+            "min_range_m": {
+              "format": "double",
+              "type": "number"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz",
+            "min_range_m",
+            "max_range_m",
+            "field_of_view_rad"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "horizontal_fov_rad": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "horizontal_resolution_rad": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "lidar",
+              "type": "string"
+            },
+            "max_range_m": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "min_range_m": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "output": {
+              "$ref": "#/$defs/LidarOutput"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            },
+            "vertical_fov_rad": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "vertical_resolution_rad": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz",
+            "output"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "mmwave",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "microphone",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "speaker",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "capacity_ah": {
+              "description": "Pack capacity. Required: it is the denominator of `charge_ratio`.",
+              "format": "double",
+              "type": "number"
+            },
+            "kind": {
+              "const": "battery",
+              "type": "string"
+            },
+            "publish_rate_hz": {
+              "format": "double",
+              "type": "number"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            },
+            "voltage_v": {
+              "description": "Nominal pack voltage. Required: it is the only thing that turns an\nenergy reading into the reported voltage and current.",
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "kind",
+            "target",
+            "publish_rate_hz",
+            "voltage_v",
+            "capacity_ah"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "led",
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/$defs/StructuralTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EncoderType": {
+      "enum": [
+        "incremental",
+        "absolute"
+      ],
+      "type": "string"
+    },
+    "GnssCoordinateSystem": {
+      "enum": [
+        "local",
+        "wgs84"
+      ],
+      "type": "string"
+    },
+    "LidarOutput": {
+      "enum": [
+        "ranges",
+        "points"
+      ],
+      "type": "string"
+    },
+    "MotorCommand": {
+      "enum": [
+        "position",
+        "velocity",
+        "torque"
+      ],
+      "type": "string"
+    },
+    "StructuralTarget": {
+      "description": "The component-local structural item a capability is attached to.\n\nAuthored structural ids are URDF names, whose grammar is wider than a\ncanonical token, so they stay plain strings until the compiler adopts them\ninto `phoxal-model`'s `LinkId` / `JointId`.",
+      "oneOf": [
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "joint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "link",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Editor schema for an authored Phoxal component.yaml document.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Capability"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "gtin": {
+          "description": "A GS1 Global Trade Item Number, exactly 13 digits.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "const": "phoxal/component/v0",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Phoxal component manifest (phoxal/component/v0)"
+}

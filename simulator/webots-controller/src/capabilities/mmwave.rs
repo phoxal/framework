@@ -5,11 +5,11 @@
 //! power. The contract wants cartesian position and velocity, so the bearing is
 //! resolved here; elevation is zero because a Webots radar target carries none.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 use webots_rs::device::radar::RadarTarget;
 
-use super::{SampledSpec, is_due};
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 pub(crate) struct NativeMmwave {
     radar: webots_rs::device::radar::Radar,
@@ -18,26 +18,24 @@ pub(crate) struct NativeMmwave {
 
 impl NativeMmwave {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &SampledSpec) -> Result<Self> {
-        let radar = webots
-            .radar(spec.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        radar
-            .enable(spec.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let radar = webots.radar(spec.reference.to_string())?;
+        radar.enable(spec.sampling_period_ms)?;
         Ok(Self {
             radar,
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::mmwave::Scan>> {
-        if !is_due(step_index, self.spec.publish_every_steps) {
-            return Ok(None);
-        }
-        let targets = self.radar.targets().map_err(|error| anyhow!(error))?;
+impl SimulatedSensor for NativeMmwave {
+    type Sample = api::component::mmwave::Scan;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
+        let targets = self.radar.targets()?;
         Ok(Some(api::component::mmwave::Scan {
             detections: targets.iter().map(detection).collect(),
         }))

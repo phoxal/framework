@@ -9,7 +9,7 @@ This project is licensed under AGPL-3.0-only. See [LICENSE](LICENSE) for the
 full license text.
 
 Contributions you submit are accepted under the same license that already
-applies to the file(s) you change — "inbound = outbound". You retain
+applies to the file(s) you change - "inbound = outbound". You retain
 copyright on your contribution; you grant the project and its users a
 license to use your contribution under the file's declared license.
 
@@ -42,5 +42,5 @@ Install Webots R2025a and either use its default install location or set
 
 ## Getting started
 
-Open an issue or draft PR early for non-trivial changes — alignment before
+Open an issue or draft PR early for non-trivial changes - alignment before
 code is cheaper than alignment after code.

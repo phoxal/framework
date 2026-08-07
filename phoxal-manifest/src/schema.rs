@@ -3,27 +3,18 @@
 //! These schemas describe the serde wire shape of the current authored v0
 //! documents. They are an editor aid only; [`crate::source`] parsing and
 //! validation remain authoritative for semantic and cross-file constraints.
+//!
+//! The generation entry point is a method on [`DocumentKind`], the same value
+//! that names an authored document everywhere else in this crate.
 
 use schemars::{SchemaGenerator, generate::SchemaSettings};
 
-/// The authored document kind whose schema an editor needs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocumentKind {
-    /// A project-root `robot.yaml` document.
-    Robot,
-    /// A component-local `component.yaml` document.
-    Component,
-    /// A component-local `simulation.yaml` document.
-    Simulation,
-}
+use crate::source::DocumentKind;
 
 impl DocumentKind {
-    /// Every authored document kind in stable generation order.
-    pub const ALL: [Self; 3] = [Self::Robot, Self::Component, Self::Simulation];
-
     /// The stable file name for this document kind's generated editor schema.
     #[must_use]
-    pub const fn file_name(self) -> &'static str {
+    pub const fn schema_file_name(self) -> &'static str {
         match self {
             Self::Robot => "robot.schema.json",
             Self::Component => "component.schema.json",
@@ -31,7 +22,28 @@ impl DocumentKind {
         }
     }
 
-    const fn metadata(self) -> (&'static str, &'static str) {
+    /// Generate a portable Draft 2020-12 JSON Schema for this document kind.
+    ///
+    /// The returned ordinary JSON value can be serialized directly into an
+    /// editor's local schema cache without exposing `schemars` types in this
+    /// crate's public API.
+    #[must_use]
+    pub fn generate(self) -> serde_json::Value {
+        let mut schema = match self {
+            Self::Robot => SchemaGenerator::new(SchemaSettings::draft2020_12())
+                .into_root_schema_for::<crate::source::robot::Manifest>(),
+            Self::Component => SchemaGenerator::new(SchemaSettings::draft2020_12())
+                .into_root_schema_for::<crate::source::component::Manifest>(),
+            Self::Simulation => SchemaGenerator::new(SchemaSettings::draft2020_12())
+                .into_root_schema_for::<crate::source::simulation::Manifest>(),
+        };
+        let (title, description) = self.schema_metadata();
+        schema.insert("title".into(), title.into());
+        schema.insert("description".into(), description.into());
+        schema.to_value()
+    }
+
+    const fn schema_metadata(self) -> (&'static str, &'static str) {
         match self {
             Self::Robot => (
                 "Phoxal robot manifest (phoxal/robot/v0)",
@@ -49,33 +61,12 @@ impl DocumentKind {
     }
 }
 
-/// Generate a portable Draft 2020-12 JSON Schema for an authored document.
-///
-/// The returned ordinary JSON value can be serialized directly into an
-/// editor's local schema cache without exposing `schemars` types in this
-/// crate's public API.
-#[must_use]
-pub fn generate(kind: DocumentKind) -> serde_json::Value {
-    let mut schema = match kind {
-        DocumentKind::Robot => SchemaGenerator::new(SchemaSettings::draft2020_12())
-            .into_root_schema_for::<crate::source::robot::Manifest>(),
-        DocumentKind::Component => SchemaGenerator::new(SchemaSettings::draft2020_12())
-            .into_root_schema_for::<crate::source::component::Manifest>(),
-        DocumentKind::Simulation => SchemaGenerator::new(SchemaSettings::draft2020_12())
-            .into_root_schema_for::<crate::source::simulation::Manifest>(),
-    };
-    let (title, description) = kind.metadata();
-    schema.insert("title".into(), title.into());
-    schema.insert("description".into(), description.into());
-    schema.to_value()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{DocumentKind, generate};
+    use crate::source::DocumentKind;
 
     fn validator(kind: DocumentKind) -> jsonschema::Validator {
-        let document_schema = generate(kind);
+        let document_schema = kind.generate();
         assert_eq!(
             document_schema
                 .get("$schema")
@@ -135,8 +126,8 @@ mod tests {
                     "simulation.schema.json",
                 ),
             };
-            let generated = generate(kind);
-            assert_eq!(kind.file_name(), file_name);
+            let generated = kind.generate();
+            assert_eq!(kind.schema_file_name(), file_name);
             assert_eq!(
                 generated.get("title").and_then(serde_json::Value::as_str),
                 Some(title)
@@ -175,15 +166,15 @@ mod tests {
 
     #[test]
     fn the_generated_robot_schema_carries_no_behavior_definition_or_field() {
-        // The generated schema is derived straight from the source DTO, so
-        // this is the standing proof that deleting `BehaviorConfig` and
-        // `Manifest::behavior` also removed them from every editor schema -
-        // there is no committed schema file to rebaseline.
-        let schema = generate(DocumentKind::Robot);
+        // Project policy belongs to the one mandatory root brain, so there is
+        // no `behavior:` subsystem for a document to configure. The schema is
+        // derived straight from the source DTO, so this is what keeps the
+        // editor's view of the grammar honest about that.
+        let schema = DocumentKind::Robot.generate();
         let serialized = serde_json::to_string(&schema).expect("schema serializes");
         assert!(
             !serialized.to_lowercase().contains("behavior"),
-            "the robot schema still mentions the retired behavior subsystem: {serialized}"
+            "the robot schema describes a behavior subsystem that does not exist: {serialized}"
         );
 
         // A `behavior:` root property must also fail structurally, not merely
@@ -202,9 +193,9 @@ mod tests {
     #[test]
     fn schema_generation_is_deterministic() {
         for kind in DocumentKind::ALL {
-            let first = serde_json::to_string_pretty(&generate(kind))
+            let first = serde_json::to_string_pretty(&kind.generate())
                 .expect("generated schema should serialize deterministically");
-            let second = serde_json::to_string_pretty(&generate(kind))
+            let second = serde_json::to_string_pretty(&kind.generate())
                 .expect("generated schema should serialize deterministically");
             assert_eq!(first, second);
         }

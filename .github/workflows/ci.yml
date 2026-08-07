@@ -26,11 +26,11 @@ jobs:
     secrets: inherit
 
   # `examples/hello-rover` is a separate Cargo workspace pinned to a *published*
-  # framework train, so `cargo check --workspace` never reaches it and it rotted
-  # silently for several trains (organization#973). It is deliberately not a
-  # workspace member - it must prove the authoring surface as an external
-  # consumer sees it, resolved from the registry - so this job is the only thing
-  # that compiles it. `--locked` makes the committed lockfile part of the proof.
+  # framework train, so `cargo check --workspace` never reaches it and it rots
+  # silently without a job of its own. It is deliberately not a workspace
+  # member - it must prove the authoring surface as an external consumer sees
+  # it, resolved from the registry - so this job is the only thing that compiles
+  # it. `--locked` makes the committed lockfile part of the proof.
   # It needs no Webots: the example depends on `phoxal` alone.
   hello-rover-example:
     name: examples/hello-rover
@@ -48,9 +48,9 @@ jobs:
         run: cargo check --locked
 
   # `phoxal-bus`'s `router` feature is off by default, so `cargo test
-  # --workspace` never compiles it. Only `phoxal-cli`'s supervisor turns it on
-  # (organization#978), which means without this job the embedded router would
-  # ship untested from this repo and break in the consumer instead.
+  # --workspace` never compiles it. Only `phoxal-cli`'s supervisor turns it on,
+  # which means without this job the embedded router would ship untested from
+  # this repo and break in the consumer instead.
   bus-router-feature:
     name: phoxal-bus router feature
     if: >-

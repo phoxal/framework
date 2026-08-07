@@ -1,5 +1,5 @@
-# The static registry this workspace's executables publish to
-# (organization#951, Decision 2). Committed here rather than passed per
+# The static registry this workspace's executables publish to.
+# Committed here rather than passed per
 # invocation because everything that touches this workspace needs it:
 # release-plz aborts outright without it ("registry index was not found in any
 # configuration"), including inside the shared reusable release-PR workflow,

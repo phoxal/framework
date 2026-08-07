@@ -1,14 +1,13 @@
-//! `ddsm115` - a Waveshare DDSM115 wheel-motor component driver (D54).
+//! `ddsm115` - a Waveshare DDSM115 wheel-motor component driver.
 //!
-//! Drivers are first-class users of the framework's macro + runner. The runner
-//! launches one participant **per**
-//! `components.instances` entry, each with a distinct `participant_id` and its own
-//! `component_instance` (D47/D53), read here via `ctx.component()`. This driver binds
-//! its instance's per-component motor-command (subscribe) and encoder-sample
-//! (publish) topics (dynamic keys, D17/D38), applies commands to the hardware, and
-//! feeds back encoder samples. `Participant::shutdown` parks the motor before the bus closes.
+//! The runner launches one participant per `components.instances` entry, each
+//! with a distinct `participant_id` and its own component instance, read here
+//! via `ctx.component()`. This driver binds its instance's per-component
+//! motor-command (subscribe) and encoder-sample (publish) topics, applies
+//! commands to the hardware, and feeds back encoder samples.
+//! `Participant::shutdown` parks the motor before the bus closes.
 //!
-//! # Non-zero actuation requires a permit (#952 section H)
+//! # Non-zero actuation requires a permit
 //!
 //! Command reception and expiry live in a **managed task**, not in `Participant::step`.
 //! That is the whole point: if logical time stops advancing, `Participant::step` stops
@@ -22,9 +21,6 @@
 //! Because this driver models the motor rather than driving it, that is not
 //! hardware or backend proof; it is the framework-side floor every official
 //! physical actuator driver inherits.
-//!
-//! This crate lives in `component/ddsm115` in the framework repository and is built
-//! from git source by `phoxal-cli` at check/deploy time.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,6 +28,7 @@ use std::time::Duration;
 use anyhow::Result;
 use phoxal::api;
 use phoxal::bus::{LEASE_TRACE_TARGET, Observed, ProducerFence, ProducerId};
+use phoxal::model::identity::ComponentInstanceId;
 use phoxal::prelude::*;
 
 /// The motor / encoder capability names on a ddsm115 component instance
@@ -52,19 +49,19 @@ const PERMIT_TICK: Duration = Duration::from_millis(20);
 ///
 /// Shared between the managed permit task and the step loop. Only a command
 /// grants a permit; both sides enforce it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Motor {
     /// The component instance this motor belongs to, so its decisions are
     /// attributable on a robot with several wheels.
-    instance: String,
+    instance: ComponentInstanceId,
     velocity_radps: f32,
     /// When the current non-zero velocity stops being permitted. `None` means
     /// the motor is already stopped and needs no permit.
     permitted_until: Option<LocalInstant>,
     /// Which commanding process holds actuation authority. A superseded
     /// authority must not be able to renew a permit after a replacement has
-    /// been accepted (#952 section G), and a replayed or reordered sample must
-    /// not renew one either.
+    /// been accepted, and a replayed or reordered sample must not renew one
+    /// either.
     fence: ProducerFence,
     /// Who granted the permit currently held, what they numbered it, and where
     /// it sat in this driver's own arrival order - so the lapse event names the
@@ -75,10 +72,14 @@ struct Motor {
 }
 
 impl Motor {
-    fn new(instance: String) -> Self {
+    fn new(instance: ComponentInstanceId) -> Self {
         Motor {
             instance,
-            ..Motor::default()
+            velocity_radps: 0.0,
+            permitted_until: None,
+            fence: ProducerFence::default(),
+            permitted_by: None,
+            observations: 0,
         }
     }
 
@@ -100,7 +101,7 @@ impl Motor {
                 tracing::debug!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
-                    instance = self.instance,
+                    instance = %self.instance,
                     producer = %producer,
                     sequence,
                     observation,
@@ -114,7 +115,7 @@ impl Motor {
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
-                    instance = self.instance,
+                    instance = %self.instance,
                     producer = %producer,
                     sequence,
                     observation,
@@ -129,7 +130,7 @@ impl Motor {
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
-                    instance = self.instance,
+                    instance = %self.instance,
                     producer = %producer,
                     sequence,
                     observation,
@@ -168,7 +169,7 @@ impl Motor {
                 tracing::error!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
-                    instance = self.instance,
+                    instance = %self.instance,
                     producer = granted.map(|(producer, _, _)| producer.to_string()),
                     sequence = granted.map(|(_, sequence, _)| sequence),
                     observation = granted.map(|(_, _, observation)| observation),
@@ -189,7 +190,7 @@ impl Motor {
                 tracing::info!(
                     target: LEASE_TRACE_TARGET,
                     input = "component/motor/command",
-                    instance = self.instance,
+                    instance = %self.instance,
                     producer = granted.map(|(producer, _, _)| producer.to_string()),
                     sequence = granted.map(|(_, sequence, _)| sequence),
                     observation = granted.map(|(_, _, observation)| observation),
@@ -211,42 +212,26 @@ impl Motor {
     }
 }
 
-/// Build an observed command for the permit path. Framework-internal shape used
-/// by the driver's own tests; the live path receives these from the bus.
-#[cfg(test)]
-fn observed_command(
-    producer: ProducerId,
-    sequence: u64,
-    observed_at: LocalInstant,
-    body: api::component::motor::Command,
-) -> Observed<api::component::motor::Command> {
-    Observed {
-        body,
-        metadata: phoxal::bus::BusMetadata {
-            codec: phoxal::bus::CodecId::MessagePack.as_u8(),
-            producer,
-            sequence,
-            produced_at: None,
-            participant: "test".to_string(),
-        },
-        observed_at,
-    }
-}
-
-pub struct Api {
+pub(crate) struct Api {
     // The command subscription is owned by the managed permit task.
     encoder: MeasurementPublisher<api::component::encoder::Sample>,
 }
 
-pub struct Ddsm115State {
+pub(crate) struct Ddsm115State {
     // Driver-private hardware state.
-    instance: String,
     position_rad: f64,
     motor: Arc<Mutex<Motor>>,
 }
 
+impl Ddsm115State {
+    /// Advance the modeled wheel position by `velocity_radps` held over `dt`.
+    fn integrate(&mut self, velocity_radps: f32, dt: Duration) {
+        self.position_rad += f64::from(velocity_radps) * dt.as_secs_f64();
+    }
+}
+
 #[phoxal::driver(state = Ddsm115State, api = Api)]
-pub struct Ddsm115;
+pub(crate) struct Ddsm115;
 
 impl Participant for Ddsm115 {
     async fn setup(
@@ -254,9 +239,9 @@ impl Participant for Ddsm115 {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        let instance = ctx.component()?.id().to_string();
-        // Prove the instance exists in the robot model (binds this driver to it).
-        let _ = ctx.robot()?.component_instance(&instance)?;
+        // `component()` already resolves the bound instance against the robot
+        // model, so holding its id is the proof that this driver is bound to it.
+        let instance = ctx.component()?.id().clone();
 
         let command = ctx
             .subscriber(
@@ -276,7 +261,7 @@ impl Participant for Ddsm115 {
             )
             .await?;
 
-        let motor = Arc::new(Mutex::new(Motor::new(instance.clone())));
+        let motor = Arc::new(Mutex::new(Motor::new(instance)));
         let permit_commands = command.clone();
         let permit_motor = Arc::clone(&motor);
         ctx.spawn_managed("motor-permit", async move {
@@ -285,7 +270,6 @@ impl Participant for Ddsm115 {
 
         Ok((
             Ddsm115State {
-                instance,
                 position_rad: 0.0,
                 motor,
             },
@@ -304,8 +288,7 @@ impl Participant for Ddsm115 {
         // can never integrate a velocity the permit task would have stopped.
         let velocity_radps = lock(&state.motor).enforce_now();
 
-        // Integrate the wheel position from the effective velocity.
-        state.position_rad = integrate(state.position_rad, velocity_radps, step.dt().as_secs_f64());
+        state.integrate(velocity_radps, step.dt);
 
         // This driver models the motor rather than reading a device clock, so
         // the encoder capture coincides exactly with this step.
@@ -323,7 +306,6 @@ impl Participant for Ddsm115 {
         // Park: command the motor to a stop. A real driver flushes the bus/CAN here
         // before the session closes.
         lock(&state.motor).stop();
-        let _ = &state.instance;
         Ok(())
     }
 }
@@ -356,15 +338,15 @@ async fn hold_permit_forever(
     lock(&motor).stop();
 }
 
+/// Take the motor lock, recovering from a poisoned one.
+///
+/// A poisoned lock means another thread panicked while holding it. Refusing to
+/// act would leave a commanded wheel turning with nothing left to stop it, so
+/// recovering the guard is strictly safer than propagating the poison.
 fn lock(motor: &Mutex<Motor>) -> std::sync::MutexGuard<'_, Motor> {
     motor
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Integrate wheel position from a commanded angular velocity over `dt`.
-fn integrate(position_rad: f64, velocity_radps: f32, dt_s: f64) -> f64 {
-    position_rad + f64::from(velocity_radps) * dt_s
 }
 
 #[cfg(test)]
@@ -377,13 +359,40 @@ mod tests {
         ProducerId::try_from(value).expect("a test producer is nonzero")
     }
 
+    /// A motor bound to one named wheel, the shape `setup` builds.
+    fn bound_motor() -> Motor {
+        Motor::new(ComponentInstanceId::new("left_drive").expect("a valid test instance id"))
+    }
+
     fn start() -> LocalInstant {
         LocalInstant::from_boot_ns(1_000_000_000)
     }
 
+    /// Build an observed command for the permit path. The live path receives
+    /// these from the bus; a test names the producer, sequence and observation
+    /// instant it wants to exercise.
+    fn observed_command(
+        producer: ProducerId,
+        sequence: u64,
+        observed_at: LocalInstant,
+        body: api::component::motor::Command,
+    ) -> Observed<api::component::motor::Command> {
+        Observed {
+            body,
+            metadata: phoxal::bus::BusMetadata {
+                codec: phoxal::bus::CodecId::MessagePack.as_u8(),
+                producer,
+                sequence,
+                produced_at: None,
+                participant: "test".to_string(),
+            },
+            observed_at,
+        }
+    }
+
     #[test]
     fn a_velocity_command_grants_a_permit_and_stop_revokes_it() {
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
         motor.apply(api::component::motor::Command::Velocity(2.5), start());
         assert_eq!(motor.velocity_radps, 2.5);
         assert!(motor.permitted_until.is_some());
@@ -398,7 +407,7 @@ mod tests {
 
     #[test]
     fn an_unmodeled_command_stops_rather_than_holding_the_last_velocity() {
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
         motor.apply(api::component::motor::Command::Velocity(2.5), start());
         motor.apply(api::component::motor::Command::Torque(9.0), start());
         assert_eq!(
@@ -412,7 +421,7 @@ mod tests {
     /// zero - regardless of whether logical time is advancing at all.
     #[test]
     fn a_lapsed_permit_stops_the_motor_even_though_no_step_ran() {
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
         motor.apply(api::component::motor::Command::Velocity(3.0), start());
 
         let inside = start().saturating_add(PERMIT - Duration::from_millis(1));
@@ -432,7 +441,7 @@ mod tests {
     /// command as fresh.
     #[test]
     fn host_suspend_counts_toward_the_permit_deadline() {
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
         motor.apply(api::component::motor::Command::Velocity(3.0), start());
         // `LocalInstant` reads CLOCK_BOOTTIME / Darwin continuous time, so an
         // hour of suspend advances it by an hour.
@@ -442,7 +451,7 @@ mod tests {
 
     #[test]
     fn a_renewal_extends_the_permit() {
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
         motor.apply(api::component::motor::Command::Velocity(3.0), start());
         let renewed_at = start().saturating_add(PERMIT - Duration::from_millis(1));
         motor.apply(api::component::motor::Command::Velocity(3.0), renewed_at);
@@ -457,7 +466,7 @@ mod tests {
     #[test]
     fn a_stale_queued_command_does_not_buy_a_fresh_permit() {
         let producer = producer(1);
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
         // Observed at `start`, drained a full permit window later.
         motor.admit(observed_command(
             producer,
@@ -474,12 +483,12 @@ mod tests {
 
     /// A superseded commanding process must not be able to renew the actuator
     /// after a replacement has been accepted, and a replayed sequence from the
-    /// accepted producer must not renew it either (#952 section G).
+    /// accepted producer must not renew it either.
     #[test]
     fn a_superseded_or_replayed_command_cannot_renew_the_permit() {
         let first = producer(2);
         let second = producer(3);
-        let mut motor = Motor::default();
+        let mut motor = bound_motor();
 
         motor.admit(observed_command(
             first,
@@ -529,8 +538,12 @@ mod tests {
 
     #[test]
     fn integration_advances_position() {
-        let p = integrate(0.0, 10.0, 0.1);
-        assert!((p - 1.0).abs() < 1e-9);
+        let mut state = Ddsm115State {
+            position_rad: 0.0,
+            motor: Arc::new(Mutex::new(bound_motor())),
+        };
+        state.integrate(10.0, Duration::from_millis(100));
+        assert!((state.position_rad - 1.0).abs() < 1e-9);
     }
 
     /// Freezing logical time must not leave the actuator commanded: the permit
@@ -538,7 +551,7 @@ mod tests {
     /// without any step ever running.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn halting_logical_time_cannot_leave_the_actuator_commanded() {
-        let motor = Arc::new(Mutex::new(Motor::new("left".to_string())));
+        let motor = Arc::new(Mutex::new(bound_motor()));
         lock(&motor).apply(
             api::component::motor::Command::Velocity(3.0),
             LocalInstant::try_now().expect("test host clock"),

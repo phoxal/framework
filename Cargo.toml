@@ -16,6 +16,7 @@ resolver = "3"
 # surface (component/<name> also carries the component definition: component.yaml,
 # structure.urdf, simulation.yaml).
 members = [
+    "fixture",
     "phoxal",
     "phoxal-api",
     "phoxal-bus",
@@ -49,6 +50,7 @@ members = [
 # When adding a workspace member, add it to both members and default-members;
 # otherwise plain cargo build/test silently skips it.
 default-members = [
+    "fixture",
     "phoxal",
     "phoxal-api",
     "phoxal-bus",
@@ -104,7 +106,7 @@ syn = { version = "2.0", features = ["full", "extra-traits"] }
 # sampling plus mounted-filesystem capacity. Default features additionally pull
 # network/component/user bindings this workspace never reads. Pinned to 0.36
 # (not the newest 0.39.x) because newer releases raise their MSRV past this
-# workspace's `rust-version = "1.85"`.
+# workspace's `rust-version`.
 sysinfo = { version = "0.36", default-features = false, features = ["disk", "system"] }
 tempfile = "3.27.0"
 thiserror = "2.0.18"
@@ -147,11 +149,15 @@ phoxal-model = { path = "phoxal-model", version = "=0.55.0" }
 phoxal-manifest = { path = "phoxal-manifest", version = "=0.55.0" }
 phoxal-runtime-contract = { path = "phoxal-runtime-contract", version = "=0.55.0" }
 phoxal-macros = { path = "phoxal-macros", version = "=0.55.0" }
+# Test-support only, and never published. Deliberately carries no version: a
+# dev-dependency without one is stripped from the manifest on publish, so the
+# participant crates that use it in tests stay publishable.
+phoxal-fixture = { path = "fixture" }
 
 [workspace.lints.rust]
 unused = "warn"
 
-# Profiles are Cargo's stock `dev` and `release`, unmodified (organization#951).
+# Profiles are Cargo's stock `dev` and `release`, unmodified.
 # A `[profile]` table here would apply only to workspace builds - `cargo install`
 # builds each registry package as its own root and never reads it - so tuning it
 # would silently split the bundle between tuned project runtimes and stock

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = ["phoxal"]
-description = "Phoxal official service: power - host lifecycle commands via Balena supervisor."
+description = "Phoxal official service: power - systemd host lifecycle commands."
 documentation.workspace = true
 homepage.workspace = true
 repository.workspace = true
@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 phoxal = { workspace = true }
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "net"] }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

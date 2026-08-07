@@ -9,9 +9,9 @@
 //!
 //! These identities live on the process-boundary floor rather than in the crate
 //! that implements each contract, because the record that declares them
-//! ([`crate::ParticipantMetadata`]) has to name all of them at once and this
-//! crate is below `phoxal-bus`, `phoxal-api`, and `phoxal-manifest` in the
-//! graph. `phoxal-api` pins [`RobotApi`] to the revision its contract tree
+//! ([`crate::metadata::ParticipantMetadata`]) has to name all of them at once
+//! and this crate is below `phoxal-bus`, `phoxal-api`, and `phoxal-manifest`
+//! in the graph. `phoxal-api` pins [`RobotApi`] to the revision its contract tree
 //! actually speaks, and `workspace-policy` pins the three document identities
 //! to the grammars `phoxal-manifest` accepts.
 
@@ -80,11 +80,9 @@ version_identity! {
     /// Namespaced, unlike the bare `v0.1` that appears as a bus key segment:
     /// the key segment is addressing inside an already-Phoxal keyspace, while
     /// this is an identity declared alongside four others.
-    #[allow(
-        non_camel_case_types,
-        reason = "the revision is `v0.1`; `V01` would lose the dot that separates its two components"
-    )]
     RobotApi {
+        /// Spelled `V0_1`, not `V01`: the revision has two components and the
+        /// separator is part of the identity.
         V0_1 = "phoxal/robot-api/v0.1",
     }
 }

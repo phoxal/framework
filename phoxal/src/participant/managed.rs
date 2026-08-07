@@ -51,6 +51,11 @@ struct ManagedTaskInfo {
 
 /// Why a managed task ended, for the runner's fault handling
 /// ([`ManagedTasks::next_unexpected_exit`]).
+///
+/// This is the participant's failure itself, not a description of one: the
+/// runner reports it directly, so the supervisor's failure evidence names the
+/// task and what it did rather than a rendering the runner had to invent.
+#[derive(Debug)]
 pub(crate) struct ManagedTaskExit {
     /// The task's diagnostic name.
     pub(crate) name: String,
@@ -58,6 +63,25 @@ pub(crate) struct ManagedTaskExit {
     /// normally.
     pub(crate) panic_message: Option<String>,
 }
+
+impl std::fmt::Display for ManagedTaskExit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.panic_message {
+            Some(message) => write!(
+                formatter,
+                "managed task \"{}\" panicked: {message}",
+                self.name
+            ),
+            None => write!(
+                formatter,
+                "managed task \"{}\" exited unexpectedly",
+                self.name
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ManagedTaskExit {}
 
 /// Registry `SetupContext` accumulates managed tasks into during `Participant::setup`;
 /// the runner takes ownership of it once `Participant::setup` returns

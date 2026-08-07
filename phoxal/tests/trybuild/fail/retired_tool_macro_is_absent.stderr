@@ -1,5 +1,0 @@
-error[E0433]: cannot find `tool` in `phoxal`
- --> tests/trybuild/fail/retired_tool_macro_is_absent.rs:4:11
-  |
-4 | #[phoxal::tool(id = "retired")]
-  |           ^^^^ could not find `tool` in `phoxal`

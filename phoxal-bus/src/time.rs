@@ -1,8 +1,8 @@
-//! The four non-interchangeable time types (#952 section C).
+//! The four non-interchangeable time types, and the timeline vocabulary built
+//! on them.
 //!
-//! Phoxal used to represent several incomparable physical facts with one
-//! `LogicalTime` that any caller could mint. This module replaces it with types
-//! that cannot be confused for one another:
+//! Each type names one physical fact, and no two of them are convertible, so a
+//! caller cannot quietly substitute one for another:
 //!
 //! - [`LocalInstant`] - a reading of this host's suspend-aware monotonic boot
 //!   clock. Process-local in meaning, host-wide in domain, and **never
@@ -18,13 +18,16 @@
 //! There is no ordering or arithmetic *across* these types, and none of them
 //! has a "zero means absent" sentinel: absence of a production instant is
 //! represented as `Option::None`.
+//!
+//! [`Timed<T>`] pairs a value with the [`RobotInstant`] it belongs to, and
+//! [`RetiredTimelines`] records the world histories a process has seen replaced.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::time::Duration;
 
+use phoxal_runtime_contract::identity::TimelineId;
 use serde::{Deserialize, Serialize};
-
-use crate::identity::TimelineId;
 
 /// Comparing or subtracting instants that belong to different world histories.
 ///
@@ -75,7 +78,7 @@ impl LocalInstant {
     /// Sticky for the life of the process: recovery from a clock fault is a
     /// fresh process, so the runner turns this into ordinary failure rather
     /// than letting the participant quietly carry on once reads start working
-    /// again (#952 section J).
+    /// again.
     pub fn clock_faulted() -> bool {
         CLOCK_FAULTED.load(std::sync::atomic::Ordering::Acquire)
     }
@@ -161,7 +164,7 @@ impl RobotInstant {
     /// and the api tree names this type in body fields, so both need to reach
     /// it. Minting an instant is therefore something a participant can do
     /// deliberately, but not by accident and not through the documented
-    /// surface - see `phoxal-bus`'s module docs for the full statement.
+    /// surface.
     #[doc(hidden)]
     pub const fn new(timeline: TimelineId, ticks: u64) -> Self {
         RobotInstant { timeline, ticks }
@@ -348,6 +351,48 @@ impl fmt::Display for TimeWindow {
     }
 }
 
+/// A value together with the robot instant it belongs to.
+///
+/// This is the shared carrier for "some body, as of some point on a timeline":
+/// an arbitrated command, a safety verdict, a navigation goal, a perception
+/// frame. Every consumer of one asks the same question of it - is this still
+/// fresh enough to act on - so that question is answered once, here, rather
+/// than re-derived at each call site.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timed<T> {
+    /// The value.
+    pub body: T,
+    /// The robot instant the value is about.
+    pub at: RobotInstant,
+}
+
+impl<T> Timed<T> {
+    /// Pair `body` with the instant it belongs to.
+    pub const fn new(body: T, at: RobotInstant) -> Self {
+        Timed { body, at }
+    }
+
+    /// Whether this value is recent enough at `now` to act on.
+    ///
+    /// True when `at` is at or before `now` and no more than `bound` behind it.
+    /// A value stamped in `now`'s future is not fresh: it is evidence of a
+    /// clock disagreement, and treating it as current would let a producer keep
+    /// a stale value alive indefinitely by stamping it forward.
+    ///
+    /// **A cross-timeline comparison is not fresh.** When `at` and `now` belong
+    /// to different world histories there is no ordering between them at all -
+    /// timelines are equality-only identities - so the honest answer is "I
+    /// cannot say this is fresh", and every caller of this method is deciding
+    /// whether to *act*. Failing closed means the world was replaced under a
+    /// held value and the value is dropped; failing open would apply a command
+    /// from a history that has already ended.
+    pub fn fresh_within(&self, now: RobotInstant, bound: Duration) -> bool {
+        TimeWindow::exact(self.at)
+            .possibly_fresh_within(now, bound)
+            .unwrap_or(false)
+    }
+}
+
 /// When a sensor observation was captured, as honestly as the driver can say.
 ///
 /// A driver owns mapping its device clock into robot time - including reset,
@@ -356,7 +401,7 @@ impl fmt::Display for TimeWindow {
 /// uncertainty; when it cannot, it says *that*, rather than inventing an
 /// instant that a consumer would then trust.
 ///
-/// Observation time (see [`Observed`](crate::handle::Observed)) remains
+/// Observation time (see [`Observed`](crate::handle::subscriber::Observed)) remains
 /// available for detecting transport silence and does not replace capture time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureStamp {
@@ -413,6 +458,38 @@ impl WallTimestamp {
 impl fmt::Display for WallTimestamp {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}ns since the UNIX epoch", self.unix_ns)
+    }
+}
+
+/// The world histories this process has seen replaced.
+///
+/// Retirement is permanent for the life of the process, and the memory is
+/// deliberately unbounded. Timelines are equality-only identities with no
+/// ordering, so nothing can recognise an evicted identity as old: a delayed
+/// clock from a controller whose timeline had been forgotten would read as a
+/// *new* world and reset every participant back into a history that had already
+/// ended. The set grows by one identity per world replacement - a reset the
+/// operator asked for - so it scales with operator actions, not with traffic.
+#[derive(Debug, Default)]
+pub struct RetiredTimelines {
+    timelines: HashSet<TimelineId>,
+}
+
+impl RetiredTimelines {
+    /// Whether `timeline` has been retired.
+    pub fn contains(&self, timeline: TimelineId) -> bool {
+        self.timelines.contains(&timeline)
+    }
+
+    /// Record `timeline` as replaced.
+    pub fn retire(&mut self, timeline: TimelineId) {
+        self.timelines.insert(timeline);
+    }
+
+    /// Make `timeline` current again, for the deliberate case where a barrier
+    /// is installed on a history this process had already retired.
+    pub fn activate(&mut self, timeline: TimelineId) {
+        self.timelines.remove(&timeline);
     }
 }
 
@@ -596,6 +673,63 @@ mod tests {
             foreign
                 .possibly_fresh_within(reference, Duration::ZERO)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn a_timed_value_is_fresh_only_within_the_bound_and_never_from_the_future() {
+        let now = instant(1, 1_000);
+
+        let fresh = Timed::new("go", instant(1, 900));
+        assert!(fresh.fresh_within(now, Duration::from_nanos(100)));
+        assert!(
+            fresh.fresh_within(now, Duration::from_nanos(1_000)),
+            "a wider bound admits the same value"
+        );
+
+        // The bound is reached *at* the bound, matching every other freshness
+        // gate in the framework, so no value is live in one layer and dead in
+        // the next.
+        let stale = Timed::new("go", instant(1, 400));
+        assert!(stale.fresh_within(now, Duration::from_nanos(600)));
+        assert!(!stale.fresh_within(now, Duration::from_nanos(599)));
+
+        // A stamp in the reference's future is evidence of clock disagreement,
+        // not of freshness.
+        let future = Timed::new("go", instant(1, 1_001));
+        assert!(!future.fresh_within(now, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_timed_value_from_another_world_history_is_never_fresh() {
+        let now = instant(1, 1_000);
+        // Identical ticks, different timeline: there is no ordering between
+        // them, so the gate fails closed rather than reading the tick numbers
+        // as if they were comparable.
+        let foreign = Timed::new("go", instant(2, 1_000));
+        assert!(!foreign.fresh_within(now, Duration::from_secs(1)));
+        assert!(!foreign.fresh_within(now, Duration::ZERO));
+    }
+
+    /// A ring of retired timelines would hand a delayed clock from a forgotten
+    /// controller back its status as a brand-new world.
+    #[test]
+    fn a_retired_timeline_is_never_forgotten() {
+        let mut retired = RetiredTimelines::default();
+        let first = TimelineId::mint();
+        retired.retire(first);
+        for _ in 0..64 {
+            retired.retire(TimelineId::mint());
+        }
+        assert!(
+            retired.contains(first),
+            "an old world must still be recognised as retired after many resets"
+        );
+
+        retired.activate(first);
+        assert!(
+            !retired.contains(first),
+            "a deliberately reactivated timeline is no longer retired"
         );
     }
 }

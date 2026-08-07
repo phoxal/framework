@@ -3,14 +3,25 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, bail};
-pub use phoxal_model::AssetId;
+use phoxal_model::AssetId;
+use phoxal_model::compiler::RobotParts;
+use phoxal_model::identity::{
+    CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId, RobotNamespace,
+};
+
+use source::SourceError;
 
 pub mod build_requirements;
 pub mod bundle;
 pub mod schema;
 pub mod source;
-mod structure;
+
+// The authored URDF DTO stays private: `phoxal-model` owns the normalized
+// structure a caller is meant to read. Only the failure vocabulary is public,
+// because it appears inside `CompileError` and a caller has to be able to name
+// what it matched.
+mod urdf_dto;
+pub use urdf_dto::{JointEnd, StructuralKind, UrdfError};
 
 /// Exact authored inputs after package/workspace component resolution.
 #[derive(Debug, Clone)]
@@ -33,61 +44,138 @@ pub(crate) struct ResolvedSources {
     component_roots: BTreeMap<String, PathBuf>,
 }
 
-/// Source compiler failure classified by the stage that owns the invariant.
+/// Source compiler failure, classified by the stage that owns the invariant.
 #[derive(Debug, thiserror::Error)]
 pub enum CompileError {
-    #[error("invalid compiler input at {}: {source:#}", path.display())]
+    /// A path the caller supplied does not resolve.
+    #[error("failed to resolve compiler input {}: {source}", path.display())]
     Input {
         path: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: std::io::Error,
     },
-    #[error("failed to compile robot document {}: {source:#}", path.display())]
-    Robot {
-        path: PathBuf,
+
+    /// A declared path resolves outside the tree it must stay inside.
+    #[error("{} must stay below {}", path.display(), root.display())]
+    Escapes { path: PathBuf, root: PathBuf },
+
+    /// The caller resolved no root for a component type the robot mounts.
+    #[error("no resolved component root for type '{component_type}'")]
+    UnresolvedComponentRoot { component_type: String },
+
+    /// An authored document failed to load.
+    #[error("failed to compile {} document: {source}", source.kind())]
+    Document {
         #[source]
-        source: anyhow::Error,
+        source: SourceError,
     },
-    #[error(
-        "failed to compile component document '{component_type}' at {}: {source:#}",
-        path.display()
-    )]
+
+    /// A component type's documents failed to load.
+    #[error("failed to compile component type '{component_type}' at {}: {source}", root.display())]
     Component {
         component_type: String,
-        path: PathBuf,
+        root: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: Box<CompileError>,
     },
-    #[error("failed to compile structure document {}: {source:#}", path.display())]
+
+    /// A URDF structure document is not a usable structure.
+    #[error("failed to compile structure document {}: {source}", path.display())]
     Structure {
         path: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: UrdfError,
     },
+
+    /// A component instance references a component type the robot never loads.
+    #[error("component instance '{instance}' references unresolved type '{component_type}'")]
+    UnknownComponentType {
+        instance: String,
+        component_type: String,
+    },
+
+    /// Instance parameters name a capability the component type never declares.
+    #[error(
+        "component instance '{instance}' parameters reference unknown capability \
+         '{capability_id}'"
+    )]
+    UnknownCapability {
+        instance: String,
+        capability_id: String,
+    },
+
+    /// Instance parameters claim a different capability kind than the component
+    /// type declares.
+    #[error(
+        "component instance '{instance}' parameter '{capability_id}' kind '{authored}' does not \
+         match '{declared}'"
+    )]
+    CapabilityKindMismatch {
+        instance: String,
+        capability_id: String,
+        authored: phoxal_model::component::capability::CapabilityKind,
+        declared: phoxal_model::component::capability::CapabilityKind,
+    },
+
+    /// An authored value and its canonical counterpart disagree on their
+    /// shared wire shape. This is a defect in this crate, not in the document:
+    /// the two are serde-compatible by construction.
+    #[error("failed to normalize authored {authored} into its canonical form: {source}")]
+    Transcode {
+        authored: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// The normalized inputs do not assemble into a valid canonical robot.
     #[error("failed to construct canonical robot from {}: {source}", path.display())]
     CanonicalModel {
         path: PathBuf,
         #[source]
         source: phoxal_model::ModelError,
     },
-    #[error("failed to normalize authored robot {}: {source:#}", path.display())]
-    Normalize {
-        path: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("failed to compile participant declarations from {}: {source:#}", path.display())]
-    Participants {
-        path: PathBuf,
-        #[source]
-        source: anyhow::Error,
-    },
-    #[error("failed to compile runtime assets below {}: {source:#}", path.display())]
+
+    /// A runtime asset tree could not be read.
+    #[error("failed to compile runtime assets below {}: {source}", root.display())]
     Assets {
+        root: PathBuf,
+        #[source]
+        source: AssetError,
+    },
+}
+
+/// Why a runtime asset tree is not compilable.
+#[derive(Debug, thiserror::Error)]
+pub enum AssetError {
+    #[error("failed to read {}: {source}", path.display())]
+    Read {
         path: PathBuf,
         #[source]
-        source: anyhow::Error,
+        source: std::io::Error,
     },
+
+    /// A symlink can point outside the source tree, so the whole tree is
+    /// refused rather than the link being followed or silently skipped.
+    #[error("asset source tree contains forbidden symlink {}", path.display())]
+    ForbiddenSymlink { path: PathBuf },
+
+    #[error("unsupported asset source entry {}", path.display())]
+    UnsupportedEntry { path: PathBuf },
+
+    #[error("asset source entry name is not UTF-8: {}", path.display())]
+    NotUtf8 { path: PathBuf },
+
+    #[error("invalid logical asset id: {source}")]
+    Id {
+        #[source]
+        source: phoxal_model::ModelError,
+    },
+
+    #[error("duplicate compiled asset '{id}'", id = id.as_str())]
+    Duplicate { id: AssetId },
+
+    #[error("canonical model references missing compiled asset '{id}'", id = id.as_str())]
+    Missing { id: AssetId },
 }
 
 /// The complete source-to-runtime compilation result.
@@ -112,135 +200,97 @@ pub struct Participant {
     pub config: Option<serde_json::Value>,
 }
 
+/// What a participant is.
+///
+/// This must round-trip every kind a real participant binary declares in its
+/// embedded metadata, which is why `Brain` is here even though a brain is never
+/// declared under `robot.yaml` `services:` - the authored grammar owns that
+/// exclusion, through `RESERVED_BRAIN_ID`, and a deserializable enum is the
+/// wrong place to express it.
+///
+/// The canonical definition is `phoxal_runtime_contract::ParticipantKind`.
+/// This crate cannot depend on it (that edge is forbidden), so the two are
+/// coupled by convention and pinned by a test.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantKind {
     Service,
     Driver,
     Simulator,
+    Brain,
 }
 
 /// Deterministic compiled runtime assets.
 #[derive(Debug, Clone, Default)]
 pub struct CompiledAssets(BTreeMap<AssetId, Vec<u8>>);
 
-/// Compile authored YAML/URDF sources after the caller resolved component roots.
-pub fn compile(sources: SourceSet) -> Result<CompiledProject, CompileError> {
-    let project_root = sources
-        .project_root
-        .canonicalize()
-        .with_context(|| {
-            format!(
-                "failed to resolve project root {}",
-                sources.project_root.display()
-            )
-        })
-        .map_err(|source| CompileError::Input {
-            path: sources.project_root.clone(),
-            source,
-        })?;
-    let robot_manifest = sources
-        .robot_manifest
-        .canonicalize()
-        .with_context(|| {
-            format!(
-                "failed to resolve robot manifest {}",
-                sources.robot_manifest.display()
-            )
-        })
-        .map_err(|source| CompileError::Input {
-            path: sources.robot_manifest.clone(),
-            source,
-        })?;
-    if !robot_manifest.starts_with(&project_root) {
-        return Err(CompileError::Input {
-            path: robot_manifest.clone(),
-            source: anyhow::anyhow!(
-                "robot manifest must stay below project root {}",
-                project_root.display()
-            ),
-        });
-    }
-    let manifest =
-        source::robot::read_from_path(&robot_manifest).map_err(|source| CompileError::Robot {
-            path: robot_manifest.clone(),
-            source,
-        })?;
-    let source::robot::Manifest::V0(manifest) = manifest;
-
-    let resolved = ResolvedSources {
-        robot_manifest,
-        robot_root: project_root.clone(),
-        component_roots: sources.component_roots,
-    };
-    let (robot, participants) = resolved.compile_model(&manifest)?;
-
-    let mut assets = CompiledAssets::default();
-    collect_files(&project_root.join("meshes"), "robot/meshes", &mut assets).map_err(|source| {
-        CompileError::Assets {
-            path: project_root.clone(),
-            source,
-        }
-    })?;
-    for component_type in manifest.used_component_types() {
-        let root = resolved.component_root(component_type)?;
-        collect_files(
-            &root.join("meshes"),
-            &format!("components/{component_type}/meshes"),
-            &mut assets,
-        )
-        .map_err(|source| CompileError::Assets {
-            path: root.clone(),
-            source,
-        })?;
-    }
-    for asset_id in referenced_asset_ids(&robot).map_err(|source| CompileError::CanonicalModel {
-        path: resolved.robot_manifest.clone(),
-        source,
-    })? {
-        if !assets.0.contains_key(&asset_id) {
-            return Err(CompileError::Assets {
-                path: project_root.clone(),
-                source: anyhow::anyhow!(
-                    "canonical model references missing compiled asset '{}'",
-                    asset_id.as_str()
-                ),
+impl SourceSet {
+    /// Compile authored YAML/URDF sources after the caller resolved component
+    /// roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`CompileError`] the sources violate, named by the
+    /// stage that owns the invariant.
+    pub fn compile(self) -> Result<CompiledProject, CompileError> {
+        let project_root = canonicalize(&self.project_root)?;
+        let robot_manifest = canonicalize(&self.robot_manifest)?;
+        if !robot_manifest.starts_with(&project_root) {
+            return Err(CompileError::Escapes {
+                path: robot_manifest,
+                root: project_root,
             });
         }
-    }
+        let source::robot::Manifest::V0(manifest) = source::robot::Manifest::load(&robot_manifest)
+            .map_err(|source| CompileError::Document { source })?;
 
-    Ok(CompiledProject {
-        robot,
-        participants,
-        assets,
-    })
+        let resolved = ResolvedSources {
+            robot_manifest,
+            robot_root: project_root.clone(),
+            component_roots: self.component_roots,
+        };
+        let (robot, participants) = resolved.compile_model(&manifest)?;
+        let assets = resolved.compile_assets(&project_root, &manifest, &robot)?;
+
+        Ok(CompiledProject {
+            robot,
+            participants,
+            assets,
+        })
+    }
 }
 
 /// Every logical asset the canonical model actually references.
-pub(crate) fn referenced_asset_ids(
-    robot: &phoxal_model::Robot,
-) -> Result<BTreeSet<AssetId>, phoxal_model::ModelError> {
+pub(crate) fn referenced_asset_ids(robot: &phoxal_model::Robot) -> BTreeSet<AssetId> {
     let mut ids = robot
         .structure()
         .asset_ids()
         .cloned()
         .collect::<BTreeSet<_>>();
     for instance in robot.components() {
-        let component = robot.component_for_instance(instance.id())?;
-        ids.extend(component.structure().asset_ids().cloned());
+        // A validated robot never mounts an instance of a type it did not
+        // load, so an absent component type is not reachable here.
+        if let Some(component) = robot.component_for_instance(instance.id().as_str()) {
+            ids.extend(component.structure().asset_ids().cloned());
+        }
     }
-    Ok(ids)
+    ids
+}
+
+fn canonicalize(path: &Path) -> Result<PathBuf, CompileError> {
+    path.canonicalize().map_err(|source| CompileError::Input {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 impl ResolvedSources {
     fn component_root(&self, component_type: &str) -> Result<&PathBuf, CompileError> {
-        self.component_roots
-            .get(component_type)
-            .ok_or_else(|| CompileError::Component {
+        self.component_roots.get(component_type).ok_or_else(|| {
+            CompileError::UnresolvedComponentRoot {
                 component_type: component_type.to_string(),
-                path: PathBuf::from(component_type),
-                source: anyhow::anyhow!("no resolved component root for type '{component_type}'"),
-            })
+            }
+        })
     }
 
     /// Build the canonical model and participant declarations from documents
@@ -252,154 +302,76 @@ impl ResolvedSources {
         let mut component_types = BTreeMap::new();
         let mut simulation_types = BTreeMap::new();
         for component_type in manifest.used_component_types() {
-            let configured_root = self.component_root(component_type)?.clone();
-            let compiled: anyhow::Result<_> = (|| {
-                let root = configured_root.canonicalize().with_context(|| {
-                    format!(
-                        "failed to resolve component root for '{component_type}': {}",
-                        configured_root.display()
-                    )
+            let root = self.component_root(component_type)?.clone();
+            let (component, simulation) = self
+                .compile_component_type(component_type, &root)
+                .map_err(|source| CompileError::Component {
+                    component_type: component_type.to_string(),
+                    root,
+                    source: Box::new(source),
                 })?;
-                let authored = source::component::read_from_dir(&root)
-                    .with_context(|| format!("failed to load component type '{component_type}'"))?;
-                let source::component::Manifest::V0(authored) = authored;
-                authored.validate_for_component(component_type)?;
-                let capabilities =
-                    serde_json::from_value(serde_json::to_value(authored.capabilities)?)?;
-                let structure_path = root.join("structure.urdf");
-                let structure = structure::Structure::read_from_file(&structure_path)
-                    .with_context(|| {
-                        format!(
-                            "failed to read component structure {}",
-                            structure_path.display()
-                        )
-                    })?
-                    .into_canonical_fragment(component_type)?;
-                let component = phoxal_model::component::Component::__new(capabilities, structure);
-                let simulation = if root.join("simulation.yaml").is_file() {
-                    let authored = source::simulation::read_from_dir(&root).with_context(|| {
-                        format!("failed to load simulation for component type '{component_type}'")
-                    })?;
-                    let source::simulation::Manifest::V0(authored) = authored;
-                    let capabilities =
-                        serde_json::from_value(serde_json::to_value(authored.capabilities)?)?;
-                    let links = authored
-                        .links
-                        .into_iter()
-                        .map(|(id, link)| (id, link.contact_material))
-                        .collect();
-                    Some(phoxal_model::simulation::Simulation::__new(
-                        capabilities,
-                        links,
-                    ))
-                } else {
-                    None
-                };
-                Ok((component, simulation))
-            })();
-            let (component, simulation) = compiled.map_err(|source| CompileError::Component {
-                component_type: component_type.to_string(),
-                path: configured_root,
-                source,
-            })?;
-            component_types.insert(component_type.to_string(), component);
+            let type_id = self.identity(ComponentTypeId::new(component_type))?;
+            component_types.insert(type_id.clone(), component);
             if let Some(simulation) = simulation {
-                simulation_types.insert(component_type.to_string(), simulation);
+                simulation_types.insert(type_id, simulation);
             }
         }
 
-        let component_instances: anyhow::Result<BTreeMap<_, _>> = (|| {
-            let mut component_instances = BTreeMap::new();
-            for (id, authored) in &manifest.robot.components {
-                let component = component_types.get(&authored.component).with_context(|| {
-                    format!(
-                        "component instance '{id}' references unresolved type '{}'",
-                        authored.component
-                    )
+        let mut component_instances = BTreeMap::new();
+        for (id, authored) in &manifest.robot.components {
+            let component = component_types
+                .get(authored.component.as_str())
+                .ok_or_else(|| CompileError::UnknownComponentType {
+                    instance: id.clone(),
+                    component_type: authored.component.clone(),
                 })?;
-                let mut direction_signs = BTreeMap::new();
-                for (capability_id, parameters) in &authored.parameters {
-                    let capability = component.capability(capability_id).with_context(|| {
-                        format!(
-                            "component instance '{id}' parameters reference unknown capability '{capability_id}'"
-                        )
-                    })?;
-                    if capability.kind_name() != parameters.kind_name() {
-                        bail!(
-                            "component instance '{id}' parameter '{capability_id}' kind '{}' does not match '{}'",
-                            parameters.kind_name(),
-                            capability.kind_name()
-                        );
+            let mut direction_signs = BTreeMap::new();
+            for (capability_id, parameters) in &authored.parameters {
+                let declared = component.capability(capability_id).ok_or_else(|| {
+                    CompileError::UnknownCapability {
+                        instance: id.clone(),
+                        capability_id: capability_id.clone(),
                     }
-                    use source::robot::v0::capability::Parameters;
-                    let direction = match parameters {
-                        Parameters::Motor(value) => value.direction_sign,
-                        Parameters::Encoder(value) => value.direction_sign,
-                        _ => 1,
-                    };
-                    direction_signs.insert(capability_id.clone(), direction);
+                })?;
+                if declared.kind() != parameters.kind() {
+                    return Err(CompileError::CapabilityKindMismatch {
+                        instance: id.clone(),
+                        capability_id: capability_id.clone(),
+                        authored: parameters.kind(),
+                        declared: declared.kind(),
+                    });
                 }
-                component_instances.insert(
-                    id.clone(),
-                    phoxal_model::robot::ComponentInstance::__new(
-                        id.clone(),
-                        authored.component.clone(),
-                        authored.mount_link.clone(),
-                        direction_signs,
-                    ),
+                direction_signs.insert(
+                    self.identity(CapabilityId::new(capability_id))?,
+                    parameters.direction_sign(),
                 );
             }
-            Ok(component_instances)
-        })();
-        let component_instances =
-            component_instances.map_err(|source| CompileError::Normalize {
-                path: self.robot_manifest.clone(),
+            let instance_id = self.identity(ComponentInstanceId::new(id))?;
+            component_instances.insert(
+                instance_id.clone(),
+                phoxal_model::compiler::component_instance(
+                    instance_id,
+                    self.identity(ComponentTypeId::new(&authored.component))?,
+                    LinkId::new(&authored.mount_link),
+                    direction_signs,
+                ),
+            );
+        }
+
+        let structure_path = self.robot_relative(&manifest.robot.structure)?;
+        let structure = urdf_dto::Structure::load(&structure_path)
+            .and_then(|structure| structure.into_canonical(None))
+            .map_err(|source| CompileError::Structure {
+                path: structure_path,
                 source,
             })?;
 
-        let structure_path = self.robot_relative(&manifest.robot.structure)?;
-        let structure = (|| -> anyhow::Result<_> {
-            structure::Structure::read_from_file(&structure_path)
-                .with_context(|| {
-                    format!(
-                        "failed to read robot structure {}",
-                        structure_path.display()
-                    )
-                })?
-                .into_canonical(None)
-        })()
-        .map_err(|source| CompileError::Structure {
-            path: structure_path,
-            source,
-        })?;
-        let kinematic =
-            serde_json::from_value(serde_json::to_value(&manifest.robot.kinematic).map_err(
-                |error| CompileError::Normalize {
-                    path: self.robot_manifest.clone(),
-                    source: error.into(),
-                },
-            )?)
-            .map_err(|error| CompileError::Normalize {
-                path: self.robot_manifest.clone(),
-                source: error.into(),
-            })?;
-        let motion_limits =
-            serde_json::from_value(serde_json::to_value(manifest.robot.motion_limits).map_err(
-                |error| CompileError::Normalize {
-                    path: self.robot_manifest.clone(),
-                    source: error.into(),
-                },
-            )?)
-            .map_err(|error| CompileError::Normalize {
-                path: self.robot_manifest.clone(),
-                source: error.into(),
-            })?;
-        let robot = phoxal_model::Robot::__from_compiler(phoxal_model::robot::RobotParts {
-            id: manifest.robot.id.clone(),
-            namespace: manifest.robot.namespace.clone(),
+        let robot = phoxal_model::compiler::robot(RobotParts {
+            id: self.identity(RobotId::new(&manifest.robot.id))?,
+            namespace: self.identity(RobotNamespace::new(&manifest.robot.namespace))?,
             clock: manifest.clock.into(),
-            kinematic,
-            motion_limits,
+            kinematic: manifest.robot.kinematic.clone(),
+            motion_limits: manifest.robot.motion_limits,
             component_instances,
             component_types,
             simulation_types,
@@ -410,126 +382,220 @@ impl ResolvedSources {
             source,
         })?;
 
-        let participants =
-            compile_participants(manifest, &self.component_roots).map_err(|source| {
-                CompileError::Participants {
-                    path: self.robot_manifest.clone(),
-                    source,
-                }
-            })?;
+        let participants = self.compile_participants(manifest)?;
         Ok((robot, participants))
+    }
+
+    /// Load and normalize one component type's documents.
+    fn compile_component_type(
+        &self,
+        component_type: &str,
+        configured_root: &Path,
+    ) -> Result<
+        (
+            phoxal_model::component::Component,
+            Option<phoxal_model::simulation::Simulation>,
+        ),
+        CompileError,
+    > {
+        let root = canonicalize(configured_root)?;
+        let authored = source::component::Manifest::load(&root)
+            .map_err(|source| CompileError::Document { source })?;
+        authored
+            .validate_as(component_type)
+            .map_err(|errors| CompileError::Document {
+                source: SourceError::Invalid {
+                    origin: source::Origin::File(root.join("component.yaml")),
+                    violations: source::Violations::Component(errors),
+                },
+            })?;
+        let source::component::Manifest::V0(authored) = authored;
+
+        let structure_path = root.join("structure.urdf");
+        let structure = urdf_dto::Structure::load(&structure_path)
+            .and_then(|structure| structure.into_canonical_fragment(component_type))
+            .map_err(|source| CompileError::Structure {
+                path: structure_path,
+                source,
+            })?;
+        let component = phoxal_model::compiler::component(
+            Self::transcode(&authored.capabilities, "component capabilities")?,
+            structure,
+        );
+
+        let simulation_path = root.join("simulation.yaml");
+        if !simulation_path.is_file() {
+            return Ok((component, None));
+        }
+        let source::simulation::Manifest::V0(authored) =
+            source::simulation::Manifest::load(&simulation_path)
+                .map_err(|source| CompileError::Document { source })?;
+        let links = authored
+            .links
+            .into_iter()
+            .map(|(id, link)| (LinkId::new(id), link.contact_material))
+            .collect();
+        let simulation = phoxal_model::compiler::simulation(
+            Self::transcode(&authored.capabilities, "simulation capabilities")?,
+            links,
+        );
+        Ok((component, Some(simulation)))
+    }
+
+    /// Adopt an authored capability map into its canonical counterpart.
+    ///
+    /// The two shapes are serde-compatible by construction: the authored DTO's
+    /// job is to add defaults and permissive spellings on the way in, and the
+    /// canonical value is what is left once those are resolved. Going through
+    /// JSON is what keeps that "same wire, different obligations" relationship
+    /// explicit rather than hiding it in a hand-written field-by-field copy that
+    /// would silently drift.
+    fn transcode<T: serde::Serialize, U: serde::de::DeserializeOwned>(
+        authored: &T,
+        what: &'static str,
+    ) -> Result<U, CompileError> {
+        let value = serde_json::to_value(authored).map_err(|source| CompileError::Transcode {
+            authored: what,
+            source,
+        })?;
+        serde_json::from_value(value).map_err(|source| CompileError::Transcode {
+            authored: what,
+            source,
+        })
+    }
+
+    /// Attribute an identifier rejection to the document that carried it.
+    fn identity<T>(&self, result: Result<T, phoxal_model::ModelError>) -> Result<T, CompileError> {
+        result.map_err(|source| CompileError::CanonicalModel {
+            path: self.robot_manifest.clone(),
+            source,
+        })
     }
 
     /// Resolve a manifest-declared path against the robot root, refusing any
     /// path that leaves it.
     fn robot_relative(&self, relative: &Path) -> Result<PathBuf, CompileError> {
-        let joined = self.robot_root.join(relative);
-        let resolved = joined
-            .canonicalize()
-            .with_context(|| format!("failed to resolve {}", joined.display()))
-            .map_err(|source| CompileError::Structure {
-                path: joined.clone(),
-                source,
-            })?;
-        let root = self
-            .robot_root
-            .canonicalize()
-            .with_context(|| format!("failed to resolve robot root {}", self.robot_root.display()))
-            .map_err(|source| CompileError::Structure {
-                path: self.robot_root.clone(),
-                source,
-            })?;
-        if !resolved.starts_with(&root) {
-            return Err(CompileError::Structure {
-                path: joined,
-                source: anyhow::anyhow!(
-                    "declared path must stay below the robot root {}",
-                    root.display()
-                ),
-            });
+        let resolved = canonicalize(&self.robot_root.join(relative))?;
+        let root = canonicalize(&self.robot_root)?;
+        if resolved.starts_with(&root) {
+            Ok(resolved)
+        } else {
+            Err(CompileError::Escapes {
+                path: resolved,
+                root,
+            })
         }
-        Ok(resolved)
     }
-}
 
-fn compile_participants(
-    manifest: &source::robot::v0::Manifest,
-    component_roots: &BTreeMap<String, PathBuf>,
-) -> anyhow::Result<ParticipantDeclarations> {
-    // `services` cannot contain the reserved `brain` identity here: every
-    // entry into this compiler validates the authored document first
-    // (`source::robot::read_from_path`), and
-    // `Manifest::validate_reserved_identities` owns that rejection.
-    let mut participants = Vec::new();
-    participants.extend(manifest.services.iter().map(|(id, service)| Participant {
-        id: id.clone(),
-        kind: ParticipantKind::Service,
-        component_instance: None,
-        config: service.config.clone(),
-    }));
-    for (instance, component) in &manifest.robot.components {
-        if let Some(driver) = &component.driver {
-            participants.push(Participant {
-                id: component.component.clone(),
-                kind: ParticipantKind::Driver,
-                component_instance: Some(instance.clone()),
-                config: Some(serde_json::to_value(driver)?),
-            });
+    fn compile_participants(
+        &self,
+        manifest: &source::robot::v0::Manifest,
+    ) -> Result<ParticipantDeclarations, CompileError> {
+        // `services` cannot contain the reserved `brain` identity here: every
+        // entry into this compiler validates the authored document first, and
+        // `Manifest::validate` owns that rejection.
+        let mut participants = manifest
+            .services
+            .iter()
+            .map(|(id, service)| Participant {
+                id: id.clone(),
+                kind: ParticipantKind::Service,
+                component_instance: None,
+                config: service.config.clone(),
+            })
+            .collect::<Vec<_>>();
+        for (instance, component) in &manifest.robot.components {
+            if let Some(driver) = &component.driver {
+                participants.push(Participant {
+                    id: component.component.clone(),
+                    kind: ParticipantKind::Driver,
+                    component_instance: Some(instance.clone()),
+                    config: Some(Self::transcode(driver, "driver configuration")?),
+                });
+            }
+            if self
+                .component_root(&component.component)?
+                .join("simulation.yaml")
+                .is_file()
+            {
+                participants.push(Participant {
+                    id: component.component.clone(),
+                    kind: ParticipantKind::Simulator,
+                    component_instance: Some(instance.clone()),
+                    config: None,
+                });
+            }
         }
-        if component_roots
-            .get(&component.component)
-            .with_context(|| {
-                format!(
-                    "no resolved component root for authored type '{}'",
-                    component.component
-                )
-            })?
-            .join("simulation.yaml")
-            .is_file()
-        {
-            participants.push(Participant {
-                id: component.component.clone(),
-                kind: ParticipantKind::Simulator,
-                component_instance: Some(instance.clone()),
-                config: None,
-            });
-        }
+        // Every constructor above is keyed by a distinct authored map: `services`
+        // by service id, and the driver/simulator declarations by component
+        // instance. The `(kind, id, component_instance)` triple is therefore
+        // unique by construction, so there is no duplicate check to run here.
+        participants.sort_by(|left, right| {
+            (
+                left.kind as u8,
+                left.id.as_str(),
+                left.component_instance.as_deref(),
+            )
+                .cmp(&(
+                    right.kind as u8,
+                    right.id.as_str(),
+                    right.component_instance.as_deref(),
+                ))
+        });
+        Ok(ParticipantDeclarations(participants))
     }
-    // Every constructor above is keyed by a distinct authored map: `services`
-    // by service id, and the driver/simulator declarations by component
-    // instance. The `(kind, id, component_instance)` triple is therefore
-    // unique by construction, so there is no duplicate check to run here.
-    participants.sort_by(|left, right| {
-        (
-            left.kind as u8,
-            left.id.as_str(),
-            left.component_instance.as_deref(),
-        )
-            .cmp(&(
-                right.kind as u8,
-                right.id.as_str(),
-                right.component_instance.as_deref(),
-            ))
-    });
-    Ok(ParticipantDeclarations(participants))
+
+    /// Stage every mesh tree the project owns, then prove the canonical model
+    /// references nothing that was not staged.
+    fn compile_assets(
+        &self,
+        project_root: &Path,
+        manifest: &source::robot::v0::Manifest,
+        robot: &phoxal_model::Robot,
+    ) -> Result<CompiledAssets, CompileError> {
+        let mut assets = CompiledAssets::default();
+        let mut collect = |root: &Path, staged: &str| -> Result<(), CompileError> {
+            collect_files(&root.join("meshes"), staged, &mut assets).map_err(|source| {
+                CompileError::Assets {
+                    root: root.to_path_buf(),
+                    source,
+                }
+            })
+        };
+        collect(project_root, "robot/meshes")?;
+        for component_type in manifest.used_component_types() {
+            let root = self.component_root(component_type)?.clone();
+            collect(&root, &format!("components/{component_type}/meshes"))?;
+        }
+        for id in referenced_asset_ids(robot) {
+            if !assets.0.contains_key(&id) {
+                return Err(CompileError::Assets {
+                    root: project_root.to_path_buf(),
+                    source: AssetError::Missing { id },
+                });
+            }
+        }
+        Ok(assets)
+    }
 }
 
 impl CompiledProject {
     #[must_use]
-    pub fn robot(&self) -> &phoxal_model::Robot {
+    pub const fn robot(&self) -> &phoxal_model::Robot {
         &self.robot
     }
 
     #[must_use]
-    pub fn participants(&self) -> &ParticipantDeclarations {
+    pub const fn participants(&self) -> &ParticipantDeclarations {
         &self.participants
     }
 
     #[must_use]
-    pub fn assets(&self) -> &CompiledAssets {
+    pub const fn assets(&self) -> &CompiledAssets {
         &self.assets
     }
 
+    #[must_use]
     pub fn into_parts(self) -> (phoxal_model::Robot, ParticipantDeclarations, CompiledAssets) {
         (self.robot, self.participants, self.assets)
     }
@@ -540,15 +606,16 @@ impl ParticipantDeclarations {
         self.0.iter()
     }
 
+    #[must_use]
     pub fn into_vec(self) -> Vec<Participant> {
         self.0
     }
 }
 
 impl CompiledAssets {
-    fn insert(&mut self, id: AssetId, bytes: Vec<u8>) -> anyhow::Result<()> {
+    fn insert(&mut self, id: AssetId, bytes: Vec<u8>) -> Result<(), AssetError> {
         if self.0.insert(id.clone(), bytes).is_some() {
-            bail!("duplicate compiled asset '{}'", id.as_str());
+            return Err(AssetError::Duplicate { id });
         }
         Ok(())
     }
@@ -557,6 +624,7 @@ impl CompiledAssets {
         self.0.iter().map(|(id, bytes)| (id, bytes.as_slice()))
     }
 
+    #[must_use]
     pub fn into_map(self) -> BTreeMap<AssetId, Vec<u8>> {
         self.0
     }
@@ -566,35 +634,44 @@ fn collect_files(
     source_root: &Path,
     staged_root: &str,
     output: &mut CompiledAssets,
-) -> anyhow::Result<()> {
+) -> Result<(), AssetError> {
     if !source_root.is_dir() {
         return Ok(());
     }
-    let mut entries = std::fs::read_dir(source_root)?.collect::<std::io::Result<Vec<_>>>()?;
+    let read = |path: &Path| {
+        std::fs::read_dir(path)
+            .and_then(std::iter::Iterator::collect::<std::io::Result<Vec<_>>>)
+            .map_err(|source| AssetError::Read {
+                path: path.to_path_buf(),
+                source,
+            })
+    };
+    let mut entries = read(source_root)?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let source = entry.path();
-        let metadata = std::fs::symlink_metadata(&source)?;
-        if metadata.file_type().is_symlink() {
-            bail!(
-                "asset source tree contains forbidden symlink {}",
-                source.display()
-            );
-        }
-        let name = entry.file_name().into_string().map_err(|name| {
-            anyhow::anyhow!(
-                "asset source entry name is not UTF-8 below {}: {:?}",
-                source_root.display(),
-                name
-            )
+        let metadata = std::fs::symlink_metadata(&source).map_err(|error| AssetError::Read {
+            path: source.clone(),
+            source: error,
         })?;
+        if metadata.file_type().is_symlink() {
+            return Err(AssetError::ForbiddenSymlink { path: source });
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            return Err(AssetError::NotUtf8 { path: source });
+        };
         let staged = format!("{staged_root}/{name}");
         if metadata.is_dir() {
             collect_files(&source, &staged, output)?;
         } else if metadata.is_file() {
-            output.insert(AssetId::new(staged)?, std::fs::read(&source)?)?;
+            let id = AssetId::new(staged).map_err(|source| AssetError::Id { source })?;
+            let bytes = std::fs::read(&source).map_err(|error| AssetError::Read {
+                path: source.clone(),
+                source: error,
+            })?;
+            output.insert(id, bytes)?;
         } else {
-            bail!("unsupported asset source entry {}", source.display());
+            return Err(AssetError::UnsupportedEntry { path: source });
         }
     }
     Ok(())
@@ -602,16 +679,35 @@ fn collect_files(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::ParticipantKind;
 
     #[test]
     fn asset_ids_are_normalized() {
         for invalid in ["", "/a", "../a", "a/../b", "a\\b", "a//b"] {
-            assert!(AssetId::new(invalid).is_err(), "{invalid}");
+            assert!(phoxal_model::AssetId::new(invalid).is_err(), "{invalid}");
         }
         assert_eq!(
-            AssetId::new("meshes/base.stl").unwrap().as_str(),
+            phoxal_model::AssetId::new("meshes/base.stl")
+                .unwrap()
+                .as_str(),
             "meshes/base.stl"
         );
+    }
+
+    /// A participant binary's embedded metadata serializes its kind with the
+    /// canonical `phoxal_runtime_contract::ParticipantKind` names. This crate
+    /// must not depend on that crate, so the coupling is pinned here: adding a
+    /// kind there without adding it below makes a real binary's metadata
+    /// undeserializable, and this test is what says so.
+    #[test]
+    fn every_canonical_participant_kind_round_trips() {
+        const CANONICAL: [&str; 4] = ["service", "driver", "simulator", "brain"];
+        for name in CANONICAL {
+            let json = format!("\"{name}\"");
+            let kind: ParticipantKind = serde_json::from_str(&json)
+                .unwrap_or_else(|error| panic!("'{name}' must deserialize: {error}"));
+            assert_eq!(serde_json::to_string(&kind).unwrap(), json);
+        }
+        assert!(serde_json::from_str::<ParticipantKind>("\"tool\"").is_err());
     }
 }

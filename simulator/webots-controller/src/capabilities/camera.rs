@@ -1,13 +1,15 @@
 //! Camera capability: publishes `component::camera::Frame` from the Webots
-//! `Camera` device. Moved from the monolith's `CameraSpec` (main.rs:585-591),
-//! `NativeCamera` (main.rs:1370-1414), and the BGRA conversion helpers
-//! (main.rs:1536-1551).
+//! `Camera` device.
+//!
+//! Webots always hands back BGRA. The component's declared mode decides which
+//! contract encoding the frame carries, so the conversion to RGB or to
+//! luminance happens here rather than in every consumer.
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use phoxal::api;
 use phoxal::model::component::capability::CameraMode;
 
-use super::{SampledSpec, is_due};
+use super::{SampledSpec, SensorStep, SimulatedSensor};
 
 #[derive(Clone, Debug)]
 pub(crate) struct CameraSpec {
@@ -24,26 +26,24 @@ pub(crate) struct NativeCamera {
 
 impl NativeCamera {
     pub(crate) fn new(webots: &webots_rs::Webots, spec: &CameraSpec) -> Result<Self> {
-        let camera = webots
-            .camera(spec.sampled.reference.to_string())
-            .map_err(|error| anyhow!(error))?;
-        camera
-            .enable(spec.sampled.sampling_period_ms)
-            .map_err(|error| anyhow!(error))?;
+        let camera = webots.camera(spec.sampled.reference.to_string())?;
+        camera.enable(spec.sampled.sampling_period_ms)?;
         Ok(Self {
             camera,
             spec: spec.clone(),
         })
     }
+}
 
-    pub(crate) fn read_if_due(
-        &self,
-        step_index: u64,
-    ) -> Result<Option<api::component::camera::Frame>> {
-        if !is_due(step_index, self.spec.sampled.publish_every_steps) {
-            return Ok(None);
-        }
-        let bgra = self.camera.get_image().map_err(|error| anyhow!(error))?;
+impl SimulatedSensor for NativeCamera {
+    type Sample = api::component::camera::Frame;
+
+    fn schedule(&self) -> phoxal::SampleSchedule {
+        self.spec.sampled.schedule
+    }
+
+    fn read(&mut self, _step: SensorStep) -> Result<Option<Self::Sample>> {
+        let bgra = self.camera.get_image()?;
         let (encoding, data) = match self.spec.mode {
             CameraMode::Mono => (api::component::camera::Encoding::L8, bgra_to_luma(&bgra)),
             CameraMode::Rgb => (api::component::camera::Encoding::Rgb8, bgra_to_rgb(&bgra)),

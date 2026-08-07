@@ -17,6 +17,15 @@ categories = ["science::robotics", "simulation"]
 name = "phoxal"
 path = "src/lib.rs"
 
+[features]
+# Off in every shipped participant binary. It exposes the deterministic
+# `TestClock` and the `run_with_bus_clock` seam that injects one, which exist
+# only so a test can drive a participant on a clock it controls. A downstream
+# crate enables it as a **dev**-dependency feature, because a participant
+# crate's tests are a separate compilation unit that cannot enable this crate's
+# `cfg(test)`.
+test-harness = []
+
 [dependencies]
 phoxal-api = { workspace = true }
 phoxal-bus = { workspace = true }
@@ -35,7 +44,14 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
+# The tests load the workspace fixture robot. It is staged by a shared,
+# never-published crate so the eight consumers cannot drift on what that
+# robot is; a versionless dev-dependency is stripped on publish.
+phoxal-fixture = { workspace = true }
 jsonschema = { workspace = true }
+# Test-only: raising SIGINT/SIGTERM at the test process is the only honest way to
+# prove the runner's shutdown trigger covers the signal a supervisor stops with.
+libc = { workspace = true }
 schemars = { workspace = true }
 serial_test = { workspace = true }
 tempfile = { workspace = true }
