@@ -1,13 +1,13 @@
-error[E0432]: unresolved import `phoxal::__private::TestHarness`
- --> tests/trybuild/fail/test_harness_is_feature_gated.rs:1:5
+error[E0432]: unresolved import `phoxal::testing`
+ --> tests/trybuild/fail/test_harness_is_feature_gated.rs:1:13
   |
-1 | use phoxal::__private::TestHarness;
-  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `TestHarness` in `__private`
+1 | use phoxal::testing::TestHarness;
+  |             ^^^^^^^ could not find `testing` in `phoxal`
   |
 note: found an item that was configured out
  --> src/lib.rs
   |
-  |     #[cfg(feature = "test-harness")]
-  |           ------------------------ the item is gated behind the `test-harness` feature
-  |     pub use crate::participant::launch::TestHarness;
-  |                                         ^^^^^^^^^^^
+  | #[cfg(feature = "test-harness")]
+  |       ------------------------ the item is gated behind the `test-harness` feature
+  | pub mod testing;
+  |         ^^^^^^^

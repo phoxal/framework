@@ -16,12 +16,15 @@ use std::time::Duration;
 pub(crate) mod api;
 pub(crate) mod bus_log;
 pub(crate) mod clock;
+pub(crate) mod config;
 pub(crate) mod context;
 pub(crate) mod launch;
 pub(crate) mod managed;
+pub(crate) mod query;
 pub(crate) mod runner;
 pub(crate) mod runtime_performance;
 pub(crate) mod scheduler;
+pub(crate) mod spec;
 // `surface` is the one engine module a participant crate reaches by name: the
 // role attributes emit `impl $crate::__private::surface::…` into the
 // participant's own crate, so the module itself is re-exported there.

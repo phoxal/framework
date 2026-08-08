@@ -45,7 +45,7 @@ pub trait WorldAuthoritySurface: sealing::Sealed {}
 #[cfg(test)]
 mod tests {
     use super::{ComponentBoundSurface, SchedulableSurface, TypedIoSurface, WorldAuthoritySurface};
-    use crate::participant::api::ParticipantSpec;
+    use crate::participant::spec::ParticipantSpec;
     use crate::prelude::*;
     use phoxal_runtime_contract::metadata::ParticipantKind;
 

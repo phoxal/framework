@@ -8,18 +8,16 @@
 //! launch-time copy of facts already authoritative in `runtime.json`.
 
 use std::path::PathBuf;
-#[cfg(feature = "test-harness")]
 use std::time::Duration;
 
 use crate::Result;
 use clap::Parser;
-#[cfg(feature = "test-harness")]
-use phoxal_runtime_contract::identity::ParticipantIdError;
 use phoxal_runtime_contract::identity::{ExecutionId, ParticipantId};
 use phoxal_runtime_contract::origin::ExecutionOrigin;
 
 /// Default bounded shutdown grace, in milliseconds.
 pub const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 2000;
+const DEFAULT_SHUTDOWN_GRACE_VALUE: &str = const_format::formatcp!("{}", DEFAULT_SHUTDOWN_GRACE_MS);
 
 /// The strict process-boundary contract for one supervised participant.
 ///
@@ -62,55 +60,12 @@ pub(crate) struct SupervisedLaunch {
 
     /// Maximum time granted to participant shutdown and owned cleanup.
     #[arg(
-        long,
+        long = "shutdown-grace-ms",
         value_name = "MILLISECONDS",
-        default_value_t = DEFAULT_SHUTDOWN_GRACE_MS,
-        value_parser = clap::value_parser!(u64).range(1..)
+        default_value = DEFAULT_SHUTDOWN_GRACE_VALUE,
+        value_parser = parse_shutdown_grace
     )]
-    pub(crate) shutdown_grace_ms: u64,
-}
-
-/// Explicit in-process test input.  This type is not a process launch
-/// protocol: it has no bundle/config/clock override and cannot open a bus.
-/// Tests supply it only alongside a caller-owned `BusHandle`.
-#[cfg(feature = "test-harness")]
-#[doc(hidden)]
-#[derive(Clone, Debug)]
-pub struct TestHarness {
-    pub(crate) participant_id: ParticipantId,
-    pub(crate) execution_origin: ExecutionOrigin,
-    pub(crate) shutdown_grace_ms: u64,
-    pub(crate) query_reply_delay: Option<Duration>,
-}
-
-#[cfg(feature = "test-harness")]
-impl TestHarness {
-    /// Construct an explicit test-harness input for a participant id.
-    pub fn new(participant_id: impl Into<String>) -> std::result::Result<Self, ParticipantIdError> {
-        Ok(Self {
-            participant_id: ParticipantId::new(participant_id)?,
-            execution_origin: ExecutionOrigin::mint(),
-            shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
-            query_reply_delay: None,
-        })
-    }
-
-    /// Use a caller-selected execution origin in a test clock domain.
-    #[must_use]
-    pub fn with_execution_origin(mut self, origin: ExecutionOrigin) -> Self {
-        self.execution_origin = origin;
-        self
-    }
-
-    /// Delay every test-harness query reply to exercise the runner's
-    /// out-of-band reply transport. This is deliberately unavailable to a
-    /// supervised participant process.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn with_query_reply_delay(mut self, delay: Duration) -> Self {
-        self.query_reply_delay = Some(delay);
-        self
-    }
+    pub(crate) shutdown_grace: Duration,
 }
 
 impl SupervisedLaunch {
@@ -145,6 +100,16 @@ fn parse_connect_endpoint(value: &str) -> std::result::Result<String, String> {
     Ok(value.to_string())
 }
 
+fn parse_shutdown_grace(value: &str) -> std::result::Result<Duration, String> {
+    let milliseconds = value.parse::<u64>().map_err(|error| {
+        format!("shutdown grace must be an integer number of milliseconds: {error}")
+    })?;
+    if milliseconds == 0 {
+        return Err("shutdown grace must be greater than zero milliseconds".to_string());
+    }
+    Ok(Duration::from_millis(milliseconds))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,7 +140,10 @@ mod tests {
         assert_eq!(launch.bundle_root, PathBuf::from("/var/lib/phoxal/bundle"));
         assert_eq!(launch.connect_endpoints, ["tcp/router-a:7447"]);
         assert_eq!(launch.execution_origin, None);
-        assert_eq!(launch.shutdown_grace_ms, DEFAULT_SHUTDOWN_GRACE_MS);
+        assert_eq!(
+            launch.shutdown_grace,
+            Duration::from_millis(DEFAULT_SHUTDOWN_GRACE_MS)
+        );
     }
 
     #[test]

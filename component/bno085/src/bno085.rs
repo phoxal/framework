@@ -40,11 +40,11 @@ mod tests {
         ))
         .await
         .expect("the in-process test bus opens");
-        let launch = phoxal::__private::TestHarness::new("bno085-test")
+        let launch = phoxal::testing::TestHarness::new("bno085-test")
             .expect("valid test participant")
-            .with_execution_origin(phoxal::__private::ExecutionOrigin::mint());
+            .with_execution_origin(phoxal::testing::ExecutionOrigin::mint());
         let result =
-            phoxal::__private::run_test_harness::<Bno085, _>(&bus, launch, std::future::pending())
+            phoxal::testing::run_test_harness::<Bno085, _>(&bus, launch, std::future::pending())
                 .await;
         owner.close().await.expect("the in-process test bus closes");
 

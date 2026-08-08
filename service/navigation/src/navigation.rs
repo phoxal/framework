@@ -727,7 +727,7 @@ impl NavigationState {
 mod tests {
     use std::time::Duration;
 
-    use phoxal::__private::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
+    use phoxal::testing::{ClockSource, TestClock, TestHarness, run_test_harness_with_clock};
     use phoxal_bus::{BusConfig, BusOwner, Querier, StatePublisher, StepToken, Subscriber};
 
     use super::*;

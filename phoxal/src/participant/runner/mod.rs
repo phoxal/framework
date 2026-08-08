@@ -22,21 +22,22 @@ use std::time::Duration;
 
 use crate::api;
 use crate::bus::{LocalInstant, RobotInstant, StepToken, Subscriber, TimelineId};
-use crate::participant::api::{Participant, ParticipantConfig};
+use crate::participant::api::Participant;
 use crate::participant::bus_log::{self, BusLogTask};
 use crate::participant::clock::real::RealClock;
 use crate::participant::clock::simulation::SimulationClock;
 use crate::participant::clock::{ClockReading, ClockSource, TimeUnsynchronized};
+use crate::participant::config::ParticipantConfig;
 use crate::participant::context::{ResetContext, SetupContext, StepContext, TimelineRetention};
 use crate::participant::launch::SupervisedLaunch;
-#[cfg(feature = "test-harness")]
-use crate::participant::launch::TestHarness;
 #[cfg(test)]
 use crate::participant::managed::ManagedTaskFailure;
 use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
 use crate::participant::scheduler::{AnyStepScheduler, SchedulerTick, StepSchedule, StepScheduler};
+#[cfg(feature = "test-harness")]
+use crate::testing::TestHarness;
 use phoxal_bundle::Sha256Digest;
 use phoxal_bus::{BusConfig, BusHandle, BusOwner, ParticipantReadyToken};
 use phoxal_runtime_contract::identity::ParticipantId;
@@ -172,9 +173,9 @@ where
     S: Future<Output = ()>,
 {
     let mut shutdown = ShutdownController::new(shutdown);
-    // Convert the Clap millisecond field once at the process boundary. The
-    // remainder of the lifecycle carries a typed duration.
-    let shutdown_grace = Duration::from_millis(launch.shutdown_grace_ms);
+    // The launch parser has already converted the millisecond CLI value. The
+    // remainder of the lifecycle carries this typed duration.
+    let shutdown_grace = launch.shutdown_grace;
 
     // Validate and select the persisted participant before opening the bus.
     // A malformed runtime document or unknown topology id is a local startup
@@ -356,7 +357,7 @@ where
         bus,
         None,
         &harness.participant_id,
-        Duration::from_millis(harness.shutdown_grace_ms),
+        harness.shutdown_grace,
         None,
         config,
         ClockMode::Real,
@@ -395,7 +396,7 @@ where
         bus,
         None,
         &harness.participant_id,
-        Duration::from_millis(harness.shutdown_grace_ms),
+        harness.shutdown_grace,
         None,
         config,
         ClockMode::Real,

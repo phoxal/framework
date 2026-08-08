@@ -14,8 +14,9 @@ use crate::bus::{
     StreamContract, StreamPublisher, Subscribe, Subscriber, TimelineId, Topic, WorldClockContract,
 };
 use crate::model::Robot;
-use crate::participant::api::{Participant, QueryRegistration};
+use crate::participant::api::Participant;
 use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedTasks};
+use crate::participant::query::QueryRegistration;
 use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusHandle, TimelineAuthority, WorldClockPublisher};
 

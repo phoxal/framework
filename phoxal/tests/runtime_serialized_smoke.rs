@@ -2,9 +2,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use phoxal::__private::{TestHarness, run_test_harness};
 use phoxal::api;
 use phoxal::prelude::*;
+use phoxal::testing::{TestHarness, run_test_harness};
 use phoxal_bus::{BusConfig, BusOwner, ExecutionId};
 use tokio::sync::Notify;
 

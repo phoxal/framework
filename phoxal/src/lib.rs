@@ -153,6 +153,10 @@ pub mod geometry;
 mod participant;
 mod sample_schedule;
 
+/// Explicit in-process participant testing support.
+#[cfg(feature = "test-harness")]
+pub mod testing;
+
 /// The concrete framework API revision selected by this release train.
 pub use phoxal_api::latest as api;
 
@@ -353,13 +357,14 @@ pub mod __private {
 
     /// Const-eval plumbing for the embedded metadata static: `ConstSchema`,
     /// `bytes_of`, and the hygienic `concatcp` re-export.
-    pub use crate::participant::api::meta;
+    pub use crate::participant::config::meta;
 
     /// The capability marker traits a role attribute implements for its marker.
     pub use crate::participant::surface;
 
     /// The traits a role attribute and `#[derive(phoxal::Config)]` implement.
-    pub use crate::participant::api::{ParticipantConfig, ParticipantSpec};
+    pub use crate::participant::config::ParticipantConfig;
+    pub use crate::participant::spec::ParticipantSpec;
 
     /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
     pub use phoxal_runtime_contract::metadata::ParticipantKind;
@@ -367,26 +372,4 @@ pub mod __private {
     /// The cadence `#[phoxal::step(hz = …)]` returns from
     /// `Participant::__step_schedule`.
     pub use crate::participant::scheduler::StepSchedule;
-
-    /// Explicit in-process test-harness injection. A production participant
-    /// enters through `phoxal::run`, which parses the strict supervised launch
-    /// and opens its own unique bus owner.
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::clock::ClockSource;
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::launch::TestHarness;
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::runner::run_test_harness;
-    #[cfg(feature = "test-harness")]
-    pub use phoxal_runtime_contract::origin::ExecutionOrigin;
-
-    /// Injecting a clock the caller drives, for the same in-process runs.
-    ///
-    /// Behind the `test-harness` feature, which a downstream crate enables as a
-    /// **dev**-dependency: a participant that could reach a clock it controls in
-    /// its shipped binary could stamp instants it never reached.
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::clock::test::TestClock;
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::runner::run_test_harness_with_clock;
 }

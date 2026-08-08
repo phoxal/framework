@@ -2,9 +2,10 @@
 //! `Participant::setup`.
 
 use crate::bus::QueryFailure;
-use crate::participant::api::{Participant, QueryRegistration};
+use crate::participant::api::Participant;
 use crate::participant::context::QueryContext;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
+use crate::participant::query::{QueryRegistration, ServerOutcome};
 use phoxal_bus::{BusHandle, IncomingQuery};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -43,7 +44,7 @@ pub(crate) struct QuerySurface<R: Participant> {
 /// must never be awaited while the serialized participant state is borrowed.
 struct PendingReply {
     incoming: IncomingQuery,
-    outcome: crate::participant::api::ServerOutcome,
+    outcome: ServerOutcome,
 }
 
 impl<R: Participant> QuerySurface<R> {
@@ -186,11 +187,7 @@ impl<R: Participant> QuerySurface<R> {
         self.enqueue(incoming, outcome)
     }
 
-    fn enqueue(
-        &self,
-        incoming: IncomingQuery,
-        outcome: crate::participant::api::ServerOutcome,
-    ) -> crate::Result<()> {
+    fn enqueue(&self, incoming: IncomingQuery, outcome: ServerOutcome) -> crate::Result<()> {
         self.replies.try_send(PendingReply { incoming, outcome }).map_err(|error| {
             anyhow::anyhow!(
                 "query reply queue is saturated or closed; refusing to stall the serialized runner: {error}"
