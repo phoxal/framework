@@ -196,23 +196,7 @@ pub mod bus {
     };
 }
 
-/// Reading the finalized runtime bundle a participant was launched against.
-///
-/// A participant normally never touches this module: the runner loads the
-/// bundle named by strict Clap launch argv, selects the exact persisted
-/// `ParticipantId`, and binds the validated model and assets onto
-/// [`SetupContext`]. It is public because the same loader is useful to a host
-/// tool embedding the framework to inspect a bundle it did not launch.
-pub mod bundle {
-    pub use phoxal_bundle::{
-        AssetIndex, AssetRecord, BinaryReference, BuildFacts, BundleError, BundlePath,
-        BundlePathError, BundleWriter, ComponentBinding, DocumentError, ParticipantArtifactId,
-        ParticipantAssets, ParticipantClock, ParticipantRuntimeInputs, Runtime, RuntimeBundle,
-        RuntimeDocument, RuntimeParticipant, RuntimeRouterConfig, Sha256Digest, StartupRequirement,
-    };
-}
-
-/// The canonical runtime robot model a [`bundle::RuntimeBundle`] yields.
+/// The canonical runtime robot model a [`phoxal_bundle::RuntimeBundle`] yields.
 ///
 /// This mirrors `phoxal-model`'s own facade one-for-one and adds nothing: the
 /// names below are the canonical ones, and everything else is reached through

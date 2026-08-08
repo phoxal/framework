@@ -24,7 +24,7 @@ use phoxal_model::component::capability::MotorCommand;
 use phoxal_model::identity::{CapabilityRef, ComponentInstanceId};
 use phoxal_model::{AssetId, Clock, Robot};
 pub use phoxal_runtime_contract::identity::ParticipantArtifactId;
-use phoxal_runtime_contract::identity::{ParticipantId, ParticipantIdError};
+use phoxal_runtime_contract::identity::ParticipantId;
 use phoxal_runtime_contract::metadata::{ParticipantContract, ParticipantRequirement};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -141,17 +141,6 @@ impl RuntimeDocument {
                 requested: id.clone(),
             })
     }
-
-    /// Replace the asset index after a build tool has staged its compiled
-    /// assets. This does not write anything and intentionally does not infer
-    /// the final participant set.
-    pub fn with_assets(mut self, assets: AssetIndex) -> Result<Self, DocumentError> {
-        match &mut self {
-            Self::V0(runtime) => runtime.assets = assets,
-        }
-        self.validate()?;
-        Ok(self)
-    }
 }
 
 /// The persisted final runtime graph and all framework-owned runtime facts.
@@ -160,17 +149,17 @@ impl RuntimeDocument {
 pub struct Runtime {
     /// The complete canonical model. Its `id` is the sole persisted RobotId;
     /// there is no namespace or duplicate top-level identity field.
-    pub robot: Robot,
+    robot: Robot,
     /// The reusable staged executables and their embedded compatibility
     /// contracts. Multiple participant instances may point to one entry.
-    pub artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
+    artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
     /// The exact process instances the executor must launch, in final
     /// persisted form.
-    pub participants: Vec<RuntimeParticipant>,
+    participants: Vec<RuntimeParticipant>,
     /// The participant-readable asset index and integrity facts.
-    pub assets: AssetIndex,
+    assets: AssetIndex,
     /// Optional supervisor router configuration, kept as an indexed asset.
-    pub router: Option<RuntimeRouterConfig>,
+    router: Option<RuntimeRouterConfig>,
 }
 
 impl<'de> Deserialize<'de> for Runtime {
@@ -199,6 +188,55 @@ impl<'de> Deserialize<'de> for Runtime {
 }
 
 impl Runtime {
+    /// Construct one runtime payload from the complete build-side assembly.
+    pub fn new(
+        robot: Robot,
+        artifacts: BTreeMap<ParticipantArtifactId, BinaryReference>,
+        participants: Vec<RuntimeParticipant>,
+        assets: AssetIndex,
+        router: Option<RuntimeRouterConfig>,
+    ) -> Result<Self, DocumentError> {
+        let runtime = Self {
+            robot,
+            artifacts,
+            participants,
+            assets,
+            router,
+        };
+        runtime.validate()?;
+        Ok(runtime)
+    }
+
+    /// The canonical compiled robot.
+    #[must_use]
+    pub const fn robot(&self) -> &Robot {
+        &self.robot
+    }
+
+    /// The reusable executable artifacts retained by this runtime.
+    #[must_use]
+    pub fn artifacts(&self) -> &BTreeMap<ParticipantArtifactId, BinaryReference> {
+        &self.artifacts
+    }
+
+    /// The final participant set, in persisted order.
+    #[must_use]
+    pub fn participants(&self) -> &[RuntimeParticipant] {
+        &self.participants
+    }
+
+    /// The participant-readable asset index.
+    #[must_use]
+    pub const fn assets(&self) -> &AssetIndex {
+        &self.assets
+    }
+
+    /// Optional router configuration selected by build tooling.
+    #[must_use]
+    pub const fn router(&self) -> Option<&RuntimeRouterConfig> {
+        self.router.as_ref()
+    }
+
     /// Validate the complete in-memory runtime document.
     pub fn validate(&self) -> Result<(), DocumentError> {
         let mut ids = BTreeSet::new();
@@ -238,21 +276,67 @@ impl Runtime {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeParticipant {
     /// The topology identity selected by the process launch.
-    pub id: ParticipantId,
+    id: ParticipantId,
     /// The reusable artifact selected for this instance.
-    pub artifact: ParticipantArtifactId,
-    /// Whether startup of this participant is required for the execution.
-    pub startup: StartupRequirement,
+    artifact: ParticipantArtifactId,
     /// The already-compiled participant configuration. `None` means JSON
     /// `null`, not a request to consult authored configuration.
-    pub config: Option<serde_json::Value>,
+    config: Option<serde_json::Value>,
     /// An optional typed component-instance binding for a driver/simulator.
-    pub binding: Option<ComponentBinding>,
+    component: Option<ComponentInstanceId>,
     /// The scheduler policy selected at build time.
-    pub clock: ParticipantClock,
+    clock: ParticipantClock,
 }
 
 impl RuntimeParticipant {
+    /// Construct one final participant instance selected by build tooling.
+    #[must_use]
+    pub fn new(
+        id: ParticipantId,
+        artifact: ParticipantArtifactId,
+        config: Option<serde_json::Value>,
+        component: Option<ComponentInstanceId>,
+        clock: ParticipantClock,
+    ) -> Self {
+        Self {
+            id,
+            artifact,
+            config,
+            component,
+            clock,
+        }
+    }
+
+    /// The persisted participant instance identity.
+    #[must_use]
+    pub const fn id(&self) -> &ParticipantId {
+        &self.id
+    }
+
+    /// The reusable artifact selected for this instance.
+    #[must_use]
+    pub const fn artifact(&self) -> &ParticipantArtifactId {
+        &self.artifact
+    }
+
+    /// The compiled participant configuration, if any.
+    #[must_use]
+    pub fn config(&self) -> Option<&serde_json::Value> {
+        self.config.as_ref()
+    }
+
+    /// The canonical component instance bound to this participant, if any.
+    #[must_use]
+    pub const fn component(&self) -> Option<&ComponentInstanceId> {
+        self.component.as_ref()
+    }
+
+    /// The scheduler policy selected for this participant.
+    #[must_use]
+    pub const fn clock(&self) -> ParticipantClock {
+        self.clock
+    }
+
     /// Validate participant facts against the compiled robot.
     pub fn validate(&self, robot: &Robot, artifact: &BinaryReference) -> Result<(), DocumentError> {
         if !artifact.path.starts_with_directory(BIN_DIR) {
@@ -261,14 +345,12 @@ impl RuntimeParticipant {
                 path: artifact.path.clone(),
             });
         }
-        if let Some(binding) = &self.binding
-            && robot
-                .component_instance(binding.component_instance.as_str())
-                .is_none()
+        if let Some(component) = &self.component
+            && robot.component_instance(component.as_str()).is_none()
         {
-            return Err(DocumentError::UnknownBinding {
+            return Err(DocumentError::UnknownComponent {
                 participant: self.id.clone(),
-                component_instance: binding.component_instance.clone(),
+                component_instance: component.clone(),
             });
         }
         match (robot.clock(), self.clock) {
@@ -308,81 +390,44 @@ impl RuntimeParticipant {
     }
 }
 
-/// A compiled component-instance binding.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComponentBinding {
-    pub component_instance: ComponentInstanceId,
-}
-
-/// Build-time startup facts retained for the executor.
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct StartupRequirement {
-    /// Whether the participant is required for the execution to be valid.
-    pub required: bool,
-    /// Whether the supervisor waits for this participant's Ready handoff.
-    pub ready: bool,
-}
-
 /// A staged reusable executable and its canonical artifact contract.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryReference {
     /// A normalized bundle-relative path under `bin/`.
-    pub path: BundlePath,
+    path: BundlePath,
     /// The exact bytes staged at `path`.
-    pub digest: Sha256Digest,
-    /// The build/artifact facts needed to explain this binary.
-    pub build: BuildFacts,
+    digest: Sha256Digest,
     /// The embedded process-contract facts the binary declared.
-    pub contract: ParticipantContract,
+    contract: ParticipantContract,
 }
 
 impl BinaryReference {
     /// Construct a reference for already-built bytes.
-    pub fn from_bytes(
-        path: BundlePath,
-        build: BuildFacts,
-        contract: ParticipantContract,
-        bytes: &[u8],
-    ) -> Self {
+    pub fn from_bytes(path: BundlePath, contract: ParticipantContract, bytes: &[u8]) -> Self {
         Self {
             path,
             digest: Sha256Digest::of(bytes),
-            build,
             contract,
         }
     }
-}
 
-/// Facts from the build leg that selected and staged one executable.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct BuildFacts {
-    /// The Cargo package or user build unit that produced the binary.
-    pub package: String,
-    /// The target triple or other build target identity.
-    pub target: String,
-    /// The profile used to produce the staged bytes.
-    pub profile: String,
-}
+    /// The normalized bundle-relative binary path.
+    #[must_use]
+    pub const fn path(&self) -> &BundlePath {
+        &self.path
+    }
 
-impl BuildFacts {
-    fn validate(&self) -> Result<(), DocumentError> {
-        for (field, value) in [
-            ("package", self.package.as_str()),
-            ("target", self.target.as_str()),
-            ("profile", self.profile.as_str()),
-        ] {
-            if value.is_empty() || value.bytes().any(|byte| byte.is_ascii_control()) {
-                return Err(DocumentError::EmptyBuildFact {
-                    field,
-                    value: value.to_string(),
-                });
-            }
-        }
-        Ok(())
+    /// The digest of the exact staged binary bytes.
+    #[must_use]
+    pub const fn digest(&self) -> Sha256Digest {
+        self.digest
+    }
+
+    /// The embedded process contract declared by this artifact.
+    #[must_use]
+    pub const fn contract(&self) -> &ParticipantContract {
+        &self.contract
     }
 }
 
@@ -400,7 +445,7 @@ impl BinaryReference {
                 path: self.path.clone(),
             });
         }
-        self.build.validate()
+        Ok(())
     }
 }
 
@@ -472,10 +517,22 @@ fn validate_drive_side(
 #[serde(deny_unknown_fields)]
 pub struct RuntimeRouterConfig {
     /// The config is an indexed asset, never an arbitrary filesystem path.
-    pub path: BundlePath,
+    path: BundlePath,
 }
 
 impl RuntimeRouterConfig {
+    /// Construct router configuration pointing at one bundle asset.
+    #[must_use]
+    pub const fn new(path: BundlePath) -> Self {
+        Self { path }
+    }
+
+    /// The indexed asset path containing the router configuration.
+    #[must_use]
+    pub const fn path(&self) -> &BundlePath {
+        &self.path
+    }
+
     fn validate(&self, assets: &AssetIndex) -> Result<(), DocumentError> {
         if !self.path.starts_with_directory(ASSETS_DIR) {
             return Err(DocumentError::RouterOutsideAssets {
@@ -495,7 +552,7 @@ impl RuntimeRouterConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetIndex {
-    pub entries: Vec<AssetRecord>,
+    entries: Vec<AssetRecord>,
 }
 
 impl AssetIndex {
@@ -516,6 +573,12 @@ impl AssetIndex {
         let index = Self { entries };
         index.validate()?;
         Ok(index)
+    }
+
+    /// Every indexed participant-readable asset, in deterministic order.
+    #[must_use]
+    pub fn entries(&self) -> &[AssetRecord] {
+        &self.entries
     }
 
     fn validate(&self) -> Result<(), DocumentError> {
@@ -553,10 +616,36 @@ impl AssetIndex {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssetRecord {
-    pub id: AssetId,
-    pub path: BundlePath,
-    pub size_bytes: u64,
-    pub digest: Sha256Digest,
+    id: AssetId,
+    path: BundlePath,
+    size_bytes: u64,
+    digest: Sha256Digest,
+}
+
+impl AssetRecord {
+    /// The logical asset identity.
+    #[must_use]
+    pub const fn id(&self) -> &AssetId {
+        &self.id
+    }
+
+    /// The normalized indexed bundle path.
+    #[must_use]
+    pub const fn path(&self) -> &BundlePath {
+        &self.path
+    }
+
+    /// The expected byte length.
+    #[must_use]
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+
+    /// The expected SHA-256 digest.
+    #[must_use]
+    pub const fn digest(&self) -> Sha256Digest {
+        self.digest
+    }
 }
 
 /// A normalized, traversal-proof bundle-relative path.
@@ -808,8 +897,8 @@ pub enum DocumentError {
         artifact: ParticipantArtifactId,
         path: BundlePath,
     },
-    #[error("participant '{participant}' binds unknown component instance '{component_instance}'")]
-    UnknownBinding {
+    #[error("participant '{participant}' names unknown component instance '{component_instance}'")]
+    UnknownComponent {
         participant: ParticipantId,
         component_instance: ComponentInstanceId,
     },
@@ -851,8 +940,6 @@ pub enum DocumentError {
         expected: MotorCommand,
         actual: MotorCommand,
     },
-    #[error("build fact '{field}' is empty or contains control characters: '{value}'")]
-    EmptyBuildFact { field: &'static str, value: String },
     #[error("participant '{participant}' has an invalid config schema: {error}")]
     InvalidConfigSchema {
         participant: ParticipantId,
@@ -893,8 +980,6 @@ pub enum SelectionError {
         participant: ParticipantId,
         artifact: ParticipantArtifactId,
     },
-    #[error("participant id is invalid: {0}")]
-    InvalidId(#[from] ParticipantIdError),
 }
 
 /// Why reading or validating a bundle failed.
@@ -1026,11 +1111,37 @@ impl ParticipantAssets {
 /// One selected participant and the immutable runtime inputs it consumes.
 #[derive(Clone, Debug)]
 pub struct ParticipantRuntimeInputs {
-    pub robot: Arc<Robot>,
-    pub participant: RuntimeParticipant,
+    robot: Arc<Robot>,
+    participant: RuntimeParticipant,
     /// The reusable artifact selected by `participant.artifact`.
-    pub artifact: BinaryReference,
-    pub assets: ParticipantAssets,
+    artifact: BinaryReference,
+    assets: ParticipantAssets,
+}
+
+impl ParticipantRuntimeInputs {
+    /// The canonical robot selected with this participant.
+    #[must_use]
+    pub fn robot(&self) -> &Robot {
+        self.robot.as_ref()
+    }
+
+    /// The exact persisted participant record selected for this process.
+    #[must_use]
+    pub const fn participant(&self) -> &RuntimeParticipant {
+        &self.participant
+    }
+
+    /// The reusable executable artifact selected by the participant record.
+    #[must_use]
+    pub const fn artifact(&self) -> &BinaryReference {
+        &self.artifact
+    }
+
+    /// Participant-readable, digest-checked assets from the same bundle.
+    #[must_use]
+    pub const fn assets(&self) -> &ParticipantAssets {
+        &self.assets
+    }
 }
 
 /// A loaded, integrity-checked runtime bundle.
@@ -2087,11 +2198,6 @@ mod tests {
         let artifact_id = ParticipantArtifactId::new("drive").expect("artifact id");
         let binary = BinaryReference::from_bytes(
             BundlePath::new("bin/drive").expect("binary path"),
-            BuildFacts {
-                package: "test".to_string(),
-                target: "host".to_string(),
-                profile: "debug".to_string(),
-            },
             ParticipantContract {
                 id: artifact_id.clone(),
                 kind: ParticipantKind::Service,
@@ -2106,28 +2212,19 @@ mod tests {
             },
             &binary_bytes,
         );
-        let participant = RuntimeParticipant {
-            id: ParticipantId::new("drive").expect("participant id"),
-            artifact: artifact_id.clone(),
-            startup: StartupRequirement {
-                required: true,
-                ready: true,
-            },
-            config: None,
-            binding: None,
-            clock: ParticipantClock::Real,
-        };
+        let participant = RuntimeParticipant::new(
+            ParticipantId::new("drive").expect("participant id"),
+            artifact_id.clone(),
+            None,
+            None,
+            ParticipantClock::Real,
+        );
         let mut artifacts = BTreeMap::new();
         artifacts.insert(artifact_id, binary);
         let index = AssetIndex::from_bytes(&assets).expect("asset index");
-        let document = RuntimeDocument::new(Runtime {
-            robot,
-            artifacts,
-            participants: vec![participant],
-            assets: index,
-            router: None,
-        })
-        .expect("runtime document");
+        let runtime =
+            Runtime::new(robot, artifacts, vec![participant], index, None).expect("runtime");
+        let document = RuntimeDocument::new(runtime).expect("runtime document");
         (document, assets, binaries)
     }
 
@@ -2323,7 +2420,7 @@ mod tests {
         assert_eq!(
             value["artifacts"]["drive"]["contract"]["requirement"],
             serde_json::Value::Null,
-            "legacy-compatible documents omit static requirements"
+            "runtime artifacts persist an explicit requirement value"
         );
         assert!(value.get("robot_id").is_none());
         let text = serde_json::to_string(&document).expect("document serializes");
@@ -2357,17 +2454,13 @@ mod tests {
         let (document, _, _) = document();
         let RuntimeDocument::V0(mut runtime) = document;
         let artifact = runtime.participants[0].artifact.clone();
-        runtime.participants.push(RuntimeParticipant {
-            id: ParticipantId::new("drive-rear").expect("participant id"),
-            artifact: artifact.clone(),
-            startup: StartupRequirement {
-                required: true,
-                ready: true,
-            },
-            config: None,
-            binding: None,
-            clock: ParticipantClock::Real,
-        });
+        runtime.participants.push(RuntimeParticipant::new(
+            ParticipantId::new("drive-rear").expect("participant id"),
+            artifact.clone(),
+            None,
+            None,
+            ParticipantClock::Real,
+        ));
 
         let document = RuntimeDocument::new(runtime).expect("shared artifact is valid");
         assert_eq!(document.artifacts().len(), 1);
@@ -2377,26 +2470,6 @@ mod tests {
                 .participants()
                 .iter()
                 .all(|participant| participant.artifact == artifact)
-        );
-    }
-
-    #[test]
-    fn runtime_json_without_requirement_remains_legacy_compatible() {
-        let (document, _, _) = document();
-        let mut value = serde_json::to_value(&document).expect("document serializes");
-        value["artifacts"]["drive"]["contract"]
-            .as_object_mut()
-            .expect("compatibility is an object")
-            .remove("requirement");
-
-        let decoded = serde_json::from_value::<RuntimeDocument>(value)
-            .expect("v0 runtime documents without the additive field remain readable");
-        let RuntimeDocument::V0(runtime) = decoded;
-        assert_eq!(
-            runtime.artifacts[&ParticipantArtifactId::new("drive").unwrap()]
-                .contract
-                .requirement,
-            None
         );
     }
 

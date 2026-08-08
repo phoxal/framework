@@ -14,9 +14,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use phoxal_bundle::{
-    AssetIndex, BinaryReference, BuildFacts, BundlePath, BundleWriter, ComponentBinding,
-    ParticipantClock, Runtime, RuntimeBundle, RuntimeDocument, RuntimeParticipant,
-    StartupRequirement,
+    AssetIndex, BinaryReference, BundlePath, BundleWriter, ParticipantClock, Runtime,
+    RuntimeBundle, RuntimeDocument, RuntimeParticipant,
 };
 use phoxal_manifest::{SourceSet, source};
 use phoxal_model::identity::ComponentInstanceId;
@@ -102,11 +101,6 @@ pub fn staged_bundle() -> StagedBundle {
                 };
                 let binary = BinaryReference::from_bytes(
                     binary_path.clone(),
-                    BuildFacts {
-                        package: format!("fixture-{}", artifact_id.as_str()),
-                        target: "host".to_string(),
-                        profile: "debug".to_string(),
-                    },
                     ParticipantContract {
                         id: artifact_id.clone(),
                         kind,
@@ -124,18 +118,13 @@ pub fn staged_bundle() -> StagedBundle {
                 binaries.insert(binary_path, bytes);
                 artifacts.insert(artifact_id.clone(), binary);
             }
-            participants.push(RuntimeParticipant {
-                id: participant_id,
-                artifact: artifact_id,
-                startup: StartupRequirement {
-                    required: true,
-                    ready: true,
-                },
+            participants.push(RuntimeParticipant::new(
+                participant_id,
+                artifact_id,
                 config,
-                binding: component_instance
-                    .map(|component_instance| ComponentBinding { component_instance }),
+                component_instance,
                 clock,
-            });
+            ));
         };
     for service in services {
         stage_participant(
@@ -150,9 +139,9 @@ pub fn staged_bundle() -> StagedBundle {
         let instance = robot
             .component_instance(driver.component_instance.as_str())
             .expect("a compiled driver must bind a canonical component instance");
-        let artifact = instance.component_type().to_string();
+        let artifact = driver.implementation.clone();
         stage_participant(
-            artifact.clone(),
+            artifact.as_str().to_string(),
             format!("{artifact}-{}", instance.id()),
             ParticipantKind::Driver,
             Some(serde_json::to_value(driver.config).expect("driver config is serializable")),
@@ -172,14 +161,9 @@ pub fn staged_bundle() -> StagedBundle {
             None,
         );
     }
-    let document = RuntimeDocument::new(Runtime {
-        robot,
-        artifacts,
-        participants,
-        assets: asset_index,
-        router: None,
-    })
-    .expect("fixture runtime document");
+    let runtime = Runtime::new(robot, artifacts, participants, asset_index, None)
+        .expect("fixture runtime is valid");
+    let document = RuntimeDocument::new(runtime).expect("fixture runtime document");
     let root = bundle.path().join("bundle");
     BundleWriter::write(&root, &document, &assets, &binaries)
         .expect("the fixture runtime bundle writes");
@@ -205,6 +189,10 @@ pub fn robot() -> Robot {
 
 #[cfg(test)]
 mod tests {
+    use phoxal_bundle::RuntimeBundle;
+    use phoxal_runtime_contract::identity::ParticipantArtifactId;
+    use phoxal_runtime_contract::metadata::ParticipantKind;
+
     use super::{robot, staged_bundle};
 
     #[test]
@@ -220,5 +208,37 @@ mod tests {
     #[test]
     fn the_fixture_robot_loads_on_the_real_clock() {
         assert_eq!(robot().clock(), phoxal_model::Clock::Real);
+    }
+
+    #[test]
+    fn driver_instances_reuse_one_artifact_and_simulation_has_one_controller() {
+        let bundle = staged_bundle();
+        let loaded = RuntimeBundle::open(bundle.path()).expect("the staged bundle loads");
+        let driver = ParticipantArtifactId::new("drive_motor").expect("driver artifact");
+        assert_eq!(
+            loaded
+                .participants()
+                .iter()
+                .filter(|participant| participant.artifact() == &driver)
+                .count(),
+            4
+        );
+        assert_eq!(loaded.artifacts().len(), 2);
+        assert_eq!(
+            loaded
+                .participants()
+                .iter()
+                .filter(|participant| {
+                    loaded
+                        .artifacts()
+                        .get(participant.artifact())
+                        .expect("participant artifact")
+                        .contract()
+                        .kind
+                        == ParticipantKind::Simulator
+                })
+                .count(),
+            1
+        );
     }
 }

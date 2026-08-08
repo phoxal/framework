@@ -104,7 +104,7 @@ version_identity! {
     /// supervisors. This is deliberately distinct from authored robot,
     /// component, and simulation source schemas.
     RuntimeSchema {
-        V0 = "phoxal/runtime/v0",
+        V0 = "phoxal/runtime-bundle/v0",
     }
 }
 
@@ -143,7 +143,7 @@ mod tests {
         assert_eq!(RobotApi::V0_1.as_str(), "phoxal/robot-api/v0.1");
         assert_eq!(RobotApi::V0_2.as_str(), "phoxal/robot-api/v0.2");
         assert_eq!(LaunchAbi::V0.as_str(), "phoxal/participant-launch/v0");
-        assert_eq!(RuntimeSchema::V0.as_str(), "phoxal/runtime/v0");
+        assert_eq!(RuntimeSchema::V0.as_str(), "phoxal/runtime-bundle/v0");
     }
 
     #[test]

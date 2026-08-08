@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use phoxal_model::AssetId;
 use phoxal_model::compiler::RobotParts;
 use phoxal_model::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
+use phoxal_runtime_contract::identity::{ParticipantArtifactId, ParticipantArtifactIdError};
 
 use source::SourceError;
 use source::robot::v0::DriverConfig;
@@ -140,6 +141,17 @@ pub enum CompileError {
         #[source]
         source: AssetError,
     },
+
+    /// A source component type cannot be used as the reusable driver artifact
+    /// identity required by the runtime contract.
+    #[error(
+        "component type '{component_type}' is not a valid driver implementation identity: {source}"
+    )]
+    InvalidDriverImplementation {
+        component_type: String,
+        #[source]
+        source: ParticipantArtifactIdError,
+    },
 }
 
 /// Why a runtime asset tree is not compilable.
@@ -198,11 +210,16 @@ pub struct CompiledService {
 
 /// One component instance whose authored source declares a hardware driver.
 ///
-/// The component type is intentionally not repeated here: the canonical
-/// [`phoxal_model::Robot`] resolves it from `component_instance`, while this
-/// fact retains only the source-owned driver declaration and configuration.
+/// The implementation identity is retained explicitly so build tooling can
+/// stage one reusable executable for every instance that selects it. The
+/// canonical [`phoxal_model::Robot`] still resolves the component type from
+/// `component_instance`; this fact carries only source-owned driver data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledDriver {
+    /// The reusable executable implementation selected for every instance of
+    /// this component type. Build tooling resolves and stages this artifact
+    /// once, then may bind it to multiple component instances.
+    pub implementation: ParticipantArtifactId,
     pub component_instance: ComponentInstanceId,
     pub config: DriverConfig,
 }
@@ -513,11 +530,19 @@ impl ResolvedSources {
             .iter()
             .filter_map(|(instance, component)| {
                 component.driver.as_ref().map(|config| {
-                    self.identity(ComponentInstanceId::new(instance))
-                        .map(|instance| CompiledDriver {
-                            component_instance: instance,
-                            config: config.clone(),
-                        })
+                    let implementation = ParticipantArtifactId::new(component.component.clone())
+                        .map_err(|source| CompileError::InvalidDriverImplementation {
+                            component_type: component.component.clone(),
+                            source,
+                        });
+                    implementation.and_then(|implementation| {
+                        self.identity(ComponentInstanceId::new(instance))
+                            .map(|instance| CompiledDriver {
+                                implementation,
+                                component_instance: instance,
+                                config: config.clone(),
+                            })
+                    })
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;

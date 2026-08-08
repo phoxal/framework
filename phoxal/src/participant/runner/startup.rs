@@ -114,18 +114,18 @@ where
             R::ID
         )
     })?;
-    if bundle.artifact.contract.id != compiled_artifact_id {
+    if bundle.artifact().contract().id != compiled_artifact_id {
         anyhow::bail!(
             "selected artifact '{}' does not match this binary's compiled artifact id '{}'",
-            bundle.artifact.contract.id,
+            bundle.artifact().contract().id,
             R::ID
         );
     }
-    if bundle.artifact.contract.kind != R::KIND {
+    if bundle.artifact().contract().kind != R::KIND {
         anyhow::bail!(
             "selected artifact '{}' has kind {:?}, but this binary declares {:?}",
-            bundle.artifact.contract.id,
-            bundle.artifact.contract.kind,
+            bundle.artifact().contract().id,
+            bundle.artifact().contract().kind,
             R::KIND
         );
     }
@@ -148,18 +148,18 @@ where
         requirement: R::REQUIREMENT,
         config_schema: process_config_schema,
     };
-    if bundle.artifact.contract != expected_contract {
+    if bundle.artifact().contract() != &expected_contract {
         anyhow::bail!(
             "selected artifact '{}' contract does not match this binary's compiled participant contract",
-            bundle.artifact.contract.id
+            bundle.artifact().contract().id
         );
     }
-    verify_current_executable(bundle.artifact.digest)?;
+    verify_current_executable(bundle.artifact().digest())?;
     // Deserialize the selected config while the process is still local. A
     // custom `Deserialize` implementation may reject a value that its JSON
     // Schema accepts; that must not become a transport-visible startup error.
-    let clock_mode = bundle.participant.clock;
-    let config = participant_config::<R::Config>(bundle.participant.config.as_ref())?;
+    let clock_mode = bundle.participant().clock();
+    let config = participant_config::<R::Config>(bundle.participant().config())?;
     let clock = clock_for_mode(clock_mode, launch.execution_origin)?;
     validate_clock_inputs::<R, _>(clock_mode, clock.as_ref())?;
     Ok((bundle, config, clock, clock_mode))

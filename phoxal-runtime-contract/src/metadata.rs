@@ -43,7 +43,6 @@ pub struct ParticipantContract {
     /// The process-boundary schemas used by the artifact.
     pub schemas: ParticipantSchemas,
     /// The optional static topology requirement.
-    #[serde(default)]
     pub requirement: Option<ParticipantRequirement>,
     /// The exact JSON Schema emitted for the artifact's config type.
     pub config_schema: serde_json::Value,
@@ -138,11 +137,11 @@ pub struct MetadataError(#[from] serde_json::Error);
 mod tests {
     use super::*;
 
-    const SCHEMAS: &str = r#"{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","runtime":"phoxal/runtime/v0"}"#;
+    const SCHEMAS: &str = r#"{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","runtime":"phoxal/runtime-bundle/v0"}"#;
 
     fn record(fields: &str) -> Vec<u8> {
         format!(
-            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},{fields}}}"#
+            r#"{{"schema":"phoxal/participant-metadata/v0","api":"phoxal/robot-api/v0.2","schemas":{SCHEMAS},"requirement":null,{fields}}}"#
         )
         .into_bytes()
     }
@@ -191,7 +190,7 @@ mod tests {
 
     #[test]
     fn an_unknown_schema_tag_is_rejected() {
-        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","runtime":"phoxal/runtime/v0"},"id":"drive","kind":"service","config_schema":null}"#;
+        let bytes = br#"{"schema":"phoxal/participant-metadata/v1","api":"phoxal/robot-api/v0.1","schemas":{"bus":"phoxal/bus-abi/v0","launch":"phoxal/participant-launch/v0","runtime":"phoxal/runtime-bundle/v0"},"id":"drive","kind":"service","config_schema":null}"#;
         assert!(ParticipantMetadata::from_bytes(bytes).is_err());
     }
 
@@ -233,15 +232,5 @@ mod tests {
             serde_json::from_str::<ParticipantRequirement>(&json).expect("requirement parses"),
             requirement
         );
-    }
-
-    #[test]
-    fn a_valid_record_without_requirement_remains_readable() {
-        let metadata = ParticipantMetadata::from_bytes(&record(
-            r#""id":"drive","kind":"service","config_schema":null"#,
-        ))
-        .expect("metadata without an optional requirement parses");
-        let contract = metadata.contract();
-        assert_eq!(contract.requirement, None);
     }
 }

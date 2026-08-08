@@ -25,6 +25,11 @@ robot:
     front_left_drive:
       component: drive_motor
       mount_link: front_left_wheel_mount
+      driver:
+        connection:
+          type: can
+          bus: 0
+          node_id: 1
       parameters:
         motor:
           kind: motor
@@ -35,6 +40,11 @@ robot:
     front_right_drive:
       component: drive_motor
       mount_link: front_right_wheel_mount
+      driver:
+        connection:
+          type: can
+          bus: 0
+          node_id: 2
       parameters:
         motor:
           kind: motor
@@ -45,6 +55,11 @@ robot:
     rear_left_drive:
       component: drive_motor
       mount_link: rear_left_wheel_mount
+      driver:
+        connection:
+          type: can
+          bus: 0
+          node_id: 3
       parameters:
         motor:
           kind: motor
@@ -55,6 +70,11 @@ robot:
     rear_right_drive:
       component: drive_motor
       mount_link: rear_right_wheel_mount
+      driver:
+        connection:
+          type: can
+          bus: 0
+          node_id: 4
       parameters:
         motor:
           kind: motor

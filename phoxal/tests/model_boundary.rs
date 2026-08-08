@@ -1,4 +1,4 @@
-use phoxal::bundle::RuntimeBundle;
+use phoxal_bundle::RuntimeBundle;
 use phoxal_fixture::staged_bundle;
 
 #[test]

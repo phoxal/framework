@@ -267,30 +267,16 @@ fn a_service_claiming_the_reserved_brain_identity_fails_compilation() {
 fn driver_facts_are_source_owned_and_simulation_stays_on_the_robot() {
     let workspace = workspace_root();
     let source_root = workspace.join("fixture/robot/rgbd-imu-diff-drive");
-    let temp = tempfile::tempdir().unwrap();
-    let yaml = std::fs::read_to_string(source_root.join("robot.yaml"))
-        .unwrap()
-        .replacen(
-            "      mount_link: front_left_wheel_mount\n",
-            "      mount_link: front_left_wheel_mount\n\
-             \x20\x20\x20\x20\x20\x20driver:\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20connection:\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20type: can\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20bus: 0\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20node_id: 1\n",
-            1,
-        );
-    std::fs::write(temp.path().join("robot.yaml"), yaml).unwrap();
-    std::fs::copy(
-        source_root.join("structure.urdf"),
-        temp.path().join("structure.urdf"),
-    )
-    .unwrap();
-
-    let compiled = sources(temp.path())
+    let compiled = sources(&source_root)
         .compile()
         .expect("driver plus simulator must compile");
-    assert_eq!(compiled.drivers().len(), 1);
+    assert_eq!(compiled.drivers().len(), 4);
+    assert!(
+        compiled
+            .drivers()
+            .iter()
+            .all(|driver| driver.implementation.as_str() == "drive_motor")
+    );
     assert_eq!(
         compiled.drivers()[0].component_instance.as_str(),
         "front_left_drive"

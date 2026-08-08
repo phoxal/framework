@@ -82,6 +82,7 @@ fn public_library_dependency_direction_is_exact() -> Result<()> {
         ("phoxal-bundle", "phoxal-runtime-contract"),
         ("phoxal-bus", "phoxal-runtime-contract"),
         ("phoxal-manifest", "phoxal-model"),
+        ("phoxal-manifest", "phoxal-runtime-contract"),
     ];
     let mut actual = Vec::new();
     for package in metadata
