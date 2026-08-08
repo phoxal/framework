@@ -195,8 +195,7 @@ where
 
     let participant_id = launch.participant_id.clone();
     let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), &participant_id);
-    let result =
-        run_lifecycle::<R, C, S>(bus, launch, bundle, clock, shutdown, bus_log_task).await;
+    let result = run_lifecycle::<R, C, S>(bus, launch, bundle, clock, shutdown, bus_log_task).await;
     bus_logs.shutdown();
     result
 }
@@ -403,6 +402,10 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
     /// Every failure after `setup` succeeds still runs the full teardown, so a
     /// server or liveliness declaration that fails cannot bypass the
     /// participant's hardware-safety hook.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "startup keeps the validated bundle, scheduler, clock, launch, and framework tasks explicit"
+    )]
     async fn start(
         bus: &Bus,
         launch: &ParticipantLaunch,
