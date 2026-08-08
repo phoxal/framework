@@ -19,9 +19,7 @@ pub(crate) const AUTONOMOUS_STALE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Arbitration {
-    pub(crate) source: Option<api::motion::Source>,
-    pub(crate) selected: api::drive::Target,
-    pub(crate) zero_reason: Option<api::motion::ZeroReason>,
+    pub(crate) decision: api::motion::Decision,
 }
 
 impl Arbitration {
@@ -37,10 +35,7 @@ impl Arbitration {
         now: RobotInstant,
     ) -> Self {
         if emergency_stop_engaged {
-            return Self::zero(
-                Some(api::motion::Source::EmergencyStop),
-                api::motion::ZeroReason::EmergencyStopEngaged,
-            );
+            return Self::zero(api::motion::ZeroReason::EmergencyStopEngaged);
         }
 
         if let Some(manual) = manual {
@@ -50,7 +45,7 @@ impl Arbitration {
             // bounded by e-stop, the lease, finite-value, and robot limits.
             let limits = match safety.filter(|constraints| safety_is_usable(constraints, now)) {
                 Some(safety) if safety.body.stop => {
-                    return Self::zero(None, api::motion::ZeroReason::SafetyProtectiveStop);
+                    return Self::zero(api::motion::ZeroReason::SafetyProtectiveStop);
                 }
                 Some(safety) => constrained_limits(limits, &safety.body),
                 None => limits,
@@ -68,10 +63,10 @@ impl Arbitration {
         {
             let Some(safety) = safety.filter(|constraints| safety_is_usable(constraints, now))
             else {
-                return Self::zero(None, api::motion::ZeroReason::SafetyConstraintsUnavailable);
+                return Self::zero(api::motion::ZeroReason::SafetyConstraintsUnavailable);
             };
             if safety.body.stop {
-                return Self::zero(None, api::motion::ZeroReason::SafetyProtectiveStop);
+                return Self::zero(api::motion::ZeroReason::SafetyProtectiveStop);
             }
             let limits = constrained_limits(limits, &safety.body);
             return Self::select(
@@ -87,7 +82,7 @@ impl Arbitration {
         } else {
             api::motion::ZeroReason::NoCandidate
         };
-        Self::zero(None, reason)
+        Self::zero(reason)
     }
 
     /// Accept one candidate, clamped to `limits`. A non-finite candidate is a
@@ -106,31 +101,34 @@ impl Arbitration {
                 }
                 api::motion::Source::EmergencyStop => api::motion::ZeroReason::EmergencyStopEngaged,
             };
-            return Self::zero(Some(source), reason);
+            return Self::zero(reason);
         }
 
+        let linear_x_mps =
+            linear_x_mps.clamp(-limits.max_linear_speed_mps, limits.max_linear_speed_mps) as f32;
+        let angular_z_radps = angular_z_radps.clamp(
+            -limits.max_angular_speed_radps,
+            limits.max_angular_speed_radps,
+        ) as f32;
+        let Ok(target) = api::drive::Target::try_new(linear_x_mps, angular_z_radps) else {
+            let reason = match source {
+                api::motion::Source::Manual => api::motion::ZeroReason::ManualCandidateNotFinite,
+                api::motion::Source::Navigation => {
+                    api::motion::ZeroReason::NavigationCandidateNotFinite
+                }
+                api::motion::Source::EmergencyStop => api::motion::ZeroReason::EmergencyStopEngaged,
+            };
+            return Self::zero(reason);
+        };
         Self {
-            source: Some(source),
-            selected: api::drive::Target {
-                linear_x_mps: linear_x_mps
-                    .clamp(-limits.max_linear_speed_mps, limits.max_linear_speed_mps)
-                    as f32,
-                angular_z_radps: angular_z_radps.clamp(
-                    -limits.max_angular_speed_radps,
-                    limits.max_angular_speed_radps,
-                ) as f32,
-                curvature_limit_radpm: None,
-            },
-            zero_reason: None,
+            decision: api::motion::Decision::Active { source, target },
         }
     }
 
     /// Command no motion, recording why.
-    fn zero(source: Option<api::motion::Source>, reason: api::motion::ZeroReason) -> Self {
+    fn zero(reason: api::motion::ZeroReason) -> Self {
         Self {
-            source,
-            selected: api::drive::Target::stopped(),
-            zero_reason: Some(reason),
+            decision: api::motion::Decision::Stopped { reason },
         }
     }
 }
@@ -316,6 +314,27 @@ mod tests {
         }
     }
 
+    fn stopped_reason(result: &Arbitration) -> api::motion::ZeroReason {
+        let api::motion::Decision::Stopped { reason } = &result.decision else {
+            panic!("expected a stopped motion decision");
+        };
+        *reason
+    }
+
+    fn active_target(result: &Arbitration) -> &api::drive::Target {
+        let api::motion::Decision::Active { target, .. } = &result.decision else {
+            panic!("expected an active motion decision");
+        };
+        target
+    }
+
+    fn active_source(result: &Arbitration) -> api::motion::Source {
+        let api::motion::Decision::Active { source, .. } = &result.decision else {
+            panic!("expected an active motion decision");
+        };
+        *source
+    }
+
     #[test]
     fn contradictory_nested_safety_stop_fails_closed() {
         let mut safety = safety();
@@ -324,8 +343,8 @@ mod tests {
         let result =
             Arbitration::decide(None, Some(&autonomous), false, Some(&safety), LIMITS, now());
         assert_eq!(
-            result.zero_reason,
-            Some(api::motion::ZeroReason::SafetyConstraintsUnavailable)
+            stopped_reason(&result),
+            api::motion::ZeroReason::SafetyConstraintsUnavailable
         );
     }
 
@@ -355,8 +374,8 @@ mod tests {
             let result =
                 Arbitration::decide(None, Some(&autonomous), false, Some(&safety), LIMITS, now());
             assert_eq!(
-                result.zero_reason,
-                Some(api::motion::ZeroReason::SafetyConstraintsUnavailable)
+                stopped_reason(&result),
+                api::motion::ZeroReason::SafetyConstraintsUnavailable
             );
         }
     }
@@ -364,10 +383,15 @@ mod tests {
     #[test]
     fn missing_candidates_are_explained() {
         let result = Arbitration::decide(None, None, false, Some(&safety()), LIMITS, now());
-        assert_eq!(result.source, None);
+        assert!(matches!(
+            result.decision,
+            api::motion::Decision::Stopped {
+                reason: api::motion::ZeroReason::NoCandidate
+            }
+        ));
         assert_eq!(
-            result.zero_reason,
-            Some(api::motion::ZeroReason::NoCandidate)
+            stopped_reason(&result),
+            api::motion::ZeroReason::NoCandidate
         );
     }
 
@@ -375,10 +399,15 @@ mod tests {
     fn emergency_stop_overrides_manual_and_navigation() {
         let manual = manual(0.2, 0.1);
         let result = Arbitration::decide(Some(&manual), None, true, None, LIMITS, now());
-        assert_eq!(result.selected, api::drive::Target::stopped());
+        assert!(matches!(
+            result.decision,
+            api::motion::Decision::Stopped {
+                reason: api::motion::ZeroReason::EmergencyStopEngaged
+            }
+        ));
         assert_eq!(
-            result.zero_reason,
-            Some(api::motion::ZeroReason::EmergencyStopEngaged)
+            stopped_reason(&result),
+            api::motion::ZeroReason::EmergencyStopEngaged
         );
     }
 
@@ -387,9 +416,9 @@ mod tests {
         let manual = manual(9.0, -9.0);
         let result =
             Arbitration::decide(Some(&manual), None, false, Some(&safety()), LIMITS, now());
-        assert_eq!(result.source, Some(api::motion::Source::Manual));
-        assert_eq!(result.selected.linear_x_mps, 0.6);
-        assert_eq!(result.selected.angular_z_radps, -2.0);
+        assert_eq!(active_source(&result), api::motion::Source::Manual);
+        assert_eq!(active_target(&result).linear_x_mps(), 0.6);
+        assert_eq!(active_target(&result).angular_z_radps(), -2.0);
     }
 
     #[test]
@@ -397,10 +426,15 @@ mod tests {
         let manual = manual(f64::NAN, 0.0);
         let result =
             Arbitration::decide(Some(&manual), None, false, Some(&safety()), LIMITS, now());
-        assert_eq!(result.selected, api::drive::Target::stopped());
+        assert!(matches!(
+            result.decision,
+            api::motion::Decision::Stopped {
+                reason: api::motion::ZeroReason::ManualCandidateNotFinite
+            }
+        ));
         assert_eq!(
-            result.zero_reason,
-            Some(api::motion::ZeroReason::ManualCandidateNotFinite)
+            stopped_reason(&result),
+            api::motion::ZeroReason::ManualCandidateNotFinite
         );
     }
 
@@ -413,8 +447,8 @@ mod tests {
         };
         let result =
             Arbitration::decide(Some(&manual), None, false, Some(&safety()), limits, now());
-        assert!(result.selected.linear_x_mps.is_finite());
-        assert!(result.selected.angular_z_radps.is_finite());
+        assert!(active_target(&result).linear_x_mps().is_finite());
+        assert!(active_target(&result).angular_z_radps().is_finite());
     }
 
     #[test]
@@ -436,16 +470,16 @@ mod tests {
             limits,
             RobotInstant::new(replaced, NOW_NS),
         );
-        assert_eq!(result.source, Some(api::motion::Source::Manual));
-        assert_eq!(result.selected.linear_x_mps, 0.4);
+        assert_eq!(active_source(&result), api::motion::Source::Manual);
+        assert_eq!(active_target(&result).linear_x_mps(), 0.4);
     }
 
     #[test]
     fn manual_works_without_safety_and_uses_valid_constraints_when_available() {
         let manual = manual(0.5, 0.4);
         let missing = Arbitration::decide(Some(&manual), None, false, None, LIMITS, now());
-        assert_eq!(missing.source, Some(api::motion::Source::Manual));
-        assert_eq!(missing.selected.linear_x_mps, 0.5);
+        assert_eq!(active_source(&missing), api::motion::Source::Manual);
+        assert_eq!(active_target(&missing).linear_x_mps(), 0.5);
 
         let mut constrained = safety();
         constrained.body.max_linear_speed_mps = Some(0.1);
@@ -460,8 +494,8 @@ mod tests {
             LIMITS,
             now(),
         );
-        assert_eq!(result.selected.linear_x_mps, 0.1);
-        assert_eq!(result.selected.angular_z_radps, 0.4);
+        assert_eq!(active_target(&result).linear_x_mps(), 0.1);
+        assert_eq!(active_target(&result).angular_z_radps(), 0.4);
     }
 
     #[test]
@@ -469,8 +503,8 @@ mod tests {
         let autonomous = autonomous();
         let missing = Arbitration::decide(None, Some(&autonomous), false, None, LIMITS, now());
         assert_eq!(
-            missing.zero_reason,
-            Some(api::motion::ZeroReason::SafetyConstraintsUnavailable)
+            stopped_reason(&missing),
+            api::motion::ZeroReason::SafetyConstraintsUnavailable
         );
     }
 
@@ -481,10 +515,15 @@ mod tests {
         stopped.body.stop = true;
         stopped.body.constraints.push(safety_constraint(true));
         let result = Arbitration::decide(Some(&manual), None, false, Some(&stopped), LIMITS, now());
-        assert_eq!(result.selected, api::drive::Target::stopped());
+        assert!(matches!(
+            result.decision,
+            api::motion::Decision::Stopped {
+                reason: api::motion::ZeroReason::SafetyProtectiveStop
+            }
+        ));
         assert_eq!(
-            result.zero_reason,
-            Some(api::motion::ZeroReason::SafetyProtectiveStop)
+            stopped_reason(&result),
+            api::motion::ZeroReason::SafetyProtectiveStop
         );
     }
 }

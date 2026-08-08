@@ -2,14 +2,19 @@
 
 use std::time::Duration;
 
-use crate::v0_1 as api;
+use crate::v0_2 as api;
 
 #[test]
-fn stopped_target_commands_no_motion_and_no_curvature_limit() {
+fn stopped_target_commands_no_motion() {
     let stopped = api::drive::Target::stopped();
-    assert_eq!(stopped.linear_x_mps, 0.0);
-    assert_eq!(stopped.angular_z_radps, 0.0);
-    assert_eq!(stopped.curvature_limit_radpm, None);
+    assert_eq!(stopped.linear_x_mps(), 0.0);
+    assert_eq!(stopped.angular_z_radps(), 0.0);
+}
+
+#[test]
+fn target_constructor_rejects_non_finite_components() {
+    assert!(api::drive::Target::try_new(f32::NAN, 0.0).is_err());
+    assert!(api::drive::Target::try_new(0.0, f32::INFINITY).is_err());
 }
 
 #[test]

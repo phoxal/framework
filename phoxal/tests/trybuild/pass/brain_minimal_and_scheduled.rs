@@ -56,11 +56,7 @@ impl Participant for MissionBrain {
     ) -> Result<()> {
         state.steps += 1;
         let _ = api.drive.latest();
-        api.target.send(api::drive::Target {
-            linear_x_mps: 0.0,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
-        })?;
+        api.target.send(api::drive::Target::stopped())?;
         Ok(())
     }
 }

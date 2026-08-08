@@ -71,11 +71,7 @@
 //!         _step: StepContext,
 //!         _state: &mut Self::State,
 //!     ) -> Result<()> {
-//!         api.target.send(api::drive::Target {
-//!             linear_x_mps: 0.2,
-//!             angular_z_radps: 0.0,
-//!             curvature_limit_radpm: None,
-//!         })?;
+//!         api.target.send(api::drive::Target::try_new(0.2, 0.0)?)?;
 //!         Ok(())
 //!     }
 //! }
@@ -325,7 +321,7 @@ pub mod __private {
         };
 
         /// The train-selected API revision (`phoxal::api`).
-        pub const API: RobotApi = RobotApi::V0_1;
+        pub const API: RobotApi = RobotApi::V0_2;
         /// The bus wire ABI.
         pub const BUS: BusAbi = BusAbi::V0;
         /// The launch record / environment ABI.

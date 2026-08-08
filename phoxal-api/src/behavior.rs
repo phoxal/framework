@@ -14,7 +14,7 @@
 //! arbitration rules belongs to that participant, not to the contract. The
 //! module is deliberately private: these are inherent impls, so each item is
 //! still reached at exactly one canonical path on its own type
-//! (`v0_1::drive::Target::stopped`), and there is no second way to name it.
+//! (`v0_2::drive::Target::stopped`), and there is no second way to name it.
 //!
 //! The wire is untouched by construction. Inherent impls add no field, no
 //! variant and no serde attribute, so nothing here can change how a body
@@ -22,15 +22,10 @@
 
 use std::time::Duration;
 
-use crate::v0_1;
+use crate::{v0_1, v0_2};
 
 impl v0_1::drive::Target {
     /// The target that commands no motion.
-    ///
-    /// Both velocity components are zero and there is no curvature limit: a
-    /// curvature limit constrains the path a moving body may take, and a body
-    /// that is not moving has no path to constrain, so `None` is the honest
-    /// value rather than an arbitrary bound.
     ///
     /// This is the value every producer in the drive chain publishes when it has
     /// nothing to command - on arbitration finding no candidate, and on the
@@ -45,6 +40,62 @@ impl v0_1::drive::Target {
         }
     }
 }
+
+impl v0_2::drive::Target {
+    /// Construct a target only when both planar velocity components are finite.
+    pub fn try_new(linear_x_mps: f32, angular_z_radps: f32) -> Result<Self, InvalidTarget> {
+        if !linear_x_mps.is_finite() {
+            return Err(InvalidTarget::LinearXNotFinite);
+        }
+        if !angular_z_radps.is_finite() {
+            return Err(InvalidTarget::AngularZNotFinite);
+        }
+        Ok(Self {
+            linear_x_mps,
+            angular_z_radps,
+        })
+    }
+
+    /// The finite forward velocity component in metres per second.
+    #[must_use]
+    pub const fn linear_x_mps(&self) -> f32 {
+        self.linear_x_mps
+    }
+
+    /// The finite yaw velocity component in radians per second.
+    #[must_use]
+    pub const fn angular_z_radps(&self) -> f32 {
+        self.angular_z_radps
+    }
+
+    /// The target that commands no motion.
+    #[must_use]
+    pub const fn stopped() -> Self {
+        Self {
+            linear_x_mps: 0.0,
+            angular_z_radps: 0.0,
+        }
+    }
+}
+
+/// Why a control target could not be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidTarget {
+    LinearXNotFinite,
+    AngularZNotFinite,
+}
+
+impl std::fmt::Display for InvalidTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let field = match self {
+            Self::LinearXNotFinite => "linear_x_mps",
+            Self::AngularZNotFinite => "angular_z_radps",
+        };
+        write!(formatter, "control target field {field} must be finite")
+    }
+}
+
+impl std::error::Error for InvalidTarget {}
 
 impl v0_1::localize::LocalizationState {
     /// Whether this estimate is a pose a consumer may act on.
@@ -117,5 +168,32 @@ impl v0_1::component::encoder::Sample {
     /// would let a dead publisher move the robot's idea of itself forever.
     /// Drivers publish well above this rate, so the horizon only trips on a
     /// genuinely silent publisher and not on ordinary jitter.
+    pub const STALE_AFTER: Duration = Duration::from_millis(200);
+}
+
+impl v0_2::localize::LocalizationState {
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        self.x_m.is_finite()
+            && self.y_m.is_finite()
+            && self.yaw_rad.is_finite()
+            && self.confidence.is_finite()
+            && self.confidence > 0.0
+    }
+}
+
+impl v0_2::navigation::RequestId {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let value = self.value.trim();
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    }
+}
+
+impl v0_2::component::encoder::Sample {
     pub const STALE_AFTER: Duration = Duration::from_millis(200);
 }

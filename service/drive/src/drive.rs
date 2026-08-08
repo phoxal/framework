@@ -5,8 +5,8 @@
 //! angular limits, mixes the limited twist into per-wheel angular speeds via
 //! differential inverse kinematics, and commands each wheel motor on its dynamic
 //! `component/<id>/motor/<cap>/command` topic.
-//! It also publishes `drive/state` (the raw requested target, the limited target,
-//! the actuator authority, and any stop reason).
+//! It also publishes `drive/state` as one active/stopped decision carrying the
+//! requested target and, when active, the limited target.
 //! The per-side motor bindings and wheel geometry are built from the robot
 //! model. Unsupported kinematics make the service explicitly inactive rather
 //! than failing static startup.
@@ -54,8 +54,8 @@ trait DriveTargetKinematics {
 impl DriveTargetKinematics for DifferentialDrive {
     fn wheel_targets(self, target: &api::drive::Target) -> Option<(f64, f64)> {
         let speeds = self.wheel_speeds(BodyTwist::planar(
-            f64::from(target.linear_x_mps),
-            f64::from(target.angular_z_radps),
+            f64::from(target.linear_x_mps()),
+            f64::from(target.angular_z_radps()),
         ));
         let (left, right) = (speeds.left_radps, speeds.right_radps);
         (left.is_finite()
@@ -198,17 +198,7 @@ impl DriveState {
         host_now: LocalInstant,
         now: RobotInstant,
     ) -> (api::drive::State, (f64, f64)) {
-        let stopped = |target, stop_reason| {
-            (
-                api::drive::State {
-                    target,
-                    limited_target: api::drive::Target::stopped(),
-                    actuator_authority: api::drive::ActuatorAuthority::Stopped,
-                    stop_reason: Some(stop_reason),
-                },
-                (0.0, 0.0),
-            )
-        };
+        let stopped = |target, reason| (api::drive::State::Stopped { target, reason }, (0.0, 0.0));
 
         let limits = self.limits;
         let Some(kinematics) = self.kinematics else {
@@ -223,28 +213,27 @@ impl DriveState {
                 api::drive::StopReason::TargetStale,
             );
         };
-        if !(target.linear_x_mps.is_finite()
-            && target.angular_z_radps.is_finite()
-            && target.curvature_limit_radpm.is_none_or(f32::is_finite))
-        {
+        // A target decoded from the bus or built by a caller is finite by
+        // construction. Keep this branch as a defensive check for values
+        // produced inside this crate before the final wheel mix.
+        if !(target.linear_x_mps().is_finite() && target.angular_z_radps().is_finite()) {
             return stopped(target, api::drive::StopReason::TargetNotFinite);
         }
 
         let clamp = |value: f32, limit: f64| value.clamp(-limit as f32, limit as f32);
-        let limited_target = api::drive::Target {
-            linear_x_mps: clamp(target.linear_x_mps, limits.max_linear_speed_mps),
-            angular_z_radps: clamp(target.angular_z_radps, limits.max_angular_speed_radps),
-            curvature_limit_radpm: target.curvature_limit_radpm,
+        let Ok(limited_target) = api::drive::Target::try_new(
+            clamp(target.linear_x_mps(), limits.max_linear_speed_mps),
+            clamp(target.angular_z_radps(), limits.max_angular_speed_radps),
+        ) else {
+            return stopped(target, api::drive::StopReason::TargetNotFinite);
         };
         let Some(wheels) = kinematics.wheel_targets(&limited_target) else {
             return stopped(target, api::drive::StopReason::ActuatorCommandNotFinite);
         };
         (
-            api::drive::State {
+            api::drive::State::Active {
                 target,
                 limited_target,
-                actuator_authority: api::drive::ActuatorAuthority::Active,
-                stop_reason: None,
             },
             wheels,
         )
@@ -392,11 +381,7 @@ mod tests {
     #[test]
     fn wheel_command_overflow_fails_closed() {
         let kinematics = DifferentialDrive::new(f64::MIN_POSITIVE, 0.4);
-        let target = api::drive::Target {
-            linear_x_mps: 0.6,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
-        };
+        let target = api::drive::Target::try_new(0.6, 0.0).unwrap();
         assert!(kinematics.wheel_targets(&target).is_none());
     }
 
@@ -428,7 +413,7 @@ mod tests {
         assert_eq!(config.kinematics.unwrap().wheel_radius_m, 0.1);
         // Each binding resolves to a concrete dynamic motor topic.
         let topic = config.left[0].topic();
-        assert!(topic.key().starts_with("v0.1/component/"));
+        assert!(topic.key().starts_with("v0.2/component/"));
         assert!(topic.key().ends_with("/command"));
     }
 
@@ -454,11 +439,7 @@ mod tests {
 
     #[test]
     fn a_decision_reports_raw_requested_and_limited_targets() {
-        let requested = api::drive::Target {
-            linear_x_mps: 5.0,
-            angular_z_radps: -5.0,
-            curvature_limit_radpm: Some(0.4),
-        };
+        let requested = api::drive::Target::try_new(5.0, -5.0).unwrap();
         let (host_now, now) = instants();
         let mut state = drive_state(Some(KINEMATICS));
         state
@@ -467,15 +448,16 @@ mod tests {
 
         let (published, wheels) = state.decide(host_now, now);
 
-        assert_eq!(published.target, requested);
-        assert_eq!(published.limited_target.linear_x_mps, 0.6);
-        assert_eq!(published.limited_target.angular_z_radps, -2.0);
-        assert_eq!(published.limited_target.curvature_limit_radpm, Some(0.4));
-        assert_eq!(
-            published.actuator_authority,
-            api::drive::ActuatorAuthority::Active
-        );
-        assert_eq!(published.stop_reason, None);
+        let api::drive::State::Active {
+            target,
+            limited_target,
+        } = published
+        else {
+            panic!("a live finite target must produce an active drive state");
+        };
+        assert_eq!(target, requested);
+        assert_eq!(limited_target.linear_x_mps(), 0.6);
+        assert_eq!(limited_target.angular_z_radps(), -2.0);
         // The wheels are driven from the *limited* target, not the raw request.
         let (left, right) = wheels;
         assert!((left - 10.0).abs() < 1e-6 && (right - 2.0).abs() < 1e-6);
@@ -486,15 +468,13 @@ mod tests {
         let (host_now, now) = instants();
         let (published, wheels) = drive_state(Some(KINEMATICS)).decide(host_now, now);
 
-        assert_eq!(published.limited_target, api::drive::Target::stopped());
-        assert_eq!(
-            published.actuator_authority,
-            api::drive::ActuatorAuthority::Stopped
-        );
-        assert_eq!(
-            published.stop_reason,
-            Some(api::drive::StopReason::TargetStale)
-        );
+        assert!(matches!(
+            published,
+            api::drive::State::Stopped {
+                target,
+                reason: api::drive::StopReason::TargetStale,
+            } if target == api::drive::Target::stopped()
+        ));
         assert_eq!(wheels, (0.0, 0.0));
     }
 
@@ -505,11 +485,13 @@ mod tests {
         let (host_now, now) = instants();
         let (published, wheels) = drive_state(None).decide(host_now, now);
 
-        assert_eq!(published.target, api::drive::Target::stopped());
-        assert_eq!(
-            published.stop_reason,
-            Some(api::drive::StopReason::Inactive)
-        );
+        assert!(matches!(
+            published,
+            api::drive::State::Stopped {
+                target,
+                reason: api::drive::StopReason::Inactive,
+            } if target == api::drive::Target::stopped()
+        ));
         assert_eq!(wheels, (0.0, 0.0));
     }
 
@@ -517,11 +499,7 @@ mod tests {
     /// request so a consumer can see what was asked for.
     #[test]
     fn a_wheel_command_the_motors_cannot_carry_stops_the_wheels() {
-        let requested = api::drive::Target {
-            linear_x_mps: 0.6,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
-        };
+        let requested = api::drive::Target::try_new(0.6, 0.0).unwrap();
         let (host_now, now) = instants();
         let mut state = drive_state(Some(DifferentialDrive::new(f64::MIN_POSITIVE, 0.4)));
         state
@@ -530,12 +508,13 @@ mod tests {
 
         let (published, wheels) = state.decide(host_now, now);
 
-        assert_eq!(published.target, requested);
-        assert_eq!(published.limited_target, api::drive::Target::stopped());
-        assert_eq!(
-            published.stop_reason,
-            Some(api::drive::StopReason::ActuatorCommandNotFinite)
-        );
+        assert!(matches!(
+            published,
+            api::drive::State::Stopped {
+                target,
+                reason: api::drive::StopReason::ActuatorCommandNotFinite,
+            } if target == requested
+        ));
         assert_eq!(wheels, (0.0, 0.0));
     }
 
@@ -545,11 +524,7 @@ mod tests {
     /// it.
     #[test]
     fn either_lease_expiry_condition_alone_stops_the_wheels() {
-        let requested = api::drive::Target {
-            linear_x_mps: 0.4,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
-        };
+        let requested = api::drive::Target::try_new(0.4, 0.0).unwrap();
         let producer = producer(1);
         let line = TimelineId::mint();
         let host_start = LocalInstant::from_boot_ns(0);
@@ -579,11 +554,7 @@ mod tests {
     /// superseded producer must not be able to command afterwards.
     #[test]
     fn a_replacement_producer_takes_over_and_fences_the_previous_one() {
-        let target = |linear_x_mps| api::drive::Target {
-            linear_x_mps,
-            angular_z_radps: 0.0,
-            curvature_limit_radpm: None,
-        };
+        let target = |linear_x_mps| api::drive::Target::try_new(linear_x_mps, 0.0).unwrap();
         let first = producer(2);
         let second = producer(3);
         let host_now = LocalInstant::from_boot_ns(0);
@@ -597,7 +568,9 @@ mod tests {
         ));
         assert_eq!(lease.producer(), Some(second));
         assert_eq!(
-            lease.live(host_now, now).map(|target| target.linear_x_mps),
+            lease
+                .live(host_now, now)
+                .map(api::drive::Target::linear_x_mps),
             Some(0.2)
         );
         assert!(matches!(

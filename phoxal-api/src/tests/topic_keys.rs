@@ -89,3 +89,23 @@ fn dynamic_topic_contract_body_topic_is_derived_from_node_path() {
         "v0.1/component/{instance}/encoder/{capability}/sample"
     );
 }
+
+#[test]
+fn current_control_contracts_use_the_v0_2_keyspace() {
+    assert_eq!(
+        <crate::v0_2::drive::Target as ContractBody>::TOPIC,
+        "v0.2/drive/target"
+    );
+    assert_eq!(
+        <crate::v0_2::drive::State as ContractBody>::TOPIC,
+        "v0.2/drive/state"
+    );
+    assert_eq!(
+        <crate::v0_2::motion::ManualCommand as ContractBody>::TOPIC,
+        "v0.2/motion/manual"
+    );
+    assert_eq!(
+        <crate::v0_2::motion::State as ContractBody>::TOPIC,
+        "v0.2/motion/state"
+    );
+}

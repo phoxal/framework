@@ -269,19 +269,21 @@ impl Participant for Motion {
         );
         state.estop.finish_cycle();
 
-        api.drive.send(arbitration.selected.clone())?;
+        let drive_target = match &arbitration.decision {
+            api::motion::Decision::Active { target, .. } => target.clone(),
+            api::motion::Decision::Stopped { .. } => api::drive::Target::stopped(),
+        };
+        api.drive.send(drive_target)?;
         api.state.publish(
             &step.token,
             api::motion::State {
+                decision: arbitration.decision,
                 manual_observed_age_ns: manual_observed_age_ns(state.manual_observed_at, host_now),
                 autonomous_candidate_age_ns: candidate_age_ns(state.last_autonomous.as_ref(), now),
                 safety_constraints_age_ns: candidate_age_ns(
                     state.last_safety_constraints.as_ref(),
                     now,
                 ),
-                selected_source: arbitration.source,
-                final_target: state_target(&arbitration.selected),
-                zero_reason: arbitration.zero_reason,
                 safety_runtime,
                 component_estop_blocked: state.estop.components_blocked(now),
                 active_safety_constraints: state.last_safety_constraints.as_ref().map_or_else(
@@ -297,14 +299,6 @@ impl Participant for Motion {
             },
         )?;
         Ok(())
-    }
-}
-
-fn state_target(target: &api::drive::Target) -> api::motion::Target {
-    api::motion::Target {
-        linear_x_mps: target.linear_x_mps,
-        angular_z_radps: target.angular_z_radps,
-        curvature_limit_radpm: target.curvature_limit_radpm,
     }
 }
 
@@ -336,19 +330,6 @@ mod tests {
 
     fn latch(count: u8) -> EmergencyStopLatch {
         EmergencyStopLatch::new((0..count).map(estop))
-    }
-
-    #[test]
-    fn state_target_preserves_the_drive_command() {
-        let drive = api::drive::Target {
-            linear_x_mps: 0.3,
-            angular_z_radps: -0.4,
-            curvature_limit_radpm: Some(1.0),
-        };
-        let state = state_target(&drive);
-        assert_eq!(state.linear_x_mps, drive.linear_x_mps);
-        assert_eq!(state.angular_z_radps, drive.angular_z_radps);
-        assert_eq!(state.curvature_limit_radpm, drive.curvature_limit_radpm);
     }
 
     /// The manual command runs on the same receiver-owned lease as any other

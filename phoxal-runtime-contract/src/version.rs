@@ -84,6 +84,9 @@ version_identity! {
         /// Spelled `V0_1`, not `V01`: the revision has two components and the
         /// separator is part of the identity.
         V0_1 = "phoxal/robot-api/v0.1",
+        /// The current control-wire revision. The historic `V0_1` identity
+        /// remains available to compatibility adapters and is immutable.
+        V0_2 = "phoxal/robot-api/v0.2",
     }
 }
 
@@ -139,6 +142,7 @@ mod tests {
     fn every_identity_serializes_to_its_canonical_spelling_and_back() {
         assert_round_trip!(BusAbi::V0);
         assert_round_trip!(RobotApi::V0_1);
+        assert_round_trip!(RobotApi::V0_2);
         assert_round_trip!(LaunchAbi::V0);
         assert_round_trip!(RobotSchema::V0);
         assert_round_trip!(ComponentSchema::V0);
@@ -149,6 +153,7 @@ mod tests {
     fn the_canonical_spellings_are_the_tokens_a_peer_binary_expects() {
         assert_eq!(BusAbi::V0.as_str(), "phoxal/bus-abi/v0");
         assert_eq!(RobotApi::V0_1.as_str(), "phoxal/robot-api/v0.1");
+        assert_eq!(RobotApi::V0_2.as_str(), "phoxal/robot-api/v0.2");
         assert_eq!(LaunchAbi::V0.as_str(), "phoxal/participant-launch/v0");
         assert_eq!(RobotSchema::V0.as_str(), "phoxal/robot/v0");
         assert_eq!(ComponentSchema::V0.as_str(), "phoxal/component/v0");

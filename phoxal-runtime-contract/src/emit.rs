@@ -121,7 +121,7 @@ mod tests {
     const CONFIG_SCHEMA: &str = r#"{"type":"null"}"#;
 
     const EMBEDDED: &str = participant_metadata_json!(
-        api = RobotApi::V0_1,
+        api = RobotApi::V0_2,
         bus = BusAbi::V0,
         launch = LaunchAbi::V0,
         robot = RobotSchema::V0,
@@ -134,7 +134,7 @@ mod tests {
 
     fn typed_record() -> ParticipantMetadataRecord<'static> {
         ParticipantMetadataRecord::V0 {
-            api: RobotApi::V0_1,
+            api: RobotApi::V0_2,
             schemas: ParticipantSchemas {
                 bus: BusAbi::V0,
                 launch: LaunchAbi::V0,
@@ -167,7 +167,7 @@ mod tests {
         } = ParticipantMetadata::from_bytes(EMBEDDED.as_bytes())
             .expect("the writer's own output must satisfy the parser");
 
-        assert_eq!(api, RobotApi::V0_1);
+        assert_eq!(api, RobotApi::V0_2);
         assert_eq!(schemas.bus, BusAbi::V0);
         assert_eq!(schemas.launch, LaunchAbi::V0);
         assert_eq!(schemas.robot, RobotSchema::V0);

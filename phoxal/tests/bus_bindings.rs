@@ -4,7 +4,7 @@
 //! `decode_sample`, codec round-trips, key-root validation) are unit tested in
 //! the `phoxal-bus` crate against a hand-written `ContractBody`. These pin the
 //! *engine-level* binding instead: that the `phoxal_api_tree!` generated
-//! `ContractBody`/`ApiVersion` impls for `v0_1` flow through `phoxal::bus`
+//! `ContractBody`/`ApiVersion` impls for the train-selected revision flow through `phoxal::bus`
 //! exactly as published, and that `TOPIC` is version-qualified. That makes them
 //! integration tests against the real API tree, not bus unit tests.
 
@@ -18,18 +18,17 @@ fn encoding_string_carries_only_the_codec() {
     assert_eq!(CodecId::MessagePack.encoding_string(), "phoxal/v0;codec=1");
 }
 
-/// The revision is folded into the wire key, so a real v0.1 contract publishes
-/// on a key that cannot collide with a hypothetical v0.2 contract of the same
-/// leaf name.
+/// The revision is folded into the wire key, so the current v0.2 contract
+/// publishes on a key that cannot collide with the immutable v0.1 contract.
 #[test]
 fn contract_body_topic_is_version_qualified_on_the_real_tree() {
     assert_eq!(
         <api::drive::Target as ContractBody>::TOPIC,
-        "v0.1/drive/target"
+        "v0.2/drive/target"
     );
     assert_eq!(
         <api::supervisor::asset::GetRequest as ContractBody>::TOPIC,
-        "v0.1/supervisor/asset/get"
+        "v0.2/supervisor/asset/get"
     );
 }
 

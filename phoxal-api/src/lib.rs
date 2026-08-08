@@ -171,6 +171,21 @@ fn valid_video_source_segment(value: &str) -> bool {
         })
 }
 
+/// Deserialize a control-target scalar without allowing a non-finite value to
+/// enter a lease or a wheel-mixing calculation. The target fields remain plain
+/// `f32`s on the wire; their explicitly restricted visibility and this serde
+/// hook make serde enforce the same invariant as `Target::try_new`.
+pub(crate) fn deserialize_finite_target_scalar<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("control target scalar must be finite"))
+}
+
 phoxal_api_tree! {
     version v0_1 {
         drive {
@@ -1328,7 +1343,63 @@ phoxal_api_tree! {
         }
 
     }
-    latest v0_1;
+    version v0_2 extends v0_1 {
+        drive {
+            remove ActuatorAuthority;
+
+            /// A finite requested or limited planar velocity in the current
+            /// control wire revision.
+            #[serde(deny_unknown_fields)]
+            replace struct Target {
+                #[serde(deserialize_with = "crate::deserialize_finite_target_scalar")]
+                pub(crate) linear_x_mps: f32,
+                #[serde(deserialize_with = "crate::deserialize_finite_target_scalar")]
+                pub(crate) angular_z_radps: f32,
+            }
+
+            /// The drive participant's exclusive control state.
+            replace enum State {
+                Active {
+                    target: Target,
+                    limited_target: Target,
+                },
+                Stopped {
+                    target: Target,
+                    reason: StopReason,
+                },
+            }
+        }
+
+        motion {
+            remove Target;
+
+            /// The sole motion execution decision. A stopped decision carries
+            /// no source or target, so consumers cannot observe an active
+            /// source alongside a stop reason.
+            enum Decision {
+                Active {
+                    source: Source,
+                    target: crate::v0_2::drive::Target,
+                },
+                Stopped {
+                    reason: ZeroReason,
+                },
+            }
+
+            replace struct State {
+                decision: Decision,
+                /// How long ago motion observed the live manual command, on
+                /// its own host clock. `None` when no manual command is live.
+                manual_observed_age_ns: Option<u64>,
+                autonomous_candidate_age_ns: Option<u64>,
+                safety_constraints_age_ns: Option<u64>,
+                safety_runtime: SafetyRuntime,
+                component_estop_blocked: bool,
+                active_safety_constraints: Vec<super::safety::Constraint>,
+            }
+        }
+    }
+    latest v0_2;
 }
 
 #[cfg(test)]

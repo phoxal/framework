@@ -195,12 +195,16 @@ impl Node {
     }
 }
 
-/// Force every named field of a macro-declared body struct to `pub` so participant
-/// code in other modules can construct and read the wire body directly.
+/// Make inherited fields public so participant code in other crates can construct
+/// and read ordinary wire bodies directly. An explicitly narrower visibility is
+/// preserved for bodies whose constructors/accessors own an invariant (for
+/// example, finite control targets).
 fn with_pub_fields(mut item: ItemStruct) -> ItemStruct {
     if let syn::Fields::Named(named) = &mut item.fields {
         for field in &mut named.named {
-            field.vis = syn::Visibility::Public(syn::token::Pub::default());
+            if matches!(field.vis, syn::Visibility::Inherited) {
+                field.vis = syn::Visibility::Public(syn::token::Pub::default());
+            }
         }
     }
     item
