@@ -45,33 +45,15 @@ impl TerminationSignals {
     }
 }
 
-/// Resolve when the host asks this participant to stop.
+/// Register the host stop request before any supervised transport is opened.
 ///
-/// The handlers stay installed for the rest of the process, so a repeated signal
-/// during teardown is absorbed rather than killing the participant mid-park; a
-/// supervisor that wants a hard stop escalates to SIGKILL.
+/// Registration is deliberately fallible: a participant that cannot install
+/// the SIGINT/SIGTERM handlers must not become Ready with a shutdown path that
+/// can only be completed by SIGKILL.
 #[cfg(unix)]
-pub(crate) fn shutdown_signal() -> impl Future<Output = ()> {
-    // Register synchronously while the runner is starting, before bus open or
-    // participant setup can await. The returned future only waits on the
-    // already-installed handlers.
-    let registered = TerminationSignals::register();
-    async move {
-        match registered {
-            Ok(mut signals) => signals.next().await,
-            Err(error) => {
-                // Not a stop request either: without a handler the participant
-                // runs until SIGKILL, which is strictly better than parking the
-                // hardware because a registration failed at startup.
-                tracing::error!(
-                    target: "phoxal.runtime",
-                    error = %error,
-                    "failed to listen for SIGINT/SIGTERM; only SIGKILL will stop this participant"
-                );
-                std::future::pending::<()>().await
-            }
-        }
-    }
+pub(crate) fn shutdown_signal() -> crate::Result<impl Future<Output = ()>> {
+    let mut signals = TerminationSignals::register()?;
+    Ok(async move { signals.next().await })
 }
 
 /// Resolve when the host asks this participant to stop.
@@ -83,12 +65,12 @@ pub(crate) fn shutdown_signal() -> impl Future<Output = ()> {
 /// supervised loop, but cannot promise protection from a startup Ctrl-C during
 /// an in-flight bus open.
 #[cfg(not(unix))]
-pub(crate) fn shutdown_signal() -> impl Future<Output = ()> {
-    async {
+pub(crate) fn shutdown_signal() -> crate::Result<impl Future<Output = ()>> {
+    Ok(async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(target: "phoxal.runtime", error = %e, "failed to listen for ctrl-c");
         }
-    }
+    })
 }
 
 /// The signal coverage the supervised stop path depends on: the supervisor
@@ -136,7 +118,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial(process_signals)]
     async fn shutdown_future_registers_before_its_first_poll() {
-        let shutdown = shutdown_signal();
+        let shutdown = shutdown_signal().expect("signal handlers install");
         // If registration were deferred until polling the future, this signal
         // would still have the process-default terminating disposition.
         assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);

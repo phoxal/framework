@@ -17,7 +17,8 @@ use std::io::Read;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
-use std::pin::{Pin, pin};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -55,6 +56,78 @@ use teardown::{Teardown, TeardownReport, abandon_setup, combine};
 /// runtime-performance rollup, and re-checking clock discipline.
 const RUNTIME_PERFORMANCE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// A sticky lifecycle stop request. The source future is polled during every
+/// asynchronous startup boundary and the request remains observable after the
+/// source has completed, so a signal cannot be lost between setup and Ready.
+struct ShutdownRequest {
+    requested: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl ShutdownRequest {
+    fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn trigger(&self) {
+        if !self.requested.swap(true, Ordering::Release) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    async fn wait(&self) {
+        if self.is_requested() {
+            return;
+        }
+        let notified = self.notify.notified();
+        if self.is_requested() {
+            return;
+        }
+        notified.await;
+    }
+}
+
+/// Couples an injected shutdown source (or the Unix signal future) to a sticky
+/// request that startup and the main loop can race independently.
+struct ShutdownController<S> {
+    request: Arc<ShutdownRequest>,
+    source: Pin<Box<S>>,
+}
+
+impl<S> ShutdownController<S>
+where
+    S: Future<Output = ()>,
+{
+    fn new(source: S) -> Self {
+        Self {
+            request: Arc::new(ShutdownRequest::new()),
+            source: Box::pin(source),
+        }
+    }
+
+    fn is_requested(&self) -> bool {
+        self.request.is_requested()
+    }
+
+    async fn wait(&mut self) {
+        if self.request.is_requested() {
+            return;
+        }
+        tokio::select! {
+            biased;
+            _ = self.request.wait() => {},
+            _ = &mut self.source => self.request.trigger(),
+        }
+    }
+}
+
 /// Run a participant to completion on a framework-owned blocking Tokio runtime.
 ///
 /// The compiled runtime record decides whether clock selection exists at all;
@@ -82,7 +155,7 @@ pub async fn run_async<R: Participant>() -> crate::Result<()> {
     // supervisor's signal is installed immediately after parsing so startup
     // teardown still follows the same steady-state path.
     let launch = SupervisedLaunch::parse()?;
-    let shutdown = shutdown_signal();
+    let shutdown = shutdown_signal()?;
 
     run_with::<R, _>(launch, shutdown).await
 }
@@ -96,6 +169,7 @@ where
     S: Future<Output = ()>,
 {
     init_tracing();
+    let mut shutdown = ShutdownController::new(shutdown);
 
     // Validate and select the persisted participant before opening the bus.
     // A malformed runtime document or unknown topology id is a local startup
@@ -152,12 +226,15 @@ where
         endpoints = ?launch.connect_endpoints,
         "connecting to the bus"
     );
-    let (owner, bus) = BusOwner::open(BusConfig::for_participant(
-        launch.execution_id,
-        launch.participant_id.clone(),
-        launch.connect_endpoints.clone(),
-    ))
-    .await?;
+    let (owner, bus) = tokio::select! {
+        biased;
+        _ = shutdown.wait() => return Ok(()),
+        result = BusOwner::open(BusConfig::for_participant(
+            launch.execution_id,
+            launch.participant_id.clone(),
+            launch.connect_endpoints.clone(),
+        )) => result?,
+    };
 
     run_inner::<R, RealClock, S>(
         &bus,
@@ -168,7 +245,7 @@ where
         config,
         clock_mode,
         clock,
-        shutdown,
+        &mut shutdown,
     )
     .await
 }
@@ -268,6 +345,7 @@ where
     let clock = RealClock::new(harness.execution_origin);
     let config = participant_config::<R::Config>(None)?;
     validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
+    let mut shutdown = ShutdownController::new(shutdown);
     run_inner::<R, RealClock, S>(
         bus,
         None,
@@ -277,7 +355,7 @@ where
         config,
         ClockMode::Real,
         clock,
-        shutdown,
+        &mut shutdown,
     )
     .await
 }
@@ -303,6 +381,7 @@ where
 {
     let config = participant_config::<R::Config>(None)?;
     validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
+    let mut shutdown = ShutdownController::new(shutdown);
     run_inner::<R, C, S>(
         bus,
         None,
@@ -312,7 +391,7 @@ where
         config,
         ClockMode::Real,
         clock,
-        shutdown,
+        &mut shutdown,
     )
     .await
 }
@@ -330,7 +409,7 @@ async fn run_inner<R, C, S>(
     config: R::Config,
     clock_mode: ClockMode,
     clock: C,
-    shutdown: S,
+    shutdown: &mut ShutdownController<S>,
 ) -> crate::Result<()>
 where
     R: Participant,
@@ -370,7 +449,7 @@ async fn run_lifecycle<R, C, S>(
     config: R::Config,
     clock_mode: ClockMode,
     clock: C,
-    shutdown: S,
+    shutdown: &mut ShutdownController<S>,
     bus_log_task: BusLogTask,
 ) -> crate::Result<()>
 where
@@ -412,6 +491,7 @@ where
         &mut owner,
         participant_id,
         shutdown_grace_ms,
+        shutdown,
         bundle,
         config,
         effective_clock,
@@ -425,7 +505,8 @@ where
     )
     .await
     {
-        Ok(runner) => runner.run(shutdown).await,
+        Ok(StartOutcome::Ready(runner)) => runner.run(shutdown).await,
+        Ok(StartOutcome::Shutdown) => close_owner_with_result(Ok(()), owner).await,
         Err(error) => close_owner_with_result(Err(error), owner).await,
     }
 }
@@ -600,6 +681,18 @@ struct RunnerTasks {
     bus_log: BusLogTask,
 }
 
+enum StartOutcome<T> {
+    Ready(T),
+    Shutdown,
+}
+
+fn startup_shutdown<T>(report: TeardownReport) -> crate::Result<StartOutcome<T>> {
+    match combine(Ok(()), report) {
+        Ok(()) => Ok(StartOutcome::Shutdown),
+        Err(error) => Err(error),
+    }
+}
+
 impl<R: Participant, C: ClockSource> Runner<R, C> {
     /// Resolve the selected runtime record, run `Participant::setup`, and declare everything the
     /// participant announced - after which the participant is live on the graph.
@@ -611,11 +704,12 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         clippy::too_many_arguments,
         reason = "startup keeps the validated bundle, scheduler, clock, and framework tasks explicit"
     )]
-    async fn start(
+    async fn start<S>(
         bus: &BusHandle,
         owner: &mut Option<BusOwner>,
         participant_id: &ParticipantId,
         shutdown_grace_ms: u64,
+        shutdown: &mut ShutdownController<S>,
         bundle: Option<ParticipantBundleInputs>,
         config: R::Config,
         clock: RunnerClock<C>,
@@ -623,7 +717,10 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         schedule: Option<StepSchedule>,
         clock_mode: ClockMode,
         tasks: RunnerTasks,
-    ) -> crate::Result<Self> {
+    ) -> crate::Result<StartOutcome<Self>>
+    where
+        S: Future<Output = ()>,
+    {
         // The selected runtime record (or explicit test harness) was already
         // deserialized before entering this transport-owned startup path.
         let component_instance = bundle
@@ -643,7 +740,26 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             );
         }
         let participant = R::__new();
-        let (mut state, api) = match participant.setup(&mut ctx, config).await {
+        let setup = participant.setup(&mut ctx, config);
+        let (mut state, api) = match tokio::select! {
+            biased;
+            _ = shutdown.wait() => {
+                let cleanup = ctx
+                    .take_managed_tasks()
+                    .shutdown_within(Duration::from_millis(shutdown_grace_ms))
+                    .await;
+                if !cleanup.unjoined.is_empty() || !cleanup.failures.is_empty() {
+                    tracing::warn!(
+                        target: "phoxal.runtime",
+                        unjoined = ?cleanup.unjoined,
+                        failures = cleanup.failures.len(),
+                        "setup cancellation left cleanup evidence"
+                    );
+                }
+                return Ok(StartOutcome::Shutdown);
+            }
+            result = setup => result,
+        } {
             Ok(pair) => pair,
             Err(error) => {
                 return Err(
@@ -662,16 +778,24 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             managed_tasks,
             grace_ms: shutdown_grace_ms,
         };
-        let mut queries =
-            match QuerySurface::declare(bus, query_registrations, &mut managed_tasks).await {
-                Ok(queries) => queries,
-                Err(error) => {
-                    let report = wind_down(managed_tasks)
-                        .run(&participant, &api, &mut state)
-                        .await;
-                    return combine(Err(error), report);
-                }
-            };
+        let mut queries = match tokio::select! {
+            biased;
+            _ = shutdown.wait() => {
+                let report = wind_down(managed_tasks)
+                    .run(&participant, &api, &mut state)
+                    .await;
+                return startup_shutdown(report);
+            }
+            result = QuerySurface::declare(bus, query_registrations, &mut managed_tasks) => result,
+        } {
+            Ok(queries) => queries,
+            Err(error) => {
+                let report = wind_down(managed_tasks)
+                    .run(&participant, &api, &mut state)
+                    .await;
+                return combine(Err(error), report);
+            }
+        };
 
         // Setup and query declaration may have started tasks whose failure is
         // already ready to observe. Drain those completions before acquiring
@@ -686,14 +810,47 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 .await;
             return combine(Err(exit.into()), report);
         }
+        if shutdown.is_requested() {
+            if let Some(queries) = queries.take() {
+                queries.close();
+            }
+            let report = wind_down(managed_tasks)
+                .run(&participant, &api, &mut state)
+                .await;
+            return startup_shutdown(report);
+        }
         // Ready acquisition is itself a lifecycle boundary. Race the bus
         // declaration against already-supervised task completion so a
         // Critical setup/query failure cannot win the await and briefly make
         // an unhealthy participant visible.
         let ready = match owner.as_ref() {
-            None => None,
+            None => {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.wait() => {
+                        if let Some(queries) = queries.take() {
+                            queries.close();
+                        }
+                        let report = wind_down(managed_tasks)
+                            .run(&participant, &api, &mut state)
+                            .await;
+                        return startup_shutdown(report);
+                    }
+                    _ = tokio::task::yield_now() => {}
+                }
+                None
+            }
             Some(owner) => Some(tokio::select! {
                 biased;
+                _ = shutdown.wait() => {
+                    if let Some(queries) = queries.take() {
+                        queries.close();
+                    }
+                    let report = wind_down(managed_tasks)
+                        .run(&participant, &api, &mut state)
+                        .await;
+                    return startup_shutdown(report);
+                }
                 exit = managed_tasks.next_unexpected_exit() => {
                     if let Some(queries) = queries.take() {
                         queries.close();
@@ -723,6 +880,16 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         // turn, drain them, and revoke the just-acquired token before any
         // Ready announcement or Runner is returned.
         tokio::task::yield_now().await;
+        if shutdown.is_requested() {
+            drop(ready);
+            if let Some(queries) = queries.take() {
+                queries.close();
+            }
+            let report = wind_down(managed_tasks)
+                .run(&participant, &api, &mut state)
+                .await;
+            return startup_shutdown(report);
+        }
         if let Some(exit) = managed_tasks.try_next_unexpected_exit() {
             drop(ready);
             if let Some(queries) = queries.take() {
@@ -740,7 +907,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             participant = %participant_id,
             "runtime ready"
         );
-        Ok(Runner {
+        Ok(StartOutcome::Ready(Runner {
             participant,
             api,
             state,
@@ -760,17 +927,17 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
             managed_tasks,
             ready,
             shutdown_grace_ms,
-        })
+        }))
     }
 
     /// Drive the participant until it stops, then wind it down. The teardown
     /// runs before the exit is turned into a result, so the hardware is parked
     /// whether the loop ended by request or by fault.
-    async fn run<S>(mut self, shutdown: S) -> crate::Result<()>
+    async fn run<S>(mut self, shutdown: &mut ShutdownController<S>) -> crate::Result<()>
     where
         S: Future<Output = ()>,
     {
-        let exit = self.main_loop(pin!(shutdown)).await;
+        let exit = self.main_loop(shutdown).await;
         let primary = exit.into_result();
         let report = self.finish().await;
         combine(primary, report)
@@ -825,7 +992,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         report
     }
 
-    async fn main_loop<S>(&mut self, mut shutdown: Pin<&mut S>) -> LoopExit
+    async fn main_loop<S>(&mut self, shutdown: &mut ShutdownController<S>) -> LoopExit
     where
         S: Future<Output = ()>,
     {
@@ -860,7 +1027,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                 // an overloaded participant; due steps still take priority over a
                 // steady query backlog.
                 biased;
-                _ = &mut shutdown => return LoopExit::ShutdownRequested,
+                _ = shutdown.wait() => return LoopExit::ShutdownRequested,
                 exit = self.managed_tasks.next_unexpected_exit() => {
                     tracing::error!(
                         target: "phoxal.runtime",
@@ -1187,6 +1354,16 @@ mod tests {
         )
     }
 
+    #[tokio::test]
+    async fn shutdown_request_remains_sticky_after_source_completes() {
+        let mut shutdown = ShutdownController::new(std::future::ready(()));
+        shutdown.wait().await;
+        assert!(shutdown.is_requested());
+        tokio::time::timeout(Duration::from_millis(10), shutdown.wait())
+            .await
+            .expect("a completed shutdown source must remain immediately observable");
+    }
+
     #[test]
     fn step_deadlines_skip_collapsed_ticks_and_saturate_instead_of_wrapping() {
         assert_eq!(
@@ -1306,5 +1483,80 @@ mod tests {
             failure.error_message.as_deref(),
             Some("setup task failed during Ready declaration")
         );
+    }
+
+    /// A stop received while setup is still awaiting must cancel setup-owned
+    /// tasks and return before the Ready boundary. This exercises the same
+    /// `Runner::start` path used by a supervised participant, with an in-memory
+    /// bus owner so the test can prove that the owner remains available for
+    /// cleanup and that no Ready token is produced.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_during_hanging_setup_never_reaches_ready() {
+        #[phoxal::service(id = "hanging-startup", state = ())]
+        struct HangingStartup;
+
+        impl Participant for HangingStartup {
+            async fn setup(
+                &self,
+                _ctx: &mut SetupContext<Self>,
+                _config: Self::Config,
+            ) -> crate::Result<(Self::State, Self::Api)> {
+                std::future::pending().await
+            }
+        }
+
+        let participant_id = ParticipantId::new("hanging-startup").expect("valid participant id");
+        let (owner, bus) = BusOwner::open(BusConfig::for_participant(
+            phoxal_runtime_contract::identity::ExecutionId::mint(),
+            participant_id.clone(),
+            Vec::new(),
+        ))
+        .await
+        .expect("open in-process bus");
+        let (scheduler, clock_handle) = AnyStepScheduler::for_clock_mode(
+            ClockMode::Real,
+            None,
+            Some(RobotInstant::new(
+                TimelineId::from_raw(1).expect("valid timeline"),
+                0,
+            )),
+        )
+        .expect("real scheduler");
+        assert!(clock_handle.is_none());
+        let (bus_logs, bus_log_task) = bus_log::attach(bus.clone(), participant_id.as_str());
+        let clock = RealClock::new(phoxal_runtime_contract::origin::ExecutionOrigin::mint());
+        let mut owner = Some(owner);
+        let mut shutdown = ShutdownController::new(std::future::ready(()));
+        let result = Runner::<HangingStartup, RealClock>::start(
+            &bus,
+            &mut owner,
+            &participant_id,
+            100,
+            &mut shutdown,
+            None,
+            (),
+            RunnerClock::Delegated(clock),
+            scheduler,
+            None,
+            ClockMode::Real,
+            RunnerTasks {
+                simulation_clock: None,
+                bus_log: bus_log_task,
+            },
+        )
+        .await
+        .expect("startup cancellation should be clean");
+        assert!(matches!(result, StartOutcome::Shutdown));
+        assert!(
+            owner.is_some(),
+            "startup cleanup must leave close ownership intact"
+        );
+        bus_logs.shutdown();
+        owner
+            .take()
+            .expect("owner retained for cleanup")
+            .close()
+            .await
+            .expect("bus close after cancelled setup");
     }
 }
