@@ -112,6 +112,14 @@ mod behavior;
 #[serde(try_from = "String", into = "String")]
 pub struct VideoSourceRef(String);
 
+/// A validated dotted capability source reference.
+///
+/// This is the generic form of [`VideoSourceRef`]. The older name remains a
+/// type alias so the published v0.1 video request keeps the same Rust and wire
+/// surface while newer contracts can reuse the exact same validation without
+/// depending on the runtime model crate.
+pub type SourceRef = VideoSourceRef;
+
 impl VideoSourceRef {
     /// Construct an already validated wire reference.
     pub fn parse(value: impl Into<String>) -> Result<Self, InvalidVideoSourceRef> {
@@ -128,6 +136,9 @@ impl VideoSourceRef {
 /// Why a `VideoSourceRef` failed its exact wire grammar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidVideoSourceRef(String);
+
+/// Generic spelling of the validation error for [`SourceRef`].
+pub type InvalidSourceRef = InvalidVideoSourceRef;
 
 impl std::fmt::Display for InvalidVideoSourceRef {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -196,6 +207,38 @@ where
         .is_finite()
         .then_some(value)
         .ok_or_else(|| serde::de::Error::custom("motor command scalar must be finite"))
+}
+
+/// Reject a non-finite confidence score on the current perception wire.
+pub(crate) fn deserialize_finite_detection_confidence<'de, D>(
+    deserializer: D,
+) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .is_finite()
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("perception confidence must be finite"))
+}
+
+/// Reject a non-finite coordinate in the current perception wire position.
+///
+/// Deserializing into `[f64; 3]` also enforces the fixed three-coordinate
+/// shape, so malformed vectors cannot enter the detector/tracker boundary.
+pub(crate) fn deserialize_finite_detection_position<'de, D>(
+    deserializer: D,
+) -> Result<[f64; 3], D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <[f64; 3] as serde::Deserialize>::deserialize(deserializer)?;
+    value
+        .iter()
+        .all(|coordinate| coordinate.is_finite())
+        .then_some(value)
+        .ok_or_else(|| serde::de::Error::custom("perception position must be finite"))
 }
 
 phoxal_api_tree! {
@@ -1417,6 +1460,54 @@ phoxal_api_tree! {
                 safety_runtime: SafetyRuntime,
                 component_estop_blocked: bool,
                 active_safety_constraints: Vec<super::safety::Constraint>,
+            }
+        }
+
+        perception {
+            /// A current-revision detection with wire-level finite and fixed
+            /// shape guarantees. The v0.1 body above remains untouched.
+            #[serde(deny_unknown_fields)]
+            replace struct Detection {
+                class_id: String,
+                #[serde(deserialize_with = "crate::deserialize_finite_detection_confidence")]
+                confidence: f32,
+                #[serde(deserialize_with = "crate::deserialize_finite_detection_position")]
+                position_m: [f64; 3],
+                frame_id: String,
+                track_id: Option<u64>,
+            }
+
+            /// One source-captured perception batch. `captured_at` is copied
+            /// from the selected camera measurement's provenance; it is not
+            /// the perception step's publication instant.
+            #[serde(deny_unknown_fields)]
+            replace struct Detections {
+                source: crate::SourceRef,
+                captured_at: ::phoxal_bus::TimeWindow,
+                detections: Vec<Detection>,
+            }
+
+            /// Why the perception participant cannot provide a healthy batch.
+            #[derive(Copy, Eq)]
+            #[serde(rename_all = "snake_case")]
+            enum HealthReason {
+                MissingCamera,
+                StaleCamera,
+                InvalidCamera,
+                DetectorFailure,
+                BackendUnavailable,
+                PublicationFailure,
+                ManagedInputFailure,
+            }
+
+            /// The perception participant's exclusive published health.
+            #[serde(deny_unknown_fields)]
+            replace enum State {
+                Healthy { detector: String },
+                Unhealthy {
+                    detector: String,
+                    reason: HealthReason,
+                },
             }
         }
 

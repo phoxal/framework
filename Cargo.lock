@@ -2443,6 +2443,7 @@ name = "phoxal-service-perception"
 version = "0.55.0"
 dependencies = [
  "phoxal",
+ "tracing",
 ]
 
 [[package]]

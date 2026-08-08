@@ -263,7 +263,7 @@ pub use participant::runner::run;
 pub use participant::api::Participant;
 pub use participant::context::{ResetContext, SetupContext, StepContext};
 pub use participant::managed::ManagedTaskPolicy;
-pub use phoxal_api::VideoSourceRef;
+pub use phoxal_api::{SourceRef, VideoSourceRef};
 pub use phoxal_bundle::ParticipantAssets as ParticipantAssetResolver;
 pub use phoxal_model::AssetId;
 pub use sample_schedule::{MissedTickPolicy, SampleSchedule};

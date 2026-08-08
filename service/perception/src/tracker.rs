@@ -139,7 +139,8 @@ mod tests {
             confidence: 0.9,
             position_m,
         }
-        .into_detection("camera", None)
+        .try_into_detection("camera", None)
+        .unwrap()
     }
 
     #[test]

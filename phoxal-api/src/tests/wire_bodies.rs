@@ -200,6 +200,80 @@ fn video_open_source_is_canonical_and_validated_during_deserialization() {
 }
 
 #[test]
+fn perception_source_capture_preserves_source_and_capture_window() {
+    let body = api::perception::Detections {
+        source: crate::SourceRef::parse("front_camera.rgb").unwrap(),
+        captured_at: phoxal_bus::TimeWindow::exact(instant(42)),
+        detections: Vec::new(),
+    };
+    let json = serde_json::to_value(&body).unwrap();
+    assert_eq!(json["source"], "front_camera.rgb");
+    assert_eq!(
+        json["captured_at"],
+        serde_json::to_value(body.captured_at).unwrap()
+    );
+    round_trip(&body);
+
+    for invalid in [
+        "front_camera",
+        "front_camera.rgb.extra",
+        "FrontCamera.rgb",
+        "front camera.rgb",
+    ] {
+        let mut malformed = json.clone();
+        malformed["source"] = serde_json::Value::String(invalid.to_string());
+        assert!(
+            serde_json::from_value::<api::perception::Detections>(malformed).is_err(),
+            "{invalid:?} must not deserialize as a perception source"
+        );
+    }
+}
+
+#[test]
+fn current_perception_detection_rejects_nonfinite_and_wrong_shape_values() {
+    #[derive(serde::Serialize)]
+    struct RawDetection {
+        class_id: &'static str,
+        confidence: f32,
+        position_m: [f64; 3],
+        frame_id: &'static str,
+        track_id: Option<u64>,
+    }
+
+    for raw in [
+        RawDetection {
+            class_id: "crate",
+            confidence: f32::NAN,
+            position_m: [1.0, 2.0, 3.0],
+            frame_id: "camera_link",
+            track_id: None,
+        },
+        RawDetection {
+            class_id: "crate",
+            confidence: 0.8,
+            position_m: [f64::INFINITY, 2.0, 3.0],
+            frame_id: "camera_link",
+            track_id: None,
+        },
+    ] {
+        let bytes = rmp_serde::to_vec_named(&raw).unwrap();
+        assert!(
+            rmp_serde::from_slice::<api::perception::Detection>(&bytes).is_err(),
+            "non-finite perception detection must fail at the wire boundary"
+        );
+    }
+
+    let wrong_shape = serde_json::json!({
+        "class_id": "crate",
+        "confidence": 0.8,
+        "position_m": [1.0, 2.0],
+        "frame_id": "camera_link",
+        "track_id": null,
+    });
+    assert!(serde_json::from_value::<api::perception::Detection>(wrong_shape).is_err());
+}
+
+#[test]
 fn navigation_and_safety_wire_shapes_are_golden() {
     let navigation = api::navigation::Result {
         request_id: api::navigation::RequestId {
@@ -351,8 +425,8 @@ fn domain_bodies_round_trip_through_messagepack() {
             value: "request-1".to_string(),
         },
     ));
-    round_trip(&api::perception::Detections {
-        detections: vec![api::perception::Detection {
+    round_trip(&legacy::perception::Detections {
+        detections: vec![legacy::perception::Detection {
             class_id: "crate".to_string(),
             confidence: 0.8,
             position_m: [1.0, 2.0, 3.0],
@@ -360,6 +434,28 @@ fn domain_bodies_round_trip_through_messagepack() {
             track_id: Some(6),
         }],
         stamp: Some(instant(7)),
+    });
+    round_trip(&legacy::perception::State {
+        healthy: true,
+        detector: "legacy-detector".to_string(),
+    });
+    round_trip(&api::perception::Detections {
+        source: crate::SourceRef::parse("front_camera.rgb").unwrap(),
+        captured_at: phoxal_bus::TimeWindow::exact(instant(7)),
+        detections: vec![api::perception::Detection {
+            class_id: "crate".to_string(),
+            confidence: 0.8,
+            position_m: [1.0, 2.0, 3.0],
+            frame_id: "camera_link".to_string(),
+            track_id: Some(6),
+        }],
+    });
+    round_trip(&api::perception::State::Healthy {
+        detector: "deterministic-placeholder".to_string(),
+    });
+    round_trip(&api::perception::State::Unhealthy {
+        detector: "deterministic-placeholder".to_string(),
+        reason: api::perception::HealthReason::StaleCamera,
     });
     round_trip(&api::video::OpenOutcome::Unsupported);
     round_trip(&api::video::OpenOutcome::Unavailable);
