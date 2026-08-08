@@ -69,45 +69,61 @@ struct ManagedTaskInfo {
 /// Why a managed task ended, for the runner's fault handling
 /// ([`ManagedTasks::next_unexpected_exit`]).
 ///
-/// This is the participant's failure itself, not a description of one: the
-/// runner reports it directly, so the supervisor's failure evidence names the
-/// task and what it did rather than a rendering the runner had to invent.
+/// Operational errors remain as `anyhow::Error` values so their source chains
+/// survive the task boundary. Rendering is deferred to `Display` rather than
+/// replacing the failure with a diagnostic string.
+#[derive(Debug)]
+pub(crate) enum ManagedTaskFailure {
+    Returned,
+    Cancelled,
+    Error(anyhow::Error),
+    Panicked(String),
+}
+
 #[derive(Debug)]
 pub(crate) struct ManagedTaskExit {
     /// The task's diagnostic name.
     pub(crate) name: String,
-    /// `Some(panic message)` if the task panicked; `None` if it returned
-    /// normally.
-    pub(crate) panic_message: Option<String>,
-    /// `Some(detail)` when the task returned an operational error.
-    pub(crate) error_message: Option<String>,
+    pub(crate) failure: ManagedTaskFailure,
 }
 
 impl std::fmt::Display for ManagedTaskExit {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.panic_message {
-            Some(message) => write!(
+        match &self.failure {
+            ManagedTaskFailure::Returned => {
+                write!(
+                    formatter,
+                    "managed task \"{}\" exited unexpectedly",
+                    self.name
+                )
+            }
+            ManagedTaskFailure::Cancelled => write!(
+                formatter,
+                "managed task \"{}\" was cancelled unexpectedly",
+                self.name
+            ),
+            ManagedTaskFailure::Error(error) => {
+                write!(formatter, "managed task \"{}\" failed: {error}", self.name)
+            }
+            ManagedTaskFailure::Panicked(message) => write!(
                 formatter,
                 "managed task \"{}\" panicked: {message}",
                 self.name
             ),
-            None => match &self.error_message {
-                Some(message) => write!(
-                    formatter,
-                    "managed task \"{}\" failed: {message}",
-                    self.name
-                ),
-                None => write!(
-                    formatter,
-                    "managed task \"{}\" exited unexpectedly",
-                    self.name
-                ),
-            },
         }
     }
 }
 
-impl std::error::Error for ManagedTaskExit {}
+impl std::error::Error for ManagedTaskExit {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.failure {
+            ManagedTaskFailure::Error(error) => Some(error.as_ref()),
+            ManagedTaskFailure::Returned
+            | ManagedTaskFailure::Cancelled
+            | ManagedTaskFailure::Panicked(_) => None,
+        }
+    }
+}
 
 /// Join evidence collected during teardown. Cancellation is expected, while
 /// an operational error or panic during cleanup is retained as evidence.
@@ -279,26 +295,23 @@ impl ManagedTasks {
                 }
                 Some(ManagedTaskExit {
                     name: info.name,
-                    panic_message: None,
-                    error_message: result.err().map(|error| error.to_string()),
+                    failure: result
+                        .map(|()| ManagedTaskFailure::Returned)
+                        .unwrap_or_else(ManagedTaskFailure::Error),
                 })
             }
             Err(join_error) => {
                 let info = self.info.remove(&join_error.id())?;
-                let error_message = if join_error.is_cancelled() {
-                    Some("cancelled unexpectedly".to_string())
+                let failure = if join_error.is_cancelled() {
+                    ManagedTaskFailure::Cancelled
+                } else if join_error.is_panic() {
+                    ManagedTaskFailure::Panicked(panic_message(join_error.into_panic()))
                 } else {
-                    None
-                };
-                let panic_message = if join_error.is_panic() {
-                    Some(panic_message(join_error.into_panic()))
-                } else {
-                    None
+                    ManagedTaskFailure::Error(anyhow::anyhow!(join_error.to_string()))
                 };
                 Some(ManagedTaskExit {
                     name: info.name,
-                    panic_message,
-                    error_message,
+                    failure,
                 })
             }
         }
@@ -317,7 +330,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ManagedTaskPolicy, ManagedTasks};
+    use super::{ManagedTaskFailure, ManagedTaskPolicy, ManagedTasks};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
@@ -337,8 +350,8 @@ mod tests {
             .await
             .expect("a Critical task that returns must be reported");
         assert_eq!(exit.name, "sensor-loop");
-        assert_eq!(
-            exit.panic_message, None,
+        assert!(
+            matches!(exit.failure, ManagedTaskFailure::Returned),
             "a normal return is an unexpected exit, not a panic"
         );
     }
@@ -355,7 +368,7 @@ mod tests {
             .try_next_unexpected_exit()
             .expect("a completed Critical task must be visible at the Ready boundary");
         assert_eq!(exit.name, "setup-watchdog");
-        assert_eq!(exit.panic_message, None);
+        assert!(matches!(exit.failure, ManagedTaskFailure::Returned));
     }
 
     /// A panic is reported with its message, so the participant's failure says
@@ -373,7 +386,10 @@ mod tests {
             .await
             .expect("a panicking Critical task must be reported");
         assert_eq!(exit.name, "io-pump");
-        assert_eq!(exit.panic_message.as_deref(), Some("serial port vanished"));
+        assert!(matches!(
+            exit.failure,
+            ManagedTaskFailure::Panicked(message) if message == "serial port vanished"
+        ));
     }
 
     /// A successful `Finite` return is expected, while a panic still faults the
@@ -393,25 +409,33 @@ mod tests {
             .await
             .expect("a finite panic must surface as a task fault");
         assert_eq!(exit.name, "warm-up");
-        assert_eq!(
-            exit.panic_message.as_deref(),
-            Some("best-effort work failed")
-        );
+        assert!(matches!(
+            exit.failure,
+            ManagedTaskFailure::Panicked(message) if message == "best-effort work failed"
+        ));
     }
 
     #[tokio::test(start_paused = true)]
     async fn finite_error_is_a_fault_with_operational_detail() {
+        let source = std::io::Error::new(std::io::ErrorKind::NotFound, "cache file");
         let mut tasks = ManagedTasks::default();
         tasks.spawn("cache-prime", ManagedTaskPolicy::Finite, async {
-            Err::<(), _>(anyhow::anyhow!("cache index is corrupt"))
+            Err::<(), _>(anyhow::Error::new(source).context("cache index is corrupt"))
         });
 
         let exit = tokio::time::timeout(NEVER, tasks.next_unexpected_exit())
             .await
             .expect("a finite operational error must surface as a task fault");
+        let ManagedTaskFailure::Error(ref error) = exit.failure else {
+            panic!("expected the original operational error");
+        };
+        assert_eq!(error.to_string(), "cache index is corrupt");
         assert_eq!(
-            exit.error_message.as_deref(),
-            Some("cache index is corrupt")
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("cache file")
         );
         assert_eq!(
             format!("{exit}"),

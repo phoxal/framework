@@ -537,4 +537,32 @@ mod tests {
         assert!(terminal.teardown.shutdown_error.is_some());
         assert!(terminal.source().is_some());
     }
+
+    #[test]
+    fn bus_close_report_stays_structured_in_terminal_evidence() {
+        let result = combine::<()>(
+            Ok(()),
+            TeardownReport {
+                bus_close_report: Some(phoxal_bus::BusCloseReport {
+                    transport_error_count: 3,
+                    transport_errors: vec!["first failure".to_string()],
+                    transport_errors_truncated: 2,
+                    ..phoxal_bus::BusCloseReport::default()
+                }),
+                ..TeardownReport::default()
+            },
+        )
+        .expect_err("transport close evidence must fail an otherwise clean run");
+        let terminal = result
+            .downcast_ref::<TerminalError>()
+            .expect("close evidence must retain the terminal structure");
+        let close = terminal
+            .teardown
+            .bus_close_report
+            .as_ref()
+            .expect("the structured close report must remain attached");
+        assert_eq!(close.transport_error_count, 3);
+        assert_eq!(close.transport_errors, ["first failure"]);
+        assert!(format!("{result}").contains("3 transport failures"));
+    }
 }

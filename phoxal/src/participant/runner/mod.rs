@@ -31,6 +31,8 @@ use crate::participant::context::{ResetContext, SetupContext, StepContext, Timel
 use crate::participant::launch::SupervisedLaunch;
 #[cfg(feature = "test-harness")]
 use crate::participant::launch::TestHarness;
+#[cfg(test)]
+use crate::participant::managed::ManagedTaskFailure;
 use crate::participant::managed::{ManagedTaskExit, ManagedTaskPolicy, ManagedTasks};
 use crate::participant::runtime_performance::{RuntimePerformance, RuntimePerformancePublisher};
 use crate::participant::scheduler::simulation::{SimulationClockAdvance, SimulationClockHandle};
@@ -603,11 +605,50 @@ impl LoopExit {
     fn into_result(self) -> crate::Result<()> {
         match self {
             LoopExit::ShutdownRequested => Ok(()),
-            LoopExit::ManagedTaskFaulted(exit) => Err(exit.into()),
-            LoopExit::ClockDisciplineLost(reason) => Err(ClockDisciplineLost { reason }.into()),
-            LoopExit::ResetFailed(error) => Err(error),
-            LoopExit::StepFailed(error) => Err(error),
-            LoopExit::QueryDispatchFailed(error) => Err(error),
+            LoopExit::ManagedTaskFaulted(exit) => Err(ParticipantFault::ManagedTask(exit).into()),
+            LoopExit::ClockDisciplineLost(reason) => {
+                Err(ParticipantFault::Clock(ClockDisciplineLost { reason }).into())
+            }
+            LoopExit::ResetFailed(error) => Err(ParticipantFault::Reset(error).into()),
+            LoopExit::StepFailed(error) => Err(ParticipantFault::Step(error).into()),
+            LoopExit::QueryDispatchFailed(error) => Err(ParticipantFault::Query(error).into()),
+        }
+    }
+}
+
+/// The typed primary fault for a participant run.
+///
+/// Lifecycle context is kept as a variant while operational causes remain in
+/// their original `anyhow::Error`/error-chain form. This lets supervisors use
+/// the rendered message while tests and callers can still downcast the
+/// underlying step/reset/task cause.
+#[derive(Debug)]
+pub(crate) enum ParticipantFault {
+    ManagedTask(ManagedTaskExit),
+    Clock(ClockDisciplineLost),
+    Reset(anyhow::Error),
+    Step(anyhow::Error),
+    Query(anyhow::Error),
+}
+
+impl std::fmt::Display for ParticipantFault {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ManagedTask(error) => error.fmt(formatter),
+            Self::Clock(error) => error.fmt(formatter),
+            Self::Reset(error) => write!(formatter, "reset failed: {error}"),
+            Self::Step(error) => write!(formatter, "step failed: {error}"),
+            Self::Query(error) => write!(formatter, "query dispatch failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ParticipantFault {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ManagedTask(error) => Some(error),
+            Self::Clock(error) => Some(error),
+            Self::Reset(error) | Self::Step(error) | Self::Query(error) => Some(error.as_ref()),
         }
     }
 }
@@ -1084,7 +1125,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     tracing::error!(
                         target: "phoxal.runtime",
                         task = %exit.name,
-                        panic = exit.panic_message.as_deref(),
+                        failure = %exit,
                         "managed task exited unexpectedly; faulting the participant"
                     );
                     return LoopExit::ManagedTaskFaulted(exit);
@@ -1406,9 +1447,17 @@ mod tests {
         let clock = LoopExit::ClockDisciplineLost(TimeUnsynchronized::ClockFault)
             .into_result()
             .expect_err("lost clock discipline is a failure");
+        let fault = clock
+            .downcast_ref::<ParticipantFault>()
+            .expect("the primary result keeps its participant fault kind");
+        let ParticipantFault::Clock(lost) = fault else {
+            panic!("expected a clock fault");
+        };
+        assert_eq!(lost.reason, TimeUnsynchronized::ClockFault);
         assert_eq!(
             clock
-                .downcast_ref::<ClockDisciplineLost>()
+                .source()
+                .and_then(|source| source.downcast_ref::<ClockDisciplineLost>())
                 .map(|lost| lost.reason),
             Some(TimeUnsynchronized::ClockFault),
             "the reason must survive as a value, not only in the message: {clock}"
@@ -1419,10 +1468,33 @@ mod tests {
             "the supervisor keeps this text as the failure evidence"
         );
 
+        let step_source = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "motor link");
+        let step =
+            LoopExit::StepFailed(anyhow::Error::new(step_source).context("step transition failed"))
+                .into_result()
+                .expect_err("a step failure is terminal");
+        assert!(matches!(
+            step.downcast_ref::<ParticipantFault>(),
+            Some(ParticipantFault::Step(_))
+        ));
+        assert!(
+            step.chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "step source evidence must survive the participant fault wrapper"
+        );
+        assert_eq!(format!("{step}"), "step failed: step transition failed");
+
+        let reset = LoopExit::ResetFailed(anyhow::anyhow!("new world rejected"))
+            .into_result()
+            .expect_err("a reset failure is terminal");
+        assert!(matches!(
+            reset.downcast_ref::<ParticipantFault>(),
+            Some(ParticipantFault::Reset(_))
+        ));
+
         let panicked = LoopExit::ManagedTaskFaulted(ManagedTaskExit {
             name: "io-pump".to_string(),
-            panic_message: Some("serial port vanished".to_string()),
-            error_message: None,
+            failure: ManagedTaskFailure::Panicked("serial port vanished".to_string()),
         })
         .into_result()
         .expect_err("a faulted managed task is a failure");
@@ -1431,10 +1503,29 @@ mod tests {
             "managed task \"io-pump\" panicked: serial port vanished"
         );
 
+        let task_source = std::io::Error::new(std::io::ErrorKind::TimedOut, "serial read");
+        let task_error = LoopExit::ManagedTaskFaulted(ManagedTaskExit {
+            name: "io-pump".to_string(),
+            failure: ManagedTaskFailure::Error(
+                anyhow::Error::new(task_source).context("serial read failed"),
+            ),
+        })
+        .into_result()
+        .expect_err("an operational task fault is terminal");
+        assert!(matches!(
+            task_error.downcast_ref::<ParticipantFault>(),
+            Some(ParticipantFault::ManagedTask(_))
+        ));
+        assert!(
+            task_error
+                .chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "managed-task source evidence must survive both wrappers"
+        );
+
         let returned = LoopExit::ManagedTaskFaulted(ManagedTaskExit {
             name: "io-pump".to_string(),
-            panic_message: None,
-            error_message: None,
+            failure: ManagedTaskFailure::Returned,
         })
         .into_result()
         .expect_err("a faulted managed task is a failure");
@@ -1500,9 +1591,12 @@ mod tests {
         };
         let failure = failure.expect("task failure must preempt Ready acquisition");
         assert_eq!(failure.name, "declaration-race");
+        let ManagedTaskFailure::Error(error) = failure.failure else {
+            panic!("expected the operational task error");
+        };
         assert_eq!(
-            failure.error_message.as_deref(),
-            Some("setup task failed during Ready declaration")
+            error.to_string(),
+            "setup task failed during Ready declaration"
         );
     }
 
