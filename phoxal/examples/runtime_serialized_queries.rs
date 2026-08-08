@@ -129,10 +129,8 @@ impl Participant for SerializedMap {
         ctx.query(
             api::topic::owner().supervisor().asset().get(),
             Self::get_asset,
-        )
-        .await?;
-        ctx.query(api::topic::owner().map().submap(), Self::submap)
-            .await?;
+        )?;
+        ctx.query(api::topic::owner().map().submap(), Self::submap)?;
         Ok((
             MapState {
                 grid: Grid::empty(),
@@ -140,9 +138,7 @@ impl Participant for SerializedMap {
             },
             Api {
                 localize: ctx.latest(api::topic::client().localize().state()).await?,
-                revision: ctx
-                    .state_publisher(api::topic::owner().map().revision())
-                    .await?,
+                revision: ctx.state_publisher(api::topic::owner().map().revision())?,
             },
         ))
     }
@@ -164,7 +160,7 @@ impl Participant for SerializedMap {
 }
 
 impl SerializedMap {
-    async fn get_asset(
+    fn get_asset(
         &self,
         _api: &Api,
         _query: QueryContext,
@@ -181,7 +177,7 @@ impl SerializedMap {
         }
     }
 
-    async fn submap(
+    fn submap(
         &self,
         _api: &Api,
         _query: QueryContext,

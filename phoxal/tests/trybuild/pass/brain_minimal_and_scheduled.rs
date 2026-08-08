@@ -41,8 +41,7 @@ impl Participant for MissionBrain {
             MissionApi {
                 drive: ctx.latest(api::topic::client().drive().state()).await?,
                 target: ctx
-                    .command_publisher(api::topic::client().drive().target())
-                    .await?,
+                    .command_publisher(api::topic::client().drive().target())?,
             },
         ))
     }

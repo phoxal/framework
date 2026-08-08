@@ -668,6 +668,20 @@ impl Sha256Digest {
         Self(Sha256::digest(bytes).into())
     }
 
+    /// Stream one reader into the digest without buffering the complete file.
+    pub fn from_reader(mut reader: impl Read) -> std::io::Result<Self> {
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        Ok(Self(hasher.finalize().into()))
+    }
+
     /// Parse the canonical JSON representation.
     pub fn parse(value: &str) -> Result<Self, DigestError> {
         if value.len() != 64
@@ -2229,6 +2243,10 @@ mod tests {
             assert_eq!(BundlePath::new(value).is_ok(), valid, "{value}");
         }
         let digest = Sha256Digest::of(b"hello");
+        assert_eq!(
+            Sha256Digest::from_reader(std::io::Cursor::new(b"hello")).expect("reader hashes"),
+            digest
+        );
         assert_eq!(Sha256Digest::parse(&digest.as_hex()), Ok(digest));
         assert!(Sha256Digest::parse(&digest.as_hex().to_uppercase()).is_err());
     }

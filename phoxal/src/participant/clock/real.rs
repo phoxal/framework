@@ -13,32 +13,22 @@ use phoxal_runtime_contract::origin::{BootId, ExecutionOrigin};
 /// The domain is host-wide, so two processes on one host compute the same
 /// [`RobotInstant`] for the same physical moment without exchanging a message.
 /// Suspend counts, because [`LocalInstant`] reads the continuous clock.
+#[derive(Debug)]
 pub(crate) struct RealClock {
-    origin: Result<ExecutionOrigin, TimeUnsynchronized>,
+    origin: ExecutionOrigin,
     last_ticks: Mutex<u64>,
 }
 
 impl RealClock {
     /// A clock anchored at `origin`, validated against this host's boot.
-    pub(crate) fn new(origin: ExecutionOrigin) -> Self {
-        let origin = if origin.boot() == BootId::current() {
-            Ok(origin)
-        } else {
-            Err(TimeUnsynchronized::ForeignBoot)
-        };
-        RealClock {
+    pub(crate) fn new(origin: ExecutionOrigin) -> Result<Self, TimeUnsynchronized> {
+        if origin.boot() != BootId::current() {
+            return Err(TimeUnsynchronized::ForeignBoot);
+        }
+        Ok(RealClock {
             origin,
             last_ticks: Mutex::new(0),
-        }
-    }
-
-    /// A clock that reports [`TimeUnsynchronized::MissingOrigin`] until the
-    /// supervisor supplies one.
-    pub(crate) fn without_origin() -> Self {
-        RealClock {
-            origin: Err(TimeUnsynchronized::MissingOrigin),
-            last_ticks: Mutex::new(0),
-        }
+        })
     }
 }
 
@@ -47,10 +37,7 @@ impl ClockSource for RealClock {
         if LocalInstant::clock_faulted() {
             return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
         }
-        let origin = match self.origin {
-            Ok(origin) => origin,
-            Err(reason) => return ClockReading::Unsynchronized(reason),
-        };
+        let origin = self.origin;
         let Some(now) = LocalInstant::try_now() else {
             return ClockReading::Unsynchronized(TimeUnsynchronized::ClockFault);
         };
@@ -87,8 +74,8 @@ mod tests {
         // the same supervisor-minted origin, they compute directly comparable
         // instants - the property the cross-process freshness checks rely on.
         let origin = ExecutionOrigin::mint();
-        let a = RealClock::new(origin);
-        let b = RealClock::new(origin);
+        let a = RealClock::new(origin).expect("current-boot origin");
+        let b = RealClock::new(origin).expect("current-boot origin");
         let ta = a.read().instant().expect("clock a must be synchronized");
         let tb = b.read().instant().expect("clock b must be synchronized");
         assert_eq!(ta.timeline(), tb.timeline());
@@ -118,7 +105,7 @@ mod tests {
 
     #[test]
     fn the_real_clock_never_regresses_within_a_timeline() {
-        let clock = RealClock::new(ExecutionOrigin::mint());
+        let clock = RealClock::new(ExecutionOrigin::mint()).expect("current-boot origin");
         let mut last = clock.read().instant().unwrap();
         for _ in 0..1000 {
             let next = clock.read().instant().unwrap();
@@ -131,20 +118,15 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_or_foreign_boot_origin_is_reported_not_papered_over() {
-        assert_eq!(
-            RealClock::without_origin().read(),
-            ClockReading::Unsynchronized(TimeUnsynchronized::MissingOrigin)
-        );
-
+    fn a_foreign_boot_origin_is_rejected_at_construction() {
         let foreign = ExecutionOrigin::new(
             BootId::from_raw(BootId::current().get() ^ 0xffff),
             LocalInstant::try_now().expect("test host clock").boot_ns(),
             TimelineId::mint(),
         );
         assert_eq!(
-            RealClock::new(foreign).read(),
-            ClockReading::Unsynchronized(TimeUnsynchronized::ForeignBoot)
+            RealClock::new(foreign).expect_err("foreign boot must fail before a clock exists"),
+            TimeUnsynchronized::ForeignBoot
         );
     }
 

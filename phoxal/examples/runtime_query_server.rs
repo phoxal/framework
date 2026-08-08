@@ -27,14 +27,13 @@ impl Participant for AssetStore {
     ) -> Result<(Self::State, Self::Api)> {
         let mut assets = BTreeMap::new();
         assets.insert("map.pgm".to_string(), vec![0x50, 0x35, 0x0a]);
-        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
-            .await?;
+        ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)?;
         Ok((AssetStoreState { assets }, Api))
     }
 }
 
 impl AssetStore {
-    async fn get(
+    fn get(
         &self,
         _api: &Api,
         _query: QueryContext,

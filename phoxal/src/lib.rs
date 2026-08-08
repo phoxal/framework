@@ -60,7 +60,7 @@
 //!     ) -> Result<(Self::State, Self::Api)> {
 //!         Ok(((), Api {
 //!             state:  ctx.latest(api::topic::client().drive().state()).await?,
-//!             target: ctx.command_publisher(api::topic::client().drive().target()).await?,
+//!             target: ctx.command_publisher(api::topic::client().drive().target())?,
 //!         }))
 //!     }
 //!
@@ -153,6 +153,10 @@ pub mod geometry;
 mod participant;
 mod sample_schedule;
 
+/// Explicit in-process participant testing support.
+#[cfg(feature = "test-harness")]
+pub mod testing;
+
 /// The concrete framework API revision selected by this release train.
 pub use phoxal_api::latest as api;
 
@@ -162,9 +166,10 @@ pub use phoxal_api::latest as api;
 /// the codec, the [`BusMetadata`](bus::BusMetadata) attachment, the four
 /// non-interchangeable time types, the body-typed handles, and side-branded
 /// [`Topic`](bus::Topic) values. Participants build their IO through
-/// [`SetupContext`] and the api-local topic builders, so the session-owning
-/// types (`Bus`, `BusConfig`, `BusHealth`, `IncomingQuery`, `ServerQueryable`)
-/// have no place here.
+/// [`SetupContext`] and the api-local topic builders, so session construction,
+/// ownership, raw handles, incoming queries, and server queryables have no
+/// place here. Host tooling that owns a session depends on `phoxal-bus`
+/// directly; a participant cannot open a second session through this facade.
 ///
 /// [`TimelineAuthority`](phoxal_bus::TimelineAuthority) and
 /// [`WorldClockPublisher`](phoxal_bus::WorldClockPublisher) are absent for a
@@ -176,18 +181,17 @@ pub use phoxal_api::latest as api;
 /// strong that guarantee is.
 pub mod bus {
     pub use phoxal_bus::{
-        ApiVersion, AskQuery, BusCloseReport, BusConfig, BusError, BusHandle, BusMetadata,
-        BusOwner, CaptureStamp, Codec, CodecError, CodecId, CommandContract, CommandPublisher,
-        ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily, DiagnosticContract,
-        DiagnosticPublisher, ExclusiveProducerLease, ExecutionId, FixedSourceLease,
-        LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LivelinessStatus, LocalInstant,
+        ApiVersion, AskQuery, BusError, BusMetadata, CaptureStamp, Codec, CodecError, CodecId,
+        CommandContract, CommandPublisher, ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily,
+        DiagnosticContract, DiagnosticPublisher, ExclusiveProducerLease, ExecutionId,
+        FixedSourceLease, LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LocalInstant,
         MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack, Observed,
-        ParticipantId, ParticipantLivelinessEvent, ParticipantReadyEvents, ProducerId, Publish,
-        Querier, QueryCode, QueryError, QueryFailure, QueryResult, Result, RobotInstant,
-        RobotTimeError, ServeQuery, SourceAttribution, SourceLabel, StateContract, StatePublisher,
-        StepStamp, StepToken, StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow,
-        Timed, TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp,
-        WildcardPublish, WorldClockContract, WorldStepToken,
+        ParticipantId, ParticipantReadyEvent, ParticipantReadyEvents, ParticipantReadyStatus,
+        ProducerId, Publish, Querier, QueryCode, QueryError, QueryFailure, QueryResult, Result,
+        RobotInstant, RobotTimeError, ServeQuery, SourceAttribution, SourceLabel, StateContract,
+        StatePublisher, StepStamp, StepToken, StreamContract, StreamPublisher, Subscribe,
+        Subscriber, TimeWindow, Timed, TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole,
+        WallTimestamp, WildcardPublish, WorldClockContract, WorldStepToken,
     };
 }
 
@@ -353,13 +357,14 @@ pub mod __private {
 
     /// Const-eval plumbing for the embedded metadata static: `ConstSchema`,
     /// `bytes_of`, and the hygienic `concatcp` re-export.
-    pub use crate::participant::api::meta;
+    pub use crate::participant::config::meta;
 
     /// The capability marker traits a role attribute implements for its marker.
     pub use crate::participant::surface;
 
     /// The traits a role attribute and `#[derive(phoxal::Config)]` implement.
-    pub use crate::participant::api::{ParticipantConfig, ParticipantSpec};
+    pub use crate::participant::config::ParticipantConfig;
+    pub use crate::participant::spec::ParticipantSpec;
 
     /// The authoring kind a role attribute records in `ParticipantSpec::KIND`.
     pub use phoxal_runtime_contract::metadata::ParticipantKind;
@@ -367,26 +372,4 @@ pub mod __private {
     /// The cadence `#[phoxal::step(hz = …)]` returns from
     /// `Participant::__step_schedule`.
     pub use crate::participant::scheduler::StepSchedule;
-
-    /// Explicit in-process test-harness injection. A production participant
-    /// enters through `phoxal::run`, which parses the strict supervised launch
-    /// and opens its own [`BusOwner`].
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::clock::ClockSource;
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::launch::TestHarness;
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::runner::run_test_harness;
-    #[cfg(feature = "test-harness")]
-    pub use phoxal_runtime_contract::origin::ExecutionOrigin;
-
-    /// Injecting a clock the caller drives, for the same in-process runs.
-    ///
-    /// Behind the `test-harness` feature, which a downstream crate enables as a
-    /// **dev**-dependency: a participant that could reach a clock it controls in
-    /// its shipped binary could stamp instants it never reached.
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::clock::test::TestClock;
-    #[cfg(feature = "test-harness")]
-    pub use crate::participant::runner::run_test_harness_with_clock;
 }

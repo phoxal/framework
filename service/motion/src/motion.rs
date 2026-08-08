@@ -182,12 +182,8 @@ impl Participant for Motion {
                 safety_constraints: ctx
                     .subscriber(api::topic::client().safety().constraints())
                     .await?,
-                drive: ctx
-                    .command_publisher(api::topic::client().drive().target())
-                    .await?,
-                state: ctx
-                    .state_publisher(api::topic::owner().motion().state())
-                    .await?,
+                drive: ctx.command_publisher(api::topic::client().drive().target())?,
+                state: ctx.state_publisher(api::topic::owner().motion().state())?,
             },
         ))
     }

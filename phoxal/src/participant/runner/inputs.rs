@@ -2,10 +2,7 @@
 //! participant's own config block, and the finalized bundle selected by the
 //! supervisor.
 
-use std::sync::Arc;
-
-use crate::model::Robot;
-use phoxal_bundle::{ParticipantAssets, RuntimeBundle, RuntimeParticipant};
+use phoxal_bundle::{ParticipantRuntimeInputs, RuntimeBundle};
 use phoxal_runtime_contract::identity::ParticipantId;
 
 /// Deserialize the participant's `Participant::setup` config from the selected
@@ -27,41 +24,20 @@ pub(crate) fn participant_config<C: serde::de::DeserializeOwned>(
 /// One value rather than two, because a participant has both or neither: the
 /// canonical model and the asset fence come out of the same load, and there is
 /// no launch that binds one without the other.
-pub(crate) struct ParticipantBundleInputs {
-    pub(crate) robot: Arc<Robot>,
-    pub(crate) assets: ParticipantAssets,
-    pub(crate) participant: RuntimeParticipant,
-    /// The binding was validated against the canonical robot before transport
-    /// startup; setup receives only this selected component instance.
-    pub(crate) component_instance: Option<String>,
-}
-
-impl ParticipantBundleInputs {
-    /// Load and select the finalized bundle before the bus can be opened.
-    pub(crate) fn for_launch(
-        root: &std::path::Path,
-        participant_id: &ParticipantId,
-    ) -> crate::Result<Self> {
-        let bundle = RuntimeBundle::open(root).map_err(|error| {
-            anyhow::anyhow!("failed to load runtime bundle {}: {error}", root.display())
-        })?;
-        let inputs = bundle.participant_inputs(participant_id).map_err(|error| {
-            anyhow::anyhow!(
-                "participant '{participant_id}' is not present in runtime bundle {}: {error}",
-                root.display()
-            )
-        })?;
-        Ok(Self {
-            robot: inputs.robot,
-            assets: inputs.assets,
-            component_instance: inputs
-                .participant
-                .binding
-                .as_ref()
-                .map(|binding| binding.component_instance.to_string()),
-            participant: inputs.participant,
-        })
-    }
+/// Load and select the finalized bundle before the bus can be opened.
+pub(crate) fn participant_inputs_for_launch(
+    root: &std::path::Path,
+    participant_id: &ParticipantId,
+) -> crate::Result<ParticipantRuntimeInputs> {
+    let bundle = RuntimeBundle::open(root).map_err(|error| {
+        anyhow::anyhow!("failed to load runtime bundle {}: {error}", root.display())
+    })?;
+    bundle.participant_inputs(participant_id).map_err(|error| {
+        anyhow::anyhow!(
+            "participant '{participant_id}' is not present in runtime bundle {}: {error}",
+            root.display()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -127,14 +103,18 @@ mod tests {
     #[test]
     fn the_bundle_binds_the_model_and_assets_together() {
         let bundle = staged_bundle();
-        let inputs = ParticipantBundleInputs::for_launch(
+        let inputs = participant_inputs_for_launch(
             bundle.path(),
             &ParticipantId::new("drive_motor-front_left_drive").expect("test participant"),
         )
         .expect("the staged bundle loads");
         assert_eq!(inputs.robot.id().as_str(), "rgbd-imu-diff-drive");
         assert_eq!(
-            inputs.component_instance.as_deref(),
+            inputs
+                .participant
+                .binding
+                .as_ref()
+                .map(|binding| binding.component_instance.as_str()),
             Some("front_left_drive")
         );
         assert!(
@@ -156,7 +136,7 @@ mod tests {
 
         let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixture/robot");
         assert!(
-            ParticipantBundleInputs::for_launch(
+            participant_inputs_for_launch(
                 &missing,
                 &ParticipantId::new("drive_motor").expect("test participant"),
             )

@@ -126,7 +126,7 @@ pub(crate) enum AnyStepScheduler {
     /// `Participant::step` (the authoring macros reject one) and no robot time
     /// to schedule it against. This releases no tick ever, rather than
     /// pretending to run a cadence nobody drives.
-    Clockless,
+    Disabled,
 }
 
 impl AnyStepScheduler {
@@ -150,7 +150,7 @@ impl AnyStepScheduler {
     ) -> crate::Result<(Self, Option<SimulationClockHandle>)> {
         let period = schedule.map(|schedule| schedule.period());
         Ok(match clock_mode {
-            ClockMode::Real if schedule.is_none() => (AnyStepScheduler::Clockless, None),
+            ClockMode::Real if schedule.is_none() => (AnyStepScheduler::Disabled, None),
             ClockMode::Real => {
                 // A real participant has no instant to anchor its cadence on
                 // until the clock is trustworthy. Anchoring on an invented
@@ -178,7 +178,10 @@ impl AnyStepScheduler {
             // A clockless participant has no cadence and no clock feed to
             // subscribe: it is driven by host events or by the simulator that
             // owns it, and it expresses no robot time.
-            ClockMode::Clockless => (AnyStepScheduler::Clockless, None),
+            ClockMode::Clockless if schedule.is_some() => {
+                anyhow::bail!("a participant with a step schedule cannot use clockless mode")
+            }
+            ClockMode::Clockless => (AnyStepScheduler::Disabled, None),
         })
     }
 
@@ -188,7 +191,7 @@ impl AnyStepScheduler {
     /// timeline replacement is still observed by clocked, step-less services.
     pub(crate) fn simulation_time_receiver(&self) -> Option<watch::Receiver<Option<RobotInstant>>> {
         match self {
-            AnyStepScheduler::Real(_) | AnyStepScheduler::Clockless => None,
+            AnyStepScheduler::Real(_) | AnyStepScheduler::Disabled => None,
             AnyStepScheduler::Simulation(scheduler) => Some(scheduler.time_receiver()),
         }
     }
@@ -213,7 +216,7 @@ impl StepScheduler for AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.wait_until(target).await,
             AnyStepScheduler::Simulation(scheduler) => scheduler.wait_until(target).await,
-            AnyStepScheduler::Clockless => std::future::pending().await,
+            AnyStepScheduler::Disabled => std::future::pending().await,
         }
     }
 
@@ -221,7 +224,7 @@ impl StepScheduler for AnyStepScheduler {
         match self {
             AnyStepScheduler::Real(scheduler) => scheduler.now(),
             AnyStepScheduler::Simulation(scheduler) => scheduler.now(),
-            AnyStepScheduler::Clockless => None,
+            AnyStepScheduler::Disabled => None,
         }
     }
 }
@@ -277,8 +280,20 @@ mod tests {
         let (scheduler, handle) =
             AnyStepScheduler::for_clock_mode(ClockMode::Real, None, Some(at(1, 0)))
                 .expect("runner clock");
-        assert!(matches!(scheduler, AnyStepScheduler::Clockless));
+        assert!(matches!(scheduler, AnyStepScheduler::Disabled));
         assert!(handle.is_none());
+    }
+
+    #[test]
+    fn a_clockless_participant_cannot_silently_disable_its_declared_step() {
+        let error = AnyStepScheduler::for_clock_mode(
+            ClockMode::Clockless,
+            Some(StepSchedule::hz(50.0)),
+            None,
+        )
+        .err()
+        .expect("clockless mode cannot drive a scheduled transition");
+        assert!(error.to_string().contains("step schedule"));
     }
 
     #[test]

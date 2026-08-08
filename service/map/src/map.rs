@@ -171,8 +171,7 @@ impl Participant for Map {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().map().submap(), Self::submap)
-            .await?;
+        ctx.query(api::topic::owner().map().submap(), Self::submap)?;
         Ok((
             MapState {
                 grid: Grid::empty(64, 64, 0.05),
@@ -187,9 +186,7 @@ impl Participant for Map {
                 // Map OWNS the `map` node (its revision telemetry and the
                 // `map/submap` query it serves below) -> owner builder;
                 // `localize/state` is consumed via the client builder.
-                revision: ctx
-                    .state_publisher(api::topic::owner().map().revision())
-                    .await?,
+                revision: ctx.state_publisher(api::topic::owner().map().revision())?,
             },
         ))
     }
@@ -248,7 +245,7 @@ impl Participant for Map {
 }
 
 impl Map {
-    async fn submap(
+    fn submap(
         &self,
         _api: &Api,
         _query: QueryContext,

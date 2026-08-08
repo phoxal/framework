@@ -212,9 +212,7 @@ impl Participant for Odometry {
                 subscriber,
             });
         }
-        let state = ctx
-            .state_publisher(api::topic::owner().odometry().state())
-            .await?;
+        let state = ctx.state_publisher(api::topic::owner().odometry().state())?;
 
         Ok((
             OdometryState {

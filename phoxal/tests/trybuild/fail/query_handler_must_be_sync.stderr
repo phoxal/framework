@@ -1,0 +1,23 @@
+error[E0271]: expected `get` to return `Result<GetResponse, QueryFailure>`, but it returns `impl Future<Output = Result<GetResponse, QueryFailure>>`
+  --> tests/trybuild/fail/query_handler_must_be_sync.rs:15:67
+   |
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)?;
+   |             ----- required by a bound introduced by this call     ^^^^^^^^^ expected `Result<GetResponse, QueryFailure>`, found future
+   |
+note: calling an async function returns a future
+  --> tests/trybuild/fail/query_handler_must_be_sync.rs:15:67
+   |
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)?;
+   |                                                                   ^^^^^^^^^
+note: required by a bound in `phoxal::SetupContext::<R>::query`
+  --> src/participant/context.rs
+   |
+   |     pub fn query<Req, Resp, H>(
+   |            ----- required by a bound in this associated function
+...
+   |             ) -> crate::bus::QueryResult<Resp>
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::query`
+help: consider `await`ing on the `Future`
+   |
+15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get.await)?;
+   |                                                                            ++++++

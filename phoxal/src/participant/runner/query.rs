@@ -2,19 +2,30 @@
 //! `Participant::setup`.
 
 use crate::bus::QueryFailure;
-use crate::participant::api::{Participant, QueryRegistration};
+use crate::participant::api::Participant;
 use crate::participant::context::QueryContext;
 use crate::participant::managed::{ManagedTaskPolicy, ManagedTasks};
+use crate::participant::query::{QueryRegistration, ServerOutcome};
 use phoxal_bus::{BusHandle, IncomingQuery};
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// How many requests may wait between the receive tasks and the serialized
 /// event loop before the transport is left to apply back-pressure.
 const REQUEST_QUEUE_DEPTH: usize = 64;
+/// How many encoded replies may wait for the runner-owned transport worker.
+/// Saturation faults the participant rather than making the serialized owner
+/// await external transport back-pressure.
+// Keep enough room for every request admitted by the ingress queue plus the
+// small number of receive tasks that may already have one item in hand.  The
+// queue remains finite; a pathological producer still fails closed instead of
+// making the serialized owner await transport back-pressure.
+const REPLY_QUEUE_DEPTH: usize = 256;
 
-/// The typed query surface a participant declared. Its receive loops are
-/// runner-owned `Critical` tasks in the same registry as participant tasks;
-/// this value only retains the registrations and serialized request queue.
+/// The typed query surface a participant declared. Its receive loops and the
+/// reply transport worker are runner-owned `Critical` tasks in the same
+/// registry as participant tasks; this value retains the registrations,
+/// serialized request queue, and bounded reply queue.
 ///
 /// The registrations, the channel, and the receive tasks are all-or-nothing: the
 /// channel exists only because there are registrations to dispatch to, a
@@ -25,6 +36,15 @@ const REQUEST_QUEUE_DEPTH: usize = 64;
 pub(crate) struct QuerySurface<R: Participant> {
     registrations: Vec<QueryRegistration<R>>,
     requests: mpsc::Receiver<(usize, IncomingQuery)>,
+    replies: mpsc::Sender<PendingReply>,
+}
+
+/// A reply is deliberately handed to a runner-owned task after the typed
+/// handler has returned.  `IncomingQuery::reply*` performs transport IO and
+/// must never be awaited while the serialized participant state is borrowed.
+struct PendingReply {
+    incoming: IncomingQuery,
+    outcome: ServerOutcome,
 }
 
 impl<R: Participant> QuerySurface<R> {
@@ -38,11 +58,36 @@ impl<R: Participant> QuerySurface<R> {
         bus: &BusHandle,
         registrations: Vec<QueryRegistration<R>>,
         managed_tasks: &mut ManagedTasks,
+        reply_delay: Option<Duration>,
     ) -> crate::Result<Option<Self>> {
         if registrations.is_empty() {
             return Ok(None);
         }
         let (sender, requests) = mpsc::channel(REQUEST_QUEUE_DEPTH);
+        let (reply_sender, mut reply_receiver) = mpsc::channel(REPLY_QUEUE_DEPTH);
+        let reply_bus = bus.clone();
+        managed_tasks.spawn("query-reply", ManagedTaskPolicy::Critical, async move {
+            while let Some(PendingReply { incoming, outcome }) = reply_receiver.recv().await {
+                if let Some(delay) = reply_delay {
+                    tokio::time::sleep(delay).await;
+                }
+                let result = match outcome {
+                    Ok(reply) => incoming.reply(&reply_bus, reply.payload).await,
+                    Err(failure) => incoming.reply_err(&failure).await,
+                };
+                if let Err(error) = result {
+                    // A caller disappearing while its reply is in flight is
+                    // not a participant fault. The reply worker remains
+                    // alive to serve the next bounded request.
+                    tracing::debug!(
+                        target: "phoxal.runtime",
+                        error = %error,
+                        "query reply transport failed"
+                    );
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        });
         for (index, registration) in registrations.iter().enumerate() {
             let queryable = match bus.declare_server(registration.topic()).await {
                 Ok(queryable) => queryable,
@@ -79,6 +124,7 @@ impl<R: Participant> QuerySurface<R> {
         Ok(Some(QuerySurface {
             registrations,
             requests,
+            replies: reply_sender,
         }))
     }
 
@@ -94,61 +140,59 @@ impl<R: Participant> QuerySurface<R> {
     }
 
     /// Serve one typed query on the serialized participant state.
-    pub(crate) async fn serve(
+    pub(crate) fn serve(
         &self,
         request: (usize, IncomingQuery),
         participant: &R,
         api: &R::Api,
         state: &mut R::State,
-        bus: &BusHandle,
-    ) {
+    ) -> crate::Result<()> {
         let (index, incoming) = request;
         let Some(registration) = self.registrations.get(index) else {
-            let _ = incoming
-                .reply_err(&QueryFailure::internal("invalid query registration"))
-                .await;
-            return;
+            return self.enqueue(
+                incoming,
+                Err(QueryFailure::internal("invalid query registration")),
+            );
         };
 
         let metadata = match incoming.request_metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                let _ = incoming
-                    .reply_err(&QueryFailure::invalid_argument(error.to_string()))
-                    .await;
-                return;
+                return self.enqueue(
+                    incoming,
+                    Err(QueryFailure::invalid_argument(error.to_string())),
+                );
             }
         };
         if metadata.codec_id().is_none() {
-            let _ = incoming
-                .reply_err(&QueryFailure::invalid_argument(format!(
+            return self.enqueue(
+                incoming,
+                Err(QueryFailure::invalid_argument(format!(
                     "unsupported request codec id {}",
                     metadata.codec
-                )))
-                .await;
-            return;
+                ))),
+            );
         }
         let query_context = QueryContext::new(metadata.producer);
         let body = match incoming.request_bytes() {
             Ok(bytes) => bytes,
             Err(error) => {
-                let _ = incoming
-                    .reply_err(&QueryFailure::invalid_argument(error.to_string()))
-                    .await;
-                return;
+                return self.enqueue(
+                    incoming,
+                    Err(QueryFailure::invalid_argument(error.to_string())),
+                );
             }
         };
-        match registration
-            .dispatch(participant, api, query_context, state, body)
-            .await
-        {
-            Ok(reply) => {
-                let _ = incoming.reply(bus, reply.payload).await;
-            }
-            Err(failure) => {
-                let _ = incoming.reply_err(&failure).await;
-            }
-        }
+        let outcome = registration.dispatch(participant, api, query_context, state, body);
+        self.enqueue(incoming, outcome)
+    }
+
+    fn enqueue(&self, incoming: IncomingQuery, outcome: ServerOutcome) -> crate::Result<()> {
+        self.replies.try_send(PendingReply { incoming, outcome }).map_err(|error| {
+            anyhow::anyhow!(
+                "query reply queue is saturated or closed; refusing to stall the serialized runner: {error}"
+            )
+        })
     }
 
     /// Stop admitting requests. The receive tasks are cancelled and joined by

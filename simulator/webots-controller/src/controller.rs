@@ -79,9 +79,7 @@ impl Participant for WebotsControllerSimulator {
         // effective source cadence schedules are allowed to publish at.
         let handle = WebotsHandle::open()?;
         let catalog = CapabilityCatalog::from_robot(ctx.robot()?, handle.basic_time_step_ms())?;
-        let clock = ctx
-            .world_clock_publisher(api::topic::owner().simulation().clock())
-            .await?;
+        let clock = ctx.world_clock_publisher(api::topic::owner().simulation().clock())?;
 
         // One pass over the catalog binds each capability's device and its bus
         // handle together, so the two are never matched up by position later.

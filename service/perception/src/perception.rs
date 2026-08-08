@@ -105,12 +105,8 @@ impl Participant for Perception {
         // Perception OWNS the `perception` node (detections + state telemetry)
         // -> owner builder; sensor frames and `localize/state` are
         // CONSUMED via the public builder.
-        let detections = ctx
-            .state_publisher(api::topic::owner().perception().detections())
-            .await?;
-        let state = ctx
-            .state_publisher(api::topic::owner().perception().state())
-            .await?;
+        let detections = ctx.state_publisher(api::topic::owner().perception().detections())?;
+        let state = ctx.state_publisher(api::topic::owner().perception().state())?;
 
         Ok((
             PerceptionState {

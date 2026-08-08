@@ -39,9 +39,7 @@ impl Participant for Localize {
         let odometry = ctx
             .subscriber(api::topic::client().odometry().state())
             .await?;
-        let state = ctx
-            .state_publisher(api::topic::owner().localize().state())
-            .await?;
+        let state = ctx.state_publisher(api::topic::owner().localize().state())?;
 
         Ok((
             LocalizeState {

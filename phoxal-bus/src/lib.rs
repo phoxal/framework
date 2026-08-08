@@ -76,8 +76,8 @@ pub use lease::{
     MAX_READY_PRODUCERS,
 };
 pub use liveliness::{
-    KeyLivelinessObserver, LivelinessStatus, ParticipantLivelinessEvent, ParticipantLivelinessKey,
-    ParticipantLivelinessObserver, ParticipantLivelinessToken, ParticipantReadyEvents,
+    KeyLivelinessObserver, LivelinessStatus, ParticipantReadyEvent, ParticipantReadyEvents,
+    ParticipantReadyObserver, ParticipantReadyStatus, ParticipantReadyToken,
 };
 pub use metadata::{BusMetadata, SourceAttribution, SourceLabel, SourceLabelError};
 pub use query::{QueryCode, QueryError, QueryFailure, QueryResult};

@@ -80,14 +80,9 @@ impl Participant for Frame {
         // Frame OWNS the `frame` node (tree, static transforms, and the
         // `frame/lookup` query it serves below) -> owner builder;
         // joint states are CONSUMED via the public builder.
-        let tree = ctx
-            .state_publisher(api::topic::owner().frame().tree())
-            .await?;
-        let static_pub = ctx
-            .state_publisher(api::topic::owner().frame().static_transforms())
-            .await?;
-        ctx.query(api::topic::owner().frame().lookup(), Self::lookup)
-            .await?;
+        let tree = ctx.state_publisher(api::topic::owner().frame().tree())?;
+        let static_pub = ctx.state_publisher(api::topic::owner().frame().static_transforms())?;
+        ctx.query(api::topic::owner().frame().lookup(), Self::lookup)?;
 
         Ok((
             FrameState {
@@ -159,7 +154,7 @@ impl Participant for Frame {
 }
 
 impl Frame {
-    async fn lookup(
+    fn lookup(
         &self,
         _api: &Api,
         _query: QueryContext,

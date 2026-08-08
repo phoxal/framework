@@ -441,18 +441,16 @@ impl Participant for Drive {
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.
         let target = ctx.subscriber(api::topic::owner().drive().target()).await?;
-        let state = ctx
-            .state_publisher(api::topic::owner().drive().state())
-            .await?;
+        let state = ctx.state_publisher(api::topic::owner().drive().state())?;
 
         let mut left_motors = Vec::with_capacity(config.left.len());
         for binding in config.left {
-            let publisher = ctx.command_publisher(binding.topic()).await?;
+            let publisher = ctx.command_publisher(binding.topic())?;
             left_motors.push(BoundMotor { binding, publisher });
         }
         let mut right_motors = Vec::with_capacity(config.right.len());
         for binding in config.right {
-            let publisher = ctx.command_publisher(binding.topic()).await?;
+            let publisher = ctx.command_publisher(binding.topic())?;
             right_motors.push(BoundMotor { binding, publisher });
         }
 
@@ -536,8 +534,8 @@ mod tests {
 
     use phoxal::api;
     use phoxal::bus::{
-        FixedSourceLease, LeaseDecision, LivelinessStatus, LocalInstant, ParticipantId, ProducerId,
-        RobotInstant, TimelineId,
+        FixedSourceLease, LeaseDecision, LocalInstant, ParticipantId, ParticipantReadyStatus,
+        ProducerId, RobotInstant, TimelineId,
     };
     use phoxal::model::RobotBuilder;
     use phoxal::model::builder::Kinematics;
@@ -808,7 +806,7 @@ mod tests {
         let source = producer(1);
         let mut target =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        target.update_ready(&motion, source, LivelinessStatus::Alive);
+        target.update_ready(&motion, source, ParticipantReadyStatus::Ready);
         DriveState {
             kinematics,
             limits: LIMITS,
@@ -972,7 +970,7 @@ mod tests {
         let motion = ParticipantId::new("motion").unwrap();
         let mut silent =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        silent.update_ready(&motion, producer, LivelinessStatus::Alive);
+        silent.update_ready(&motion, producer, ParticipantReadyStatus::Ready);
         silent.offer(Some(&motion), producer, 1, host_start, requested.clone());
         assert!(silent.live(host_start, robot_start).is_some());
         let past_silence = host_start.saturating_add(TARGET_SILENCE + Duration::from_millis(1));
@@ -983,7 +981,7 @@ mod tests {
 
         let mut held =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        held.update_ready(&motion, producer, LivelinessStatus::Alive);
+        held.update_ready(&motion, producer, ParticipantReadyStatus::Ready);
         held.offer(Some(&motion), producer, 1, host_start, requested);
         assert!(held.live(host_start, robot_start).is_some());
         let past_hold = robot_start.saturating_add(TARGET_HOLD + Duration::from_millis(1));
@@ -1005,14 +1003,14 @@ mod tests {
         let motion = ParticipantId::new("motion").unwrap();
         let mut lease =
             FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
-        lease.update_ready(&motion, first, LivelinessStatus::Alive);
+        lease.update_ready(&motion, first, ParticipantReadyStatus::Ready);
         lease.offer(Some(&motion), first, 9, host_now, target(0.1));
-        lease.update_ready(&motion, second, LivelinessStatus::Alive);
+        lease.update_ready(&motion, second, ParticipantReadyStatus::Ready);
         assert!(matches!(
             lease.offer(Some(&motion), second, 0, host_now, target(0.2)),
             LeaseDecision::Rejected(_)
         ));
-        lease.update_ready(&motion, first, LivelinessStatus::Lost);
+        lease.update_ready(&motion, first, ParticipantReadyStatus::Lost);
         assert!(matches!(
             lease.offer(Some(&motion), second, 0, host_now, target(0.2)),
             LeaseDecision::Acquired

@@ -40,7 +40,7 @@ impl Participant for MixedApi {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let topic: Topic<Publish<ForeignState>> = Topic::new_static("foreign/drive/state");
-        let _publisher = ctx.state_publisher(topic).await?;
+        let _publisher = ctx.state_publisher(topic)?;
         Ok(((), ()))
     }
 }

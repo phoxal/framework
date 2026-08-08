@@ -40,7 +40,7 @@ error[E0599]: the method `world_clock_publisher` exists for mutable reference `&
 ...
 18 |           let _clock = ctx
    |  ______________________-
-19 | |             .world_clock_publisher(api::topic::owner().simulation().clock())
+19 | |             .world_clock_publisher(api::topic::owner().simulation().clock())?;
    | |             -^^^^^^^^^^^^^^^^^^^^^ method cannot be called on `&mut phoxal::SetupContext<PrivilegedBrain>` due to unsatisfied trait bounds
    | |_____________|
    |

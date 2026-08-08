@@ -18,6 +18,7 @@ path = "src/main.rs"
 phoxal = { workspace = true }
 phoxal-bus = { workspace = true }
 anyhow = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 # The lifecycle test drives the participant over a real bus with a `TestClock`

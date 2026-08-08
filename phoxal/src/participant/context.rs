@@ -14,9 +14,10 @@ use crate::bus::{
     StreamContract, StreamPublisher, Subscribe, Subscriber, TimelineId, Topic, WorldClockContract,
 };
 use crate::model::Robot;
-use crate::participant::api::{Participant, QueryRegistration};
+use crate::participant::api::Participant;
 use crate::participant::managed::{ManagedTaskOutput, ManagedTaskPolicy, ManagedTasks};
-use crate::participant::runner::inputs::ParticipantBundleInputs;
+use crate::participant::query::QueryRegistration;
+use phoxal_bundle::ParticipantRuntimeInputs;
 use phoxal_bus::{BusHandle, TimelineAuthority, WorldClockPublisher};
 
 pub(crate) type TimelineRetention = Box<dyn Fn(TimelineId) + Send + Sync>;
@@ -52,8 +53,7 @@ pub struct SetupContext<R: Participant> {
     /// launched with one. Model and assets travel together because they are two
     /// views of the same load: there is no launch that binds one without the
     /// other.
-    bundle: Option<ParticipantBundleInputs>,
-    component_instance: Option<String>,
+    runtime: Option<ParticipantRuntimeInputs>,
     managed_tasks: ManagedTasks,
     timeline_retentions: Vec<TimelineRetention>,
     queries: Vec<QueryRegistration<R>>,
@@ -75,15 +75,10 @@ impl<R: Participant> SetupContext<R> {
         Ok(self.bus.participant_ready_events().await?)
     }
 
-    pub(crate) fn new(
-        bus: BusHandle,
-        bundle: Option<ParticipantBundleInputs>,
-        component_instance: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(bus: BusHandle, runtime: Option<ParticipantRuntimeInputs>) -> Self {
         SetupContext {
             bus,
-            bundle,
-            component_instance,
+            runtime,
             managed_tasks: ManagedTasks::default(),
             timeline_retentions: Vec::new(),
             queries: Vec::new(),
@@ -101,7 +96,7 @@ impl<R: Participant> SetupContext<R> {
     /// task, by contrast, is watched for the rest of the participant's
     /// lifetime - if it panics or returns while `Critical` applies, the
     /// runner treats that as a runtime fault (participant marked `Failed`,
-    /// lose the participant Liveliness token) exactly as it would a `Participant::step` bug it
+    /// revoke the participant Ready token) exactly as it would a `Participant::step` bug it
     /// cannot recover from. After `Participant::shutdown` has had the required
     /// I/O available, the runner cancels every managed task and joins it within
     /// the same runner-enforced grace budget, before the bus closes.
@@ -162,20 +157,20 @@ impl<R: Participant> SetupContext<R> {
 
     /// The immutable canonical model loaded from the finalized bundle.
     pub fn robot(&self) -> crate::Result<&Robot> {
-        let bundle = self.bundle.as_ref().ok_or_else(|| {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "no robot model is bound (this participant was launched without a bundle root)"
             )
         })?;
-        Ok(&bundle.robot)
+        Ok(&runtime.robot)
     }
 
     /// The validated assets this participant's runtime bundle declares.
     pub fn assets(&self) -> crate::Result<&ParticipantAssetResolver> {
-        let bundle = self.bundle.as_ref().ok_or_else(|| {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
             anyhow::anyhow!("no bundle assets are bound (this participant has no bundle root)")
         })?;
-        Ok(&bundle.assets)
+        Ok(&runtime.assets)
     }
 }
 
@@ -186,35 +181,35 @@ impl<R: Participant> SetupContext<R> {
 /// error at the builder call, not a runtime mismatch: this is what makes the
 /// `api` field of the participant's embedded metadata record truthful.
 impl<R: Participant + TypedIoSurface> SetupContext<R> {
-    pub async fn state_publisher<B: StateContract<Api = R::ContractApi>>(
+    pub fn state_publisher<B: StateContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<StatePublisher<B>> {
         Ok(StatePublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn measurement_publisher<B: MeasurementContract<Api = R::ContractApi>>(
+    pub fn measurement_publisher<B: MeasurementContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<MeasurementPublisher<B>> {
         Ok(MeasurementPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn command_publisher<B: CommandContract<Api = R::ContractApi>>(
+    pub fn command_publisher<B: CommandContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<CommandPublisher<B>> {
         Ok(CommandPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn stream_publisher<B: StreamContract<Api = R::ContractApi>>(
+    pub fn stream_publisher<B: StreamContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<StreamPublisher<B>> {
         Ok(StreamPublisher::new(self.bus.clone(), &topic)?)
     }
 
-    pub async fn diagnostic_publisher<B: DiagnosticContract<Api = R::ContractApi>>(
+    pub fn diagnostic_publisher<B: DiagnosticContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<DiagnosticPublisher<B>> {
@@ -245,7 +240,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         Ok(handle)
     }
 
-    pub async fn querier<
+    pub fn querier<
         Req: ContractBody<Api = R::ContractApi>,
         Resp: ContractBody<Api = R::ContractApi>,
     >(
@@ -259,7 +254,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
         )?)
     }
 
-    pub async fn query<Req, Resp, H>(
+    pub fn query<Req, Resp, H>(
         &mut self,
         topic: Topic<ServeQuery<Req, Resp>>,
         handler: H,
@@ -267,7 +262,7 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
     where
         Req: ContractBody<Api = R::ContractApi>,
         Resp: ContractBody<Api = R::ContractApi>,
-        H: for<'a> std::ops::AsyncFn(
+        H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
                 QueryContext,
@@ -294,12 +289,19 @@ impl<R: Participant + TypedIoSurface> SetupContext<R> {
 impl<R: Participant + ComponentBoundSurface> SetupContext<R> {
     /// The compiled component instance bound to this driver or simulator.
     pub fn component(&self) -> crate::Result<&crate::model::robot::ComponentInstance> {
-        let id = self.component_instance.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("no component instance is bound for this participant record")
-        })?;
-        self.robot()?.component_instance(id).ok_or_else(|| {
-            anyhow::anyhow!("the bound component instance '{id}' is not in the robot model")
-        })
+        let id = self
+            .runtime
+            .as_ref()
+            .and_then(|runtime| runtime.participant.binding.as_ref())
+            .map(|binding| &binding.component_instance)
+            .ok_or_else(|| {
+                anyhow::anyhow!("no component instance is bound for this participant record")
+            })?;
+        self.robot()?
+            .component_instance(id.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!("the bound component instance '{id}' is not in the robot model")
+            })
     }
 }
 
@@ -308,7 +310,7 @@ impl<R: Participant + WorldAuthoritySurface> SetupContext<R> {
         Ok(TimelineAuthority::mint(timeline)?)
     }
 
-    pub async fn world_clock_publisher<B: WorldClockContract<Api = R::ContractApi>>(
+    pub fn world_clock_publisher<B: WorldClockContract<Api = R::ContractApi>>(
         &self,
         topic: Topic<Publish<B>>,
     ) -> crate::Result<WorldClockPublisher<B>> {
