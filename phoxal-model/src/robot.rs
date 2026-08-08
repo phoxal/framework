@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::compiler::RobotParts;
 use crate::component::Component;
 use crate::component::capability::{
     Capability, CapabilityKind, Encoder, Motor, StructuralKind, StructuralTarget,
@@ -581,13 +582,16 @@ impl<'de> serde::Deserialize<'de> for Robot {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = RobotWire::deserialize(deserializer)?;
         Self::new(
-            wire.id,
-            wire.clock,
-            MotionModel::new(wire.kinematic, wire.motion_limits),
-            wire.component_instances,
-            wire.component_types,
-            wire.simulation_types,
-            wire.structure,
+            RobotParts {
+                id: wire.id,
+                clock: wire.clock,
+                kinematic: wire.kinematic,
+                motion_limits: wire.motion_limits,
+                component_instances: wire.component_instances,
+                component_types: wire.component_types,
+                simulation_types: wire.simulation_types,
+                structure: wire.structure,
+            },
             wire.footprint,
         )
         .map_err(serde::de::Error::custom)
@@ -689,25 +693,18 @@ impl fmt::Display for KinematicKind {
 }
 
 impl Robot {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        id: RobotId,
-        clock: Clock,
-        motion: MotionModel,
-        component_instances: BTreeMap<ComponentInstanceId, ComponentInstance>,
-        component_types: BTreeMap<ComponentTypeId, Component>,
-        simulation_types: BTreeMap<ComponentTypeId, Simulation>,
-        structure: Structure,
+        parts: RobotParts,
         footprint: Option<FootprintEnvelope>,
     ) -> Result<Self, ModelError> {
         let robot = Self {
-            id,
-            clock,
-            motion,
-            component_instances,
-            component_types,
-            simulation_types,
-            structure,
+            id: parts.id,
+            clock: parts.clock,
+            motion: MotionModel::new(parts.kinematic, parts.motion_limits),
+            component_instances: parts.component_instances,
+            component_types: parts.component_types,
+            simulation_types: parts.simulation_types,
+            structure: parts.structure,
             footprint,
         };
         robot.validate()?;

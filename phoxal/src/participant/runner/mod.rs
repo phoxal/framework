@@ -156,7 +156,7 @@ where
     let query_reply_delay = harness.query_reply_delay;
     let clock = RealClock::new(harness.execution_origin)?;
     let config = inputs::participant_config::<R::Config>(None)?;
-    startup::validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
+    startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
         PreparedRun::<R, RealClock> {
@@ -167,7 +167,7 @@ where
             bundle: None,
             config,
             clock_mode: ClockMode::Real,
-            clock,
+            clock: Some(clock),
             query_reply_delay,
         },
         &mut shutdown,
@@ -194,7 +194,7 @@ where
     bus_log::init_tracing();
     let query_reply_delay = harness.query_reply_delay;
     let config = inputs::participant_config::<R::Config>(None)?;
-    startup::validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
+    startup::validate_clock_inputs::<R, _>(ClockMode::Real, Some(&clock))?;
     let mut shutdown = ShutdownController::new(shutdown);
     lifecycle::run(
         PreparedRun::<R, C> {
@@ -205,7 +205,7 @@ where
             bundle: None,
             config,
             clock_mode: ClockMode::Real,
-            clock,
+            clock: Some(clock),
             query_reply_delay,
         },
         &mut shutdown,

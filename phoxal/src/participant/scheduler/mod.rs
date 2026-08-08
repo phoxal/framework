@@ -130,6 +130,37 @@ pub(crate) enum AnyStepScheduler {
 }
 
 impl AnyStepScheduler {
+    /// Validate scheduler facts without allocating a live scheduler or a
+    /// simulation clock channel.
+    ///
+    /// Startup uses this pure check before transport exists. The lifecycle
+    /// calls [`Self::for_clock_mode`] only after the bus connection succeeds,
+    /// so simulation's watch channel and real mode's timer anchors are never
+    /// constructed and discarded during local preflight.
+    pub(crate) fn validate_clock_mode(
+        clock_mode: ClockMode,
+        schedule: Option<StepSchedule>,
+        now: Option<RobotInstant>,
+    ) -> crate::Result<()> {
+        // Evaluate the period with the same validation boundary as live
+        // construction, but retain no scheduler state here.
+        let _period = schedule.map(|schedule| schedule.period());
+        match clock_mode {
+            ClockMode::Real if schedule.is_none() => Ok(()),
+            ClockMode::Real => {
+                now.context(
+                    "a real participant cannot anchor its cadence without a synchronized clock",
+                )?;
+                Ok(())
+            }
+            ClockMode::Simulation => Ok(()),
+            ClockMode::Clockless if schedule.is_some() => {
+                anyhow::bail!("a participant with a step schedule cannot use clockless mode")
+            }
+            ClockMode::Clockless => Ok(()),
+        }
+    }
+
     /// The scheduler `clock_mode` calls for, plus the driving handle a
     /// simulation scheduler needs.
     ///
@@ -148,6 +179,7 @@ impl AnyStepScheduler {
         schedule: Option<StepSchedule>,
         now: Option<RobotInstant>,
     ) -> crate::Result<(Self, Option<SimulationClockHandle>)> {
+        Self::validate_clock_mode(clock_mode, schedule, now)?;
         let period = schedule.map(|schedule| schedule.period());
         Ok(match clock_mode {
             ClockMode::Real if schedule.is_none() => (AnyStepScheduler::Disabled, None),
@@ -157,9 +189,11 @@ impl AnyStepScheduler {
                 // timeline would publish a world history nobody authored, so the
                 // participant does not start at all - which is the ordinary
                 // failure the supervisor already knows how to handle.
-                let now = now.context(
-                    "a real participant cannot anchor its cadence without a synchronized clock",
-                )?;
+                let now = now.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "a real participant cannot anchor its cadence without a synchronized clock"
+                    )
+                })?;
                 (
                     AnyStepScheduler::Real(
                         RealScheduler::new(period, now)
@@ -178,9 +212,6 @@ impl AnyStepScheduler {
             // A clockless participant has no cadence and no clock feed to
             // subscribe: it is driven by host events or by the simulator that
             // owns it, and it expresses no robot time.
-            ClockMode::Clockless if schedule.is_some() => {
-                anyhow::bail!("a participant with a step schedule cannot use clockless mode")
-            }
             ClockMode::Clockless => (AnyStepScheduler::Disabled, None),
         })
     }
@@ -304,6 +335,34 @@ mod tests {
         assert!(
             AnyStepScheduler::for_clock_mode(ClockMode::Real, Some(StepSchedule::hz(50.0)), None)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn preflight_scheduler_validation_does_not_construct_a_live_scheduler() {
+        AnyStepScheduler::validate_clock_mode(
+            ClockMode::Simulation,
+            Some(StepSchedule::hz(20.0)),
+            None,
+        )
+        .expect("simulation facts do not need a seed instant or a live channel");
+        AnyStepScheduler::validate_clock_mode(ClockMode::Clockless, None, None)
+            .expect("clockless facts are valid without a scheduler");
+        assert!(
+            AnyStepScheduler::validate_clock_mode(
+                ClockMode::Clockless,
+                Some(StepSchedule::hz(20.0)),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            AnyStepScheduler::validate_clock_mode(
+                ClockMode::Real,
+                Some(StepSchedule::hz(20.0)),
+                None,
+            )
+            .is_err()
         );
     }
 

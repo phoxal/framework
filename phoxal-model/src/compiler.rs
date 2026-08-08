@@ -20,7 +20,7 @@ use crate::component::Component;
 use crate::component::capability::Capability;
 use crate::error::ModelError;
 use crate::identity::{CapabilityId, ComponentInstanceId, ComponentTypeId, LinkId, RobotId};
-use crate::robot::{Clock, ComponentInstance, KinematicConfig, MotionLimits, MotionModel, Robot};
+use crate::robot::{Clock, ComponentInstance, KinematicConfig, MotionLimits, Robot};
 use crate::simulation::{self, Simulation};
 use crate::structure::Structure;
 
@@ -98,14 +98,5 @@ pub fn robot(parts: RobotParts) -> Result<Robot, ModelError> {
         Err(ModelError::FootprintMovableJoint { .. } | ModelError::FootprintMesh { .. }) => None,
         Err(error) => return Err(error),
     };
-    Robot::new(
-        parts.id,
-        parts.clock,
-        MotionModel::new(parts.kinematic, parts.motion_limits),
-        parts.component_instances,
-        parts.component_types,
-        parts.simulation_types,
-        parts.structure,
-        footprint,
-    )
+    Robot::new(parts, footprint)
 }

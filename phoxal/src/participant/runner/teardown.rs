@@ -36,7 +36,6 @@ pub(crate) struct TeardownReport {
     pub(crate) shutdown_error: Option<anyhow::Error>,
     pub(crate) shutdown_timed_out: bool,
     pub(crate) unjoined_tasks: Vec<String>,
-    pub(crate) unjoined_error: Option<anyhow::Error>,
     pub(crate) task_errors: Vec<anyhow::Error>,
     pub(crate) bus_close_error: Option<anyhow::Error>,
     pub(crate) bus_close_report: Option<phoxal_bus::BusCloseReport>,
@@ -47,7 +46,6 @@ impl TeardownReport {
         self.shutdown_error.is_none()
             && !self.shutdown_timed_out
             && self.unjoined_tasks.is_empty()
-            && self.unjoined_error.is_none()
             && self.task_errors.is_empty()
             && self.bus_close_error.is_none()
             && self
@@ -135,9 +133,8 @@ impl TeardownReport {
                     .map(|error| error.as_ref() as _)
             })
             .or_else(|| {
-                self.unjoined_error
-                    .as_ref()
-                    .map(|error| error.as_ref() as _)
+                (!self.unjoined_tasks.is_empty())
+                    .then_some(&UNJOINED_TASKS_ERROR as &(dyn std::error::Error + 'static))
             })
             .or_else(|| {
                 self.shutdown_timed_out
@@ -147,6 +144,8 @@ impl TeardownReport {
 }
 
 static SHUTDOWN_TIMEOUT_ERROR: ShutdownTimeoutError = ShutdownTimeoutError;
+
+static UNJOINED_TASKS_ERROR: UnjoinedTasksError = UnjoinedTasksError;
 
 #[derive(Debug)]
 struct ShutdownTimeoutError;
@@ -158,6 +157,17 @@ impl std::fmt::Display for ShutdownTimeoutError {
 }
 
 impl std::error::Error for ShutdownTimeoutError {}
+
+#[derive(Debug)]
+struct UnjoinedTasksError;
+
+impl std::fmt::Display for UnjoinedTasksError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("managed tasks remained unjoined after bounded reaping")
+    }
+}
+
+impl std::error::Error for UnjoinedTasksError {}
 
 pub(crate) fn combine<T>(primary: crate::Result<T>, teardown: TeardownReport) -> crate::Result<T> {
     if teardown.is_clean() {
@@ -222,12 +232,6 @@ impl Teardown {
         managed_tasks.cancel();
         let task_report = managed_tasks.join_until(deadline.instant()).await;
         report.unjoined_tasks = task_report.unjoined;
-        if !report.unjoined_tasks.is_empty() {
-            report.unjoined_error = Some(anyhow::anyhow!(
-                "managed tasks remained unjoined after bounded reaping: {:?}",
-                report.unjoined_tasks
-            ));
-        }
         report.task_errors = task_report.failures;
         tracing::info!(target: "phoxal.runtime", id = R::ID, "runtime stopped");
         report
@@ -271,15 +275,8 @@ pub(crate) async fn abandon_startup(
 }
 
 fn task_report(shutdown: crate::participant::managed::ManagedTaskShutdown) -> TeardownReport {
-    let unjoined_error = (!shutdown.unjoined.is_empty()).then(|| {
-        anyhow::anyhow!(
-            "managed tasks remained unjoined after bounded reaping: {:?}",
-            shutdown.unjoined
-        )
-    });
     TeardownReport {
         unjoined_tasks: shutdown.unjoined,
-        unjoined_error,
         task_errors: shutdown.failures,
         ..TeardownReport::default()
     }
