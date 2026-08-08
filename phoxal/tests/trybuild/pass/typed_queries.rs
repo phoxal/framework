@@ -14,15 +14,15 @@ impl Participant for TypedQueries {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
-            .await?;
+            ?;
         ctx.query(api::topic::owner().map().submap(), Self::submap)
-            .await?;
+            ?;
         Ok((State(0), Api))
     }
 }
 
 impl TypedQueries {
-    async fn get(
+    fn get(
         &self,
         _api: &Api,
         _query: QueryContext,
@@ -33,7 +33,7 @@ impl TypedQueries {
         Ok(api::supervisor::asset::GetResponse::Missing)
     }
 
-    async fn submap(
+    fn submap(
         &self,
         _api: &Api,
         _query: QueryContext,

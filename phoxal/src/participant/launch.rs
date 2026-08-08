@@ -8,6 +8,8 @@
 //! launch-time copy of facts already authoritative in `runtime.json`.
 
 use std::path::PathBuf;
+#[cfg(feature = "test-harness")]
+use std::time::Duration;
 
 use crate::Result;
 use clap::Parser;
@@ -78,6 +80,7 @@ pub struct TestHarness {
     pub(crate) participant_id: ParticipantId,
     pub(crate) execution_origin: ExecutionOrigin,
     pub(crate) shutdown_grace_ms: u64,
+    pub(crate) query_reply_delay: Option<Duration>,
 }
 
 #[cfg(feature = "test-harness")]
@@ -88,6 +91,7 @@ impl TestHarness {
             participant_id: ParticipantId::new(participant_id)?,
             execution_origin: ExecutionOrigin::mint(),
             shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS,
+            query_reply_delay: None,
         })
     }
 
@@ -95,6 +99,16 @@ impl TestHarness {
     #[must_use]
     pub fn with_execution_origin(mut self, origin: ExecutionOrigin) -> Self {
         self.execution_origin = origin;
+        self
+    }
+
+    /// Delay every test-harness query reply to exercise the runner's
+    /// out-of-band reply transport. This is deliberately unavailable to a
+    /// supervised participant process.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_query_reply_delay(mut self, delay: Duration) -> Self {
+        self.query_reply_delay = Some(delay);
         self
     }
 }

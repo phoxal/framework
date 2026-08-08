@@ -250,6 +250,7 @@ where
         config,
         clock_mode,
         clock,
+        None,
         &mut shutdown,
     )
     .await
@@ -347,6 +348,7 @@ where
     R: Participant,
     S: Future<Output = ()>,
 {
+    let query_reply_delay = harness.query_reply_delay;
     let clock = RealClock::new(harness.execution_origin);
     let config = participant_config::<R::Config>(None)?;
     validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
@@ -360,6 +362,7 @@ where
         config,
         ClockMode::Real,
         clock,
+        query_reply_delay,
         &mut shutdown,
     )
     .await
@@ -384,6 +387,7 @@ where
     C: ClockSource,
     S: Future<Output = ()>,
 {
+    let query_reply_delay = harness.query_reply_delay;
     let config = participant_config::<R::Config>(None)?;
     validate_clock_inputs::<R, _>(ClockMode::Real, &clock)?;
     let mut shutdown = ShutdownController::new(shutdown);
@@ -396,6 +400,7 @@ where
         config,
         ClockMode::Real,
         clock,
+        query_reply_delay,
         &mut shutdown,
     )
     .await
@@ -414,6 +419,7 @@ async fn run_inner<R, C, S>(
     config: R::Config,
     clock_mode: ClockMode,
     clock: C,
+    query_reply_delay: Option<Duration>,
     shutdown: &mut ShutdownController<S>,
 ) -> crate::Result<()>
 where
@@ -433,6 +439,7 @@ where
         config,
         clock_mode,
         clock,
+        query_reply_delay,
         shutdown,
         bus_log_task,
     )
@@ -454,6 +461,7 @@ async fn run_lifecycle<R, C, S>(
     config: R::Config,
     clock_mode: ClockMode,
     clock: C,
+    query_reply_delay: Option<Duration>,
     shutdown: &mut ShutdownController<S>,
     bus_log_task: BusLogTask,
 ) -> crate::Result<()>
@@ -518,6 +526,7 @@ where
         RunnerTasks {
             simulation_clock: clock_handle,
             bus_log: bus_log_task,
+            query_reply_delay,
         },
     )
     .await
@@ -589,6 +598,9 @@ enum LoopExit {
     /// runner can park the participant immediately instead of continuing with
     /// state whose invariants the transition may have left unknown.
     StepFailed(anyhow::Error),
+    /// The bounded runner-owned query reply queue could not accept a response
+    /// without making the serialized owner await transport back-pressure.
+    QueryDispatchFailed(anyhow::Error),
 }
 
 impl LoopExit {
@@ -599,6 +611,7 @@ impl LoopExit {
             LoopExit::ClockDisciplineLost(reason) => Err(ClockDisciplineLost { reason }.into()),
             LoopExit::ResetFailed(error) => Err(error),
             LoopExit::StepFailed(error) => Err(error),
+            LoopExit::QueryDispatchFailed(error) => Err(error),
         }
     }
 }
@@ -689,6 +702,7 @@ struct Runner<R: Participant, C: ClockSource> {
 struct RunnerTasks {
     simulation_clock: Option<SimulationClockHandle>,
     bus_log: BusLogTask,
+    query_reply_delay: Option<Duration>,
 }
 
 enum StartOutcome<T> {
@@ -804,6 +818,7 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
         let mut managed_tasks = ctx.take_managed_tasks();
         let timeline_retentions = ctx.take_timeline_retentions();
         let query_registrations = ctx.take_query_registrations();
+        let query_reply_delay = tasks.query_reply_delay;
 
         let mut queries = match tokio::select! {
             biased;
@@ -817,7 +832,12 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     Ok(()),
                 ).await;
             }
-            result = QuerySurface::declare(bus, query_registrations, &mut managed_tasks) => result,
+            result = QuerySurface::declare(
+                bus,
+                query_registrations,
+                &mut managed_tasks,
+                query_reply_delay,
+            ) => result,
         } {
             Ok(queries) => queries,
             Err(error) => {
@@ -1247,25 +1267,19 @@ impl<R: Participant, C: ClockSource> Runner<R, C> {
                     self.runtime_performance.finish_step(observation, success);
                 }
                 request = next_query(&mut self.queries) => {
-                    self.serve_query(request).await;
+                    if let Err(error) = self.serve_query(request) {
+                        return LoopExit::QueryDispatchFailed(error);
+                    }
                 }
             }
         }
     }
 
-    async fn serve_query(&mut self, request: (usize, phoxal_bus::IncomingQuery)) {
+    fn serve_query(&mut self, request: (usize, phoxal_bus::IncomingQuery)) -> crate::Result<()> {
         let Some(queries) = &self.queries else {
-            return;
+            return Ok(());
         };
-        queries
-            .serve(
-                request,
-                &self.participant,
-                &self.api,
-                &mut self.state,
-                &self.bus,
-            )
-            .await;
+        queries.serve(request, &self.participant, &self.api, &mut self.state)
     }
 }
 

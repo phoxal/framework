@@ -41,7 +41,7 @@ struct CompletedOperation {
 pub(crate) struct Api {
     localize: Subscriber<api::localize::LocalizationState>,
     map_revision: Subscriber<api::map::Revision>,
-    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
+    frontier_requests: tokio::sync::mpsc::Sender<FrontierIoRequest>,
     state: StatePublisher<api::navigation::State>,
     progress: StatePublisher<api::navigation::Progress>,
     result: StatePublisher<api::navigation::Result>,
@@ -57,6 +57,90 @@ pub(crate) struct NavigationState {
     starts: VecDeque<CachedStart>,
     completed: VecDeque<CompletedOperation>,
     last_time: Option<RobotInstant>,
+    frontier_results: Option<tokio::sync::mpsc::Receiver<FrontierIoResult>>,
+    frontier_in_flight: bool,
+    latest_frontier: Option<CachedFrontier>,
+}
+
+struct FrontierIoRequest {
+    requested_at: RobotInstant,
+    localization_at: RobotInstant,
+    map_revision_at: RobotInstant,
+    revision: u64,
+    resolution_m: f32,
+    robot_xy_m: (f64, f64),
+}
+
+struct FrontierIoResult {
+    requested_at: RobotInstant,
+    localization_at: RobotInstant,
+    map_revision_at: RobotInstant,
+    revision: u64,
+    outcome: std::result::Result<Option<api::navigation::Frontier>, String>,
+}
+
+struct CachedFrontier {
+    requested_at: RobotInstant,
+    localization_at: RobotInstant,
+    map_revision_at: RobotInstant,
+    revision: u64,
+    frontier: Option<api::navigation::Frontier>,
+}
+
+/// Fetch and score map snapshots outside the serialized navigation owner.  The
+/// request carries the exact map revision and localization samples that the
+/// runner observed at a step; responses that no longer match those authorities
+/// are rejected when the next step incorporates them.
+async fn frontier_map_worker(
+    map_submap: Querier<api::map::SubmapRequest, api::map::SubmapResponse>,
+    mut requests: tokio::sync::mpsc::Receiver<FrontierIoRequest>,
+    results: tokio::sync::mpsc::Sender<FrontierIoResult>,
+) -> Result<()> {
+    while let Some(request) = requests.recv().await {
+        let extent = f64::from(request.resolution_m) * 128.0;
+        let outcome = match map_submap
+            .query(api::map::SubmapRequest {
+                min_x_m: 0.0,
+                min_y_m: 0.0,
+                max_x_m: extent,
+                max_y_m: extent,
+            })
+            .await
+        {
+            Ok(response) => {
+                let response_revision = match &response {
+                    api::map::SubmapResponse::Window(window)
+                    | api::map::SubmapResponse::Partial { window } => window.revision,
+                    api::map::SubmapResponse::OutOfBounds { revision, .. } => *revision,
+                };
+                if response_revision != request.revision {
+                    Err(format!(
+                        "map submap response revision {} does not match requested revision {}",
+                        response_revision, request.revision
+                    ))
+                } else {
+                    let frontier = OccupancyGrid::from_submap(response).and_then(|grid| {
+                        grid.score_frontiers(grid.detect_frontiers(), request.robot_xy_m)
+                            .into_iter()
+                            .next()
+                    });
+                    Ok(frontier)
+                }
+            }
+            Err(error) => Err(error.to_string()),
+        };
+        results
+            .send(FrontierIoResult {
+                requested_at: request.requested_at,
+                localization_at: request.localization_at,
+                map_revision_at: request.map_revision_at,
+                revision: request.revision,
+                outcome,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("navigation frontier result receiver closed"))?;
+    }
+    Ok(())
 }
 
 impl NavigationState {
@@ -70,13 +154,29 @@ impl NavigationState {
             starts: VecDeque::new(),
             completed: VecDeque::new(),
             last_time: None,
+            frontier_results: None,
+            frontier_in_flight: false,
+            latest_frontier: None,
         }
+    }
+
+    fn with_frontier_results(
+        server_producer: ProducerId,
+        frontier_results: tokio::sync::mpsc::Receiver<FrontierIoResult>,
+    ) -> Self {
+        let mut state = Self::new(server_producer);
+        state.frontier_results = Some(frontier_results);
+        state
     }
 
     fn reset(&mut self) {
         let producer = self.server_producer;
         let next_operation_sequence = self.next_operation_sequence;
-        *self = Self::new(producer);
+        let frontier_results = self.frontier_results.take();
+        *self = match frontier_results {
+            Some(frontier_results) => Self::with_frontier_results(producer, frontier_results),
+            None => Self::new(producer),
+        };
         // A timeline reset discards active operation state, but it does not
         // mint a new navigation producer. Keep the server-incarnation counter
         // monotonic so an operation id observed before the reset cannot be
@@ -201,17 +301,22 @@ impl Participant for Navigation {
         ctx: &mut SetupContext<Self>,
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
-        ctx.query(api::topic::owner().navigation().start(), Self::start)
-            .await?;
-        ctx.query(api::topic::owner().navigation().cancel(), Self::cancel)
-            .await?;
+        ctx.query(api::topic::owner().navigation().start(), Self::start)?;
+        ctx.query(api::topic::owner().navigation().cancel(), Self::cancel)?;
         ctx.query(
             api::topic::owner().navigation().next_frontier(),
             Self::next_frontier,
-        )
-        .await?;
+        )?;
+        let (frontier_requests, frontier_request_rx) = tokio::sync::mpsc::channel(1);
+        let (frontier_result_tx, frontier_results) = tokio::sync::mpsc::channel(1);
+        let map_submap = ctx.querier(api::topic::client().map().submap())?;
+        ctx.spawn_managed_with(
+            "navigation-frontier-map-io",
+            ManagedTaskPolicy::Critical,
+            frontier_map_worker(map_submap, frontier_request_rx, frontier_result_tx),
+        );
         Ok((
-            NavigationState::new(ctx.producer()),
+            NavigationState::with_frontier_results(ctx.producer(), frontier_results),
             Api {
                 localize: ctx
                     .subscriber(api::topic::client().localize().state())
@@ -219,19 +324,11 @@ impl Participant for Navigation {
                 map_revision: ctx
                     .subscriber(api::topic::client().map().revision())
                     .await?,
-                map_submap: ctx.querier(api::topic::client().map().submap()).await?,
-                state: ctx
-                    .state_publisher(api::topic::owner().navigation().state())
-                    .await?,
-                progress: ctx
-                    .state_publisher(api::topic::owner().navigation().progress())
-                    .await?,
-                result: ctx
-                    .state_publisher(api::topic::owner().navigation().result())
-                    .await?,
-                candidate: ctx
-                    .state_publisher(api::topic::owner().navigation().candidate())
-                    .await?,
+                frontier_requests,
+                state: ctx.state_publisher(api::topic::owner().navigation().state())?,
+                progress: ctx.state_publisher(api::topic::owner().navigation().progress())?,
+                result: ctx.state_publisher(api::topic::owner().navigation().result())?,
+                candidate: ctx.state_publisher(api::topic::owner().navigation().candidate())?,
             },
         ))
     }
@@ -248,6 +345,63 @@ impl Participant for Navigation {
         while let Some(received) = api.map_revision.try_recv() {
             if let Some(at) = received.metadata.produced_exactly_at() {
                 state.last_map_revision = Some(Timed::new(received.body, at));
+            }
+        }
+
+        // Map submap is transport IO, so its result is incorporated only at a
+        // step boundary.  A response from a replaced timeline or a different
+        // map revision is discarded; the next step will request a snapshot for
+        // the current authoritative revision.
+        while let Some(result) = state
+            .frontier_results
+            .as_mut()
+            .and_then(|results| results.try_recv().ok())
+        {
+            state.frontier_in_flight = false;
+            let Some(revision) = state.fresh_map_revision(now) else {
+                continue;
+            };
+            if revision.at.timeline() != result.requested_at.timeline()
+                || revision.at != result.map_revision_at
+                || revision.body.revision != result.revision
+                || result.requested_at.timeline() != now.timeline()
+            {
+                continue;
+            }
+            let Some(localization) = state.fresh_localization(now) else {
+                continue;
+            };
+            if localization.at != result.localization_at {
+                continue;
+            }
+            let Ok(frontier) = result.outcome else {
+                continue;
+            };
+            state.latest_frontier = Some(CachedFrontier {
+                requested_at: result.requested_at,
+                localization_at: result.localization_at,
+                map_revision_at: result.map_revision_at,
+                revision: result.revision,
+                frontier,
+            });
+        }
+
+        if !state.frontier_in_flight
+            && let (Some(revision), Some(localization)) =
+                (state.fresh_map_revision(now), state.fresh_localization(now))
+            && revision.body.resolution_m.is_finite()
+            && revision.body.resolution_m > 0.0
+        {
+            let request = FrontierIoRequest {
+                requested_at: now,
+                localization_at: localization.at,
+                map_revision_at: revision.at,
+                revision: revision.body.revision,
+                resolution_m: revision.body.resolution_m,
+                robot_xy_m: (localization.body.x_m, localization.body.y_m),
+            };
+            if api.frontier_requests.try_send(request).is_ok() {
+                state.frontier_in_flight = true;
             }
         }
 
@@ -358,7 +512,7 @@ impl Participant for Navigation {
 }
 
 impl Navigation {
-    async fn start(
+    fn start(
         &self,
         _api: &Api,
         query: QueryContext,
@@ -437,7 +591,7 @@ impl Navigation {
         Ok(response)
     }
 
-    async fn cancel(
+    fn cancel(
         &self,
         _api: &Api,
         query: QueryContext,
@@ -447,9 +601,9 @@ impl Navigation {
         Ok(state.cancel(query.producer(), request.operation_id))
     }
 
-    async fn next_frontier(
+    fn next_frontier(
         &self,
-        api: &Api,
+        _api: &Api,
         _query: QueryContext,
         request: api::navigation::FrontierRequest,
         state: &mut NavigationState,
@@ -476,25 +630,23 @@ impl Navigation {
                 map_revision: Some(revision.body.revision),
             });
         }
-        let extent = f64::from(revision.body.resolution_m) * 128.0;
-        let response = api
-            .map_submap
-            .query(api::map::SubmapRequest {
-                min_x_m: 0.0,
-                min_y_m: 0.0,
-                max_x_m: extent,
-                max_y_m: extent,
-            })
-            .await
-            .map_err(|error| QueryFailure::unavailable(error.to_string()))?;
-        let robot_xy_m = (localization.body.x_m, localization.body.y_m);
-        let frontier = OccupancyGrid::from_submap(response).and_then(|grid| {
-            grid.score_frontiers(grid.detect_frontiers(), robot_xy_m)
-                .into_iter()
-                .next()
-        });
+        let Some(cached) = state.latest_frontier.as_ref() else {
+            return Err(QueryFailure::unavailable(
+                "map submap snapshot is unavailable or stale",
+            ));
+        };
+        if cached.revision != revision.body.revision
+            || cached.map_revision_at != revision.at
+            || !Timed::new((), cached.requested_at).fresh_within(now, LOCALIZATION_STALE)
+            || !Timed::new((), cached.localization_at).fresh_within(now, LOCALIZATION_STALE)
+            || cached.localization_at != localization.at
+        {
+            return Err(QueryFailure::unavailable(
+                "map submap snapshot is unavailable or stale",
+            ));
+        }
         Ok(api::navigation::FrontierResponse {
-            frontier,
+            frontier: cached.frontier.clone(),
             map_revision: Some(revision.body.revision),
         })
     }

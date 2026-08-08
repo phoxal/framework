@@ -13,13 +13,13 @@ impl Participant for BadRequest {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
-            .await?;
+            ?;
         Ok(((), Api))
     }
 }
 
 impl BadRequest {
-    async fn get(
+    fn get(
         &self,
         _api: &Api,
         _query: QueryContext,

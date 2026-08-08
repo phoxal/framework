@@ -127,9 +127,7 @@ impl Participant for Joint {
         for joint_id in joint_ids {
             // Joint OWNS each `joint/{id}` node's state telemetry, so this is
             // the owner builder.
-            let publisher = ctx
-                .state_publisher(api::topic::owner().joint(&joint_id).state())
-                .await?;
+            let publisher = ctx.state_publisher(api::topic::owner().joint(&joint_id).state())?;
             states.insert(joint_id, publisher);
         }
 

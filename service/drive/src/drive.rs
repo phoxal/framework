@@ -441,18 +441,16 @@ impl Participant for Drive {
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.
         let target = ctx.subscriber(api::topic::owner().drive().target()).await?;
-        let state = ctx
-            .state_publisher(api::topic::owner().drive().state())
-            .await?;
+        let state = ctx.state_publisher(api::topic::owner().drive().state())?;
 
         let mut left_motors = Vec::with_capacity(config.left.len());
         for binding in config.left {
-            let publisher = ctx.command_publisher(binding.topic()).await?;
+            let publisher = ctx.command_publisher(binding.topic())?;
             left_motors.push(BoundMotor { binding, publisher });
         }
         let mut right_motors = Vec::with_capacity(config.right.len());
         for binding in config.right {
-            let publisher = ctx.command_publisher(binding.topic()).await?;
+            let publisher = ctx.command_publisher(binding.topic())?;
             right_motors.push(BoundMotor { binding, publisher });
         }
 

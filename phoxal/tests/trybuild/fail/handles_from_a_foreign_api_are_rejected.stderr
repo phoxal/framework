@@ -1,7 +1,7 @@
 error[E0271]: type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
   --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:43:46
    |
-43 |         let _publisher = ctx.state_publisher(topic).await?;
+43 |         let _publisher = ctx.state_publisher(topic)?;
    |                              --------------- ^^^^^ type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
    |                              |
    |                              required by a bound introduced by this call
@@ -14,39 +14,5 @@ note: expected this to be `Api`
 note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
   --> src/participant/context.rs
    |
-   |     pub async fn state_publisher<B: StateContract<Api = R::ContractApi>>(
-   |                                                   ^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
-
-error[E0271]: type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
-  --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:43:26
-   |
-43 |         let _publisher = ctx.state_publisher(topic).await?;
-   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^ type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
-   |
-note: expected this to be `Api`
-  --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:22:16
-   |
-22 |     type Api = ForeignApi;
-   |                ^^^^^^^^^^
-note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
-  --> src/participant/context.rs
-   |
-   |     pub async fn state_publisher<B: StateContract<Api = R::ContractApi>>(
-   |                                                   ^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
-
-error[E0271]: type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
-  --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:43:53
-   |
-43 |         let _publisher = ctx.state_publisher(topic).await?;
-   |                                                     ^^^^^ type mismatch resolving `<ForeignState as ContractBody>::Api == Api`
-   |
-note: expected this to be `Api`
-  --> tests/trybuild/fail/handles_from_a_foreign_api_are_rejected.rs:22:16
-   |
-22 |     type Api = ForeignApi;
-   |                ^^^^^^^^^^
-note: required by a bound in `phoxal::SetupContext::<R>::state_publisher`
-  --> src/participant/context.rs
-   |
-   |     pub async fn state_publisher<B: StateContract<Api = R::ContractApi>>(
-   |                                                   ^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`
+   |     pub fn state_publisher<B: StateContract<Api = R::ContractApi>>(
+   |                                             ^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::state_publisher`

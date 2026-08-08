@@ -16,8 +16,7 @@ impl Participant for PrivilegedBrain {
         let _component = ctx.component()?;
         let _authority = ctx.timeline_authority(TimelineId::mint())?;
         let _clock = ctx
-            .world_clock_publisher(api::topic::owner().simulation().clock())
-            .await?;
+            .world_clock_publisher(api::topic::owner().simulation().clock())?;
         Ok(((), ()))
     }
 }

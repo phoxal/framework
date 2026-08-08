@@ -22,8 +22,7 @@ impl Participant for DynamicHandles {
                         .component("chassis")
                         .range(capability)
                         .sample(),
-                )
-                .await?,
+                )?,
             );
         }
         Ok(((), Api { ranges }))

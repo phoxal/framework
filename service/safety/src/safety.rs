@@ -578,7 +578,7 @@ impl Participant for Safety {
                     .await?,
             });
         }
-        let map_query = ctx.querier(api::topic::client().map().submap()).await?;
+        let map_query = ctx.querier(api::topic::client().map().submap())?;
         let (map_sender, map_events) = mpsc::channel(4);
         let map_epoch = Arc::new(AtomicU64::new(0));
         let task_epoch = Arc::clone(&map_epoch);
@@ -661,12 +661,8 @@ impl Participant for Safety {
                 drive: ctx.subscriber(api::topic::client().drive().state()).await?,
                 batteries,
                 ranges,
-                constraints: ctx
-                    .state_publisher(api::topic::owner().safety().constraints())
-                    .await?,
-                state: ctx
-                    .state_publisher(api::topic::owner().safety().state())
-                    .await?,
+                constraints: ctx.state_publisher(api::topic::owner().safety().constraints())?,
+                state: ctx.state_publisher(api::topic::owner().safety().state())?,
             },
         ))
     }

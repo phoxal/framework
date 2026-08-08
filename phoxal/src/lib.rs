@@ -60,7 +60,7 @@
 //!     ) -> Result<(Self::State, Self::Api)> {
 //!         Ok(((), Api {
 //!             state:  ctx.latest(api::topic::client().drive().state()).await?,
-//!             target: ctx.command_publisher(api::topic::client().drive().target()).await?,
+//!             target: ctx.command_publisher(api::topic::client().drive().target())?,
 //!         }))
 //!     }
 //!

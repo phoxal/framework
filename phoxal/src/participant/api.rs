@@ -14,10 +14,7 @@
 //! [`surface`](crate::participant::surface): a driver or simulator resolves a
 //! bound component, and a simulator alone reaches world-clock authority.
 
-use std::future::Future;
 use std::marker::PhantomData;
-use std::ops::AsyncFn;
-use std::pin::Pin;
 
 use crate::bus::{Codec, ContractBody, MessagePack, QueryFailure};
 use crate::participant::context::{QueryContext, ResetContext, SetupContext, StepContext};
@@ -327,8 +324,9 @@ pub(crate) struct ServerReply {
     pub payload: Vec<u8>,
 }
 
-/// What a query dispatcher returns: a [`ServerReply`] or a structured
-/// [`QueryFailure`].
+/// What a synchronous query dispatcher returns: a [`ServerReply`] or a
+/// structured [`QueryFailure`]. Transport reply IO is queued by the runner
+/// after this value is produced.
 pub(crate) type ServerOutcome = std::result::Result<ServerReply, QueryFailure>;
 
 /// One setup-time query binding, type-erased only after its request/response
@@ -350,7 +348,7 @@ impl<R: Participant> QueryRegistration<R> {
     where
         Req: ContractBody,
         Resp: ContractBody,
-        H: for<'a> AsyncFn(
+        H: for<'a> Fn(
                 &'a R,
                 &'a R::Api,
                 QueryContext,
@@ -374,7 +372,7 @@ impl<R: Participant> QueryRegistration<R> {
         &self.topic
     }
 
-    pub(crate) async fn dispatch(
+    pub(crate) fn dispatch(
         &self,
         participant: &R,
         api: &R::Api,
@@ -384,19 +382,18 @@ impl<R: Participant> QueryRegistration<R> {
     ) -> ServerOutcome {
         self.handler
             .dispatch(participant, api, query_context, state, request)
-            .await
     }
 }
 
 trait ErasedQueryHandler<R: Participant>: Send + Sync {
-    fn dispatch<'a>(
-        &'a self,
-        participant: &'a R,
-        api: &'a R::Api,
+    fn dispatch(
+        &self,
+        participant: &R,
+        api: &R::Api,
         query_context: QueryContext,
-        state: &'a mut R::State,
+        state: &mut R::State,
         request: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>>;
+    ) -> ServerOutcome;
 }
 
 struct TypedQueryHandler<H, Req, Resp> {
@@ -409,7 +406,7 @@ where
     R: Participant,
     Req: ContractBody,
     Resp: ContractBody,
-    H: for<'a> AsyncFn(
+    H: for<'a> Fn(
             &'a R,
             &'a R::Api,
             QueryContext,
@@ -420,30 +417,28 @@ where
         + Sync
         + 'static,
 {
-    fn dispatch<'a>(
-        &'a self,
-        participant: &'a R,
-        api: &'a R::Api,
+    fn dispatch(
+        &self,
+        participant: &R,
+        api: &R::Api,
         query_context: QueryContext,
-        state: &'a mut R::State,
+        state: &mut R::State,
         request: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = ServerOutcome> + 'a>> {
-        Box::pin(async move {
-            let request = MessagePack::decode::<Req>(&request).map_err(|error| {
-                QueryFailure::invalid_argument(format!(
-                    "decode query request for '{}': {error}",
-                    Req::TOPIC
-                ))
-            })?;
-            let response = (self.handler)(participant, api, query_context, request, state).await?;
-            let payload = MessagePack::encode(&response).map_err(|error| {
-                QueryFailure::internal(format!(
-                    "encode query response for '{}': {error}",
-                    Resp::TOPIC
-                ))
-            })?;
-            Ok(ServerReply { payload })
-        })
+    ) -> ServerOutcome {
+        let request = MessagePack::decode::<Req>(&request).map_err(|error| {
+            QueryFailure::invalid_argument(format!(
+                "decode query request for '{}': {error}",
+                Req::TOPIC
+            ))
+        })?;
+        let response = (self.handler)(participant, api, query_context, request, state)?;
+        let payload = MessagePack::encode(&response).map_err(|error| {
+            QueryFailure::internal(format!(
+                "encode query response for '{}': {error}",
+                Resp::TOPIC
+            ))
+        })?;
+        Ok(ServerReply { payload })
     }
 }
 
@@ -505,7 +500,7 @@ mod tests {
     }
 
     impl QueryParticipant {
-        async fn get(
+        fn get(
             &self,
             _api: &Api,
             query: QueryContext,
@@ -548,7 +543,6 @@ mod tests {
                 &mut state,
                 first,
             )
-            .await
             .unwrap();
         let response: api::supervisor::asset::GetResponse =
             MessagePack::decode(&reply.payload).unwrap();
@@ -569,7 +563,6 @@ mod tests {
                 &mut state,
                 second,
             )
-            .await
             .unwrap_err();
         assert_eq!(failure.code, QueryCode::NotFound);
         assert_eq!(state.calls, ["ok", "missing"]);
