@@ -167,6 +167,7 @@ impl SerializedMap {
     async fn get_asset(
         &self,
         _api: &Api,
+        _query: QueryContext,
         request: api::supervisor::asset::GetRequest,
         state: &mut MapState,
     ) -> QueryResult<api::supervisor::asset::GetResponse> {
@@ -183,6 +184,7 @@ impl SerializedMap {
     async fn submap(
         &self,
         _api: &Api,
+        _query: QueryContext,
         request: api::map::SubmapRequest,
         state: &mut MapState,
     ) -> QueryResult<api::map::SubmapResponse> {

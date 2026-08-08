@@ -90,7 +90,8 @@
 //!   builders and returned alongside mutable state.
 //! - `#[phoxal::step(hz = ...)]` adds a cadence to the trait's step override.
 //! - `ctx.query(owner_endpoint, Self::handler)` registers typed query handlers;
-//!   the endpoint fixes the handler's request and response types at compile time.
+//!   the endpoint fixes the handler's request and response types at compile time,
+//!   and the runner supplies trusted requester [`QueryContext`] provenance.
 //! - The runner serializes step, query, reset, and shutdown access to `State`.
 //! - `fn main() -> phoxal::Result<()> { phoxal::run::<R>() }` is the default
 //!   blocking entrypoint. For a custom Tokio main, call
@@ -178,14 +179,15 @@ pub mod bus {
         ApiVersion, AskQuery, BusCloseReport, BusConfig, BusError, BusHandle, BusMetadata,
         BusOwner, CaptureStamp, Codec, CodecError, CodecId, CommandContract, CommandPublisher,
         ContractBody, DEFAULT_QUERY_TIMEOUT, DeliveryFamily, DiagnosticContract,
-        DiagnosticPublisher, ExecutionId, LEASE_TRACE_TARGET, Latest, Lease, LeaseDecision,
-        LeaseRejection, LocalInstant, MeasurementContract, MeasurementPublisher, MessagePack,
-        Observed, ParticipantId, ProducerFence, ProducerId, Publish, Querier, QueryCode,
-        QueryError, QueryFailure, QueryResult, Result, RobotInstant, RobotTimeError, ServeQuery,
-        SourceAttribution, SourceLabel, StateContract, StatePublisher, StepStamp, StepToken,
-        StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow, Timed, TimelineId,
-        TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp, WildcardPublish,
-        WorldClockContract, WorldStepToken,
+        DiagnosticPublisher, ExclusiveProducerLease, ExecutionId, FixedSourceLease,
+        LEASE_TRACE_TARGET, Latest, LeaseDecision, LeaseRejection, LivelinessStatus, LocalInstant,
+        MAX_READY_PRODUCERS, MeasurementContract, MeasurementPublisher, MessagePack, Observed,
+        ParticipantId, ParticipantLivelinessEvent, ParticipantReadyEvents, ProducerId, Publish,
+        Querier, QueryCode, QueryError, QueryFailure, QueryResult, Result, RobotInstant,
+        RobotTimeError, ServeQuery, SourceAttribution, SourceLabel, StateContract, StatePublisher,
+        StepStamp, StepToken, StreamContract, StreamPublisher, Subscribe, Subscriber, TimeWindow,
+        Timed, TimelineId, TimelineMismatch, Topic, TopicKind, TopicRole, WallTimestamp,
+        WildcardPublish, WorldClockContract, WorldStepToken,
     };
 }
 
@@ -263,7 +265,7 @@ pub use phoxal_macros::step;
 pub use participant::runner::run;
 
 pub use participant::api::Participant;
-pub use participant::context::{ResetContext, SetupContext, StepContext};
+pub use participant::context::{QueryContext, ResetContext, SetupContext, StepContext};
 pub use participant::managed::ManagedTaskPolicy;
 pub use phoxal_api::{SourceRef, VideoSourceRef};
 pub use phoxal_bundle::ParticipantAssets as ParticipantAssetResolver;
@@ -281,13 +283,14 @@ pub mod tokio {
 pub mod prelude {
     pub use crate::Result;
     pub use crate::bus::{
-        CaptureStamp, CommandPublisher, DiagnosticPublisher, Latest, Lease, LeaseDecision,
-        LocalInstant, MeasurementPublisher, Observed, ProducerFence, Querier, QueryError,
-        QueryResult, RobotInstant, StatePublisher, Subscriber, TimeWindow, Timed, TimelineId,
+        CaptureStamp, CommandPublisher, DiagnosticPublisher, ExclusiveProducerLease,
+        FixedSourceLease, Latest, LeaseDecision, LocalInstant, MeasurementPublisher, Observed,
+        Querier, QueryError, QueryResult, RobotInstant, StatePublisher, Subscriber, TimeWindow,
+        Timed, TimelineId,
     };
     pub use crate::{
-        AssetId, ManagedTaskPolicy, Participant, ParticipantAssetResolver, ResetContext,
-        SetupContext, StepContext,
+        AssetId, ManagedTaskPolicy, Participant, ParticipantAssetResolver, QueryContext,
+        ResetContext, SetupContext, StepContext,
     };
 }
 

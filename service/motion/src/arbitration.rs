@@ -16,6 +16,8 @@ pub(crate) const MANUAL_SILENCE: Duration = Duration::from_millis(150);
 pub(crate) const MANUAL_HOLD: Duration = Duration::from_millis(500);
 
 pub(crate) const AUTONOMOUS_STALE: Duration = Duration::from_millis(500);
+pub(crate) const AUTONOMOUS_SILENCE: Duration = Duration::from_millis(500);
+pub(crate) const AUTONOMOUS_HOLD: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Arbitration {
@@ -295,7 +297,7 @@ pub(crate) fn manual_observed_age_ns(
 
 #[cfg(test)]
 mod tests {
-    use phoxal::bus::TimelineId;
+    use phoxal::bus::{ProducerId, TimelineId};
 
     use super::*;
 
@@ -311,6 +313,10 @@ mod tests {
 
     fn now() -> RobotInstant {
         RobotInstant::new(line(), NOW_NS)
+    }
+
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from((1_u128 << 124) | value).expect("canonical producer")
     }
 
     /// A live manual command, i.e. one the receiver-owned lease already
@@ -388,8 +394,9 @@ mod tests {
     fn autonomous() -> Timed<api::navigation::Candidate> {
         Timed {
             body: api::navigation::Candidate {
-                request_id: api::navigation::RequestId {
-                    value: "test-navigation".to_string(),
+                operation_id: api::navigation::NavigationOperationId {
+                    producer: producer(1),
+                    sequence: 1,
                 },
                 linear_x_mps: 0.2,
                 angular_z_radps: 0.1,

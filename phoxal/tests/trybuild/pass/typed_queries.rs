@@ -25,6 +25,7 @@ impl TypedQueries {
     async fn get(
         &self,
         _api: &Api,
+        _query: QueryContext,
         _request: api::supervisor::asset::GetRequest,
         state: &mut State,
     ) -> QueryResult<api::supervisor::asset::GetResponse> {
@@ -35,6 +36,7 @@ impl TypedQueries {
     async fn submap(
         &self,
         _api: &Api,
+        _query: QueryContext,
         _request: api::map::SubmapRequest,
         _state: &mut State,
     ) -> QueryResult<api::map::SubmapResponse> {

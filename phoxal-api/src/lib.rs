@@ -1597,6 +1597,8 @@ phoxal_api_tree! {
 
     }
     version v0_2 extends v0_1 {
+        remove power;
+
         drive {
             remove ActuatorAuthority;
 
@@ -1711,10 +1713,94 @@ phoxal_api_tree! {
         }
 
         navigation {
+            remove RequestKind;
+            remove Request;
+            remove request;
+
+            /// A navigation server-issued operation identity.  The producer
+            /// scopes the local sequence to this service incarnation, so a
+            /// restart inside one execution cannot collide with an old
+            /// operation that used the same counter value.
+            #[derive(Copy, Eq, Hash)]
+            struct NavigationOperationId {
+                producer: ::phoxal_bus::ProducerId,
+                sequence: u64,
+            }
+
+            /// Work accepted by the navigation server.
+            enum StartKind {
+                GotoPose(Pose),
+                FollowPath(Path),
+            }
+
+            /// A start admission request.  The requester producer comes from
+            /// the trusted query envelope; `request_id` is only the client's
+            /// bounded retry key.
+            struct StartRequest {
+                request_id: RequestId,
+                kind: StartKind,
+            }
+
+            /// The server's idempotent admission response.
+            enum StartResponse {
+                Accepted { operation_id: NavigationOperationId },
+                Refused(RefusalReason),
+            }
+
+            /// Cancel one server-issued operation.  The query requester must
+            /// be the operation owner.
+            struct CancelRequest {
+                operation_id: NavigationOperationId,
+            }
+
+            /// The cancellation admission response.
+            enum CancelResponse {
+                Accepted,
+                Refused(RefusalReason),
+            }
+
+            #[serde(rename_all = "snake_case")]
+            replace enum RefusalReason {
+                Busy,
+                InvalidRequest,
+                Unsupported,
+                Unavailable,
+                NotOwner,
+                NotFound,
+            }
+
             // Results are ordered completion events, not a latest-value
             // snapshot. Keep the published v0.1 role immutable and correct the
             // active revision's delivery family explicitly.
             replace topic result: event Result;
+
+            replace enum State {
+                Idle,
+                Accepted(NavigationOperationId),
+                Running(NavigationOperationId),
+            }
+
+            replace struct Progress {
+                operation_id: NavigationOperationId,
+                request_id: RequestId,
+                distance_remaining_m: f64,
+                path_index: u32,
+            }
+
+            replace struct Result {
+                operation_id: NavigationOperationId,
+                request_id: RequestId,
+                outcome: Outcome,
+            }
+
+            replace struct Candidate {
+                operation_id: NavigationOperationId,
+                linear_x_mps: f32,
+                angular_z_radps: f32,
+            }
+
+            topic start: query StartRequest => StartResponse;
+            topic cancel: query CancelRequest => CancelResponse;
         }
 
         safety {

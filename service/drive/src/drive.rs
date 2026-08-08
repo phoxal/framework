@@ -355,6 +355,7 @@ impl DriveConfig {
 
 pub(crate) struct Api {
     target: Subscriber<api::drive::Target>,
+    ready: phoxal::bus::ParticipantReadyEvents,
     state: StatePublisher<api::drive::State>,
     left_motors: Vec<BoundMotor>,
     right_motors: Vec<BoundMotor>,
@@ -365,7 +366,7 @@ pub(crate) struct DriveState {
     /// by setup before the participant can enter its step loop.
     kinematics: DifferentialDrive,
     limits: MotionLimits,
-    target: Lease<api::drive::Target>,
+    target: FixedSourceLease<api::drive::Target>,
 }
 
 impl DriveState {
@@ -433,6 +434,9 @@ impl Participant for Drive {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let config = DriveConfig::from_robot(ctx.robot()?)?;
+        let motion = phoxal::bus::ParticipantId::new("motion")
+            .map_err(|error| anyhow::anyhow!("invalid fixed motion participant id: {error}"))?;
+        let ready = ctx.participant_ready_events().await?;
 
         // Drive OWNS the `drive` node: it reads its command input and publishes its
         // telemetry through the owner builder.
@@ -456,10 +460,11 @@ impl Participant for Drive {
             DriveState {
                 kinematics: config.kinematics,
                 limits: config.limits,
-                target: Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD),
+                target: FixedSourceLease::new("drive/target", motion, TARGET_SILENCE, TARGET_HOLD),
             },
             Api {
                 target,
+                ready,
                 state,
                 left_motors,
                 right_motors,
@@ -483,11 +488,18 @@ impl Participant for Drive {
             bail!("the host boot clock could not be read");
         };
 
-        // Offer every inbound target to the lease. The lease - not the sender -
-        // decides what is live: it fences a superseded producer, rejects a
-        // replayed sequence, and stamps the receiver's own observation.
+        while let Some(event) = api.ready.try_recv() {
+            state.target.update_ready_event(&event);
+        }
+        if api.ready.overflowed() {
+            state.target.mark_ready_overflow();
+        }
+
+        // Offer every inbound target to the fixed-source lease. Packet arrival
+        // cannot transfer authority: the exact Ready source set decides.
         while let Some(observed) = api.target.try_recv() {
             let decision = state.target.offer(
+                observed.metadata.participant.as_ref(),
                 observed.metadata.producer,
                 observed.metadata.sequence,
                 observed.observed_at,
@@ -523,7 +535,10 @@ mod tests {
     use std::cell::RefCell;
 
     use phoxal::api;
-    use phoxal::bus::{Lease, LeaseDecision, LocalInstant, ProducerId, RobotInstant, TimelineId};
+    use phoxal::bus::{
+        FixedSourceLease, LeaseDecision, LivelinessStatus, LocalInstant, ParticipantId, ProducerId,
+        RobotInstant, TimelineId,
+    };
     use phoxal::model::RobotBuilder;
     use phoxal::model::builder::Kinematics;
 
@@ -789,10 +804,15 @@ mod tests {
     const KINEMATICS: DifferentialDrive = DifferentialDrive::new(0.1, 0.4);
 
     fn drive_state(kinematics: DifferentialDrive) -> DriveState {
+        let motion = ParticipantId::new("motion").unwrap();
+        let source = producer(1);
+        let mut target =
+            FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
+        target.update_ready(&motion, source, LivelinessStatus::Alive);
         DriveState {
             kinematics,
             limits: LIMITS,
-            target: Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD),
+            target,
         }
     }
 
@@ -868,9 +888,10 @@ mod tests {
         let requested = api::drive::Target::try_new(5.0, -5.0).unwrap();
         let (host_now, now) = instants();
         let mut state = drive_state(KINEMATICS);
+        let motion = state.target.expected_participant().clone();
         state
             .target
-            .offer(producer(1), 1, host_now, requested.clone());
+            .offer(Some(&motion), producer(1), 1, host_now, requested.clone());
 
         let (published, wheels) = state.decide(host_now, now);
 
@@ -919,9 +940,10 @@ mod tests {
         let requested = api::drive::Target::try_new(0.6, 0.0).unwrap();
         let (host_now, now) = instants();
         let mut state = drive_state(DifferentialDrive::new(f64::MIN_POSITIVE, 0.4));
+        let motion = state.target.expected_participant().clone();
         state
             .target
-            .offer(producer(1), 1, host_now, requested.clone());
+            .offer(Some(&motion), producer(1), 1, host_now, requested.clone());
 
         let (published, wheels) = state.decide(host_now, now);
 
@@ -947,8 +969,11 @@ mod tests {
         let host_start = LocalInstant::from_boot_ns(0);
         let robot_start = RobotInstant::new(line, 0);
 
-        let mut silent = Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD);
-        silent.offer(producer, 1, host_start, requested.clone());
+        let motion = ParticipantId::new("motion").unwrap();
+        let mut silent =
+            FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
+        silent.update_ready(&motion, producer, LivelinessStatus::Alive);
+        silent.offer(Some(&motion), producer, 1, host_start, requested.clone());
         assert!(silent.live(host_start, robot_start).is_some());
         let past_silence = host_start.saturating_add(TARGET_SILENCE + Duration::from_millis(1));
         assert!(
@@ -956,8 +981,10 @@ mod tests {
             "host silence expires the lease even while robot time stands still"
         );
 
-        let mut held = Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD);
-        held.offer(producer, 1, host_start, requested);
+        let mut held =
+            FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
+        held.update_ready(&motion, producer, LivelinessStatus::Alive);
+        held.offer(Some(&motion), producer, 1, host_start, requested);
         assert!(held.live(host_start, robot_start).is_some());
         let past_hold = robot_start.saturating_add(TARGET_HOLD + Duration::from_millis(1));
         assert!(
@@ -966,9 +993,8 @@ mod tests {
         );
     }
 
-    /// A restarted publisher is a fresh producer whose sequence restarts at
-    /// zero; that must take over rather than look like a replay, and the
-    /// superseded producer must not be able to command afterwards.
+    /// A restarted publisher takes over only after the old Ready token is
+    /// gone; packet arrival alone cannot perform the handoff.
     #[test]
     fn a_replacement_producer_takes_over_and_fences_the_previous_one() {
         let target = |linear_x_mps| api::drive::Target::try_new(linear_x_mps, 0.0).unwrap();
@@ -976,12 +1002,20 @@ mod tests {
         let second = producer(3);
         let host_now = LocalInstant::from_boot_ns(0);
         let now = RobotInstant::new(TimelineId::mint(), 0);
-
-        let mut lease = Lease::new("drive/target", TARGET_SILENCE, TARGET_HOLD);
-        lease.offer(first, 9, host_now, target(0.1));
+        let motion = ParticipantId::new("motion").unwrap();
+        let mut lease =
+            FixedSourceLease::new("drive/target", motion.clone(), TARGET_SILENCE, TARGET_HOLD);
+        lease.update_ready(&motion, first, LivelinessStatus::Alive);
+        lease.offer(Some(&motion), first, 9, host_now, target(0.1));
+        lease.update_ready(&motion, second, LivelinessStatus::Alive);
         assert!(matches!(
-            lease.offer(second, 0, host_now, target(0.2)),
-            LeaseDecision::ProducerReplaced { superseded } if superseded == first
+            lease.offer(Some(&motion), second, 0, host_now, target(0.2)),
+            LeaseDecision::Rejected(_)
+        ));
+        lease.update_ready(&motion, first, LivelinessStatus::Lost);
+        assert!(matches!(
+            lease.offer(Some(&motion), second, 0, host_now, target(0.2)),
+            LeaseDecision::Acquired
         ));
         assert_eq!(lease.producer(), Some(second));
         assert_eq!(
@@ -991,7 +1025,7 @@ mod tests {
             Some(0.2)
         );
         assert!(matches!(
-            lease.offer(second, 0, host_now, target(0.3)),
+            lease.offer(Some(&motion), second, 0, host_now, target(0.3)),
             LeaseDecision::Rejected(_)
         ));
     }

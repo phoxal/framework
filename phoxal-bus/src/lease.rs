@@ -1,249 +1,377 @@
-//! Receiver-owned command leases and producer fencing.
+//! Receiver-owned authority leases for fixed topology and external sources.
 //!
-//! A command envelope carries execution membership (structurally, through the
-//! bus root), producer identity, a monotonic sequence, and the body. It carries
-//! no production timestamp, because a command is a request, not an observation.
-//!
-//! The **owning service** - never the sender - decides what a command is worth:
-//! it rejects a non-increasing sequence from a known producer, stamps its own
-//! [`LocalInstant`] observation, renews a lease it owns itself, and applies the
-//! result at a logical step. Every leased command has two independent expiry
-//! conditions, and neither is distorted to serve the other:
-//!
-//! - a **host-monotonic silence deadline**, which protects human and network
-//!   liveness. At 5x simulation speed it still requires operator presence in
-//!   human time.
-//! - a **logical hold horizon**, which bounds real or simulated travel. At 5x
-//!   simulation speed it still bounds how far the machine may move on one
-//!   command.
-//!
-//! [`ProducerFence`] is the identity half. A fresh process is a fresh producer
-//! whose sequence starts at zero, so "did the sequence reset" collapses into
-//! "is this a different producer". Once a replacement producer is accepted, the
-//! superseded one is fenced: it cannot renew a lease or an actuator permit
-//! afterwards, even if it is still live.
+//! A packet never transfers authority merely because it arrived later.  Fixed
+//! topology inputs are admitted only when the packet's participant is the
+//! expected one and that participant has exactly one currently Ready producer.
+//! External inputs use an explicit receiver-owned acquisition lease and do not
+//! participate in participant Ready at all.
 
 use std::collections::HashSet;
 use std::time::Duration;
 
-use phoxal_runtime_contract::identity::ProducerId;
+use phoxal_runtime_contract::identity::{ParticipantId, ProducerId};
 
+use crate::liveliness::{LivelinessStatus, ParticipantLivelinessEvent};
 use crate::time::{LocalInstant, RobotInstant, RobotTimeError};
 
-/// Why a command was not accepted.
+/// The maximum number of simultaneously observed Ready incarnations retained
+/// by one fixed-source receiver.  More than one is already a fail-closed
+/// conflict; the cap prevents a malformed or hostile liveliness stream from
+/// turning receiver state into an allocation sink.
+pub const MAX_READY_PRODUCERS: usize = 16;
+
+/// Why a source was not admitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LeaseRejection {
-    /// The sequence did not increase within the accepted producer's stream, so
-    /// this is a replay or a reorder.
-    #[error("sequence {observed} does not follow {accepted} for the accepted producer")]
-    StaleSequence {
-        /// The highest sequence accepted so far.
-        accepted: u64,
-        /// The sequence just observed.
-        observed: u64,
+    /// The source identified a different participant than this input expects.
+    #[error("participant attribution does not match the fixed source")]
+    WrongParticipant,
+    /// No producer currently holds an exact Ready lease for the participant.
+    #[error("fixed source has no Ready producer")]
+    SourceAbsent,
+    /// More than one producer is Ready for the fixed participant.
+    #[error("fixed source has a Ready producer conflict")]
+    SourceConflict,
+    /// The sequence did not strictly increase for the active producer.
+    #[error("sequence {observed} does not follow {accepted} for the active producer")]
+    StaleSequence { accepted: u64, observed: u64 },
+    /// A different external producer owns the receiver-side acquisition lease.
+    #[error("external producer {owner} already owns the lease")]
+    AuthorityHeld { owner: ProducerId },
+    /// A caller attempted to release another producer's external lease.
+    #[error("producer {requested} does not own the external lease held by {owner}")]
+    NotOwner {
+        owner: ProducerId,
+        requested: ProducerId,
     },
-    /// A producer that has already been superseded tried to renew.
-    #[error("producer {superseded} was superseded by {accepted}")]
-    SupersededProducer {
-        /// The producer that tried to renew.
-        superseded: ProducerId,
-        /// The producer that replaced it.
-        accepted: ProducerId,
-    },
+    /// The bounded Ready observation state overflowed and authority is unknown.
+    #[error("Ready observation state overflowed")]
+    ReadyStateOverflow,
 }
 
-/// What happened to a lease when a command was offered to it.
+/// What happened when a source offered a body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeaseDecision {
-    /// The command was accepted and the lease renewed.
+    /// The current source renewed its receiver-owned lease.
     Renewed,
-    /// A replacement producer was accepted; the previous one is now fenced.
-    ProducerReplaced {
-        /// The producer that was fenced.
-        superseded: ProducerId,
-    },
-    /// The command was rejected and the lease untouched.
+    /// A source acquired an otherwise unowned receiver-side lease.
+    Acquired,
+    /// The body was rejected and the held value was left untouched.
     Rejected(LeaseRejection),
 }
 
-/// Tracks which producer holds authority over one input, and which ones have
-/// lost it for good.
-///
-/// The replacement policy is "last accepted wins, and the loser stays fenced":
-/// a live producer is authoritative until a *different* producer is accepted,
-/// at which point the previous one is recorded as superseded and can never
-/// renew again. Remembering only the current producer would let A -> B -> late A
-/// hand authority back to a process the service already replaced, which is the
-/// exact zombie this fence exists to stop.
-///
-/// "Never" is meant literally, so the fenced set is not bounded. A ring would
-/// hand authority back to the oldest zombie once enough replacements pushed it
-/// out - and producer identities are opaque, so nothing downstream could tell
-/// that had happened. The set grows by one identity per replacement, which is
-/// one process restart, not one message.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ProducerFence {
-    accepted: Option<(ProducerId, u64)>,
-    superseded: HashSet<ProducerId>,
-}
-
-impl ProducerFence {
-    /// Nothing accepted yet.
-    pub fn new() -> Self {
-        ProducerFence::default()
-    }
-
-    /// The producer currently holding authority, if any.
-    pub fn accepted_producer(&self) -> Option<ProducerId> {
-        self.accepted.map(|(producer, _)| producer)
-    }
-
-    /// Offer a sample from `producer` at `sequence`.
-    ///
-    /// A different producer replaces the current one and fences it. The same
-    /// producer must strictly increase its sequence. A producer that was
-    /// already superseded is rejected outright, however live it still is.
-    pub fn admit(&mut self, producer: ProducerId, sequence: u64) -> LeaseDecision {
-        if self.superseded.contains(&producer) {
-            return LeaseDecision::Rejected(LeaseRejection::SupersededProducer {
-                superseded: producer,
-                accepted: self.accepted.map_or(producer, |(accepted, _)| accepted),
-            });
-        }
-        match self.accepted {
-            None => {
-                self.accepted = Some((producer, sequence));
-                LeaseDecision::Renewed
-            }
-            Some((accepted, last)) if accepted == producer => {
-                if sequence > last {
-                    self.accepted = Some((producer, sequence));
-                    LeaseDecision::Renewed
-                } else {
-                    LeaseDecision::Rejected(LeaseRejection::StaleSequence {
-                        accepted: last,
-                        observed: sequence,
-                    })
-                }
-            }
-            Some((superseded, _)) => {
-                self.fence(superseded);
-                self.accepted = Some((producer, sequence));
-                LeaseDecision::ProducerReplaced { superseded }
-            }
-        }
-    }
-
-    /// Whether `producer` may still act, i.e. has not been superseded.
-    pub fn permits(&self, producer: ProducerId) -> bool {
-        !self.superseded.contains(&producer)
-            && self
-                .accepted
-                .is_none_or(|(accepted, _)| accepted == producer)
-    }
-
-    /// Forget the *accepted* producer, so the next sample starts a fresh
-    /// stream. The superseded set deliberately survives: a world replacement
-    /// invalidates derived state, not the fact that a process lost authority.
-    pub fn clear(&mut self) {
-        self.accepted = None;
-    }
-
-    fn fence(&mut self, producer: ProducerId) {
-        self.superseded.insert(producer);
-    }
-}
-
-/// The tracing target every lease decision is emitted on.
-///
-/// It is deliberately outside the `phoxal_bus` / `phoxal.bus` prefixes the bus
-/// log layer filters, so the decision trace reaches the bus and any recorder
-/// subscribed to it. Renewals are `DEBUG` and every transition is `INFO`, so an
-/// operator running at the default level sees each change of authority and each
-/// expiry, and raising the level to `DEBUG` yields the complete per-command
-/// trace.
+/// The tracing target used for authority decisions.
 pub const LEASE_TRACE_TARGET: &str = "phoxal.lease";
-
-/// A receiver-owned command lease with two independent expiry conditions.
-///
-/// The lease holds the last accepted command body plus both deadlines. It is
-/// the owning service's own state, renewed only by commands the service itself
-/// admitted, and read at a logical step.
-///
-/// Every decision it takes - renewal, replacement, rejection, and each expiry -
-/// is emitted on [`LEASE_TRACE_TARGET`] with the producer, the sender's
-/// sequence, this receiver's own observation ordinal, and the logical step the
-/// command was applied at. That trace is the acceptance evidence; the lease
-/// keeps no private history of its own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Lease<B> {
-    input: &'static str,
-    silence: Duration,
-    hold: Duration,
-    fence: ProducerFence,
-    held: Option<Held<B>>,
-    observations: u64,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Held<B> {
     body: B,
     observed_at: LocalInstant,
-    /// Who sent the held command, what they numbered it, and where it sits in
-    /// this receiver's own arrival order. Every later decision about this
-    /// command - the step it was applied at, the deadline it died on - reports
-    /// the same three, so a trace never has to be joined back to an earlier
-    /// row that may itself have been dropped.
     producer: ProducerId,
     sequence: u64,
     observation: u64,
     accepted_at: Option<RobotInstant>,
 }
 
-impl<B> Lease<B> {
-    /// A lease that expires after `silence` of host-monotonic quiet, or after
-    /// `hold` of robot time since the command was applied.
-    ///
-    /// `input` names the command input this lease owns (`"motion/manual"`,
-    /// `"drive/target"`); it labels every decision this lease emits.
-    pub fn new(input: &'static str, silence: Duration, hold: Duration) -> Self {
-        Lease {
+/// A fixed topology source whose authority follows the exact Ready set for
+/// one expected participant.
+///
+/// The Ready set is current state, not a historical fence.  When the old
+/// producer loses Ready and a new producer is the sole Ready source, the new
+/// source may start a fresh sequence stream.  While both are Ready, every
+/// packet is rejected and any held body is dropped fail-closed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FixedSourceLease<B> {
+    input: &'static str,
+    expected_participant: ParticipantId,
+    silence: Duration,
+    hold: Duration,
+    ready: HashSet<ProducerId>,
+    ready_overflow: bool,
+    /// The one current source's high-water sequence. It survives body
+    /// expiry, but is cleared when that source loses Ready, so no producer
+    /// history accumulates across handoffs.
+    active: Option<(ProducerId, u64)>,
+    held: Option<Held<B>>,
+    observations: u64,
+}
+
+impl<B> FixedSourceLease<B> {
+    /// Construct a fixed-source lease for `expected_participant`.
+    pub fn new(
+        input: &'static str,
+        expected_participant: ParticipantId,
+        silence: Duration,
+        hold: Duration,
+    ) -> Self {
+        Self {
             input,
+            expected_participant,
             silence,
             hold,
-            fence: ProducerFence::new(),
+            ready: HashSet::new(),
+            ready_overflow: false,
+            active: None,
             held: None,
             observations: 0,
         }
     }
 
-    /// How many commands this receiver has observed on this input.
-    ///
-    /// This is the receiver's own arrival order, not anything the sender
-    /// supplied, and it is the ordinate of the decision trace.
+    /// The participant this lease accepts.
+    pub fn expected_participant(&self) -> &ParticipantId {
+        &self.expected_participant
+    }
+
+    /// Update one exact participant/producer Ready token.
+    pub fn update_ready(
+        &mut self,
+        participant: &ParticipantId,
+        producer: ProducerId,
+        status: LivelinessStatus,
+    ) {
+        if participant != &self.expected_participant {
+            return;
+        }
+        match status {
+            LivelinessStatus::Alive => {
+                if !self.ready.contains(&producer) && self.ready.len() >= MAX_READY_PRODUCERS {
+                    self.ready_overflow = true;
+                } else {
+                    self.ready.insert(producer);
+                }
+            }
+            LivelinessStatus::Lost => {
+                self.ready.remove(&producer);
+                if self.active.is_some_and(|(active, _)| active == producer) {
+                    self.active = None;
+                    self.held = None;
+                }
+                // A later exact observation can make the state trustworthy
+                // again; loss events themselves do not erase an overflow
+                // because the dropped identities are still unknown.
+            }
+        }
+        self.reconcile_ready();
+    }
+
+    /// Apply an exact observer event, ignoring Ready tokens for other
+    /// participants in the execution.
+    pub fn update_ready_event(&mut self, event: &ParticipantLivelinessEvent) {
+        if event.key.participant() == self.expected_participant.as_str() {
+            self.update_ready(
+                &self.expected_participant.clone(),
+                event.key.producer(),
+                event.status,
+            );
+        }
+    }
+
+    /// Mark the Ready observer's bounded channel as lossy.  The receiver stays
+    /// fail-closed until the process reconstructs a fresh lease/observer.
+    pub fn mark_ready_overflow(&mut self) {
+        self.ready_overflow = true;
+        self.reconcile_ready();
+    }
+
+    /// Number of current Ready producers for this participant.
+    pub fn ready_count(&self) -> usize {
+        self.ready.len()
+    }
+
+    /// The active source, if a body is currently held.
+    pub fn producer(&self) -> Option<ProducerId> {
+        self.held.as_ref().map(|held| held.producer)
+    }
+
+    /// Number of receiver observations, useful for diagnostics and tests.
     pub const fn observations(&self) -> u64 {
         self.observations
     }
 
-    /// The host-monotonic silence deadline this lease enforces.
-    pub const fn silence(&self) -> Duration {
-        self.silence
+    /// Offer one fixed-source body with transport provenance.
+    pub fn offer(
+        &mut self,
+        participant: Option<&ParticipantId>,
+        producer: ProducerId,
+        sequence: u64,
+        observed_at: LocalInstant,
+        body: B,
+    ) -> LeaseDecision {
+        let decision = if participant != Some(&self.expected_participant) {
+            LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
+        } else if self.ready_overflow {
+            LeaseDecision::Rejected(LeaseRejection::ReadyStateOverflow)
+        } else if self.ready.is_empty() {
+            LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
+        } else if self.ready.len() != 1 || !self.ready.contains(&producer) {
+            LeaseDecision::Rejected(LeaseRejection::SourceConflict)
+        } else if let Some((active, accepted)) = self.active {
+            if active != producer {
+                // A different producer can only be admitted after the Ready
+                // loss cleared `active`; packet arrival never performs a
+                // takeover.
+                LeaseDecision::Rejected(LeaseRejection::SourceConflict)
+            } else if sequence <= accepted {
+                LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                    accepted,
+                    observed: sequence,
+                })
+            } else {
+                LeaseDecision::Renewed
+            }
+        } else {
+            LeaseDecision::Acquired
+        };
+
+        self.observations = self.observations.saturating_add(1);
+        self.trace(producer, sequence, decision);
+        if matches!(decision, LeaseDecision::Renewed | LeaseDecision::Acquired) {
+            self.active = Some((producer, sequence));
+            self.held = Some(Held {
+                body,
+                observed_at,
+                producer,
+                sequence,
+                observation: self.observations,
+                accepted_at: None,
+            });
+        }
+        decision
     }
 
-    /// The logical hold horizon this lease enforces.
-    pub const fn hold(&self) -> Duration {
-        self.hold
+    /// Return the held body when both host and logical deadlines are live.
+    pub fn live(&mut self, now: LocalInstant, step: RobotInstant) -> Option<&B> {
+        self.live_host(now)?;
+        let held = self.held.as_mut()?;
+        let (producer, sequence, observation) = (held.producer, held.sequence, held.observation);
+        let anchor = match held.accepted_at {
+            Some(anchor) => anchor,
+            None => *held.accepted_at.insert(step),
+        };
+        match step.duration_since(anchor) {
+            Ok(elapsed) if elapsed < self.hold => Some(&self.held.as_ref()?.body),
+            Ok(_) => {
+                self.trace_expiry(producer, sequence, observation, "expired_hold");
+                self.held = None;
+                None
+            }
+            Err(RobotTimeError::TimelineMismatch(_)) => {
+                self.trace_expiry(producer, sequence, observation, "timeline_replaced");
+                self.held = None;
+                None
+            }
+            Err(RobotTimeError::Reversed { .. }) => {
+                self.trace_expiry(producer, sequence, observation, "time_reversed");
+                self.held = None;
+                None
+            }
+        }
     }
 
-    /// The producer currently holding this lease.
+    /// Return the held body when the receiver's host-clock silence deadline is
+    /// live.  Webots motor control has no framework robot-step token before it
+    /// advances the world, so it uses this host-only part of the same lease.
+    pub fn live_host(&mut self, now: LocalInstant) -> Option<&B> {
+        let held = self.held.as_ref()?;
+        let expired = now.saturating_duration_since(held.observed_at) >= self.silence;
+        if !expired {
+            return self.held.as_ref().map(|held| &held.body);
+        }
+        let held = self.held.take()?;
+        let (producer, sequence, observation) = (held.producer, held.sequence, held.observation);
+        self.trace_expiry(producer, sequence, observation, "expired_silence");
+        None
+    }
+
+    /// Drop the held body while retaining the current source's sequence fence.
+    /// Ready state is retained so a later packet cannot bypass the fixed-source
+    /// policy or replay an earlier sequence.
+    pub fn clear(&mut self) {
+        self.held = None;
+    }
+
+    fn reconcile_ready(&mut self) {
+        let sole = (!self.ready_overflow && self.ready.len() == 1)
+            .then(|| self.ready.iter().next().copied())
+            .flatten();
+        if let Some((active, _)) = self.active
+            && !self.ready.contains(&active)
+            && sole != Some(active)
+        {
+            self.active = None;
+        }
+        let still_owned = self
+            .held
+            .as_ref()
+            .is_some_and(|held| sole == Some(held.producer));
+        if !still_owned {
+            self.held = None;
+        }
+    }
+
+    fn trace(&self, producer: ProducerId, sequence: u64, decision: LeaseDecision) {
+        tracing::info!(
+            target: LEASE_TRACE_TARGET,
+            input = self.input,
+            expected_participant = %self.expected_participant,
+            producer = %producer,
+            sequence,
+            observation = self.observations,
+            decision = ?decision,
+            ready_count = self.ready.len(),
+            "fixed-source authority decision"
+        );
+    }
+
+    fn trace_expiry(&self, producer: ProducerId, sequence: u64, observation: u64, decision: &str) {
+        tracing::info!(
+            target: LEASE_TRACE_TARGET,
+            input = self.input,
+            expected_participant = %self.expected_participant,
+            producer = %producer,
+            sequence,
+            observation,
+            decision,
+            "fixed-source authority expired"
+        );
+    }
+}
+
+/// A receiver-owned lease for an external/operator producer.
+///
+/// It has no participant field and never consults Ready.  The first admissible
+/// producer acquires an unowned lease; another producer cannot steal it by
+/// sending a later sequence.  Expiry or explicit release makes acquisition
+/// available again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExclusiveProducerLease<B> {
+    input: &'static str,
+    silence: Duration,
+    hold: Duration,
+    owner: Option<(ProducerId, u64)>,
+    held: Option<Held<B>>,
+    observations: u64,
+}
+
+impl<B> ExclusiveProducerLease<B> {
+    /// Construct an external acquisition lease.
+    pub fn new(input: &'static str, silence: Duration, hold: Duration) -> Self {
+        Self {
+            input,
+            silence,
+            hold,
+            owner: None,
+            held: None,
+            observations: 0,
+        }
+    }
+
+    /// The external producer currently holding the lease.
     pub fn producer(&self) -> Option<ProducerId> {
-        self.fence.accepted_producer()
+        self.owner.map(|(producer, _)| producer)
     }
 
-    /// Offer an observed command to the lease.
-    ///
-    /// `observed_at` is the receiver's own stamp - the one the bus took before
-    /// decode - never anything the sender supplied.
+    /// Offer a body, acquiring the lease when it is free.
     pub fn offer(
         &mut self,
         producer: ProducerId,
@@ -251,166 +379,143 @@ impl<B> Lease<B> {
         observed_at: LocalInstant,
         body: B,
     ) -> LeaseDecision {
-        let decision = self.fence.admit(producer, sequence);
+        let decision = match self.owner {
+            None => LeaseDecision::Acquired,
+            Some((owner, _accepted)) if owner != producer => {
+                LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner })
+            }
+            Some((_owner, accepted)) if sequence <= accepted => {
+                LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                    accepted,
+                    observed: sequence,
+                })
+            }
+            Some(_) => LeaseDecision::Renewed,
+        };
         self.observations = self.observations.saturating_add(1);
-        let observation = self.observations;
-        match decision {
-            LeaseDecision::Renewed => {
-                tracing::debug!(
-                    target: LEASE_TRACE_TARGET,
-                    input = self.input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    decision = "renewed",
-                    "command renewed the lease"
-                );
-            }
-            LeaseDecision::ProducerReplaced { superseded } => {
-                tracing::info!(
-                    target: LEASE_TRACE_TARGET,
-                    input = self.input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    superseded = %superseded,
-                    decision = "producer_replaced",
-                    "a replacement producer took the lease; the previous one is fenced"
-                );
-            }
-            LeaseDecision::Rejected(rejection) => {
-                tracing::info!(
-                    target: LEASE_TRACE_TARGET,
-                    input = self.input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    decision = "rejected",
-                    reason = %rejection,
-                    "command rejected"
-                );
-            }
-        }
-        match decision {
-            LeaseDecision::Renewed | LeaseDecision::ProducerReplaced { .. } => {
-                self.held = Some(Held {
-                    body,
-                    observed_at,
-                    producer,
-                    sequence,
-                    observation,
-                    // A renewal restarts the logical horizon at the next step
-                    // that applies it; until then it has not been applied at
-                    // any robot instant.
-                    accepted_at: None,
-                });
-            }
-            LeaseDecision::Rejected(_) => {}
+        tracing::info!(
+            target: LEASE_TRACE_TARGET,
+            input = self.input,
+            producer = %producer,
+            sequence,
+            observation = self.observations,
+            decision = ?decision,
+            "external authority decision"
+        );
+        if matches!(decision, LeaseDecision::Acquired | LeaseDecision::Renewed) {
+            self.owner = Some((producer, sequence));
+            self.held = Some(Held {
+                body,
+                observed_at,
+                producer,
+                sequence,
+                observation: self.observations,
+                accepted_at: None,
+            });
         }
         decision
     }
 
-    /// The live command at this step, or `None` if either expiry condition has
-    /// been met.
-    ///
-    /// The first call after a renewal anchors the logical hold horizon at
-    /// `now`, so the horizon measures time since the command was *applied*, not
-    /// since it was sent - which is what makes it survive a paused simulation
-    /// correctly.
-    ///
-    /// A cross-timeline anchor is not a silently wrong number: it means the
-    /// world was replaced under a held command, so the command is dropped.
-    ///
-    /// Both deadlines are reached *at* the deadline, not after it: a command
-    /// whose silence or hold has run exactly to its bound is already expired.
-    /// The actuator permit ages the same way, so no boundary sample is live in
-    /// one layer and dead in the next.
+    /// Explicitly release the receiver-owned lease.
+    pub fn release(&mut self, producer: ProducerId) -> Result<(), LeaseRejection> {
+        let Some((owner, _)) = self.owner else {
+            return Ok(());
+        };
+        if owner != producer {
+            return Err(LeaseRejection::NotOwner {
+                owner,
+                requested: producer,
+            });
+        }
+        self.owner = None;
+        self.held = None;
+        Ok(())
+    }
+
+    /// Return the held body while both expiry conditions remain live.
     pub fn live(&mut self, now: LocalInstant, step: RobotInstant) -> Option<&B> {
-        let input = self.input;
-        let silence = self.silence;
-        let hold = self.hold;
+        self.expire_before_offer(now, step);
         let held = self.held.as_mut()?;
         let (producer, sequence, observation) = (held.producer, held.sequence, held.observation);
-        if now.saturating_duration_since(held.observed_at) >= silence {
-            tracing::info!(
-                target: LEASE_TRACE_TARGET,
-                input,
-                producer = %producer,
-                sequence,
-                observation,
-                decision = "expired_silence",
-                "the lease expired on host-monotonic silence"
-            );
-            self.held = None;
-            return None;
-        }
         let anchor = match held.accepted_at {
             Some(anchor) => anchor,
-            None => {
-                tracing::debug!(
-                    target: LEASE_TRACE_TARGET,
-                    input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    step = %step,
-                    decision = "applied",
-                    "the held command was applied at this step and anchors the hold horizon"
-                );
-                *held.accepted_at.insert(step)
-            }
+            None => *held.accepted_at.insert(step),
         };
         match step.duration_since(anchor) {
-            Ok(elapsed) if elapsed < hold => Some(&self.held.as_ref()?.body),
+            Ok(elapsed) if elapsed < self.hold => Some(&self.held.as_ref()?.body),
             Ok(_) => {
-                tracing::info!(
-                    target: LEASE_TRACE_TARGET,
-                    input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    step = %step,
-                    decision = "expired_hold",
-                    "the lease expired on its logical hold horizon"
-                );
-                self.held = None;
+                self.expire(producer, sequence, observation, "expired_hold");
                 None
             }
             Err(RobotTimeError::TimelineMismatch(_)) => {
-                tracing::info!(
-                    target: LEASE_TRACE_TARGET,
-                    input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    step = %step,
-                    decision = "timeline_replaced",
-                    "the world was replaced under the held command, so it was dropped"
-                );
-                self.held = None;
+                self.expire(producer, sequence, observation, "timeline_replaced");
                 None
             }
             Err(RobotTimeError::Reversed { .. }) => {
-                tracing::info!(
-                    target: LEASE_TRACE_TARGET,
-                    input,
-                    producer = %producer,
-                    sequence,
-                    observation,
-                    step = %step,
-                    decision = "time_reversed",
-                    "the logical clock moved backwards under the held command, so it was dropped"
-                );
-                self.held = None;
+                self.expire(producer, sequence, observation, "time_reversed");
                 None
             }
         }
     }
 
-    /// Drop any held command and forget the accepted producer.
+    /// Drop any external authority and body.
     pub fn clear(&mut self) {
+        self.owner = None;
         self.held = None;
-        self.fence.clear();
+    }
+
+    /// Expire an external lease using the receiver's host clock and logical
+    /// clock before admitting the next queued body.
+    ///
+    /// Callers that drain a command queue should invoke this before offering
+    /// the queue's next body so a silent or logically expired owner cannot
+    /// block a new producer's first command. A body that has not yet been
+    /// applied has no logical anchor and is anchored by the first `live` call.
+    pub fn expire_before_offer(&mut self, now: LocalInstant, step: RobotInstant) {
+        self.expire_host(now);
+        let Some(held) = self.held.as_ref() else {
+            return;
+        };
+        let Some(anchor) = held.accepted_at else {
+            return;
+        };
+        let reason = match step.duration_since(anchor) {
+            Ok(elapsed) if elapsed >= self.hold => Some("expired_hold"),
+            Err(RobotTimeError::TimelineMismatch(_)) => Some("timeline_replaced"),
+            Err(RobotTimeError::Reversed { .. }) => Some("time_reversed"),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            let (producer, sequence, observation) =
+                (held.producer, held.sequence, held.observation);
+            self.expire(producer, sequence, observation, reason);
+        }
+    }
+
+    /// Expire an external lease using only the receiver's host clock.
+    pub fn expire_host(&mut self, now: LocalInstant) {
+        let Some(held) = self.held.as_ref() else {
+            return;
+        };
+        if now.saturating_duration_since(held.observed_at) >= self.silence {
+            let (producer, sequence, observation) =
+                (held.producer, held.sequence, held.observation);
+            self.expire(producer, sequence, observation, "expired_silence");
+        }
+    }
+
+    fn expire(&mut self, producer: ProducerId, sequence: u64, observation: u64, decision: &str) {
+        tracing::info!(
+            target: LEASE_TRACE_TARGET,
+            input = self.input,
+            producer = %producer,
+            sequence,
+            observation,
+            decision,
+            "external authority expired"
+        );
+        self.owner = None;
+        self.held = None;
     }
 }
 
@@ -419,224 +524,231 @@ mod tests {
     use super::*;
     use phoxal_runtime_contract::identity::TimelineId;
 
-    use crate::test_support::producer;
+    fn producer(value: u128) -> ProducerId {
+        ProducerId::try_from((1_u128 << 124) | value).expect("canonical test producer")
+    }
 
-    const SILENCE: Duration = Duration::from_millis(150);
-    const HOLD: Duration = Duration::from_millis(500);
+    fn participant(name: &str) -> ParticipantId {
+        ParticipantId::new(name).expect("valid test participant")
+    }
 
     fn step(line: TimelineId, ticks: u64) -> RobotInstant {
         RobotInstant::new(line, ticks)
     }
 
-    fn ms(value: u64) -> u64 {
-        value * 1_000_000
+    #[test]
+    fn fixed_source_requires_exact_ready_source_and_participant() {
+        let expected = participant("motion");
+        let wrong = participant("drive");
+        let source = producer(1);
+        let mut lease = FixedSourceLease::new(
+            "drive/target",
+            expected.clone(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        let at = LocalInstant::from_boot_ns(0);
+        assert_eq!(
+            lease.offer(Some(&expected), source, 1, at, "blocked"),
+            LeaseDecision::Rejected(LeaseRejection::SourceAbsent)
+        );
+        lease.update_ready(&wrong, source, LivelinessStatus::Alive);
+        assert_eq!(lease.ready_count(), 0);
+        assert_eq!(
+            lease.offer(Some(&wrong), source, 2, at, "wrong"),
+            LeaseDecision::Rejected(LeaseRejection::WrongParticipant)
+        );
+        lease.update_ready(&expected, source, LivelinessStatus::Alive);
+        assert_eq!(
+            lease.offer(Some(&expected), source, 1, at, "ok"),
+            LeaseDecision::Acquired
+        );
     }
 
     #[test]
-    fn a_sequence_that_does_not_increase_is_rejected_without_touching_the_lease() {
-        let producer = producer(1);
-        let start = LocalInstant::from_boot_ns(1_000);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-
-        assert_eq!(
-            lease.offer(producer, 1, start, "go"),
-            LeaseDecision::Renewed
-        );
-        assert_eq!(
-            lease.offer(producer, 1, start, "replay"),
-            LeaseDecision::Rejected(LeaseRejection::StaleSequence {
-                accepted: 1,
-                observed: 1
-            })
-        );
-        assert_eq!(
-            lease.offer(producer, 0, start, "reorder"),
-            LeaseDecision::Rejected(LeaseRejection::StaleSequence {
-                accepted: 1,
-                observed: 0
-            })
-        );
-
-        let line = TimelineId::mint();
-        assert_eq!(lease.live(start, step(line, 0)), Some(&"go"));
-    }
-
-    #[test]
-    fn a_fresh_producer_starting_at_zero_supersedes_and_fences_the_previous_one() {
+    fn fixed_source_conflict_never_allows_arrival_order_takeover() {
+        let expected = participant("motion");
         let first = producer(2);
         let second = producer(3);
-        let start = LocalInstant::from_boot_ns(1_000);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-
-        lease.offer(first, 9, start, "old");
-        // A restarted publisher is a fresh producer whose sequence restarts at
-        // zero; that must not look like a replay.
-        assert_eq!(
-            lease.offer(second, 0, start, "new"),
-            LeaseDecision::ProducerReplaced { superseded: first }
+        let at = LocalInstant::from_boot_ns(0);
+        let mut lease = FixedSourceLease::new(
+            "drive/target",
+            expected.clone(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
         );
-        assert!(!lease.fence.permits(first));
-        assert!(lease.fence.permits(second));
-
-        // The superseded producer cannot renew afterwards, however live it
-        // still is: A -> B -> late A must not hand authority back to A.
+        lease.update_ready(&expected, first, LivelinessStatus::Alive);
         assert_eq!(
-            lease.offer(first, 10, start, "zombie"),
-            LeaseDecision::Rejected(LeaseRejection::SupersededProducer {
-                superseded: first,
-                accepted: second,
-            })
+            lease.offer(Some(&expected), first, 7, at, "old"),
+            LeaseDecision::Acquired
+        );
+        lease.update_ready(&expected, second, LivelinessStatus::Alive);
+        assert_eq!(lease.producer(), None);
+        assert_eq!(
+            lease.offer(Some(&expected), second, 0, at, "new"),
+            LeaseDecision::Rejected(LeaseRejection::SourceConflict)
+        );
+        lease.update_ready(&expected, first, LivelinessStatus::Lost);
+        assert_eq!(
+            lease.offer(Some(&expected), second, 0, at, "new"),
+            LeaseDecision::Acquired
         );
         assert_eq!(lease.producer(), Some(second));
-        assert_eq!(
-            lease.live(start, step(TimelineId::mint(), 0)),
-            Some(&"new"),
-            "the zombie must not have replaced the held command either"
-        );
-    }
-
-    /// A world replacement discards derived state, but it does not rehabilitate
-    /// a process that already lost authority.
-    #[test]
-    fn clearing_a_lease_does_not_unfence_a_superseded_producer() {
-        let first = producer(4);
-        let second = producer(5);
-        let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-
-        lease.offer(first, 1, start, "old");
-        lease.offer(second, 0, start, "new");
-        lease.clear();
-
-        assert!(matches!(
-            lease.offer(first, 2, start, "zombie"),
-            LeaseDecision::Rejected(LeaseRejection::SupersededProducer { .. })
-        ));
-        assert_eq!(
-            lease.offer(second, 1, start, "live"),
-            LeaseDecision::Renewed
-        );
     }
 
     #[test]
-    fn a_superseded_producer_cannot_renew_an_actuator_permit() {
-        let first = producer(6);
-        let second = producer(7);
-        let mut fence = ProducerFence::new();
-        fence.admit(first, 1);
-        fence.admit(second, 0);
-        assert_eq!(fence.accepted_producer(), Some(second));
+    fn fixed_source_only_tracks_current_ready_state_and_rejects_replays() {
+        let expected = participant("motion");
+        let source = producer(4);
+        let at = LocalInstant::from_boot_ns(0);
+        let mut lease = FixedSourceLease::new(
+            "drive/target",
+            expected.clone(),
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        lease.update_ready(&expected, source, LivelinessStatus::Alive);
+        assert_eq!(
+            lease.offer(Some(&expected), source, 3, at, "first"),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(
+            lease.offer(Some(&expected), source, 3, at, "replay"),
+            LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                accepted: 3,
+                observed: 3,
+            })
+        );
         assert!(
-            !fence.permits(first),
-            "the fenced authority must not be able to hold a permit open"
+            lease
+                .live(
+                    at.saturating_add(Duration::from_secs(1)),
+                    step(TimelineId::mint(), 0),
+                )
+                .is_none()
         );
-        assert!(matches!(
-            fence.admit(first, 2),
-            LeaseDecision::Rejected(LeaseRejection::SupersededProducer { .. })
-        ));
         assert_eq!(
-            fence.accepted_producer(),
-            Some(second),
-            "a rejected zombie must not become the accepted producer"
+            lease.offer(Some(&expected), source, 1, at, "expired replay"),
+            LeaseDecision::Rejected(LeaseRejection::StaleSequence {
+                accepted: 3,
+                observed: 1,
+            })
         );
-    }
-
-    /// A ring of fenced producers would hand authority back to the oldest
-    /// zombie once enough replacements pushed it out, and producer identities
-    /// are opaque, so nothing downstream could notice. "Never renews again"
-    /// has to survive an arbitrary number of restarts.
-    #[test]
-    fn a_superseded_producer_stays_fenced_after_many_replacements() {
-        let first = producer(8);
-        let mut fence = ProducerFence::new();
-        fence.admit(first, 1);
-        for replacement in 100..164 {
-            fence.admit(producer(replacement), 0);
-        }
-        assert!(matches!(
-            fence.admit(first, 2),
-            LeaseDecision::Rejected(LeaseRejection::SupersededProducer { .. })
-        ));
-        assert!(!fence.permits(first));
-    }
-
-    #[test]
-    fn host_silence_expires_the_lease_independently_of_logical_time() {
-        let producer = producer(9);
-        let line = TimelineId::mint();
-        let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-        lease.offer(producer, 1, start, "go");
-
-        // Logical time is frozen (a paused or slowed simulation), yet host
-        // silence still expires the command: operator presence is a human-time
-        // requirement.
-        let quiet = start.saturating_add(SILENCE);
-        assert_eq!(lease.live(quiet, step(line, 0)), None);
+        lease.update_ready(&expected, source, LivelinessStatus::Lost);
+        lease.update_ready(&expected, source, LivelinessStatus::Alive);
         assert_eq!(
-            lease.live(start, step(line, 0)),
-            None,
-            "an expired lease stays expired until a new command renews it"
+            lease.offer(Some(&expected), source, 0, at, "new incarnation"),
+            LeaseDecision::Acquired
         );
     }
 
     #[test]
-    fn the_logical_horizon_expires_the_lease_independently_of_host_time() {
-        let producer = producer(10);
-        let line = TimelineId::mint();
-        let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-        lease.offer(producer, 1, start, "go");
-
-        // Host time is still (an accelerated simulation), yet simulated travel
-        // is bounded.
-        assert_eq!(lease.live(start, step(line, 0)), Some(&"go"));
-        assert_eq!(lease.live(start, step(line, ms(499))), Some(&"go"));
-        // The horizon is reached *at* the bound, matching how the actuator
-        // permit ages: no sample is live in one layer and dead in the next.
-        assert_eq!(lease.live(start, step(line, ms(500))), None);
+    fn external_control_has_no_participant_or_ready_prerequisite_and_no_steal() {
+        let first = producer(5);
+        let second = producer(6);
+        let at = LocalInstant::from_boot_ns(0);
+        let mut lease = ExclusiveProducerLease::new(
+            "motion/manual",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+        );
+        assert_eq!(lease.offer(first, 0, at, "first"), LeaseDecision::Acquired);
+        assert_eq!(
+            lease.offer(second, 99, at, "steal"),
+            LeaseDecision::Rejected(LeaseRejection::AuthorityHeld { owner: first })
+        );
+        assert_eq!(lease.producer(), Some(first));
+        assert_eq!(
+            lease.release(second),
+            Err(LeaseRejection::NotOwner {
+                owner: first,
+                requested: second,
+            })
+        );
+        assert!(lease.release(first).is_ok());
+        assert_eq!(
+            lease.offer(second, 0, at, "second"),
+            LeaseDecision::Acquired
+        );
     }
 
     #[test]
-    fn a_lease_that_expired_while_paused_does_not_apply_on_the_first_resumed_step() {
-        let producer = producer(11);
+    fn external_expiry_releases_authority() {
+        let first = producer(7);
+        let second = producer(8);
+        let at = LocalInstant::from_boot_ns(0);
         let line = TimelineId::mint();
-        let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-        lease.offer(producer, 1, start, "go");
-        assert_eq!(lease.live(start, step(line, 0)), Some(&"go"));
-
-        // The world is paused: no steps happen, but host time keeps running
-        // past the silence deadline. The first resumed arbitration step must
-        // not apply the retained command.
-        let resumed = start.saturating_add(SILENCE);
-        assert_eq!(lease.live(resumed, step(line, 1)), None);
+        let mut lease = ExclusiveProducerLease::new(
+            "motion/manual",
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        );
+        lease.offer(first, 0, at, "first");
+        assert!(
+            lease
+                .live(at.saturating_add(Duration::from_millis(10)), step(line, 0))
+                .is_none()
+        );
+        assert_eq!(
+            lease.offer(second, 0, at, "second"),
+            LeaseDecision::Acquired
+        );
     }
 
     #[test]
-    fn a_replacement_timeline_drops_a_held_command_rather_than_comparing_across_worlds() {
-        let producer = producer(12);
-        let first_line = TimelineId::mint();
-        let second_line = TimelineId::mint();
+    fn a_silent_owner_is_replaced_by_the_first_next_step_offer() {
+        let first = producer(9);
+        let second = producer(10);
         let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-        lease.offer(producer, 1, start, "go");
-        assert_eq!(lease.live(start, step(first_line, 0)), Some(&"go"));
-        assert_eq!(lease.live(start, step(second_line, 0)), None);
+        let after_silence = start.saturating_add(Duration::from_millis(10));
+        let mut lease = ExclusiveProducerLease::new(
+            "motion/manual",
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            lease.offer(first, 0, start, "first"),
+            LeaseDecision::Acquired
+        );
+        lease.expire_host(after_silence);
+        assert_eq!(
+            lease.offer(second, 0, after_silence, "second"),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(lease.producer(), Some(second));
+        let line = TimelineId::mint();
+        assert_eq!(lease.live(after_silence, step(line, 0)), Some(&"second"));
     }
 
     #[test]
-    fn a_decreasing_step_on_one_timeline_drops_the_held_command() {
-        let producer = producer(13);
+    fn a_logically_expired_owner_is_replaced_before_the_next_offer() {
+        let first = producer(11);
+        let second = producer(12);
+        let host_start = LocalInstant::from_boot_ns(0);
         let line = TimelineId::mint();
-        let start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("test/input", SILENCE, HOLD);
-        lease.offer(producer, 1, start, "go");
+        let hold = Duration::from_millis(10);
+        let mut lease = ExclusiveProducerLease::new("motion/manual", Duration::from_secs(1), hold);
 
-        assert_eq!(lease.live(start, step(line, 100)), Some(&"go"));
-        // A same-timeline regression is not a fresh zero-age sample. It is a
-        // broken logical clock, so the receiver drops the command fail-closed.
-        assert_eq!(lease.live(start, step(line, 99)), None);
-        assert_eq!(lease.live(start, step(line, 101)), None);
+        assert_eq!(
+            lease.offer(first, 0, host_start, "first"),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(lease.live(host_start, step(line, 0)), Some(&"first"));
+        let after_hold = step(line, u64::try_from(hold.as_nanos()).unwrap() + 1);
+        lease.expire_before_offer(
+            host_start.saturating_add(Duration::from_millis(1)),
+            after_hold,
+        );
+        assert_eq!(
+            lease.offer(
+                second,
+                0,
+                host_start.saturating_add(Duration::from_millis(1)),
+                "second"
+            ),
+            LeaseDecision::Acquired
+        );
+        assert_eq!(lease.producer(), Some(second));
     }
 }

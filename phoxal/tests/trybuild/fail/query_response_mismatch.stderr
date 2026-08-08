@@ -1,4 +1,4 @@
-error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
+error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, QueryContext, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, QueryContext, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
   --> tests/trybuild/fail/query_response_mismatch.rs:15:67
    |
 15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
@@ -15,7 +15,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    |             ) -> crate::bus::QueryResult<Resp>
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::query`
 
-error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
+error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, QueryContext, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, QueryContext, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
   --> tests/trybuild/fail/query_response_mismatch.rs:15:9
    |
 15 |         ctx.query(api::topic::owner().supervisor().asset().get(), Self::get)
@@ -32,7 +32,7 @@ note: required by a bound in `phoxal::SetupContext::<R>::query`
    |             ) -> crate::bus::QueryResult<Resp>
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `SetupContext::<R>::query`
 
-error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
+error[E0271]: type mismatch resolving `<fn(&BadResponse, &Api, QueryContext, GetRequest, &mut ()) -> impl Future<Output = Result<SubmapResponse, QueryFailure>> {BadResponse::get} as AsyncFnOnce<(&BadResponse, &Api, QueryContext, GetRequest, &mut ())>>::Output == Result<GetResponse, QueryFailure>`
   --> tests/trybuild/fail/query_response_mismatch.rs:16:14
    |
 16 |             .await?;

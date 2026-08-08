@@ -843,11 +843,44 @@ path = "src/example.rs"
 
     #[test]
     fn real_workspace_release_scope_is_valid() -> Result<()> {
+        use std::collections::BTreeSet;
+
         let workspace_manifest = workspace_root()?.join("Cargo.toml");
         let workspace =
             Workspace::discover(MetadataCommand::new().manifest_path(workspace_manifest))?;
 
-        assert_eq!(workspace.official_artifacts().len(), 18);
+        let actual = workspace
+            .official_artifacts()
+            .iter()
+            .map(OfficialArtifact::package)
+            .collect::<BTreeSet<_>>();
+        let expected = BTreeSet::from([
+            "phoxal/component-bno085",
+            "phoxal/component-ddsm115",
+            "phoxal/component-oak_d_lite",
+            "phoxal/component-vl53l1x",
+            "phoxal/component-zed_f9p",
+            "phoxal/service-drive",
+            "phoxal/service-frame",
+            "phoxal/service-joint",
+            "phoxal/service-localize",
+            "phoxal/service-map",
+            "phoxal/service-motion",
+            "phoxal/service-navigation",
+            "phoxal/service-odometry",
+            "phoxal/service-perception",
+            "phoxal/service-safety",
+            "phoxal/service-video",
+            "phoxal/simulator-webots-controller",
+        ])
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert!(
+            !actual.contains("phoxal/service-power"),
+            "the removed power service must not remain in the release scope"
+        );
 
         assert_eq!(
             workspace
@@ -855,7 +888,7 @@ path = "src/example.rs"
                 .iter()
                 .filter(|artifact| artifact.kind == ArtifactKind::Service)
                 .count(),
-            12
+            11
         );
         let simulators = workspace
             .official_artifacts()

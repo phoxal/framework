@@ -30,8 +30,8 @@ use phoxal::model::robot::MotionLimits;
 use phoxal::prelude::*;
 
 use crate::arbitration::{
-    Arbitration, MANUAL_HOLD, MANUAL_SILENCE, candidate_age_ns, manual_observed_age_ns,
-    safety_is_usable,
+    AUTONOMOUS_HOLD, AUTONOMOUS_SILENCE, Arbitration, MANUAL_HOLD, MANUAL_SILENCE,
+    candidate_age_ns, manual_observed_age_ns, safety_is_usable,
 };
 
 /// A configured component emergency stop must keep publishing. Silence past
@@ -106,6 +106,7 @@ impl EmergencyStopLatch {
 pub(crate) struct Api {
     manual: Subscriber<api::motion::ManualCommand>,
     autonomous: Subscriber<api::navigation::Candidate>,
+    navigation_ready: phoxal::bus::ParticipantReadyEvents,
     component_estops: Vec<BoundEmergencyStop>,
     safety_constraints: Subscriber<api::safety::MotionConstraints>,
     drive: CommandPublisher<api::drive::Target>,
@@ -114,9 +115,10 @@ pub(crate) struct Api {
 
 pub(crate) struct MotionState {
     limits: MotionLimits,
-    manual: Lease<api::motion::ManualCommand>,
+    manual: ExclusiveProducerLease<api::motion::ManualCommand>,
     manual_observed_at: Option<LocalInstant>,
     last_autonomous: Option<Timed<api::navigation::Candidate>>,
+    autonomous_authority: FixedSourceLease<api::navigation::Candidate>,
     estop: EmergencyStopLatch,
     last_safety_constraints: Option<Timed<api::safety::MotionConstraints>>,
 }
@@ -131,6 +133,9 @@ impl Participant for Motion {
         _config: Self::Config,
     ) -> Result<(Self::State, Self::Api)> {
         let robot = ctx.robot()?;
+        let navigation = phoxal::bus::ParticipantId::new("navigation")
+            .map_err(|error| anyhow::anyhow!("invalid fixed navigation participant id: {error}"))?;
+        let navigation_ready = ctx.participant_ready_events().await?;
         let limits = robot.motion().limits().validate()?;
         let estops =
             robot.capability_refs(|capability| matches!(capability, Capability::EmergencyStop(_)));
@@ -153,9 +158,15 @@ impl Participant for Motion {
         Ok((
             MotionState {
                 limits,
-                manual: Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
+                manual: ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD),
                 manual_observed_at: None,
                 last_autonomous: None,
+                autonomous_authority: FixedSourceLease::new(
+                    "navigation/candidate",
+                    navigation,
+                    AUTONOMOUS_SILENCE,
+                    AUTONOMOUS_HOLD,
+                ),
                 estop: EmergencyStopLatch::new(estops),
                 last_safety_constraints: None,
             },
@@ -166,6 +177,7 @@ impl Participant for Motion {
                 autonomous: ctx
                     .subscriber(api::topic::client().navigation().candidate())
                     .await?,
+                navigation_ready,
                 component_estops,
                 safety_constraints: ctx
                     .subscriber(api::topic::client().safety().constraints())
@@ -182,6 +194,7 @@ impl Participant for Motion {
 
     fn reset(&self, _ctx: ResetContext, _api: &Self::Api, state: &mut Self::State) -> Result<()> {
         state.last_autonomous = None;
+        state.autonomous_authority.clear();
         state.last_safety_constraints = None;
         state.estop.reset_timeline();
         // The manual command is a clockless operator input sampled at a logical
@@ -207,6 +220,18 @@ impl Participant for Motion {
             bail!("the host boot clock could not be read");
         };
 
+        // Release a silent external owner before admitting this step's
+        // queue. Otherwise a replacement operator would need to transmit a
+        // second command after the receiver happened to call `live`.
+        state.manual.expire_before_offer(host_now, now);
+
+        while let Some(event) = api.navigation_ready.try_recv() {
+            state.autonomous_authority.update_ready_event(&event);
+        }
+        if api.navigation_ready.overflowed() {
+            state.autonomous_authority.mark_ready_overflow();
+        }
+
         while let Some(observed) = api.manual.try_recv() {
             let observed_at = observed.observed_at;
             match state.manual.offer(
@@ -227,8 +252,21 @@ impl Participant for Motion {
         }
         while let Some(observed) = api.autonomous.try_recv() {
             if let Some(at) = observed.metadata.produced_exactly_at() {
-                state.last_autonomous = Some(Timed::new(observed.body, at));
+                let body = observed.body;
+                let decision = state.autonomous_authority.offer(
+                    observed.metadata.participant.as_ref(),
+                    observed.metadata.producer,
+                    observed.metadata.sequence,
+                    observed.observed_at,
+                    body.clone(),
+                );
+                if !matches!(decision, LeaseDecision::Rejected(_)) {
+                    state.last_autonomous = Some(Timed::new(body, at));
+                }
             }
+        }
+        if state.autonomous_authority.live(host_now, now).is_none() {
+            state.last_autonomous = None;
         }
         for bound in &api.component_estops {
             while let Some(observed) = bound.state.try_recv() {
@@ -353,7 +391,7 @@ mod tests {
         let producer = producer(1);
         let host_start = LocalInstant::from_boot_ns(0);
 
-        let mut silent = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+        let mut silent = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         silent.offer(producer, 1, host_start, command.clone());
         assert!(silent.live(host_start, at(0)).is_some());
         assert!(
@@ -365,7 +403,7 @@ mod tests {
                 .is_none()
         );
 
-        let mut held = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+        let mut held = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         held.offer(producer, 1, host_start, command);
         assert!(held.live(host_start, at(0)).is_some());
         let past_hold = u64::try_from(MANUAL_HOLD.as_nanos()).unwrap() + 1;
@@ -378,7 +416,7 @@ mod tests {
     fn a_lease_expired_while_paused_does_not_apply_on_the_first_resumed_step() {
         let producer = producer(2);
         let host_start = LocalInstant::from_boot_ns(0);
-        let mut lease = Lease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
+        let mut lease = ExclusiveProducerLease::new("motion/manual", MANUAL_SILENCE, MANUAL_HOLD);
         lease.offer(
             producer,
             1,

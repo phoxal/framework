@@ -9,9 +9,13 @@
 
 use anyhow::Result;
 use phoxal::api;
-use phoxal::bus::{CaptureStamp, ContractBody, MeasurementContract, StepStamp, WorldStepToken};
+use phoxal::bus::{
+    CaptureStamp, ContractBody, FixedSourceLease, LeaseDecision, LocalInstant, MeasurementContract,
+    ParticipantId, ParticipantReadyEvents, StepStamp, WorldStepToken,
+};
 use phoxal::model::identity::CapabilityRef;
 use phoxal::prelude::*;
+use std::time::Duration;
 
 use crate::capabilities::accelerometer::NativeAccelerometer;
 use crate::capabilities::battery::NativeBattery;
@@ -33,6 +37,8 @@ use crate::capabilities::{SensorStep, SimulatedSensor};
 use crate::catalog::CapabilitySpec;
 use crate::controller::WebotsControllerSimulator;
 
+const MOTOR_SOURCE_SILENCE: Duration = Duration::from_millis(150);
+
 /// Reading a subscriber's backlog the way one world step needs it.
 ///
 /// Two answers are meaningful, and which one a capability wants is part of
@@ -46,6 +52,10 @@ trait CommandBacklog<B> {
 
     /// Everything queued, oldest first.
     fn take_all(&self) -> Vec<B>;
+
+    /// The newest body together with the trusted transport provenance that
+    /// decides whether an actuator may apply it.
+    fn take_newest_observed(&self) -> Option<Observed<B>>;
 }
 
 impl<B: ContractBody> CommandBacklog<B> for Subscriber<B> {
@@ -64,15 +74,26 @@ impl<B: ContractBody> CommandBacklog<B> for Subscriber<B> {
         }
         received
     }
+
+    fn take_newest_observed(&self) -> Option<Observed<B>> {
+        let mut newest = None;
+        while let Some(received) = self.try_recv() {
+            newest = Some(received);
+        }
+        newest
+    }
 }
 
 /// A Webots device the graph drives.
 trait SimulatedActuator {
     /// The contract body this device is commanded with.
-    type Command: ContractBody;
+    type Command: ContractBody + Clone;
 
     /// Apply everything the graph sent since the previous step.
     fn apply_backlog(&mut self, commands: &Subscriber<Self::Command>) -> Result<()>;
+
+    /// Apply one already-admitted command body.
+    fn apply_body(&mut self, command: Self::Command) -> Result<()>;
 
     /// Leave the device quiet: a simulation that stopped must not keep driving
     /// or keep playing. A device with nothing to quiet keeps the default.
@@ -91,6 +112,10 @@ impl SimulatedActuator for NativeMotor {
         }
     }
 
+    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
+        self.apply(&command)
+    }
+
     fn park(&mut self) -> Result<()> {
         self.apply(&api::component::motor::Command::Stop)
     }
@@ -105,6 +130,10 @@ impl SimulatedActuator for NativeLed {
             None => Ok(()),
         }
     }
+
+    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
+        self.apply(&command)
+    }
 }
 
 impl SimulatedActuator for NativeSpeaker {
@@ -117,6 +146,10 @@ impl SimulatedActuator for NativeSpeaker {
             self.apply(chunk)?;
         }
         Ok(())
+    }
+
+    fn apply_body(&mut self, command: Self::Command) -> Result<()> {
+        self.apply(command)
     }
 
     fn park(&mut self) -> Result<()> {
@@ -164,11 +197,54 @@ where
 struct ActuatorChannel<A: SimulatedActuator> {
     device: A,
     commands: Subscriber<A::Command>,
+    authority: Option<FixedSourceLease<A::Command>>,
+    ready: Option<ParticipantReadyEvents>,
 }
 
 impl<A: SimulatedActuator> ActuatorChannel<A> {
     fn apply_backlog(&mut self) -> Result<()> {
-        self.device.apply_backlog(&self.commands)
+        let Some(authority) = self.authority.as_mut() else {
+            return self.device.apply_backlog(&self.commands);
+        };
+        if let Some(ready) = self.ready.as_ref() {
+            while let Some(event) = ready.try_recv() {
+                authority.update_ready_event(&event);
+            }
+            if ready.overflowed() {
+                authority.mark_ready_overflow();
+            }
+        }
+        let Some(host_now) = LocalInstant::try_now() else {
+            // A receiver that cannot stamp its own clock cannot prove that a
+            // retained motor command is still live.  Drain and park before
+            // the next Webots step; the runner will surface the latched clock
+            // fault as a participant failure.
+            self.commands.take_all();
+            authority.clear();
+            return self.device.park();
+        };
+        match self.commands.take_newest_observed() {
+            Some(observed) => {
+                let body = observed.body;
+                let accepted = matches!(
+                    authority.offer(
+                        observed.metadata.participant.as_ref(),
+                        observed.metadata.producer,
+                        observed.metadata.sequence,
+                        observed.observed_at,
+                        body.clone(),
+                    ),
+                    LeaseDecision::Acquired | LeaseDecision::Renewed
+                );
+                if accepted && authority.live_host(host_now).is_some() {
+                    self.device.apply_body(body)
+                } else {
+                    self.device.park()
+                }
+            }
+            None if authority.live_host(host_now).is_none() => self.device.park(),
+            None => Ok(()),
+        }
     }
 
     fn park(&mut self) -> Result<()> {
@@ -340,14 +416,25 @@ impl CapabilityChannel {
             CapabilitySpec::Motor(spec) => CapabilityBinding::Motor(ActuatorChannel {
                 device: NativeMotor::new(webots, spec)?,
                 commands: ctx.subscriber(component().motor(id).command()).await?,
+                authority: Some(FixedSourceLease::new(
+                    "component/motor/command",
+                    ParticipantId::new("drive")?,
+                    MOTOR_SOURCE_SILENCE,
+                    Duration::MAX,
+                )),
+                ready: Some(ctx.participant_ready_events().await?),
             }),
             CapabilitySpec::Led(led) => CapabilityBinding::Led(ActuatorChannel {
                 device: NativeLed::new(webots, led)?,
                 commands: ctx.subscriber(component().led(id).command()).await?,
+                authority: None,
+                ready: None,
             }),
             CapabilitySpec::Speaker(speaker) => CapabilityBinding::Speaker(ActuatorChannel {
                 device: NativeSpeaker::new(webots, speaker)?,
                 commands: ctx.subscriber(component().speaker(id).stream()).await?,
+                authority: None,
+                ready: None,
             }),
             CapabilitySpec::Encoder(spec) => CapabilityBinding::Encoder(SensorChannel {
                 device: NativeEncoder::new(webots, spec)?,

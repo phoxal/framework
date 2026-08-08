@@ -7,6 +7,9 @@
 //! entirely and can never be mistaken for the current run's.
 
 use phoxal_runtime_contract::identity::ProducerId;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc;
 use zenoh::key_expr::OwnedKeyExpr;
 use zenoh::sample::SampleKind;
 
@@ -129,6 +132,40 @@ pub struct ParticipantLivelinessObserver {
     _subscriber: zenoh::pubsub::Subscriber<()>,
 }
 
+/// A bounded runner-facing stream of exact participant Ready changes.
+///
+/// Zenoh invokes the observer callback outside the participant step loop.  The
+/// callback therefore only attempts a bounded local enqueue; services drain
+/// this value at their ordinary step boundary.  If the queue ever overflows,
+/// [`Self::overflowed`] remains true and fixed-source consumers must fail
+/// closed rather than act on an incomplete Ready set.
+pub struct ParticipantReadyEvents {
+    receiver: Mutex<mpsc::Receiver<ParticipantLivelinessEvent>>,
+    _observer: ParticipantLivelinessObserver,
+    overflowed: Arc<AtomicBool>,
+}
+
+impl ParticipantReadyEvents {
+    /// Drain one Ready event without waiting.
+    pub fn try_recv(&self) -> Option<ParticipantLivelinessEvent> {
+        match self.receiver.lock() {
+            Ok(mut receiver) => receiver.try_recv().ok(),
+            Err(_) => {
+                // A poisoned receiver means the exact Ready set can no
+                // longer be trusted. Fixed-source consumers observe this as
+                // overflow and stop admitting authority.
+                self.overflowed.store(true, Ordering::Release);
+                None
+            }
+        }
+    }
+
+    /// Whether the bounded observer queue dropped an event.
+    pub fn overflowed(&self) -> bool {
+        self.overflowed.load(Ordering::Acquire)
+    }
+}
+
 /// Keeps an observation of one exact Liveliness key declared until it is
 /// dropped, and carries the state that key was in when it was established.
 pub struct KeyLivelinessObserver {
@@ -162,6 +199,27 @@ impl BusOwner {
 }
 
 impl BusHandle {
+    /// Observe all exact participant Ready tokens below this execution root,
+    /// delivering changes through a bounded local channel suitable for a
+    /// participant step loop.
+    pub async fn participant_ready_events(&self) -> Result<ParticipantReadyEvents> {
+        let (sender, receiver) = mpsc::channel(64);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::clone(&overflowed);
+        let observer = self
+            .observe_participant_ready(move |event| {
+                if sender.try_send(event).is_err() {
+                    dropped.store(true, Ordering::Release);
+                }
+            })
+            .await?;
+        Ok(ParticipantReadyEvents {
+            receiver: Mutex::new(receiver),
+            _observer: observer,
+            overflowed,
+        })
+    }
+
     /// Observe participant appearance and disappearance, including tokens that
     /// were already live when this observer was declared.
     ///

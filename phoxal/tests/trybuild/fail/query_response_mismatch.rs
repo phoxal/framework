@@ -22,6 +22,7 @@ impl BadResponse {
     async fn get(
         &self,
         _api: &Api,
+        _query: QueryContext,
         _request: api::supervisor::asset::GetRequest,
         _state: &mut (),
     ) -> QueryResult<api::map::SubmapResponse> {
